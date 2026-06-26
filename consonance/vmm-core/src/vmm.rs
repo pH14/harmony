@@ -982,6 +982,21 @@ impl<B: Backend> Vmm<B> {
         //    VM's first `service_pending_irqs`, so there is no separate plan to carry.)
         let mut vcpu = snapshot::vcpu_state_from(s);
         vcpu.events = dev.events;
+        // TEMP DIAGNOSTIC (task 41 box debugging): dump the captured non-quiescent
+        // state so the box log shows exactly which in-flight fields are set + the RIP +
+        // the LAPIC IRR/ISR. Gated by env so normal runs are unaffected. Remove before
+        // the final commit.
+        if std::env::var_os("NQ_DEBUG").is_some() && snapshot::has_inflight_injection(&vcpu.events) {
+            let (irr, isr) = dev
+                .lapic
+                .as_ref()
+                .map(|l| (l.irr, l.isr))
+                .unwrap_or(([0; 8], [0; 8]));
+            eprintln!(
+                "[nq-debug] restore non-quiescent: rip={:#018x} rflags={:#x}\n[nq-debug]   events={:?}\n[nq-debug]   lapic.irr={:08x?}\n[nq-debug]   lapic.isr={:08x?}",
+                vcpu.regs.rip, vcpu.regs.rflags, vcpu.events, irr, isr
+            );
+        }
         // 3. Commit the fallible backend restore first — a failure here leaves the
         //    V-time/device state untouched (nothing below this line can reject the
         //    blob; only the hardware counter reset can fail, infrastructurally).
