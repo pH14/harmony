@@ -1,0 +1,50 @@
+--- consonance/vmm-core/src/snapshot.rs
++++ replace encode_device_blob -> DeviceBlob with Default::default()
+@@ -579,46 +579,17 @@
+     put_u32(out, s.count_at_arm);
+     put_u64(out, s.timer_arm_vns);
+     out.push(u8::from(s.timer_running));
+     out.push(u8::from(s.timer_pending));
+ }
+ 
+ /// Encode a [`DeviceState`] into the vmm-core device blob (the `DeviceBlob` bytes).
+ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
+-    let mut out = Vec::new();
+-    put_u32(&mut out, DEVICE_BLOB_MAGIC);
+-    put_u16(&mut out, DEVICE_BLOB_VERSION);
+-    put_u64(&mut out, d.tsc_adjust);
+-    put_u32(&mut out, d.report_stream.len() as u32);
+-    for &word in &d.report_stream {
+-        put_u32(&mut out, word);
+-    }
+-    put_u32(&mut out, d.uart.capture.len() as u32);
+-    out.extend_from_slice(&d.uart.capture);
+-    out.extend_from_slice(&d.uart.regs);
+-    out.push(u8::from(d.uart.dlab));
+-    out.push(d.uart.dlm);
+-    match &d.lapic {
+-        Some(l) => {
+-            out.push(1);
+-            put_lapic(&mut out, l);
+-        }
+-        None => out.push(0),
+-    }
+-    match &d.legacy {
+-        Some(l) => {
+-            out.push(1);
+-            put_u32(&mut out, l.config_address);
+-            out.push(l.master_imr);
+-            out.push(l.slave_imr);
+-        }
+-        None => out.push(0),
+-    }
+-    DeviceBlob(out)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// A total little-endian cursor over the device blob; every read is bounds-checked
+ /// and yields `None` past end-of-buffer (mapped to [`SnapshotError::DeviceBlob`]).
+ struct Reader<'a> {
+     buf: &'a [u8],
+     pos: usize,
+ }

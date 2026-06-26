@@ -1,0 +1,550 @@
+
+*** consonance/vmm-core/src/snapshot.rs:587:5: replace encode_device_blob -> DeviceBlob with Default::default()
+
+*** mutation diff:
+--- consonance/vmm-core/src/snapshot.rs
++++ replace encode_device_blob -> DeviceBlob with Default::default()
+@@ -579,46 +579,17 @@
+     put_u32(out, s.count_at_arm);
+     put_u64(out, s.timer_arm_vns);
+     out.push(u8::from(s.timer_running));
+     out.push(u8::from(s.timer_pending));
+ }
+ 
+ /// Encode a [`DeviceState`] into the vmm-core device blob (the `DeviceBlob` bytes).
+ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
+-    let mut out = Vec::new();
+-    put_u32(&mut out, DEVICE_BLOB_MAGIC);
+-    put_u16(&mut out, DEVICE_BLOB_VERSION);
+-    put_u64(&mut out, d.tsc_adjust);
+-    put_u32(&mut out, d.report_stream.len() as u32);
+-    for &word in &d.report_stream {
+-        put_u32(&mut out, word);
+-    }
+-    put_u32(&mut out, d.uart.capture.len() as u32);
+-    out.extend_from_slice(&d.uart.capture);
+-    out.extend_from_slice(&d.uart.regs);
+-    out.push(u8::from(d.uart.dlab));
+-    out.push(d.uart.dlm);
+-    match &d.lapic {
+-        Some(l) => {
+-            out.push(1);
+-            put_lapic(&mut out, l);
+-        }
+-        None => out.push(0),
+-    }
+-    match &d.legacy {
+-        Some(l) => {
+-            out.push(1);
+-            put_u32(&mut out, l.config_address);
+-            out.push(l.master_imr);
+-            out.push(l.slave_imr);
+-        }
+-        None => out.push(0),
+-    }
+-    DeviceBlob(out)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// A total little-endian cursor over the device blob; every read is bounds-checked
+ /// and yields `None` past end-of-buffer (mapped to [`SnapshotError::DeviceBlob`]).
+ struct Reader<'a> {
+     buf: &'a [u8],
+     pos: usize,
+ }
+
+
+*** /Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo nextest run --no-run --verbose --package=vmm-core@0.1.0
+   Compiling vmm-core v0.1.0 (/private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/consonance/vmm-core)
+warning: unused variable: `d`
+   --> consonance/vmm-core/src/snapshot.rs:586:34
+    |
+586 | pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
+    |                                  ^ help: if this is intentional, prefix it with an underscore: `_d`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `put_u16` is never used
+   --> consonance/vmm-core/src/snapshot.rs:547:4
+    |
+547 | fn put_u16(out: &mut Vec<u8>, v: u16) {
+    |    ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `put_u32` is never used
+   --> consonance/vmm-core/src/snapshot.rs:550:4
+    |
+550 | fn put_u32(out: &mut Vec<u8>, v: u32) {
+    |    ^^^^^^^
+
+warning: function `put_u64` is never used
+   --> consonance/vmm-core/src/snapshot.rs:553:4
+    |
+553 | fn put_u64(out: &mut Vec<u8>, v: u64) {
+    |    ^^^^^^^
+
+warning: function `put_lapic` is never used
+   --> consonance/vmm-core/src/snapshot.rs:559:4
+    |
+559 | fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
+    |    ^^^^^^^^^
+
+warning: `vmm-core` (lib) generated 5 warnings (run `cargo fix --lib -p vmm-core` to apply 1 suggestion)
+warning: `vmm-core` (lib test) generated 5 warnings (5 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.54s
+
+*** result: Success
+
+*** /Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo nextest run --verbose --package=vmm-core@0.1.0 --all-features
+warning: unused variable: `d`
+   --> consonance/vmm-core/src/snapshot.rs:586:34
+    |
+586 | pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
+    |                                  ^ help: if this is intentional, prefix it with an underscore: `_d`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `put_u16` is never used
+   --> consonance/vmm-core/src/snapshot.rs:547:4
+    |
+547 | fn put_u16(out: &mut Vec<u8>, v: u16) {
+    |    ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `put_u32` is never used
+   --> consonance/vmm-core/src/snapshot.rs:550:4
+    |
+550 | fn put_u32(out: &mut Vec<u8>, v: u32) {
+    |    ^^^^^^^
+
+warning: function `put_u64` is never used
+   --> consonance/vmm-core/src/snapshot.rs:553:4
+    |
+553 | fn put_u64(out: &mut Vec<u8>, v: u64) {
+    |    ^^^^^^^
+
+warning: function `put_lapic` is never used
+   --> consonance/vmm-core/src/snapshot.rs:559:4
+    |
+559 | fn put_lapic(out: &mut Vec<u8>, s: &LapicState) {
+    |    ^^^^^^^^^
+
+warning: `vmm-core` (lib) generated 5 warnings (run `cargo fix --lib -p vmm-core` to apply 1 suggestion)
+warning: `vmm-core` (lib test) generated 5 warnings (5 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+────────────
+ Nextest run ID 078cbfa1-e43a-494d-9e04-cc242c1cd1ec with nextest profile: default
+    Starting 221 tests across 12 binaries (2 tests skipped)
+       START [         ] (  1/221) vmm-core bringup::tests::compose_drives_guestram_and_unsafe_map_memory
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::compose_drives_guestram_and_unsafe_map_memory --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::apply_entry_overlays_registers_segments_and_control_regs
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::apply_entry_overlays_registers_segments_and_control_regs --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::boot_runs_the_host_assert_then_composes
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::boot_runs_the_host_assert_then_composes --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::image_kind_detects_linux_multiboot_and_garbage
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::image_kind_detects_linux_multiboot_and_garbage --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::compose_linux_loads_kernel_and_wires_lapic
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::compose_linux_loads_kernel_and_wires_lapic --nocapture
+       START [         ] (  1/221) vmm-core contract::canonical::tests::reg_and_subleaf_tokens_render
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::canonical::tests::reg_and_subleaf_tokens_render --nocapture
+       START [         ] (  1/221) vmm-core contract::canonical::tests::cell_renders_each_disposition_shape
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::canonical::tests::cell_renders_each_disposition_shape --nocapture
+       START [         ] (  1/221) vmm-core contract::parse::tests::cpuid_row_single_and_range_leaf
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::cpuid_row_single_and_range_leaf --nocapture
+       START [         ] (  1/221) vmm-core contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf --nocapture
+        PASS [   0.028s] (  1/221) vmm-core contract::canonical::tests::cell_renders_each_disposition_shape
+       START [         ] (  2/221) vmm-core contract::parse::tests::dispositions_reads_tokens_and_optional_params
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::dispositions_reads_tokens_and_optional_params --nocapture
+        PASS [   0.036s] (  2/221) vmm-core contract::canonical::tests::reg_and_subleaf_tokens_render
+       START [         ] (  3/221) vmm-core contract::parse::tests::hex32_parses_hex_and_decimal
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::hex32_parses_hex_and_decimal --nocapture
+        PASS [   0.037s] (  3/221) vmm-core contract::parse::tests::cpuid_row_single_and_range_leaf
+       START [         ] (  4/221) vmm-core contract::parse::tests::index_spec_indices_expands_and_sorts
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::index_spec_indices_expands_and_sorts --nocapture
+        PASS [   0.039s] (  4/221) vmm-core bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr
+       START [         ] (  5/221) vmm-core contract::parse::tests::msr_row_single_range_and_members
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::msr_row_single_range_and_members --nocapture
+        PASS [   0.042s] (  5/221) vmm-core bringup::tests::apply_entry_overlays_registers_segments_and_control_regs
+       START [         ] (  6/221) vmm-core contract::parse::tests::parse_full_synthetic_contract
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::parse_full_synthetic_contract --nocapture
+        PASS [   0.044s] (  6/221) vmm-core bringup::tests::compose_drives_guestram_and_unsafe_map_memory
+       START [         ] (  7/221) vmm-core contract::parse::tests::parse_raw_sections_arrays_and_stray_keys
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::parse_raw_sections_arrays_and_stray_keys --nocapture
+        PASS [   0.042s] (  7/221) vmm-core contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf
+       START [         ] (  8/221) vmm-core contract::parse::tests::parse_value_classifies_every_token
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::parse_value_classifies_every_token --nocapture
+        PASS [   0.049s] (  8/221) vmm-core bringup::tests::boot_runs_the_host_assert_then_composes
+       START [         ] (  9/221) vmm-core contract::parse::tests::prop_int_token_roundtrips
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::prop_int_token_roundtrips --nocapture
+        PASS [   0.053s] (  9/221) vmm-core bringup::tests::image_kind_detects_linux_multiboot_and_garbage
+       START [         ] ( 10/221) vmm-core contract::parse::tests::prop_parse_value_never_panics
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::prop_parse_value_never_panics --nocapture
+        PASS [   0.025s] ( 10/221) vmm-core contract::parse::tests::dispositions_reads_tokens_and_optional_params
+       START [         ] ( 11/221) vmm-core contract::parse::tests::prop_quoted_string_roundtrips
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::prop_quoted_string_roundtrips --nocapture
+        PASS [   0.019s] ( 11/221) vmm-core contract::parse::tests::msr_row_single_range_and_members
+       START [         ] ( 12/221) vmm-core contract::parse::tests::reg_field_base_is_exact
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::reg_field_base_is_exact --nocapture
+        PASS [   0.023s] ( 12/221) vmm-core contract::parse::tests::index_spec_indices_expands_and_sorts
+       START [         ] ( 13/221) vmm-core contract::parse::tests::reg_field_parses_const_and_dyn_tokens
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::reg_field_parses_const_and_dyn_tokens --nocapture
+        PASS [   0.023s] ( 13/221) vmm-core contract::parse::tests::parse_value_classifies_every_token
+       START [         ] ( 14/221) vmm-core contract::parse::tests::strip_comment_respects_quoted_hashes
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::strip_comment_respects_quoted_hashes --nocapture
+        PASS [   0.070s] ( 14/221) vmm-core bringup::tests::compose_linux_loads_kernel_and_wires_lapic
+       START [         ] ( 15/221) vmm-core contract::parse::tests::subleaf_parses_all_forms
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::subleaf_parses_all_forms --nocapture
+        PASS [   0.029s] ( 15/221) vmm-core contract::parse::tests::parse_raw_sections_arrays_and_stray_keys
+       START [         ] ( 16/221) vmm-core contract::parse::tests::toml_value_accessors_and_fallbacks
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::toml_value_accessors_and_fallbacks --nocapture
+        PASS [   0.034s] ( 16/221) vmm-core contract::parse::tests::hex32_parses_hex_and_decimal
+       START [         ] ( 17/221) vmm-core contract::tests::canonical_form_matches_golden
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::canonical_form_matches_golden --nocapture
+        PASS [   0.035s] ( 17/221) vmm-core contract::parse::tests::parse_full_synthetic_contract
+       START [         ] ( 18/221) vmm-core contract::tests::canonical_form_well_formed
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::canonical_form_well_formed --nocapture
+        PASS [   0.011s] ( 18/221) vmm-core contract::parse::tests::strip_comment_respects_quoted_hashes
+       START [         ] ( 19/221) vmm-core contract::tests::contract_hash_is_stable
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::contract_hash_is_stable --nocapture
+        PASS [   0.023s] ( 19/221) vmm-core contract::parse::tests::reg_field_parses_const_and_dyn_tokens
+       START [         ] ( 20/221) vmm-core contract::tests::contract_hash_matches_committed_registry
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::contract_hash_matches_committed_registry --nocapture
+        PASS [   0.024s] ( 20/221) vmm-core contract::parse::tests::reg_field_base_is_exact
+       START [         ] ( 21/221) vmm-core contract::tests::cpuid_model_masks_and_hides
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::cpuid_model_masks_and_hides --nocapture
+        PASS [   0.039s] ( 21/221) vmm-core contract::parse::tests::prop_int_token_roundtrips
+       START [         ] ( 22/221) vmm-core contract::tests::cpuid_model_subleaf_significance_is_exact
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::cpuid_model_subleaf_significance_is_exact --nocapture
+        PASS [   0.018s] ( 22/221) vmm-core contract::parse::tests::subleaf_parses_all_forms
+       START [         ] ( 23/221) vmm-core contract::tests::msr_dispositions_match_contract
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::msr_dispositions_match_contract --nocapture
+        PASS [   0.016s] ( 23/221) vmm-core contract::parse::tests::toml_value_accessors_and_fallbacks
+       START [         ] ( 24/221) vmm-core contract::tests::msr_filter_allow_is_the_stateful_set
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::msr_filter_allow_is_the_stateful_set --nocapture
+        PASS [   0.058s] ( 24/221) vmm-core contract::parse::tests::prop_parse_value_never_panics
+       START [         ] ( 25/221) vmm-core contract::tests::msr_index_set_is_disjoint_and_complete
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::msr_index_set_is_disjoint_and_complete --nocapture
+        PASS [   0.035s] ( 25/221) vmm-core contract::tests::canonical_form_well_formed
+       START [         ] ( 26/221) vmm-core contract::tests::prop_canonical_form_invariant_to_formatting
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::prop_canonical_form_invariant_to_formatting --nocapture
+        PASS [   0.030s] ( 26/221) vmm-core contract::tests::cpuid_model_masks_and_hides
+       START [         ] ( 27/221) vmm-core contract::tests::report_contract_hash
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::report_contract_hash --nocapture
+        PASS [   0.029s] ( 27/221) vmm-core contract::tests::msr_dispositions_match_contract
+       START [         ] ( 28/221) vmm-core contract::tests::resolve_cpuid_bit_math_is_exact
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::resolve_cpuid_bit_math_is_exact --nocapture
+        PASS [   0.042s] ( 28/221) vmm-core contract::tests::cpuid_model_subleaf_significance_is_exact
+       START [         ] ( 29/221) vmm-core contract::tests::resolve_cpuid_overlays_dynamic_cells
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::resolve_cpuid_overlays_dynamic_cells --nocapture
+        PASS [   0.055s] ( 29/221) vmm-core contract::tests::contract_hash_is_stable
+       START [         ] ( 30/221) vmm-core contract::tests::user_space_mask_is_filter_unknown_inval
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::tests::user_space_mask_is_filter_unknown_inval --nocapture
+        PASS [   0.060s] ( 30/221) vmm-core contract::tests::canonical_form_matches_golden
+       START [         ] ( 31/221) vmm-core corpus::tests::coexisting_spawns_are_determinism_identical_despite_a_shared_work_counter
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::coexisting_spawns_are_determinism_identical_despite_a_shared_work_counter --nocapture
+        PASS [   0.020s] ( 31/221) vmm-core contract::tests::resolve_cpuid_bit_math_is_exact
+       START [         ] ( 32/221) vmm-core corpus::tests::determinism_oracle_sees_a_clean_pass
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::determinism_oracle_sees_a_clean_pass --nocapture
+        PASS [   0.063s] ( 32/221) vmm-core contract::tests::contract_hash_matches_committed_registry
+       START [         ] ( 33/221) vmm-core corpus::tests::machine_runs_to_terminal_and_reports_halted
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::machine_runs_to_terminal_and_reports_halted --nocapture
+        PASS [   0.064s] ( 33/221) vmm-core contract::tests::msr_filter_allow_is_the_stateful_set
+       START [         ] ( 34/221) vmm-core corpus::tests::o1_catches_a_report_stream_only_divergence
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::o1_catches_a_report_stream_only_divergence --nocapture
+        PASS [   0.056s] ( 34/221) vmm-core contract::tests::msr_index_set_is_disjoint_and_complete
+       START [         ] ( 35/221) vmm-core corpus::tests::observable_digest_overrides_state_hash_for_o3
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::observable_digest_overrides_state_hash_for_o3 --nocapture
+        PASS [   0.038s] ( 35/221) vmm-core corpus::tests::determinism_oracle_sees_a_clean_pass
+       START [         ] ( 36/221) vmm-core corpus::tests::run_to_rejects_a_rewind_below_current_work
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::run_to_rejects_a_rewind_below_current_work --nocapture
+        PASS [   0.045s] ( 36/221) vmm-core contract::tests::user_space_mask_is_filter_unknown_inval
+       START [         ] ( 37/221) vmm-core corpus::tests::shared_work_counter_without_run_start_reset_diverges
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact corpus::tests::shared_work_counter_without_run_start_reset_diverges --nocapture
+        PASS [   0.065s] ( 37/221) vmm-core contract::tests::report_contract_hash
+       START [         ] ( 38/221) vmm-core devices::tests::divisor_latch_read_back_with_dlab_set
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::divisor_latch_read_back_with_dlab_set --nocapture
+        PASS [   0.052s] ( 38/221) vmm-core contract::tests::resolve_cpuid_overlays_dynamic_cells
+       START [         ] ( 39/221) vmm-core devices::tests::i8042_status_reports_obf_set_so_the_probe_fails_fast
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::i8042_status_reports_obf_set_so_the_probe_fails_fast --nocapture
+        PASS [   0.128s] ( 39/221) vmm-core contract::parse::tests::prop_quoted_string_roundtrips
+       START [         ] ( 40/221) vmm-core devices::tests::ier_preserved_across_divisor_latch_window
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::ier_preserved_across_divisor_latch_window --nocapture
+        PASS [   0.035s] ( 40/221) vmm-core corpus::tests::machine_runs_to_terminal_and_reports_halted
+       START [         ] ( 41/221) vmm-core devices::tests::iir_reports_thre_interrupt_only_when_thri_enabled
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::iir_reports_thre_interrupt_only_when_thri_enabled --nocapture
+        PASS [   0.080s] ( 41/221) vmm-core contract::tests::prop_canonical_form_invariant_to_formatting
+       START [         ] ( 42/221) vmm-core devices::tests::irq_masked_reads_the_right_imr_bit
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::irq_masked_reads_the_right_imr_bit --nocapture
+        PASS [   0.062s] ( 42/221) vmm-core corpus::tests::coexisting_spawns_are_determinism_identical_despite_a_shared_work_counter
+       START [         ] ( 43/221) vmm-core devices::tests::legacy_only_dword_write_to_cf8_latches
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::legacy_only_dword_write_to_cf8_latches --nocapture
+        PASS [   0.031s] ( 43/221) vmm-core corpus::tests::observable_digest_overrides_state_hash_for_o3
+       START [         ] ( 44/221) vmm-core devices::tests::legacy_owns_the_curated_ports_only
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::legacy_owns_the_curated_ports_only --nocapture
+        PASS [   0.052s] ( 44/221) vmm-core corpus::tests::o1_catches_a_report_stream_only_divergence
+       START [         ] ( 45/221) vmm-core devices::tests::legacy_pci_config_address_round_trips_and_data_reads_no_device
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::legacy_pci_config_address_round_trips_and_data_reads_no_device --nocapture
+        PASS [   0.043s] ( 45/221) vmm-core corpus::tests::shared_work_counter_without_run_start_reset_diverges
+       START [         ] ( 46/221) vmm-core devices::tests::legacy_reads_give_absent_idle_values
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::legacy_reads_give_absent_idle_values --nocapture
+        PASS [   0.022s] ( 46/221) vmm-core devices::tests::legacy_owns_the_curated_ports_only
+        PASS [   0.041s] ( 47/221) vmm-core devices::tests::divisor_latch_read_back_with_dlab_set
+        PASS [   0.026s] ( 48/221) vmm-core devices::tests::legacy_only_dword_write_to_cf8_latches
+       START [         ] ( 49/221) vmm-core devices::tests::owns_is_the_com1_block_only
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::owns_is_the_com1_block_only --nocapture
+       START [         ] ( 49/221) vmm-core devices::tests::out_of_range_ports_not_owned
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::out_of_range_ports_not_owned --nocapture
+       START [         ] ( 49/221) vmm-core devices::tests::lsr_reports_thr_empty
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::lsr_reports_thr_empty --nocapture
+        PASS [   0.050s] ( 49/221) vmm-core devices::tests::irq_masked_reads_the_right_imr_bit
+       START [         ] ( 50/221) vmm-core devices::tests::pic_imr_latches_so_probe_8259a_sees_a_real_pic
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::pic_imr_latches_so_probe_8259a_sees_a_real_pic --nocapture
+        PASS [   0.060s] ( 50/221) vmm-core devices::tests::ier_preserved_across_divisor_latch_window
+       START [         ] ( 51/221) vmm-core devices::tests::shadow_regs_and_dlab_reflect_writes
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::shadow_regs_and_dlab_reflect_writes --nocapture
+        PASS [   0.062s] ( 51/221) vmm-core devices::tests::i8042_status_reports_obf_set_so_the_probe_fails_fast
+       START [         ] ( 52/221) vmm-core devices::tests::task04_init_order_does_not_capture_divisor
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::task04_init_order_does_not_capture_divisor --nocapture
+        PASS [   0.059s] ( 52/221) vmm-core devices::tests::iir_reports_thre_interrupt_only_when_thri_enabled
+       START [         ] ( 53/221) vmm-core devices::tests::thr_capture_independent_of_thri
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::thr_capture_independent_of_thri --nocapture
+        PASS [   0.024s] ( 53/221) vmm-core devices::tests::out_of_range_ports_not_owned
+       START [         ] ( 54/221) vmm-core devices::tests::thr_writes_captured_in_order_dlab_clear
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::thr_writes_captured_in_order_dlab_clear --nocapture
+        PASS [   0.071s] ( 54/221) vmm-core corpus::tests::run_to_rejects_a_rewind_below_current_work
+       START [         ] ( 55/221) vmm-core devices::tests::thri_ignored_while_dlab_selects_the_divisor_latch
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact devices::tests::thri_ignored_while_dlab_selects_the_divisor_latch --nocapture
+        PASS [   0.031s] ( 55/221) vmm-core devices::tests::legacy_reads_give_absent_idle_values
+       START [         ] ( 56/221) vmm-core entry::tests::entry_state_matches_multiboot_contract
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact entry::tests::entry_state_matches_multiboot_contract --nocapture
+        PASS [   0.043s] ( 56/221) vmm-core devices::tests::legacy_pci_config_address_round_trips_and_data_reads_no_device
+       START [         ] ( 57/221) vmm-core entry::tests::long_mode_entry_matches_64bit_boot_protocol
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact entry::tests::long_mode_entry_matches_64bit_boot_protocol --nocapture
+        PASS [   0.031s] ( 57/221) vmm-core devices::tests::owns_is_the_com1_block_only
+       START [         ] ( 58/221) vmm-core entry::tests::write_boot_info_rejects_tiny_ram
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact entry::tests::write_boot_info_rejects_tiny_ram --nocapture
+        PASS [   0.031s] ( 58/221) vmm-core devices::tests::lsr_reports_thr_empty
+       START [         ] ( 59/221) vmm-core entry::tests::write_boot_info_zeroes_and_returns_gpa
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact entry::tests::write_boot_info_zeroes_and_returns_gpa --nocapture
+        PASS [   0.022s] ( 59/221) vmm-core devices::tests::pic_imr_latches_so_probe_8259a_sees_a_real_pic
+       START [         ] ( 60/221) vmm-core hostassert::tests::report_is_well_formed_and_enforce_agrees
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact hostassert::tests::report_is_well_formed_and_enforce_agrees --nocapture
+        PASS [   0.028s] ( 60/221) vmm-core devices::tests::thr_writes_captured_in_order_dlab_clear
+       START [         ] ( 61/221) vmm-core hostassert::tests::verdict_is_ok_iff_all_outcomes_pass
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact hostassert::tests::verdict_is_ok_iff_all_outcomes_pass --nocapture
+        PASS [   0.028s] ( 61/221) vmm-core devices::tests::thri_ignored_while_dlab_selects_the_divisor_latch
+        PASS [   0.022s] ( 62/221) vmm-core entry::tests::entry_state_matches_multiboot_contract
+        PASS [   0.031s] ( 63/221) vmm-core devices::tests::task04_init_order_does_not_capture_divisor
+        PASS [   0.030s] ( 64/221) vmm-core devices::tests::thr_capture_independent_of_thri
+       START [         ] ( 65/221) vmm-core linux_loader::tests::kernel_end_equal_to_ram_fits
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::kernel_end_equal_to_ram_fits --nocapture
+       START [         ] ( 65/221) vmm-core linux_loader::tests::boot_params_field_offsets
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::boot_params_field_offsets --nocapture
+       START [         ] ( 65/221) vmm-core linux_loader::tests::caps_cmdline_against_header_cmdline_size
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::caps_cmdline_against_header_cmdline_size --nocapture
+       START [         ] ( 65/221) vmm-core linux_loader::tests::honors_initrd_addr_max
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::honors_initrd_addr_max --nocapture
+        PASS [   0.034s] ( 65/221) vmm-core devices::tests::shadow_regs_and_dlab_reflect_writes
+       START [         ] ( 66/221) vmm-core linux_loader::tests::load_pins_every_computed_value
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::load_pins_every_computed_value --nocapture
+        PASS [   0.028s] ( 66/221) vmm-core entry::tests::write_boot_info_zeroes_and_returns_gpa
+       START [         ] ( 67/221) vmm-core linux_loader::tests::page_tables_identity_map_with_2mib_pages
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::page_tables_identity_map_with_2mib_pages --nocapture
+        PASS [   0.036s] ( 67/221) vmm-core entry::tests::write_boot_info_rejects_tiny_ram
+       START [         ] ( 68/221) vmm-core linux_loader::tests::parses_a_valid_bzimage
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::parses_a_valid_bzimage --nocapture
+        PASS [   0.027s] ( 68/221) vmm-core hostassert::tests::report_is_well_formed_and_enforce_agrees
+       START [         ] ( 69/221) vmm-core linux_loader::tests::protocol_version_boundary_is_inclusive
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::protocol_version_boundary_is_inclusive --nocapture
+        PASS [   0.017s] ( 69/221) vmm-core linux_loader::tests::honors_initrd_addr_max
+       START [         ] ( 70/221) vmm-core linux_loader::tests::ram_exactly_high_ram_start_is_too_small
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::ram_exactly_high_ram_start_is_too_small --nocapture
+        PASS [   0.046s] ( 70/221) vmm-core entry::tests::long_mode_entry_matches_64bit_boot_protocol
+       START [         ] ( 71/221) vmm-core linux_loader::tests::rejects_initramfs_overlap
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_initramfs_overlap --nocapture
+        PASS [   0.026s] ( 71/221) vmm-core linux_loader::tests::boot_params_field_offsets
+       START [         ] ( 72/221) vmm-core linux_loader::tests::rejects_kernel_that_does_not_fit
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_kernel_that_does_not_fit --nocapture
+        PASS [   0.027s] ( 72/221) vmm-core linux_loader::tests::page_tables_identity_map_with_2mib_pages
+       START [         ] ( 73/221) vmm-core linux_loader::tests::rejects_kernel_too_small_for_64bit_entry
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_kernel_too_small_for_64bit_entry --nocapture
+        PASS [   0.032s] ( 73/221) vmm-core linux_loader::tests::caps_cmdline_against_header_cmdline_size
+        PASS [   0.033s] ( 74/221) vmm-core linux_loader::tests::kernel_end_equal_to_ram_fits
+       START [         ] ( 75/221) vmm-core linux_loader::tests::rejects_non_bzimage
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_non_bzimage --nocapture
+       START [         ] ( 75/221) vmm-core linux_loader::tests::rejects_no_64bit_entry
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_no_64bit_entry --nocapture
+        PASS [   0.026s] ( 75/221) vmm-core linux_loader::tests::parses_a_valid_bzimage
+       START [         ] ( 76/221) vmm-core linux_loader::tests::rejects_old_protocol
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_old_protocol --nocapture
+        PASS [   0.041s] ( 76/221) vmm-core hostassert::tests::verdict_is_ok_iff_all_outcomes_pass
+        PASS [   0.038s] ( 77/221) vmm-core linux_loader::tests::load_pins_every_computed_value
+       START [         ] ( 78/221) vmm-core linux_loader::tests::rejects_pref_address_below_high_ram
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_pref_address_below_high_ram --nocapture
+       START [         ] ( 78/221) vmm-core linux_loader::tests::rejects_overlong_cmdline
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_overlong_cmdline --nocapture
+        PASS [   0.034s] ( 78/221) vmm-core linux_loader::tests::protocol_version_boundary_is_inclusive
+       START [         ] ( 79/221) vmm-core linux_loader::tests::rejects_tiny_ram
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::rejects_tiny_ram --nocapture
+        PASS [   0.027s] ( 79/221) vmm-core linux_loader::tests::rejects_initramfs_overlap
+       START [         ] ( 80/221) vmm-core linux_loader::tests::setup_header_field_offsets
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::setup_header_field_offsets --nocapture
+        PASS [   0.022s] ( 80/221) vmm-core linux_loader::tests::rejects_kernel_too_small_for_64bit_entry
+       START [         ] ( 81/221) vmm-core linux_loader::tests::writes_boot_gdt
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact linux_loader::tests::writes_boot_gdt --nocapture
+        PASS [   0.042s] ( 81/221) vmm-core linux_loader::tests::ram_exactly_high_ram_start_is_too_small
+       START [         ] ( 82/221) vmm-core multiboot::tests::bad_checksum_rejected
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::bad_checksum_rejected --nocapture
+        PASS [   0.023s] ( 82/221) vmm-core linux_loader::tests::rejects_pref_address_below_high_ram
+       START [         ] ( 83/221) vmm-core multiboot::tests::full_override_formula_header_addr_ne_load_addr
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::full_override_formula_header_addr_ne_load_addr --nocapture
+        PASS [   0.034s] ( 83/221) vmm-core linux_loader::tests::rejects_old_protocol
+       START [         ] ( 84/221) vmm-core multiboot::tests::load_address_field_validation
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::load_address_field_validation --nocapture
+        PASS [   0.047s] ( 84/221) vmm-core linux_loader::tests::rejects_kernel_that_does_not_fit
+       START [         ] ( 85/221) vmm-core multiboot::tests::load_region_exact_fit_is_accepted
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::load_region_exact_fit_is_accepted --nocapture
+        PASS [   0.042s] ( 85/221) vmm-core linux_loader::tests::rejects_no_64bit_entry
+       START [         ] ( 86/221) vmm-core multiboot::tests::missing_address_override_flag_rejected
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::missing_address_override_flag_rejected --nocapture
+        PASS [   0.027s] ( 86/221) vmm-core linux_loader::tests::setup_header_field_offsets
+        PASS [   0.042s] ( 87/221) vmm-core linux_loader::tests::rejects_non_bzimage
+       START [         ] ( 88/221) vmm-core multiboot::tests::parses_and_loads_current_payload_shape
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::parses_and_loads_current_payload_shape --nocapture
+       START [         ] ( 88/221) vmm-core multiboot::tests::missing_magic_is_no_header
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::missing_magic_is_no_header --nocapture
+        PASS [   0.037s] ( 88/221) vmm-core linux_loader::tests::rejects_tiny_ram
+       START [         ] ( 89/221) vmm-core multiboot::tests::region_too_large_for_ram_is_out_of_range
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::region_too_large_for_ram_is_out_of_range --nocapture
+        PASS [   0.046s] ( 89/221) vmm-core linux_loader::tests::rejects_overlong_cmdline
+       START [         ] ( 90/221) vmm-core multiboot::tests::truncated_header_is_image_too_small
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact multiboot::tests::truncated_header_is_image_too_small --nocapture
+        PASS [   0.028s] ( 90/221) vmm-core multiboot::tests::bad_checksum_rejected
+       START [         ] ( 91/221) vmm-core snapshot::tests::base_then_derive_stores_only_dirtied_pages
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::base_then_derive_stores_only_dirtied_pages --nocapture
+        PASS [   0.026s] ( 91/221) vmm-core multiboot::tests::full_override_formula_header_addr_ne_load_addr
+       START [         ] ( 92/221) vmm-core snapshot::tests::derive_with_dirty_hint_matches_full_capture
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::derive_with_dirty_hint_matches_full_capture --nocapture
+        PASS [   0.040s] ( 92/221) vmm-core linux_loader::tests::writes_boot_gdt
+       START [         ] ( 93/221) vmm-core snapshot::tests::device_blob_decode_is_total_on_garbage
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::device_blob_decode_is_total_on_garbage --nocapture
+        PASS [   0.026s] ( 93/221) vmm-core multiboot::tests::load_address_field_validation
+       START [         ] ( 94/221) vmm-core snapshot::tests::device_blob_lapic_restores_through_lapic_crate
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::device_blob_lapic_restores_through_lapic_crate --nocapture
+        PASS [   0.019s] ( 94/221) vmm-core multiboot::tests::region_too_large_for_ram_is_out_of_range
+       START [         ] ( 95/221) vmm-core snapshot::tests::device_blob_round_trips_all_fields
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::device_blob_round_trips_all_fields --nocapture
+        PASS [   0.036s] ( 95/221) vmm-core multiboot::tests::load_region_exact_fit_is_accepted
+       START [         ] ( 96/221) vmm-core snapshot::tests::device_blob_round_trips_without_optional_devices
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::device_blob_round_trips_without_optional_devices --nocapture
+        PASS [   0.025s] ( 96/221) vmm-core multiboot::tests::missing_magic_is_no_header
+        PASS [   0.021s] ( 97/221) vmm-core snapshot::tests::derive_with_dirty_hint_matches_full_capture
+       START [         ] ( 98/221) vmm-core snapshot::tests::fill_vcpu_state_leaves_timer_queue_empty
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::fill_vcpu_state_leaves_timer_queue_empty --nocapture
+       START [         ] ( 98/221) vmm-core snapshot::tests::engine_mem_pages_retain_release_gc
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::engine_mem_pages_retain_release_gc --nocapture
+        PASS [   0.027s] ( 98/221) vmm-core snapshot::tests::base_then_derive_stores_only_dirtied_pages
+       START [         ] ( 99/221) vmm-core snapshot::tests::materialize_reproduces_the_full_image
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::materialize_reproduces_the_full_image --nocapture
+        PASS [   0.032s] ( 99/221) vmm-core multiboot::tests::truncated_header_is_image_too_small
+       START [         ] (100/221) vmm-core snapshot::tests::n_views_share_one_read_only_base
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-YlTSAd.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact snapshot::tests::n_views_share_one_read_only_base --nocapture
+        FAIL [   0.025s] (100/221) vmm-core snapshot::tests::device_blob_decode_is_total_on_garbage
+  stdout ───
+
+    running 1 test
+    test snapshot::tests::device_blob_decode_is_total_on_garbage ... FAILED
+
+    failures:
+
+    failures:
+        snapshot::tests::device_blob_decode_is_total_on_garbage
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'snapshot::tests::device_blob_decode_is_total_on_garbage' (58428446) panicked at consonance/vmm-core/src/snapshot.rs:969:9:
+    assertion failed: matches!(decode_device_blob(&trailing),
+        Err(SnapshotError::DeviceBlob("trailing bytes")))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 9 tests still running
+        PASS [   0.041s] (101/221) vmm-core multiboot::tests::missing_address_override_flag_rejected
+        PASS [   0.036s] (102/221) vmm-core multiboot::tests::parses_and_loads_current_payload_shape
+        FAIL [   0.029s] (103/221) vmm-core snapshot::tests::device_blob_round_trips_all_fields
+  stdout ───
+
+    running 1 test
+    test snapshot::tests::device_blob_round_trips_all_fields ... FAILED
+
+    failures:
+
+    failures:
+        snapshot::tests::device_blob_round_trips_all_fields
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'snapshot::tests::device_blob_round_trips_all_fields' (58428463) panicked at consonance/vmm-core/src/snapshot.rs:920:51:
+    called `Result::unwrap()` on an `Err` value: DeviceBlob("truncated header")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.039s] (104/221) vmm-core snapshot::tests::device_blob_lapic_restores_through_lapic_crate
+  stdout ───
+
+    running 1 test
+    test snapshot::tests::device_blob_lapic_restores_through_lapic_crate ... FAILED
+
+    failures:
+
+    failures:
+        snapshot::tests::device_blob_lapic_restores_through_lapic_crate
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'snapshot::tests::device_blob_lapic_restores_through_lapic_crate' (58428464) panicked at consonance/vmm-core/src/snapshot.rs:983:69:
+    called `Result::unwrap()` on an `Err` value: DeviceBlob("truncated header")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.027s] (105/221) vmm-core snapshot::tests::fill_vcpu_state_leaves_timer_queue_empty
+        FAIL [   0.031s] (106/221) vmm-core snapshot::tests::device_blob_round_trips_without_optional_devices
+  stdout ───
+
+    running 1 test
+    test snapshot::tests::device_blob_round_trips_without_optional_devices ... FAILED
+
+    failures:
+
+    failures:
+        snapshot::tests::device_blob_round_trips_without_optional_devices
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'snapshot::tests::device_blob_round_trips_without_optional_devices' (58428469) panicked at consonance/vmm-core/src/snapshot.rs:942:48:
+    called `Result::unwrap()` on an `Err` value: DeviceBlob("truncated header")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.029s] (107/221) vmm-core snapshot::tests::materialize_reproduces_the_full_image
+        PASS [   0.030s] (108/221) vmm-core snapshot::tests::engine_mem_pages_retain_release_gc
+        PASS [   0.035s] (109/221) vmm-core snapshot::tests::n_views_share_one_read_only_base
+────────────
+     Summary [   0.434s] 109/221 tests run: 105 passed, 4 failed, 2 skipped
+        FAIL [   0.025s] (100/221) vmm-core snapshot::tests::device_blob_decode_is_total_on_garbage
+        FAIL [   0.029s] (103/221) vmm-core snapshot::tests::device_blob_round_trips_all_fields
+        FAIL [   0.039s] (104/221) vmm-core snapshot::tests::device_blob_lapic_restores_through_lapic_crate
+        FAIL [   0.031s] (106/221) vmm-core snapshot::tests::device_blob_round_trips_without_optional_devices
+warning: 112/221 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed
+
+*** result: Failure(100)

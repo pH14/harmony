@@ -1,0 +1,145 @@
+--- consonance/vmm-core/src/vmm.rs
++++ replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())
+@@ -816,141 +816,17 @@
+     /// [`VmmError::Snapshot`] for a contract mismatch / malformed device blob /
+     /// rejected LAPIC; [`VmmError::ContractViolation`] at an RNG mid-exit boundary,
+     /// a V-time wiring/rate mismatch, or a rejected entropy blob;
+     /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the
+     /// backend/clock/counter.
+     pub fn restore_vm_state(&mut self, s: &vm_state::VmState) -> Result<(), VmmError> {
+         // 0. Refuse at an RNG mid-exit boundary (a staged, uncommitted completion
+         //    lives in the backend; restoring over it would shift the next draw).
+-        if self.rng_completion_staged {
+-            return Err(VmmError::ContractViolation(
+-                "restore_vm_state at an RNG mid-exit boundary: a seeded RDRAND/RDSEED completion is \
+-                 staged (not committed). Restore only at a clean boundary (step once more first)."
+-                    .to_string(),
+-            ));
+-        }
+-        // 1. Validate, committing nothing.
+-        // 1a. Contract: a blob taken under a different CPUID/MSR contract would
+-        //     silently diverge on restore (INTEGRATION.md §4 `contract_hash`).
+-        if s.contract_hash != contract::contract_hash() {
+-            return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
+-        }
+-        // 1b. Decode the vmm-core device blob (total, never panics).
+-        let dev = snapshot::decode_device_blob(&s.devices.0)?;
+-        // 1c. The blob's LAPIC must be coherent AND match this VM's wiring.
+-        let new_lapic = match (&dev.lapic, self.lapic.is_some()) {
+-            (Some(ls), true) => Some(
+-                lapic::Lapic::restore(ls)
+-                    .map_err(|_| SnapshotError::Lapic("incoherent LapicState in device blob"))?,
+-            ),
+-            (Some(_), false) | (None, true) => {
+-                return Err(VmmError::ContractViolation(
+-                    "restore_vm_state: snapshot/VM xAPIC wiring mismatch (one has a LAPIC, the other \
+-                     does not) — restore into a VM composed like the snapshot source."
+-                        .to_string(),
+-                ));
+-            }
+-            (None, false) => None,
+-        };
+-        // 1c-bis. The legacy platform must match this VM's wiring too — a blob whose
+-        // legacy subrecord is absent (or present) where the VM's is not is a malformed
+-        // snapshot, **rejected** rather than silently skipped (which would leave the
+-        // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by
+-        // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one
+-        // that does not.)
+-        if dev.legacy.is_some() != self.legacy.is_some() {
+-            return Err(VmmError::ContractViolation(
+-                "restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the 8259/PCI \
+-                 latches, the other does not) — restore into a VM composed like the snapshot source."
+-                    .to_string(),
+-            ));
+-        }
+-        // 1d. V-time: validate the rate matches and pre-build the clock + entropy.
+-        let vtime_commit = match self.vtime.as_ref() {
+-            Some(vt) => {
+-                if s.vtime.ratio_num != vt.cfg.ratio_num
+-                    || s.vtime.ratio_den != 1
+-                    || s.vtime.tsc_hz != vt.cfg.tsc_hz
+-                    || s.vtime.tsc_base != vt.cfg.tsc_base
+-                {
+-                    return Err(VmmError::ContractViolation(
+-                        "restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/tsc_hz/\
+-                         tsc_base differ from this VM's wired clock)."
+-                            .to_string(),
+-                    ));
+-                }
+-                let mut cfg = vt.cfg;
+-                cfg.vns_base = s.vtime.snapshot_vns;
+-                let clock = VClock::new(cfg)?;
+-                let mut entropy = vt.entropy.clone();
+-                entropy.restore_state(&s.hypercall).map_err(|e| {
+-                    VmmError::ContractViolation(format!(
+-                        "entropy snapshot rejected on restore: {e:?}"
+-                    ))
+-                })?;
+-                Some((cfg, clock, entropy))
+-            }
+-            None => {
+-                // Unwired VM: the snapshot must not carry a live V-time block (a
+-                // non-zero clock rate means it was taken on a V-time-wired VM).
+-                if s.vtime.tsc_hz != 0 || s.vtime.snapshot_vns != 0 {
+-                    return Err(VmmError::ContractViolation(
+-                        "restore_vm_state: snapshot carries a V-time block but this VM has no V-time \
+-                         wired — restore into a VM composed like the snapshot source."
+-                            .to_string(),
+-                    ));
+-                }
+-                None
+-            }
+-        };
+-        // 2. Build the vCPU state (pure).
+-        let vcpu = snapshot::vcpu_state_from(s);
+-        // 3. Commit the fallible backend restore first — a failure here leaves the
+-        //    V-time/device state untouched (nothing below this line can reject the
+-        //    blob; only the hardware counter reset can fail, infrastructurally).
+-        self.backend.restore(&vcpu)?;
+-        if vtime_commit.is_some() {
+-            // The hardware work counter restarts at 0; the snapshot's V-time now
+-            // lives in `vns_base` (continuity, INTEGRATION.md §4 / restore-transparency).
+-            self.vtime
+-                .as_mut()
+-                .expect("vtime_commit implies wired")
+-                .work
+-                .reset()?;
+-        }
+-        // 4. Commit the validated state (all infallible from here).
+-        if let Some((cfg, clock, entropy)) = vtime_commit {
+-            let vt = self.vtime.as_mut().expect("vtime_commit implies wired");
+-            vt.cfg = cfg;
+-            vt.clock = clock;
+-            vt.entropy = entropy;
+-            vt.last_intercept_work = 0;
+-            vt.tsc_adjust = dev.tsc_adjust;
+-            self.vtime_synchronized = true;
+-        }
+-        if let Some(l) = new_lapic {
+-            self.lapic = Some(l);
+-        }
+-        if let (Some(legacy), Some(ls)) = (self.legacy.as_mut(), dev.legacy) {
+-            legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);
+-        }
+-        self.uart
+-            .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+-        // The ordered report stream is restored so a branch resumes the guest's
+-        // observable output (its `observable_digest` / O2 signal) instead of losing
+-        // every report emitted before the snapshot.
+-        self.report_stream = dev.report_stream;
+-        // A restored VM is runnable again from the snapshot point: clear the latched
+-        // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
+-        // restored backend state.
+-        self.terminal = None;
+-        self.saved_state = None;
+-        self.rng_completion_staged = false;
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Restore a full snapshot — guest memory **and** the non-memory `vm_state` — in
+     /// one call. The materialized image (from [`crate::snapshot::SnapshotEngine::materialize`])
+     /// goes into guest RAM, then [`Vmm::restore_vm_state`] resumes the vCPU/V-time/
+     /// devices. *Same state ⇒ same future* (gate 1).
+     pub fn restore_snapshot(
+         &mut self,

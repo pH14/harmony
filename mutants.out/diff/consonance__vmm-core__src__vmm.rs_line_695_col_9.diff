@@ -1,0 +1,74 @@
+--- consonance/vmm-core/src/vmm.rs
++++ replace Vmm<B>::build_vm_state -> vm_state::VmState with Default::default()
+@@ -687,70 +687,17 @@
+     /// xAPIC, the legacy 8259/PCI latches, the 8250 UART, the ordered report stream,
+     /// and `IA32_TSC_ADJUST`. The `contract_hash` is stamped so a restore can reject a
+     /// blob taken under a different contract. The caller supplies `vcpu` (so the
+     /// fallible `Backend::save` is resolved where the error can propagate —
+     /// [`Vmm::save_vm_state`] — rather than swallowed). Infallible; the V-time block is
+     /// anchored to the deterministic `last_intercept_work`, exactly like
+     /// [`encode_vtime`], so it is byte-deterministic at any exit.
+     fn build_vm_state(&self, vcpu: &VcpuState) -> vm_state::VmState {
+-        let mut s = vm_state::VmState::default();
+-        snapshot::fill_vcpu_state(&mut s, vcpu);
+-        let tsc_adjust = match &self.vtime {
+-            Some(vt) => {
+-                s.vtime = vm_state::VtimeState {
+-                    ratio_num: vt.cfg.ratio_num,
+-                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so the
+-                    // blob is encodable (a fractional ratio is rejected at encode).
+-                    ratio_den: 1,
+-                    tsc_hz: vt.cfg.tsc_hz,
+-                    tsc_base: vt.cfg.tsc_base,
+-                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
+-                };
+-                // The entropy PRNG position rides the `hypercall` section
+-                // (INTEGRATION.md §4: `Dispatcher::save_state()`, "notably the
+-                // entropy PRNG position") — vmm-core's hypercall RNG and RDRAND draw
+-                // from this one stream.
+-                s.hypercall = vt.entropy.save_state();
+-                vt.tsc_adjust
+-            }
+-            None => {
+-                // Unwired (M1/M2): a sentinel encodable V-time block, no entropy.
+-                s.vtime.ratio_den = 1;
+-                0
+-            }
+-        };
+-        let dev = DeviceState {
+-            tsc_adjust,
+-            // The ordered conformance report stream is guest-observable output (it
+-            // feeds `observable_digest` / the O2 oracle), captured here so a restore
+-            // resumes it — else a branch taken after `REPORT_PORT` writes would lose
+-            // them and its `observable_digest` would diverge from the reference. It is
+-            // NOT in the default `state_hash` (O1): that path never emits a `VMST`
+-            // chunk (snapshot-hashing is opt-in), so O1/O2 stay separate.
+-            report_stream: self.report_stream.clone(),
+-            uart: UartState {
+-                capture: self.uart.capture().to_vec(),
+-                regs: *self.uart.shadow_regs(),
+-                dlab: self.uart.dlab(),
+-                dlm: self.uart.dlm(),
+-            },
+-            lapic: self.lapic.as_ref().map(|l| l.snapshot()),
+-            legacy: self.legacy.as_ref().map(|l| {
+-                let imr = l.pic_imr();
+-                LegacyState {
+-                    config_address: l.config_address(),
+-                    master_imr: imr[0],
+-                    slave_imr: imr[1],
+-                }
+-            }),
+-        };
+-        s.devices = snapshot::encode_device_blob(&dev);
+-        s.contract_hash = contract::contract_hash();
+-        s
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// Capture the **non-memory** machine state as a canonical [`vm_state::VmState`]
+     /// (INTEGRATION.md §4) — pair with [`Vmm::guest_memory`] +
+     /// [`crate::snapshot::SnapshotEngine`] for the memory half. The vmm-core adapter
+     /// that fills `vm-state`'s plain-data structs from the live machine and
+     /// `VmState::encode`s them (task 39 Phase 1).
+     ///

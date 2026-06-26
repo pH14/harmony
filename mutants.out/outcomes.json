@@ -1,0 +1,659 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.156620208,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.617376792,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/snapshot.rs:587:5: replace encode_device_blob -> DeviceBlob with Default::default()",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/snapshot.rs",
+          "function": {
+            "function_name": "encode_device_blob",
+            "return_type": "-> DeviceBlob",
+            "span": {
+              "start": {
+                "line": 585,
+                "column": 1
+              },
+              "end": {
+                "line": 617,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 587,
+              "column": 5
+            },
+            "end": {
+              "line": 616,
+              "column": 20
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_587_col_5.log",
+      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_587_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 5.909353458,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.8847865,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:824:9: replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::restore_vm_state",
+            "return_type": "-> Result<(), VmmError>",
+            "span": {
+              "start": {
+                "line": 801,
+                "column": 5
+              },
+              "end": {
+                "line": 949,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 824,
+              "column": 9
+            },
+            "end": {
+              "line": 948,
+              "column": 15
+            }
+          },
+          "replacement": "Ok(())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_824_col_9.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_824_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 8.960008459,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 1.111286875,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:860:33: replace != with == in Vmm<B>::restore_vm_state",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::restore_vm_state",
+            "return_type": "-> Result<(), VmmError>",
+            "span": {
+              "start": {
+                "line": 801,
+                "column": 5
+              },
+              "end": {
+                "line": 949,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 860,
+              "column": 33
+            },
+            "end": {
+              "line": 860,
+              "column": 35
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_860_col_33.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_860_col_33.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 6.083216875,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.821914083,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:775:9: replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::save_vm_state",
+            "return_type": "-> Result<vm_state::VmState, VmmError>",
+            "span": {
+              "start": {
+                "line": 751,
+                "column": 5
+              },
+              "end": {
+                "line": 799,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 775,
+              "column": 9
+            },
+            "end": {
+              "line": 798,
+              "column": 39
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_775_col_9.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_775_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 25.828482042,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.469774791,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:695:9: replace Vmm<B>::build_vm_state -> vm_state::VmState with Default::default()",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::build_vm_state",
+            "return_type": "-> vm_state::VmState",
+            "span": {
+              "start": {
+                "line": 684,
+                "column": 5
+              },
+              "end": {
+                "line": 749,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 695,
+              "column": 9
+            },
+            "end": {
+              "line": 748,
+              "column": 10
+            }
+          },
+          "replacement": "Default::default()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_695_col_9.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_695_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 31.62003175,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.478259583,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![]",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::state_blob",
+            "return_type": "-> Vec<u8>",
+            "span": {
+              "start": {
+                "line": 1101,
+                "column": 5
+              },
+              "end": {
+                "line": 1162,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 1118,
+              "column": 9
+            },
+            "end": {
+              "line": 1161,
+              "column": 12
+            }
+          },
+          "replacement": "vec![]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_1118_col_9.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_1118_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 10.188165459,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.294140458,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/snapshot.rs:703:5: replace decode_device_blob -> Result<DeviceState, SnapshotError> with Ok(Default::default())",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/snapshot.rs",
+          "function": {
+            "function_name": "decode_device_blob",
+            "return_type": "-> Result<DeviceState, SnapshotError>",
+            "span": {
+              "start": {
+                "line": 700,
+                "column": 1
+              },
+              "end": {
+                "line": 755,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 703,
+              "column": 5
+            },
+            "end": {
+              "line": 754,
+              "column": 7
+            }
+          },
+          "replacement": "Ok(Default::default())",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_703_col_5.log",
+      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_703_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 34.2504775,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.533473917,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![0]",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::state_blob",
+            "return_type": "-> Vec<u8>",
+            "span": {
+              "start": {
+                "line": 1101,
+                "column": 5
+              },
+              "end": {
+                "line": 1162,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 1118,
+              "column": 9
+            },
+            "end": {
+              "line": 1161,
+              "column": 12
+            }
+          },
+          "replacement": "vec![0]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_1118_col_9_001.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_1118_col_9_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 8.343972667,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.403927208,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![1]",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/vmm.rs",
+          "function": {
+            "function_name": "Vmm<B>::state_blob",
+            "return_type": "-> Vec<u8>",
+            "span": {
+              "start": {
+                "line": 1101,
+                "column": 5
+              },
+              "end": {
+                "line": 1162,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 1118,
+              "column": 9
+            },
+            "end": {
+              "line": 1161,
+              "column": 12
+            }
+          },
+          "replacement": "vec![1]",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__vmm.rs_line_1118_col_9_002.log",
+      "diff_path": "diff/consonance__vmm-core__src__vmm.rs_line_1118_col_9_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.655965459,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.292567375,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 9,
+  "missed": 0,
+  "caught": 9,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-06-26T04:49:16.793511Z",
+  "end_time": "2026-06-26T04:50:09.234511Z",
+  "cargo_mutants_version": "27.1.0"
+}

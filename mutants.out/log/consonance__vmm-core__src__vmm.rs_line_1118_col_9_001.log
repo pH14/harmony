@@ -1,0 +1,236 @@
+
+*** consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![0]
+
+*** mutation diff:
+--- consonance/vmm-core/src/vmm.rs
++++ replace Vmm<B>::state_blob -> Vec<u8> with vec![0]
+@@ -1110,60 +1110,17 @@
+     /// the effective V-time (`vns_base` + work folded into one canonical field), and the entropy
+     /// stream position (seed + draws so far) — so two states with identical RAM/regs
+     /// but different V-time/seed hash **differently** (the replay-equivalence
+     /// `unison::compare_runs` relies on), while a restored VM and a fresh VM at the
+     /// same effective V-time hash **identically** (see [`encode_vtime`]). Stock KVM /
+     /// M1/M2 (`vtime: None`) emit **no** chunk, so their `state_hash` is byte-for-
+     /// byte unchanged from before this was added.
+     pub fn state_blob(&self) -> Vec<u8> {
+-        let mut out = Vec::new();
+-        put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
+-        put_chunk(&mut out, b"VCPU", &encode_vcpu_state(&self.current_vcpu()));
+-        put_chunk(&mut out, b"SERL", self.uart.capture());
+-        put_chunk(&mut out, b"DEV\0", &self.encode_device_terminal());
+-        if let Some(vt) = &self.vtime {
+-            put_chunk(&mut out, b"VTIM", &encode_vtime(vt));
+-        }
+-        // The xAPIC chunk is present **only** on the Linux boot path (`lapic`
+-        // wired); M1/M2/corpus emit none, so their hash is byte-for-byte
+-        // unchanged. It captures the register file + timer bookkeeping that
+-        // governs future interrupt delivery, so two same-seed Linux runs that
+-        // leave the APIC in different state hash differently.
+-        if let Some(lapic) = &self.lapic {
+-            put_chunk(&mut out, b"LAPC", &encode_lapic_state(&lapic.snapshot()));
+-        }
+-        // Legacy-platform state (the PCI CONFIG_ADDRESS latch + the 8259 master/
+-        // slave IMR) — Linux path only. The IMR governs which IRQ lines deliver, so
+-        // two same-seed runs that leave it different (hence future interrupt
+-        // delivery different) hash differently.
+-        if let Some(legacy) = &self.legacy {
+-            let mut legy = legacy.config_address().to_le_bytes().to_vec();
+-            legy.extend_from_slice(&legacy.pic_imr());
+-            put_chunk(&mut out, b"LEGY", &legy);
+-        }
+-        // The canonical `vm_state` blob, folded into the hash **only** when the
+-        // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps
+-        // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do
+-        // not move — task 39 "gate the swap"); when on, two states whose canonical
+-        // blob differs hash differently, so a snapshot's integrity is in the hash.
+-        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`
+-        // can never produce (`ratio_den` is the invariant `1`), so the fallback is
+-        // unreachable; it is deterministic regardless.
+-        if self.snapshot_hashing {
+-            // Best-effort like the other hash chunks: `current_vcpu` uses the
+-            // terminal-captured state or a swallowing live `save` (the snapshot path,
+-            // `save_vm_state`, reads the vCPU fallibly instead).
+-            let bytes = self
+-                .build_vm_state(&self.current_vcpu())
+-                .encode()
+-                .unwrap_or_default();
+-            put_chunk(&mut out, b"VMST", &bytes);
+-        }
+-        out
++        vec![0] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     /// `sha256(state_blob())` — the M2 determinism hash and the unison
+     /// `state_hash`.
+     pub fn state_hash(&self) -> [u8; 32] {
+         let mut hasher = Sha256::new();
+         hasher.update(self.state_blob());
+         hasher.finalize().into()
+
+
+*** /Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo nextest run --no-run --verbose --package=vmm-core@0.1.0
+   Compiling vmm-core v0.1.0 (/private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/consonance/vmm-core)
+warning: function `put_chunk` is never used
+    --> consonance/vmm-core/src/vmm.rs:1886:4
+     |
+1886 | fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
+     |    ^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `encode_vtime` is never used
+    --> consonance/vmm-core/src/vmm.rs:2016:4
+     |
+2016 | fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
+     |    ^^^^^^^^^^^^
+
+warning: function `encode_lapic_state` is never used
+    --> consonance/vmm-core/src/vmm.rs:2035:4
+     |
+2035 | fn encode_lapic_state(s: &lapic::LapicState) -> Vec<u8> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_vcpu_state` is never used
+    --> consonance/vmm-core/src/vmm.rs:2066:4
+     |
+2066 | fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: `vmm-core` (lib) generated 4 warnings
+warning: `vmm-core` (lib test) generated 4 warnings (4 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.23s
+
+*** result: Success
+
+*** /Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo nextest run --verbose --package=vmm-core@0.1.0 --all-features
+warning: function `put_chunk` is never used
+    --> consonance/vmm-core/src/vmm.rs:1886:4
+     |
+1886 | fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
+     |    ^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `encode_vtime` is never used
+    --> consonance/vmm-core/src/vmm.rs:2016:4
+     |
+2016 | fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
+     |    ^^^^^^^^^^^^
+
+warning: function `encode_lapic_state` is never used
+    --> consonance/vmm-core/src/vmm.rs:2035:4
+     |
+2035 | fn encode_lapic_state(s: &lapic::LapicState) -> Vec<u8> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_vcpu_state` is never used
+    --> consonance/vmm-core/src/vmm.rs:2066:4
+     |
+2066 | fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: `vmm-core` (lib) generated 4 warnings
+warning: `vmm-core` (lib test) generated 4 warnings (4 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+────────────
+ Nextest run ID 86691af3-d2e6-4bbf-81f4-0714fad6328b with nextest profile: default
+    Starting 221 tests across 12 binaries (2 tests skipped)
+       START [         ] (  1/221) vmm-core bringup::tests::compose_drives_guestram_and_unsafe_map_memory
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::compose_drives_guestram_and_unsafe_map_memory --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::apply_entry_overlays_registers_segments_and_control_regs
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::apply_entry_overlays_registers_segments_and_control_regs --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::boot_runs_the_host_assert_then_composes
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::boot_runs_the_host_assert_then_composes --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::image_kind_detects_linux_multiboot_and_garbage
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::image_kind_detects_linux_multiboot_and_garbage --nocapture
+       START [         ] (  1/221) vmm-core bringup::tests::compose_linux_loads_kernel_and_wires_lapic
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact bringup::tests::compose_linux_loads_kernel_and_wires_lapic --nocapture
+       START [         ] (  1/221) vmm-core contract::canonical::tests::reg_and_subleaf_tokens_render
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::canonical::tests::reg_and_subleaf_tokens_render --nocapture
+       START [         ] (  1/221) vmm-core contract::canonical::tests::cell_renders_each_disposition_shape
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::canonical::tests::cell_renders_each_disposition_shape --nocapture
+       START [         ] (  1/221) vmm-core contract::parse::tests::cpuid_row_single_and_range_leaf
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::cpuid_row_single_and_range_leaf --nocapture
+       START [         ] (  1/221) vmm-core contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf --nocapture
+        PASS [   0.017s] (  1/221) vmm-core contract::canonical::tests::subleaf_sort_key_is_the_lowest_covered_subleaf
+       START [         ] (  2/221) vmm-core contract::parse::tests::dispositions_reads_tokens_and_optional_params
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::dispositions_reads_tokens_and_optional_params --nocapture
+        PASS [   0.018s] (  2/221) vmm-core bringup::tests::apply_linux_entry_overlays_long_mode_state_gdtr_and_efer_msr
+       START [         ] (  3/221) vmm-core contract::parse::tests::hex32_parses_hex_and_decimal
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::hex32_parses_hex_and_decimal --nocapture
+        PASS [   0.018s] (  3/221) vmm-core bringup::tests::apply_entry_overlays_registers_segments_and_control_regs
+       START [         ] (  4/221) vmm-core contract::parse::tests::index_spec_indices_expands_and_sorts
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::index_spec_indices_expands_and_sorts --nocapture
+        PASS [   0.018s] (  4/221) vmm-core contract::canonical::tests::reg_and_subleaf_tokens_render
+       START [         ] (  5/221) vmm-core contract::parse::tests::msr_row_single_range_and_members
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::msr_row_single_range_and_members --nocapture
+        PASS [   0.018s] (  5/221) vmm-core contract::parse::tests::cpuid_row_single_and_range_leaf
+       START [         ] (  6/221) vmm-core contract::parse::tests::parse_full_synthetic_contract
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::parse_full_synthetic_contract --nocapture
+        PASS [   0.018s] (  6/221) vmm-core contract::canonical::tests::cell_renders_each_disposition_shape
+       START [         ] (  7/221) vmm-core contract::parse::tests::parse_raw_sections_arrays_and_stray_keys
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::parse_raw_sections_arrays_and_stray_keys --nocapture
+        PASS [   0.023s] (  7/221) vmm-core bringup::tests::image_kind_detects_linux_multiboot_and_garbage
+       START [         ] (  8/221) vmm-core contract::parse::tests::parse_value_classifies_every_token
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::parse_value_classifies_every_token --nocapture
+        PASS [   0.025s] (  8/221) vmm-core bringup::tests::boot_runs_the_host_assert_then_composes
+       START [         ] (  9/221) vmm-core contract::parse::tests::prop_int_token_roundtrips
+             command: /private/var/folders/tl/xt8wryl909g74kw4q35w0pbw0000gn/T/cargo-mutants-harmony-task-snapshot-branch-yMUUh8.tmp/target/debug/deps/vmm_core-808993ca00eae902 --exact contract::parse::tests::prop_int_token_roundtrips --nocapture
+        FAIL [   0.025s] (  9/221) vmm-core bringup::tests::compose_linux_loads_kernel_and_wires_lapic
+  stdout ───
+
+    running 1 test
+    test bringup::tests::compose_linux_loads_kernel_and_wires_lapic ... FAILED
+
+    failures:
+
+    failures:
+        bringup::tests::compose_linux_loads_kernel_and_wires_lapic
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'bringup::tests::compose_linux_loads_kernel_and_wires_lapic' (58446588) panicked at consonance/vmm-core/src/bringup.rs:578:24:
+    range start index 12 out of range for slice of length 1
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 9 tests still running
+        FAIL [   0.030s] ( 10/221) vmm-core bringup::tests::compose_drives_guestram_and_unsafe_map_memory
+  stdout ───
+
+    running 1 test
+    test bringup::tests::compose_drives_guestram_and_unsafe_map_memory ... FAILED
+
+    failures:
+
+    failures:
+        bringup::tests::compose_drives_guestram_and_unsafe_map_memory
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'bringup::tests::compose_drives_guestram_and_unsafe_map_memory' (58446590) panicked at consonance/vmm-core/src/bringup.rs:447:25:
+    range end index 4 out of range for slice of length 1
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.013s] ( 11/221) vmm-core contract::parse::tests::hex32_parses_hex_and_decimal
+        PASS [   0.017s] ( 12/221) vmm-core contract::parse::tests::parse_full_synthetic_contract
+        PASS [   0.017s] ( 13/221) vmm-core contract::parse::tests::msr_row_single_range_and_members
+        PASS [   0.018s] ( 14/221) vmm-core contract::parse::tests::index_spec_indices_expands_and_sorts
+        PASS [   0.017s] ( 15/221) vmm-core contract::parse::tests::parse_raw_sections_arrays_and_stray_keys
+        PASS [   0.018s] ( 16/221) vmm-core contract::parse::tests::dispositions_reads_tokens_and_optional_params
+        PASS [   0.013s] ( 17/221) vmm-core contract::parse::tests::parse_value_classifies_every_token
+        PASS [   0.021s] ( 18/221) vmm-core contract::parse::tests::prop_int_token_roundtrips
+────────────
+     Summary [   0.047s] 18/221 tests run: 16 passed, 2 failed, 2 skipped
+        FAIL [   0.025s] (  9/221) vmm-core bringup::tests::compose_linux_loads_kernel_and_wires_lapic
+        FAIL [   0.030s] ( 10/221) vmm-core bringup::tests::compose_drives_guestram_and_unsafe_map_memory
+warning: 203/221 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed
+
+*** result: Failure(100)

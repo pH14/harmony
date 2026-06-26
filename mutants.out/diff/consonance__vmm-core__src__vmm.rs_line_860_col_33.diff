@@ -1,0 +1,21 @@
+--- consonance/vmm-core/src/vmm.rs
++++ replace != with == in Vmm<B>::restore_vm_state
+@@ -852,17 +852,17 @@
+             (None, false) => None,
+         };
+         // 1c-bis. The legacy platform must match this VM's wiring too — a blob whose
+         // legacy subrecord is absent (or present) where the VM's is not is a malformed
+         // snapshot, **rejected** rather than silently skipped (which would leave the
+         // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by
+         // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one
+         // that does not.)
+-        if dev.legacy.is_some() != self.legacy.is_some() {
++        if dev.legacy.is_some() == /* ~ changed by cargo-mutants ~ */ self.legacy.is_some() {
+             return Err(VmmError::ContractViolation(
+                 "restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the 8259/PCI \
+                  latches, the other does not) — restore into a VM composed like the snapshot source."
+                     .to_string(),
+             ));
+         }
+         // 1d. V-time: validate the rate matches and pre-build the clock + entropy.
+         let vtime_commit = match self.vtime.as_ref() {

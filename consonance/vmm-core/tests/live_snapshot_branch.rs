@@ -33,8 +33,6 @@
 //! `src/vmm.rs` and the portable `tests/snapshot_branch.rs` integration test.
 #![cfg(target_os = "linux")]
 
-use std::time::Instant;
-
 use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_selected};
 use vmm_core::snapshot::SnapshotEngine;
@@ -229,45 +227,48 @@ fn gate3_n_vms_share_one_read_only_base() {
 #[test]
 #[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host; run on \
             `ssh <det-box>` with `-- --ignored`"]
-fn gate2_restore_latency_probe() {
-    // A booted base + a 1-page-dirty child, to show capture is dirty-set-proportional
-    // and to time the restore path against a full-image memcpy baseline.
+fn gate2_capture_is_dirty_set_proportional() {
+    // Gate 2 (capture side): a derived snapshot stores **only the pages dirtied since
+    // its parent** — `owned_pages` tracks the dirty set, not the image size. Measured
+    // structurally via store stats, **not** wall-clock: timing is disallowed in this
+    // determinism codebase (`clippy.toml` bans `Instant::now`), and the wall-clock
+    // "beat full-memcpy on restore" headline is the `vmm-backend` memslot-swap
+    // follow-up (below the `Backend` trait; see IMPLEMENTATION.md) — not measurable,
+    // nor measured, here. Restore correctness is asserted instead.
     let mut a = boot_patched_or_panic();
     a.step().expect("step to a clean intercept");
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let blob = a.save_vm_state().expect("save").encode().expect("encode");
-
-    let t = Instant::now();
     let base = engine.snapshot_base(a.guest_memory(), &blob).expect("base");
-    let capture_base = t.elapsed();
+    let pages = (GUEST_RAM_LEN / 4096) as u64;
 
+    // Dirty exactly one (previously-zero, high) guest page and derive: the child owns
+    // exactly that one page over the shared base — dirty-set-proportional, not
+    // image-size-proportional.
+    let gfn = pages - 1;
+    let off = (gfn as usize) * 4096;
+    let mut dirtied = a.guest_memory().to_vec();
+    dirtied[off..off + 4096].fill(0xC3);
+    let child = engine
+        .snapshot_derive(base, &dirtied, Some(&[gfn]), &blob)
+        .expect("derive");
+    let owned = engine.stats(child).expect("stats").owned_pages;
+    eprintln!(
+        "[gate2] image = {pages} pages; a +1-page-delta child owns {owned} page(s) store-wide — \
+         capture scales with the dirty set, not image size. The O(dirty) restore that beats memcpy \
+         is the vmm-backend memslot-swap follow-up."
+    );
+    assert_eq!(
+        owned, 1,
+        "a one-page delta must store exactly one owned page (dirty-set-proportional capture)"
+    );
+
+    // Restore correctness: the materialized child restores and runs to terminal.
     let mut b = boot_patched_or_panic();
-    let decoded = engine.vm_state(base).expect("decode");
-
-    // Restore = materialize (store-side, scales with resident non-zero pages) + the
-    // guest-RAM copy (currently O(image); the O(dirty) memslot swap is the
-    // vmm-backend follow-up — see IMPLEMENTATION.md).
-    let t = Instant::now();
-    let mapping = engine.materialize(base).expect("materialize");
-    let materialize = t.elapsed();
-    let t = Instant::now();
+    let decoded = engine.vm_state(child).expect("decode");
+    let mapping = engine.materialize(child).expect("materialize");
     b.restore_snapshot(mapping.as_slice(), &decoded)
         .expect("restore");
-    let restore_copy = t.elapsed();
-
-    // Full-memcpy baseline: copying the whole image (what remap must beat).
-    let img = a.guest_memory().to_vec();
-    let t = Instant::now();
-    let mut sink = vec![0u8; img.len()];
-    sink.copy_from_slice(&img);
-    let full_memcpy = t.elapsed();
-    std::hint::black_box(&sink);
-
-    eprintln!(
-        "[gate2] base capture = {capture_base:?} (image {} MiB); materialize = {materialize:?}; \
-         restore copy = {restore_copy:?}; full-memcpy baseline = {full_memcpy:?}",
-        GUEST_RAM_LEN >> 20
-    );
     let r = b.run().expect("restored VM still runs to terminal");
     assert_eq!(r.reason, TerminalReason::DebugExit { code: 0 });
 }
