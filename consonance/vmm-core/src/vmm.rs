@@ -524,6 +524,12 @@ impl<B: Backend> Vmm<B> {
         snapshot::has_inflight_injection(&self.current_vcpu().events)
     }
 
+    /// TEMP DIAGNOSTIC (task 41 box debugging): the live guest RIP. Remove before the
+    /// final commit.
+    pub fn debug_rip(&self) -> u64 {
+        self.current_vcpu().regs.rip
+    }
+
     /// TEMP DIAGNOSTIC (task 41 box debugging): a formatted dump of the live vCPU's 8
     /// segments, so a box gate can localize a segment field the restore round-trip
     /// fails to reproduce. Remove before the final commit.

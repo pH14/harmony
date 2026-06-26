@@ -439,6 +439,84 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// `vtim:work-raw` pair legitimately differs — the work counter resets to 0 on restore
 /// — and is filtered). Then steps the restored VM a few times and prints its serial, to
 /// see whether it resumes the workload or faults immediately.
+/// DIAGNOSTIC (not a gate): trace the guest RIP of the LIVE continuation (stepped
+/// forward from the seal, the correct future) vs the RESTORED continuation, to find the
+/// exact instruction where the restored execution diverges. The restored VM re-executes
+/// the seal's V-time intercept (one extra exit), so its trace is offset by ~1 from the
+/// live trace; both are printed so the alignment + first divergence are visible.
+#[test]
+#[ignore = "diagnostic, box-only: traces RIP to localize the restored-execution divergence"]
+fn diag_restore_rip_trace() {
+    require_kvm();
+    require_host_baseline();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs-postgres.cpio.gz");
+    let marker = workload_marker();
+    const K: usize = 40;
+
+    let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
+    let mut live_rips = Vec::new();
+    let snap = {
+        let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
+        let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
+        let blob = sealed.vm_state.encode().expect("encode");
+        let snap = engine
+            .snapshot_base(live.guest_memory(), &blob)
+            .expect("snapshot");
+        eprintln!(
+            "[rip] sealed at step {}; seal RIP={:#018x}",
+            sealed.step,
+            live.debug_rip()
+        );
+        // Step the LIVE continuation forward (the correct future) and record RIPs.
+        for i in 0..K {
+            match live.step() {
+                Ok(Step::Continued) => live_rips.push(live.debug_rip()),
+                Ok(Step::Terminal(r)) => {
+                    eprintln!("[rip] live terminal at step {i}: {r:?}");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("[rip] live step error at {i}: {e}");
+                    break;
+                }
+            }
+        }
+        snap
+    };
+
+    // Restore + trace the restored continuation.
+    let mut b = boot_pg(&kernel, &initramfs, BASE_SEED);
+    b.restore_snapshot(
+        engine.materialize(snap).expect("materialize").as_slice(),
+        &engine.vm_state(snap).expect("decode"),
+    )
+    .expect("restore");
+    eprintln!("[rip] restored RIP (before step)={:#018x}", b.debug_rip());
+    let mut b_rips = Vec::new();
+    for i in 0..K + 4 {
+        match b.step() {
+            Ok(Step::Continued) => b_rips.push(b.debug_rip()),
+            Ok(Step::Terminal(r)) => {
+                eprintln!("[rip] restored terminal at step {i}: {r:?}");
+                break;
+            }
+            Err(e) => {
+                eprintln!("[rip] restored step error at {i}: {e}");
+                break;
+            }
+        }
+    }
+    let fmt = |v: &[u64]| {
+        v.iter()
+            .map(|r| format!("{r:#011x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    eprintln!("[rip] live continuation RIPs:\n[rip]   {}", fmt(&live_rips));
+    eprintln!("[rip] restored continuation RIPs:\n[rip]   {}", fmt(&b_rips));
+}
+
 #[test]
 #[ignore = "diagnostic, box-only: localizes which state a mid-workload restore loses"]
 fn diag_restore_component_fidelity() {
