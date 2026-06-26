@@ -1,5 +1,162 @@
 # guest/linux — implementation notes
 
+## Task 42 — Postgres workload v2: `gen_random_uuid()` + time, still deterministic-twice
+
+### What landed
+
+The shared bare(37)+OCI(38) Postgres workload (`workload.sql`, generated in both
+`build-postgres-image.sh` and `build-docker-image.sh`) now populates each row with a
+**`gen_random_uuid()`** id (column `DEFAULT`) and a **`clock_timestamp()`**
+wall-clock column, streamed as `row|i|count|sum|uuid|t`:
+
+```sql
+CREATE TABLE ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), i int, t timestamptz);
+-- each of N=20 iterations:
+INSERT INTO ledger(i,t) VALUES ($i, clock_timestamp());
+SELECT 'row', i, (SELECT count(*) FROM ledger), (SELECT sum(i) FROM ledger), id, t FROM ledger WHERE i=$i;
+```
+
+The headline: a random UUID and a per-call wall-clock timestamp *look* nondeterministic,
+but come out **bit-identical across two same-seed runs** — because `gen_random_uuid()`
+draws from `pg_strong_random` → the seeded CRNG (task 37's verified path), and
+`clock_timestamp()` reads the system clock, which is V-time-driven. It is a sharper
+determinism demo *and* a stress test of the RNG/clock determinization: if any path
+escaped, the deterministic-twice gate would fail and that would be a real
+determinization finding. **It did not escape — both bare and OCI pass
+deterministic-twice.**
+
+The `count`/`sum` prefix stays a pure function of the loop index (`row|20|20|210|` for
+the final row: count=20, sum(1..20)=210) — the **deterministic anchor** the gates match.
+The uuid + t are seed-derived (deterministic but not predictable), so the gates check
+them by **shape** (`is_uuid`/`is_timestamp`) and prove **seed-sensitivity** at a second
+seed, rather than pinning a literal.
+
+### `gen_random_uuid()` needs no extension
+
+It is built into PostgreSQL **core since v13** (PG17 here — both the Debian `.deb`s of the
+bare image and the official `postgres:17` OCI image), so **no `CREATE EXTENSION
+pgcrypto`** at build time. Confirmed empirically: the workload runs clean under `psql -v
+ON_ERROR_STOP=1` (a missing function would abort the run and the final row would never
+reach the serial — yet it did, in every run below).
+
+### Determinism closure (the whole point — each traces to the seed / V-time)
+
+- **`gen_random_uuid()` → seeded CRNG.** Core `gen_random_uuid()` fills 16 bytes from
+  `pg_strong_random()` → `getrandom(2)` → the kernel CRNG. Under the patched backend,
+  RDRAND/RDSEED trap to the **seeded entropy stream** and credit the CRNG
+  deterministically (the same root as task 37's cancel keys and task 38's `AT_RANDOM`).
+  So the 20 UUIDs are a deterministic function of the seed: identical across two same-seed
+  runs, **different across different seeds** (Gate 3).
+- **`clock_timestamp()` → V-time.** It reads `CLOCK_REALTIME` (gettimeofday), whose base
+  is the VMM's deterministic persistent-clock value and whose advance is the TSC-derived
+  monotonic clock — both V-time-driven. Empirically the wall-clock base is a fixed epoch
+  (`1999-11-30 00:00:00`) and the per-row sub-second field **advances** across the 20 rows
+  — a live, advancing clock that is nonetheless bit-identical across same-seed runs.
+- **Text rendering pinned.** `timestamptz` text depends on `timezone`/locale; both are
+  pinned (`timezone='UTC'`, `LC_ALL=C.UTF-8`, default ISO `DateStyle`), so the rendered
+  bytes are stable. The serial bit-identity (Gate 2) is the ground truth either way.
+
+### The gates (both files, plus the task-40 regression)
+
+`live_postgres.rs` and `live_postgres_docker.rs` dropped the old
+`FINAL_ROW = row|20|407|20|3010` literal (no longer valid) and now assert:
+
+1. **Deterministic-twice** (Gate 2) — two same-seed patched runs: bit-identical serial
+   (incl. the UUIDs + timestamps) **and** identical `state_hash`. *This* is the proof the
+   UUIDs/timestamps are bit-identical.
+2. **Shape** (in Gates 1+2) — the final row carries a valid UUID + timestamp, and all 20
+   per-iteration UUIDs are **distinct** (not a frozen constant within a run).
+3. **Seed-sensitivity** (Gate 3, a new `p3_*` test in each file) — a second seed produces
+   **different** UUIDs (genuinely seed-driven, not a constant).
+
+`live_branching_demo.rs` (task 40) shares the image; its workload-complete marker was moved
+from the old literal to the new anchor `row|20|20|210|` so it does not regress. The bare
+runs confirm that exact byte sequence reaches the serial, and the branching demo uses the
+SAME image + the same `find(serial, …)` check, so the marker matches by construction (the
+demo was not re-run — it is many boots, and no behavior of it changed beyond the marker).
+`pg-init.sh`'s header comment was updated to the new determinism rationale.
+
+**No production code changed** (no kernel / `devices.rs` / contract / hashing), so M1/M2/P6
++ the det-corpus goldens and the `state_hash` schema are byte-unchanged by construction;
+host gates (build, `nextest` 226 passed, clippy, fmt, `deny`) are green and the
+`#[cfg(target_os="linux")]`-gated test bodies cross-check + cross-clippy clean under
+`--target x86_64-unknown-linux-gnu`.
+
+### Acceptance-gate evidence (box `ssh hetzner`, `taskset -c 2`, reverted to stock `1396736`)
+
+Built on the box (cached `.deb`s / OCI tar / docker bundle + the unchanged task-36
+`bzImage` reused from ht38; `GUEST_BUILD_ROOT` under `/tmp` so the build-time `initdb` —
+run as an unprivileged uid — can traverse it, and isolated from task 41). Every patched run
+reverted to stock KVM (`lsmod | grep '^kvm '` = `1396736`, `kvm_intel users=0`) and was
+verified by the `run-patched-ht42.sh` trap; lsmod was checked **before** each load to
+coordinate with task 41 (core 4).
+
+**Bare (task 37 path), `live_postgres.rs`:**
+
+- **Gate 1** (`p1_postgres_runs_and_streams_patched`): `pg_ready workload_done final_row
+  GUEST_READY` all true, 20 distinct UUIDs, clean `Hlt` terminal, 167701 steps, `ok`.
+  Sample final row: `uuid=c001b5cb-c6c4-41e9-9c80-6deee886ab99 t=1999-11-30 00:00:00.374345+00`.
+- **Gate 2 — deterministic-twice** (`p2_postgres_deterministic_twice_patched`):
+  ```
+  [p2 run A] steps=167701 ... all true   uuid=c001b5cb-c6c4-41e9-9c80-6deee886ab99 t=1999-11-30 00:00:00.374345+00
+  [p2 run B] steps=167701 ... all true   uuid=c001b5cb-c6c4-41e9-9c80-6deee886ab99 t=1999-11-30 00:00:00.374345+00
+  serial A == serial B  (16063 bytes, incl. the UUIDs + timestamps)
+  state_hash A = state_hash B = 794e3565aebf018b5330a1428d15b196664af452e26fcaef2f070ec7ff833a7f
+  ```
+  The random-looking UUID + wall-clock timestamp are **bit-identical** across the two runs.
+- **Gate 3 — seed-sensitivity** (`p3_postgres_seed_sensitivity_patched`):
+  ```
+  seed 0x0028c0ffee5eedc0 -> c001b5cb-c6c4-41e9-9c80-6deee886ab99
+  seed 0x9e1fb946911491d5 -> 67a3ff14-f485-4424-8319-ec693058d058
+  ```
+  Different seed ⇒ **different UUID** (also a different step count, 167701 vs 167699, and a
+  different timestamp — genuinely a different entropy stream). `test result: ok. 2 passed`,
+  `REVERT OK`, `lsmod kvm = 1396736`.
+
+**OCI (task 38 path), `live_postgres_docker.rs`** — same three gates through the full
+container stack (the official `postgres:17` OCI image, namespace/cgroup-isolated):
+
+- **Gate 1** (`p1_docker_postgres_runs_and_streams_patched`): `container_up pg_ready
+  workload_done final_row GUEST_READY` all true, 20 distinct UUIDs, clean `Hlt` terminal,
+  167750 steps, `ok`. Sample: `uuid=6c8b2ac4-1b3b-4cd2-9246-8b267304a394 t=1999-11-30 00:00:01.827954+00`.
+- **Gate 2 — deterministic-twice** (`p2_docker_postgres_deterministic_twice_patched`):
+  ```
+  [p2 run A] steps=167750 ... all true   uuid=6c8b2ac4-1b3b-4cd2-9246-8b267304a394 t=1999-11-30 00:00:01.827954+00
+  [p2 run B] steps=167750 ... all true   uuid=6c8b2ac4-1b3b-4cd2-9246-8b267304a394 t=1999-11-30 00:00:01.827954+00
+  serial A == serial B  (17344 bytes, incl. the UUIDs + timestamps)
+  state_hash A = state_hash B = 0266abce246253ed6b8e10695de49b064d9074a1bc9e8b5d30eb9aa467adaf30
+  ```
+- **Gate 3 — seed-sensitivity** (`p3_docker_postgres_seed_sensitivity_patched`):
+  ```
+  seed 0x0028c0ffee5eedc0 -> 6c8b2ac4-1b3b-4cd2-9246-8b267304a394
+  seed 0x9e1fb946911491d5 -> d1c1360d-fe72-486c-8bc2-21819805f7ca
+  ```
+  `test result: ok. 3 passed; finished in 1855s`, `gate rc=0`, `REVERT OK`, `lsmod kvm =
+  1396736` (`kvm_intel users=0`).
+
+The container's UUIDs/timestamps differ from the bare path's at the *same* seed (e.g.
+`6c8b2ac4…` vs `c001b5cb…`, and the clock has reached `00:00:01.8` vs `00:00:00.3`) —
+expected: the container surface consumes entropy + V-time differently before the workload,
+so the CRNG and clock are at a different point. Each path is bit-identical to *itself*
+across same-seed runs, which is the determinism property the gate proves.
+
+### Deviations considered / limitations
+
+- **`clock_timestamp()` over `now()`.** The spec allows either; `clock_timestamp()` is the
+  stronger test (it reads the wall clock on *every* call, not once per transaction), so the
+  per-row timestamps advance — exercising the live clock 20× per run rather than freezing it.
+- **Single combined SELECT** (not `INSERT … RETURNING` + a separate SELECT). One streamed
+  `row|…` line per iteration carries the uuid + t + the running aggregate — fewer lines, a
+  cleaner golden, and a single deterministic anchor to match; fully satisfies "use both
+  `gen_random_uuid()` and a time function, stream id + t + a running aggregate".
+- **Shape, not value, for uuid/t.** A 122-bit random UUID and a V-time timestamp are
+  deterministic but not predictable without running, so the gates can't pin a literal; they
+  match the deterministic count/sum anchor + validate uuid/t by shape + prove distinctness +
+  seed-sensitivity. The serial bit-identity (Gate 2) is what actually pins them.
+- **No durability-fault surface** (RAM-backed PGDATA; deferred D1) — unchanged from 37/38.
+- **No determinization-mechanism change** (per the spec non-goals): this task *exercises*
+  the existing RNG/clock determinization; it found no gap.
+
 ## Task 38 — Postgres as an OCI container, deterministic-twice
 
 ### What landed
@@ -247,6 +404,10 @@ the task-36 capability audit already confirmed `EXT4_FS`, `BLK_DEV_LOOP`/`BLK_DE
    function of the loop index (no `now()`/`random()` columns), so the golden is a
    deterministic function of the seed. One psql session streams them all (fork +
    connect per row would be needlessly heavy under the single-stepping VMM).
+   **(Superseded by task 42** — the workload now populates each row with a
+   `gen_random_uuid()` id + a `clock_timestamp()` column; see the Task 42 section at
+   the top. The determinism closure below is unchanged and is exactly what makes those
+   random/wall-clock columns come out bit-identical.)
 
 ### Determinism closure (each item traces to the seed / V-time)
 
