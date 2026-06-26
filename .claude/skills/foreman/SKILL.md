@@ -24,6 +24,22 @@ review or verification) per iteration.
 Everything is derived fresh each time from GitHub, the box, and the repo. Any fresh
 session running this skill must reach the same conclusions.
 
+**Current frontier + review posture (integrator directive, 2026-06).** The north star is
+**running a real workload deterministically on the box** — the consonance Postgres stream
+(tasks 36 → 37 → 38, ending at `docker run postgres` deterministic-twice) in parallel with the
+dissonance branching stream (39 → 40). **Maximize box (real-KVM) execution; minimize ceremony on
+theory-only PRs.** Concretely, overriding the per-PR review default below:
+- **Tier the review.** *Substantive* PRs (crate code, determinism leaks, the CPU/MSR contract,
+  wire formats, `unsafe`) get the full **pr-review** treatment incl. the mandatory cross-model
+  (GPT-5.5/codex) pass. *Light* PRs (docs, specs, ROADMAP, feedback, handoff plans) get a foreman
+  sanity read + the standard gates, then merge — **no cross-model pass, no multi-round loop.**
+- **A green box gate outranks a review round.** For box-only frontier tasks the determinism gate
+  on the box (boots, runs, bit-identical `state_hash`) is the decisive signal; once it is green and
+  the diff has had one substantive review, merge — do not hold frontier progress for extra rounds.
+- **Keep both trains moving.** Spawn up to **3** workers during the Wave-3 push (the two box
+  frontier streams + one Mac-only quality/docs worker); pin concurrent box runs to distinct cores
+  (see `docs/BOX-PINNING.md`). Prioritize the box/Postgres frontier over backlog and quality tasks.
+
 ## 1. Sync (every iteration, cheap)
 
 ```sh
@@ -100,9 +116,13 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
    the blind GPT-5.5 cross-model pass on the fixed head (pr-review skill §5) — fixes can
    introduce new bugs; iterate until a *clean* cross-model pass confirms it. Only then
    post APPROVE; otherwise REQUEST_CHANGES.
-3. ★ **Review** one `needs-review`: invoke the **pr-review skill** (it owns the whole
-   procedure: spec conformance, gates, **mandatory** blind GPT-5.5 pass, batched inline
-   review). The GPT-5.5 cross-model pass is never skipped — no PR merges without a clean one.
+3. ★ **Review** one `needs-review`, **tiered** (see the review-posture rule above):
+   - *Substantive* (crate code, determinism, contract, wire formats, `unsafe`): invoke the
+     **pr-review skill** in full — spec conformance, gates, the **mandatory** blind GPT-5.5
+     cross-model pass, batched inline review. Never skip the cross-model pass for this tier.
+   - *Light* (docs, specs, ROADMAP, feedback, handoff plans): a foreman sanity read + the
+     standard gates, then merge — no cross-model pass. (This is a *cheap* action, not the
+     starred heavy one.)
 4. **Dispatch fixes** for each `needs-fix-dispatch`:
    - **Task-owned PR**: if session `agent-<slug>` is alive,
      `scripts/agent-send.sh <slug> "Your PR #<N> got review feedback: <url>. Read every comment (gh pr view <N> --comments). Fix all [blocking] items, answer [question]s in PR replies, re-run all gates, commit and push."`
@@ -120,7 +140,9 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
    `tmux capture-pane -p -t agent-<slug> | tail -30`. If it's waiting on a
    permission prompt or confused, send-keys what unblocks it; nudge at most once. Stalled
    again next iteration ⇒ kill, respawn fresh, note it. Fails twice ⇒ escalate.
-7. **Spawn** next `unstarted` task (tasks/ numeric order) while live workers < **2**:
+7. **Spawn** the next task while live workers < **3** (Wave-3 push cap; see the posture rule).
+   Priority: the box/Postgres frontier (36 → 37 → 38) ‖ the dissonance branching stream (39 → 40)
+   ahead of backlog/quality tasks (else numeric order):
    `~/workspace/harmony/scripts/agent-spawn.sh <slug>`. **The foreman drives box-only tasks too —
    it does not bow out of frontier work.** A worker runs on the Mac but **reaches the determinism box over
    SSH (`ssh <det-box>`) for the Linux/KVM build, tests, and gates** (the box is an execution target;
