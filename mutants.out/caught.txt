@@ -1,9 +1,26 @@
-consonance/vmm-core/src/snapshot.rs:587:5: replace encode_device_blob -> DeviceBlob with Default::default()
-consonance/vmm-core/src/vmm.rs:824:9: replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())
-consonance/vmm-core/src/vmm.rs:860:33: replace != with == in Vmm<B>::restore_vm_state
-consonance/vmm-core/src/vmm.rs:775:9: replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())
-consonance/vmm-core/src/vmm.rs:695:9: replace Vmm<B>::build_vm_state -> vm_state::VmState with Default::default()
-consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![]
-consonance/vmm-core/src/snapshot.rs:703:5: replace decode_device_blob -> Result<DeviceState, SnapshotError> with Ok(Default::default())
-consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![0]
-consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![1]
+consonance/vmm-core/src/snapshot.rs:509:5: replace unrepresentable_state -> Option<&'static str> with None
+consonance/vmm-core/src/snapshot.rs:516:35: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:540:9: replace || with && in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:510:16: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:509:5: replace unrepresentable_state -> Option<&'static str> with Some("")
+consonance/vmm-core/src/snapshot.rs:509:5: replace unrepresentable_state -> Option<&'static str> with Some("xyzzy")
+consonance/vmm-core/src/snapshot.rs:536:9: replace || with && in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:535:9: replace || with && in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:532:9: replace || with && in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:531:9: replace || with && in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:527:48: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:528:39: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:529:36: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:530:32: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:531:33: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:532:27: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:533:29: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:534:27: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:535:25: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:536:26: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:537:22: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:538:29: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:539:31: replace != with == in unrepresentable_state
+consonance/vmm-core/src/snapshot.rs:540:35: replace != with == in unrepresentable_state
+consonance/vmm-core/src/vmm.rs:778:9: replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())
+consonance/vmm-core/src/vmm.rs:837:9: replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())

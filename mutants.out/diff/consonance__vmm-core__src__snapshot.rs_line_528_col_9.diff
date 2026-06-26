@@ -1,0 +1,21 @@
+--- consonance/vmm-core/src/snapshot.rs
++++ replace || with && in unrepresentable_state
+@@ -520,17 +520,17 @@
+         );
+     }
+     let e = &vcpu.events;
+     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,
+     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}
+     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight
+     // injection / SMM / triple-fault state the restore would silently drop.
+     let dropped_nonzero = e.exception_injected != 0
+-        || e.exception_has_error_code != 0
++        && /* ~ changed by cargo-mutants ~ */ e.exception_has_error_code != 0
+         || e.exception_has_payload != 0
+         || e.exception_payload != 0
+         || e.interrupt_injected != 0
+         || e.interrupt_nr != 0
+         || e.interrupt_soft != 0
+         || e.nmi_injected != 0
+         || e.nmi_masked != 0
+         || e.sipi_vector != 0

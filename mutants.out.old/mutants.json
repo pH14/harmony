@@ -1,0 +1,290 @@
+[
+  {
+    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace encode_device_blob -> DeviceBlob with Default::default()\n@@ -579,46 +579,17 @@\n     put_u32(out, s.count_at_arm);\n     put_u64(out, s.timer_arm_vns);\n     out.push(u8::from(s.timer_running));\n     out.push(u8::from(s.timer_pending));\n }\n \n /// Encode a [`DeviceState`] into the vmm-core device blob (the `DeviceBlob` bytes).\n pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {\n-    let mut out = Vec::new();\n-    put_u32(&mut out, DEVICE_BLOB_MAGIC);\n-    put_u16(&mut out, DEVICE_BLOB_VERSION);\n-    put_u64(&mut out, d.tsc_adjust);\n-    put_u32(&mut out, d.report_stream.len() as u32);\n-    for &word in &d.report_stream {\n-        put_u32(&mut out, word);\n-    }\n-    put_u32(&mut out, d.uart.capture.len() as u32);\n-    out.extend_from_slice(&d.uart.capture);\n-    out.extend_from_slice(&d.uart.regs);\n-    out.push(u8::from(d.uart.dlab));\n-    out.push(d.uart.dlm);\n-    match &d.lapic {\n-        Some(l) => {\n-            out.push(1);\n-            put_lapic(&mut out, l);\n-        }\n-        None => out.push(0),\n-    }\n-    match &d.legacy {\n-        Some(l) => {\n-            out.push(1);\n-            put_u32(&mut out, l.config_address);\n-            out.push(l.master_imr);\n-            out.push(l.slave_imr);\n-        }\n-        None => out.push(0),\n-    }\n-    DeviceBlob(out)\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n /// A total little-endian cursor over the device blob; every read is bounds-checked\n /// and yields `None` past end-of-buffer (mapped to [`SnapshotError::DeviceBlob`]).\n struct Reader<'a> {\n     buf: &'a [u8],\n     pos: usize,\n }\n",
+    "file": "consonance/vmm-core/src/snapshot.rs",
+    "function": {
+      "function_name": "encode_device_blob",
+      "return_type": "-> DeviceBlob",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 617
+        },
+        "start": {
+          "column": 1,
+          "line": 585
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/snapshot.rs:587:5: replace encode_device_blob -> DeviceBlob with Default::default()",
+    "package": "vmm-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 20,
+        "line": 616
+      },
+      "start": {
+        "column": 5,
+        "line": 587
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace decode_device_blob -> Result<DeviceState, SnapshotError> with Ok(Default::default())\n@@ -695,68 +695,17 @@\n             timer_pending: self.bool()?,\n         })\n     }\n }\n \n /// Decode the vmm-core device blob. Strict and total: any malformation is a\n /// [`SnapshotError::DeviceBlob`], never a panic.\n pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotError> {\n-    let mut r = Reader::new(blob);\n-    let bad = |m: &'static str| SnapshotError::DeviceBlob(m);\n-    if r.u32().ok_or(bad(\"truncated header\"))? != DEVICE_BLOB_MAGIC {\n-        return Err(bad(\"bad magic\"));\n-    }\n-    if r.u16().ok_or(bad(\"truncated version\"))? != DEVICE_BLOB_VERSION {\n-        return Err(bad(\"unsupported version\"));\n-    }\n-    let tsc_adjust = r.u64().ok_or(bad(\"truncated tsc_adjust\"))?;\n-    let report_len = r.u32().ok_or(bad(\"truncated report len\"))? as usize;\n-    let mut report_stream = Vec::with_capacity(report_len.min(1 << 16));\n-    for _ in 0..report_len {\n-        report_stream.push(r.u32().ok_or(bad(\"truncated report stream\"))?);\n-    }\n-    let cap_len = r.u32().ok_or(bad(\"truncated capture len\"))? as usize;\n-    let capture = r.take(cap_len).ok_or(bad(\"truncated capture\"))?.to_vec();\n-    let regs: [u8; 8] = r\n-        .take(8)\n-        .ok_or(bad(\"truncated uart regs\"))?\n-        .try_into()\n-        .map_err(|_| bad(\"uart regs len\"))?;\n-    let dlab = r.bool().ok_or(bad(\"bad uart dlab\"))?;\n-    let dlm = r.u8().ok_or(bad(\"truncated uart dlm\"))?;\n-    let lapic = match r.u8().ok_or(bad(\"truncated lapic flag\"))? {\n-        0 => None,\n-        1 => Some(r.lapic().ok_or(bad(\"truncated lapic\"))?),\n-        _ => return Err(bad(\"bad lapic flag\")),\n-    };\n-    let legacy = match r.u8().ok_or(bad(\"truncated legacy flag\"))? {\n-        0 => None,\n-        1 => Some(LegacyState {\n-            config_address: r.u32().ok_or(bad(\"truncated legacy addr\"))?,\n-            master_imr: r.u8().ok_or(bad(\"truncated master imr\"))?,\n-            slave_imr: r.u8().ok_or(bad(\"truncated slave imr\"))?,\n-        }),\n-        _ => return Err(bad(\"bad legacy flag\")),\n-    };\n-    if r.pos != blob.len() {\n-        return Err(bad(\"trailing bytes\"));\n-    }\n-    Ok(DeviceState {\n-        tsc_adjust,\n-        report_stream,\n-        uart: UartState {\n-            capture,\n-            regs,\n-            dlab,\n-            dlm,\n-        },\n-        lapic,\n-        legacy,\n-    })\n+    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     fn lapic_state(tpr: u32) -> LapicState {\n         LapicState {\n",
+    "file": "consonance/vmm-core/src/snapshot.rs",
+    "function": {
+      "function_name": "decode_device_blob",
+      "return_type": "-> Result<DeviceState, SnapshotError>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 755
+        },
+        "start": {
+          "column": 1,
+          "line": 700
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/snapshot.rs:703:5: replace decode_device_blob -> Result<DeviceState, SnapshotError> with Ok(Default::default())",
+    "package": "vmm-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 7,
+        "line": 754
+      },
+      "start": {
+        "column": 5,
+        "line": 703
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace Vmm<B>::build_vm_state -> vm_state::VmState with Default::default()\n@@ -687,70 +687,17 @@\n     /// xAPIC, the legacy 8259/PCI latches, the 8250 UART, the ordered report stream,\n     /// and `IA32_TSC_ADJUST`. The `contract_hash` is stamped so a restore can reject a\n     /// blob taken under a different contract. The caller supplies `vcpu` (so the\n     /// fallible `Backend::save` is resolved where the error can propagate —\n     /// [`Vmm::save_vm_state`] — rather than swallowed). Infallible; the V-time block is\n     /// anchored to the deterministic `last_intercept_work`, exactly like\n     /// [`encode_vtime`], so it is byte-deterministic at any exit.\n     fn build_vm_state(&self, vcpu: &VcpuState) -> vm_state::VmState {\n-        let mut s = vm_state::VmState::default();\n-        snapshot::fill_vcpu_state(&mut s, vcpu);\n-        let tsc_adjust = match &self.vtime {\n-            Some(vt) => {\n-                s.vtime = vm_state::VtimeState {\n-                    ratio_num: vt.cfg.ratio_num,\n-                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so the\n-                    // blob is encodable (a fractional ratio is rejected at encode).\n-                    ratio_den: 1,\n-                    tsc_hz: vt.cfg.tsc_hz,\n-                    tsc_base: vt.cfg.tsc_base,\n-                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),\n-                };\n-                // The entropy PRNG position rides the `hypercall` section\n-                // (INTEGRATION.md §4: `Dispatcher::save_state()`, \"notably the\n-                // entropy PRNG position\") — vmm-core's hypercall RNG and RDRAND draw\n-                // from this one stream.\n-                s.hypercall = vt.entropy.save_state();\n-                vt.tsc_adjust\n-            }\n-            None => {\n-                // Unwired (M1/M2): a sentinel encodable V-time block, no entropy.\n-                s.vtime.ratio_den = 1;\n-                0\n-            }\n-        };\n-        let dev = DeviceState {\n-            tsc_adjust,\n-            // The ordered conformance report stream is guest-observable output (it\n-            // feeds `observable_digest` / the O2 oracle), captured here so a restore\n-            // resumes it — else a branch taken after `REPORT_PORT` writes would lose\n-            // them and its `observable_digest` would diverge from the reference. It is\n-            // NOT in the default `state_hash` (O1): that path never emits a `VMST`\n-            // chunk (snapshot-hashing is opt-in), so O1/O2 stay separate.\n-            report_stream: self.report_stream.clone(),\n-            uart: UartState {\n-                capture: self.uart.capture().to_vec(),\n-                regs: *self.uart.shadow_regs(),\n-                dlab: self.uart.dlab(),\n-                dlm: self.uart.dlm(),\n-            },\n-            lapic: self.lapic.as_ref().map(|l| l.snapshot()),\n-            legacy: self.legacy.as_ref().map(|l| {\n-                let imr = l.pic_imr();\n-                LegacyState {\n-                    config_address: l.config_address(),\n-                    master_imr: imr[0],\n-                    slave_imr: imr[1],\n-                }\n-            }),\n-        };\n-        s.devices = snapshot::encode_device_blob(&dev);\n-        s.contract_hash = contract::contract_hash();\n-        s\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Capture the **non-memory** machine state as a canonical [`vm_state::VmState`]\n     /// (INTEGRATION.md §4) — pair with [`Vmm::guest_memory`] +\n     /// [`crate::snapshot::SnapshotEngine`] for the memory half. The vmm-core adapter\n     /// that fills `vm-state`'s plain-data structs from the live machine and\n     /// `VmState::encode`s them (task 39 Phase 1).\n     ///\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::build_vm_state",
+      "return_type": "-> vm_state::VmState",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 749
+        },
+        "start": {
+          "column": 5,
+          "line": 684
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/vmm.rs:695:9: replace Vmm<B>::build_vm_state -> vm_state::VmState with Default::default()",
+    "package": "vmm-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 748
+      },
+      "start": {
+        "column": 9,
+        "line": 695
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())\n@@ -767,40 +767,17 @@\n     /// restored VM's first service — so there is no separate injection plan to\n     /// serialize (vm-state deliberately has no plan field).\n     ///\n     /// # Errors\n     /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary or a\n     /// non-synchronized point; [`VmmError::Backend`] if reading the live vCPU state\n     /// fails (a snapshot **fails closed** rather than sealing a zeroed vCPU).\n     pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {\n-        if self.rng_completion_staged {\n-            return Err(VmmError::ContractViolation(\n-                \"save_vm_state at an RNG mid-exit boundary: the seeded RDRAND/RDSEED draw advanced \\\n-                 the stream but its completion is staged, not committed — snapshot only at a clean \\\n-                 boundary (step once more first).\"\n-                    .to_string(),\n-            ));\n-        }\n-        if self.vtime.is_some() && !self.vtime_synchronized {\n-            return Err(VmmError::ContractViolation(\n-                \"save_vm_state at a non-synchronized point: the exact V-time (which a restored TSC \\\n-                 resumes from) is known only at a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a \\\n-                 TSC MSR). Snapshot at a V-time-intercept boundary.\"\n-                    .to_string(),\n-            ));\n-        }\n-        // Read the vCPU **fallibly**: a `Backend::save` failure must abort the\n-        // snapshot, not seal a `VcpuState::default()` (the swallowing `current_vcpu`\n-        // does for the best-effort hash). Use the terminal-captured state if present.\n-        let vcpu = match &self.saved_state {\n-            Some(s) => s.clone(),\n-            None => self.backend.save()?,\n-        };\n-        Ok(self.build_vm_state(&vcpu))\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Restore the **non-memory** machine state from a [`vm_state::VmState`] (pair\n     /// with [`Vmm::restore_guest_memory`]; or use [`Vmm::restore_snapshot`] for\n     /// both). Decodes the typed records back into the vCPU via `Backend::restore`,\n     /// resumes the V-time clock (`vns_base` = the snapshot's V-time, the hardware\n     /// counter reset to 0) + entropy stream + `IA32_TSC_ADJUST`, and restores the\n     /// xAPIC + legacy platform + UART from the device blob.\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::save_vm_state",
+      "return_type": "-> Result<vm_state::VmState, VmmError>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 799
+        },
+        "start": {
+          "column": 5,
+          "line": 751
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/vmm.rs:775:9: replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())",
+    "package": "vmm-core",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 798
+      },
+      "start": {
+        "column": 9,
+        "line": 775
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())\n@@ -816,141 +816,17 @@\n     /// [`VmmError::Snapshot`] for a contract mismatch / malformed device blob /\n     /// rejected LAPIC; [`VmmError::ContractViolation`] at an RNG mid-exit boundary,\n     /// a V-time wiring/rate mismatch, or a rejected entropy blob;\n     /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the\n     /// backend/clock/counter.\n     pub fn restore_vm_state(&mut self, s: &vm_state::VmState) -> Result<(), VmmError> {\n         // 0. Refuse at an RNG mid-exit boundary (a staged, uncommitted completion\n         //    lives in the backend; restoring over it would shift the next draw).\n-        if self.rng_completion_staged {\n-            return Err(VmmError::ContractViolation(\n-                \"restore_vm_state at an RNG mid-exit boundary: a seeded RDRAND/RDSEED completion is \\\n-                 staged (not committed). Restore only at a clean boundary (step once more first).\"\n-                    .to_string(),\n-            ));\n-        }\n-        // 1. Validate, committing nothing.\n-        // 1a. Contract: a blob taken under a different CPUID/MSR contract would\n-        //     silently diverge on restore (INTEGRATION.md §4 `contract_hash`).\n-        if s.contract_hash != contract::contract_hash() {\n-            return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));\n-        }\n-        // 1b. Decode the vmm-core device blob (total, never panics).\n-        let dev = snapshot::decode_device_blob(&s.devices.0)?;\n-        // 1c. The blob's LAPIC must be coherent AND match this VM's wiring.\n-        let new_lapic = match (&dev.lapic, self.lapic.is_some()) {\n-            (Some(ls), true) => Some(\n-                lapic::Lapic::restore(ls)\n-                    .map_err(|_| SnapshotError::Lapic(\"incoherent LapicState in device blob\"))?,\n-            ),\n-            (Some(_), false) | (None, true) => {\n-                return Err(VmmError::ContractViolation(\n-                    \"restore_vm_state: snapshot/VM xAPIC wiring mismatch (one has a LAPIC, the other \\\n-                     does not) — restore into a VM composed like the snapshot source.\"\n-                        .to_string(),\n-                ));\n-            }\n-            (None, false) => None,\n-        };\n-        // 1c-bis. The legacy platform must match this VM's wiring too — a blob whose\n-        // legacy subrecord is absent (or present) where the VM's is not is a malformed\n-        // snapshot, **rejected** rather than silently skipped (which would leave the\n-        // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by\n-        // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one\n-        // that does not.)\n-        if dev.legacy.is_some() != self.legacy.is_some() {\n-            return Err(VmmError::ContractViolation(\n-                \"restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the 8259/PCI \\\n-                 latches, the other does not) — restore into a VM composed like the snapshot source.\"\n-                    .to_string(),\n-            ));\n-        }\n-        // 1d. V-time: validate the rate matches and pre-build the clock + entropy.\n-        let vtime_commit = match self.vtime.as_ref() {\n-            Some(vt) => {\n-                if s.vtime.ratio_num != vt.cfg.ratio_num\n-                    || s.vtime.ratio_den != 1\n-                    || s.vtime.tsc_hz != vt.cfg.tsc_hz\n-                    || s.vtime.tsc_base != vt.cfg.tsc_base\n-                {\n-                    return Err(VmmError::ContractViolation(\n-                        \"restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/tsc_hz/\\\n-                         tsc_base differ from this VM's wired clock).\"\n-                            .to_string(),\n-                    ));\n-                }\n-                let mut cfg = vt.cfg;\n-                cfg.vns_base = s.vtime.snapshot_vns;\n-                let clock = VClock::new(cfg)?;\n-                let mut entropy = vt.entropy.clone();\n-                entropy.restore_state(&s.hypercall).map_err(|e| {\n-                    VmmError::ContractViolation(format!(\n-                        \"entropy snapshot rejected on restore: {e:?}\"\n-                    ))\n-                })?;\n-                Some((cfg, clock, entropy))\n-            }\n-            None => {\n-                // Unwired VM: the snapshot must not carry a live V-time block (a\n-                // non-zero clock rate means it was taken on a V-time-wired VM).\n-                if s.vtime.tsc_hz != 0 || s.vtime.snapshot_vns != 0 {\n-                    return Err(VmmError::ContractViolation(\n-                        \"restore_vm_state: snapshot carries a V-time block but this VM has no V-time \\\n-                         wired — restore into a VM composed like the snapshot source.\"\n-                            .to_string(),\n-                    ));\n-                }\n-                None\n-            }\n-        };\n-        // 2. Build the vCPU state (pure).\n-        let vcpu = snapshot::vcpu_state_from(s);\n-        // 3. Commit the fallible backend restore first — a failure here leaves the\n-        //    V-time/device state untouched (nothing below this line can reject the\n-        //    blob; only the hardware counter reset can fail, infrastructurally).\n-        self.backend.restore(&vcpu)?;\n-        if vtime_commit.is_some() {\n-            // The hardware work counter restarts at 0; the snapshot's V-time now\n-            // lives in `vns_base` (continuity, INTEGRATION.md §4 / restore-transparency).\n-            self.vtime\n-                .as_mut()\n-                .expect(\"vtime_commit implies wired\")\n-                .work\n-                .reset()?;\n-        }\n-        // 4. Commit the validated state (all infallible from here).\n-        if let Some((cfg, clock, entropy)) = vtime_commit {\n-            let vt = self.vtime.as_mut().expect(\"vtime_commit implies wired\");\n-            vt.cfg = cfg;\n-            vt.clock = clock;\n-            vt.entropy = entropy;\n-            vt.last_intercept_work = 0;\n-            vt.tsc_adjust = dev.tsc_adjust;\n-            self.vtime_synchronized = true;\n-        }\n-        if let Some(l) = new_lapic {\n-            self.lapic = Some(l);\n-        }\n-        if let (Some(legacy), Some(ls)) = (self.legacy.as_mut(), dev.legacy) {\n-            legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);\n-        }\n-        self.uart\n-            .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);\n-        // The ordered report stream is restored so a branch resumes the guest's\n-        // observable output (its `observable_digest` / O2 signal) instead of losing\n-        // every report emitted before the snapshot.\n-        self.report_stream = dev.report_stream;\n-        // A restored VM is runnable again from the snapshot point: clear the latched\n-        // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the\n-        // restored backend state.\n-        self.terminal = None;\n-        self.saved_state = None;\n-        self.rng_completion_staged = false;\n-        Ok(())\n+        Ok(()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Restore a full snapshot — guest memory **and** the non-memory `vm_state` — in\n     /// one call. The materialized image (from [`crate::snapshot::SnapshotEngine::materialize`])\n     /// goes into guest RAM, then [`Vmm::restore_vm_state`] resumes the vCPU/V-time/\n     /// devices. *Same state ⇒ same future* (gate 1).\n     pub fn restore_snapshot(\n         &mut self,\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::restore_vm_state",
+      "return_type": "-> Result<(), VmmError>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 949
+        },
+        "start": {
+          "column": 5,
+          "line": 801
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/vmm.rs:824:9: replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())",
+    "package": "vmm-core",
+    "replacement": "Ok(())",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 948
+      },
+      "start": {
+        "column": 9,
+        "line": 824
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace != with == in Vmm<B>::restore_vm_state\n@@ -852,17 +852,17 @@\n             (None, false) => None,\n         };\n         // 1c-bis. The legacy platform must match this VM's wiring too — a blob whose\n         // legacy subrecord is absent (or present) where the VM's is not is a malformed\n         // snapshot, **rejected** rather than silently skipped (which would leave the\n         // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by\n         // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one\n         // that does not.)\n-        if dev.legacy.is_some() != self.legacy.is_some() {\n+        if dev.legacy.is_some() == /* ~ changed by cargo-mutants ~ */ self.legacy.is_some() {\n             return Err(VmmError::ContractViolation(\n                 \"restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the 8259/PCI \\\n                  latches, the other does not) — restore into a VM composed like the snapshot source.\"\n                     .to_string(),\n             ));\n         }\n         // 1d. V-time: validate the rate matches and pre-build the clock + entropy.\n         let vtime_commit = match self.vtime.as_ref() {\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::restore_vm_state",
+      "return_type": "-> Result<(), VmmError>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 949
+        },
+        "start": {
+          "column": 5,
+          "line": 801
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "consonance/vmm-core/src/vmm.rs:860:33: replace != with == in Vmm<B>::restore_vm_state",
+    "package": "vmm-core",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 35,
+        "line": 860
+      },
+      "start": {
+        "column": 33,
+        "line": 860
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace Vmm<B>::state_blob -> Vec<u8> with vec![]\n@@ -1110,60 +1110,17 @@\n     /// the effective V-time (`vns_base` + work folded into one canonical field), and the entropy\n     /// stream position (seed + draws so far) — so two states with identical RAM/regs\n     /// but different V-time/seed hash **differently** (the replay-equivalence\n     /// `unison::compare_runs` relies on), while a restored VM and a fresh VM at the\n     /// same effective V-time hash **identically** (see [`encode_vtime`]). Stock KVM /\n     /// M1/M2 (`vtime: None`) emit **no** chunk, so their `state_hash` is byte-for-\n     /// byte unchanged from before this was added.\n     pub fn state_blob(&self) -> Vec<u8> {\n-        let mut out = Vec::new();\n-        put_chunk(&mut out, b\"MEM\\0\", self.ram.as_bytes());\n-        put_chunk(&mut out, b\"VCPU\", &encode_vcpu_state(&self.current_vcpu()));\n-        put_chunk(&mut out, b\"SERL\", self.uart.capture());\n-        put_chunk(&mut out, b\"DEV\\0\", &self.encode_device_terminal());\n-        if let Some(vt) = &self.vtime {\n-            put_chunk(&mut out, b\"VTIM\", &encode_vtime(vt));\n-        }\n-        // The xAPIC chunk is present **only** on the Linux boot path (`lapic`\n-        // wired); M1/M2/corpus emit none, so their hash is byte-for-byte\n-        // unchanged. It captures the register file + timer bookkeeping that\n-        // governs future interrupt delivery, so two same-seed Linux runs that\n-        // leave the APIC in different state hash differently.\n-        if let Some(lapic) = &self.lapic {\n-            put_chunk(&mut out, b\"LAPC\", &encode_lapic_state(&lapic.snapshot()));\n-        }\n-        // Legacy-platform state (the PCI CONFIG_ADDRESS latch + the 8259 master/\n-        // slave IMR) — Linux path only. The IMR governs which IRQ lines deliver, so\n-        // two same-seed runs that leave it different (hence future interrupt\n-        // delivery different) hash differently.\n-        if let Some(legacy) = &self.legacy {\n-            let mut legy = legacy.config_address().to_le_bytes().to_vec();\n-            legy.extend_from_slice(&legacy.pic_imr());\n-            put_chunk(&mut out, b\"LEGY\", &legy);\n-        }\n-        // The canonical `vm_state` blob, folded into the hash **only** when the\n-        // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps\n-        // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do\n-        // not move — task 39 \"gate the swap\"); when on, two states whose canonical\n-        // blob differs hash differently, so a snapshot's integrity is in the hash.\n-        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`\n-        // can never produce (`ratio_den` is the invariant `1`), so the fallback is\n-        // unreachable; it is deterministic regardless.\n-        if self.snapshot_hashing {\n-            // Best-effort like the other hash chunks: `current_vcpu` uses the\n-            // terminal-captured state or a swallowing live `save` (the snapshot path,\n-            // `save_vm_state`, reads the vCPU fallibly instead).\n-            let bytes = self\n-                .build_vm_state(&self.current_vcpu())\n-                .encode()\n-                .unwrap_or_default();\n-            put_chunk(&mut out, b\"VMST\", &bytes);\n-        }\n-        out\n+        vec![] /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// `sha256(state_blob())` — the M2 determinism hash and the unison\n     /// `state_hash`.\n     pub fn state_hash(&self) -> [u8; 32] {\n         let mut hasher = Sha256::new();\n         hasher.update(self.state_blob());\n         hasher.finalize().into()\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::state_blob",
+      "return_type": "-> Vec<u8>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 1162
+        },
+        "start": {
+          "column": 5,
+          "line": 1101
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![]",
+    "package": "vmm-core",
+    "replacement": "vec![]",
+    "span": {
+      "end": {
+        "column": 12,
+        "line": 1161
+      },
+      "start": {
+        "column": 9,
+        "line": 1118
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace Vmm<B>::state_blob -> Vec<u8> with vec![0]\n@@ -1110,60 +1110,17 @@\n     /// the effective V-time (`vns_base` + work folded into one canonical field), and the entropy\n     /// stream position (seed + draws so far) — so two states with identical RAM/regs\n     /// but different V-time/seed hash **differently** (the replay-equivalence\n     /// `unison::compare_runs` relies on), while a restored VM and a fresh VM at the\n     /// same effective V-time hash **identically** (see [`encode_vtime`]). Stock KVM /\n     /// M1/M2 (`vtime: None`) emit **no** chunk, so their `state_hash` is byte-for-\n     /// byte unchanged from before this was added.\n     pub fn state_blob(&self) -> Vec<u8> {\n-        let mut out = Vec::new();\n-        put_chunk(&mut out, b\"MEM\\0\", self.ram.as_bytes());\n-        put_chunk(&mut out, b\"VCPU\", &encode_vcpu_state(&self.current_vcpu()));\n-        put_chunk(&mut out, b\"SERL\", self.uart.capture());\n-        put_chunk(&mut out, b\"DEV\\0\", &self.encode_device_terminal());\n-        if let Some(vt) = &self.vtime {\n-            put_chunk(&mut out, b\"VTIM\", &encode_vtime(vt));\n-        }\n-        // The xAPIC chunk is present **only** on the Linux boot path (`lapic`\n-        // wired); M1/M2/corpus emit none, so their hash is byte-for-byte\n-        // unchanged. It captures the register file + timer bookkeeping that\n-        // governs future interrupt delivery, so two same-seed Linux runs that\n-        // leave the APIC in different state hash differently.\n-        if let Some(lapic) = &self.lapic {\n-            put_chunk(&mut out, b\"LAPC\", &encode_lapic_state(&lapic.snapshot()));\n-        }\n-        // Legacy-platform state (the PCI CONFIG_ADDRESS latch + the 8259 master/\n-        // slave IMR) — Linux path only. The IMR governs which IRQ lines deliver, so\n-        // two same-seed runs that leave it different (hence future interrupt\n-        // delivery different) hash differently.\n-        if let Some(legacy) = &self.legacy {\n-            let mut legy = legacy.config_address().to_le_bytes().to_vec();\n-            legy.extend_from_slice(&legacy.pic_imr());\n-            put_chunk(&mut out, b\"LEGY\", &legy);\n-        }\n-        // The canonical `vm_state` blob, folded into the hash **only** when the\n-        // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps\n-        // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do\n-        // not move — task 39 \"gate the swap\"); when on, two states whose canonical\n-        // blob differs hash differently, so a snapshot's integrity is in the hash.\n-        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`\n-        // can never produce (`ratio_den` is the invariant `1`), so the fallback is\n-        // unreachable; it is deterministic regardless.\n-        if self.snapshot_hashing {\n-            // Best-effort like the other hash chunks: `current_vcpu` uses the\n-            // terminal-captured state or a swallowing live `save` (the snapshot path,\n-            // `save_vm_state`, reads the vCPU fallibly instead).\n-            let bytes = self\n-                .build_vm_state(&self.current_vcpu())\n-                .encode()\n-                .unwrap_or_default();\n-            put_chunk(&mut out, b\"VMST\", &bytes);\n-        }\n-        out\n+        vec![0] /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// `sha256(state_blob())` — the M2 determinism hash and the unison\n     /// `state_hash`.\n     pub fn state_hash(&self) -> [u8; 32] {\n         let mut hasher = Sha256::new();\n         hasher.update(self.state_blob());\n         hasher.finalize().into()\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::state_blob",
+      "return_type": "-> Vec<u8>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 1162
+        },
+        "start": {
+          "column": 5,
+          "line": 1101
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![0]",
+    "package": "vmm-core",
+    "replacement": "vec![0]",
+    "span": {
+      "end": {
+        "column": 12,
+        "line": 1161
+      },
+      "start": {
+        "column": 9,
+        "line": 1118
+      }
+    }
+  },
+  {
+    "diff": "--- consonance/vmm-core/src/vmm.rs\n+++ replace Vmm<B>::state_blob -> Vec<u8> with vec![1]\n@@ -1110,60 +1110,17 @@\n     /// the effective V-time (`vns_base` + work folded into one canonical field), and the entropy\n     /// stream position (seed + draws so far) — so two states with identical RAM/regs\n     /// but different V-time/seed hash **differently** (the replay-equivalence\n     /// `unison::compare_runs` relies on), while a restored VM and a fresh VM at the\n     /// same effective V-time hash **identically** (see [`encode_vtime`]). Stock KVM /\n     /// M1/M2 (`vtime: None`) emit **no** chunk, so their `state_hash` is byte-for-\n     /// byte unchanged from before this was added.\n     pub fn state_blob(&self) -> Vec<u8> {\n-        let mut out = Vec::new();\n-        put_chunk(&mut out, b\"MEM\\0\", self.ram.as_bytes());\n-        put_chunk(&mut out, b\"VCPU\", &encode_vcpu_state(&self.current_vcpu()));\n-        put_chunk(&mut out, b\"SERL\", self.uart.capture());\n-        put_chunk(&mut out, b\"DEV\\0\", &self.encode_device_terminal());\n-        if let Some(vt) = &self.vtime {\n-            put_chunk(&mut out, b\"VTIM\", &encode_vtime(vt));\n-        }\n-        // The xAPIC chunk is present **only** on the Linux boot path (`lapic`\n-        // wired); M1/M2/corpus emit none, so their hash is byte-for-byte\n-        // unchanged. It captures the register file + timer bookkeeping that\n-        // governs future interrupt delivery, so two same-seed Linux runs that\n-        // leave the APIC in different state hash differently.\n-        if let Some(lapic) = &self.lapic {\n-            put_chunk(&mut out, b\"LAPC\", &encode_lapic_state(&lapic.snapshot()));\n-        }\n-        // Legacy-platform state (the PCI CONFIG_ADDRESS latch + the 8259 master/\n-        // slave IMR) — Linux path only. The IMR governs which IRQ lines deliver, so\n-        // two same-seed runs that leave it different (hence future interrupt\n-        // delivery different) hash differently.\n-        if let Some(legacy) = &self.legacy {\n-            let mut legy = legacy.config_address().to_le_bytes().to_vec();\n-            legy.extend_from_slice(&legacy.pic_imr());\n-            put_chunk(&mut out, b\"LEGY\", &legy);\n-        }\n-        // The canonical `vm_state` blob, folded into the hash **only** when the\n-        // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps\n-        // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do\n-        // not move — task 39 \"gate the swap\"); when on, two states whose canonical\n-        // blob differs hash differently, so a snapshot's integrity is in the hash.\n-        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`\n-        // can never produce (`ratio_den` is the invariant `1`), so the fallback is\n-        // unreachable; it is deterministic regardless.\n-        if self.snapshot_hashing {\n-            // Best-effort like the other hash chunks: `current_vcpu` uses the\n-            // terminal-captured state or a swallowing live `save` (the snapshot path,\n-            // `save_vm_state`, reads the vCPU fallibly instead).\n-            let bytes = self\n-                .build_vm_state(&self.current_vcpu())\n-                .encode()\n-                .unwrap_or_default();\n-            put_chunk(&mut out, b\"VMST\", &bytes);\n-        }\n-        out\n+        vec![1] /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// `sha256(state_blob())` — the M2 determinism hash and the unison\n     /// `state_hash`.\n     pub fn state_hash(&self) -> [u8; 32] {\n         let mut hasher = Sha256::new();\n         hasher.update(self.state_blob());\n         hasher.finalize().into()\n",
+    "file": "consonance/vmm-core/src/vmm.rs",
+    "function": {
+      "function_name": "Vmm<B>::state_blob",
+      "return_type": "-> Vec<u8>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 1162
+        },
+        "start": {
+          "column": 5,
+          "line": 1101
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "consonance/vmm-core/src/vmm.rs:1118:9: replace Vmm<B>::state_blob -> Vec<u8> with vec![1]",
+    "package": "vmm-core",
+    "replacement": "vec![1]",
+    "span": {
+      "end": {
+        "column": 12,
+        "line": 1161
+      },
+      "start": {
+        "column": 9,
+        "line": 1118
+      }
+    }
+  }
+]

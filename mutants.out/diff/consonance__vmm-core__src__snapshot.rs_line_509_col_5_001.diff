@@ -1,0 +1,59 @@
+--- consonance/vmm-core/src/snapshot.rs
++++ replace unrepresentable_state -> Option<&'static str> with Some("")
+@@ -501,55 +501,17 @@
+ ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued
+ ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md
+ ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask
+ ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally
+ ///   non-zero), not guest state the future depends on.
+ ///
+ /// Returns `None` for a clean quiescent snapshot. Pure.
+ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
+-    let s = &vcpu.sregs;
+-    if s.flags != 0 {
+-        return Some(
+-            "kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \
+-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable",
+-        );
+-    }
+-    if s.pdptrs.iter().any(|&p| p != 0) {
+-        return Some(
+-            "PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \
+-             is 64-bit / paging-off, where PDPTRs are unused)",
+-        );
+-    }
+-    let e = &vcpu.events;
+-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,
+-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}
+-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight
+-    // injection / SMM / triple-fault state the restore would silently drop.
+-    let dropped_nonzero = e.exception_injected != 0
+-        || e.exception_has_error_code != 0
+-        || e.exception_has_payload != 0
+-        || e.exception_payload != 0
+-        || e.interrupt_injected != 0
+-        || e.interrupt_nr != 0
+-        || e.interrupt_soft != 0
+-        || e.nmi_injected != 0
+-        || e.nmi_masked != 0
+-        || e.sipi_vector != 0
+-        || e.smi_smm != 0
+-        || e.smi_inside_nmi != 0
+-        || e.smi_latched_init != 0
+-        || e.triple_fault_pending != 0;
+-    if dropped_nonzero {
+-        return Some(
+-            "pending-event state outside the captured subset is set (in-flight injection / SMM / \
+-             triple-fault) — snapshot only at a quiescent point (nothing armed)",
+-        );
+-    }
+-    None
++    Some("") /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ // ---------------------------------------------------------------------------
+ // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.
+ //
+ // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,
+ // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or
+ // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and

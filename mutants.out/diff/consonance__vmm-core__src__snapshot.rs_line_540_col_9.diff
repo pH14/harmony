@@ -1,0 +1,21 @@
+--- consonance/vmm-core/src/snapshot.rs
++++ replace || with && in unrepresentable_state
+@@ -532,17 +532,17 @@
+         || e.interrupt_nr != 0
+         || e.interrupt_soft != 0
+         || e.nmi_injected != 0
+         || e.nmi_masked != 0
+         || e.sipi_vector != 0
+         || e.smi_smm != 0
+         || e.smi_inside_nmi != 0
+         || e.smi_latched_init != 0
+-        || e.triple_fault_pending != 0;
++        && /* ~ changed by cargo-mutants ~ */ e.triple_fault_pending != 0;
+     if dropped_nonzero {
+         return Some(
+             "pending-event state outside the captured subset is set (in-flight injection / SMM / \
+              triple-fault) — snapshot only at a quiescent point (nothing armed)",
+         );
+     }
+     None
+ }
