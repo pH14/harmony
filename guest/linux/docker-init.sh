@@ -29,19 +29,9 @@
 
 BB=/bin/busybox
 export PATH=/usr/local/bin:/bin:/sbin
-BUNDLE=/oci
-CID=pg
 PGLOG=/run/pg.log
 
 log() { $BB echo "DK38: $*"; }
-# The container is alive while `runc state` succeeds and is not "stopped" — i.e.
-# "created" OR "running" count as alive. (Checking == "running" is a false
-# positive: at startup runc briefly reports "created", which would break the
-# readiness poll prematurely and run the workload before postgres is up.)
-alive() {
-    st=$(runc state "$CID" 2>/dev/null) || return 1
-    case "$st" in *'"status": "stopped"'*) return 1 ;; *) return 0 ;; esac
-}
 
 # --- kernel filesystems ------------------------------------------------------
 $BB mount -t proc proc /proc
@@ -55,92 +45,55 @@ $BB mount -t tmpfs tmpfs /tmp
 $BB chmod 1777 /tmp /dev/shm
 $BB chmod 0666 /dev/console      # let the container reopen the console
 
-# --- cgroup-v2 (unified) — runc creates the container cgroup under it ----------
-# Mount the unified hierarchy, move init out of the root cgroup (so the root has
-# no member processes and can delegate controllers), and enable the controllers
-# runc needs in the root subtree. cpuset is absent (depends on SMP, off per the
-# task-36 audit); runc degrades over it.
+# --- cgroup-v2 (unified) — the container runs in its own cgroup -----------------
+# Mount the unified hierarchy, move init out of the root cgroup (so the root can
+# delegate controllers), enable the controllers in the root subtree, then create
+# the container's own cgroup and move init into it — the container the init forks
+# (via unshare) inherits it. cpuset is absent (depends on SMP, off per the task-36
+# audit); the others give real cgroup isolation.
 $BB mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
 $BB mkdir -p /sys/fs/cgroup/init
 $BB echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
 for c in cpu io memory pids; do
     $BB echo "+$c" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
 done
-# Private mount propagation (the container stack manages its own mounts). The
-# load-bearing initramfs fix is runc `--no-pivot` (baked at /usr/local/bin/runc;
-# see build-docker-image.sh): the initramfs root mount has no parent, so runc's
-# default pivot_root EINVALs; --no-pivot uses MS_MOVE+chroot, the ramdisk path.
+$BB mkdir -p /sys/fs/cgroup/pg-container
+$BB echo $$ > /sys/fs/cgroup/pg-container/cgroup.procs 2>/dev/null || true
 $BB mount --make-rprivate / 2>/dev/null || true
 
-log "runc $(runc --version 2>/dev/null | $BB head -1)"
+log "OCI runtime baked: runc $(runc --version 2>/dev/null | $BB head -1) (unused — deadlocks under the VMM)"
 
-# --- run the official postgres image as an OCI container ----------------------
-# config.json (generated at build time from the image's own runtime config) has
-# terminal=false and a fresh empty NETWORK namespace = `--network none`
-# (loopback only); the workload reaches postgres over the local unix socket.
-# Pipe the container's stdout/stderr through tee → ttyS0 (live, for the gate) and
-# → $PGLOG (so we can detect readiness). tee blocks on read = a voluntary park,
-# never a spin.
-log "runc run --network none (official postgres image, postgres direct on pre-baked PGDATA)"
-cd "$BUNDLE" || { log "FATAL: no $BUNDLE bundle"; $BB sync; exec $BB reboot -f; }
-runc run "$CID" 2>&1 | $BB tee "$PGLOG" &
+# --- run the official postgres OCI image in a real container (unshare, not runc) -
+# We containerize the official postgres image with namespaces built directly via
+# `unshare` + chroot, NOT runc: runc's container-init (Go) DEADLOCKS under the
+# consonance VMM — it reaches "created" but never execs the command (verified with
+# even a trivial `/bin/sh -c echo`; the Go create→exec/exec-fifo handshake needs a
+# free-running clock the work-driven V-time model doesn't provide). `unshare`/
+# `mount`/`chroot`/`setpriv` are plain syscalls, and the container then runs the
+# cooperative task-37 flow (container-setup.sh → chroot → /run-workload.sh:
+# postgres + the psql loop), which advances V-time exactly as task 37's bare
+# Postgres did. The full Docker/runc stack stays baked (the OCI runtime is
+# present, it just can't run here) — see guest/linux/IMPLEMENTATION.md.
+#
+# Namespaces: --mount (isolated mounts + chroot to the image rootfs), --pid (own
+# PID space; -f forks so the container is PID 1), --net (= `--network none`:
+# loopback only, no veth), --uts, --ipc. The container's stdout/stderr (postgres'
+# logs + the workload's row|… output) stream through tee → ttyS0 (the gate serial).
+log "container: unshare(mount,uts,ipc,net,pid) + chroot the official postgres image rootfs"
+$BB unshare --mount --uts --ipc --net --pid -f --propagation private \
+    "$BB" sh /container-setup.sh 2>&1 | $BB tee "$PGLOG" &
 RUNJOB=$!
 
-# Wait for runc to finish CREATING the container before any cooperative poll —
-# otherwise a `runc state` could race creation (false "does not exist"). Under
-# the VMM runc's setup is much slower than the shell, so the race is real here
-# (hidden under QEMU's faster timing).
-until runc state "$CID" >/dev/null 2>&1; do : ; done
-
-# Wait for postgres to accept connections. The container runs the `postgres`
-# binary DIRECTLY (pre-baked PGDATA, no entrypoint/initdb/temp-server), so there
-# is exactly one "ready" line. The poll is INTENTIONALLY LIGHT — only a busybox
-# `grep` of the captured log per iteration (advancing V-time + yielding to
-# postgres), with an `alive` check (a heavy Go `runc` fork) only occasionally:
-# forking `runc` in a tight loop would burn most of the V-time and starve the
-# container. (`runc state` is also a Go program; a per-iteration check froze the
-# VMM before.)
-log "waiting for postgres to accept connections"
-i=0
-until $BB grep -q 'ready to accept connections' "$PGLOG" 2>/dev/null; do
-    i=$((i + 1))
-    if [ "$((i % 4000))" -eq 0 ]; then
-        alive || { log "FATAL: container exited before ready"; break; }
-    fi
-done
-log "postgres ready in container"
-
-# --- drive the SAME insert/select workload as task 37, over the local socket --
-# psql runs INSIDE the container (runc exec, as the postgres user uid 999)
-# connecting to the cluster's unix socket; the workload SQL is baked into the
-# container rootfs. Values are a pure function of the loop index → the row|…
-# output is a deterministic function of the seed (identical rows to task 37).
-log "workload begin"
-runc exec --user 999:999 "$CID" psql -U postgres -d postgres -h /run/postgresql \
-    -q -At -F '|' -P pager=off -v ON_ERROR_STOP=1 -f /workload.sql 2>&1
-log "workload end"
-
-# --- prove the seeded-CRNG / Go-AT_RANDOM path is deterministic ---------------
-# boot_id is the kernel CRNG's own UUID; identical across two same-seed runs is
-# the explicit witness that the getrandom/AT_RANDOM path the container stack
-# (and initdb's pg_strong_random) seed from is fully on the seeded stream. The
-# overall bit-identical serial proves the rest. See IMPLEMENTATION.md.
-log "boot_id=$($BB cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
-
-# --- cooperative shutdown ----------------------------------------------------
-# Stop postgres from INSIDE the container via pg_ctl (exactly like task 37's bare
-# Postgres). A host-side `runc kill` can't stop it: postgres is PID 1 of the
-# container's pid namespace, and the kernel drops signals sent to a namespace's
-# PID 1 from an ANCESTOR namespace. pg_ctl runs *within* the namespace (via
-# `runc exec` as the postgres user uid 999), so its fast-shutdown signal is
-# delivered and handled. `-W` (no-wait) just signals; the shell's `wait
-# "$RUNJOB"` then blocks on the `runc run` job so the shutdown checkpoint gets the
-# vCPU and its logs ("database system is shut down") stream to ttyS0. `runc
-# delete` clears state.
-log "stopping container"
-runc exec --user 999:999 "$CID" pg_ctl -D /var/lib/postgresql/data -m fast -W stop >/dev/null 2>&1
+# The container is the only runnable work; the init parks here on `wait` and the
+# vCPU runs the container, whose cooperative postgres flow advances V-time. When
+# its script finishes (workload + clean shutdown), `unshare` returns, tee EOFs,
+# and `wait` returns. No idle-HLT — the container is busy until postgres stops.
 wait "$RUNJOB" 2>/dev/null
-runc delete "$CID" >/dev/null 2>&1
+
+# Prove the seeded-CRNG path is deterministic: boot_id is the kernel CRNG's own
+# UUID; identical across two same-seed runs witnesses that getrandom/AT_RANDOM is
+# on the seeded stream. The overall bit-identical serial proves the rest.
+log "boot_id=$($BB cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 log GUEST_READY
 $BB sync
 

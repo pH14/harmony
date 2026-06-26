@@ -108,13 +108,13 @@ const MAX_STEPS: u64 = 200_000_000_000;
 /// `timeout`.
 const WALL_BUDGET: Duration = Duration::from_secs(2700);
 
-/// `docker-init.sh` prints this once the containerized postgres is accepting
-/// connections (the OCI container came up under runc).
-const CONTAINER_UP: &[u8] = b"DK38: postgres ready in container";
+/// The in-container flow script (`pg-container-run.sh`) prints this once the OCI
+/// container is up and has started postgres.
+const CONTAINER_UP: &[u8] = b"PGC38: starting postgres in container";
 /// postgres (inside the container) announces this once accepting connections.
 const PG_READY: &[u8] = b"database system is ready to accept connections";
-/// The workload loop's end marker (printed by `docker-init.sh`).
-const WORKLOAD_END: &[u8] = b"DK38: workload end";
+/// The workload loop's end marker (printed by the in-container `pg-container-run.sh`).
+const WORKLOAD_END: &[u8] = b"PGC38: workload end";
 /// The final workload row: iteration 20, v = 20*20+7 = 407, count = 20, running
 /// sum = 3010 — the SAME pure-function-of-the-index row task 37 pins, proving the
 /// *query results* (not just "docker ran") reached the serial.

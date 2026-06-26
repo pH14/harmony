@@ -206,6 +206,11 @@ done
     done
 } >"$BUNDLE/rootfs/workload.sql"
 
+# The in-container flow script (the container's PID 1): starts postgres, drives
+# the cooperative psql loop + workload, stops it — the whole task-37 flow, run
+# *inside* the container so it advances V-time under the VMM. See its header.
+install -m 0755 "$LINUX_DIR/pg-container-run.sh" "$BUNDLE/rootfs/run-workload.sh"
+
 # Pre-bake PGDATA: run the image's own `initdb` ONCE at build time (as the
 # postgres user, uid 999), exactly like task 37 pre-baked its bare cluster — and
 # for the SAME reason, now load-bearing for the container path. Running the
@@ -276,7 +281,7 @@ IMG_ENV=$(jq -c '.config.Env // []' "$CFG")     # the image's PATH/PG_* etc.
 # fine for a trusted single-purpose determinism gate.
 jq --argjson env "$IMG_ENV" '
     .process.terminal = false
-  | .process.args = ["/usr/lib/postgresql/'"$PG_MAJOR"'/bin/postgres", "-D", "/var/lib/postgresql/data"]
+  | .process.args = ["/bin/sh", "/run-workload.sh"]
   | .process.cwd = "/var/lib/postgresql"
   | .process.user = {"uid": 999, "gid": 999, "additionalGids": [999]}
   | .process.env = ($env + ["LC_ALL=C.UTF-8", "LANG=C.UTF-8", "TZ=UTC", "PGTZ=UTC"])
@@ -287,9 +292,12 @@ jq --argjson env "$IMG_ENV" '
   | .linux.resources.devices = [{"allow": true, "access": "rwm"}]
 ' "$BUNDLE/config.json" >"$BUNDLE/config.json.new"
 mv "$BUNDLE/config.json.new" "$BUNDLE/config.json"
-echo "   postgres direct (uid 999) on pre-baked PGDATA; rootfs=$(du -sh "$BUNDLE/rootfs" | cut -f1)"
+echo "   container runs /run-workload.sh as uid 999 on pre-baked PGDATA; rootfs=$(du -sh "$BUNDLE/rootfs" | cut -f1)"
 
+# The guest /init and the in-namespace container-setup helper (the latter runs
+# as the unshared container PID 1, before chroot; see docker-init.sh).
 install -m 0755 "$LINUX_DIR/docker-init.sh" "$DKROOT/init"
+install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
 
 # --- 5. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
 # DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs.
