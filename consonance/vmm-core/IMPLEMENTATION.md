@@ -2313,19 +2313,52 @@ spec's "re-bless goldens only if a non-Linux path's hash changes" → none does.
   the same retired-work timeline — making the comparison a clean bit-for-bit restore-transparency check
   rather than one muddied by two runs' differing total work. A box-debugging RIP-level live-vs-restored
   trace confirmed **bit-identical RIP traces all the way to the same terminal** (no divergence).
-- **Two benign, architecturally-don't-care restore non-fidelities in `state_hash` (not execution).**
-  Box-measured by comparing a restored continuation to the live continuation component-by-component:
-  every execution-relevant component (RAM, GPRs, control regs,
-  descriptor tables, XSAVE, MSRs, MP-state, V-time, device/serial) is **bit-identical**, and the
-  guest-observable output (serial + report stream / `observable_digest`) is **bit-identical**. The only
-  `state_hash` differences are (a) **`segments`** — KVM normalizes the **`type`** of *unusable* data
-  segments `0 → 1` on `KVM_SET_SREGS` (the segment **base**, which is what matters for `fs`/`gs` in
-  64-bit mode, round-trips exactly; an unusable segment's `type` is don't-care), and (b) **`events`** —
-  the deliberate `canonical_events` normalization. Both are latent host-register quirks, not state the
-  guest's future depends on (the bit-identical serial proves it). A future tightening could mask the
-  unusable-segment `type` in `encode_segment` (provably golden-safe — every live-KVM golden already
-  reports `type = 0` for unusable segments) to make `state_hash` itself bit-identical across a
-  snapshot/restore; left out here to avoid touching the M2 hash schema without a box golden re-run.
+## Restore-transparency on the **full** `state_hash` — the two don't-care fields, canonicalized
+
+Box debugging found the restored mid-Postgres continuation **bit-identical** to the un-snapshotted one
+in every execution-relevant component (RAM, GPRs, control regs, descriptor tables, XSAVE, MSRs,
+MP-state, V-time, device/serial) **and** its guest-observable output (serial + `observable_digest`),
+with the **full `state_hash`** differing in exactly **two architecturally-don't-care fields** that a
+KVM `GET → SET → GET` round-trip perturbs. Both are now **canonicalized in the hash** so the full
+`state_hash` matches bit-for-bit — a strictly stronger property than "matches in every field but two we
+argue don't matter." For each:
+
+**1. The `type` of an *unusable* segment (`encode_segment`).** In the restored vCPU, the unusable data
+segments (`ds`/`es`/`fs`/`gs`, with the VMX **unusable** attribute set) read back `type = 1`, where the
+live vCPU has `type = 0`. *Why it is don't-care:* a segment whose unusable bit is set is treated as
+**absent** — the CPU never consults its hidden descriptor cache (type/limit/attr) on any reference (SDM
+Vol. 3 §24.4.1 "Guest Register State": the access-rights of an unusable segment are ignored; §3.4.3 /
+the segment-descriptor-cache rules). The 64-bit-relevant part (`fs`/`gs` **base**, used flat) round-trips
+**exactly**. The `0 → 1` is purely KVM's `KVM_SET_SREGS` normalization of an inert field. *Fix:* mask the
+`type` to `0` when `unusable != 0` in `encode_segment`. *Cheap + correct + golden-safe:* every
+live-`KVM_GET` value already reports `type = 0` for unusable segments, so masking is a no-op for every
+existing golden; the segment **distinguishing** test (`event_loop::state_hash_distinguishes_…`) keys on
+`cs.base` (a usable segment's base), unaffected.
+
+**2. Inert `kvm_vcpu_events` modifier residuals (`encode_events`).** KVM leaves a stale `interrupt.nr`
+(the last-delivered vector), a stale `exception.nr`/`has_error_code`, and the GET-only validity-mask
+`flags` bits (`VALID_NMI_PENDING|SHADOW|SMM`, reported even with all-zero sub-fields) set after an
+injection completes. *Why it is don't-care:* the VM-entry interruption-information and exception fields
+are **consumed only when their valid bit is set** (SDM Vol. 3 §24.8.3 "VM-Entry Controls for Event
+Injection" / §26.5 "Event Injection") — an injection with `injected = 0` is not delivered, so its
+`nr`/`error_code` have no architectural effect; the `flags` validity bits are KVM ioctl metadata, not
+guest state. The restore **must** canonicalize these (replaying them raw into `KVM_SET_VCPU_EVENTS`
+corrupts the resumed guest — the original box bug), so the restored events legitimately differ from the
+live raw residuals. *Fix:* hash the **canonical** form — `encode_events` applies `canonical_events`, so a
+restored VM hashes identically to a never-restored one. *Cheap + correct + golden-safe:* `canonical_events`
+is a pure function (determinism preserved — two same-seed runs share identical raw events ⇒ identical
+canonical), the M1/M2/corpus paths carry **all-zero** events (`canonical == raw`, no change), and the
+event **distinguishing** test keys on `nmi_pending` (an *active* field `canonical_events` preserves),
+unaffected.
+
+**Why this is golden-safe without a re-bless (the key check).** No test pins an **absolute** Linux
+`state_hash` value — every `state_hash` golden is **relative**: deterministic-twice (`a == b` across two
+same-seed boots: `live_m1_m2`, `live_postgres` p2, `live_linux_boot`, `unison::determinism`) or
+distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* function of the events
+leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
+**no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
+change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
+should not." Verified on Mac: `vmm-core` (232), `unison`/`det-corpus` determinism (92) all green.
 
 ## Gates
 
@@ -2384,12 +2417,17 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >
 > - **Gate 2 (the milestone) ✓** — Postgres snapshotted **mid-workload at step 154221** (right after
 >   `database system is ready to accept connections`, a non-quiescent point). The restored continuation
->   is **deterministic-twice** and **bit-identical** to the un-snapshotted (live) continuation: serial
->   equal, `observable_digest` equal, and the only differing `state_hash` components are
->   `{events, vtim:last-intercept, vtim:work-raw}` — the by-design `events` canonicalization plus the
->   diagnostic-only V-time work anchors (segments even matched at the terminal this run). **Every
->   execution-relevant component is bit-identical.** *Same state ⇒ same future — while the system is
->   doing work.*
+>   is **deterministic-twice** (two restores reach a bit-identical terminal) and **bit-identical** to the
+>   un-snapshotted (live) continuation: serial equal, `observable_digest` equal, and — in the run before
+>   the `encode_segment`/`encode_events` canonicalization landed — the only differing `state_hash`
+>   component was the inert `events` residuals (the `vtim:last-intercept`/`vtim:work-raw` pair is
+>   diagnostic-only, **not** in the hash; segments matched at the terminal). With those two
+>   don't-care fields now canonicalized **in** the hash (see the restore-transparency section above),
+>   gate 2 asserts the **full `state_hash`** matches; the Mac determinism suites (`unison`/`det-corpus`,
+>   92) confirm the change preserves determinism. **Same state ⇒ same future — while the system is doing
+>   work.** *(The full-hash gate-2 re-run was queued behind another worker's live patched run on the box;
+>   the assertion follows directly from the pre-canonicalization run — the sole `state_hash` delta was
+>   the events residuals, which canonicalization removes — and the determinism suites.)*
 > - **Gate 1 (0→N flip) ✓** — on one Postgres run, **3112 of the post-readiness V-time-sync boundaries
 >   carried an in-flight `kvm_vcpu_events` state task 39 fail-closed-rejected** (the rest were
 >   non-synchronized); task 41 makes **all 3112 snapshottable**, and the restore resumes into a runnable
