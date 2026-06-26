@@ -131,4 +131,16 @@ exclude_re = [
     #     line 201; the `>`→`==`/`<` siblings ARE killed by `tests/golden.rs`'s
     #     reorder-release tests). See dissonance/pv-net/IMPLEMENTATION.md.
     "dissonance/pv-net/src/switch\\.rs.*replace > with >= in Switch::route_one",
+    # (i) `telemetry::RunningServer::shutdown -> ()` (task 29): provably equivalent.
+    #     `shutdown(mut self)` takes the server *by value*; its only act is
+    #     `self.stop()`, and when `self` is dropped at the end of the function
+    #     `<impl Drop for RunningServer>::drop` *also* calls `self.stop()` (which is
+    #     idempotent — it `take()`s the join handles and re-stores `running = false`).
+    #     So emptying `shutdown`'s body to `()` leaves the observable post-condition
+    #     identical (threads joined, listener closed) — `shutdown` is by design just
+    #     an explicit, eager `drop`. The `stop`/`drop` bodies themselves stay
+    #     mutation-gated (killed by `dropping_the_server_stops_the_listener`, which
+    #     asserts a dropped server stops accepting); only this one Drop-shadowed
+    #     mutant is excluded. See consonance/telemetry/IMPLEMENTATION.md.
+    "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
 ]

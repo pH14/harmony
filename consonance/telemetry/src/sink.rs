@@ -186,6 +186,18 @@ mod tests {
     }
 
     #[test]
+    fn is_empty_and_capacity_report_exact_values() {
+        // capacity 7 is distinct from the 0/1 a mutated accessor would return.
+        let mut sink = LiveSink::new(7);
+        assert_eq!(sink.capacity(), 7, "capacity reports the configured value");
+        assert!(sink.is_empty(), "a fresh sink is empty");
+
+        sink.emit(&ev(1));
+        assert!(!sink.is_empty(), "a sink holding an event is not empty");
+        assert_eq!(sink.len(), 1);
+    }
+
+    #[test]
     fn clones_share_one_queue() {
         let mut producer = LiveSink::new(16);
         let consumer = producer.clone();

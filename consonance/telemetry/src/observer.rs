@@ -186,4 +186,45 @@ mod tests {
         assert!(rec.take_error().is_some());
         assert!(rec.error().is_none());
     }
+
+    /// A writer that stages writes and only commits them to a shared buffer on
+    /// `flush`, so a `flush` that does nothing is observable as missing bytes.
+    struct DeferredWriter {
+        staged: Vec<u8>,
+        committed: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+    }
+    impl Write for DeferredWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.staged.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.committed.borrow_mut().extend_from_slice(&self.staged);
+            self.staged.clear();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn flush_forwards_to_the_underlying_writer() {
+        let committed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let writer = DeferredWriter {
+            staged: Vec::new(),
+            committed: std::rc::Rc::clone(&committed),
+        };
+        let mut rec = NdjsonRecorder::new(writer);
+
+        rec.emit(&sample(0)); // emit writes but does not flush…
+        assert!(
+            committed.borrow().is_empty(),
+            "emit must not flush on its own"
+        );
+
+        rec.flush().expect("flush");
+        // …so the bytes only become visible if `flush` actually forwards.
+        assert!(
+            !committed.borrow().is_empty(),
+            "flush must push staged bytes through the writer"
+        );
+    }
 }

@@ -115,6 +115,42 @@ server + `EventHub` fan-out) · `lib.rs` (crate doc, re-exports) · `main.rs` (t
   std-only, no npm, no framework. Graphs are hand-drawn on `<canvas>`; the live
   transport is SSE (`new EventSource(...)`, one line, no library).
 
+## Mutation testing (quality-c)
+
+The first `cargo mutants --in-diff` run left 17 missed + 2 timeouts; all are now
+killed by exact-value/observable-post-condition tests, with one documented
+equivalent excluded:
+
+- **The web server made testable by factoring, not by I/O.** `read_request` now
+  delegates to a generic `parse_request<R: BufRead>`, unit-tested against a
+  `Cursor` that asserts the header drain stops **exactly** at the blank line
+  (leaving the body) — pinning the `n == 0 || == "\r\n" || == "\n"` boundary. The
+  idle/keepalive counter is a pure `advance_idle(idle) -> (u32, Option<&[u8]>)`,
+  unit-tested across the cadence (kills the `+= 1` and the `>=` boundary without
+  waiting real time). `EventHub` is unit-tested directly (same-file `mod tests`):
+  publish delivers to every subscriber, and after `unsubscribe` the removed
+  client stops receiving while the rest keep receiving (kills `push`/`drain`/
+  `unsubscribe` and the `!Arc::ptr_eq`). Lifecycle: `dropping_the_server_stops_the_listener`
+  asserts a dropped/shut-down server stops accepting connections (kills `stop`/`drop`).
+- **`is_empty`/`capacity`/`flush` pinned to exact values.** A capacity of `7`
+  (distinct from the `0`/`1` a mutant returns); `is_empty()` asserted both true
+  (fresh) and false (after one event); a `DeferredWriter` proves
+  `NdjsonRecorder::flush` actually forwards (staged bytes only become visible
+  after the flush call).
+- **Two equivalences removed by simplification rather than excluded.** The accept
+  loop's `WouldBlock` match-guard arm did the same `sleep(POLL)` as the generic
+  error arm, so the guard was meaningless — the arms are collapsed into one
+  (deletes the three guard mutants). `serve_recording` now streams via `io::copy`
+  instead of a hand-rolled `[0u8; 64 * 1024]` loop, deleting the equivalent
+  `64 * 1024` → `64 + 1024` mutant (any non-zero chunk size yields identical
+  output).
+- **One genuinely-equivalent mutant excluded** in `.cargo/mutants.toml` (entry
+  (i)): `RunningServer::shutdown -> ()`. `shutdown(mut self)` only calls
+  `self.stop()`, and dropping `self` runs `Drop::drop`, which calls `self.stop()`
+  too (idempotent) — so an empty `shutdown` body has the identical observable
+  post-condition. `shutdown` is by design just an eager `drop`; the `stop`/`drop`
+  bodies stay mutation-gated.
+
 ## Known limitations (for the integrator)
 
 - **Live is from-subscribe-onward.** A browser that connects after the run starts

@@ -21,7 +21,7 @@
 //! drawn browser-side), so it trips none of the determinism lints.
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -226,11 +226,11 @@ pub fn serve(addr: SocketAddr, live: LiveSink, opts: ServerOptions) -> io::Resul
                             let _ = handle_conn(stream, &running, &hub, &opts);
                         });
                     }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        thread::sleep(POLL);
-                    }
+                    // `WouldBlock` (no pending connection on the non-blocking
+                    // listener) and any transient accept error are handled the
+                    // same way — back off one poll interval and try again — so
+                    // there is no behavioral distinction to draw between them.
                     Err(_) => {
-                        // Transient accept error; back off and keep serving.
                         thread::sleep(POLL);
                     }
                 }
@@ -262,7 +262,15 @@ fn read_request(stream: &TcpStream) -> io::Result<Request> {
     // A header read should not hang a thread forever on a stalled client.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream);
+    parse_request(&mut reader)
+}
 
+/// Parses the request line (method + path, query stripped) and then drains the
+/// remaining headers up to and **including** the blank line, leaving the body
+/// (if any) unconsumed. Split out from [`read_request`] over a generic
+/// [`BufRead`] so the exact stop point — drain through the blank line, no
+/// further — is unit-testable against a `Cursor` with no socket.
+fn parse_request<R: BufRead>(reader: &mut R) -> io::Result<Request> {
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Err(io::Error::new(
@@ -276,7 +284,9 @@ fn read_request(stream: &TcpStream) -> io::Result<Request> {
     // Strip any query string; this server routes on the path only.
     let path = raw_path.split('?').next().unwrap_or("/").to_string();
 
-    // Drain headers up to the blank line (we need none of them).
+    // Drain headers up to the blank line (we need none of them, but a server that
+    // closes with the request unread can trigger an RST that truncates the
+    // response, so the bytes must be consumed).
     let mut header = String::new();
     loop {
         header.clear();
@@ -369,15 +379,9 @@ fn serve_recording(stream: &mut TcpStream, opts: &Arc<ServerOptions>) -> io::Res
          \r\n"
     );
     stream.write_all(header.as_bytes())?;
-    // Stream in chunks so a large box recording never balloons memory.
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        stream.write_all(&buf[..n])?;
-    }
+    // Stream the body straight through; `io::copy` uses a fixed internal buffer,
+    // so a large box recording never balloons memory.
+    io::copy(&mut file, stream)?;
     stream.flush()
 }
 
@@ -404,6 +408,21 @@ fn serve_events(
     result
 }
 
+/// Advances the idle-iteration counter and decides whether a keepalive is due.
+/// Returns the next counter value and, when the [`KEEPALIVE_EVERY`] cadence is
+/// reached, the SSE comment bytes to send (resetting the counter to 0). Pure, so
+/// the off-by-one cadence is unit-testable without waiting real time.
+fn advance_idle(idle: u32) -> (u32, Option<&'static [u8]>) {
+    let next = idle + 1;
+    if next >= KEEPALIVE_EVERY {
+        // An SSE comment line: ignored by EventSource, but writing it detects a
+        // vanished client and keeps proxies from timing out.
+        (0, Some(b": keepalive\n\n"))
+    } else {
+        (next, None)
+    }
+}
+
 fn pump_events_to(
     stream: &mut TcpStream,
     running: &Arc<AtomicBool>,
@@ -413,12 +432,10 @@ fn pump_events_to(
     while running.load(Ordering::SeqCst) {
         let batch = sub.drain();
         if batch.is_empty() {
-            idle += 1;
-            if idle >= KEEPALIVE_EVERY {
-                idle = 0;
-                // An SSE comment line: ignored by EventSource, but a write here
-                // detects a vanished client and keeps proxies from timing out.
-                stream.write_all(b": keepalive\n\n")?;
+            let (next, keepalive) = advance_idle(idle);
+            idle = next;
+            if let Some(msg) = keepalive {
+                stream.write_all(msg)?;
                 stream.flush()?;
             }
             thread::sleep(POLL);
@@ -443,6 +460,7 @@ mod tests {
     use super::*;
     use crate::event::EventKind;
     use crate::observer::Observer;
+    use std::io::Read;
     use std::net::TcpStream;
 
     fn loopback() -> SocketAddr {
@@ -473,6 +491,110 @@ mod tests {
             }
         }
         String::from_utf8_lossy(&acc).into_owned()
+    }
+
+    fn ev(seq: u64) -> Event {
+        Event::new(seq, seq, seq, EventKind::Inject { vector: 7 })
+    }
+
+    #[test]
+    fn parse_request_drains_exactly_through_the_blank_line() {
+        // Request line + two headers + blank line + a body. `parse_request` must
+        // consume up to and including the blank line and leave the body intact.
+        let raw = b"GET /foo?x=1 HTTP/1.1\r\nHost: x\r\nAccept: */*\r\n\r\nBODYBYTES";
+        let mut cur = std::io::Cursor::new(&raw[..]);
+        let req = parse_request(&mut cur).expect("parse");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.path, "/foo", "query string is stripped from the path");
+
+        // The drain loop must stop on the blank line — not the first header (that
+        // is the `n == 0 || == "\r\n" || == "\n"` boundary). If any `==` flips to
+        // `!=`, the loop breaks one line early and leaves the headers in the body.
+        let mut rest = Vec::new();
+        cur.read_to_end(&mut rest).expect("read remainder");
+        assert_eq!(
+            rest, b"BODYBYTES",
+            "exactly the blank line was the stop point"
+        );
+    }
+
+    #[test]
+    fn parse_request_rejects_an_empty_stream() {
+        // No request line at all → the `read_line == 0` guard must fail closed.
+        let mut cur = std::io::Cursor::new(&b""[..]);
+        assert!(parse_request(&mut cur).is_err());
+    }
+
+    #[test]
+    fn advance_idle_increments_then_fires_on_cadence() {
+        // Below the threshold: count up by exactly one, no keepalive.
+        assert_eq!(advance_idle(0), (1, None));
+        assert_eq!(advance_idle(5), (6, None));
+        // At the cadence (next == KEEPALIVE_EVERY): reset to 0 and a keepalive is
+        // due. Pins both the `+ 1` step and the `>=` comparison.
+        assert_eq!(
+            advance_idle(KEEPALIVE_EVERY - 1),
+            (0, Some(b": keepalive\n\n" as &[u8]))
+        );
+        // Past the cadence (next > KEEPALIVE_EVERY): still due — distinguishes
+        // `>=` from `==`.
+        assert_eq!(
+            advance_idle(KEEPALIVE_EVERY),
+            (0, Some(b": keepalive\n\n" as &[u8]))
+        );
+    }
+
+    #[test]
+    fn hub_fans_out_and_unsubscribe_stops_delivery() {
+        let hub = EventHub::default();
+        let s1 = hub.subscribe();
+        let s2 = hub.subscribe();
+
+        // publish must push the event onto every subscriber's queue.
+        hub.publish(&ev(1));
+        assert_eq!(
+            s1.drain().len(),
+            1,
+            "subscriber 1 receives the published event"
+        );
+        assert_eq!(s2.drain().len(), 1, "subscriber 2 receives it too");
+        // drain emptied the queues.
+        assert_eq!(s1.drain().len(), 0);
+
+        // After unsubscribe, s1 must stop receiving while s2 keeps receiving —
+        // this pins both `unsubscribe` doing something and the `!Arc::ptr_eq`
+        // (remove the matched one, keep the rest, not the inverse).
+        hub.unsubscribe(&s1);
+        hub.publish(&ev(2));
+        assert_eq!(
+            s1.drain().len(),
+            0,
+            "the unsubscribed client receives nothing"
+        );
+        assert_eq!(
+            s2.drain().len(),
+            1,
+            "the still-subscribed client still receives"
+        );
+    }
+
+    #[test]
+    fn dropping_the_server_stops_the_listener() {
+        let addr = {
+            let live = LiveSink::new(8);
+            let server = serve(loopback(), live, ServerOptions::default()).expect("serve");
+            let a = server.local_addr();
+            // While alive, the port accepts connections.
+            assert!(TcpStream::connect(a).is_ok(), "an alive server accepts");
+            a
+        }; // server dropped here → Drop → stop() → accept thread joined, port closed.
+
+        // A dropped/stopped server must stop accepting — `stop`/`drop` becoming a
+        // no-op would leave the accept thread (and the listener) alive.
+        assert!(
+            TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_err(),
+            "a dropped server stops accepting connections"
+        );
     }
 
     #[test]
