@@ -39,7 +39,7 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio gunzip jq tar
+require_tools cc make gzip bzip2 cpio gunzip jq tar chroot mount umount
 # `runc` (for `runc spec`) is taken from the docker bundle we extract below.
 
 if [ "$(id -u)" != "0" ]; then
@@ -97,6 +97,11 @@ make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox >/dev/null
 
 # --- 3. assemble the guest rootfs --------------------------------------------
 echo "== docker image: assembling rootfs"
+# DEFENSIVE: umount any leaked build-time bind mounts (the §4 initdb binds the
+# host /dev/proc into the rootfs) BEFORE rm -rf — `rm -rf` crosses mount points,
+# so deleting an un-umounted /dev bind would wipe the host's /dev.
+umount "$DKROOT/oci/rootfs/proc" 2>/dev/null || true
+umount "$DKROOT/oci/rootfs/dev" 2>/dev/null || true
 rm -rf "$DKROOT"
 mkdir -p "$DKROOT"/{bin,sbin,etc,proc,sys,dev,tmp,root}
 mkdir -p "$DKROOT/usr/local/bin" "$DKROOT/run" "$DKROOT/var/lib/docker" \
@@ -182,8 +187,8 @@ for layer in $(jq -r '.[0].Layers[]' "$MANI"); do
         rm -rf "${target:?}" "$wh"      # :? guards against an empty expansion
     done
 done
-[ -x "$BUNDLE/rootfs/usr/local/bin/docker-entrypoint.sh" ] \
-    || { echo "FAIL: docker-entrypoint.sh not in the extracted rootfs" >&2; exit 1; }
+[ -x "$BUNDLE/rootfs/usr/lib/postgresql/$PG_MAJOR/bin/postgres" ] \
+    || { echo "FAIL: postgres binary not in the extracted image rootfs" >&2; exit 1; }
 
 # The SAME fixed insert/select workload as task 37, baked INTO the container
 # rootfs so `runc exec ... psql -f /workload.sql` drives the live DB over its
@@ -201,43 +206,80 @@ done
     done
 } >"$BUNDLE/rootfs/workload.sql"
 
-echo "== docker image: generating the OCI config.json"
+# Pre-bake PGDATA: run the image's own `initdb` ONCE at build time (as the
+# postgres user, uid 999), exactly like task 37 pre-baked its bare cluster — and
+# for the SAME reason, now load-bearing for the container path. Running the
+# official image's *entrypoint* would `initdb` at container START, which is both
+# crushingly slow under the single-stepping VMM AND re-execs through `gosu` (a Go
+# program whose runtime busy-spins with no VM-exit → it FREEZES V-time, the same
+# failure mode as dockerd). Pre-baking lets us run the `postgres` binary directly
+# as PID 1 (no entrypoint, no gosu, no runtime initdb) — a cooperative C workload
+# identical to task 37's, now inside an OCI container. `initdb` runs in a `chroot`
+# (the image's own binary + libs) with /dev,/proc bind-mounted; the cluster
+# system identifier it mints is snapshotted here, so there is no initdb-time
+# nondeterminism at runtime.
+echo "== docker image: pre-baking PGDATA (build-time initdb as uid 999)"
+PGDATA_REL=/var/lib/postgresql/data
+PGBIN=/usr/lib/postgresql/$PG_MAJOR/bin
+# initdb needs a few device nodes; mknod them directly in the rootfs (NOT a bind
+# mount of the host /dev — a leaked bind mount would make a later `rm -rf` delete
+# the host's /dev). runc mounts a fresh tmpfs /dev in the container at runtime, so
+# these baked nodes are hidden then — harmless.
+# Bind the host's working /dev + /proc into the rootfs for initdb (BUILD_ROOT is
+# on a `nodev` tmpfs, so mknod'd nodes don't function; initdb needs /dev/null and
+# checks /proc). The EXIT trap + the §3 defensive umount guarantee these never
+# leak into a later `rm -rf`. runc gives the *runtime* container its own /dev.
+mount --bind /dev "$BUNDLE/rootfs/dev"
+mount -t proc proc "$BUNDLE/rootfs/proc"
+trap 'umount "$BUNDLE/rootfs/proc" 2>/dev/null || true; umount "$BUNDLE/rootfs/dev" 2>/dev/null || true' EXIT
+# Drop to the postgres uid with chroot's own --userspec (not gosu, which is a Go
+# binary that needs /proc/self/exe). initdb refuses to run as root.
+chroot --userspec=999:999 "$BUNDLE/rootfs" /bin/sh -c "
+    cd /var/lib/postgresql
+    export LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC HOME=/var/lib/postgresql
+    exec $PGBIN/initdb -D $PGDATA_REL \
+        --locale=C.UTF-8 --encoding=UTF8 --auth-local=trust --auth-host=trust -U postgres -N
+" >"$BUILD_ROOT/initdb-bundle.log" 2>&1 || { cat "$BUILD_ROOT/initdb-bundle.log"; exit 1; }
+umount "$BUNDLE/rootfs/proc" 2>/dev/null || true
+umount "$BUNDLE/rootfs/dev" 2>/dev/null || true
+trap - EXIT
+# Determinism overlay on the baked cluster's postgresql.conf (mirrors task 37):
+# socket-only, pinned TZ/locale, deterministic pid log prefix, autovacuum off.
+cat >>"$BUNDLE/rootfs$PGDATA_REL/postgresql.conf" <<EOF
+
+# --- task 38 determinism overlay (see guest/linux/IMPLEMENTATION.md) ---
+listen_addresses = ''            # unix socket only — no networking nondeterminism
+unix_socket_directories = '/run/postgresql'
+fsync = on                       # instant + deterministic on RAM-backed rootfs
+jit = off
+log_timezone = 'UTC'
+timezone = 'UTC'
+log_line_prefix = '[pg %p] '     # deterministic pid (sequential forks); no clock
+log_statement = 'none'
+shared_buffers = 32MB
+max_connections = 16
+autovacuum = off
+max_wal_size = 64MB
+EOF
+
+echo "== docker image: generating the OCI config.json (postgres direct, uid 999)"
 RUNC=$DK_STAGE/docker/runc                      # the real runc (not the wrapper)
 "$RUNC" spec --bundle "$BUNDLE"                 # default template -> $BUNDLE/config.json
-IMG_ENV=$(jq -c '.config.Env // []' "$CFG")
-IMG_ARGS=$(jq -cn \
-    --argjson e "$(jq -c '.config.Entrypoint // []' "$CFG")" \
-    --argjson c "$(jq -c '.config.Cmd // []' "$CFG")" '$e + $c')
-IMG_CWD=$(jq -r '.config.WorkingDir // "/"' "$CFG")
-# Docker's default capability set. The bare `runc spec` template grants only 3
-# caps (AUDIT_WRITE/KILL/NET_BIND_SERVICE) — too few for the postgres entrypoint,
-# which chowns PGDATA and `gosu`/`setpriv`s to the postgres user (needs CHOWN,
-# DAC_OVERRIDE, FOWNER, SETUID, SETGID, …). Grant the same set docker would, so
-# the off-the-shelf image's entrypoint runs unchanged.
-CAPS='["CAP_CHOWN","CAP_DAC_OVERRIDE","CAP_FSETID","CAP_FOWNER","CAP_MKNOD",
-       "CAP_NET_RAW","CAP_SETGID","CAP_SETUID","CAP_SETFCAP","CAP_SETPCAP",
-       "CAP_NET_BIND_SERVICE","CAP_SYS_CHROOT","CAP_KILL","CAP_AUDIT_WRITE"]'
-# Patch the template with the image's runtime config. terminal=false so the
-# container's stdout/stderr are inherited from `runc run` (= ttyS0). The default
-# template's namespaces include a fresh NETWORK namespace with no veth — i.e.
-# `--network none` (loopback only); the workload reaches postgres over the local
-# unix socket. POSTGRES_HOST_AUTH_METHOD=trust runs the off-the-shelf image
-# without a password.
-# Allow all devices (the bare `runc spec` template's default-deny device cgroup —
-# `[{allow:false}]` with no allow rules — kills the container's PID 1 on the
-# guest kernel: cgroup-v2 device control is an eBPF filter, and with everything
-# denied the init dies at exec). This is a trusted single-purpose determinism
-# gate (not a hostile multi-tenant host), so allow-all is appropriate.
-# noNewPrivileges=false matches docker's default (the entrypoint `gosu`s).
-jq --argjson env "$IMG_ENV" --argjson args "$IMG_ARGS" --arg cwd "$IMG_CWD" \
-   --argjson caps "$CAPS" '
+IMG_ENV=$(jq -c '.config.Env // []' "$CFG")     # the image's PATH/PG_* etc.
+# Run the image's postgres binary DIRECTLY as the postgres user (uid 999) on the
+# pre-baked cluster — no entrypoint, no gosu, no initdb (see the pre-bake note).
+# terminal=false so the container's stdout/stderr are inherited from `runc run`
+# (= ttyS0). The default template's namespaces include a fresh empty NETWORK
+# namespace = `--network none` (loopback only); the workload reaches postgres over
+# the local unix socket. Allow all devices (the bare `runc spec` default-deny
+# device cgroup is an eBPF filter that kills PID 1 at exec on the guest kernel) —
+# fine for a trusted single-purpose determinism gate.
+jq --argjson env "$IMG_ENV" '
     .process.terminal = false
-  | .process.args = $args
-  | .process.cwd = (if $cwd == "" then "/" else $cwd end)
-  | .process.env = ($env + ["POSTGRES_HOST_AUTH_METHOD=trust", "TERM=xterm"])
-  | .process.capabilities.bounding = $caps
-  | .process.capabilities.effective = $caps
-  | .process.capabilities.permitted = $caps
+  | .process.args = ["/usr/lib/postgresql/'"$PG_MAJOR"'/bin/postgres", "-D", "/var/lib/postgresql/data"]
+  | .process.cwd = "/var/lib/postgresql"
+  | .process.user = {"uid": 999, "gid": 999, "additionalGids": [999]}
+  | .process.env = ($env + ["LC_ALL=C.UTF-8", "LANG=C.UTF-8", "TZ=UTC", "PGTZ=UTC"])
   | .process.noNewPrivileges = false
   | .root.path = "rootfs"
   | .root.readonly = false
@@ -245,16 +287,20 @@ jq --argjson env "$IMG_ENV" --argjson args "$IMG_ARGS" --arg cwd "$IMG_CWD" \
   | .linux.resources.devices = [{"allow": true, "access": "rwm"}]
 ' "$BUNDLE/config.json" >"$BUNDLE/config.json.new"
 mv "$BUNDLE/config.json.new" "$BUNDLE/config.json"
-echo "   args=$IMG_ARGS cwd=${IMG_CWD:-/}  rootfs=$(du -sh "$BUNDLE/rootfs" | cut -f1)"
+echo "   postgres direct (uid 999) on pre-baked PGDATA; rootfs=$(du -sh "$BUNDLE/rootfs" | cut -f1)"
 
 install -m 0755 "$LINUX_DIR/docker-init.sh" "$DKROOT/init"
 
-# --- 5. pack the initramfs (sorted, fixed mtime, owner 0:0, gzip -n) ----------
+# --- 5. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
 # DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs.
-# Best-effort reproducible; the baked postgres image (a content-addressed
-# registry export) is the one large non-byte-reproducible-across-tools input.
+# **Ownership is PRESERVED** (no `--owner=0:0`): the guest-side files (busybox,
+# the docker bins, /init, /etc) are root-owned because root created them, while
+# the OCI bundle keeps the image's own ownerships + the pre-baked PGDATA owned by
+# uid 999 — which the container's postgres (uid 999) needs at runtime. Forcing
+# 0:0 would make PGDATA root-owned and postgres would refuse it. Ownership is a
+# deterministic function of the image + initdb, so this stays reproducible.
 echo "== docker image: packing initramfs"
 find "$DKROOT" -mindepth 1 -exec touch -hcd @0 {} +
 ( cd "$DKROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
-    | cpio --null -o -H newc --owner=0:0 --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-docker.cpio.gz"
+    | cpio --null -o -H newc --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-docker.cpio.gz"
 echo "ok: $ART_DIR/initramfs-docker.cpio.gz ($(du -h "$ART_DIR/initramfs-docker.cpio.gz" | cut -f1))"

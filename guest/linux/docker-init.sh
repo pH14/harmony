@@ -81,42 +81,43 @@ log "runc $(runc --version 2>/dev/null | $BB head -1)"
 # Pipe the container's stdout/stderr through tee → ttyS0 (live, for the gate) and
 # → $PGLOG (so we can detect readiness). tee blocks on read = a voluntary park,
 # never a spin.
-log "runc run --network none (official postgres image)"
+log "runc run --network none (official postgres image, postgres direct on pre-baked PGDATA)"
 cd "$BUNDLE" || { log "FATAL: no $BUNDLE bundle"; $BB sync; exec $BB reboot -f; }
 runc run "$CID" 2>&1 | $BB tee "$PGLOG" &
 RUNJOB=$!
 
-# Wait for runc to finish CREATING the container before the readiness loops poll
-# alive() — otherwise the first `runc state` (cooperative: a forked round-trip
-# that advances V-time) can race container creation and `alive` would
-# false-FATAL on "does not exist". Under the VMM `runc run` setup is much slower
-# than the shell reaching this point, so the race is real here (it was hidden
-# under QEMU's faster timing).
+# Wait for runc to finish CREATING the container before any cooperative poll —
+# otherwise a `runc state` could race creation (false "does not exist"). Under
+# the VMM runc's setup is much slower than the shell, so the race is real here
+# (hidden under QEMU's faster timing).
 until runc state "$CID" >/dev/null 2>&1; do : ; done
 
-# Wait for the REAL server, not the entrypoint's transient init server. The
-# official image runs initdb against a temporary unix-socket server, then prints
-# "PostgreSQL init process complete; ready for start up." and starts the final
-# server. Gate on that marker (PGDATA is fresh each boot, so init always runs),
-# then on pg_isready — so we never drive the temp server and race its shutdown.
-log "waiting for postgres init to complete"
-until $BB grep -q 'init process complete' "$PGLOG" 2>/dev/null; do
-    alive || { log "FATAL: container exited during init"; break; }
-done
+# Wait for postgres to accept connections. The container runs the `postgres`
+# binary DIRECTLY (pre-baked PGDATA, no entrypoint/initdb/temp-server), so there
+# is exactly one "ready" line. The poll is INTENTIONALLY LIGHT — only a busybox
+# `grep` of the captured log per iteration (advancing V-time + yielding to
+# postgres), with an `alive` check (a heavy Go `runc` fork) only occasionally:
+# forking `runc` in a tight loop would burn most of the V-time and starve the
+# container. (`runc state` is also a Go program; a per-iteration check froze the
+# VMM before.)
 log "waiting for postgres to accept connections"
-until runc exec "$CID" pg_isready -U postgres -q >/dev/null 2>&1; do
-    alive || { log "FATAL: container exited before ready"; break; }
+i=0
+until $BB grep -q 'ready to accept connections' "$PGLOG" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$((i % 4000))" -eq 0 ]; then
+        alive || { log "FATAL: container exited before ready"; break; }
+    fi
 done
 log "postgres ready in container"
 
 # --- drive the SAME insert/select workload as task 37, over the local socket --
-# psql runs INSIDE the container (runc exec) connecting to the cluster's unix
-# socket; the workload SQL is baked into the container rootfs. Values are a pure
-# function of the loop index → the row|… output is a deterministic function of
-# the seed (identical rows to task 37's golden).
+# psql runs INSIDE the container (runc exec, as the postgres user uid 999)
+# connecting to the cluster's unix socket; the workload SQL is baked into the
+# container rootfs. Values are a pure function of the loop index → the row|…
+# output is a deterministic function of the seed (identical rows to task 37).
 log "workload begin"
-runc exec "$CID" psql -U postgres -d postgres -q -At -F '|' -P pager=off \
-    -v ON_ERROR_STOP=1 -f /workload.sql 2>&1
+runc exec --user 999:999 "$CID" psql -U postgres -d postgres -h /run/postgresql \
+    -q -At -F '|' -P pager=off -v ON_ERROR_STOP=1 -f /workload.sql 2>&1
 log "workload end"
 
 # --- prove the seeded-CRNG / Go-AT_RANDOM path is deterministic ---------------
@@ -131,12 +132,13 @@ log "boot_id=$($BB cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 # Postgres). A host-side `runc kill` can't stop it: postgres is PID 1 of the
 # container's pid namespace, and the kernel drops signals sent to a namespace's
 # PID 1 from an ANCESTOR namespace. pg_ctl runs *within* the namespace (via
-# `runc exec` + gosu→postgres user), so its fast-shutdown signal is delivered and
-# handled. `-W` (no-wait) just signals; the shell's `wait "$RUNJOB"` then blocks
-# on the `runc run` job so the shutdown checkpoint gets the vCPU and its logs
-# ("database system is shut down") stream to ttyS0. `runc delete` clears state.
+# `runc exec` as the postgres user uid 999), so its fast-shutdown signal is
+# delivered and handled. `-W` (no-wait) just signals; the shell's `wait
+# "$RUNJOB"` then blocks on the `runc run` job so the shutdown checkpoint gets the
+# vCPU and its logs ("database system is shut down") stream to ttyS0. `runc
+# delete` clears state.
 log "stopping container"
-runc exec "$CID" gosu postgres pg_ctl -D /var/lib/postgresql/data -m fast -W stop >/dev/null 2>&1
+runc exec --user 999:999 "$CID" pg_ctl -D /var/lib/postgresql/data -m fast -W stop >/dev/null 2>&1
 wait "$RUNJOB" 2>/dev/null
 runc delete "$CID" >/dev/null 2>&1
 log GUEST_READY
