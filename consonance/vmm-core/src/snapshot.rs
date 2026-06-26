@@ -550,6 +550,36 @@ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'s
     None
 }
 
+/// `true` iff `e` carries **in-flight event-injection** state — the predicate that
+/// distinguishes a **non-quiescent** snapshot point (an interrupt or exception KVM has
+/// injected but not yet delivered, the `#PF`/`#DB` payload, a `SIPI`, SMM, or a queued
+/// triple fault) from a quiescent one. These are exactly the fields task 39's
+/// quiescent-only codec **fail-closed-rejected** (`unrepresentable_state`) and task 41
+/// now captures, so the same point is snapshottable. Excluded (always representable,
+/// never a "non-quiescent" marker): `exception_pending`/`exception_nr`/
+/// `exception_error_code`/`nmi_pending`/`smi_pending`/`interrupt_shadow` and the
+/// ioctl validity-mask `flags`. Pure; exposed via [`crate::vmm::Vmm::has_inflight_event_injection`]
+/// so a control plane / gate can quote a run's quiescent-vs-non-quiescent split.
+pub(crate) fn has_inflight_injection(e: &vmm_backend::VcpuEvents) -> bool {
+    let fields: [u64; 14] = [
+        u64::from(e.exception_injected),
+        u64::from(e.exception_has_error_code),
+        u64::from(e.exception_has_payload),
+        e.exception_payload,
+        u64::from(e.interrupt_injected),
+        u64::from(e.interrupt_nr),
+        u64::from(e.interrupt_soft),
+        u64::from(e.nmi_injected),
+        u64::from(e.nmi_masked),
+        u64::from(e.sipi_vector),
+        u64::from(e.smi_smm),
+        u64::from(e.smi_inside_nmi),
+        u64::from(e.smi_latched_init),
+        u64::from(e.triple_fault_pending),
+    ];
+    fields.iter().any(|&x| x != 0)
+}
+
 // ---------------------------------------------------------------------------
 // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.
 //
@@ -1145,6 +1175,79 @@ mod tests {
                 .events,
             vmm_backend::VcpuEvents::default()
         );
+    }
+
+    #[test]
+    fn has_inflight_injection_flags_exactly_the_non_quiescent_fields() {
+        // A quiescent record (default, plus the always-representable subset) is NOT
+        // in-flight; each in-flight field alone IS. Pins the exact field set so a mutant
+        // dropping any single field (the gate-1 before/after measurement depends on it)
+        // is caught.
+        assert!(!has_inflight_injection(&vmm_backend::VcpuEvents::default()));
+        // The captured/excluded subset must NOT count as in-flight.
+        for excluded in [
+            vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_nr: 14,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_error_code: 0xFFFF,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                nmi_pending: 1,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                smi_pending: 1,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                interrupt_shadow: 1,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                flags: 0x1F,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                !has_inflight_injection(&excluded),
+                "an always-representable field must not mark a non-quiescent point: {excluded:?}"
+            );
+        }
+        // Each of the 14 in-flight fields alone marks a non-quiescent point.
+        let mut probes: Vec<vmm_backend::VcpuEvents> = Vec::new();
+        for set in [
+            |e: &mut vmm_backend::VcpuEvents| e.exception_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_has_error_code = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_has_payload = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_payload = 0xCAFE,
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_nr = 0x34,
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_soft = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_masked = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.sipi_vector = 0xAB,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_smm = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_inside_nmi = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_latched_init = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.triple_fault_pending = 1,
+        ] {
+            let mut e = vmm_backend::VcpuEvents::default();
+            set(&mut e);
+            probes.push(e);
+        }
+        for e in probes {
+            assert!(
+                has_inflight_injection(&e),
+                "an in-flight field must mark a non-quiescent point: {e:?}"
+            );
+        }
     }
 
     #[test]

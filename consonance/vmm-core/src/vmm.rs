@@ -509,6 +509,21 @@ impl<B: Backend> Vmm<B> {
         self.ram.as_bytes()
     }
 
+    /// `true` iff the live vCPU is at a **non-quiescent** point — its `kvm_vcpu_events`
+    /// carries an interrupt or exception KVM has injected but not yet delivered (or the
+    /// `#PF`/`#DB` payload / `SIPI` / SMM / a queued triple fault) **in flight**. This is
+    /// exactly the state task 39's quiescent-only snapshot codec **fail-closed-rejected**
+    /// and task 41 now captures, so such a point is snapshottable. Exposed so a control
+    /// plane or a box gate can quote a run's quiescent-vs-non-quiescent split (gate 1 —
+    /// the before/after snapshottable counts) without reaching below the `Backend` trait.
+    ///
+    /// Reads the live vCPU **best-effort** (a `Backend::save` error reports `false`,
+    /// matching [`Vmm::state_blob`]'s `current_vcpu`); the fallible snapshot path
+    /// ([`Vmm::save_vm_state`]) reads it strictly instead. Does not mutate the VM.
+    pub fn has_inflight_event_injection(&self) -> bool {
+        snapshot::has_inflight_injection(&self.current_vcpu().events)
+    }
+
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
     /// guest RAM size. On the box, KVM reads the guest through this same backing, so
     /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
@@ -4804,6 +4819,25 @@ mod tests {
         assert!(
             v_ok.save_vm_state().is_ok(),
             "a quiescent point still snapshots"
+        );
+    }
+
+    #[test]
+    fn has_inflight_event_injection_reflects_the_live_vcpu() {
+        // The public accessor the gate-1 measurement quotes: `false` at a quiescent
+        // point, `true` when the live vCPU has an interrupt/exception in flight.
+        let quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
+        assert!(
+            !quiescent.has_inflight_event_injection(),
+            "a quiescent vCPU is not a non-quiescent point"
+        );
+        let mut st = nonzero_state();
+        st.events.interrupt_injected = 1;
+        st.events.interrupt_nr = 0x34;
+        let in_flight = full_vmm(st, vec![], 0, 1);
+        assert!(
+            in_flight.has_inflight_event_injection(),
+            "an injected-but-undelivered interrupt is a non-quiescent point"
         );
     }
 

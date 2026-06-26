@@ -102,7 +102,8 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
     // A's backend reports an in-flight vCPU; advance V-time to a synchronized boundary.
     let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
     m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
-    m.set_msr_filter(&vmm_backend::MsrFilter::default()).unwrap();
+    m.set_msr_filter(&vmm_backend::MsrFilter::default())
+        .unwrap();
     m.set_state(VcpuState {
         events: in_flight,
         ..Default::default()
