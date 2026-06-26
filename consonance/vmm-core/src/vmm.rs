@@ -681,18 +681,19 @@ impl<B: Backend> Vmm<B> {
 
     // --- full vm_state snapshot / restore (task 39) ------------------------
 
-    /// Build the canonical [`vm_state::VmState`] from the **current** live machine
-    /// (the memory-less half of a snapshot): the vCPU registers via the backend, the
+    /// Build the canonical [`vm_state::VmState`] from `vcpu` + the **current** live
+    /// machine (the memory-less half of a snapshot): the supplied vCPU registers, the
     /// V-time block + entropy stream, and a vmm-core-owned device blob carrying the
-    /// xAPIC, the legacy 8259/PCI latches, the 8250 UART, and `IA32_TSC_ADJUST`. The
-    /// `contract_hash` is stamped so a restore can reject a blob taken under a
-    /// different contract. Infallible (the only `encode` failure, `FractionalRatio`,
-    /// is impossible — `ratio_den` is the invariant `1`); the V-time block is
+    /// xAPIC, the legacy 8259/PCI latches, the 8250 UART, the ordered report stream,
+    /// and `IA32_TSC_ADJUST`. The `contract_hash` is stamped so a restore can reject a
+    /// blob taken under a different contract. The caller supplies `vcpu` (so the
+    /// fallible `Backend::save` is resolved where the error can propagate —
+    /// [`Vmm::save_vm_state`] — rather than swallowed). Infallible; the V-time block is
     /// anchored to the deterministic `last_intercept_work`, exactly like
     /// [`encode_vtime`], so it is byte-deterministic at any exit.
-    fn build_vm_state(&self) -> vm_state::VmState {
+    fn build_vm_state(&self, vcpu: &VcpuState) -> vm_state::VmState {
         let mut s = vm_state::VmState::default();
-        snapshot::fill_vcpu_state(&mut s, &self.current_vcpu());
+        snapshot::fill_vcpu_state(&mut s, vcpu);
         let tsc_adjust = match &self.vtime {
             Some(vt) => {
                 s.vtime = vm_state::VtimeState {
@@ -719,6 +720,13 @@ impl<B: Backend> Vmm<B> {
         };
         let dev = DeviceState {
             tsc_adjust,
+            // The ordered conformance report stream is guest-observable output (it
+            // feeds `observable_digest` / the O2 oracle), captured here so a restore
+            // resumes it — else a branch taken after `REPORT_PORT` writes would lose
+            // them and its `observable_digest` would diverge from the reference. It is
+            // NOT in the default `state_hash` (O1): that path never emits a `VMST`
+            // chunk (snapshot-hashing is opt-in), so O1/O2 stay separate.
+            report_stream: self.report_stream.clone(),
             uart: UartState {
                 capture: self.uart.capture().to_vec(),
                 regs: *self.uart.shadow_regs(),
@@ -761,7 +769,8 @@ impl<B: Backend> Vmm<B> {
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary or a
-    /// non-synchronized point.
+    /// non-synchronized point; [`VmmError::Backend`] if reading the live vCPU state
+    /// fails (a snapshot **fails closed** rather than sealing a zeroed vCPU).
     pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
         if self.rng_completion_staged {
             return Err(VmmError::ContractViolation(
@@ -779,7 +788,14 @@ impl<B: Backend> Vmm<B> {
                     .to_string(),
             ));
         }
-        Ok(self.build_vm_state())
+        // Read the vCPU **fallibly**: a `Backend::save` failure must abort the
+        // snapshot, not seal a `VcpuState::default()` (the swallowing `current_vcpu`
+        // does for the best-effort hash). Use the terminal-captured state if present.
+        let vcpu = match &self.saved_state {
+            Some(s) => s.clone(),
+            None => self.backend.save()?,
+        };
+        Ok(self.build_vm_state(&vcpu))
     }
 
     /// Restore the **non-memory** machine state from a [`vm_state::VmState`] (pair
@@ -835,6 +851,19 @@ impl<B: Backend> Vmm<B> {
             }
             (None, false) => None,
         };
+        // 1c-bis. The legacy platform must match this VM's wiring too — a blob whose
+        // legacy subrecord is absent (or present) where the VM's is not is a malformed
+        // snapshot, **rejected** rather than silently skipped (which would leave the
+        // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by
+        // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one
+        // that does not.)
+        if dev.legacy.is_some() != self.legacy.is_some() {
+            return Err(VmmError::ContractViolation(
+                "restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the 8259/PCI \
+                 latches, the other does not) — restore into a VM composed like the snapshot source."
+                    .to_string(),
+            ));
+        }
         // 1d. V-time: validate the rate matches and pre-build the clock + entropy.
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
@@ -906,6 +935,10 @@ impl<B: Backend> Vmm<B> {
         }
         self.uart
             .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+        // The ordered report stream is restored so a branch resumes the guest's
+        // observable output (its `observable_digest` / O2 signal) instead of losing
+        // every report emitted before the snapshot.
+        self.report_stream = dev.report_stream;
         // A restored VM is runnable again from the snapshot point: clear the latched
         // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
         // restored backend state.
@@ -1116,7 +1149,13 @@ impl<B: Backend> Vmm<B> {
         // can never produce (`ratio_den` is the invariant `1`), so the fallback is
         // unreachable; it is deterministic regardless.
         if self.snapshot_hashing {
-            let bytes = self.build_vm_state().encode().unwrap_or_default();
+            // Best-effort like the other hash chunks: `current_vcpu` uses the
+            // terminal-captured state or a swallowing live `save` (the snapshot path,
+            // `save_vm_state`, reads the vCPU fallibly instead).
+            let bytes = self
+                .build_vm_state(&self.current_vcpu())
+                .encode()
+                .unwrap_or_default();
             put_chunk(&mut out, b"VMST", &bytes);
         }
         out
@@ -4358,6 +4397,129 @@ mod tests {
             stock2.restore_vm_state(&only_vns),
             Err(VmmError::ContractViolation(_))
         ));
+    }
+
+    /// A backend that forwards to an inner mock but **fails `save()`** — to prove
+    /// `save_vm_state` fails closed rather than sealing a `VcpuState::default()`.
+    struct SaveFailBackend(MockBackend);
+    impl Backend for SaveFailBackend {
+        fn set_cpuid(&mut self, m: &CpuidModel) -> vmm_backend::Result<()> {
+            self.0.set_cpuid(m)
+        }
+        fn set_msr_filter(&mut self, f: &MsrFilter) -> vmm_backend::Result<()> {
+            self.0.set_msr_filter(f)
+        }
+        unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
+            // SAFETY: forwards to the inner mock, which only records the region
+            // (no dereference); this adds no obligation beyond the trait contract.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit> {
+            self.0.run()
+        }
+        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+            self.0.run_until(d)
+        }
+        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+            self.0.inject(e)
+        }
+        fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(v)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, v: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(v)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(rax)
+        }
+        fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
+            self.0.complete_cpuid(a, b, c, d)
+        }
+        fn save(&self) -> vmm_backend::Result<VcpuState> {
+            Err(vmm_backend::BackendError::Memory("induced save failure"))
+        }
+        fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
+            self.0.restore(s)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities {
+            self.0.capabilities()
+        }
+    }
+
+    #[test]
+    fn save_vm_state_fails_closed_on_backend_save_error() {
+        // A backend `save()` failure must abort the snapshot (fail closed), never
+        // seal a zeroed vCPU and return Ok (the bug `current_vcpu`'s unwrap_or_default
+        // would have hidden).
+        let v = Vmm::new(
+            SaveFailBackend(configured_mock(vec![])),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        assert!(
+            matches!(v.save_vm_state(), Err(VmmError::Backend(_))),
+            "a failing Backend::save must make save_vm_state fail closed"
+        );
+    }
+
+    #[test]
+    fn report_stream_round_trips_through_save_restore() {
+        // The conformance report stream is captured + restored, so a branch resumes
+        // the guest's observable output (its observable_digest), not just the vCPU.
+        let mut a = full_vmm(VcpuState::default(), vec![], 0, 1);
+        a.report_stream = vec![0xAA, 0x0000_0000, 0xDEAD_BEEF];
+        let s = a.save_vm_state().unwrap();
+
+        let mut b = full_vmm(VcpuState::default(), vec![], 0, 1);
+        assert!(b.report_stream().is_empty(), "B starts with no reports");
+        b.restore_vm_state(&s).unwrap();
+        assert_eq!(
+            b.report_stream(),
+            &[0xAA, 0x0000_0000, 0xDEAD_BEEF],
+            "the report stream is restored in execution order"
+        );
+        assert_eq!(
+            b.observable_digest(),
+            a.observable_digest(),
+            "the restored VM's O2 observable_digest matches the snapshot source"
+        );
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_a_legacy_wiring_mismatch() {
+        // A malformed blob whose legacy subrecord is absent while the LAPIC matches
+        // must be rejected (not silently skipped, which would leave stale 8259/PCI
+        // state) — fail-closed, symmetric with the LAPIC wiring check.
+        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
+        step_n(&mut a, 6);
+        let mut s = a.save_vm_state().unwrap();
+        let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
+        assert!(
+            dev.legacy.is_some() && dev.lapic.is_some(),
+            "the full-VM blob carries both LAPIC and legacy state"
+        );
+        dev.legacy = None; // drop legacy while LAPIC stays → wiring mismatch
+        s.devices = snapshot::encode_device_blob(&dev);
+
+        let mut b = full_vmm(VcpuState::default(), vec![], 100, 1);
+        assert!(
+            matches!(b.restore_vm_state(&s), Err(VmmError::ContractViolation(_))),
+            "a dropped legacy subrecord must be rejected, not silently skipped"
+        );
     }
 
     #[test]

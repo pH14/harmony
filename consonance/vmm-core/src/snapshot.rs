@@ -504,7 +504,8 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 /// Device-blob layout version. Bump on any layout change (independent of
 /// `VM_STATE_VERSION`, since this lives inside the opaque device section).
-const DEVICE_BLOB_VERSION: u16 = 1;
+/// v2 added the ordered conformance `report_stream`.
+const DEVICE_BLOB_VERSION: u16 = 2;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
@@ -531,6 +532,10 @@ pub(crate) struct LegacyState {
 pub(crate) struct DeviceState {
     /// `IA32_TSC_ADJUST` — the signed V-time TSC offset (no typed `vm_state` field).
     pub tsc_adjust: u64,
+    /// The ordered conformance report stream (`REPORT_PORT` writes) — guest-
+    /// observable output that feeds `observable_digest` (O2), restored so a branch
+    /// resumes it. Empty for runs that never touch the report channel.
+    pub report_stream: Vec<u32>,
     /// The 8250 UART residual state.
     pub uart: UartState,
     /// The userspace xAPIC register file + timer bookkeeping (Linux path only).
@@ -583,6 +588,10 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     put_u32(&mut out, DEVICE_BLOB_MAGIC);
     put_u16(&mut out, DEVICE_BLOB_VERSION);
     put_u64(&mut out, d.tsc_adjust);
+    put_u32(&mut out, d.report_stream.len() as u32);
+    for &word in &d.report_stream {
+        put_u32(&mut out, word);
+    }
     put_u32(&mut out, d.uart.capture.len() as u32);
     out.extend_from_slice(&d.uart.capture);
     out.extend_from_slice(&d.uart.regs);
@@ -700,6 +709,11 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         return Err(bad("unsupported version"));
     }
     let tsc_adjust = r.u64().ok_or(bad("truncated tsc_adjust"))?;
+    let report_len = r.u32().ok_or(bad("truncated report len"))? as usize;
+    let mut report_stream = Vec::with_capacity(report_len.min(1 << 16));
+    for _ in 0..report_len {
+        report_stream.push(r.u32().ok_or(bad("truncated report stream"))?);
+    }
     let cap_len = r.u32().ok_or(bad("truncated capture len"))? as usize;
     let capture = r.take(cap_len).ok_or(bad("truncated capture"))?.to_vec();
     let regs: [u8; 8] = r
@@ -728,6 +742,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
     }
     Ok(DeviceState {
         tsc_adjust,
+        report_stream,
         uart: UartState {
             capture,
             regs,
@@ -916,6 +931,7 @@ mod tests {
     fn device_blob_round_trips_all_fields() {
         let d = DeviceState {
             tsc_adjust: 0xCAFE_F00D_1234_5678,
+            report_stream: vec![0x1111_1111, 0x0000_0000, 0xDEAD_BEEF],
             uart: UartState {
                 capture: b"GUEST_READY PASS\n".to_vec(),
                 regs: [0x01, 0x02, 0xC7, 0x03, 0x03, 0x00, 0x00, 0x00],
@@ -930,14 +946,18 @@ mod tests {
             }),
         };
         let blob = encode_device_blob(&d);
-        assert_eq!(decode_device_blob(&blob.0).unwrap(), d);
+        let decoded = decode_device_blob(&blob.0).unwrap();
+        assert_eq!(decoded, d);
+        // The report stream survives in execution order (not reordered/dropped).
+        assert_eq!(decoded.report_stream, vec![0x1111_1111, 0, 0xDEAD_BEEF]);
     }
 
     #[test]
     fn device_blob_round_trips_without_optional_devices() {
-        // M1/M2-style: no xAPIC, no legacy platform — just tsc_adjust + UART.
+        // M1/M2-style: no xAPIC, no legacy platform, no reports — just tsc_adjust + UART.
         let d = DeviceState {
             tsc_adjust: 0,
+            report_stream: Vec::new(),
             uart: UartState {
                 capture: b"PAYLOAD x PASS\n".to_vec(),
                 regs: [0; 8],

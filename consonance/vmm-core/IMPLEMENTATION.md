@@ -1836,6 +1836,7 @@ deps — the CoW mmap lives in snapshot-store, the byte layout in vm-state.
 | userspace xAPIC | `lapic::Lapic::snapshot()` | **device blob** |
 | 8259 IMRs + PCI latch | `LegacyPlatform` | **device blob** |
 | 8250 UART (regs + serial capture) | `Uart8250` | **device blob** |
+| report stream (`REPORT_PORT` writes — O2 output) | `self.report_stream` | **device blob** |
 | `contract_hash` | `contract::contract_hash()` | `contract_hash` (compared on restore) |
 | timer queue | — (vmm-core has no `vtime::TimerQueue`) | empty `TimerQueueState` |
 
@@ -1946,6 +1947,22 @@ taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --t
 >   `kvm 1396736` after (verified via `lsmod`). Task 36 was idle; the box was free.
 > - **public-api ✓** — `tests/public-api.txt` refreshed on the box (pinned nightly +
 >   `cargo public-api`); the `public_api` gate is green (the +37 lines are this task's new surface).
+
+## PR #7 cross-model review fixes
+
+- **[P1] `save_vm_state` fails closed on a `Backend::save` error.** It no longer reads the vCPU via
+  `current_vcpu` (which swallows a save error into `VcpuState::default()` for the best-effort hash);
+  it reads `saved_state` or `self.backend.save()?` and propagates — a snapshot can never seal a
+  zeroed vCPU and return `Ok`. (`build_vm_state` now takes the vCPU as a parameter; the gated `VMST`
+  hash chunk keeps the best-effort `current_vcpu`, unchanged.) Proven by a save-failing backend.
+- **[P1] The report stream is captured + restored.** `self.report_stream` (the ordered `REPORT_PORT`
+  output that feeds `observable_digest` / O2) rides the device blob (v2), so a branch taken after
+  report writes resumes them instead of restoring an empty stream and diverging on O2. It does **not**
+  reach the default `state_hash` (O1): that path emits no `VMST` chunk (snapshot-hashing is opt-in),
+  so O1/O2 stay separate.
+- **[P2] Legacy-platform wiring mismatch is rejected.** A blob whose legacy subrecord is absent (or
+  present) where the VM's is not is refused (fail-closed, symmetric with the LAPIC check) rather than
+  silently skipped — which would leave the 8259 IMRs / PCI latch stale.
 
 ## Known limitations / integrator notes
 
