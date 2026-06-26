@@ -2369,12 +2369,16 @@ should not." Verified on Mac: `vmm-core` (232), `unison`/`det-corpus` determinis
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**234** tests) / `deny`. **Miri**
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**235** tests) / `deny`. **Miri**
 validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
-predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** — exact-value tests
-pin the new surface: the full in-flight `kvm_vcpu_events` device-blob round-trip (every field distinct,
-non-zero), the `has_inflight_injection` 14-field predicate (each field alone flips it), and
-`canonical_events` (each SMI/NMI OR-chain operand individually — 32/32 caught after the PR-#12 hardening).
+predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** (`cargo mutants
+--no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout** (45 caught).
+Exact-value tests pin the new surface: the full in-flight `kvm_vcpu_events` device-blob round-trip (every
+field distinct, non-zero), the `has_inflight_injection` 14-field predicate (each field alone flips it),
+`canonical_events` (each SMI/NMI OR-chain operand individually — 32/32 caught after the PR-#12 hardening),
+and the `encode_segment` unusable-`type` mask — `state_hash_masks_only_an_unusable_segments_type` pins
+**both halves** of `if seg.unusable != 0 { 0 } else { seg.type_ }` (a *usable* segment's type reaches the
+hash; an *unusable* one's does not), killing the `!= -> ==` mutant that the PR-#12 fix first surfaced.
 **public-api** — one new line (`Vmm::has_inflight_event_injection`), `tests/public-api.txt` matches on the box.
 
 Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
