@@ -431,6 +431,86 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// DIAGNOSTIC (not a gate): pinpoint **which** machine-state component the mid-workload
+/// restore fails to reproduce. Seals S at a non-quiescent point, records the LIVE VM's
+/// per-component digests **at the seal**, drops it, restores S into a fresh VM, and
+/// records the restored VM's per-component digests **before stepping**. Any meaningful
+/// component that differs is state the restore lost (the `vtim:last-intercept` /
+/// `vtim:work-raw` pair legitimately differs — the work counter resets to 0 on restore
+/// — and is filtered). Then steps the restored VM a few times and prints its serial, to
+/// see whether it resumes the workload or faults immediately.
+#[test]
+#[ignore = "diagnostic, box-only: localizes which state a mid-workload restore loses"]
+fn diag_restore_component_fidelity() {
+    require_kvm();
+    require_host_baseline();
+    let kernel = require_artifact("bzImage");
+    let initramfs = require_artifact("initramfs-postgres.cpio.gz");
+    let marker = workload_marker();
+
+    let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
+    let (snap, live_components) = {
+        let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
+        let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
+        let components = live.state_components();
+        let blob = sealed.vm_state.encode().expect("vm_state encodes");
+        let snap = engine
+            .snapshot_base(live.guest_memory(), &blob)
+            .expect("snapshot the live guest");
+        eprintln!("[diag] sealed at step {}; captured live components.", sealed.step);
+        (snap, components)
+    };
+
+    // Restore into a fresh VM and capture its components BEFORE stepping.
+    let mut b = boot_pg(&kernel, &initramfs, BASE_SEED);
+    let mapping = engine.materialize(snap).expect("materialize");
+    let vm_state = engine.vm_state(snap).expect("decode");
+    b.restore_snapshot(mapping.as_slice(), &vm_state)
+        .expect("restore");
+    let restored_components = b.state_components();
+
+    // Diff (filter the diagnostic-only V-time anchors that legitimately reset).
+    let ignore = ["vtim:last-intercept", "vtim:work-raw"];
+    let mut lost = Vec::new();
+    for ((name, lh), (_, rh)) in live_components.iter().zip(restored_components.iter()) {
+        if lh != rh && !ignore.contains(name) {
+            lost.push(*name);
+        }
+    }
+    eprintln!(
+        "[diag] components that DIFFER between live-at-seal and restored-before-step \
+         (= state the restore lost): {lost:?}"
+    );
+    if lost.is_empty() {
+        eprintln!(
+            "[diag] restore reproduces all observable state at the seal — the corruption is in \
+             EXECUTION after resume (staged-completion replay / a KVM-internal not in save())."
+        );
+    }
+
+    // Step the restored VM a few times and show its serial (resume vs immediate fault).
+    let before = b.serial().len();
+    for i in 0..200 {
+        match b.step() {
+            Ok(Step::Continued) => {}
+            Ok(Step::Terminal(r)) => {
+                eprintln!("[diag] restored VM terminal at restored-step {i}: {r:?}");
+                break;
+            }
+            Err(e) => {
+                eprintln!("[diag] restored VM step error at restored-step {i}: {e}");
+                break;
+            }
+        }
+    }
+    let tail = &b.serial()[before..];
+    eprintln!(
+        "[diag] restored VM serial after 200 steps ({} new bytes):\n{}",
+        tail.len(),
+        String::from_utf8_lossy(&tail[..tail.len().min(800)])
+    );
+}
+
 #[test]
 #[ignore = "box-only non-quiescent snapshot gate (LOADED patched KVM + built Postgres image + \
             det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`"]
