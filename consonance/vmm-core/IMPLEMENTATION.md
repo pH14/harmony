@@ -1816,3 +1816,244 @@ left held, no patched proxy (1400832) left loaded.
 - The patched boot reaches `GUEST_READY` in ~293,943 steps / ~14 s wall per boot; this is bounded
   and deterministic, not optimized. Faster boot (e.g. `run_until`-precise timer stepping) is task 07,
   not this milestone.
+
+---
+
+# Task 39 — live VM snapshot / branch
+
+vmm-core is now "the elsewhere" that `snapshot-store` and `vm-state` defer their KVM side to.
+Three pieces:
+
+1. **`src/snapshot.rs` — the `vm_state` adapter + the `SnapshotEngine`.**
+   - `SnapshotEngine` owns a `snapshot_store::Store`: `snapshot_base` (booted image →
+     `begin_base`/`write_page` per frame/`seal`), `snapshot_derive` (pages dirtied since a parent →
+     `derive`/`write_page`/`seal`), `materialize` (→ a private CoW `Mapping`), `vm_state` (decode the
+     sealed blob), plus `retain`/`release`/`gc`/`store_stats`/`stats`.
+   - Pure, bidirectional conversions between the live `vmm_backend` value types and `vm-state`'s
+     plain-data records (segment pack/unpack, regs/sregs/events/debugregs/mp/xcr0/msrs/xsave), and a
+     **vmm-core-owned device blob** carried inside `vm_state::DeviceBlob` (task 09's placeholder).
+2. **`src/vmm.rs` — the live save/restore methods on `Vmm`:** `save_vm_state`/`restore_vm_state`
+   (memory-less half), `restore_guest_memory`/`guest_memory` (memory half), `restore_snapshot`
+   (both), `reseed_entropy` (branch), and the gated `wire_snapshot_hashing` that folds the canonical
+   blob into `state_hash`.
+3. **`src/devices.rs`** gained `pub(crate)` restore setters + a `dlm()` accessor for the 8250 UART
+   and the legacy platform, so the device blob round-trips.
+
+`Cargo.toml` adds `snapshot-store` + `vm-state` (a **reviewed dependency addition**, like the
+`kvm-*` deps; both pinned `version` + `path` for `cargo deny`'s wildcard ban). No new third-party
+deps — the CoW mmap lives in snapshot-store, the byte layout in vm-state.
+
+## Snapshot contents map (INTEGRATION.md §4 / §5)
+
+| §4 item | Source | `vm_state` home |
+|---|---|---|
+| GPRs / segments / CRs / EFER / APIC_BASE / debug / events / MP / MSRs / XSAVE / XCR0 | `Backend::save()` | the typed records |
+| V-time clock + `snapshot_vns` | `VtimeWiring` (reuses `save_vtime`) | `vtime: VtimeState` |
+| entropy PRNG position | `SeededEntropy::save_state()` | `hypercall: Vec<u8>` |
+| `IA32_TSC_ADJUST` | `VtimeWiring::tsc_adjust` | **device blob** |
+| userspace xAPIC | `lapic::Lapic::snapshot()` | **device blob** |
+| 8259 IMRs + PCI latch | `LegacyPlatform` | **device blob** |
+| 8250 UART (regs + serial capture) | `Uart8250` | **device blob** |
+| report stream (`REPORT_PORT` writes — O2 output) | `self.report_stream` | **device blob** |
+| `contract_hash` | `contract::contract_hash()` | `contract_hash` (compared on restore) |
+| timer queue | — (vmm-core has no `vtime::TimerQueue`) | empty `TimerQueueState` |
+
+**The device blob.** `vm-state`'s typed records have no field for the xAPIC, the 8259/PCI latches,
+the UART, or `IA32_TSC_ADJUST`. Task 09 carries the device section as an opaque, length-delimited
+placeholder ("the vmm-core adapter passes through whatever the device models emit"); this is that
+emission — a small, versioned, little-endian TLV (`"DEV1"` magic) vmm-core owns end to end and the
+codec never interprets. Decode is **total** (fuzzed by `device_blob_decode_is_total_on_garbage`).
+When task 13 folds a typed `LapicState` into `vm-state` under a bumped `VM_STATE_VERSION`, the xAPIC
+sub-record can move out; tsc_adjust/UART/legacy stay vmm-core-owned.
+
+`IA32_TSC_ADJUST` rides the device blob (not the MSR map) because it is an `emulate-vtime` MSR
+(userspace-serviced, *not* `allow-stateful`): it never appears in `Backend::save().msrs` and must
+not be fed to `Backend::restore` (KVM rejects a filtered MSR). Keeping it in the vmm-core-owned blob
+leaves the MSR map exactly "the allow-stateful set".
+
+## Representable-subset lossiness (deliberate, sound at the quiescent point)
+
+The live `VcpuState` is a superset of `vm-state`'s records: `VcpuEvents`'s full injection bookkeeping
+is projected to the 6-field determinism subset; `kvm_sregs2` `flags`/`pdptrs` and the always-zero
+`DebugRegs.flags` are not carried. These are **zero at the quiescent point a snapshot is taken**
+(§4: after an exit is fully serviced, nothing armed; long-mode/paging-off guests use no PAE PDPTRs),
+so the projection is faithful there — proven byte-exact over the subset by
+`vcpu_state_round_trips_through_vm_state`. A future workload that snapshots mid-instruction with a
+queued exception would grow §4's checklist and these records (tracks the workload, a non-goal here).
+
+## Quiescent-point assertion + atomic restore
+
+`save_vm_state` fails closed at an RNG mid-exit boundary and (V-time wired) at a non-synchronized
+point — the same guards `save_vtime` enforces. The LAPIC IRR/pending state is *captured* (state, not
+an armed plan); the backend's per-entry `set_pending_irq` slot is re-derived from the LAPIC on the
+restored VM's first service, so there is no plan to serialize (why `vm-state` has no plan field).
+`restore_vm_state` is **atomic on rejection**: contract-hash, device-blob decode, LAPIC coherence,
+clock rebuild, and entropy validation all run before any live state mutates.
+
+## state_hash folding — "gate the swap"
+
+`wire_snapshot_hashing()` opts a VMM into appending a `VMST` chunk (`= build_vm_state().encode()`) to
+`state_blob`. **Default off**, so M1/M2/P6/corpus/Linux-boot blobs are byte-for-byte unchanged (no
+golden moves); the snapshot/branch path opts in so a snapshot's `vm_state` integrity drives the hash.
+
+**Deviation considered and rejected:** *replacing* the existing `VCPU`/`LAPC`/`VTIM` chunks with the
+single canonical `VMST` chunk. Rejected — it would move every existing `state_hash` and the spec's
+explicit priority is "goldens don't move." Appending-behind-a-gate folds the blob into the hash with
+zero golden churn (`wiring_snapshot_hashing_folds_the_canonical_blob_into_the_hash`).
+
+## Restore mechanism — here vs. the `vmm-backend` follow-up
+
+`restore_guest_memory` overwrites the owned `GuestRam` from the materialized image. KVM reads the
+guest through that backing, so the restored memory is live on the next `KVM_RUN` — a **correct**,
+**memcpy-class** (O(image)) restore, the right thing within this directory (rule 1).
+
+The **O(dirty) memslot-swap** that beats full-`memcpy` (gate 2's headline) and the **dirty-log
+harvest** that yields the precise per-snapshot dirty set are KVM-specific and live **below the
+`Backend` trait, in `vmm-backend`**: `KVM_GET_DIRTY_LOG` + a `KVM_SET_USER_MEMORY_REGION` remap
+pointing the memslot at `materialize()`'s CoW mapping (task 08's chosen mechanism). They are a
+**reviewed `vmm-backend` follow-up** (a small `Backend::remap_memory` / dirty-log seam), out of this
+task's directory. The engine here is ready: capture is already dirty-set-proportional
+(`snapshot_derive(parent, mem, Some(dirty), …)`, and even the write-all path is dirty-proportional in
+*storage* via the store's seal-time dedup), and `materialize()` yields the exact CoW `Mapping` the
+memslot would point at. The box probe `gate2_restore_latency_probe` prints the current materialize +
+copy + the full-memcpy baseline so the follow-up has a number to beat.
+
+## Gates
+
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (213 tests) / `deny` (the
+`NCSA` warning is pre-existing). **Miri** validates the device-blob byte-parsing + the conversions;
+the `materialize` (mmap) tests are `#[cfg_attr(miri, ignore)]` (Miri cannot execute `mmap`, same as
+snapshot-store's own materialize tests). **mutants** — exact-value tests pin the adapter field set
+(segment pack/unpack bit positions, every device-blob field, the vcpu round-trip) and the restore
+logic (contract-mismatch / RNG-boundary / clock-resume value tests). **public-api** — refreshed on
+the box; the new surface is `Vmm::{save_vm_state, restore_vm_state, restore_snapshot,
+restore_guest_memory, guest_memory, reseed_entropy, wire_snapshot_hashing, snapshot_hashing_wired}`,
+`VmmError::Snapshot`, and the `snapshot` module.
+
+**Box (`tests/live_snapshot_branch.rs`, `#[cfg(target_os="linux")]` + `#[ignore]`):**
+- `gate1_restore_replays_bit_identical` — the milestone: snapshot a running patched VM at a clean
+  V-time intercept, restore into a fresh VM, run forward; the restored continuation's `state_hash` +
+  serial are **bit-identical** to the un-snapshotted reference. *Same state ⇒ same future.* (The
+  snapshot point is an RDTSC intercept — its completion replays idempotently, the design's intended
+  clean boundary; the model treats a literal `HLT` as terminal, so the conceptual "quiescent HLT" is
+  the serviced-intercept boundary.)
+- `gate3_n_vms_share_one_read_only_base` — N branches materialized from one base store the base's
+  pages once store-wide.
+- `gate2_restore_latency_probe` — prints capture / materialize / restore-copy / full-memcpy timings.
+
+Run pinned per `docs/BOX-PINNING.md` (task-08's core 4), patched modules loaded, reverted to stock
+after:
+
+```sh
+taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --test-threads=1
+```
+
+> **Box-run results (2026-06-26, patched KVM, `taskset -c 4`, sibling cpu12 idle).** All three
+> gate tests passed; the box was reverted to stock afterward.
+>
+> - **Gate 1 (milestone) ✓** — reference and restored `state_hash` are **equal**:
+>   `53d1be2770d78c2d4edfa9c01b4468304c969533ce0ef21a8d512b3e4068dd74` (both). The restored
+>   continuation is bit-identical to the un-snapshotted reference — *same state ⇒ same future.*
+> - **Gate 3 ✓** — 1 base unique page; after 8 branches still **1** store-wide (resident 51,094 B):
+>   one read-only base shared, not 8× copied.
+> - **Gate 2 (probe)** — for a 4 MiB image: base capture 5.84 ms, **`materialize` = 27.9 µs**
+>   (dirty-set-proportional, sparse — only resident non-zero pages touch the tempfile), restore copy
+>   9.38 ms, full-memcpy baseline 1.04 ms. The materialize is already O(dirty); the O(image) restore
+>   *copy* is the memcpy-class part the `vmm-backend` memslot-swap follow-up (above) replaces to
+>   "beat memcpy". (Debug build; relative shape is the point.)
+> - **Gate 5 (hygiene) ✓** — patched `kvm 1400832` loaded for the run, reverted to stock
+>   `kvm 1396736` after (verified via `lsmod`). Task 36 was idle; the box was free.
+> - **public-api ✓** — `tests/public-api.txt` refreshed on the box (pinned nightly +
+>   `cargo public-api`); the `public_api` gate is green (the +37 lines are this task's new surface).
+
+## PR #7 cross-model review fixes
+
+### Round 3 — and the class-closing audit
+
+Rounds 1–2 were whack-a-mole on one root cause: *the snapshot omits a live field and the restore
+silently zeros it.* Round 3 fixes the last three instances **and** audits the whole adapter so every
+field is **captured, asserted-zero at save, or rejected at restore** — the blob is provably
+lossless-or-rejected.
+
+- **[P1] Restore refuses a staged backend completion (not just RNG).** Any read-style / MSR / CPUID /
+  determinism exit leaves a reg-write/RIP-advance pending in `kvm_run` that `Backend::restore` does
+  **not** clear, so restoring into such a backend would commit the *old* exit on the next run. A new
+  `Vmm::completion_staged` flag (set each `step` from the serviced exit via `exit_stages_completion`,
+  superset of `rng_completion_staged`) makes `restore_vm_state` require a fresh/committed backend.
+  *(Save still allows a non-RNG staged completion — restore re-executes it idempotently into a fresh
+  target; only RNG, non-idempotent, is refused at save.)*
+- **[P2] Restore rejects a non-empty `timers` section.** vmm-core has no `vtime::TimerQueue` (the only
+  timer is the xAPIC timer, in the device blob), so a non-default `timers` would be silently dropped —
+  now fail-closed. (A vmm-core blob always seals it empty.)
+- **[P2] Save rejects a non-zero `kvm_debugregs.flags`.** DR0..3/DR6/DR7 are carried; the `flags`
+  field is not (KVM defines it as currently always 0) — added to `snapshot::unrepresentable_state`.
+
+**The audit — every `VcpuState` / `vm_state` field:**
+
+| Field | Disposition |
+|---|---|
+| `regs` (all GPRs/RIP/RFLAGS) | captured |
+| `sregs` segments (+ all L/DB/G/AVL/unusable/present/dpl/s bits), GDT/IDT, CR0–CR8, EFER, APIC_BASE | captured |
+| `sregs.flags`, `sregs.pdptrs` | **asserted zero at save** (PAE-only; 64-bit guest) |
+| `xcr0` | captured |
+| `debugregs.db`/`dr6`/`dr7` | captured |
+| `debugregs.flags` | **asserted zero at save** (KVM always-0) |
+| `events` — pending exc vector/code, NMI/SMI pending, interrupt shadow | captured (6-field subset) |
+| `events` — in-flight injection / payload / SMM / triple-fault (14 fields) | **asserted zero at save** |
+| `events.flags` (KVM validity mask) | **excluded** (ioctl metadata, not guest state) |
+| `mp_state`, `msrs`, `xsave` | captured |
+| V-time clock + `tsc_adjust` + entropy | captured (typed `vtime` + device blob + `hypercall`) |
+| xAPIC, 8259 IMRs, PCI latch, 8250 UART, report stream | captured (device blob) |
+| `contract_hash` | captured + compared at restore |
+| `timers` | empty at save; **rejected at restore if non-empty** |
+| staged backend completion (`kvm_run`) | **rejected at restore** (require fresh/committed backend) |
+| backend pending-IRQ slot | re-derived from the LAPIC on the restored VM's first service (not stored) |
+
+Anything added to `VcpuState`/`vm_state` later must extend `unrepresentable_state` (or be captured),
+or `save_vm_state` would seal it lossily — the audit is the contract.
+
+### Round 2
+
+- **[P1 — determinism] Restore re-arms the first-entry work-counter gate.** `restore_vm_state` now
+  resets `first_entry_done = false`, treating the restored VM as a **fresh spawn**: its next `step`
+  re-runs `WorkSource::start_run` (the per-VM baseline) right before VM-entry. On the shared box
+  `perf_event` counter, without this a coexisting VM's branches between the restore (which resets the
+  counter) and the restored VM's entry would be miscounted into the restored V-time — a determinism
+  bug on the explorer's N-concurrent-VM path. *(test: `start_run` fires again after restore)*
+- **[P2 — fail-closed] `save_vm_state` rejects unrepresentable `kvm_sregs2` flags/pdptrs.** These are
+  not carried by the subset and are zero for the 64-bit / paging-off determinism guest; a non-zero
+  value now fails the snapshot closed instead of being silently zeroed on restore.
+- **[P2 — fail-closed] `save_vm_state` rejects unrepresentable pending-event state.** The pending-event
+  fields outside the captured 6-field subset (in-flight exception/interrupt/NMI injection, the
+  exception payload, SMM state, a queued triple fault) fail the snapshot closed if non-zero — zero at
+  a quiescent point. The KVM validity-mask `kvm_vcpu_events.flags` is **excluded** (ioctl metadata,
+  normally non-zero). Both checks live in `snapshot::unrepresentable_state`. *(tests pin each field +
+  the flags exclusion)*
+
+### Round 1
+
+- **[P1] `save_vm_state` fails closed on a `Backend::save` error.** It no longer reads the vCPU via
+  `current_vcpu` (which swallows a save error into `VcpuState::default()` for the best-effort hash);
+  it reads `saved_state` or `self.backend.save()?` and propagates — a snapshot can never seal a
+  zeroed vCPU and return `Ok`. (`build_vm_state` now takes the vCPU as a parameter; the gated `VMST`
+  hash chunk keeps the best-effort `current_vcpu`, unchanged.) Proven by a save-failing backend.
+- **[P1] The report stream is captured + restored.** `self.report_stream` (the ordered `REPORT_PORT`
+  output that feeds `observable_digest` / O2) rides the device blob (v2), so a branch taken after
+  report writes resumes them instead of restoring an empty stream and diverging on O2. It does **not**
+  reach the default `state_hash` (O1): that path emits no `VMST` chunk (snapshot-hashing is opt-in),
+  so O1/O2 stay separate.
+- **[P2] Legacy-platform wiring mismatch is rejected.** A blob whose legacy subrecord is absent (or
+  present) where the VM's is not is refused (fail-closed, symmetric with the LAPIC check) rather than
+  silently skipped — which would leave the 8259 IMRs / PCI latch stale.
+
+## Known limitations / integrator notes
+
+- The **dirty-log harvest + O(1) memslot-swap restore are the `vmm-backend` follow-up** (above).
+  This task delivers the portable substrate (engine + adapter + correct memcpy-class restore) that
+  the explorer (task 12) and the branching demo (task 40) build on; "branch" *is* `restore_snapshot`
+  + `reseed_entropy`.
+- **Timer queue is empty** in the blob: vmm-core has no `vtime::TimerQueue`; the only timer is the
+  xAPIC timer (in the device blob). A future `TimerQueue` would fill `vm_state.timers`.
+- **Restore wiring must match the snapshot source**: `restore_vm_state` refuses a V-time/xAPIC
+  wiring mismatch loudly rather than silently dropping state.
+- `contract_hash` is **compared** on restore (a blob from a different ratified contract is refused).

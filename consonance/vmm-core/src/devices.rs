@@ -223,6 +223,25 @@ impl Uart8250 {
     pub fn dlab(&self) -> bool {
         self.dlab
     }
+
+    /// The divisor-latch-high (DLM) shadow — captured by the snapshot adapter
+    /// alongside the register shadows so a restored UART reads back an identical
+    /// divisor. (Not in the state hash, like the field itself.)
+    pub(crate) fn dlm(&self) -> u8 {
+        self.dlm
+    }
+
+    /// Overwrite the UART residual state on snapshot restore: the serial capture
+    /// buffer (so a restored continuation reproduces byte-identical console
+    /// output), the register shadows, the latched DLAB window, and the divisor-
+    /// latch-high byte. Mirrors what [`Self::capture`]/[`Self::shadow_regs`]/
+    /// [`Self::dlab`]/[`Self::dlm`] read back.
+    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u8; 8], dlab: bool, dlm: u8) {
+        self.capture = capture;
+        self.regs = regs;
+        self.dlab = dlab;
+        self.dlm = dlm;
+    }
 }
 
 /// Minimal **legacy PC platform** I/O for the Linux boot path: enough of the
@@ -404,6 +423,16 @@ impl LegacyPlatform {
     /// hash differently.
     pub(crate) fn pic_imr(&self) -> [u8; 2] {
         [self.master_imr, self.slave_imr]
+    }
+
+    /// Overwrite the legacy-platform latches on snapshot restore: the PCI
+    /// CONFIG_ADDRESS register and both 8259 IMRs. Mirrors what
+    /// [`Self::config_address`]/[`Self::pic_imr`] read back, so a restored platform
+    /// is observationally identical (same PCI probing, same IRQ masking).
+    pub(crate) fn restore(&mut self, config_address: u32, master_imr: u8, slave_imr: u8) {
+        self.config_address = config_address;
+        self.master_imr = master_imr;
+        self.slave_imr = slave_imr;
     }
 }
 
