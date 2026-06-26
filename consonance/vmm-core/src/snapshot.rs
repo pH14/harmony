@@ -485,7 +485,14 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.sregs = to_vm_sregs(&s.sregs);
     out.xcrs = Xcrs { xcr0: s.xcr0 };
     out.debugregs = to_vm_debugregs(&s.debugregs);
-    out.events = to_vm_events(&s.events);
+    // Project the **canonical** events into the reduced typed record — mirroring the
+    // device blob (`DeviceState.events = canonical_events(...)`). A raw residual (a stale
+    // `exception.nr`/`error_code` with neither `injected` nor `pending`) must NOT survive
+    // here either: with `wire_snapshot_hashing()` ON, the typed record rides the `VMST`
+    // hash chunk, so a raw residual would make a save→restore→save round-trip's
+    // `state_hash` differ from the source (the restore re-establishes the *canonical*
+    // events). Canonicalizing both records keeps the full hash restore-transparent.
+    out.events = to_vm_events(&canonical_events(&s.events));
     out.mp_state = to_vm_mp_state(s.mp_state);
     out.msrs = MsrBlock(s.msrs.clone());
     out.xsave = XsaveImage(s.xsave.clone());
@@ -1197,6 +1204,39 @@ mod tests {
         assert_eq!(s.msrs.0.len(), 2, "both allow-stateful MSRs carried");
         assert_eq!(s.xcrs.xcr0, 0x7);
         assert_eq!(s.mp_state, MpState::Halted);
+    }
+
+    #[test]
+    fn fill_vcpu_state_canonicalizes_the_typed_events_record() {
+        // P2 (PR #12): the reduced typed `vm_state::VcpuEvents` must carry the CANONICAL
+        // events — an inert residual (a stale exception vector/error-code with neither
+        // `injected` nor `pending`) must collapse, mirroring the device blob. Otherwise,
+        // with `wire_snapshot_hashing()` ON, the raw residual rides the VMST hash chunk and
+        // a save→restore→save round-trip's `state_hash` diverges from the source.
+        let mut vcpu = sample_vcpu();
+        vcpu.events = vmm_backend::VcpuEvents {
+            exception_nr: 13, // residual: set, but...
+            exception_error_code: 0xABCD,
+            exception_has_error_code: 1,
+            interrupt_nr: 0x34,   // residual: last-delivered vector, not injected
+            flags: 0x0D,          // GET-only validity bits
+            ..Default::default()  // injected / pending all 0 ⇒ all inert
+        };
+        let mut s = VmState::default();
+        fill_vcpu_state(&mut s, &vcpu);
+        // The typed record == the projection of the CANONICAL events (which zero the
+        // inert residual), NOT the raw events.
+        assert_eq!(s.events, to_vm_events(&canonical_events(&vcpu.events)));
+        // Concretely: the residual exception vector / error-code collapsed.
+        assert_eq!(
+            s.events.exception_vector, 0,
+            "inert exception vector collapsed"
+        );
+        assert_eq!(
+            s.events.exception_error_code, 0,
+            "inert error code collapsed"
+        );
+        assert!(!s.events.exception_pending);
     }
 
     // --- device blob ---------------------------------------------------------

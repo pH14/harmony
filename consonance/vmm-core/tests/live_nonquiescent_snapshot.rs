@@ -186,17 +186,29 @@ fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
     )
 }
 
-/// What a bounded run observed. `final_row` / `guest_ready` are informative (whether the
-/// continuation reached the workload markers): a continuation from a mid-workload seal
-/// runs the remaining workload to `GUEST_READY` and the guest's clean power-off `Hlt`
+/// What a bounded run observed. A continuation from a mid-workload seal runs the remaining
+/// workload to its final row + `GUEST_READY` and the guest's clean power-off `Hlt`
 /// (box-confirmed). The gates assert restore *fidelity* (the resumed run is bit-identical
-/// to the un-snapshotted continuation), of which workload completion is a consequence.
+/// to the un-snapshotted continuation) **and** that each continuation is internally
+/// consistent — so the milestone cannot pass by comparing a shared *failed* prefix.
 struct RunOutcome {
     reason: Option<TerminalReason>,
     steps: u64,
     final_row: bool,
     guest_ready: bool,
     step_error: Option<String>,
+}
+
+impl RunOutcome {
+    /// A continuation **cleanly completed the workload**: no step error, it reached a real
+    /// terminal (`reason.is_some()` — `drive_to_terminal` leaves `reason == None` on a
+    /// step-error or wall-budget break, which `step_error`/this `is_some` reject), and the
+    /// guest emitted both the workload's **final row** and **`GUEST_READY`** (the
+    /// clean-shutdown marker). This is what makes the milestone a *proof* of a clean
+    /// continuation rather than a match over a shared failed prefix.
+    fn internally_consistent(&self) -> bool {
+        self.step_error.is_none() && self.reason.is_some() && self.final_row && self.guest_ready
+    }
 }
 
 /// Drive `vmm` to a terminal state (or the step / wall budget), streaming new serial
@@ -464,11 +476,14 @@ fn gate1_nonquiescent_point_is_snapshottable() {
         outcome.reason, outcome.steps, outcome.final_row, outcome.guest_ready, outcome.step_error
     );
     assert!(
-        outcome.step_error.is_none() && outcome.reason.is_some() && outcome.steps > 0,
-        "gate 1: the restored VM from a non-quiescent point must resume and run (no step error), \
-         reaching a terminal — terminal={:?} steps={} err={:?}",
+        outcome.internally_consistent() && outcome.steps > 0,
+        "gate 1: the restored VM from a non-quiescent point must resume and cleanly complete the \
+         workload — final_row + GUEST_READY, a real terminal, no step error — terminal={:?} \
+         steps={} final_row={} guest_ready={} err={:?}",
         outcome.reason,
         outcome.steps,
+        outcome.final_row,
+        outcome.guest_ready,
         outcome.step_error,
     );
     eprintln!(
@@ -509,11 +524,30 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
             "[nq] gate 2: sealed mid-workload S at step {}.",
             sealed.step
         );
-        // Step the un-snapshotted live continuation to its terminal.
+        // Step the un-snapshotted live continuation to its terminal. It MUST cleanly
+        // complete the workload (final row + GUEST_READY + a real terminal, no step error)
+        // — otherwise the milestone could "pass" by comparing a shared FAILED prefix of
+        // two runs that both broke the same way (a budget-expiry / step-error leaves
+        // `reason == None`).
         let outcome = drive_to_terminal(&mut live);
         eprintln!(
-            "[nq] gate 2: live (un-snapshotted) continuation: terminal={:?} steps={}",
-            outcome.reason, outcome.steps
+            "[nq] gate 2: live (un-snapshotted) continuation: terminal={:?} steps={} final_row={} \
+             GUEST_READY={} step_error={:?}",
+            outcome.reason,
+            outcome.steps,
+            outcome.final_row,
+            outcome.guest_ready,
+            outcome.step_error
+        );
+        assert!(
+            outcome.internally_consistent(),
+            "gate 2: the un-snapshotted (live) continuation must cleanly complete the workload \
+             (final_row + GUEST_READY, real terminal, no step error) — else the milestone proves \
+             nothing. terminal={:?} final_row={} guest_ready={} err={:?}",
+            outcome.reason,
+            outcome.final_row,
+            outcome.guest_ready,
+            outcome.step_error,
         );
         (
             snap,
@@ -535,8 +569,25 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
         .expect("restore the mid-workload snapshot");
         let outcome = drive_to_terminal(&mut b);
         eprintln!(
-            "[nq] gate 2: restored continuation ({label}): terminal={:?} steps={}",
-            outcome.reason, outcome.steps
+            "[nq] gate 2: restored continuation ({label}): terminal={:?} steps={} final_row={} \
+             GUEST_READY={} step_error={:?}",
+            outcome.reason,
+            outcome.steps,
+            outcome.final_row,
+            outcome.guest_ready,
+            outcome.step_error
+        );
+        // Each restored continuation must ALSO cleanly complete the workload — not just
+        // match the live one (which the full-hash + serial asserts below cover).
+        assert!(
+            outcome.internally_consistent(),
+            "gate 2: the restored continuation ({label}) must cleanly complete the workload \
+             (final_row + GUEST_READY, real terminal, no step error). terminal={:?} final_row={} \
+             guest_ready={} err={:?}",
+            outcome.reason,
+            outcome.final_row,
+            outcome.guest_ready,
+            outcome.step_error,
         );
         (
             b.state_hash(),
@@ -649,10 +700,13 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
     for r in 0..n {
         let fork = run_fork(&engine, snap, &kernel, &initramfs, None);
         assert!(
-            fork.outcome.step_error.is_none() && fork.outcome.reason.is_some(),
-            "base replay {r} must resume and reach a clean terminal (no step error): terminal={:?} \
-             err={:?}",
+            fork.outcome.internally_consistent(),
+            "base replay {r} (the verbatim continuation) must cleanly complete the workload \
+             (final_row + GUEST_READY, real terminal, no step error): terminal={:?} final_row={} \
+             guest_ready={} err={:?}",
             fork.outcome.reason,
+            fork.outcome.final_row,
+            fork.outcome.guest_ready,
             fork.outcome.step_error,
         );
         match base_digest {
@@ -684,11 +738,19 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
         let mut comps = None;
         for r in 0..n {
             let fork = run_fork(&engine, snap, &kernel, &initramfs, Some(seed));
+            // A branch must reach a **clean shutdown** (`GUEST_READY`, a real terminal, no
+            // step error) — proving it ran a clean continuation, not a shared failed prefix.
+            // We do NOT pin the workload's final row here: a seed fork is *allowed* to
+            // diverge into a different guest-observable future (the point of branching), so
+            // long as it cleanly shuts down.
             assert!(
-                fork.outcome.step_error.is_none() && fork.outcome.reason.is_some(),
-                "branch {b} replay {r} must resume and reach a clean terminal: terminal={:?} \
-                 err={:?}",
+                fork.outcome.step_error.is_none()
+                    && fork.outcome.reason.is_some()
+                    && fork.outcome.guest_ready,
+                "branch {b} replay {r} must reach a clean shutdown (GUEST_READY, real terminal, no \
+                 step error): terminal={:?} guest_ready={} err={:?}",
                 fork.outcome.reason,
+                fork.outcome.guest_ready,
                 fork.outcome.step_error,
             );
             match digest {

@@ -169,6 +169,65 @@ fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
 }
 
 #[test]
+fn snapshot_hashing_round_trips_at_a_residual_events_point() {
+    // P2 (PR #12): with `wire_snapshot_hashing()` ON, a snapshot taken where the live
+    // `kvm_vcpu_events` carries INERT modifier residuals (a stale exception vector /
+    // error-code / `interrupt.nr` with neither `injected` nor `pending`, plus the GET-only
+    // validity `flags`) must round-trip save→restore→`state_hash` **bit-identically**. The
+    // restore re-establishes the *canonical* events, so unless BOTH the device blob AND the
+    // typed `VmState.events` record (which rides the VMST hash chunk) are canonicalized, the
+    // restored `state_hash` would diverge from the source at a residual point — the
+    // "clean full-hash match" would hold only where a test misses residuals.
+    let residual = VcpuEvents {
+        exception_nr: 13,
+        exception_error_code: 0xABCD,
+        exception_has_error_code: 1,
+        interrupt_nr: 0x34,
+        flags: 0x0D,
+        ..Default::default() // injected / pending all 0 ⇒ inert
+    };
+    let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
+    m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+    m.set_msr_filter(&vmm_backend::MsrFilter::default())
+        .unwrap();
+    m.set_state(VcpuState {
+        events: residual,
+        ..Default::default()
+    });
+    let mut a = Vmm::new(m, GuestRam::new(RAM).unwrap());
+    a.wire_vtime(
+        VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
+    );
+    a.wire_snapshot_hashing();
+    a.restore_guest_memory(&booted_image()).unwrap();
+    assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized
+    let hash_a = a.state_hash();
+
+    let mut eng = SnapshotEngine::new(RAM);
+    let snap = eng
+        .snapshot_base(
+            a.guest_memory(),
+            &a.save_vm_state().unwrap().encode().unwrap(),
+        )
+        .unwrap();
+
+    let mut b = vmm(vec![], 9999, 0);
+    b.wire_snapshot_hashing();
+    b.restore_snapshot(
+        eng.materialize(snap).unwrap().as_slice(),
+        &eng.vm_state(snap).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        b.state_hash(),
+        hash_a,
+        "a restored VM hashes identically to a residual-events snapshot source — both the \
+         device blob AND the typed VmState.events record are canonicalized, so the VMST hash \
+         chunk carries no raw residual"
+    );
+}
+
+#[test]
 fn derive_captures_only_pages_dirtied_since_the_parent() {
     let mut a = vmm(vec![Exit::Rdtsc, Exit::Rdtsc], 100, 1);
     a.restore_guest_memory(&booted_image()).unwrap();
