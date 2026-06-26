@@ -219,3 +219,78 @@ Known leak vectors the contract must cover:
   V-time.
 - **CPUID stability**: one frozen, versioned CPUID model (a config artifact, hashed into
   the determinism gate) — never inherit the host's leaves.
+
+## 8. Telemetry tap (out-of-band observation)
+
+A **read-only host-side observation lane** (`consonance/telemetry`, task 29) for a human
+operator: it *watches* the exit stream `vmm-core` already services and copies it out, live or
+recorded. It is deliberately **not** a fourth guest→host data lane. The three existing lanes —
+the serial console (`Uart8250`, hashed into M2), the `Event` hypercall service (id 4), and the
+report channel (`0x0CA2` → `observable_digest`, §1.1) — are all **in-band and deterministic**;
+the telemetry tap adds none of them. It surfaces them for display and adds a host-side mirror of
+the exit stream on top.
+
+**Load-bearing invariants (pin these — the determinism gate depends on them):**
+
+- **Read-only.** The seam is one trait: `Observer::emit(&mut self, ev: &Event)`. It receives an
+  *already-built* `Event` by shared reference and returns `()`. An observer has **no `&mut`
+  access** to anything feeding `state_hash`/`observable_digest`; it cannot draw entropy, advance
+  `work`, inject, or mutate guest/VMM state. Determinism is therefore preserved **by
+  construction**, not by convention.
+- **Default-off.** `Vmm::step()` defaults to `telemetry::NullObserver` (a zero-sized no-op).
+  Unless an operator explicitly attaches a real sink, M1/M2/corpus/Linux goldens are
+  byte-identical to a build without the tap. Attaching the tap is opt-in.
+- **Never hashed.** No telemetry value is folded into `state_hash`, `observable_digest`, or
+  `contract_hash`. The tap carries **no per-host input** and adds **no contract rows** —
+  `contract_hash` is unchanged by it (like the §1/§1.1 transport constants). The hashes remain
+  the source of truth; telemetry is strictly for the operator.
+
+**The per-exit wiring is frontier (integrator-owned, like the §2 run-loop inversion). The task-29
+worker does not touch `vmm-core`.** `Vmm::step()` gains an `&mut dyn Observer` argument (default
+`NullObserver`). After each exit is **fully serviced**, at the existing quiescent point where
+`work` is already read for V-time, `vmm-core` builds the matching `telemetry::Event`
+(`seq += 1`; `work` = the retired-branch counter; `vns = vclock.vns(work)`) and calls
+`observer.emit(&ev)`. The `EventKind` mapping:
+
+| Source in `vmm-core` | `telemetry::EventKind` |
+|---|---|
+| `Uart8250` THR write (M2 capture) | `Console { text }` (UTF-8-lossy; **display only** — M2 owns the bytes) |
+| hypercall `Event` service (id 4) | `GuestEvent { id, data }` |
+| `Exit::Io` (incl. report port `0x0CA2`, doorbell `0x0CA1`) | `Io { port, size, value, write }` |
+| `Exit::Mmio` (e.g. the xAPIC page) | `Mmio { addr, size, value, write }` |
+| `Exit::Hypercall` (patched backend) | `Hypercall { service, opcode, status }` |
+| `Exit::Rdmsr` / `Exit::Wrmsr` | `Msr { index, value, write }` |
+| `Exit::Rdtsc` / `Exit::Rdtscp` (patched) | `Tsc { value }` |
+| `Exit::Rdrand` / `Exit::Rdseed` (patched) | `Rng { value }` |
+| `Exit::Cpuid` (patched) | `Cpuid { leaf, subleaf }` |
+| `InjectionPlanner` delivery | `Inject { vector }` |
+| periodic `state_hash()` checkpoint | `Checkpoint { state_hash: [u8; 32] }` |
+| periodic `ExitCounts` snapshot | `Counts(ExitCounts)` (telemetry's **local mirror** of vmm-backend's tally) |
+| run end | `Terminal { reason }` |
+
+The construction is **side-effect-free on the run**: it only *reads* `work`, the clock, and the
+device/exit state that already exist at the quiescent point. `ExitCounts` is mirrored as a local
+struct in `telemetry` (leaf crate, no sibling import per Convention rule 2); the seam maps
+vmm-backend's `ExitCounts` field-for-field into it.
+
+**Sinks the driver may attach** (all `impl Observer`): `NullObserver` (default, no-op);
+`NdjsonRecorder<W>` (lossless — one `serde_json` line per event; the persisted record and the
+replay source of truth); `LiveSink` (lossy, never blocks — bounded queue, drops + counts under
+load, surfacing the drop count as a synthetic event). Because V-time is work-based, even a
+blocking observer could not perturb the run; drop-don't-block exists so a *live UI* adds no
+wall-clock pause, while the recorder stays authoritative.
+
+**Record → replay (the operator use case).** Postgres/Docker workloads (tasks 37/38) are box-only
+(patched KVM). The path: on the **box**, the driver attaches an `NdjsonRecorder` (captured to a
+file) and/or a `LiveSink` (live view where the VMM runs); the captured NDJSON file is copied to a
+**Mac** and replayed with `console --source file:<path>`. The web console keys every render on
+`vns` — a pure function of the run — so live and replay use the **same renderer** and a recording
+re-renders identically. The console is std-only (no async, no framework, no npm, no build step)
+and fully Mac-local; no box is needed to build or run the viewer.
+
+**Box determinism check (for the integrator to add at bring-up; not built in task 29).** A
+payload's `state_hash` must be **byte-identical** under `NullObserver` vs `NdjsonRecorder`, and
+deterministic-twice (two recorded runs of the same seed produce equal `state_hash` sequences and
+equal recordings). This is the on-box proof of the by-construction read-only claim above. The
+task-29 crate proves the structural half (the `Observer` signature grants no mutable access and
+`emit` returns `()`); the box check closes the loop empirically.
