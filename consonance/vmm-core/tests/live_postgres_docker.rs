@@ -42,16 +42,33 @@
 //! determinism surface; this task adds only the *container* surface on top, so a
 //! future divergence localizes to a layer.
 //!
+//! **Workload v2 (task 42).** As in `live_postgres.rs`, each streamed row now
+//! carries a `gen_random_uuid()` id and a `clock_timestamp()` wall-clock column
+//! (`row|i|count|sum|uuid|t`). They *look* nondeterministic but must come out
+//! **bit-identical** across two same-seed runs — `gen_random_uuid()` rides
+//! `pg_strong_random` → the seeded CRNG, `clock_timestamp()` reads the V-time clock
+//! — now proven through the **full container surface**. The `count`/`sum` prefix is
+//! the deterministic anchor ([`FINAL_ROW_PREFIX`] = `row|20|20|210|`); the uuid + t
+//! are seed-derived (checked by shape, with seed-sensitivity proven at a different
+//! seed). A UUID/timestamp differing across same-seed runs would fail Gate 2 — a
+//! real determinization finding, reported, not papered over.
+//!
 //! **Gate 1 — Postgres-in-a-container runs + streams
 //! ([`p1_docker_postgres_runs_and_streams_patched`]).** One patched boot must
 //! bring the OCI-image container up, have postgres announce it is ready, run the
 //! workload (the streamed `row|…` lines + `database system is ready to accept
-//! connections` reach the serial), reach `GUEST_READY`, and power off cleanly.
+//! connections` reach the serial, each row bearing a **valid UUID + timestamp**, all
+//! 20 UUIDs distinct), reach `GUEST_READY`, and power off cleanly.
 //!
 //! **Gate 2 — deterministic twice (the milestone,
 //! [`p2_docker_postgres_deterministic_twice_patched`]).** Two same-seed patched
 //! boots through the **full container stack** must produce a **bit-identical**
-//! serial capture (including the query output) **and** `state_hash`.
+//! serial capture (including the UUIDs + timestamps) **and** `state_hash`.
+//!
+//! **Gate 3 — seed-sensitivity ([`p3_docker_postgres_seed_sensitivity_patched`]).**
+//! A run at a *different* seed produces *different* UUIDs (through the container),
+//! proving they are seed-driven (the seeded CRNG), not a frozen constant. Both
+//! seeds' sample UUIDs are quoted.
 //!
 //! **Why patched, not stock.** As for task 37: the workload needs the live
 //! periodic V-time tick (background workers, the Go runtimes' timers) and the
@@ -89,6 +106,10 @@ use vmm_core::vmm::{Step, TerminalReason, Vmm};
 const GUEST_RAM_LEN: usize = 8 << 30;
 /// The pinned determinism seed (same as the corpus / `live_postgres` seed).
 const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
+/// A *different* seed for the seed-sensitivity gate (Gate 3) — same value
+/// `live_postgres.rs` uses. A different seed must yield different `gen_random_uuid()`
+/// UUIDs (the seeded CRNG). Well-mixed away from [`SEED`] (XOR the golden ratio).
+const SEED_B: u64 = SEED ^ 0x9E37_79B9_7F4A_7C15;
 /// The determinism command line. Identical to `live_postgres.rs` (see that file
 /// for `tsc=reliable`/`no_timer_check`/`lpj=`/`nokaslr`/`nosmp`/`maxcpus=1`/
 /// `nox2apic`/`hpet=disable`, the dropped `random.trust_cpu=off`, and
@@ -116,12 +137,20 @@ const CONTAINER_UP: &[u8] = b"PGC38: starting postgres in container";
 const PG_READY: &[u8] = b"database system is ready to accept connections";
 /// The workload loop's end marker (printed by the in-container `pg-container-run.sh`).
 const WORKLOAD_END: &[u8] = b"PGC38: workload end";
-/// The final workload row: iteration 20, v = 20*20+7 = 407, count = 20, running
-/// sum = 3010 — the SAME pure-function-of-the-index row task 37 pins, proving the
-/// *query results* (not just "docker ran") reached the serial.
-const FINAL_ROW: &[u8] = b"row|20|407|20|3010";
+/// The deterministic prefix of the final workload row (iteration 20): the `row`
+/// marker, loop index 20, running `count(*)` = 20, running `sum(i)` = 1+…+20 = 210 —
+/// the SAME pure-function-of-the-index anchor `live_postgres.rs` pins. The `uuid|t`
+/// that FOLLOW it in the streamed line (`row|20|20|210|<uuid>|<t>`) are seed-derived
+/// (checked by shape, not value). Matching this proves the *query results* (not just
+/// "docker ran") reached the serial.
+const FINAL_ROW_PREFIX: &[u8] = b"row|20|20|210|";
 /// `docker-init.sh` prints this after a clean shutdown.
 const GUEST_READY: &[u8] = b"GUEST_READY";
+
+/// The fixed iteration count of the workload loop (`WORKLOAD_N` in
+/// `build-docker-image.sh`): every run streams exactly this many `row|…` lines, each
+/// with its own distinct `gen_random_uuid()`.
+const WORKLOAD_N: usize = 20;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -186,6 +215,83 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// `true` iff `s` is a textual UUID — 36 chars, `8-4-4-4-12` hex with hyphens at the
+/// canonical offsets. A lightweight shape check (no `uuid` crate): proves the streamed
+/// field is a real UUID, not a constant placeholder or an error string.
+fn is_uuid(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 36 {
+        return false;
+    }
+    b.iter().enumerate().all(|(i, &c)| match i {
+        8 | 13 | 18 | 23 => c == b'-',
+        _ => c.is_ascii_hexdigit(),
+    })
+}
+
+/// `true` iff `s` opens with an ISO `YYYY-MM-DD HH:MM:SS` timestamp (postgres
+/// `timestamptz` text form). A lightweight shape check that the streamed
+/// `clock_timestamp()` field is a real timestamp, not a constant or an error.
+fn is_timestamp(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() < 19 {
+        return false;
+    }
+    let d = |i: usize| b[i].is_ascii_digit();
+    d(0) && d(1)
+        && d(2)
+        && d(3)
+        && b[4] == b'-'
+        && d(5)
+        && d(6)
+        && b[7] == b'-'
+        && d(8)
+        && d(9)
+        && b[10] == b' '
+        && d(11)
+        && d(12)
+        && b[13] == b':'
+        && d(14)
+        && d(15)
+        && b[16] == b':'
+        && d(17)
+        && d(18)
+}
+
+/// The streamed line that begins with `prefix`, from the prefix to the next newline
+/// (trailing `\r` trimmed), as UTF-8. `None` if the prefix never appears.
+fn line_with_prefix<'a>(serial: &'a [u8], prefix: &[u8]) -> Option<&'a str> {
+    let start = serial.windows(prefix.len()).position(|w| w == prefix)?;
+    let rest = &serial[start..];
+    let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
+    std::str::from_utf8(&rest[..end])
+        .ok()
+        .map(|s| s.trim_end_matches('\r'))
+}
+
+/// Parse the final workload row (`row|20|20|210|<uuid>|<t>`): return its `(uuid, t)`
+/// fields as owned strings. `None` if the row is absent or malformed.
+fn final_row_uuid_ts(serial: &[u8]) -> Option<(String, String)> {
+    let line = line_with_prefix(serial, FINAL_ROW_PREFIX)?;
+    let fields: Vec<&str> = line.split('|').collect();
+    // row | i | count | sum | uuid | t
+    if fields.len() != 6 {
+        return None;
+    }
+    Some((fields[4].to_string(), fields[5].to_string()))
+}
+
+/// Every per-iteration row's UUID (field 5 of each `row|…` line that parses as a
+/// UUID). Used to prove the UUIDs are not a frozen constant *within* a run.
+fn all_row_uuids(serial: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(serial)
+        .lines()
+        .filter(|l| l.starts_with("row|"))
+        .filter_map(|l| l.split('|').nth(4).map(str::to_string))
+        .filter(|u| is_uuid(u))
+        .collect()
+}
+
 /// What a bounded run observed.
 struct BootOutcome {
     reason: Option<TerminalReason>,
@@ -193,7 +299,12 @@ struct BootOutcome {
     container_up: bool,
     pg_ready: bool,
     workload_done: bool,
+    /// The deterministic final-row prefix `row|20|20|210|` reached the serial.
     final_row: bool,
+    /// The final row's seed-derived `(uuid, t)` fields, if it was streamed + parsed.
+    sample_uuid_ts: Option<(String, String)>,
+    /// Every per-iteration UUID streamed (for the distinctness / not-a-constant check).
+    row_uuids: Vec<String>,
     guest_ready: bool,
     step_error: Option<String>,
 }
@@ -257,7 +368,9 @@ fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
         container_up: find(serial, CONTAINER_UP),
         pg_ready: find(serial, PG_READY),
         workload_done: find(serial, WORKLOAD_END),
-        final_row: find(serial, FINAL_ROW),
+        final_row: find(serial, FINAL_ROW_PREFIX),
+        sample_uuid_ts: final_row_uuid_ts(serial),
+        row_uuids: all_row_uuids(serial),
         guest_ready: find(serial, GUEST_READY),
         step_error,
     }
@@ -289,16 +402,56 @@ fn boot_docker(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
 fn report(tag: &str, out: &BootOutcome) {
     eprintln!(
         "\n[{tag}] steps={} terminal={:?} container_up={} pg_ready={} workload_done={} \
-         final_row={} GUEST_READY={} step_error={:?}",
+         final_row={} uuids={} GUEST_READY={} step_error={:?}",
         out.steps,
         out.reason,
         out.container_up,
         out.pg_ready,
         out.workload_done,
         out.final_row,
+        out.row_uuids.len(),
         out.guest_ready,
         out.step_error,
     );
+    if let Some((uuid, t)) = &out.sample_uuid_ts {
+        eprintln!("[{tag}] final-row sample: uuid={uuid} t={t}");
+    }
+}
+
+/// Assert the workload's UUID/time columns are *well-formed* in `out`: the final row
+/// carries a valid UUID + timestamp, all [`WORKLOAD_N`] per-iteration UUIDs reached
+/// the serial, and they are pairwise distinct (so the column is not a frozen constant
+/// *within* a run). Returns the final row's sample UUID for quoting + Gate 3's
+/// cross-seed comparison. Panics (loud failure) on any malformed/missing field.
+fn assert_uuid_time_shape(tag: &str, out: &BootOutcome) -> String {
+    let (uuid, t) = out.sample_uuid_ts.clone().unwrap_or_else(|| {
+        panic!("{tag}: the final workload row (row|20|20|210|<uuid>|<t>) must reach the serial")
+    });
+    assert!(
+        is_uuid(&uuid),
+        "{tag}: final-row id `{uuid}` is not a valid UUID (gen_random_uuid escaped or errored)"
+    );
+    assert!(
+        is_timestamp(&t),
+        "{tag}: final-row t `{t}` is not a valid timestamp (clock_timestamp escaped or errored)"
+    );
+    assert_eq!(
+        out.row_uuids.len(),
+        WORKLOAD_N,
+        "{tag}: expected {WORKLOAD_N} per-iteration UUIDs on the serial, saw {}",
+        out.row_uuids.len()
+    );
+    let mut distinct = out.row_uuids.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        WORKLOAD_N,
+        "{tag}: the {WORKLOAD_N} streamed UUIDs must be pairwise distinct (a frozen constant would \
+         collapse them) — only {} were distinct",
+        distinct.len()
+    );
+    uuid
 }
 
 // --- Gate 1: Dockerized Postgres runs + streams (patched) ------------------
@@ -337,12 +490,16 @@ fn p1_docker_postgres_runs_and_streams_patched() {
     );
     assert!(
         out.workload_done,
-        "Gate 1: the workload loop must run to completion (DK38: workload end)"
+        "Gate 1: the workload loop must run to completion (PGC38: workload end)"
     );
     assert!(
         out.final_row,
-        "Gate 1: the final workload row (row|20|407|20|3010) must reach the serial"
+        "Gate 1: the deterministic final workload row (row|20|20|210|…) must reach the serial"
     );
+    // Shape (task 42): the streamed rows carry a valid UUID + timestamp, not a
+    // constant/error, and the per-iteration UUIDs are all distinct.
+    let sample = assert_uuid_time_shape("Gate 1", &out);
+    eprintln!("[p1] sample UUID (seed {SEED:#018x}): {sample}");
     assert!(
         out.guest_ready,
         "Gate 1: the guest must announce GUEST_READY after a clean shutdown"
@@ -381,7 +538,9 @@ fn p2_docker_postgres_deterministic_twice_patched() {
     );
 
     // Both runs must actually have run the workload to GUEST_READY, so two
-    // identical-but-stranded boots cannot pass this gate vacuously.
+    // identical-but-stranded boots cannot pass this gate vacuously — and each must
+    // carry well-formed, distinct UUIDs + timestamps (so the bit-identity below is
+    // over *real* random/wall-clock columns, not a constant or an error string).
     for (tag, out) in [("A", &out_a), ("B", &out_b)] {
         assert!(
             out.step_error.is_none(),
@@ -390,16 +549,65 @@ fn p2_docker_postgres_deterministic_twice_patched() {
         );
         assert!(
             out.final_row,
-            "Gate 2 run {tag}: the workload's final row must reach the serial"
+            "Gate 2 run {tag}: the deterministic final workload row (row|20|20|210|…) must reach \
+             the serial"
         );
         assert!(out.guest_ready, "Gate 2 run {tag}: must reach GUEST_READY");
+        assert_uuid_time_shape(&format!("Gate 2 run {tag}"), out);
     }
     assert_eq!(
         serial_a, serial_b,
-        "Gate 2: two same-seed patched boots must produce a bit-identical serial capture"
+        "Gate 2: two same-seed patched boots must produce a bit-identical serial capture \
+         (this is what proves the UUIDs + timestamps are bit-identical across same-seed runs — \
+         through the full container surface; if a gen_random_uuid()/clock_timestamp() escaped, the \
+         serials would differ here: a real determinization finding, not a flake)"
     );
     assert_eq!(
         hash_a, hash_b,
         "Gate 2: two same-seed patched boots must produce an identical state_hash"
+    );
+
+    // The headline witness: the random-looking UUID + wall-clock timestamp came out
+    // bit-identical across the two same-seed runs, through the OCI container stack.
+    let (uuid, t) = out_a
+        .sample_uuid_ts
+        .clone()
+        .expect("final row parsed (asserted above)");
+    eprintln!(
+        "[dk] deterministic-twice witness (seed {SEED:#018x}): the random-looking UUID + \
+         wall-clock timestamp are bit-identical in run A and run B —\n  uuid = {uuid}\n  t    = {t}"
+    );
+}
+
+// --- Gate 3: seed-sensitivity ----------------------------------------------
+
+/// **Gate 3 — seed-sensitivity.** A run at [`SEED`] and a run at a *different* seed
+/// [`SEED_B`] must produce *different* UUIDs through the container — proving they are
+/// genuinely driven by the seeded CRNG (`gen_random_uuid()` → `pg_strong_random`),
+/// not a frozen constant that would sail through Gate 2 vacuously. Both sample UUIDs
+/// are quoted.
+#[test]
+#[ignore = "box-only seed-sensitivity gate (task 42): different seed ⇒ different UUIDs through the \
+            container; run on the box with the LOADED patched KVM and `-- --ignored --nocapture`"]
+fn p3_docker_postgres_seed_sensitivity_patched() {
+    require_kvm();
+    require_host_baseline();
+
+    // boot_docker drops each run's Vmm (and its PMU counter) before the next boots.
+    let (_serial_a, _hash_a, out_a) = boot_docker(SEED);
+    report("p3 seed A", &out_a);
+    let (_serial_b, _hash_b, out_b) = boot_docker(SEED_B);
+    report("p3 seed B", &out_b);
+
+    let uuid_a = assert_uuid_time_shape(&format!("Gate 3 seed A ({SEED:#018x})"), &out_a);
+    let uuid_b = assert_uuid_time_shape(&format!("Gate 3 seed B ({SEED_B:#018x})"), &out_b);
+    eprintln!(
+        "[dk] seed-sensitivity: sample UUID per seed —\n  seed {SEED:#018x} -> {uuid_a}\n  \
+         seed {SEED_B:#018x} -> {uuid_b}"
+    );
+    assert_ne!(
+        uuid_a, uuid_b,
+        "Gate 3: a different seed must produce a different UUID — gen_random_uuid() is supposed to \
+         draw from the seeded CRNG; identical UUIDs across seeds would mean it is a frozen constant"
     );
 }

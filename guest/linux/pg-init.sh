@@ -4,11 +4,15 @@
 # starts a real PostgreSQL server, drives a fixed insert/select workload loop, and
 # reaches a clean deterministic terminal. Every byte it prints to ttyS0 (postgres'
 # own stdout/stderr plus the per-iteration query results) is part of the
-# deterministic-twice golden, so the script does nothing wall-clock- or
-# environment-dependent: the workload data is a pure function of the loop index
-# (baked into /workload.sql) and locale/TZ are pinned. Determinism of the
-# *execution* (TSC, RNG, fork order) is enforced from below by the patched KVM
-# backend + V-time — see guest/linux/IMPLEMENTATION.md.
+# deterministic-twice golden. The workload (task 42) deliberately populates each row
+# with values that *look* nondeterministic — a gen_random_uuid() id and a
+# clock_timestamp() wall-clock column — to prove they come out bit-identical anyway:
+# gen_random_uuid() rides pg_strong_random -> the seeded CRNG, and the clock is
+# V-time-driven; the running count/sum stays a pure function of the loop index (the
+# gate's deterministic anchor) and locale/TZ are pinned so the uuid/timestamp text
+# renders stably. Determinism of the *execution* (TSC, RNG, fork order, the clock) is
+# enforced from below by the patched KVM backend + V-time — see
+# guest/linux/IMPLEMENTATION.md.
 #
 # Two consonance-VMM realities shape the control flow (see IMPLEMENTATION.md):
 #   * The VMM terminates the run on the first guest HLT and does not wake a

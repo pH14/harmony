@@ -190,18 +190,22 @@ done
 [ -x "$BUNDLE/rootfs/usr/lib/postgresql/$PG_MAJOR/bin/postgres" ] \
     || { echo "FAIL: postgres binary not in the extracted image rootfs" >&2; exit 1; }
 
-# The SAME fixed insert/select workload as task 37, baked INTO the container
-# rootfs so `runc exec ... psql -f /workload.sql` drives the live DB over its
-# local unix socket: CREATE then N autocommit INSERT+SELECT iterations, each
-# reporting the row plus a running count/sum. Values are a pure function of the
-# loop index (no wall-clock / random columns) → the golden is a deterministic
-# function of the seed (identical rows to task 37).
+# The SAME workload v2 as task 37 (task 42), baked INTO the container rootfs so the
+# in-container `psql -f /workload.sql` drives the live DB over its local unix socket:
+# each row carries a gen_random_uuid() id (column DEFAULT) + a clock_timestamp()
+# wall-clock column. They LOOK nondeterministic but come out BIT-IDENTICAL twice —
+# gen_random_uuid() rides pg_strong_random → the seeded CRNG, clock_timestamp() reads
+# the V-time clock — now proven through the FULL container surface. The SELECT streams
+# `row|i|count|sum|uuid|t`; the count/sum prefix is a pure function of the loop index
+# (the deterministic anchor, `row|20|20|210|…`), the uuid + t are seed-derived.
+# gen_random_uuid() is built into PostgreSQL core since v13 (the official postgres:17
+# image here), so no CREATE EXTENSION is needed.
 {
-    echo "CREATE TABLE ledger(i int primary key, v bigint);"
+    echo "CREATE TABLE ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), i int, t timestamptz);"
     i=1
     while [ "$i" -le "$WORKLOAD_N" ]; do
-        echo "INSERT INTO ledger(i,v) VALUES ($i, $i::bigint*$i + 7);"
-        echo "SELECT 'row', i, v, (SELECT count(*) FROM ledger), (SELECT sum(v) FROM ledger) FROM ledger WHERE i=$i;"
+        echo "INSERT INTO ledger(i,t) VALUES ($i, clock_timestamp());"
+        echo "SELECT 'row', i, (SELECT count(*) FROM ledger), (SELECT sum(i) FROM ledger), id, t FROM ledger WHERE i=$i;"
         i=$((i+1))
     done
 } >"$BUNDLE/rootfs/workload.sql"
