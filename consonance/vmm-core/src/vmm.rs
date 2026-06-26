@@ -2294,8 +2294,20 @@ fn encode_segment(v: &mut Vec<u8>, seg: &vmm_backend::Segment) {
     v.extend_from_slice(&seg.base.to_le_bytes());
     v.extend_from_slice(&seg.limit.to_le_bytes());
     v.extend_from_slice(&seg.selector.to_le_bytes());
+    // An **unusable** segment's `type` (and the rest of its access-rights byte) is
+    // architecturally **don't-care**: the CPU never consults the descriptor cache of a
+    // segment whose unusable bit is set (SDM Vol. 3 §24.4.1 — the VMX "unusable"
+    // attribute means the segment is treated as absent; the hidden type/attr bits are
+    // ignored on every use). KVM **normalizes** it (a `KVM_GET` of an unusable segment
+    // reports `type = 0`, but after `KVM_SET_SREGS` a `KVM_GET` reports `type = 1`), so
+    // a snapshot/restore round-trip otherwise perturbs this don't-care field and breaks
+    // restore-transparency on `state_hash`. Canonicalize it to `0` so the hash reflects
+    // only architecturally-meaningful state. Golden-safe: every live-`KVM_GET` value
+    // already reports `type = 0` for unusable segments, so no existing (relative) golden
+    // moves; the only effect is making a restored unusable segment hash like a live one.
+    let type_ = if seg.unusable != 0 { 0 } else { seg.type_ };
     v.extend_from_slice(&[
-        seg.type_,
+        type_,
         seg.present,
         seg.dpl,
         seg.db,
@@ -2307,7 +2319,21 @@ fn encode_segment(v: &mut Vec<u8>, seg: &vmm_backend::Segment) {
     ]);
 }
 
-fn encode_events(v: &mut Vec<u8>, e: &vmm_backend::VcpuEvents) {
+/// Encode the pending-event state into the `state_hash` in **canonical** form
+/// ([`snapshot::canonical_events`]): an inert `kvm_vcpu_events` modifier residual KVM
+/// leaves set when its active bit is clear (a stale `interrupt.nr`/`exception.nr`, the
+/// GET-only validity `flags` bits) has **no architectural effect** — the VM-entry
+/// interruption-information / exception fields are consumed only when their valid bit is
+/// set (SDM Vol. 3 §24.8.3, §26.5). Hashing the canonical form makes a restored VM
+/// (whose events were canonicalized at restore for soundness — see
+/// [`snapshot::canonical_events`]) hash **identically** to a never-restored VM at the
+/// same point, so restore-transparency holds on the full `state_hash`. Determinism is
+/// unaffected (canonical is a pure function; two same-seed runs share identical raw
+/// events ⇒ identical canonical), and it is golden-safe (the M1/M2/corpus paths carry
+/// all-zero events ⇒ canonical == raw; the Linux paths' goldens are relative
+/// deterministic-twice checks, so no pinned value moves).
+fn encode_events(v: &mut Vec<u8>, raw: &vmm_backend::VcpuEvents) {
+    let e = &snapshot::canonical_events(raw);
     v.extend_from_slice(&[
         e.exception_injected,
         e.exception_nr,
