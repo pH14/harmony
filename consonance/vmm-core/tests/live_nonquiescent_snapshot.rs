@@ -414,15 +414,19 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
          41 captures + restores a state task 39 could not represent (the 0→N flip task 40 documented \
          as missing)"
     );
-    // PR #12 round 4 — gate rigor. When this caller **scans the run** (gate 1, with
-    // `post_seal_scan > 0` the scan window runs to the workload's terminal), require that the
-    // live workload genuinely produced **≥ 1 in-flight EVENT** (a vector pending in the LAPIC
-    // IRR / a `kvm_vcpu_events` injection) — not merely inert residuals. Otherwise the gate
-    // could "pass" on residual canonicalization alone without the live workload ever reaching
-    // a real in-flight point. The Postgres workload is V-time **deterministic**, so this count
-    // is stable run-to-run (non-flaky). gates 2/3 seal-and-return at the first task-39-rejected
-    // point and do not scan, so they do not assert this; the genuine-injection *capture* proof
-    // is the constructed `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact`.
+    // PR #12 round 4/5 — gate rigor. Require that the live workload genuinely produced **≥ 1
+    // in-flight EVENT** (a vector pending in the LAPIC IRR / a `kvm_vcpu_events` injection) —
+    // not merely inert residuals — so a gate cannot "pass" on residual canonicalization alone
+    // without the live run ever reaching a real in-flight point. The V-time **deterministic**
+    // Postgres workload reaches the same genuine point(s) every run (non-flaky). When this
+    // caller **scans to the workload terminal** (gate 1, `post_seal_scan > 0` runs the scan
+    // window past the end), it asserts that here over its own scan. Gates 2/3 seal-and-return
+    // at the first task-39-rejected point (`post_seal_scan == 0`) so they cannot assert it
+    // here — they enforce the SAME `genuine_inflight >= 1` via the standalone
+    // [`assert_run_reaches_genuine_inflight`] full-run presence check (round 5: codex/GPT-5.5
+    // sharpened that gates 2/3, the headline gates, must also prove the run is not
+    // residual-only). The genuine-injection *capture* proof is the constructed
+    // `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact`.
     if post_seal_scan > 0 {
         assert!(
             genuine_inflight >= 1,
@@ -432,6 +436,58 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
         );
     }
     sealed
+}
+
+/// Boot a fresh live Postgres run and assert the workload reaches **≥ 1 genuine in-flight
+/// event at a snapshottable boundary** over its full span (`marker` → terminal): a vector
+/// pending in the LAPIC IRR ([`Vmm::has_pending_guest_interrupt`]) or a `kvm_vcpu_events`
+/// active injection ([`Vmm::has_active_event_injection`]) — **not** merely an inert residual.
+///
+/// The headline gates (2 and 3) **seal** the snapshot at the first task-39-rejected point
+/// (an inert residual for this workload — the genuine point does not reliably land at a
+/// synchronized *save* boundary, which is why the constructed
+/// `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact` test exists), so the
+/// seal alone proves only residual canonicalization. They additionally call this **full-run
+/// presence check** so the headline result also proves the live run is **not residual-only**
+/// — the same `genuine_inflight >= 1` property gate 1 asserts over its own scan, but over a
+/// fresh boot-to-terminal scan that does not perturb the gate's own seal/continuation. The
+/// seal POINT is unchanged. Cheap: the `save_vm_state` confirmation runs only at the rare
+/// steps where a genuine event is present (short-circuit), so the scan is ~a plain run to
+/// terminal. Non-flaky: the V-time-deterministic workload reaches the same point(s) every run.
+fn assert_run_reaches_genuine_inflight(kernel: &[u8], initramfs: &[u8], marker: &[u8]) {
+    let mut live = boot_pg(kernel, initramfs, BASE_SEED);
+    let mut armed = marker.is_empty();
+    let mut genuine = 0u64;
+    let mut steps = 0u64;
+    loop {
+        if !armed {
+            armed = find(live.serial(), marker);
+        }
+        // A genuine in-flight event AND snapshottable (save succeeds) — the same condition
+        // gate 1 tallies as `genuine_inflight`. `save_vm_state` is only reached when a genuine
+        // event is present (short-circuit), so the full scan stays cheap.
+        if armed
+            && (live.has_active_event_injection()
+                || live.has_pending_guest_interrupt().unwrap_or(false))
+            && live.save_vm_state().is_ok()
+        {
+            genuine += 1;
+        }
+        match live.step() {
+            Ok(Step::Continued) => steps += 1,
+            Ok(Step::Terminal(_)) => break,
+            Err(e) => panic!("step while checking genuine in-flight presence failed: {e}"),
+        }
+    }
+    assert!(
+        genuine >= 1,
+        "the live workload must reach ≥1 GENUINE in-flight point at a snapshottable boundary over the \
+         full run (genuine={genuine}, steps={steps}) — the headline gate is not residual-only"
+    );
+    eprintln!(
+        "[nq] genuine-presence check ✓ — the run reached {genuine} genuine in-flight point(s) over \
+         {steps} steps (gates 2/3 are not residual-only)"
+    );
 }
 
 /// One fork's terminal observation: the full-state digest, the per-component digest
@@ -566,6 +622,12 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
     let initramfs = require_artifact("initramfs-postgres.cpio.gz");
     let marker = workload_marker();
     eprintln!("[nq] gate 2 (milestone): cmdline: {}", cmdline());
+
+    // Gate rigor (PR #12 round 5): the seal below lands at the first task-39-rejected point
+    // (an inert residual for this workload), so prove SEPARATELY — over a fresh full
+    // boot-to-terminal scan — that the live run genuinely reaches ≥1 in-flight point, so this
+    // headline gate is not merely demonstrating residual canonicalization.
+    assert_run_reaches_genuine_inflight(&kernel, &initramfs, &marker);
 
     // --- Snapshot a RUNNING Postgres mid-workload at a non-quiescent point, AND keep
     //     stepping the LIVE (un-snapshotted) VM forward — that live continuation is the
@@ -739,6 +801,11 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
     eprintln!(
         "[nq] gate 3: re-run task 40's matrix sealed MID-POSTGRES. BRANCHES(K)={k} REPLAYS(N)={n}"
     );
+
+    // Gate rigor (PR #12 round 5): the seal below lands at the first task-39-rejected point
+    // (an inert residual for this workload), so prove SEPARATELY that the live run genuinely
+    // reaches ≥1 in-flight point — this headline (branching) gate is not residual-only.
+    assert_run_reaches_genuine_inflight(&kernel, &initramfs, &marker);
 
     // --- Seal S at a mid-Postgres non-quiescent point. ---
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);

@@ -2495,14 +2495,18 @@ to FAIL without the `pack_segment` mask*).
   restored continuation must be `internally_consistent`** (final row + `GUEST_READY` + real terminal +
   no step error) — so the milestone cannot "pass" by comparing a shared *failed* prefix of two runs that
   both broke the same way (a step-error / wall-budget break leaves `reason == None`; PR #12 review).
-  Restore is exact at a non-quiescent point — *same state ⇒ same future* (see §5 for exactly what this
-  proves, and what is a deferred follow-up).
+  **Also calls `assert_run_reaches_genuine_inflight`** (PR #12 round 5): the seal lands at an inert residual
+  for this workload, so a fresh full boot-to-terminal scan separately proves the live run reaches **≥1
+  genuine in-flight point** (`genuine_inflight >= 1`) — this headline gate is not residual-only. Restore is
+  exact at a non-quiescent point — *same state ⇒ same future* (see §5 for exactly what this proves, and what
+  is a deferred follow-up).
 - `gate3_branching_from_a_mid_postgres_snapshot` — re-runs task 40's matrix sealed at a **mid-Postgres**
   point: each seeded fork reproducible across N replays, ≥1 divergent (a reseeded entropy stream makes
   the terminal `state_hash` distinct), one shared read-only base. The base continuation must be
   `internally_consistent`; each branch must reach a **clean shutdown** (`GUEST_READY` + real terminal +
   no step error) *without* pinning the workload row — a branch is allowed to diverge into a different
-  guest-observable future.
+  guest-observable future. Also calls `assert_run_reaches_genuine_inflight` (PR #12 round 5 — the
+  branching headline gate is not residual-only either).
 
 `live_branching_demo.rs` (task 40) is left intact as the boot-entry baseline, with a doc note pointing
 to the task-41 gate for the mid-workload capability.
