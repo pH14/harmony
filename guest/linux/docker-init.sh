@@ -58,6 +58,13 @@ done
 
 # --- storage: vfs on a tmpfs /var/lib/docker (RAM-backed, no overlay/ext4) ----
 $BB mount -t tmpfs -o size=8g tmpfs /var/lib/docker
+# Belt-and-suspenders: private mount propagation (the container stack manages its
+# own mounts; nothing here needs shared propagation).
+$BB mount --make-rprivate / 2>/dev/null || true
+# NB the load-bearing fix for running containers from an initramfs is the runc
+# `--no-pivot` wrapper baked at /usr/local/bin/runc (see build-docker-image.sh):
+# the initramfs root mount has no parent, so runc's pivot_root EINVALs; --no-pivot
+# uses MS_MOVE+chroot, the ramdisk-safe path.
 
 # --- KEEPALIVE: keep the guest non-idle (the first HLT is the VMM terminal) ----
 # A lowest-priority busy loop. Its iteration count is a deterministic function of

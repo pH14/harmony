@@ -109,6 +109,36 @@ for b in dockerd docker containerd containerd-shim-runc-v2 runc ctr docker-proxy
     [ -f "$DK_STAGE/docker/$b" ] && cp "$DK_STAGE/docker/$b" "$DKROOT/usr/local/bin/$b"
 done
 
+# runc `--no-pivot` wrapper. The container rootfs lives in the initramfs
+# (a ramdisk whose root mount has no parent), so runc's default pivot_root
+# EINVALs ("pivot_root: invalid argument"); runc's `--no-pivot` switches to the
+# MS_MOVE+chroot path that is documented for exactly "rootfs on top of a
+# ramdisk". containerd's shim resolves `runc` by PATH, so we shim it: the real
+# binary becomes runc.real and `runc` is this wrapper, which injects --no-pivot
+# into the create/run subcommand (IFS=newline rebuild → spaces in args survive;
+# runc argv has no newlines). Determinism-neutral (a fixed arg).
+mv "$DKROOT/usr/local/bin/runc" "$DKROOT/usr/local/bin/runc.real"
+cat >"$DKROOT/usr/local/bin/runc" <<'WRAP'
+#!/bin/sh
+new_args() {
+    injected=0
+    for a in "$@"; do
+        printf '%s\n' "$a"
+        if [ "$injected" = 0 ] && { [ "$a" = create ] || [ "$a" = run ]; }; then
+            printf '%s\n' --no-pivot
+            injected=1
+        fi
+    done
+}
+OLDIFS=$IFS
+IFS='
+'
+set -- $(new_args "$@")
+IFS=$OLDIFS
+exec /usr/local/bin/runc.real "$@"
+WRAP
+chmod 0755 "$DKROOT/usr/local/bin/runc"
+
 # Minimal /etc. Static Go uses pure-Go nss (reads these files directly); root is
 # all the container stack needs (the postgres user lives inside the image).
 printf 'root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/:/bin/sh\n' >"$DKROOT/etc/passwd"
