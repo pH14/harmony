@@ -98,6 +98,49 @@ Naming them here so the dependency is explicit:
 5. Frontier work (vmm-core skeleton → backends → loaders → snapshot wiring) proceeds on the
    box, consuming 06–08's outputs.
 
+## Wave 3 — workloads + branching (current frontier)
+
+Deterministic real-Linux boot **landed** (task 34: two same-seed patched boots → bit-identical serial
+through `GUEST_READY` + identical `state_hash`). That closes PLAN.md Phases 0–3. Wave 3 is the
+reorientation after it, decided with the user: **running a sophisticated workload is the highest-leverage
+next step** ("right now we barely run anything"), and **branching is the dissonance half**. Two streams
+run **in parallel right now** — they share nothing and both execute on the box:
+
+| Stream | Tasks (start → end) | Startable now | Output |
+|---|---|---|---|
+| **consonance — workloads** | **36** kernel rebase → **37** bare Postgres → **38** Postgres-in-Docker | **36** | a real, stateful, containerized DB runs deterministically, streaming stdout/stderr |
+| **dissonance — branching** | **39** live snapshot/branch → **40** branching demo | **39** | snapshot a running guest, fork into reproducible seeded futures |
+
+The two are independent until they **join at 40** (branch a running Postgres, needs 39 + 37). Task **39**
+can start against the guest we *already* boot — it does not wait on Postgres. So the immediate parallel
+pair is **36 (consonance) ‖ 39 (dissonance)**.
+
+Decisions baked into the specs (from the design discussion):
+- **Workload = Postgres**, single-node throughout (bare first to isolate the DB determinism surface, then
+  Docker for the credibility shot). Container runs `--network none`.
+- **Guest kernel:** stop hand-growing `tinyconfig`; rebase onto a **Kata-class container-host config** +
+  the determinism overlay (`config-fragment`), built + pinned with our own pipeline. Determinism is
+  enforced from *below* (patched KVM + V-time + device models), so the config is capability/probe-surface
+  only, not load-bearing — see task 36.
+- **Storage = RAM-backed** (brd or loop-over-ext4-image): real ext4 + real `fsync`, contents in the
+  already-hashed/snapshotted guest RAM. **Tasks 22 (`BLOCK_WRITE` to real storage) and 23
+  (crash-consistency) are struck** as originally scoped.
+
+Deferred, captured so they aren't re-derived (none on the Wave-3 critical path):
+- **D1 — host-side, snapshot-store-backed RAM block device.** The reborn 22/23: a *modeled* disk outside
+  guest volatile RAM, so "power loss drops the cache, keeps the disk" is expressible and durability faults
+  (tear / reorder / drop un-synced writes per seed) inject at the host's block view. The only way to hunt
+  **durability/crash-consistency** bugs; until it exists, task 40 hunts the **concurrency/scheduling** bug
+  class only.
+- **D2 — distributed / multi-node + live `pv-net`** (the 3-node-Raft money-shot). **D3 — modeled
+  block-level faults** (rides D1). **D4 — boot/exec performance** (`run_until`-precise stepping; 14 s/boot
+  is bounded and fine until exploration scales).
+
+CPU characterization (an AMD-SVM and/or ARM branch-count **feasibility spike**, task-92 registry) is a
+"maybe" the user flagged — held off the critical path because it needs different silicon, not because it
+lacks value (AMD is the lower-risk portability win; ARM the higher-risk/higher-cool one). See the ARM
+section below.
+
 ## Cross-cutting: ARM/AArch64 port (post-v1)
 
 `docs/ARM-PORT.md` captures the feasibility analysis for an eventual AArch64 backend
@@ -121,11 +164,16 @@ sweep) are specced and delegable-now; 19 (fuzzer) and 20 (SQLite-with-disk) are 
 The device surface is deliberately minimal and thin today — the complete set of hypercall
 services is `Console` (out), `Entropy`, `Block` (read-only), `Event`; there is **no network
 service and no writable storage** yet (see the "Current device surface" table in
-DETERMINISM-CORPUS.md). The near-term gap for running a standard system is a **writable block
-device** (task 22: `BLOCK_WRITE` + snapshotted backing), which unblocks the SQLite determinism
-test (20). Network is *not* a host device in this model — intra-guest networking comes free with
-a Linux guest; the external-net escape, the fault-injecting bridge, and the storage fault model
-(crash-consistency, task 23) are deferred to **R3** (+ a guest OS), not a new device-model ruling.
+DETERMINISM-CORPUS.md). Wave 3 supplies writable storage **inside the guest** instead of via a
+host service: a RAM-backed ext4 (brd / loop), so the contents live in already-hashed guest RAM and
+need no new hypercall service — **tasks 22/23 (host `BLOCK_WRITE` to real storage + crash-consistency)
+are struck**, and the corpus's "real standard system" entry retargets from SQLite-with-disk to
+**Postgres-on-RAM** (tasks 36–38). The durability-fault surface — the one thing RAM-in-guest can't
+model, since an instant/no-op `fsync` has no durable-vs-volatile split — is **deferred to D1**, a
+host-side snapshot-store-backed RAM-disk model, not a real disk. Network is *not* a host device in
+this model — intra-guest networking comes free with a Linux guest; the external-net escape, the
+fault-injecting bridge, and the distributed fault model are deferred to **R3 / D2** (+ multi-node),
+not a new device-model ruling.
 
 ## Cross-cutting: code quality
 
