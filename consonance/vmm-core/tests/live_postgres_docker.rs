@@ -10,24 +10,32 @@
 //! `guest/build/initramfs-docker.cpio.gz`, built by
 //! `guest/linux/build-docker-image.sh`) via
 //! [`vmm_core::bringup::boot_linux_selected`]. The guest `/init`
-//! (`docker-init.sh`) brings up cgroup-v2, starts a real **dockerd** (static
-//! bundle: dockerd + containerd + containerd-shim-runc-v2 + runc), `docker
-//! load`s the **baked official postgres image** (no registry pull), runs it with
-//! `docker run --network none`, and drives the SAME fixed insert/select workload
-//! as task 37 against the containerized DB over its local unix socket. The
-//! container's + the loop's stdout/stderr stream to `ttyS0`.
+//! (`docker-init.sh`) brings up cgroup-v2 and runs the **official postgres
+//! image** as a real OCI container with **`runc`** (the low-level runtime
+//! dockerd/containerd invoke under the hood; the full Docker static stack is
+//! baked too), with a fresh empty network namespace (`--network none`), then
+//! drives the SAME fixed insert/select workload as task 37 against the
+//! containerized DB over its local unix socket (via `runc exec`). The container's
+//! + the loop's stdout/stderr stream to `ttyS0`.
 //!
-//! **Why the container stack is deterministic (the delta over task 37).**
-//! `dockerd`/`containerd`/`runc` are large Go programs that read kernel entropy
-//! (`AT_RANDOM`/`getrandom`) at startup to seed map-iteration + hash randomization;
-//! if that weren't bit-identical, every Go map order would diverge and nothing
-//! would reproduce. Under the patched backend RDRAND/RDSEED trap to the **seeded
-//! stream** and credit the kernel CRNG deterministically (the same root task 37's
-//! `pg_strong_random` rides), so `AT_RANDOM`/`getrandom` are on the seeded stream.
-//! cgroup-v2 setup + the vfs layer assembly are deterministic given V-time
-//! (deterministic timestamps) + seeded entropy. Gate 2 passing through the full
-//! stack is the empirical proof; `docker-init.sh` also prints the container id +
-//! `boot_id` (both CRNG-drawn) as an explicit identical-twice witness.
+//! **Why runc-direct, not dockerd (the load-bearing finding — see
+//! `guest/linux/IMPLEMENTATION.md`).** Under consonance's single-vCPU / V-time
+//! model, V-time advances only at VM-exits; the long-running **dockerd daemon
+//! busy-spins with no VM-exit** (its Go runtime spin-waits on containerd over
+//! gRPC), freezing V-time → the LAPIC tick never fires → deadlock. `runc` is not
+//! a daemon — it runs the identical official-image container to completion, so
+//! there is no idle daemon to spin.
+//!
+//! **Why the container is deterministic (the delta over task 37).** `runc` (Go)
+//! reads kernel entropy (`AT_RANDOM`/`getrandom`) at startup to seed map-iteration
+//! randomization; if that weren't bit-identical, Go map order would diverge.
+//! Under the patched backend RDRAND/RDSEED trap to the **seeded stream** and
+//! credit the kernel CRNG deterministically (the same root task 37's
+//! `pg_strong_random` and initdb ride), so `AT_RANDOM`/`getrandom` are on the
+//! seeded stream. cgroup-v2 setup + the rootfs assembly are deterministic given
+//! V-time + seeded entropy. Gate 2 passing through the full container stack is
+//! the empirical proof; `docker-init.sh` also prints `boot_id` (the CRNG's UUID)
+//! as an explicit identical-twice witness.
 //!
 //! **Blame boundary.** Task 37 (bare Postgres) isolates the *database*
 //! determinism surface; this task adds only the *container-stack* surface on top,
@@ -35,8 +43,8 @@
 //!
 //! **Gate 1 — Dockerized Postgres runs + streams
 //! ([`p1_docker_postgres_runs_and_streams_patched`]).** One patched boot must
-//! bring dockerd up, run the container, have postgres announce it is ready, run
-//! the workload (the streamed `row|…` lines + `database system is ready to accept
+//! bring the OCI container up, have postgres announce it is ready, run the
+//! workload (the streamed `row|…` lines + `database system is ready to accept
 //! connections` reach the serial), reach `GUEST_READY`, and power off cleanly.
 //!
 //! **Gate 2 — deterministic twice (the milestone,
@@ -73,10 +81,10 @@ use std::time::{Duration, Instant};
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
-/// 8 GiB of guest RAM: the static docker stack + the baked postgres image tar
-/// (~160 MiB) live in the initramfs tmpfs, and `vfs` copies the unpacked image
-/// (~0.5 GiB) into `/var/lib/docker` (also tmpfs) per `docker load` + per
-/// container — far more than task 37's bare Postgres needs.
+/// 8 GiB of guest RAM: the static docker stack (~120 MiB) + the official
+/// postgres image's extracted OCI rootfs (~0.5 GiB) live in the initramfs tmpfs,
+/// and the container writes its cluster (PGDATA, RAM-backed) into that rootfs —
+/// generous headroom over task 37's bare Postgres.
 const GUEST_RAM_LEN: usize = 8 << 30;
 /// The pinned determinism seed (same as the corpus / `live_postgres` seed).
 const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
@@ -100,8 +108,9 @@ const MAX_STEPS: u64 = 200_000_000_000;
 /// `timeout`.
 const WALL_BUDGET: Duration = Duration::from_secs(2700);
 
-/// dockerd announces this once its API socket is serving (from `docker-init.sh`).
-const DOCKERD_UP: &[u8] = b"DK38: dockerd is up";
+/// `docker-init.sh` prints this once the containerized postgres is accepting
+/// connections (the OCI container came up under runc).
+const CONTAINER_UP: &[u8] = b"DK38: postgres ready in container";
 /// postgres (inside the container) announces this once accepting connections.
 const PG_READY: &[u8] = b"database system is ready to accept connections";
 /// The workload loop's end marker (printed by `docker-init.sh`).
@@ -180,7 +189,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
 struct BootOutcome {
     reason: Option<TerminalReason>,
     steps: u64,
-    dockerd_up: bool,
+    container_up: bool,
     pg_ready: bool,
     workload_done: bool,
     final_row: bool,
@@ -244,7 +253,7 @@ fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
     BootOutcome {
         reason,
         steps,
-        dockerd_up: find(serial, DOCKERD_UP),
+        container_up: find(serial, CONTAINER_UP),
         pg_ready: find(serial, PG_READY),
         workload_done: find(serial, WORKLOAD_END),
         final_row: find(serial, FINAL_ROW),
@@ -278,11 +287,11 @@ fn boot_docker(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
 
 fn report(tag: &str, out: &BootOutcome) {
     eprintln!(
-        "\n[{tag}] steps={} terminal={:?} dockerd_up={} pg_ready={} workload_done={} \
+        "\n[{tag}] steps={} terminal={:?} container_up={} pg_ready={} workload_done={} \
          final_row={} GUEST_READY={} step_error={:?}",
         out.steps,
         out.reason,
-        out.dockerd_up,
+        out.container_up,
         out.pg_ready,
         out.workload_done,
         out.final_row,
@@ -317,7 +326,10 @@ fn p1_docker_postgres_runs_and_streams_patched() {
         "Gate 1: must reach a terminal, not hang ({} steps)",
         out.steps
     );
-    assert!(out.dockerd_up, "Gate 1: dockerd must come up");
+    assert!(
+        out.container_up,
+        "Gate 1: the OCI container (runc) must come up and report postgres ready"
+    );
     assert!(
         out.pg_ready,
         "Gate 1: the containerized postgres must announce it is ready to accept connections"

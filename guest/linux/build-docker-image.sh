@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the **Postgres-in-Docker workload initramfs** (task 38, consonance
-# workload stream step 3 of 3 — the credibility money-shot: an off-the-shelf
-# `docker run --network none postgres` runs deterministically in the guest).
+# workload stream step 3 of 3 — the credibility money-shot: the off-the-shelf
+# **official `postgres` image** runs deterministically in the guest as a real
+# OCI container).
 #
-# The rootfs is a static busybox + Docker's **static** binary bundle (dockerd +
-# containerd + containerd-shim-runc-v2 + runc + the docker CLI + ctr — all
-# statically linked, so unlike task 37 there is NO glibc/postgres closure to
-# copy: the container ships its own userland inside the baked image) + the
-# **official `postgres` image** baked in as a `docker load`-able tar (no runtime
-# registry pull) + the `docker-init.sh` /init. The companion kernel is the
-# *unchanged* task-36 container-class bzImage (the §capability audit in
-# guest/linux/IMPLEMENTATION.md confirmed cgroup-v2, OVERLAY_FS, the namespace
-# set, EXT4/LOOP, TMPFS, EPOLL/FUTEX/… are all built in — no kernel change).
+# **Why runc-direct, not dockerd (the load-bearing finding — see IMPLEMENTATION.md).**
+# We bake the FULL Docker static stack (dockerd + containerd + containerd-shim +
+# runc) into the rootfs, but the deterministic run drives the container with
+# **`runc` directly** — the same low-level OCI runtime dockerd/containerd invoke
+# under the hood. The reason: under consonance's single-vCPU / V-time model
+# (V-time advances only at VM-exits), the long-running **dockerd daemon
+# busy-spins with no VM-exit** (its Go runtime spin-waits on its containerd over
+# gRPC), which freezes V-time → the LAPIC tick never fires → nothing is ever
+# scheduled → deadlock. runc avoids this entirely: it is NOT a long-running
+# daemon — it sets up the container (namespaces, cgroups, rootfs) and runs to
+# completion, so there is no idle daemon to spin. The container it runs is the
+# identical official-image container docker would run (`docker run` is just
+# dockerd → containerd → runc + image management; we keep the image + runc).
 #
-# **Storage driver: `vfs` on a tmpfs `/var/lib/docker`** — the spec's simplest
-# RAM-backed option (just copies layers; space-hungry but we don't care about
-# speed, and the box has 100+ GiB). vfs needs no overlay mounts and no ext4
-# backing, which is the fewest moving parts for the deterministic bring-up.
-# overlay2-on-a-loop-ext4 is the documented alternative (see IMPLEMENTATION.md);
-# flip $STORAGE_DRIVER + the daemon flags in docker-init.sh to switch.
+# The rootfs is a static busybox + the static Docker bundle + an **OCI bundle**
+# (the official postgres image's rootfs, extracted from the registry export, +
+# a generated `config.json`). The companion kernel is the *unchanged* task-36
+# container-class bzImage (the §capability audit in guest/linux/IMPLEMENTATION.md
+# confirmed cgroup-v2, the namespace set, TMPFS, EPOLL/FUTEX/… are all built in —
+# no kernel change). The container rootfs lives in the initramfs tmpfs (RAM), so
+# PGDATA is RAM-backed (fsync is a noop — no durability-fault surface, deferred
+# to D1, as in task 37).
 #
 # Linux + root only (mounts, cgroup, the static-bin layout assume a Linux build
 # host; the box is the pinned build environment). On macOS run it in a
@@ -32,7 +39,8 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_amd64
-require_tools cc make gzip bzip2 cpio gunzip
+require_tools cc make gzip bzip2 cpio gunzip jq tar
+# `runc` (for `runc spec`) is taken from the docker bundle we extract below.
 
 if [ "$(id -u)" != "0" ]; then
     echo "FAIL: build-docker-image.sh must run as root (the cpio is packed owner 0:0" >&2
@@ -147,15 +155,42 @@ printf 'passwd: files\ngroup: files\nhosts: files\n' >"$DKROOT/etc/nsswitch.conf
 printf '127.0.0.1 localhost\n::1 localhost\n' >"$DKROOT/etc/hosts"
 : >"$DKROOT/etc/resolv.conf"                   # empty — `--network none`, no DNS
 
-# --- 4. bake the official postgres image + the workload ----------------------
-echo "== docker image: baking the official postgres image ($(du -h "$PG_IMAGE_TAR" | cut -f1))"
-cp "$PG_IMAGE_TAR" "$DKROOT/postgres-image.tar"
+# --- 4. build the OCI bundle from the official postgres image -----------------
+# Extract the image's merged rootfs (apply its layers in order, with best-effort
+# whiteout handling) and generate an OCI runtime `config.json` from the image's
+# own runtime config (entrypoint/cmd/env/cwd) — the bundle `runc run` consumes.
+echo "== docker image: extracting the official postgres image rootfs"
+IMG=$BUILD_ROOT/dk-img
+rm -rf "$IMG"; mkdir -p "$IMG"
+tar -xf "$PG_IMAGE_TAR" -C "$IMG"
+MANI=$IMG/manifest.json
+[ -f "$MANI" ] || { echo "FAIL: no manifest.json in the image export" >&2; exit 1; }
+CFG=$IMG/$(jq -r '.[0].Config' "$MANI")
+[ -f "$CFG" ] || { echo "FAIL: image config blob $CFG missing" >&2; exit 1; }
 
-# The SAME fixed insert/select workload as task 37: CREATE then N autocommit
-# INSERT+SELECT iterations, each reporting the row plus a running count/sum. The
-# values are a pure function of the loop index (no wall-clock / random columns),
-# so the golden is a deterministic function of the seed. Driven inside the
-# container over its local unix socket via `docker exec` (see docker-init.sh).
+BUNDLE=$DKROOT/oci
+mkdir -p "$BUNDLE/rootfs"
+# Apply each layer in order. Whiteouts (.wh.<f> = delete, .wh..wh..opq = opaque
+# dir) are applied right after the layer that introduces them, approximating
+# overlayfs semantics. Stale-but-undeleted files would only bloat the rootfs;
+# they do not affect postgres — so this is robust for this image.
+for layer in $(jq -r '.[0].Layers[]' "$MANI"); do
+    tar -xf "$IMG/$layer" -C "$BUNDLE/rootfs"
+    find "$BUNDLE/rootfs" -name '.wh..wh..opq' -delete 2>/dev/null || true
+    find "$BUNDLE/rootfs" -name '.wh.*' 2>/dev/null | while read -r wh; do
+        target="$(dirname "$wh")/$(basename "$wh" | sed 's/^\.wh\.//')"
+        rm -rf "${target:?}" "$wh"      # :? guards against an empty expansion
+    done
+done
+[ -x "$BUNDLE/rootfs/usr/local/bin/docker-entrypoint.sh" ] \
+    || { echo "FAIL: docker-entrypoint.sh not in the extracted rootfs" >&2; exit 1; }
+
+# The SAME fixed insert/select workload as task 37, baked INTO the container
+# rootfs so `runc exec ... psql -f /workload.sql` drives the live DB over its
+# local unix socket: CREATE then N autocommit INSERT+SELECT iterations, each
+# reporting the row plus a running count/sum. Values are a pure function of the
+# loop index (no wall-clock / random columns) → the golden is a deterministic
+# function of the seed (identical rows to task 37).
 {
     echo "CREATE TABLE ledger(i int primary key, v bigint);"
     i=1
@@ -164,7 +199,53 @@ cp "$PG_IMAGE_TAR" "$DKROOT/postgres-image.tar"
         echo "SELECT 'row', i, v, (SELECT count(*) FROM ledger), (SELECT sum(v) FROM ledger) FROM ledger WHERE i=$i;"
         i=$((i+1))
     done
-} >"$DKROOT/workload.sql"
+} >"$BUNDLE/rootfs/workload.sql"
+
+echo "== docker image: generating the OCI config.json"
+RUNC=$DK_STAGE/docker/runc                      # the real runc (not the wrapper)
+"$RUNC" spec --bundle "$BUNDLE"                 # default template -> $BUNDLE/config.json
+IMG_ENV=$(jq -c '.config.Env // []' "$CFG")
+IMG_ARGS=$(jq -cn \
+    --argjson e "$(jq -c '.config.Entrypoint // []' "$CFG")" \
+    --argjson c "$(jq -c '.config.Cmd // []' "$CFG")" '$e + $c')
+IMG_CWD=$(jq -r '.config.WorkingDir // "/"' "$CFG")
+# Docker's default capability set. The bare `runc spec` template grants only 3
+# caps (AUDIT_WRITE/KILL/NET_BIND_SERVICE) — too few for the postgres entrypoint,
+# which chowns PGDATA and `gosu`/`setpriv`s to the postgres user (needs CHOWN,
+# DAC_OVERRIDE, FOWNER, SETUID, SETGID, …). Grant the same set docker would, so
+# the off-the-shelf image's entrypoint runs unchanged.
+CAPS='["CAP_CHOWN","CAP_DAC_OVERRIDE","CAP_FSETID","CAP_FOWNER","CAP_MKNOD",
+       "CAP_NET_RAW","CAP_SETGID","CAP_SETUID","CAP_SETFCAP","CAP_SETPCAP",
+       "CAP_NET_BIND_SERVICE","CAP_SYS_CHROOT","CAP_KILL","CAP_AUDIT_WRITE"]'
+# Patch the template with the image's runtime config. terminal=false so the
+# container's stdout/stderr are inherited from `runc run` (= ttyS0). The default
+# template's namespaces include a fresh NETWORK namespace with no veth — i.e.
+# `--network none` (loopback only); the workload reaches postgres over the local
+# unix socket. POSTGRES_HOST_AUTH_METHOD=trust runs the off-the-shelf image
+# without a password.
+# Allow all devices (the bare `runc spec` template's default-deny device cgroup —
+# `[{allow:false}]` with no allow rules — kills the container's PID 1 on the
+# guest kernel: cgroup-v2 device control is an eBPF filter, and with everything
+# denied the init dies at exec). This is a trusted single-purpose determinism
+# gate (not a hostile multi-tenant host), so allow-all is appropriate.
+# noNewPrivileges=false matches docker's default (the entrypoint `gosu`s).
+jq --argjson env "$IMG_ENV" --argjson args "$IMG_ARGS" --arg cwd "$IMG_CWD" \
+   --argjson caps "$CAPS" '
+    .process.terminal = false
+  | .process.args = $args
+  | .process.cwd = (if $cwd == "" then "/" else $cwd end)
+  | .process.env = ($env + ["POSTGRES_HOST_AUTH_METHOD=trust", "TERM=xterm"])
+  | .process.capabilities.bounding = $caps
+  | .process.capabilities.effective = $caps
+  | .process.capabilities.permitted = $caps
+  | .process.noNewPrivileges = false
+  | .root.path = "rootfs"
+  | .root.readonly = false
+  | .linux.cgroupsPath = "pg-container"
+  | .linux.resources.devices = [{"allow": true, "access": "rwm"}]
+' "$BUNDLE/config.json" >"$BUNDLE/config.json.new"
+mv "$BUNDLE/config.json.new" "$BUNDLE/config.json"
+echo "   args=$IMG_ARGS cwd=${IMG_CWD:-/}  rootfs=$(du -sh "$BUNDLE/rootfs" | cut -f1)"
 
 install -m 0755 "$LINUX_DIR/docker-init.sh" "$DKROOT/init"
 
