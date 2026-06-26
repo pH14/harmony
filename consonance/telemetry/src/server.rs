@@ -21,7 +21,7 @@
 //! drawn browser-side), so it trips none of the determinism lints.
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +47,14 @@ const POLL: Duration = Duration::from_millis(5);
 /// Idle SSE writer iterations between `: keepalive` comments (≈ every 3 s at the
 /// [`POLL`] cadence) — keeps proxies open and surfaces a dead client promptly.
 const KEEPALIVE_EVERY: u32 = 600;
+
+/// Upper bound on the bytes [`parse_request`] reads for the request line plus
+/// headers. A client that never sends the blank-line terminator (or streams
+/// endless headers / one giant unterminated line) is rejected after this many
+/// bytes rather than driving an unbounded read — a real robustness bound, and
+/// the reason the header drain can never loop forever. (Plain literal, not
+/// `64 * 1024`, so no arithmetic operator can be mutated to an equivalent bound.)
+const MAX_REQUEST_BYTES: u64 = 65_536;
 
 /// Which source the page should render: a live stream or a recorded file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,9 +278,18 @@ fn read_request(stream: &TcpStream) -> io::Result<Request> {
 /// (if any) unconsumed. Split out from [`read_request`] over a generic
 /// [`BufRead`] so the exact stop point — drain through the blank line, no
 /// further — is unit-testable against a `Cursor` with no socket.
+///
+/// The reader is wrapped in [`Read::take`] at [`MAX_REQUEST_BYTES`], so the total
+/// request line + header bytes are bounded: a client that never sends the
+/// blank-line terminator hits the bound (the inner `read_line` returns `0`) and
+/// is rejected, never read unboundedly. EOF or the bound *before* the blank line
+/// is a malformed/oversized request and fails closed — which also means the
+/// drain loop can never spin on a terminator condition that is never satisfied.
 fn parse_request<R: BufRead>(reader: &mut R) -> io::Result<Request> {
+    let mut limited = reader.take(MAX_REQUEST_BYTES);
+
     let mut line = String::new();
-    if reader.read_line(&mut line)? == 0 {
+    if limited.read_line(&mut line)? == 0 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "empty request",
@@ -290,8 +307,16 @@ fn parse_request<R: BufRead>(reader: &mut R) -> io::Result<Request> {
     let mut header = String::new();
     loop {
         header.clear();
-        let n = reader.read_line(&mut header)?;
-        if n == 0 || header == "\r\n" || header == "\n" {
+        let n = limited.read_line(&mut header)?;
+        if n == 0 {
+            // EOF or the byte bound reached before the blank line: the request is
+            // unterminated or oversized. Fail closed instead of looping.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request headers unterminated or exceed the size bound",
+            ));
+        }
+        if header == "\r\n" || header == "\n" {
             break;
         }
     }
@@ -460,7 +485,6 @@ mod tests {
     use super::*;
     use crate::event::EventKind;
     use crate::observer::Observer;
-    use std::io::Read;
     use std::net::TcpStream;
 
     fn loopback() -> SocketAddr {
@@ -507,9 +531,12 @@ mod tests {
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/foo", "query string is stripped from the path");
 
-        // The drain loop must stop on the blank line — not the first header (that
-        // is the `n == 0 || == "\r\n" || == "\n"` boundary). If any `==` flips to
-        // `!=`, the loop breaks one line early and leaves the headers in the body.
+        // The drain loop must stop exactly on the blank line. If the EOF check
+        // `n == 0` flips to `!=`, or either `header == "…"` flips to `!=`, the
+        // loop breaks one line early and leaves the headers in the body. If the
+        // terminator `||` flips to `&&` (the CI timeout mutant), the loop never
+        // accepts the blank line, runs to the EOF guard, and returns `Err` — so
+        // `.expect("parse")` panics here. Every one of those is caught fast.
         let mut rest = Vec::new();
         cur.read_to_end(&mut rest).expect("read remainder");
         assert_eq!(
@@ -523,6 +550,22 @@ mod tests {
         // No request line at all → the `read_line == 0` guard must fail closed.
         let mut cur = std::io::Cursor::new(&b""[..]);
         assert!(parse_request(&mut cur).is_err());
+    }
+
+    #[test]
+    fn parse_request_rejects_unterminated_oversized_headers() {
+        // A request whose headers never end with a blank line must be rejected
+        // after the size bound — never read unboundedly, and never looped on. The
+        // `take(MAX_REQUEST_BYTES)` bound turns this into a fast `Err`.
+        let mut raw = b"GET / HTTP/1.1\r\n".to_vec();
+        while (raw.len() as u64) <= MAX_REQUEST_BYTES {
+            raw.extend_from_slice(b"X-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n");
+        }
+        let mut cur = std::io::Cursor::new(raw);
+        assert!(
+            parse_request(&mut cur).is_err(),
+            "unterminated headers past the bound are rejected, not read forever"
+        );
     }
 
     #[test]
