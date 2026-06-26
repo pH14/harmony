@@ -26,6 +26,9 @@ The integrator was away; per the stated default I applied my **best-guess resolu
 
 ## What to revisit
 
+- **Update (`docs/DISSONANCE.md` ruling):** the single `Moment` axis (retired-instruction count) now
+  carries *both* host- and guest-plane overrides, so `compose`'s re-keying is one-axis arithmetic on
+  `Moment` rather than a cross-plane merge — factor this in to the questions below.
 - Is `EnvCodec::compose` actually pulling its weight once task 12 is implemented, or does
   genesis-only branching (drop `compose`) give a simpler engine with acceptable performance?
 - Does `compose`'s decision-ID re-indexing have a clean, well-defined semantics in practice, or
