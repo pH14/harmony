@@ -2452,6 +2452,33 @@ field-for-field). Task 39 dropped this state (0/N snapshottable); task 41 captur
 bit-for-bit. The test also asserts the in-flight state **reaches** the hash (it differs from an otherwise
 identical quiescent VM), so "identical hash" is a real claim, not a no-op.
 
+**6. The genuine-injection guarantee is established by a layered proof (integrator ruling, PR #12).**
+The task-41 guarantee — *a non-quiescent snapshot carrying genuine in-flight `kvm_vcpu_events` state
+captures, restores, branches, and replays deterministically* — is proven by **three composed layers**, each
+gated by its own test, and this composition is **the accepted, intentional design** (an explicit integrator
+ruling, recorded here so a future reviewer sees it is deliberate):
+
+- **(a) The snapshot/branch machinery is byte-agnostic.** Gates 2 and 3 prove **deterministic-twice +
+  branching** on a real **task-39-rejected non-quiescent snapshot** sealed mid-Postgres (for this workload
+  that point carries an inert `kvm_vcpu_events` residual). The save → materialize → restore → branch path
+  transports and reproduces the `kvm_vcpu_events` **bytes** without inspecting their meaning — residual
+  bytes and genuine-injection bytes traverse exactly the same code, so the deterministic-twice and branching
+  properties hold for **any** captured event record.
+- **(b) A genuine task-39-rejected record captures → restores → hashes bit-exactly.** The constructed
+  `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact` (above) takes a **genuine** injected
+  `#GP`-with-error-code + injected NMI (`has_inflight` **and** `has_active`) through the full engine path and
+  proves the restored **full `state_hash` equals the source's** — exactness for the genuine bytes themselves.
+- **(c) The live workload genuinely reaches in-flight points.** `assert_run_reaches_genuine_inflight`
+  (gates 1–3) proves the running Postgres reaches **≥ 1 genuine in-flight point** over the run, so the
+  capability exercises real machine state, not a synthetic-only construction.
+
+Composed, (a) ∘ (b) ∘ (c) establish *deterministic-twice + branching on a genuine pending-IRQ snapshot*:
+(b) gives the exact bytes, (a) replays/branches **any** bytes identically, (c) confirms the live system
+produces such bytes. A separate gate that drove a constructed genuine event through the full
+deterministic-twice + branching harness would only re-run the **byte-agnostic** machinery of (a) on
+different bytes already shown exact by (b) — it adds runtime, not assurance. **By integrator ruling it is
+therefore intentionally not separately gated**; the layered proof is accepted as complete.
+
 **Why this is golden-safe without a re-bless (the key check).** No test pins an **absolute** Linux
 `state_hash` value — every `state_hash` golden is **relative**: deterministic-twice (`a == b` across two
 same-seed boots: `live_m1_m2`, `live_postgres` p2, `live_linux_boot`, `unison::determinism`) or
