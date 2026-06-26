@@ -17,6 +17,7 @@ use vtime::{VClock, VClockConfig};
 
 use crate::contract::{self, MsrDisposition};
 use crate::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
+use crate::snapshot::{self, DeviceState, LegacyState, SnapshotError, UartState};
 use crate::work::{WorkError, WorkSource};
 
 /// xAPIC MMIO base (`0xFEE0_0000`, the architectural default the contract fixes
@@ -100,6 +101,11 @@ pub enum VmmError {
     /// panic — the malformed config is surfaced.
     #[error("v-time error: {0}")]
     Vtime(#[from] vtime::VtimeError),
+    /// A live snapshot/branch operation failed: a `snapshot-store` error, a
+    /// `vm_state` codec error, a malformed device blob, a LAPIC restore rejection,
+    /// or a snapshot taken under a different CPU/MSR contract. Never a panic.
+    #[error("snapshot error")]
+    Snapshot(#[from] crate::snapshot::SnapshotError),
 }
 
 /// One serviced exit.
@@ -406,6 +412,14 @@ pub struct Vmm<B: Backend> {
     /// M1/M2/corpus (which never touch these ports), so their port-I/O default-deny
     /// and `state_hash` are unchanged.
     legacy: Option<LegacyPlatform>,
+    /// When set ([`Vmm::wire_snapshot_hashing`]), [`Vmm::state_blob`] folds the
+    /// **canonical `vm_state` encoding** into the hash as a `VMST` chunk — the
+    /// snapshot/branch path's "the canonical `vm_state` blob drives `state_hash`"
+    /// (BRINGUP). Default **off**, so M1/M2/corpus/Linux-boot blobs are byte-for-
+    /// byte unchanged (their goldens do not move); a snapshot/branch consumer opts
+    /// in. The chunk is the same bytes a [`Vmm::save_vm_state`] would seal, so two
+    /// states whose canonical blob differs hash differently.
+    snapshot_hashing: bool,
 }
 
 impl<B: Backend> Vmm<B> {
@@ -427,6 +441,7 @@ impl<B: Backend> Vmm<B> {
             first_entry_done: false,
             lapic: None,
             legacy: None,
+            snapshot_hashing: false,
         }
     }
 
@@ -458,6 +473,48 @@ impl<B: Backend> Vmm<B> {
     /// `true` once the determinism V-time path is wired.
     pub fn vtime_wired(&self) -> bool {
         self.vtime.is_some()
+    }
+
+    /// Opt this VMM into folding the **canonical `vm_state` blob** into
+    /// [`Vmm::state_hash`] (a `VMST` chunk). Default off, so M1/M2/corpus/Linux-boot
+    /// hashes are byte-for-byte unchanged; the snapshot/branch path calls this so a
+    /// snapshot's `vm_state` integrity (not just the ad-hoc register layout) drives
+    /// the determinism hash (task 39 Phase 1 / BRINGUP).
+    pub fn wire_snapshot_hashing(&mut self) -> &mut Self {
+        self.snapshot_hashing = true;
+        self
+    }
+
+    /// `true` once the canonical-`vm_state` hash chunk is wired.
+    pub fn snapshot_hashing_wired(&self) -> bool {
+        self.snapshot_hashing
+    }
+
+    /// The current full guest-memory image (the owned [`GuestRam`] backing) — the
+    /// memory half a snapshot captures into [`crate::snapshot::SnapshotEngine`].
+    pub fn guest_memory(&self) -> &[u8] {
+        self.ram.as_bytes()
+    }
+
+    /// Overwrite the full guest-memory image on restore. `image` must be exactly the
+    /// guest RAM size. On the box, KVM reads the guest through this same backing, so
+    /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
+    /// memslot-remap optimization (task 08, below the trait) supersedes for O(dirty)
+    /// latency (see `IMPLEMENTATION.md`); correctness is identical either way.
+    ///
+    /// # Errors
+    /// [`VmmError::ContractViolation`] if `image.len()` is not the guest RAM size.
+    pub fn restore_guest_memory(&mut self, image: &[u8]) -> Result<(), VmmError> {
+        let ram = self.ram.as_mut_bytes();
+        if image.len() != ram.len() {
+            return Err(VmmError::ContractViolation(format!(
+                "restore_guest_memory: image is {} bytes, guest RAM is {} bytes",
+                image.len(),
+                ram.len()
+            )));
+        }
+        ram.copy_from_slice(image);
+        Ok(())
     }
 
     /// Capture the V-time + entropy state for a mid-run snapshot (INTEGRATION.md
@@ -622,6 +679,291 @@ impl<B: Backend> Vmm<B> {
         Ok(())
     }
 
+    // --- full vm_state snapshot / restore (task 39) ------------------------
+
+    /// Build the canonical [`vm_state::VmState`] from the **current** live machine
+    /// (the memory-less half of a snapshot): the vCPU registers via the backend, the
+    /// V-time block + entropy stream, and a vmm-core-owned device blob carrying the
+    /// xAPIC, the legacy 8259/PCI latches, the 8250 UART, and `IA32_TSC_ADJUST`. The
+    /// `contract_hash` is stamped so a restore can reject a blob taken under a
+    /// different contract. Infallible (the only `encode` failure, `FractionalRatio`,
+    /// is impossible — `ratio_den` is the invariant `1`); the V-time block is
+    /// anchored to the deterministic `last_intercept_work`, exactly like
+    /// [`encode_vtime`], so it is byte-deterministic at any exit.
+    fn build_vm_state(&self) -> vm_state::VmState {
+        let mut s = vm_state::VmState::default();
+        snapshot::fill_vcpu_state(&mut s, &self.current_vcpu());
+        let tsc_adjust = match &self.vtime {
+            Some(vt) => {
+                s.vtime = vm_state::VtimeState {
+                    ratio_num: vt.cfg.ratio_num,
+                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so the
+                    // blob is encodable (a fractional ratio is rejected at encode).
+                    ratio_den: 1,
+                    tsc_hz: vt.cfg.tsc_hz,
+                    tsc_base: vt.cfg.tsc_base,
+                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
+                };
+                // The entropy PRNG position rides the `hypercall` section
+                // (INTEGRATION.md §4: `Dispatcher::save_state()`, "notably the
+                // entropy PRNG position") — vmm-core's hypercall RNG and RDRAND draw
+                // from this one stream.
+                s.hypercall = vt.entropy.save_state();
+                vt.tsc_adjust
+            }
+            None => {
+                // Unwired (M1/M2): a sentinel encodable V-time block, no entropy.
+                s.vtime.ratio_den = 1;
+                0
+            }
+        };
+        let dev = DeviceState {
+            tsc_adjust,
+            uart: UartState {
+                capture: self.uart.capture().to_vec(),
+                regs: *self.uart.shadow_regs(),
+                dlab: self.uart.dlab(),
+                dlm: self.uart.dlm(),
+            },
+            lapic: self.lapic.as_ref().map(|l| l.snapshot()),
+            legacy: self.legacy.as_ref().map(|l| {
+                let imr = l.pic_imr();
+                LegacyState {
+                    config_address: l.config_address(),
+                    master_imr: imr[0],
+                    slave_imr: imr[1],
+                }
+            }),
+        };
+        s.devices = snapshot::encode_device_blob(&dev);
+        s.contract_hash = contract::contract_hash();
+        s
+    }
+
+    /// Capture the **non-memory** machine state as a canonical [`vm_state::VmState`]
+    /// (INTEGRATION.md §4) — pair with [`Vmm::guest_memory`] +
+    /// [`crate::snapshot::SnapshotEngine`] for the memory half. The vmm-core adapter
+    /// that fills `vm-state`'s plain-data structs from the live machine and
+    /// `VmState::encode`s them (task 39 Phase 1).
+    ///
+    /// **Quiescent-point assertion (INTEGRATION.md §4).** A snapshot is only sound at
+    /// a quiescent point — after an exit is fully serviced, with nothing armed. So
+    /// `save_vm_state` **fails closed** (a) at an RNG mid-exit boundary
+    /// (`rng_completion_staged`: a seeded RDRAND/RDSEED draw advanced the stream but
+    /// its completion is only staged, not committed — restoring there would re-draw),
+    /// and (b), when V-time is wired, at a non-`vtime_synchronized` point (the exact
+    /// V-time the restored TSC resumes from is known only at a V-time intercept).
+    /// These are the same guards [`Vmm::save_vtime`] enforces. The LAPIC IRR /
+    /// pending-vector state is captured (it is *state*, not an armed plan), and the
+    /// backend's per-entry `set_pending_irq` slot is re-derived from the LAPIC on the
+    /// restored VM's first service — so there is no separate injection plan to
+    /// serialize (vm-state deliberately has no plan field).
+    ///
+    /// # Errors
+    /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary or a
+    /// non-synchronized point.
+    pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
+        if self.rng_completion_staged {
+            return Err(VmmError::ContractViolation(
+                "save_vm_state at an RNG mid-exit boundary: the seeded RDRAND/RDSEED draw advanced \
+                 the stream but its completion is staged, not committed — snapshot only at a clean \
+                 boundary (step once more first)."
+                    .to_string(),
+            ));
+        }
+        if self.vtime.is_some() && !self.vtime_synchronized {
+            return Err(VmmError::ContractViolation(
+                "save_vm_state at a non-synchronized point: the exact V-time (which a restored TSC \
+                 resumes from) is known only at a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a \
+                 TSC MSR). Snapshot at a V-time-intercept boundary."
+                    .to_string(),
+            ));
+        }
+        Ok(self.build_vm_state())
+    }
+
+    /// Restore the **non-memory** machine state from a [`vm_state::VmState`] (pair
+    /// with [`Vmm::restore_guest_memory`]; or use [`Vmm::restore_snapshot`] for
+    /// both). Decodes the typed records back into the vCPU via `Backend::restore`,
+    /// resumes the V-time clock (`vns_base` = the snapshot's V-time, the hardware
+    /// counter reset to 0) + entropy stream + `IA32_TSC_ADJUST`, and restores the
+    /// xAPIC + legacy platform + UART from the device blob.
+    ///
+    /// **Atomic on rejection.** Every fallible step that can reject an untrusted blob
+    /// — the `contract_hash` check, the device-blob decode, the LAPIC coherence
+    /// check, the clock rebuild, and the entropy-blob validation — runs **before**
+    /// any live state is mutated, so a bad snapshot leaves the VM fully intact rather
+    /// than half-restored. Refuses at an RNG mid-exit boundary (symmetric with
+    /// [`Vmm::restore_vtime`]).
+    ///
+    /// # Errors
+    /// [`VmmError::Snapshot`] for a contract mismatch / malformed device blob /
+    /// rejected LAPIC; [`VmmError::ContractViolation`] at an RNG mid-exit boundary,
+    /// a V-time wiring/rate mismatch, or a rejected entropy blob;
+    /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the
+    /// backend/clock/counter.
+    pub fn restore_vm_state(&mut self, s: &vm_state::VmState) -> Result<(), VmmError> {
+        // 0. Refuse at an RNG mid-exit boundary (a staged, uncommitted completion
+        //    lives in the backend; restoring over it would shift the next draw).
+        if self.rng_completion_staged {
+            return Err(VmmError::ContractViolation(
+                "restore_vm_state at an RNG mid-exit boundary: a seeded RDRAND/RDSEED completion is \
+                 staged (not committed). Restore only at a clean boundary (step once more first)."
+                    .to_string(),
+            ));
+        }
+        // 1. Validate, committing nothing.
+        // 1a. Contract: a blob taken under a different CPUID/MSR contract would
+        //     silently diverge on restore (INTEGRATION.md §4 `contract_hash`).
+        if s.contract_hash != contract::contract_hash() {
+            return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
+        }
+        // 1b. Decode the vmm-core device blob (total, never panics).
+        let dev = snapshot::decode_device_blob(&s.devices.0)?;
+        // 1c. The blob's LAPIC must be coherent AND match this VM's wiring.
+        let new_lapic = match (&dev.lapic, self.lapic.is_some()) {
+            (Some(ls), true) => Some(
+                lapic::Lapic::restore(ls)
+                    .map_err(|_| SnapshotError::Lapic("incoherent LapicState in device blob"))?,
+            ),
+            (Some(_), false) | (None, true) => {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: snapshot/VM xAPIC wiring mismatch (one has a LAPIC, the other \
+                     does not) — restore into a VM composed like the snapshot source."
+                        .to_string(),
+                ));
+            }
+            (None, false) => None,
+        };
+        // 1d. V-time: validate the rate matches and pre-build the clock + entropy.
+        let vtime_commit = match self.vtime.as_ref() {
+            Some(vt) => {
+                if s.vtime.ratio_num != vt.cfg.ratio_num
+                    || s.vtime.ratio_den != 1
+                    || s.vtime.tsc_hz != vt.cfg.tsc_hz
+                    || s.vtime.tsc_base != vt.cfg.tsc_base
+                {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: V-time clock-rate mismatch (the snapshot's ratio/tsc_hz/\
+                         tsc_base differ from this VM's wired clock)."
+                            .to_string(),
+                    ));
+                }
+                let mut cfg = vt.cfg;
+                cfg.vns_base = s.vtime.snapshot_vns;
+                let clock = VClock::new(cfg)?;
+                let mut entropy = vt.entropy.clone();
+                entropy.restore_state(&s.hypercall).map_err(|e| {
+                    VmmError::ContractViolation(format!(
+                        "entropy snapshot rejected on restore: {e:?}"
+                    ))
+                })?;
+                Some((cfg, clock, entropy))
+            }
+            None => {
+                // Unwired VM: the snapshot must not carry a live V-time block (a
+                // non-zero clock rate means it was taken on a V-time-wired VM).
+                if s.vtime.tsc_hz != 0 || s.vtime.snapshot_vns != 0 {
+                    return Err(VmmError::ContractViolation(
+                        "restore_vm_state: snapshot carries a V-time block but this VM has no V-time \
+                         wired — restore into a VM composed like the snapshot source."
+                            .to_string(),
+                    ));
+                }
+                None
+            }
+        };
+        // 2. Build the vCPU state (pure).
+        let vcpu = snapshot::vcpu_state_from(s);
+        // 3. Commit the fallible backend restore first — a failure here leaves the
+        //    V-time/device state untouched (nothing below this line can reject the
+        //    blob; only the hardware counter reset can fail, infrastructurally).
+        self.backend.restore(&vcpu)?;
+        if vtime_commit.is_some() {
+            // The hardware work counter restarts at 0; the snapshot's V-time now
+            // lives in `vns_base` (continuity, INTEGRATION.md §4 / restore-transparency).
+            self.vtime
+                .as_mut()
+                .expect("vtime_commit implies wired")
+                .work
+                .reset()?;
+        }
+        // 4. Commit the validated state (all infallible from here).
+        if let Some((cfg, clock, entropy)) = vtime_commit {
+            let vt = self.vtime.as_mut().expect("vtime_commit implies wired");
+            vt.cfg = cfg;
+            vt.clock = clock;
+            vt.entropy = entropy;
+            vt.last_intercept_work = 0;
+            vt.tsc_adjust = dev.tsc_adjust;
+            self.vtime_synchronized = true;
+        }
+        if let Some(l) = new_lapic {
+            self.lapic = Some(l);
+        }
+        if let (Some(legacy), Some(ls)) = (self.legacy.as_mut(), dev.legacy) {
+            legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);
+        }
+        self.uart
+            .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+        // A restored VM is runnable again from the snapshot point: clear the latched
+        // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
+        // restored backend state.
+        self.terminal = None;
+        self.saved_state = None;
+        self.rng_completion_staged = false;
+        Ok(())
+    }
+
+    /// Restore a full snapshot — guest memory **and** the non-memory `vm_state` — in
+    /// one call. The materialized image (from [`crate::snapshot::SnapshotEngine::materialize`])
+    /// goes into guest RAM, then [`Vmm::restore_vm_state`] resumes the vCPU/V-time/
+    /// devices. *Same state ⇒ same future* (gate 1).
+    pub fn restore_snapshot(
+        &mut self,
+        memory: &[u8],
+        vm_state: &vm_state::VmState,
+    ) -> Result<(), VmmError> {
+        // All-or-nothing: pre-check the image length so a wrong-sized image is
+        // rejected before either half mutates. Then restore the vm_state (itself
+        // atomic on a malformed blob — see [`Vmm::restore_vm_state`]) *before* the
+        // memory, so a bad blob never leaves a half-overwritten guest.
+        if memory.len() != self.ram.len() {
+            return Err(VmmError::ContractViolation(format!(
+                "restore_snapshot: image is {} bytes, guest RAM is {} bytes",
+                memory.len(),
+                self.ram.len()
+            )));
+        }
+        self.restore_vm_state(vm_state)?;
+        self.restore_guest_memory(memory)?; // length pre-checked above
+        Ok(())
+    }
+
+    /// **Branch**: reseed the entropy stream after a restore so the continuation
+    /// draws a *divergent* RDRAND/RDSEED sequence from its parent (INTEGRATION.md §4:
+    /// "after a restore intended to branch, vmm-core reseeds/perturbs the entropy
+    /// service explicitly"). `branch(snap, seed') = restore(snap) + reseed(seed')`;
+    /// the V-time clock and memory continue from the snapshot, only the entropy
+    /// forks. The seed choice is the explorer's, so it is explicit, not ambient.
+    ///
+    /// # Errors
+    /// [`VmmError::ContractViolation`] if the seeded-entropy path is not wired (a
+    /// branch only diverges where there is a seeded stream to perturb).
+    pub fn reseed_entropy(&mut self, seed: u64) -> Result<(), VmmError> {
+        match self.vtime.as_mut() {
+            Some(vt) => {
+                vt.entropy = SeededEntropy::new(seed);
+                Ok(())
+            }
+            None => Err(VmmError::ContractViolation(
+                "reseed_entropy: the seeded-entropy path is not wired, so there is no stream to fork \
+                 for a branch."
+                    .to_string(),
+            )),
+        }
+    }
+
     /// Drive the vCPU for exactly one exit and dispatch it. Data-returning exits
     /// (port read, `Rdmsr`, `Cpuid`) are resolved back to the backend; any
     /// unmodeled exit is a loud [`VmmError::ContractViolation`].
@@ -764,6 +1106,18 @@ impl<B: Backend> Vmm<B> {
             let mut legy = legacy.config_address().to_le_bytes().to_vec();
             legy.extend_from_slice(&legacy.pic_imr());
             put_chunk(&mut out, b"LEGY", &legy);
+        }
+        // The canonical `vm_state` blob, folded into the hash **only** when the
+        // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps
+        // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do
+        // not move — task 39 "gate the swap"); when on, two states whose canonical
+        // blob differs hash differently, so a snapshot's integrity is in the hash.
+        // The only `encode` failure is `FractionalRatio`, which `build_vm_state`
+        // can never produce (`ratio_den` is the invariant `1`), so the fallback is
+        // unreachable; it is deterministic regardless.
+        if self.snapshot_hashing {
+            let bytes = self.build_vm_state().encode().unwrap_or_default();
+            put_chunk(&mut out, b"VMST", &bytes);
         }
         out
     }
@@ -3672,6 +4026,437 @@ mod tests {
         assert!(
             matches!(err, VmmError::Work(_)),
             "a work-counter error must fail closed, got {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Full vm_state snapshot / restore / branch (task 39). Mock-driven; the
+    // live box gate is tests/live_snapshot_branch.rs.
+    // -----------------------------------------------------------------------
+
+    /// A `Vmm<MockBackend>` with V-time + the Linux platform (xAPIC + legacy I/O)
+    /// all wired — the full surface `save_vm_state` captures.
+    fn full_vmm(state: VcpuState, exits: Vec<Exit>, work_at: u64, seed: u64) -> Vmm<MockBackend> {
+        let mut m = configured_mock(exits);
+        m.set_state(state);
+        let mut v = Vmm::new(m, GuestRam::new(0x2000).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(work_at)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v
+    }
+
+    /// A non-trivial but quiescent-point-representable `VcpuState` (the dropped
+    /// `kvm_vcpu_events` injection bookkeeping and `kvm_sregs2` flags/pdptrs are
+    /// zero, as they are after an exit is fully serviced).
+    fn nonzero_state() -> VcpuState {
+        let mut msrs = std::collections::BTreeMap::new();
+        msrs.insert(0xC000_0080u32, 0x501);
+        VcpuState {
+            regs: vmm_backend::VcpuRegs {
+                rax: 0x1111,
+                rbx: 0x2222,
+                rip: 0x10_0000,
+                rsp: 0x8000,
+                rflags: 0x2,
+                ..Default::default()
+            },
+            sregs: vmm_backend::VcpuSregs {
+                cs: vmm_backend::Segment {
+                    selector: 0x10,
+                    limit: 0xFFFF_FFFF,
+                    type_: 0xB,
+                    present: 1,
+                    s: 1,
+                    l: 1,
+                    g: 1,
+                    ..Default::default()
+                },
+                cr0: 0x8000_0011,
+                cr3: 0x1000,
+                cr4: 0x20,
+                efer: 0x500,
+                apic_base: 0xFEE0_0900,
+                ..Default::default()
+            },
+            xcr0: 0x7,
+            msrs,
+            xsave: (0u16..512).map(|i| i as u8).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The exits that drive the device + V-time + entropy state into a non-default,
+    /// clean (post-RDTSC, no staged RNG) configuration: WRMSR TSC_ADJUST, an xAPIC
+    /// TPR write, a PIC IMR unmask, a serial byte, one RDRAND, then an RDTSC.
+    fn mutate_exits() -> Vec<Exit> {
+        vec![
+            Exit::Wrmsr {
+                index: 0x3b,
+                value: 0x1234,
+            },
+            Exit::Mmio {
+                gpa: Gpa(0xFEE0_0080),
+                size: 4,
+                write: Some(0x20),
+            }, // TPR = 0x20
+            Exit::Io {
+                port: 0x0021,
+                size: 1,
+                write: Some(0xEF),
+            }, // PIC master IMR
+            Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(u32::from(b'H')),
+            }, // serial 'H'
+            Exit::Rdrand { width: 8 }, // advance the entropy stream
+            Exit::Rdtsc,               // V-time intercept → clean, synchronized boundary
+        ]
+    }
+
+    fn step_n(v: &mut Vmm<MockBackend>, n: usize) {
+        for _ in 0..n {
+            assert_eq!(v.step().unwrap(), Step::Continued);
+        }
+    }
+
+    #[test]
+    fn save_vm_state_round_trips_through_the_codec() {
+        let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
+        step_n(&mut a, 6);
+        let s = a.save_vm_state().expect("clean synchronized boundary");
+        // The adapter's output is a faithful, encodable vm_state blob.
+        let bytes = s.encode().expect("encodable (ratio_den == 1)");
+        assert_eq!(vm_state::VmState::decode(&bytes).unwrap(), s);
+        // The captured surface is non-trivial: regs, the V-time block, entropy
+        // position, and the device blob all reflect the run.
+        assert_eq!(s.regs.rax, 0x1111);
+        assert_eq!(s.vtime.snapshot_vns, 500); // ratio 1:1 → vns == work
+        assert_eq!(s.contract_hash, crate::contract::contract_hash());
+    }
+
+    #[test]
+    fn restore_vm_state_reproduces_the_blob_byte_for_byte() {
+        // Live round-trip: save on A, restore into a fresh equivalently-wired B,
+        // re-save — the second blob equals the first (the adapter is lossless over
+        // the representable + device + V-time + entropy + tsc_adjust surface).
+        let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
+        step_n(&mut a, 6);
+        let s = a.save_vm_state().unwrap();
+
+        let mut b = full_vmm(VcpuState::default(), vec![], 9999, 0x0000);
+        b.restore_vm_state(&s).expect("restore");
+        let s2 = b.save_vm_state().expect("re-save after restore");
+        assert_eq!(s, s2, "restore-then-save must reproduce the snapshot blob");
+    }
+
+    #[test]
+    fn restore_vm_state_resumes_tsc_and_forked_entropy_exactly() {
+        // After a restore the V-time clock continues from the snapshot's vns and the
+        // entropy stream resumes at its captured position (not replayed) — and a
+        // counter sitting at a NON-zero value is reset to 0 (else the TSC would read
+        // high). B reads the SECOND stream word (A drew the first) and a TSC that
+        // continues from the snapshot point.
+        const SEED: u64 = 0x5151_5151;
+        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, SEED);
+        step_n(&mut a, 6);
+        let s = a.save_vm_state().unwrap();
+
+        // B's counter starts at 700 (non-zero) so the reset is observable.
+        let mut b = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Rdtsc, Exit::Rdrand { width: 8 }],
+            700,
+            0xDEAD, // overwritten by the restored stream
+        );
+        b.restore_vm_state(&s).unwrap();
+        b.step().unwrap(); // RDTSC at reset work=0 → visible = 2*vns_base + tsc_adjust
+        b.step().unwrap(); // RDRAND → the word AFTER A's first draw
+
+        // visible_tsc = VClock::tsc(0) [= 2 * vns_base = 1000] + IA32_TSC_ADJUST
+        // [0x1234, set by mutate_exits and round-tripped through the snapshot].
+        assert_eq!(
+            b.backend.completions()[0],
+            Completion::Read(2 * 500 + 0x1234)
+        );
+        let mut ref_stream = SeededEntropy::new(SEED);
+        let mut w0 = [0u8; 8];
+        let mut w1 = [0u8; 8];
+        ref_stream.handle(1, &8u32.to_le_bytes(), &mut w0);
+        ref_stream.handle(1, &8u32.to_le_bytes(), &mut w1);
+        assert_eq!(
+            b.backend.completions()[1],
+            Completion::Read(u64::from_le_bytes(w1)),
+            "restored entropy resumes at the next word (not replayed)"
+        );
+    }
+
+    #[test]
+    fn save_vm_state_fails_closed_at_rng_and_non_synchronized_boundaries() {
+        // RNG mid-exit: a staged RDRAND completion ⇒ refuse.
+        let mut rng = full_vmm(VcpuState::default(), vec![Exit::Rdrand { width: 8 }], 10, 1);
+        rng.step().unwrap();
+        assert!(matches!(
+            rng.save_vm_state(),
+            Err(VmmError::ContractViolation(_))
+        ));
+        // Non-synchronized: a UART OUT after an RDTSC desynchronizes ⇒ refuse.
+        let mut io = full_vmm(
+            VcpuState::default(),
+            vec![
+                Exit::Rdtsc,
+                Exit::Io {
+                    port: 0x3F8,
+                    size: 1,
+                    write: Some(u32::from(b'x')),
+                },
+            ],
+            10,
+            1,
+        );
+        io.step().unwrap();
+        assert!(io.save_vm_state().is_ok(), "exact at the intercept");
+        io.step().unwrap();
+        assert!(matches!(
+            io.save_vm_state(),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_a_different_contract_atomically() {
+        let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
+        step_n(&mut a, 6);
+        let mut s = a.save_vm_state().unwrap();
+        s.contract_hash = [0xFFu8; 32]; // a different ratified contract
+
+        let mut b = full_vmm(nonzero_state(), vec![], 100, 0xABCD);
+        let before = b.state_hash();
+        assert!(matches!(
+            b.restore_vm_state(&s),
+            Err(VmmError::Snapshot(
+                crate::snapshot::SnapshotError::ContractMismatch
+            ))
+        ));
+        assert_eq!(
+            b.state_hash(),
+            before,
+            "a rejected snapshot leaves the VM fully intact (atomic)"
+        );
+    }
+
+    #[test]
+    fn branch_restores_then_forks_the_entropy_stream() {
+        // branch(snap, seed') = restore + reseed: memory + V-time continue from the
+        // snapshot, but the entropy stream forks to a divergent sequence.
+        const PARENT_SEED: u64 = 0x1111;
+        const BRANCH_SEED: u64 = 0x2222;
+        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, PARENT_SEED);
+        step_n(&mut a, 6);
+        let s = a.save_vm_state().unwrap();
+
+        let mut b = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Rdrand { width: 8 }],
+            0,
+            0xDEAD,
+        );
+        b.restore_vm_state(&s).unwrap();
+        b.reseed_entropy(BRANCH_SEED).unwrap();
+        b.step().unwrap(); // RDRAND draws from the BRANCH seed, not the parent's
+
+        let mut branch_stream = SeededEntropy::new(BRANCH_SEED);
+        let mut w = [0u8; 8];
+        branch_stream.handle(1, &8u32.to_le_bytes(), &mut w);
+        assert_eq!(
+            b.backend.completions()[0],
+            Completion::Read(u64::from_le_bytes(w)),
+            "the branch draws from the reseeded stream"
+        );
+    }
+
+    #[test]
+    fn reseed_entropy_requires_a_wired_stream() {
+        let mut stock = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        assert!(matches!(
+            stock.reseed_entropy(7),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_a_clock_rate_mismatch() {
+        // Restoring a blob whose V-time *rate* differs from this VM's wired clock is
+        // refused (the rate is not applied from the blob, so a silent accept would
+        // run the restored timeline at the wrong rate). Each field perturbed alone
+        // pins every disjunct of the rate-mismatch check.
+        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
+        step_n(&mut a, 6);
+        let s = a.save_vm_state().unwrap();
+        let reject = |bad: &vm_state::VmState, name: &str| {
+            let mut b = full_vmm(VcpuState::default(), vec![], 100, 1);
+            assert!(
+                matches!(b.restore_vm_state(bad), Err(VmmError::ContractViolation(_))),
+                "a {name} clock-rate mismatch must be rejected"
+            );
+        };
+        // Each disjunct of the rate-mismatch check, perturbed alone.
+        let mut bad = s.clone();
+        bad.vtime.ratio_num += 1;
+        reject(&bad, "ratio_num");
+        let mut bad = s.clone();
+        bad.vtime.ratio_den = 2;
+        reject(&bad, "ratio_den");
+        let mut bad = s.clone();
+        bad.vtime.tsc_hz += 1;
+        reject(&bad, "tsc_hz");
+        let mut bad = s.clone();
+        bad.vtime.tsc_base += 1;
+        reject(&bad, "tsc_base");
+    }
+
+    #[test]
+    fn restore_into_unwired_vm_rejects_a_vtime_bearing_blob() {
+        // A V-time-wired (no-LAPIC) source yields a blob carrying a live V-time
+        // block; restoring it into a VM with no V-time wired is refused (wiring must
+        // match the snapshot source). Both the tsc_hz and the snapshot_vns disjuncts
+        // are pinned individually.
+        let mut a = vtime_vmm(vec![Exit::Rdtsc], Box::new(ScriptedWork::at(5)), 1);
+        a.step().unwrap();
+        let s = a.save_vm_state().unwrap();
+        assert!(
+            s.vtime.tsc_hz != 0,
+            "source blob carries a live V-time block"
+        );
+
+        let mut only_hz = s.clone();
+        only_hz.vtime.snapshot_vns = 0; // tsc_hz still nonzero
+        let mut stock1 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        assert!(matches!(
+            stock1.restore_vm_state(&only_hz),
+            Err(VmmError::ContractViolation(_))
+        ));
+
+        let mut only_vns = s.clone();
+        only_vns.vtime.tsc_hz = 0;
+        only_vns.vtime.snapshot_vns = 7;
+        let mut stock2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        assert!(matches!(
+            stock2.restore_vm_state(&only_vns),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn save_vm_state_captures_the_uart_dlm() {
+        // The divisor-latch-high byte (a DLAB-window write) is captured into the
+        // device blob — pins the `Uart8250::dlm()` accessor.
+        let mut v = full_vmm(
+            VcpuState::default(),
+            vec![
+                Exit::Io {
+                    port: 0x3FB,
+                    size: 1,
+                    write: Some(0x80),
+                }, // LCR: DLAB = 1
+                Exit::Io {
+                    port: 0x3F9,
+                    size: 1,
+                    write: Some(0x07),
+                }, // offset+1 under DLAB ⇒ DLM = 7
+                Exit::Rdtsc, // re-synchronize for the save
+            ],
+            0,
+            1,
+        );
+        step_n(&mut v, 3);
+        let s = v.save_vm_state().unwrap();
+        let dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
+        assert_eq!(dev.uart.dlm, 7, "save_vm_state must capture the UART DLM");
+        assert!(dev.uart.dlab, "and the latched DLAB window state");
+    }
+
+    #[test]
+    fn restore_guest_memory_overwrites_the_backing_and_checks_length() {
+        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2000).unwrap());
+        let image = vec![0xABu8; 0x2000];
+        v.restore_guest_memory(&image).unwrap();
+        assert_eq!(v.guest_memory(), &image[..]);
+        // Wrong length fails closed (never a partial overwrite).
+        assert!(matches!(
+            v.restore_guest_memory(&[0u8; 0x1000]),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    // --- the canonical-vm_state hash gate ----------------------------------
+
+    fn has_tag(blob: &[u8], tag: &[u8; 4]) -> bool {
+        blob.windows(4).any(|w| w == tag)
+    }
+
+    #[test]
+    fn snapshot_hashing_is_gated_off_by_default() {
+        // Default-off: no VMST chunk, so M1/M2/corpus/Linux-boot hashes are
+        // byte-for-byte unchanged from before this path existed.
+        let v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        assert!(!v.snapshot_hashing_wired());
+        assert!(!has_tag(&v.state_blob(), b"VMST"));
+        // A second identical VM hashes identically (no nondeterminism introduced).
+        let v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
+        assert_eq!(v.state_hash(), v2.state_hash());
+    }
+
+    #[test]
+    fn wiring_snapshot_hashing_folds_the_canonical_blob_into_the_hash() {
+        // Enabling it adds the VMST chunk and changes the hash; two states whose
+        // canonical blob differs (here a TPR write) then hash differently, while the
+        // unwired twin's hash is untouched.
+        let base = full_vmm(VcpuState::default(), vec![], 0, 1);
+        let base_hash_unwired = base.state_hash();
+
+        let mut on = full_vmm(VcpuState::default(), vec![], 0, 1);
+        on.wire_snapshot_hashing();
+        assert!(on.snapshot_hashing_wired());
+        assert!(has_tag(&on.state_blob(), b"VMST"));
+        assert_ne!(
+            on.state_hash(),
+            base_hash_unwired,
+            "folding the canonical blob changes the hash"
+        );
+
+        // A vm_state difference (a TPR write) changes the VMST-folded hash.
+        let mut a = full_vmm(VcpuState::default(), vec![], 0, 1);
+        a.wire_snapshot_hashing();
+        let mut b = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Mmio {
+                gpa: Gpa(0xFEE0_0080),
+                size: 4,
+                write: Some(0x30),
+            }],
+            0,
+            1,
+        );
+        b.wire_snapshot_hashing();
+        b.step().unwrap();
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "a vm_state difference reaches state_hash when snapshot-hashing is wired"
         );
     }
 }

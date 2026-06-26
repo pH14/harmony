@@ -40,6 +40,7 @@ pub mod entry;
 pub mod hostassert;
 pub mod linux_loader;
 pub mod multiboot;
+pub mod snapshot;
 pub mod vmm;
 pub mod work;
 
