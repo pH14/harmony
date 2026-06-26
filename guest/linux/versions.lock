@@ -9,3 +9,21 @@ KERNEL_SHA256=f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236
 BUSYBOX_VERSION=1.38.0
 BUSYBOX_URL=https://busybox.net/downloads/busybox-1.38.0.tar.bz2
 BUSYBOX_SHA256=34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
+
+# PostgreSQL for the bare-Postgres workload image (task 37). We vendor the Debian
+# trixie .debs (server + client + libpq) by URL+sha256 — same pin-then-verify
+# discipline as the kernel/busybox. PostgreSQL 17.10 is the trixie security build;
+# pinned 2026-06-26. The runtime shared-lib closure (glibc, libicu, libssl, ...)
+# is taken from the build host's own /lib at build time (the determinism box is
+# the pinned build environment) — see guest/linux/build-postgres-image.sh. URLs
+# are the debian-security pool; if a version is superseded, re-fetch the same
+# files (sha256-addressable) from snapshot.debian.org.
+PG_MAJOR=17
+PG_VERSION=17.10-0+deb13u1
+PG_DEB_BASE=https://deb.debian.org/debian-security/pool/updates/main/p/postgresql-17
+PG_SERVER_DEB_URL=$PG_DEB_BASE/postgresql-17_17.10-0+deb13u1_amd64.deb
+PG_SERVER_DEB_SHA256=3b7d9dbfd2f618d767fc091ffb7432faa6284a20f7095b430dd57644602f40dd
+PG_CLIENT_DEB_URL=$PG_DEB_BASE/postgresql-client-17_17.10-0+deb13u1_amd64.deb
+PG_CLIENT_DEB_SHA256=0f4b84e21eb9df17a000af9a5c68eeed14c7c1cad9fa911bb3cb26311ee4a5b5
+PG_LIBPQ_DEB_URL=$PG_DEB_BASE/libpq5_17.10-0+deb13u1_amd64.deb
+PG_LIBPQ_DEB_SHA256=bcaba7700a2afbdc4b7bf0b0bc9532f1cd49a8fd6fa47ccab125befd4ba7716a

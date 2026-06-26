@@ -46,3 +46,7 @@ fetch_one() {
 
 fetch_one "$KERNEL_URL" "$KERNEL_SHA256"
 fetch_one "$BUSYBOX_URL" "$BUSYBOX_SHA256"
+# PostgreSQL .debs for the task-37 bare-Postgres workload image.
+fetch_one "$PG_SERVER_DEB_URL" "$PG_SERVER_DEB_SHA256"
+fetch_one "$PG_CLIENT_DEB_URL" "$PG_CLIENT_DEB_SHA256"
+fetch_one "$PG_LIBPQ_DEB_URL" "$PG_LIBPQ_DEB_SHA256"

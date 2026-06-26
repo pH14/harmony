@@ -1,5 +1,160 @@
 # guest/linux — implementation notes
 
+## Task 37 — bare Postgres in full guest Linux, deterministic-twice
+
+### What landed
+
+A **bare-Postgres workload image** (consonance workload stream, step 2 of 3): the
+*unchanged* task-36 container-class `bzImage` + a new `initramfs-postgres.cpio.gz`
+that boots a real **PostgreSQL 17**, drives a fixed insert/select workload loop, and
+runs **bit-identically twice** on the patched backend. No kernel change was needed —
+the task-36 capability audit already confirmed `EXT4_FS`, `BLK_DEV_LOOP`/`BLK_DEV_RAM`,
+`TMPFS`, `UNIX` (sockets), `SYSVIPC`, `DEVTMPFS_MOUNT` are all built in. New files:
+`build-postgres-image.sh`, `pg-init.sh`; `versions.lock`/`fetch.sh` pin+fetch the
+.debs; the box gates live in `consonance/vmm-core/tests/live_postgres.rs`.
+
+### Build (`build-postgres-image.sh`, root + Linux only)
+
+1. **PostgreSQL from pinned Debian .debs** (server + client + libpq, `versions.lock`,
+   verified by sha256 like the kernel/busybox). The relocatable Debian binaries keep
+   their `bin`/`lib`/`share` relative layout; the runtime shared-library closure
+   (glibc, libicu, libssl, libgssapi, …) is resolved with `ldd` and copied from the
+   build host's own `/lib` (+ `libnss_files` for the getpwnam postgres does), with
+   `ldconfig -r` building the rootfs ld.so cache. `--with-system-tzdata` means we also
+   ship `/usr/share/zoneinfo`; glibc's `C.UTF-8` is file-backed here so we ship
+   `/usr/lib/locale/{locale-archive,C.utf8}`. JIT bitcode is dropped (jit=off).
+2. **Pre-`initdb`'d PGDATA baked into a RAM-backed ext4.** `initdb` runs **once at
+   build time** as a non-root build user (postgres refuses uid 0) into a *subdirectory*
+   of the staging tree (a subdir keeps initdb's 0700 + uid-70, which postgres requires
+   of PGDATA — the ext4 root that `mke2fs` creates is root-owned). `mke2fs -t ext4 -U
+   <fixed-uuid> -E lazy_itable_init=0,lazy_journal_init=0 -d <staging>` bakes the
+   cluster in. At runtime `pg-init.sh` loop-mounts that image (`mount -o loop`, so the
+   ext4 lives in the initramfs tmpfs = RAM) on `/pgmnt`.
+3. **Workload** (`/workload.sql`, baked): `CREATE TABLE ledger(i,v)` then N=20
+   autocommit iterations, each `INSERT (i, i*i+7)` + a `SELECT` of the row plus the
+   running `count(*)`/`sum(v)` — printed as `row|i|v|count|sum`. Values are a pure
+   function of the loop index (no `now()`/`random()` columns), so the golden is a
+   deterministic function of the seed. One psql session streams them all (fork +
+   connect per row would be needlessly heavy under the single-stepping VMM).
+
+### Determinism closure (each item traces to the seed / V-time)
+
+- **Pre-`initdb`'d PGDATA.** `initdb` mints the cluster *system identifier* from
+  `gettimeofday`+pid+random; doing it once at build time and baking the result removes
+  that nondeterminism from the runtime entirely. (This is the one build-time event the
+  spec calls out; it also makes the *image* not byte-reproducible across separate
+  builds — a documented non-goal, distinct from the runtime determinism the gate
+  proves.)
+- **Locale + TZ pinned** (`LC_ALL=C.UTF-8`, `TZ=UTC`, `timezone='UTC'`,
+  `--locale=C.UTF-8`). C.UTF-8 collation is byte-order (memcmp) — deterministic and
+  locale-version-independent, so sorts cannot diverge silently.
+- **`pg_strong_random` → the seeded CRNG.** Postgres' per-backend cancel key + other
+  secrets go through `pg_strong_random` → `getrandom(2)` → the kernel CRNG. Under the
+  patched backend RDRAND/RDSEED trap to the **seeded entropy stream** (the same root as
+  the task-38 `AT_RANDOM` path); crediting them seeds the CRNG deterministically. See
+  the **CRNG-init** finding below — this is load-bearing, not just hygiene.
+- **Multiprocess is deterministic by construction.** The postmaster forks the startup
+  process, checkpointer, bgwriter, walwriter, autovacuum launcher and a per-connection
+  backend; a single vCPU means no SMP races, fork order is sequential (deterministic
+  PIDs — visible in the `[pg <pid>]` log prefix), and any timer-driven background work
+  wakes at V-time-deterministic points. The serial (incl. the startup/shutdown log
+  lines + their V-time timestamps) is bit-identical twice — empirical proof.
+- **`fsync` on RAM-backed storage** is instant + deterministic (the loop-over-tmpfs
+  honors it; no real device). Durability calls add no nondeterminism. **Limitation
+  (D1):** RAM storage has no durable/volatile split, so there is no
+  durability-fault surface here (deferred, per the spec non-goals).
+
+### consonance-VMM control-flow — four findings (the non-obvious part)
+
+The minimal task-30/34/36 `init.sh` runs straight through to `poweroff`; it never
+idles, never sleeps, never uses block I/O. Postgres exercises all three, surfacing
+VMM properties the boot gate never hit. Each fix is **guest-side + deterministic** (no
+VMM/contract change, per the task's "build on 34, don't re-architect the seam"):
+
+1. **CRNG init must not be starved (cmdline: drop `random.trust_cpu=off`).** Under
+   deterministic V-time there is no interrupt-timing jitter, so with the CPU RNG
+   distrusted the kernel CRNG **never initializes** and postgres' first *blocking*
+   `getrandom` hangs forever before its first log line. Trusting the trapped+seeded
+   RDRAND/RDSEED seeds the CRNG deterministically (`random: crng init done` appears
+   early) — the determinism is preserved *because* the entropy is the seeded stream.
+2. **No `nanosleep` wakeups; await cooperatively, never by `sleep` or busy-spin.** A
+   focused test showed `sleep 1` never returns under the VMM (no clock-event/tick
+   device is set up; only the TSC clocksource is). So readiness/shutdown can't be
+   `sleep`-polled (the sleeper never wakes) and can't be busy-spun (a spin starves
+   postgres — there's no preemption tick either). Instead `pg-init.sh` waits
+   **cooperatively**: a blocking `psql` connect yields the single vCPU to the starting
+   postmaster (retry the idempotent `SELECT 1` until it connects), and the shell's
+   `wait $PGPID` blocks on the postmaster so its shutdown checkpoint gets the CPU.
+3. **The first guest HLT is terminal — keep the guest non-idle until the real exit.**
+   `vmm.rs` treats `Exit::Hlt` as a terminal reason (the boot's `poweroff`→HLT is how
+   it ends). A workload that idles (HLT) would end the run prematurely; the cooperative
+   waits above keep *something* runnable at all times, so the guest never idles until
+   the deliberate terminal.
+4. **`poweroff` strands in `device_shutdown`; terminate via `reboot=t,force`.** Once
+   block I/O has been used, the kernel's poweroff path hangs in `device_shutdown` under
+   V-time. `pg-init.sh` unmounts the ext4 (auto-detaching loop0) and `reboot -f`s; the
+   cmdline's **`reboot=force`** skips the orderly device_shutdown and **`reboot=t`**
+   (triple-fault) becomes a clean `KVM_EXIT_SHUTDOWN`/HLT terminal. Relatedly, the
+   deterministic-twice gate boots the image **twice in one process and drops the first
+   run's `Vmm` before the second** — two pinned `perf_event` work counters open at once
+   multiplex on the PMU and perturb the branch count (a few-step V-time skid → a
+   divergent printk timestamp). One counter at a time is exact.
+
+### Acceptance-gate evidence (box, `ssh <det-box>`, core-2-pinned, then reverted to stock 1396736)
+
+Built with the repo `make -C guest/linux postgres-image` (kernel reused from task 36;
+`bzImage` sha256 matches the committed `MANIFEST.sha256`). Patched 6.12.90 proxy
+modules loaded, `taskset -c 2`, reverted to stock after each run.
+
+- **Gate 1 — Postgres runs + streams** (`p1_postgres_runs_and_streams_patched`):
+  `pg_ready=true workload_done=true final_row=true GUEST_READY=true`, clean terminal,
+  ~163k VMM steps. Quoted serial (excerpt):
+
+  ```
+  [pg 100] LOG:  starting PostgreSQL 17.10 ... on x86_64-pc-linux-gnu
+  [pg 100] LOG:  database system is ready to accept connections
+  PG37: workload begin
+  row|1|8|1|8
+  row|2|11|2|19
+  ...
+  row|20|407|20|3010
+  PG37: workload end
+  [pg 100] LOG:  database system is shut down
+  GUEST_READY
+  ```
+
+- **Gate 2 — deterministic twice** (`p2_postgres_deterministic_twice_patched`,
+  the milestone): two same-seed patched boots → identical step count (162609) and
+  **bit-identical serial + `state_hash`** (`test result: ok. 2 passed`):
+
+  ```
+  [p2 run A] steps=162609 terminal=Hlt  pg_ready workload_done final_row GUEST_READY = all true
+  [p2 run B] steps=162609 terminal=Hlt  pg_ready workload_done final_row GUEST_READY = all true
+  serial A == serial B  (14813 bytes, including the row|… query output)
+  state_hash A = state_hash B =
+    7ea21de2e3eb3ba2dede8370edda84a6950f97afe7469de8c990f88090845e39
+  ```
+
+- **Gate 3 — no regression:** only `guest/linux/` (+ the box-only `live_postgres.rs`
+  test) changed; the kernel/minimal-image/`devices.rs`/contract are untouched, so
+  M1/M2/P6 + the det-corpus goldens and `state_hash` schema are byte-unchanged.
+- **Gate 4 — box hygiene:** every patched run reverts to stock KVM (`lsmod | grep
+  '^kvm '` = `1396736`) and is verified.
+
+### Deviations considered / limitations
+
+- **Distro .debs vs. building PostgreSQL from source.** Chose the pinned Debian
+  binaries (fast, tested) with `--locale-provider=libc --locale=C.UTF-8` so ICU
+  collation is never used; ICU/krb5/openssl are linked but determinism comes from below
+  so their presence is harmless. A `--without-icu` source build would shrink the rootfs
+  but adds a heavy build step for no determinism gain.
+- **Image not byte-reproducible across separate builds** (the baked initdb system id is
+  a build-time random) — runtime determinism, the gate, is unaffected. The runtime libs
+  are taken from the build host's `/lib` (the determinism box is the pinned build
+  environment), not separately pinned.
+- **Terminal is a forced triple-fault reboot, not an ACPI poweroff** — a consequence of
+  the device_shutdown stall above; deterministic and clean for the gate's purpose.
+
 ## Task 36 — guest-kernel rebase: Kata-class container-host config + determinism overlay
 
 ### The decision (what landed)
