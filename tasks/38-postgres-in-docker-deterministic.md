@@ -17,9 +17,12 @@ and `RESEARCH.md` / `docs/ROADMAP.md` (Go-runtime entropy note) first.
 - **Storage driver:** `vfs` (simplest on RAM — just copies layers; space-hungry but RAM-backed and we
   don't care about speed) or `overlay2` on the RAM-backed ext4. Pick the one that boots cleanest;
   document.
-- **Run:** `docker run --network none postgres` + the **same fixed workload as task 37** → stream the
-  container's stdout/stderr to `ttyS0` → clean poweroff. `--network none` drops the entire Docker
-  bridge/netfilter surface (config *and* nondeterminism) — single-node has no network anyway.
+- **Run:** `docker run --network none postgres`, then drive it with the **same fixed insert/select loop
+  as task 37** (the client connects to the containerized DB over its unix socket / localhost — N
+  iterations of insert → select → print) → stream the container's **and the loop's** stdout/stderr to
+  `ttyS0` → clean poweroff. `--network none` drops the entire Docker bridge/netfilter surface (config
+  *and* nondeterminism) — single-node has no network anyway; the workload reaches Postgres over the local
+  socket, not TCP.
 
 ## Determinism closure (delta over 37 — the container stack's surface)
 
