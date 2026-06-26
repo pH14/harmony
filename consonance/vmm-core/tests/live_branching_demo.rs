@@ -125,9 +125,14 @@ const WALL_BUDGET: Duration = Duration::from_secs(1200);
 /// whether `S` was sealed before or after Postgres came up (the snapshot itself is
 /// sealed at the first clean boundary, see `seal_first_clean`).
 const PG_READY: &[u8] = b"database system is ready to accept connections";
-/// The final workload row (iteration 20): a pure function of the loop index, so it
-/// proves the *query results* reached the serial in every continuation.
-const FINAL_ROW: &[u8] = b"row|20|407|20|3010";
+/// The deterministic prefix of the final workload row (iteration 20): `row`, loop
+/// index 20, running `count(*)` = 20, running `sum(i)` = 210 (task 42's workload v2 —
+/// the streamed line is `row|20|20|210|<uuid>|<t>`, the uuid + t seed-derived). This
+/// count/sum prefix is a pure function of the loop index, so matching it proves the
+/// *query results* reached the serial in every continuation. (The demo only needs a
+/// workload-completed marker; the per-row UUID/timestamp shape is gated in
+/// `live_postgres.rs`.)
+const FINAL_ROW: &[u8] = b"row|20|20|210|";
 /// `pg-init.sh` prints this after a clean shutdown.
 const GUEST_READY: &[u8] = b"GUEST_READY";
 

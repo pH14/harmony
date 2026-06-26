@@ -162,16 +162,26 @@ mke2fs -q -t ext4 -U "$FIXED_UUID" \
     -E lazy_itable_init=0,lazy_journal_init=0 \
     -d "$STAGEFS" -F "$EXT4" "$EXT4_SIZE"
 
-# --- 4. the baked workload: CREATE then N autocommit INSERT+SELECT iterations -
-# Each SELECT reports the row plus the running count/sum aggregate; the values are
-# a pure function of the loop index (no wall-clock / random columns) so the golden
-# is a deterministic function of the seed.
+# --- 4. the baked workload v2 (task 42): UUID + wall-clock, still deterministic -
+# Each row carries a gen_random_uuid() id (column DEFAULT) and a clock_timestamp()
+# wall-clock column. These LOOK nondeterministic — a random UUID, a per-call
+# wall-clock time — but must come out BIT-IDENTICAL across two same-seed runs:
+# gen_random_uuid() draws from pg_strong_random → the seeded CRNG (the same path
+# task 37 verified), and clock_timestamp() reads the system clock, which is
+# V-time-driven. Each iteration INSERTs (i, clock_timestamp()) and SELECTs the row
+# back with the running count(*)/sum(i) aggregate plus its id + t, streamed as
+# `row|i|count|sum|uuid|t`. The count/sum prefix stays a pure function of the loop
+# index — the deterministic anchor the gate matches (`row|20|20|210|…`) — while the
+# uuid + t are seed-derived (deterministic but not predictable, so the gate checks
+# them by *shape* and proves seed-sensitivity at a different seed). gen_random_uuid()
+# is built into PostgreSQL core since v13 (PG17 here), so no CREATE EXTENSION pgcrypto
+# is needed — confirmed by the workload running clean under ON_ERROR_STOP=1.
 {
-    echo "CREATE TABLE ledger(i int primary key, v bigint);"
+    echo "CREATE TABLE ledger(id uuid PRIMARY KEY DEFAULT gen_random_uuid(), i int, t timestamptz);"
     i=1
     while [ "$i" -le "$WORKLOAD_N" ]; do
-        echo "INSERT INTO ledger(i,v) VALUES ($i, $i::bigint*$i + 7);"
-        echo "SELECT 'row', i, v, (SELECT count(*) FROM ledger), (SELECT sum(v) FROM ledger) FROM ledger WHERE i=$i;"
+        echo "INSERT INTO ledger(i,t) VALUES ($i, clock_timestamp());"
+        echo "SELECT 'row', i, (SELECT count(*) FROM ledger), (SELECT sum(i) FROM ledger), id, t FROM ledger WHERE i=$i;"
         i=$((i+1))
     done
 } >"$PGROOT/workload.sql"
