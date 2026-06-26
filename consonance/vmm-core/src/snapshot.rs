@@ -563,7 +563,16 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     c.nmi_pending = e.nmi_pending;
     c.nmi_masked = e.nmi_masked;
     c.interrupt_shadow = e.interrupt_shadow;
-    c.sipi_vector = e.sipi_vector;
+    // SIPI: gate strictly on the *original* validity bit, never on `sipi_vector != 0`.
+    // Vector 0 is a legal SIPI (a value test would drop a genuine one), and a nonzero
+    // vector with `VALID_SIPI_VECTOR` clear is a stale residual (a value test would
+    // replay it). KVM zeroes the vector and clears the bit on every `KVM_GET_VCPU_EVENTS`
+    // (it is SET-only — for injecting into a wait-for-SIPI vCPU), so a captured snapshot
+    // carries no SIPI; gating on the bit keeps a synthetic/relayed record faithful.
+    let sipi_valid = e.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR != 0;
+    if sipi_valid {
+        c.sipi_vector = e.sipi_vector;
+    }
     c.smi_smm = e.smi_smm;
     c.smi_pending = e.smi_pending;
     c.smi_inside_nmi = e.smi_inside_nmi;
@@ -579,7 +588,7 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
         KVM_VCPUEVENT_VALID_NMI_PENDING
     } else {
         0
-    } | if c.sipi_vector != 0 {
+    } | if sipi_valid {
         KVM_VCPUEVENT_VALID_SIPI_VECTOR
     } else {
         0
@@ -690,6 +699,32 @@ pub(crate) fn has_inflight_injection(e: &vmm_backend::VcpuEvents) -> bool {
         u64::from(e.triple_fault_pending),
     ];
     fields.iter().any(|&x| x != 0)
+}
+
+/// `true` iff `e` carries a **genuine in-flight event** — a real injected-or-pending bit,
+/// the *active* subset of [`has_inflight_injection`].
+///
+/// Where [`has_inflight_injection`] fires on KVM's inert **modifier residuals** too (a
+/// stale `interrupt.nr` / `exception.has_error_code` / `sipi_vector` left set with every
+/// active bit clear), this fires **only** when an event is actually mid-flight: an
+/// injected interrupt / exception / NMI, a pending exception / NMI / SMI, a queued triple
+/// fault, or a valid SIPI. A residual is *not* a non-quiescent point — it collapses to the
+/// clean quiescent record under [`canonical_events`] — so a gate that wants to **prove** a
+/// non-quiescent snapshot (an event KVM committed to that the guest has not yet consumed)
+/// must seal on **this**, not on `has_inflight_injection` (which would let an inert
+/// residual seal a quiescent point dressed as non-quiescent). On a real
+/// `KVM_GET_VCPU_EVENTS` the SIPI vector is reported 0 with `VALID_SIPI_VECTOR` clear (it
+/// is SET-only), so the SIPI term never fires for a captured snapshot; it is kept for
+/// completeness and to match [`canonical_events`]'s validity-bit-driven SIPI handling.
+pub(crate) fn has_active_event_injection(e: &vmm_backend::VcpuEvents) -> bool {
+    e.interrupt_injected != 0
+        || e.exception_injected != 0
+        || e.exception_pending != 0
+        || e.nmi_injected != 0
+        || e.nmi_pending != 0
+        || e.smi_pending != 0
+        || e.triple_fault_pending != 0
+        || e.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR != 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1396,6 +1431,62 @@ mod tests {
     }
 
     #[test]
+    fn has_active_event_injection_flags_only_genuine_injections_not_residuals() {
+        // The *active* subset of has_inflight_injection: only a real injected/pending bit
+        // counts, never an inert modifier residual. The live gate seals on THIS, so the
+        // active/residual split must be exact — a `|| → &&` on any operand (which would
+        // stop a single genuine event from sealing) and a stray residual term (which would
+        // let a quiescent-dressed residual seal a non-headline point) are both caught.
+        assert!(!has_active_event_injection(
+            &vmm_backend::VcpuEvents::default()
+        ));
+        // Each GENUINE active bit alone marks an in-flight event (one operand of the chain).
+        for set in [
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_pending = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_pending = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_pending = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.triple_fault_pending = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.flags = KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+        ] {
+            let mut e = vmm_backend::VcpuEvents::default();
+            set(&mut e);
+            assert!(
+                has_active_event_injection(&e),
+                "a genuine injected/pending bit must mark an active event: {e:?}"
+            );
+        }
+        // Every inert modifier residual alone must NOT (each collapses under
+        // canonical_events). This is the whole point of the active/residual distinction:
+        // a residual is snapshottable but does not prove a non-quiescent point. A nonzero
+        // `sipi_vector` with VALID_SIPI_VECTOR clear is a residual (the SIPI edge fix).
+        for set in [
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_nr = 0x34,
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_soft = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_nr = 14,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_has_error_code = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_error_code = 0xFFFF,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_has_payload = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.exception_payload = 0xCAFE,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_masked = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.interrupt_shadow = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.sipi_vector = 0xAB, // bit clear → residual
+            |e: &mut vmm_backend::VcpuEvents| e.smi_smm = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_inside_nmi = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_latched_init = 1,
+        ] {
+            let mut e = vmm_backend::VcpuEvents::default();
+            set(&mut e);
+            assert!(
+                !has_active_event_injection(&e),
+                "an inert modifier residual must NOT mark an active event: {e:?}"
+            );
+        }
+    }
+
+    #[test]
     fn canonical_events_collapses_residuals_and_reconstructs_flags() {
         // The box bug: KVM leaves inert modifier residuals (a stale interrupt.nr /
         // exception.nr/has_error_code, the GET-only validity bits) set even at a
@@ -1429,7 +1520,10 @@ mod tests {
             interrupt_shadow: 1,
             nmi_masked: 1,
             triple_fault_pending: 1,
-            flags: 0xFFFF_FFFF, // raw GET flags ignored; rebuilt below
+            // Every GET-side flag bit set EXCEPT VALID_SIPI_VECTOR (whose validity is now
+            // preserved from this bit, not inferred — tested separately). The rest are
+            // ignored and rebuilt from the surviving fields below.
+            flags: !KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             ..Default::default()
         };
         let c = canonical_events(&injected);
@@ -1461,13 +1555,48 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(canonical_events(&no_int).interrupt_nr, 0);
-        let sipi = vmm_backend::VcpuEvents {
+        // SIPI is gated on the *original* validity bit, never on `sipi_vector != 0`. KVM
+        // zeroes the vector and clears the bit on every GET (it is SET-only), so this is
+        // the general-correctness path, not the captured-snapshot path.
+        //   * a nonzero vector with the bit CLEAR is a stale residual → drop vector + bit;
+        let sipi_residual = vmm_backend::VcpuEvents {
+            sipi_vector: 0xAB, // Default flags = 0 → VALID_SIPI_VECTOR clear
+            ..Default::default()
+        };
+        let cr = canonical_events(&sipi_residual);
+        assert_eq!(
+            cr.sipi_vector, 0,
+            "a SIPI residual (bit clear) drops the vector"
+        );
+        assert_eq!(
+            cr.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            0,
+            "a SIPI residual (bit clear) clears the validity bit"
+        );
+        //   * a vector with the bit SET is genuine → carry vector + keep bit;
+        let sipi_genuine = vmm_backend::VcpuEvents {
             sipi_vector: 0xAB,
+            flags: KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            ..Default::default()
+        };
+        let cg = canonical_events(&sipi_genuine);
+        assert_eq!(cg.sipi_vector, 0xAB, "a valid SIPI carries its vector");
+        assert_eq!(
+            cg.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            "a valid SIPI keeps the validity bit"
+        );
+        //   * vector 0 with the bit SET is a LEGAL SIPI (not a residual) → bit survives
+        //     (a `sipi_vector != 0` test would have wrongly dropped it).
+        let sipi_zero = vmm_backend::VcpuEvents {
+            sipi_vector: 0,
+            flags: KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             ..Default::default()
         };
         assert_eq!(
-            canonical_events(&sipi).flags,
-            KVM_VCPUEVENT_VALID_SIPI_VECTOR
+            canonical_events(&sipi_zero).flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            "vector 0 with the validity bit set is a legal SIPI, not a residual"
         );
         // VALID_SMM is set by ANY of the four SMI sub-fields; VALID_NMI_PENDING by ANY
         // of the three NMI sub-fields. Exercise EACH operand alone so the OR-chains in

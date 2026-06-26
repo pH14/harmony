@@ -2264,9 +2264,14 @@ in-flight fields. So the entire fix is in `src/snapshot.rs` + `src/vmm.rs`; no c
    of which an interrupt-driven guest has *many* (every RDTSC the workload retires). This is the spec's
    "capture it **or** be defined to exclude it" — we define it out; an RDTSC-intercept boundary's
    completion replays idempotently, so the in-flight interrupt at that boundary is what task 41 adds.
-6. **One new public item:** `Vmm::has_inflight_event_injection() -> bool` — `true` iff the live vCPU is
-   at a non-quiescent point (the exact 14-field predicate task 39 rejected). Exposed so the gate-1
-   box test can quote a run's quiescent-vs-non-quiescent split (the `0 → N` flip) without reaching
+6. **Two new public items:** `Vmm::has_inflight_event_injection() -> bool` — `true` iff the live vCPU is
+   at a point the 14-field task-39 predicate rejected (a genuine injection **or** an inert residual);
+   and `Vmm::has_active_event_injection() -> bool` — `true` iff a **genuine** injected/pending event is
+   in flight (the *active* subset: an injected interrupt/exception/NMI, a pending exception/NMI/SMI, a
+   queued triple fault, or a valid SIPI), excluding residuals. The gate **seals on `has_active_…`** so it
+   proves restore of a *true* non-quiescent point — a residual collapses to the clean quiescent record
+   under canonicalization and would seal a quiescent point dressed as non-quiescent (PR #12 round 2). The
+   gate-1 box test quotes the full split (genuine active / inert residual / quiescent) without reaching
    below the `Backend` trait. (public-api refreshed on the box.)
 
 ## state_hash / goldens — no movement
@@ -2357,6 +2362,31 @@ projects `canonical_events(&vcpu.events)`, mirroring the device blob). The typed
 residual point (PR #12 review). Pinned by `fill_vcpu_state_canonicalizes_the_typed_events_record` (unit)
 and `snapshot_hashing_round_trips_at_a_residual_events_point` (end-to-end, snapshot-hashing ON).
 
+**3. SIPI validity derives from the validity bit, never from the vector value (`canonical_events`, PR #12
+round 2).** The earlier draft set `VALID_SIPI_VECTOR` (and carried `sipi_vector`) from `sipi_vector != 0`.
+That is wrong in two directions: **vector 0 is a legal SIPI** (a `!= 0` test silently drops a genuine
+SIPI-to-vector-0), and a **nonzero vector with `VALID_SIPI_VECTOR` clear is a stale residual** (a `!= 0`
+test replays it). *Fix:* gate both the carry and the rebuilt bit on the **original** `flags &
+VALID_SIPI_VECTOR`. *Correctness, golden-safe by construction:* `KVM_GET_VCPU_EVENTS` zeroes `sipi_vector`
+and clears `VALID_SIPI_VECTOR` on every GET (the vector is SET-only — for injecting into a wait-for-SIPI
+AP), so for every captured snapshot the value is already 0 and the bit already clear — the fix changes
+nothing on the real path; it makes a *synthetic/relayed* events record round-trip faithfully. Our
+single-vCPU guest never carries a SIPI. Pinned by the SIPI cases in
+`canonical_events_collapses_residuals_and_reconstructs_flags` (residual-with-vector dropped, valid-with-
+vector carried, **valid-with-vector-0 kept**).
+
+**4. The gate seals on a *genuine* injection, not a residual (`has_active_event_injection`, PR #12 round
+2).** `has_inflight_injection` (the task-39-reject predicate) also fires on the inert residuals of §2, so a
+gate that sealed at the first `has_inflight_…` match could seal a point whose only "event" is a stale
+`interrupt.nr` — which canonicalizes to the clean quiescent record, so gates 1/2/3 would pass without ever
+proving restore of a genuinely injected-but-undelivered event (the headline). *Fix:* a stricter
+`has_active_event_injection` — true only for a real injected/pending bit — and the live gate **seals on
+it**, tracking residual-only matches in a separate bucket. The gate-1 tally now reports three disjoint
+classes (genuine active / inert residual / quiescent), and asserts `active_snapshottable > 0`. Pinned by
+`has_active_event_injection_flags_only_genuine_injections_not_residuals` (each genuine bit alone fires;
+each of the 13 residual modifiers alone does not). The box gate must re-confirm the seal still lands at a
+true active-injection point (an injected LAPIC/device IRQ).
+
 **Why this is golden-safe without a re-bless (the key check).** No test pins an **absolute** Linux
 `state_hash` value — every `state_hash` golden is **relative**: deterministic-twice (`a == b` across two
 same-seed boots: `live_m1_m2`, `live_postgres` p2, `live_linux_boot`, `unison::determinism`) or
@@ -2364,40 +2394,47 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (232), `unison`/`det-corpus` determinism (92) all green; and
+should not." Verified on Mac: `vmm-core` (237), `unison`/`det-corpus` determinism (92) all green; and
 **on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**235** tests) / `deny`. **Miri**
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**237** tests) / `deny`. **Miri**
 validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
 predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** (`cargo mutants
---no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout** (45 caught).
+--no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout**.
 Exact-value tests pin the new surface: the full in-flight `kvm_vcpu_events` device-blob round-trip (every
-field distinct, non-zero), the `has_inflight_injection` 14-field predicate (each field alone flips it),
-`canonical_events` (each SMI/NMI OR-chain operand individually — 32/32 caught after the PR-#12 hardening),
-and the `encode_segment` unusable-`type` mask — `state_hash_masks_only_an_unusable_segments_type` pins
-**both halves** of `if seg.unusable != 0 { 0 } else { seg.type_ }` (a *usable* segment's type reaches the
-hash; an *unusable* one's does not), killing the `!= -> ==` mutant that the PR-#12 fix first surfaced.
-**public-api** — one new line (`Vmm::has_inflight_event_injection`), `tests/public-api.txt` matches on the box.
+field distinct, non-zero), the `has_inflight_injection` 14-field predicate (each field alone flips it), the
+`has_active_event_injection` active/residual split (each genuine bit alone fires; each of the 13 residual
+modifiers alone does not — PR #12 round 2), `canonical_events` (each SMI/NMI OR-chain operand individually,
+plus the SIPI validity-bit cases incl. valid-vector-0 — PR #12 round 2), and the `encode_segment`
+unusable-`type` mask — `state_hash_masks_only_an_unusable_segments_type` pins **both halves** of
+`if seg.unusable != 0 { 0 } else { seg.type_ }` (a *usable* segment's type reaches the hash; an *unusable*
+one's does not), killing the `!= -> ==` mutant the PR-#12 round-1 fix first surfaced.
+**public-api** — two new lines (`Vmm::has_active_event_injection`, `Vmm::has_inflight_event_injection`),
+`tests/public-api.txt` matches on the box.
 
 Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
 (`device_blob_round_trips_a_full_in_flight_events_record`,
 `has_inflight_injection_flags_exactly_the_non_quiescent_fields`,
+`has_active_event_injection_flags_only_genuine_injections_not_residuals`,
 `canonical_events_collapses_residuals_and_reconstructs_flags`,
 `fill_vcpu_state_canonicalizes_the_typed_events_record`), `src/vmm.rs`
 (`save_vm_state_captures_in_flight_events_at_a_non_quiescent_point`,
 `snapshot_restore_re_derives_the_in_flight_lapic_irq`,
-`has_inflight_event_injection_reflects_the_live_vcpu`), `tests/snapshot_branch.rs`
+`has_inflight_event_injection_reflects_the_live_vcpu`), `tests/event_loop.rs`
+(`state_hash_masks_only_an_unusable_segments_type`), `tests/snapshot_branch.rs`
 (`non_quiescent_in_flight_events_round_trip_through_the_engine` — the full engine path;
 `snapshot_hashing_round_trips_at_a_residual_events_point` — the VMST chunk is residual-clean, PR #12).
 
 **Box (`tests/live_nonquiescent_snapshot.rs`, `#[cfg(target_os="linux")]` + `#[ignore]`):**
 - `gate1_nonquiescent_point_is_snapshottable` — scans the post-readiness Postgres workload and quotes
-  the **before/after split on the same run** (the in-flight points task 39 rejected, now snapshottable
-  — the `0 → N` flip), then snapshots one such point and confirms `restore_vm_state` produces a
-  **runnable** VM that **cleanly completes the workload** (`internally_consistent`: final row +
-  `GUEST_READY` + a real terminal + no step error).
+  the **before/after split on the same run** in three disjoint classes (genuine **active** injection /
+  inert **residual** / quiescent — all rejected by task 39, now snapshottable; the `0 → N` flip), seals at
+  the first point carrying a **genuine active injection** (`has_active_event_injection`, *not* a residual —
+  so it proves restore of a true non-quiescent point), asserts `active_snapshottable > 0`, then confirms
+  `restore_vm_state` produces a **runnable** VM that **cleanly completes the workload**
+  (`internally_consistent`: final row + `GUEST_READY` + a real terminal + no step error).
 - `gate2_mid_postgres_roundtrip_is_deterministic` — **the milestone:** a running Postgres is snapshotted
   **mid-workload at a non-quiescent point**; the **un-snapshotted (live) continuation** from that seal
   is the reference (the spec's "un-snapshotted run"). The snapshot is restored into a fresh VM and
@@ -2472,5 +2509,6 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 > - **Hygiene ✓** — patched `kvm 1400832` loaded per run, reverted to stock `kvm 1396736` after each
 >   (verified via `lsmod`), `kvm_intel` users checked `== 0` before loading (task 38 idle).
 > - **Standard gates on the box ✓** — `clippy -D warnings` (the box-only test file included), `fmt`,
->   `nextest` (235 non-ignored), and **public-api** (`tests/public-api.txt` matches
->   `cargo +nightly public-api` exactly — the one new line `Vmm::has_inflight_event_injection`).
+>   `nextest` (237 non-ignored), and **public-api** (`tests/public-api.txt` matches
+>   `cargo +nightly public-api` exactly — the two new lines `Vmm::has_active_event_injection`,
+>   `Vmm::has_inflight_event_injection`).

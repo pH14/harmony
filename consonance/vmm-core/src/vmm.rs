@@ -524,6 +524,22 @@ impl<B: Backend> Vmm<B> {
         snapshot::has_inflight_injection(&self.current_vcpu().events)
     }
 
+    /// `true` iff the live vCPU carries a **genuine in-flight event** — a real
+    /// injected-or-pending bit (an injected interrupt/exception/NMI, a pending
+    /// exception/NMI/SMI, a queued triple fault, or a valid SIPI), the *active* subset of
+    /// [`Vmm::has_inflight_event_injection`].
+    ///
+    /// [`Vmm::has_inflight_event_injection`] reports the full task-39-would-reject set,
+    /// which **also** fires on KVM's inert modifier residuals (a stale `interrupt.nr` /
+    /// `exception.has_error_code` left set with every active bit clear). This reports only
+    /// a *genuine* injection — an event KVM has committed to that the guest has not yet
+    /// consumed — so a gate proving a non-quiescent snapshot seals on **this**, not on a
+    /// residual (which collapses to the clean quiescent record under canonicalization).
+    /// Best-effort read, like [`Vmm::has_inflight_event_injection`]; does not mutate the VM.
+    pub fn has_active_event_injection(&self) -> bool {
+        snapshot::has_active_event_injection(&self.current_vcpu().events)
+    }
+
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
     /// guest RAM size. On the box, KVM reads the guest through this same backing, so
     /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
@@ -4872,6 +4888,42 @@ mod tests {
         assert!(
             in_flight.has_inflight_event_injection(),
             "an injected-but-undelivered interrupt is a non-quiescent point"
+        );
+    }
+
+    #[test]
+    fn has_active_event_injection_reflects_the_live_vcpu() {
+        // The accessor the gate-1 SEAL uses: `false` at a quiescent point AND at an inert
+        // residual point, `true` only for a GENUINE injected/pending event. This is the
+        // active/residual distinction at the `Vmm` seam — sealing on a residual would
+        // snapshot a quiescent-equivalent point that does not prove the headline (PR #12
+        // round 2). Pins the wrapper so a `-> true`/`-> false` mutant is caught.
+        let quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
+        assert!(
+            !quiescent.has_active_event_injection(),
+            "a quiescent vCPU carries no active event"
+        );
+        // A stale modifier residual (interrupt.nr set, injected clear) is a task-39-reject
+        // point (`has_inflight`) but NOT active — the gate must never seal here.
+        let mut residual = nonzero_state();
+        residual.events.interrupt_nr = 0x34; // injected stays 0 → inert residual
+        let residual_vmm = full_vmm(residual, vec![], 0, 1);
+        assert!(
+            residual_vmm.has_inflight_event_injection(),
+            "an inert residual is still a task-39-reject point"
+        );
+        assert!(
+            !residual_vmm.has_active_event_injection(),
+            "but an inert residual is NOT a genuine active injection — never seal here"
+        );
+        // A genuine injected-but-undelivered interrupt IS active.
+        let mut st = nonzero_state();
+        st.events.interrupt_injected = 1;
+        st.events.interrupt_nr = 0x34;
+        let in_flight = full_vmm(st, vec![], 0, 1);
+        assert!(
+            in_flight.has_active_event_injection(),
+            "an injected-but-undelivered interrupt is a genuine active injection"
         );
     }
 
