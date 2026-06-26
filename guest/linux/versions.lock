@@ -27,3 +27,24 @@ PG_CLIENT_DEB_URL=$PG_DEB_BASE/postgresql-client-17_17.10-0+deb13u1_amd64.deb
 PG_CLIENT_DEB_SHA256=0f4b84e21eb9df17a000af9a5c68eeed14c7c1cad9fa911bb3cb26311ee4a5b5
 PG_LIBPQ_DEB_URL=$PG_DEB_BASE/libpq5_17.10-0+deb13u1_amd64.deb
 PG_LIBPQ_DEB_SHA256=bcaba7700a2afbdc4b7bf0b0bc9532f1cd49a8fd6fa47ccab125befd4ba7716a
+
+# --- task 38: Postgres-in-Docker (the container stack + the official image) ---
+# Docker's official **static** binary bundle (dockerd + containerd +
+# containerd-shim-runc-v2 + runc + the docker CLI + ctr) — all statically
+# linked, so the guest rootfs needs no glibc closure for the container stack
+# (only the busybox + the static docker bins). Pinned by URL+sha256 like the
+# kernel/busybox; pinned 2026-06-26 (latest stable on download.docker.com).
+DOCKER_VERSION=29.6.0
+DOCKER_TGZ_URL=https://download.docker.com/linux/static/stable/x86_64/docker-29.6.0.tgz
+DOCKER_TGZ_SHA256=4d2f6782406b56eb43a519ad5078a6a79abe4d663328acb69136aceff5e05224
+
+# The **official `postgres` image** baked into the rootfs (no runtime registry
+# pull — the spec's requirement). We pin it by registry **digest** (content-
+# addressed, the strongest integrity anchor); `guest/scripts/fetch.sh` pulls it
+# with the box's `ctr` (containerd) into an isolated namespace and `ctr image
+# export`s a `docker load`-compatible tar to guest/dl/postgres-image.tar. The
+# digest below is the multi-arch index for `postgres:17`; ctr resolves the
+# linux/amd64 manifest (recorded too, for provenance). Pinned 2026-06-26.
+POSTGRES_IMAGE_NAME=postgres:17
+POSTGRES_IMAGE_INDEX_DIGEST=sha256:5f050f770b427fbd477edee6c3968a72e5c6be97e050a7e368b2b74a9494a285
+POSTGRES_IMAGE_AMD64_DIGEST=sha256:9c1534cbf839ec70409508a874f4c02bf4739de2f32f77efe080eef1cfd34bf4
