@@ -67,9 +67,26 @@ const SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
 /// rather than a hang; `tsc=reliable`/`no_timer_check`/`lpj=` neutralize the
 /// boot's dependence on a periodic timer tick (`calibrate_delay` is preset; the
 /// timer cross-check is skipped) so the kernel reaches userspace **without** a
-/// timer interrupt. Override with `BOOT_CMDLINE` to iterate.
-const DEFAULT_CMDLINE: &str =
-    "console=ttyS0 panic=-1 reboot=t tsc=reliable no_timer_check lpj=4000000";
+/// timer interrupt.
+///
+/// The trailing params are the **determinism guarantees the Kata-config base needs
+/// at runtime** (task 36) — each a no-op against the determinism overlay's build
+/// symbols, present belt-and-suspenders because Kata's base sets the opposite:
+/// `random.trust_cpu=off` (never credit RDRAND entropy — RDRAND is trapped to the
+/// seeded stream anyway); `nokaslr` (KASLR is config-off, but Kata's base.conf has
+/// RANDOMIZE_BASE=y); `nosmp`/`maxcpus=1` (SMP is config-off → UP kernel, but Kata's
+/// base.conf has SMP=y — pin to one vCPU regardless); `nox2apic` (the VMM models
+/// only the xAPIC-MMIO LAPIC, and Kata builds X86_X2APIC=y now that HYPERVISOR_GUEST
+/// is on — CPUID.1:ECX[21]=0 already keeps the kernel on xAPIC, this nails it shut);
+/// `hpet=disable` (no HPET is exposed; HPET_TIMER is def_y and cannot be config-off).
+///
+/// Phase-2 result (task 36): the rebased kernel needs **no new probe-stall fix** —
+/// the task-34 i8042 OBF-set fast-clear (`devices::LegacyPlatform`) already covers
+/// the one jiffies-timeout probe, and the larger Kata config introduced no new
+/// boot-stranding spin under patched V-time. Override with `BOOT_CMDLINE` to iterate.
+const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t tsc=reliable \
+     no_timer_check lpj=4000000 random.trust_cpu=off nokaslr nosmp maxcpus=1 \
+     nox2apic hpet=disable";
 /// Step budget: a generous cap so a stuck guest exit-spamming cannot run forever
 /// (a guest *busy* loop with no exits is bounded by the external `timeout`).
 const MAX_STEPS: u64 = 200_000_000;
