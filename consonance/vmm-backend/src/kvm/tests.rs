@@ -872,3 +872,44 @@ fn interrupt_fields_round_trip_through_vcpu_events() {
     assert_eq!(back.interrupt_shadow, 1);
     assert_eq!(back, e);
 }
+
+// ---------------------------------------------------------------------------
+// run_until exit classification (task 47): the overflow-early / single-step path
+// must distinguish the single-step debug trap and the signal kick from a genuine
+// guest exit, since `decode_exit` rejects the former two as "unhandled".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn classify_single_step_trap() {
+    let s = SynRun::new();
+    set_reason(&s, kvm_bindings::KVM_EXIT_DEBUG);
+    assert_eq!(classify_step_exit(s.page()), StepStop::SingleStepTrap);
+}
+
+#[test]
+fn classify_overflow_signal() {
+    let s = SynRun::new();
+    set_reason(&s, kvm_bindings::KVM_EXIT_INTR);
+    assert_eq!(classify_step_exit(s.page()), StepStop::Interrupted);
+}
+
+#[test]
+fn classify_irq_window_is_reenter() {
+    let s = SynRun::new();
+    set_reason(&s, KVM_EXIT_IRQ_WINDOW_OPEN);
+    assert_eq!(classify_step_exit(s.page()), StepStop::Reenter);
+}
+
+#[test]
+fn classify_genuine_guest_exits() {
+    // A real guest exit before the deadline must be routed to `decode_exit`.
+    for reason in [KVM_EXIT_IO, KVM_EXIT_MMIO, KVM_EXIT_HLT, KVM_EXIT_X86_RDMSR] {
+        let s = SynRun::new();
+        set_reason(&s, reason);
+        assert_eq!(
+            classify_step_exit(s.page()),
+            StepStop::GuestExit,
+            "reason {reason} must classify as a guest exit"
+        );
+    }
+}

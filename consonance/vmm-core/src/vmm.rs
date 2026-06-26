@@ -12,7 +12,7 @@
 
 use hypercall_proto::{SeededEntropy, Service, Status};
 use sha2::{Digest, Sha256};
-use vmm_backend::{Backend, Exit, Gpa, VcpuState};
+use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
 use vtime::{VClock, VClockConfig};
 
 use crate::contract::{self, MsrDisposition};
@@ -1205,7 +1205,20 @@ impl<B: Backend> Vmm<B> {
         // boundary is clean again. `complete_rng` re-sets the flag if the exit we
         // service below is itself an RNG draw. (Cleared after `run()`, since a failed
         // re-entry did not commit the staged completion.)
-        let exit = self.backend.run()?;
+        //
+        // **Preemption (task 47).** When the determinism-complete path is wired and a
+        // LAPIC timer is armed, run to the timer's V-time deadline (`run_until`)
+        // instead of an open-ended `run()`, so a guest that takes no natural VM-exit
+        // (a busy-spin) is still preempted at exactly the seed-deterministic
+        // retired-branch count and the timer can fire. A natural guest exit before
+        // the deadline returns from `run_until` identically to `run()`; only a guest
+        // that would otherwise spin forever is forced out (additive — see
+        // `preemption_deadline`). Unwired paths (M1/M2/corpus: no LAPIC; stock KVM:
+        // no deterministic counter) keep plain `run()`, byte-for-byte unchanged.
+        let exit = match self.preemption_deadline() {
+            Some(deadline) => self.backend.run_until(deadline)?,
+            None => self.backend.run()?,
+        };
         self.rng_completion_staged = false;
         // This `run` committed any completion staged by the prior step; the exit we
         // are about to service stages a new one iff it is a read-style / MSR / CPUID /
@@ -1245,9 +1258,7 @@ impl<B: Backend> Vmm<B> {
             // loud contract violation, never a host-derived value.
             Exit::Rdtsc | Exit::Rdtscp => self.complete_tsc(),
             Exit::Rdrand { width } | Exit::Rdseed { width } => self.complete_rng(width),
-            Exit::Deadline { .. } => Err(VmmError::ContractViolation(
-                "unexpected run_until deadline (V-time is a later phase)".to_string(),
-            )),
+            Exit::Deadline { reached } => self.on_deadline(reached),
         }
     }
 
@@ -1710,6 +1721,63 @@ impl<B: Backend> Vmm<B> {
                 Ok(vt.clock.snapshot_vns(work))
             }
             None => Ok(0),
+        }
+    }
+
+    /// The next-timer V-time deadline as an absolute retired-branch **work count**
+    /// for [`Backend::run_until`], or `None` to keep the plain open-ended `run()`.
+    ///
+    /// Returns `Some` only on the **determinism-complete** path (a backend with a
+    /// deterministic retired-branch counter — [`Capabilities::deterministic_tsc`])
+    /// with the LAPIC wired and its timer armed. That gating keeps `run_until`
+    /// strictly **additive**, so the protected goldens never take it:
+    ///
+    /// - **M1/M2/P6/corpus/multiboot** never wire the LAPIC → always `run()`.
+    /// - **Stock KVM** (no deterministic counter; [`Self::lapic_now_vns`] reads live
+    ///   work and fires the timer at natural exits — Phase B.1) → always `run()`.
+    /// - **Patched KVM Linux boot** → `run_until` the timer deadline, so a
+    ///   busy-spinning guest is preempted on time (task 47 / ROADMAP D4).
+    ///
+    /// The timer deadline is V-time ns; [`VClock::work_for_vns`] converts it to the
+    /// work axis the counter measures (rounding **up** to the first work count whose
+    /// V-time reaches the deadline, so the post-preemption anchor does fire the timer).
+    ///
+    /// [`Capabilities::deterministic_tsc`]: vmm_backend::Capabilities
+    fn preemption_deadline(&self) -> Option<Vtime> {
+        let vt = self.vtime.as_ref()?;
+        if !self.backend.capabilities().deterministic_tsc {
+            return None;
+        }
+        let deadline_vns = self.lapic.as_ref()?.next_timer_deadline()?;
+        Some(Vtime(vt.clock.work_for_vns(deadline_vns)))
+    }
+
+    /// Handle [`Exit::Deadline`]: the guest was preempted at exactly `reached`
+    /// retired branches (a pure function of the seed — bit-identical across same-seed
+    /// runs even mid-spin). Advance the skid-free last-intercept anchor to it — a
+    /// deterministic V-time intercept, like an RDTSC trap — so the NEXT `step`'s
+    /// [`Self::service_pending_irqs`] sees [`Self::lapic_now_vns`] at the timer
+    /// deadline, fires the timer into the LAPIC IRR, and injects it at the first
+    /// injectable entry. No completion (the backend left nothing pending).
+    fn on_deadline(&mut self, reached: Vtime) -> Result<Step, VmmError> {
+        match self.vtime.as_mut() {
+            Some(vt) => {
+                vt.last_intercept_work = reached.0;
+                // The preemption point is an exact work boundary, so V-time is
+                // synchronized (a snapshot taken right here is exact, like any
+                // other intercept).
+                self.vtime_synchronized = true;
+                Ok(Step::Continued)
+            }
+            // A `Deadline` only ever answers a `run_until`, which the VMM issues
+            // ONLY on the V-time-wired determinism path ([`Self::preemption_deadline`]).
+            // One arriving with no V-time wired is a backend contract violation —
+            // fail closed, never silently absorbed.
+            None => Err(VmmError::ContractViolation(format!(
+                "Exit::Deadline (reached {}) with no V-time wired — run_until is the \
+                 determinism-path preemption seam and is never issued without it",
+                reached.0
+            ))),
         }
     }
 
@@ -3964,6 +4032,40 @@ mod tests {
             reads.last().expect("ISR read B") & 1,
             1,
             "delivered off the advancing live-work clock (deterministic_tsc=false)"
+        );
+    }
+
+    #[test]
+    fn run_until_deadline_advances_anchor_and_fires_the_timer() {
+        // The preemption path (task 47), wiring proof on the portable mock: once a
+        // LAPIC timer is armed on the determinism-complete path, the VMM runs via
+        // `run_until` (busy-spin preemption). An `Exit::Deadline` advances the
+        // skid-free anchor to the reached work, so the NEXT entry fires the timer
+        // into the IRR and delivers it (IRR→ISR on acceptance). A guest that never
+        // exits on its own thus still observes the timer.
+        let mut exits = arm_timer_exits(1000);
+        // The mock rewrites `reached` to the deadline the VMM passed `run_until`
+        // (= work_for_vns(timer deadline)); the literal here is a placeholder.
+        exits.push(Exit::Deadline { reached: Vtime(0) });
+        exits.push(read_mmio(isr_gpa(0x40))); // after delivery: vector 0x40 in service
+        exits.push(Exit::Hlt);
+        // Default (deterministic) caps so `preemption_deadline` engages; the
+        // ScriptedWork value is irrelevant (the clock reads the intercept anchor).
+        let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(0)));
+
+        v.run().expect("run");
+        let isr = *read_completions(&v).last().expect("ISR read");
+        assert_eq!(
+            isr & 1,
+            1,
+            "the timer vector (0x40, ISR bank bit 0) is delivered after the run_until \
+             preemption deadline advanced the anchor past the timer's expiry"
+        );
+        // The anchor moved to the reached work (a non-zero V-time intercept), proving
+        // `on_deadline` recorded the preemption point.
+        assert!(
+            v.vtime.as_ref().unwrap().last_intercept_work > 0,
+            "the preemption deadline advanced the last-intercept anchor"
         );
     }
 

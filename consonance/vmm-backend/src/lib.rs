@@ -30,6 +30,15 @@ mod region;
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 mod run_buf;
 
+// The portable `Backend::run_until` orchestration (§2 inversion seam): drives the
+// pure `vtime` planner over a guest-exit-aware `PreemptCpu` and maps the outcome to
+// an `Exit`. Compiled on every platform (its determinism contract is property-tested
+// against `vtime::sim::SimCpu` on macOS); the live `PreemptCpu` it serves is the
+// box-only `KvmBackend` adapter. Dead on a non-test, non-Linux build (only the live
+// adapter calls it), hence the conditional allow.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+mod run_until;
+
 #[cfg(feature = "mock")]
 mod mock;
 
@@ -41,6 +50,13 @@ mod mock;
 mod kvm;
 #[cfg(target_os = "linux")]
 mod kvm_sys;
+// `pmu` is the box-only backend-owned `perf_event` branch counter that drives
+// `run_until`'s overflow-early phase (the live `vtime::CpuBackend` underneath the
+// portable `run_until` orchestration). Like `kvm_sys` it is box-only syscall
+// orchestration excluded from the coverage + mutation gates; its raw syscalls sit
+// behind `#[cfg(not(miri))]` seams.
+#[cfg(target_os = "linux")]
+mod pmu;
 // `patched_kvm` is the box-only syscall orchestration for the determinism
 // backend (the `KVM_EXIT_DETERMINISM` decode/complete logic it drives is the
 // pure, unit-tested `kvm` module); like `kvm_sys` it is excluded from the

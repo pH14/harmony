@@ -22,9 +22,11 @@ use kvm_bindings::{
     // NB: `SIGNIFCANT` (missing the 'I') is an upstream typo in kvm-bindings /
     // the kernel uapi, faithfully preserved here.
     KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
+    KVM_EXIT_DEBUG,
     KVM_EXIT_FAIL_ENTRY,
     KVM_EXIT_HLT,
     KVM_EXIT_INTERNAL_ERROR,
+    KVM_EXIT_INTR,
     KVM_EXIT_IO,
     KVM_EXIT_IO_IN,
     KVM_EXIT_IRQ_WINDOW_OPEN,
@@ -160,7 +162,7 @@ impl RunPage {
         Self { run, len }
     }
 
-    fn exit_reason(&self) -> u32 {
+    pub(crate) fn exit_reason(&self) -> u32 {
         // SAFETY: `run` is a valid `kvm_run` (constructor contract); `exit_reason`
         // is a plain field, always initialized.
         unsafe { (*self.run).exit_reason }
@@ -365,10 +367,40 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
         KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Shutdown, Pending::None))),
         KVM_EXIT_INTERNAL_ERROR => Err(BackendError::Internal("KVM_EXIT_INTERNAL_ERROR")),
         KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),
-        // Run-loop control exits — consumed internally, never surfaced. (inject /
-        // run_until are Phase 2; absent those, only EINTR-style wakeups land here.)
+        // Run-loop control exits — consumed internally, never surfaced.
         KVM_EXIT_IRQ_WINDOW_OPEN => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
+    }
+}
+
+/// How a `KVM_RUN` during the `run_until` (overflow-early + single-step) path
+/// stopped, classified from the raw `kvm_run.exit_reason` **before** [`decode_exit`]
+/// (which rejects the debug-trap and signal reasons as "unhandled" — they are not
+/// guest-observable exits). Pure: reads `page`, issues no syscall.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum StepStop {
+    /// `KVM_EXIT_DEBUG`: a single-step trap — exactly one instruction retired, NOT
+    /// a guest exit. Read the work counter and advance the planner.
+    SingleStepTrap,
+    /// `KVM_EXIT_INTR`: a signal (the PMU-overflow kick, or a spurious one) broke
+    /// `KVM_RUN` out. The caller checks the counter against the armed point. (This
+    /// reason is usually observed as the ioctl's `EINTR` return; handled here too
+    /// for the rare in-band case.)
+    Interrupted,
+    /// `KVM_EXIT_IRQ_WINDOW_OPEN`: a run-loop control exit; re-enter.
+    Reenter,
+    /// Any other reason: a genuine guest exit — decode it with [`decode_exit`] and
+    /// return it from `run_until` (short of the deadline).
+    GuestExit,
+}
+
+/// Classify the current `kvm_run` for the `run_until` path. Pure.
+pub(crate) fn classify_step_exit(page: RunPage) -> StepStop {
+    match page.exit_reason() {
+        KVM_EXIT_DEBUG => StepStop::SingleStepTrap,
+        KVM_EXIT_INTR => StepStop::Interrupted,
+        KVM_EXIT_IRQ_WINDOW_OPEN => StepStop::Reenter,
+        _ => StepStop::GuestExit,
     }
 }
 

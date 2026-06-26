@@ -2700,3 +2700,39 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >   `nextest` (245 non-ignored), and **public-api** (`tests/public-api.txt` matches
 >   `cargo +nightly public-api` exactly — the three new lines `Vmm::has_active_event_injection`,
 >   `Vmm::has_inflight_event_injection`, `Vmm::has_pending_guest_interrupt`).
+
+## Task 47 — preemption-timer VMM wiring (`run_until`)
+
+The run loop becomes V-time **active**: when the determinism-complete path is wired and a
+LAPIC timer is armed, `step()` runs to the timer's V-time deadline via
+`Backend::run_until` instead of an open-ended `run()`, so a guest that takes no natural
+VM-exit (a busy-spin) is still preempted at the seed-deterministic retired-branch count
+and the timer fires. The live PMU-overflow + KVM single-step machinery lives below the
+trait in `vmm-backend` (task 47 there); this crate only decides *when* to preempt and
+*what to do* with the resulting `Exit::Deadline`.
+
+- **`preemption_deadline()`** returns `Some(work)` — the next timer deadline (vns)
+  converted to a retired-branch work count via `VClock::work_for_vns` (which rounds
+  **up**, so the post-preemption anchor reaches the deadline) — **only** on the
+  `deterministic_tsc` backend with a wired LAPIC whose timer is armed. Otherwise `None`
+  → plain `run()`. This gating is what makes the path **strictly additive**:
+  M1/M2/P6/corpus/multiboot (no LAPIC) and stock KVM (live-work clock, natural-exit
+  timer — Phase B.1) never take it, so their `state_hash`/goldens are byte-for-byte
+  unchanged (confirmed: vmm-core 227/227, det-corpus + unison 92/92).
+- **`on_deadline(reached)`** advances the skid-free last-intercept anchor
+  (`last_intercept_work = reached`) — a deterministic V-time intercept, like an RDTSC
+  trap — and marks V-time synchronized, so the next `step`'s `service_pending_irqs` sees
+  `lapic_now_vns` at the timer deadline, fires the timer into the LAPIC IRR, and injects
+  it (via the existing re-arbitrated `set_pending_irq` seam) at the first injectable
+  entry. A `Deadline` arriving with **no V-time wired** is a backend contract violation
+  → fail closed (it only ever answers a `run_until`, which is never issued off the
+  determinism path) — this preserves `deadline_exit_fails_closed`.
+- The A≡B counter invariant (the backend's `run_until` counter equals this crate's
+  V-time `PerfWorkCounter`) is documented in `vmm-backend`'s notes and is the key
+  box-validation item. A mid-`run_until` determinism exit (e.g. RDTSC) is dispatched by
+  the normal `step()` path, reading the live counter — consistent because both counters
+  advance with the same guest execution during `run_until`.
+- Test: `run_until_deadline_advances_anchor_and_fires_the_timer` (portable, MockBackend)
+  proves the wiring end-to-end (arm timer → `run_until` → `Exit::Deadline` → anchor
+  advances → timer delivered). Gates 2/3 (live busy-spin + runc/Postgres,
+  deterministic-twice) are box-only — see `vmm-backend/IMPLEMENTATION.md`.

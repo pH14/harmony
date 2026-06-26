@@ -27,19 +27,23 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL,
-    KVM_MSR_EXIT_REASON_UNKNOWN, KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_interrupt,
-    kvm_mp_state, kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
+    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+    KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL, KVM_MSR_EXIT_REASON_UNKNOWN,
+    KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_guest_debug, kvm_interrupt, kvm_mp_state,
+    kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
     kvm_userspace_memory_region, kvm_xsave,
 };
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
+use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Event, Exit, ExitCounts};
 use crate::kvm::*;
+use crate::pmu::PmuBranchCounter;
 use crate::region::MemRegions;
+use crate::run_until::{PreemptCpu, SKID_MARGIN, drive_run_until};
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
 
@@ -118,6 +122,26 @@ pub struct KvmBackend {
     /// single-source operation; a `VecDeque` for robustness.)
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    /// The backend-owned retired-conditional-branch counter driving
+    /// [`Backend::run_until`]'s overflow-early phase (task 47, the live
+    /// [`vtime::CpuBackend`]). Opened **lazily-at-build but non-fatally**: `None`
+    /// when `perf_event` is unavailable (no Intel PMU / `perf_event_paranoid` too
+    /// high), in which case `run_until` returns a clear [`BackendError::Capability`]
+    /// and the `run()`-only paths (M1/M2/corpus) are unaffected. Opened with the
+    /// **same** event/flags/baseline as vmm-core's V-time `PerfWorkCounter`, on the
+    /// same thread, so on a deterministic guest stream the two read identical work
+    /// counts (the box-validation invariant — see `pmu` module docs).
+    pmu: Option<PmuBranchCounter>,
+    /// Whether `KVM_GUESTDBG_SINGLESTEP` is currently armed on the vCPU, so the
+    /// single-step ioctl is issued once per `run_until` (not per step) and always
+    /// disarmed before the next `run`.
+    single_step_armed: bool,
+    /// Set on the FIRST `run`/`run_until` of this VM's life, mirroring vmm-core's
+    /// first-entry [`WorkSource::start_run`]: the backend PMU counter is reset there
+    /// so it shares vmm-core's work-counter baseline even when a coexisting VM ran
+    /// on this (shared) thread first. (Touches only the unhashed PMU counter — the
+    /// `run()` path's observable state stays byte-identical.)
+    first_run_done: bool,
 }
 
 impl KvmBackend {
@@ -187,6 +211,13 @@ impl KvmBackend {
             pending_irq: None,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            // Open the run_until branch counter now (before any guest entry, so it
+            // shares vmm-core's V-time counter baseline) but never let its absence
+            // fail VM creation — only `run_until` needs it. `.ok()`: a box without
+            // perf access still creates a backend that can `run()`/save/restore.
+            pmu: PmuBranchCounter::open().ok(),
+            single_step_armed: false,
+            first_run_done: false,
         })
     }
 
@@ -260,6 +291,176 @@ impl KvmBackend {
                 None => continue, // run-loop control exit; re-enter
             }
         }
+    }
+
+    // -- run_until (§2 inversion seam: PMU overflow-early + single-step) --------
+
+    /// On the FIRST guest entry of this VM's life (via `run` or `run_until`), reset
+    /// the backend PMU counter so it shares vmm-core's first-entry baseline (the
+    /// V-time `PerfWorkCounter` does the same via `start_run`). No-op if perf is
+    /// unavailable; touches only the unhashed PMU counter, so `run()`'s observable
+    /// state stays byte-identical.
+    fn ensure_first_run(&mut self) {
+        if !self.first_run_done {
+            if let Some(pmu) = self.pmu.as_mut() {
+                let _ = pmu.reset();
+            }
+            self.first_run_done = true;
+        }
+    }
+
+    /// The backend PMU work count (run_until's V-time axis). Errors if the counter
+    /// is unavailable (perf open failed at build) or unreadable.
+    fn pmu_work(&self) -> Result<u64> {
+        self.pmu
+            .as_ref()
+            .ok_or(BackendError::Capability {
+                cap: "perf_event PMU branch counter (run_until)",
+            })?
+            .work()
+    }
+
+    /// Arm the PMU overflow at absolute work `armed_at` (planner phase 1).
+    fn pmu_arm(&self, armed_at: u64) -> Result<()> {
+        self.pmu
+            .as_ref()
+            .ok_or(BackendError::Capability {
+                cap: "perf_event PMU branch counter (run_until)",
+            })?
+            .arm_overflow(armed_at)
+    }
+
+    /// Disarm the PMU overflow + drain its ring buffer (best-effort cleanup).
+    fn pmu_disarm(&self) {
+        if let Some(pmu) = self.pmu.as_ref() {
+            let _ = pmu.disarm();
+        }
+    }
+
+    /// Planner phase 1: arm the overflow at `armed_at`, free-run the guest until the
+    /// overflow signal kicks `KVM_RUN` out (an `EINTR`) at-or-past `armed_at`, or a
+    /// genuine guest exit happens first. A pending maskable IRQ set before
+    /// `run_until` rides this entry via the normal injection handshake. The overflow
+    /// is disarmed by the caller.
+    fn run_armed(&mut self, armed_at: u64) -> Result<LiveStop> {
+        self.pmu_arm(armed_at)?;
+        let fd = self.vcpu.as_raw_fd();
+        loop {
+            // Same userspace-irqchip injection handshake as `enter_guest`: deliver a
+            // pre-existing pending vector when the guest can take it (deterministic
+            // delivery point), else arm the interrupt window.
+            match plan_irq_entry(self.run_page(), self.pending_irq) {
+                IrqEntry::Queue(vector) => {
+                    // SAFETY (raw ioctl seam): queue `vector` on the owned vCPU.
+                    unsafe { raw_interrupt(fd, u32::from(vector))? };
+                    self.pending_irq = None;
+                    self.accepted_irq.push_back(vector);
+                }
+                IrqEntry::Run => {}
+            }
+            // SAFETY (raw ioctl seam): `KVM_RUN` on the owned vCPU.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    // A signal broke us out. The overflow kick fires at-or-past the
+                    // armed count; a spurious signal before it just re-enters.
+                    let work = self.pmu_work()?;
+                    if work >= armed_at {
+                        return Ok(LiveStop::Count(work));
+                    }
+                    continue;
+                }
+                return Err(BackendError::Io(err));
+            }
+            match classify_step_exit(self.run_page()) {
+                // The overflow surfaced as KVM_EXIT_INTR rather than the ioctl EINTR.
+                StepStop::Interrupted => {
+                    let work = self.pmu_work()?;
+                    if work >= armed_at {
+                        return Ok(LiveStop::Count(work));
+                    }
+                    continue;
+                }
+                StepStop::Reenter => continue, // IRQ window opened; re-enter.
+                // Single-step is not armed during the free-run; a debug exit here is
+                // a contract violation, never silently treated as progress.
+                StepStop::SingleStepTrap => {
+                    return Err(BackendError::Internal(
+                        "run_until: unexpected single-step debug exit during free-run",
+                    ));
+                }
+                StepStop::GuestExit => {
+                    let (exit, pending) = decode_exit(self.run_page())?.ok_or(
+                        BackendError::Internal("run_until: control exit misclassified as guest"),
+                    )?;
+                    self.pending = pending;
+                    return Ok(LiveStop::Guest(exit));
+                }
+            }
+        }
+    }
+
+    /// Planner phase 2: single-step **one** instruction (`KVM_GUESTDBG_SINGLESTEP`)
+    /// to land at the exact deadline despite skid. Returns the new work count, or a
+    /// genuine guest exit taken by the stepped instruction. Does **not** inject (the
+    /// interrupt window is cleared) so the skid-margin steps land cleanly at the
+    /// deadline; a held pending vector is delivered after the deadline by the VMM.
+    fn single_step_once(&mut self) -> Result<LiveStop> {
+        self.enable_single_step()?;
+        let fd = self.vcpu.as_raw_fd();
+        loop {
+            // Clear any interrupt-window request so a window-open exit cannot loop
+            // (and so we do not inject mid-skid-margin).
+            let _ = plan_irq_entry(self.run_page(), None);
+            // SAFETY (raw ioctl seam): single-stepped `KVM_RUN` on the owned vCPU.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue; // spurious signal during a step; re-step.
+                }
+                return Err(BackendError::Io(err));
+            }
+            match classify_step_exit(self.run_page()) {
+                StepStop::SingleStepTrap => return Ok(LiveStop::Count(self.pmu_work()?)),
+                StepStop::Interrupted => continue, // overflow is disarmed; re-step.
+                StepStop::Reenter => continue,
+                StepStop::GuestExit => {
+                    let (exit, pending) = decode_exit(self.run_page())?.ok_or(
+                        BackendError::Internal("run_until: control exit misclassified as guest"),
+                    )?;
+                    self.pending = pending;
+                    return Ok(LiveStop::Guest(exit));
+                }
+            }
+        }
+    }
+
+    /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` (once per `run_until`).
+    fn enable_single_step(&mut self) -> Result<()> {
+        if self.single_step_armed {
+            return Ok(());
+        }
+        let dbg = kvm_guest_debug {
+            control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
+            ..Default::default()
+        };
+        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        self.single_step_armed = true;
+        Ok(())
+    }
+
+    /// Disarm guest-debug single-step, restoring normal execution for the next
+    /// `run`. No-op if it was never armed.
+    fn disable_single_step(&mut self) -> Result<()> {
+        if !self.single_step_armed {
+            return Ok(());
+        }
+        let dbg = kvm_guest_debug::default(); // control = 0: disable
+        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        self.single_step_armed = false;
+        Ok(())
     }
 
     /// Read the `allow-stateful` MSR set via `KVM_GET_MSRS` (the index list is the
@@ -578,6 +779,92 @@ impl Drop for KvmBackend {
     }
 }
 
+/// Where a single planner-driven `KVM_RUN` (free-run or single-step) stopped.
+enum LiveStop {
+    /// Stopped at this work count (overflow kick or single-step trap) — no guest
+    /// exit; the planner advances toward the deadline.
+    Count(u64),
+    /// A genuine guest exit was taken before the deadline; its pending-completion
+    /// was already armed on the backend. The planner is told it reached the
+    /// deadline (so it stops), and `run_until` returns this exit instead.
+    Guest(Exit),
+}
+
+/// The live [`vtime::CpuBackend`] (+ [`PreemptCpu`]): a thin adapter binding the
+/// pure precise-injection planner to the real PMU counter + KVM single-step on a
+/// borrowed [`KvmBackend`]. `work()` is infallible (the trait demands it), so the
+/// current count is cached from the fallible read `run_until` did up front and
+/// refreshed after each overflow-run/single-step; a guest exit / syscall error is
+/// stashed for `run_until` to recover after the planner returns.
+struct LiveCpu<'a> {
+    backend: &'a mut KvmBackend,
+    deadline: u64,
+    work_cache: u64,
+    pending_exit: Option<Exit>,
+    err: Option<BackendError>,
+}
+
+impl CpuBackend for LiveCpu<'_> {
+    fn work(&self) -> u64 {
+        self.work_cache
+    }
+
+    fn run_until_overflow(
+        &mut self,
+        armed_at: u64,
+    ) -> std::result::Result<u64, vtime::BackendError> {
+        match self.backend.run_armed(armed_at) {
+            Ok(LiveStop::Count(work)) => {
+                self.work_cache = work;
+                Ok(work)
+            }
+            // A guest exit: report the deadline so the planner stops cleanly; the
+            // real exit is recovered via `take_guest_exit`.
+            Ok(LiveStop::Guest(exit)) => {
+                self.pending_exit = Some(exit);
+                Ok(self.deadline)
+            }
+            Err(e) => {
+                self.err = Some(e);
+                Err(vtime::BackendError::new(
+                    "run_until_overflow: KVM/PMU failure",
+                ))
+            }
+        }
+    }
+
+    fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
+        // Once a guest exit is captured, stop advancing (never re-enter past a
+        // pending-completion exit): tell the planner the deadline was reached.
+        if self.pending_exit.is_some() {
+            return Ok(self.deadline);
+        }
+        match self.backend.single_step_once() {
+            Ok(LiveStop::Count(work)) => {
+                self.work_cache = work;
+                Ok(work)
+            }
+            Ok(LiveStop::Guest(exit)) => {
+                self.pending_exit = Some(exit);
+                Ok(self.deadline)
+            }
+            Err(e) => {
+                self.err = Some(e);
+                Err(vtime::BackendError::new("single_step: KVM/PMU failure"))
+            }
+        }
+    }
+}
+
+impl PreemptCpu for LiveCpu<'_> {
+    fn take_guest_exit(&mut self) -> Option<Exit> {
+        self.pending_exit.take()
+    }
+    fn take_error(&mut self) -> Option<BackendError> {
+        self.err.take()
+    }
+}
+
 impl Backend for KvmBackend {
     fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
         let entries = cpuid_entries(model);
@@ -665,12 +952,49 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        self.ensure_first_run();
         self.enter_guest()
     }
 
-    fn run_until(&mut self, _deadline: Vtime) -> Result<Exit> {
-        // Phase 2: needs the PMU single-step + lapic injection seam (task 07).
-        Err(BackendError::Unsupported { what: "run_until" })
+    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+        // The §2 inversion seam (task 47): drive the pure precise-injection planner
+        // over the live PMU + KVM single-step. Arm the retired-branch overflow at
+        // `deadline − skid_margin`, free-run until it kicks `KVM_RUN` out, then
+        // single-step to land at EXACTLY `deadline` retired branches → `Exit::Deadline`.
+        // A genuine guest exit before the deadline returns that exit instead, short
+        // of `deadline`. Completion/observability discipline matches `run`.
+        if !self.configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.ensure_first_run();
+        // Read the current work first (the planner's only `work()` call) and prove
+        // the PMU is present + readable before entering the guest.
+        let start = self.pmu_work()?;
+        let planner = InjectionPlanner::new(PlannerConfig {
+            skid_margin: SKID_MARGIN,
+        });
+        // Scope the adapter's `&mut self` borrow so cleanup can use `self` after.
+        let outcome = {
+            let mut cpu = LiveCpu {
+                backend: self,
+                deadline: deadline.0,
+                work_cache: start,
+                pending_exit: None,
+                err: None,
+            };
+            drive_run_until(&planner, &mut cpu, deadline.0)
+        };
+        // Always restore normal execution + disarm the overflow, success or error.
+        let _ = self.disable_single_step();
+        self.pmu_disarm();
+        let exit = outcome?;
+        // Count the exit (a guest exit's pending was armed inside the adapter;
+        // `Deadline` needs no completion, leaving `pending == None`).
+        self.counts.bump(exit.reason());
+        Ok(exit)
     }
 
     fn inject(&mut self, event: Event) -> Result<()> {

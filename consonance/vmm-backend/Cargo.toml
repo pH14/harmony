@@ -14,6 +14,15 @@ mock = []
 
 [dependencies]
 thiserror = "2"
+# Rule-2 sibling exception (task 47): `run_until` (the §2 inversion seam) drives
+# the pure precise-injection planner that lives in `vtime` — the `InjectionPlanner`
+# / `CpuBackend` / `PlanOutcome` state machine and its `skid_margin`. This is a
+# DOWNWARD dependency (vtime is pure-logic, no_std-ish, depends on nothing in this
+# workspace), so it introduces no cycle and keeps `vmm-backend` free of any
+# `vmm-core` (upward) dependency — the live `CpuBackend` is implemented HERE on a
+# backend-owned PMU counter (see IMPLEMENTATION.md "central design decision").
+# Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
+vtime = { path = "../vtime", version = "0.1.0" }
 
 # Linux-only frontier deps (reviewed rule-5 whitelist EXCEPTION, recorded in
 # tasks/14-backend.md §"Dependencies" and the PR description — NOT a deny.toml

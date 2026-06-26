@@ -854,6 +854,7 @@ dependencies = [
  "libc",
  "proptest",
  "thiserror",
+ "vtime",
 ]
 
 [[package]]

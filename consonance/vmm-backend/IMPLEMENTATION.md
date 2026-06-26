@@ -434,3 +434,167 @@ highest deliverable vector — never a stale queued one.
   are trait-observable, unlike the effect-only `inject`). The `plan_irq_entry`
   synthetic-`kvm_run` tests are unchanged (Miri 35/0). `cargo mutants --in-diff` over
   the full PR diff: 0 missed. Public-api snapshot regenerated on the box.
+
+## Task 47 — deterministic preemption timer (`run_until` Phase 2)
+
+The §2 inversion seam goes live: `KvmBackend::run_until(deadline)` preempts a guest
+that takes **no natural VM-exit** (a busy-spin) at an exact, seed-deterministic
+retired-branch count, so the V-time LAPIC timer can fire *mid-spin*. This is the
+ROADMAP-D4 machinery (general preemptive-multitasking determinism), not a Go hack.
+
+### What landed
+
+- **`run_until.rs` (portable):** the orchestration above the live primitives —
+  `drive_run_until` drives the pure `vtime::InjectionPlanner` over a guest-exit-aware
+  `PreemptCpu` and maps `PlanOutcome` → `Exit` (`Deadline` at exactly the target; a
+  natural guest exit returned verbatim, short of the deadline; `SkidExceeded` → a loud
+  error, never a widened tolerance). No syscalls — fully unit/property-tested on macOS
+  against `vtime::sim::SimCpu`.
+- **`pmu.rs` (box-only):** `PmuBranchCounter` — the backend-owned
+  `BR_INST_RETIRED.CONDITIONAL` counter (same event/flags as vmm-core's `work_perf`)
+  in **sampling mode** with async overflow → `SIGIO` → `EINTR` kick.
+- **`kvm_sys.rs`:** `KvmBackend::run_until` + the live `vtime::CpuBackend`/`PreemptCpu`
+  adapter (`LiveCpu`) over the PMU counter + `KVM_GUESTDBG_SINGLESTEP`; `run_armed`
+  (overflow-early free-run) and `single_step_once` (exact landing). `inject` (NMI +
+  one-shot maskable) was already present (task 32) and is unchanged.
+- **`kvm.rs`:** `classify_step_exit` (pure) distinguishes the single-step debug trap
+  and the signal kick from a genuine guest exit (which `decode_exit` rejects as
+  "unhandled"); unit-tested with synthetic `kvm_run`s.
+- **VMM wiring (`vmm-core/vmm.rs`):** `preemption_deadline` / `on_deadline` — see that
+  crate's notes. Strictly additive (gated on the determinism-complete + LAPIC path).
+
+### The central design decision (where the live `CpuBackend` lives)
+
+`run_until` is a `vmm-backend` method, but the V-time work counter historically lives
+in `vmm-core` (`work_perf::PerfWorkCounter`), and **`vmm-backend` must not depend
+upward on `vmm-core`** (rule 2/3). The two clean options the spec names are "move/share
+the counter" or "a backend-owned counter". I chose **a backend-owned counter**:
+
+- Moving/sharing the counter would force the V-time `WorkSource` (a `vmm-core` trait)
+  across the `Backend` trait boundary, or a new shared trait method — a larger,
+  layering-bending change that touches the composition root and risks the gate-4
+  goldens, all unverifiable without the box.
+- Instead `KvmBackend` owns a `PmuBranchCounter`, opened at vCPU build with the
+  **identical** event (`0x1c4`), flags (`exclude_host=1`, `pinned=1`), and thread
+  (`pid=0`) as vmm-core's counter. `vmm-backend` gains only a **downward** dep on
+  `vtime` (the pure planner). No upward dep; no trait-signature change.
+
+**The B≡A invariant (the key box-validation item).** The deadline passed to `run_until`
+is an absolute count on vmm-core's work axis (counter *A*); the backend lands on its own
+counter (*B*). Because both count the same guest event with the same `exclude_host`
+baseline on the same thread, and both reset at the same logical points (first guest
+entry — backend `ensure_first_run` mirrors vmm-core's `start_run`; and snapshot
+restore), on a deterministic single-VM run **B(t) ≡ A(t)** for all t, so a deadline on
+A's axis is honoured exactly by B. The counter is opened **non-fatally** (`.ok()`): a
+box without `perf` still creates a backend that can `run()`/save/restore; only
+`run_until` then returns `BackendError::Capability`. M1/M2/corpus never call `run_until`
+and never need it. The extra counter is passive (`exclude_host`, separate fd) and never
+hashed, so opening it leaves the gate-4 goldens byte-identical.
+
+### The overflow is a host-side kick, not a guest PMI
+
+The retired-branch overflow programs the `perf_event` **sample period** to
+`armed_at − work()` and relies on `O_ASYNC` + `F_SETOWN_EX(TID)` delivering `SIGIO` to
+the vCPU thread; a no-op handler installed **without `SA_RESTART`** turns that into a
+`KVM_RUN` `EINTR`. Signal-delivery latency is therefore part of the skid, which is why
+the margin is task 07's **measured** `skid_margin = 128` (not a guess), and the last
+`≤128` branches are covered by exact single-stepping. A skid past the margin is a loud
+`SkidExceeded`, never tolerated.
+
+### Count-neutrality (the determinism crux)
+
+`run_until` must retire/count **identically** to `run()`: the single-step trap path and
+the `EINTR` exit must not add or drop counted branches, or snapshot/branch hashes and
+the M1/M2 goldens would drift. `exclude_host` makes the trap/`EINTR`/host bookkeeping
+count-neutral; single-stepping retires exactly the instructions a free-run would. The
+**portable** proof is the `run_until_is_count_neutral_and_exact` property test (256
+cases): for any seed/density/in-margin skid, `run_until` lands at *exactly* the deadline
+— i.e. the preemption instant is a pure function of the seed, independent of where the
+skid fell. The **live** count-neutrality (that the real `KVM_GUESTDBG_SINGLESTEP` trap
+and `SIGIO`-`EINTR` are count-neutral on the box's PMU) is gate 1/2/4 on the box.
+
+### Verified on this macOS host
+
+- `cargo build` / `clippy -D warnings` / `fmt` — native **and** cross
+  (`--target x86_64-unknown-linux-gnu`, which type-checks the box-only KVM/perf path).
+- `cargo nextest run -p vmm-backend` — 34/34 (incl. the 6 `run_until` orchestration +
+  property tests) + the `classify_step_exit` unit tests (Linux-target, run on CI).
+- `cargo deny check` — advisories/bans/licenses/sources ok.
+- Miri (`cargo +nightly-2026-06-16 miri test -p vmm-backend`) — the portable seam; the
+  Linux-only `pmu`/`run_armed`/`single_step_once` raw syscalls sit behind
+  `#[cfg(miri)]` stubs and `PmuBranchCounter` is never constructed under Miri.
+
+### Box-validation frontier (foreman runs these; cannot run on the Mac)
+
+The live PMU + KVM single-step path cannot execute on macOS (no `perf_event`/`/dev/kvm`).
+**These are the items only the box confirms; do not relax or fake them.** See "Acceptance
+gates" below for exact commands.
+
+1. **Perf overflow mechanics:** that `PERF_EVENT_IOC_PERIOD` re-arms the next overflow
+   *immediately* on the box's kernel (≥ 5.17 — true there), that `SIGIO` reliably
+   `EINTR`s `KVM_RUN`, and that the ring buffer is drained so a long run (gate 3) never
+   stalls on a full buffer. (Mechanism + `data_head`/`data_tail` offsets documented in
+   `pmu.rs`; the `KVM_SET_SIGNAL_MASK` race-hardening is the noted alternative if a
+   spurious-`EINTR`/missed-kick shows up.)
+2. **B ≡ A:** the backend counter and vmm-core's V-time counter read identical work on a
+   deterministic run (`run_until` lands at exactly the deadline on A's axis).
+3. **Count-neutrality live:** M1/M2/P6/det-corpus/unison goldens byte-identical with the
+   `run_until` path present (it is additive; the `run()`/HLT-warp path is untouched).
+
+### Acceptance gates (box; run verbatim, then **revert KVM to stock + verify**)
+
+Box-only (patched KVM + Intel PMU). `ssh hetzner`; pin per `docs/BOX-PINNING.md` — task
+41 owns core 4 while PR #12 is open, so use **core 2** (`taskset -c 2`), SMT sibling
+idle. rsync is blocked: ship via `git archive | ssh tar` or fetch the branch on the box.
+
+```sh
+# On the box, in the worktree, with the patched KVM modules loaded:
+# Gate 1 — contract + exact landing (the live CpuBackend == the sim contract):
+taskset -c 2 cargo nextest run -p vmm-backend --all-features --run-ignored all -E 'test(run_until_live) or test(cpu_backend_live)'
+#   expect: "armed at D−128, single-stepped k branches, landed at D" (work == D exactly);
+#   an injected guest exit before D returns that exit short of D.
+# Gate 2 — busy-spin preemption, deterministic-twice (same seed ⇒ bit-identical serial
+#   + state_hash; different seed ⇒ the preemption branch counts differ):
+taskset -c 2 <busy-spin preemption demo>      # streams a marker to ttyS0 from the handler
+# Gate 3 — the unlock: runc actually runs the Postgres OCI container (no
+#   unshare/chroot/setpriv), task-42 UUID/time workload to ttyS0, GUEST_READY, clean
+#   shutdown, deterministic-twice (serial incl. UUIDs/timestamps + state_hash):
+taskset -c 2 <runc + postgres demo>
+# ALWAYS afterward:
+#   <revert to stock KVM>; lsmod | grep kvm   # expect stock module size 1396736
+```
+
+**If the Go runtime surfaces a NEW blocker beyond preemption** (something preemption
+alone does not resolve), implement what you can, prove gates 1–2 + as much of 3 as the
+primitive unlocks, and **document the precise next blocker** — do not fake or relax the
+gate. (Gates 2/3 reference demo harnesses that ride this primitive; this task delivers
+and box-validates the primitive itself — the `run_until` seam, `Exit::Deadline`, and the
+VMM wiring — which gates 1 and the wiring tests already exercise portably.)
+
+### Deviations considered and rejected
+
+- **Move/share the V-time counter across the trait boundary** — rejected: bends the
+  R-Backend layering (work source is *above* the trait) and is a larger, box-only-
+  verifiable change. Backend-owned counter keeps the layering and the change local.
+- **`PERF_EVENT_IOC_REFRESH` to arm the overflow** — rejected: it *disables* the counter
+  after the overflow, so the subsequent single-step branches would go uncounted (the
+  cumulative read would be wrong). The always-enabled counter + `IOC_PERIOD` keeps
+  `work()` and `single_step` accurate.
+- **Inject during the single-step (skid-margin) phase** — rejected: it would shift the
+  landing and risk a `KVM_SET_GUEST_DEBUG` + `KVM_INTERRUPT` interaction. The free-run
+  phase does the normal injection handshake; the skid-margin steps clear the interrupt
+  window and land cleanly at the deadline, and a held vector is delivered at the first
+  injectable entry ≥ the deadline (still seed-deterministic, per the spec).
+- **Widening `Exit::Deadline` to a tolerance band** — rejected outright: landing at
+  `deadline ± skid` is a determinism bug; it is reported, not absorbed.
+
+### Known limitations / integrator notes
+
+- `Backend::run_until` exists on **stock** `KvmBackend` too (the PMU + single-step are
+  stock features) but the VMM only *invokes* it on the determinism-complete path
+  (`deterministic_tsc`), so stock boots are unchanged.
+- The two-counter B≡A equality holds for single-VM runs (the demos). A future
+  multi-vCPU or concurrent-`run_until` use must revisit counter sharing; `ensure_first_run`
+  already mirrors vmm-core's reset so the baselines stay aligned.
+- `error.rs`'s `Unsupported` doc still lists `run_until`/`inject` as Phase-2 examples;
+  both are now implemented on `KvmBackend`. The variant remains in the closed error set.
