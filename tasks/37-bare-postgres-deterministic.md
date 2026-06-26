@@ -18,9 +18,16 @@ Read `tasks/00-CONVENTIONS.md`, `tasks/36-guest-kernel-container-config.md`, `gu
   **RAM-backed ext4** for `PGDATA` — loop-over-an-ext4-image-file in the initramfs, or brd (`/dev/ram0`),
   per what task 36's audit confirmed built-in. ext4 image baked with a **fixed UUID** and
   `lazy_itable_init=0,lazy_journal_init=0` (pin the determinism knobs at `mkfs` time, once).
-- **`init.sh`:** mount the ext4 → start `postgres` on the baked `PGDATA` → run a **fixed SQL workload**
-  (e.g. `CREATE TABLE`, `INSERT` N rows, a few `SELECT`s / an aggregate) → stream Postgres
-  **stdout/stderr to `ttyS0`** (interleaved with the query output) → clean poweroff.
+- **`init.sh`:** mount the ext4 → start `postgres` on the baked `PGDATA` → run a **fixed insert/select
+  workload loop** — a small client (a `psql -f` script or a tiny program) that drives the *live* DB:
+  `CREATE TABLE`, then **iterate a fixed N times**, each iteration `INSERT`ing a row of deterministic
+  computed values, `SELECT`ing it back plus a running aggregate (e.g. `count(*)` / `sum`), and
+  **printing that iteration's result to stdout**. The point is that Postgres is *continuously executing
+  transactions and streaming query results*, not merely starting up. Stream Postgres' stdout/stderr **and
+  the loop's per-iteration output to `ttyS0`** (interleaved) → clean poweroff. The loop output is part of
+  the deterministic-twice comparison (gate 2), so keep the values a pure function of the loop index (no
+  wall-clock/random columns — though even `now()` is V-time-deterministic, fixed data keeps the golden
+  readable).
 
 ## Determinism closure (the spec's real content — each must trace to the seed/V-time)
 

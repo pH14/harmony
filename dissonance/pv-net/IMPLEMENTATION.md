@@ -151,3 +151,49 @@ workspace-`clippy.toml` meta-diagnostics (the `rand::*` disallowed-method paths
 are unresolvable once proptest pulls `rand` into the dev dep graph); they are
 emitted for every proptest-using crate, do not cite this crate's code, and do not
 fail `-D warnings`.
+
+## Task 35 — mutation hardening
+
+`tests/mutation_kills.rs` adds exact-value tests that kill the mutants the first
+full-tree `cargo mutants` run left surviving in this crate. No production logic
+changed — these are *test-tightness* gaps in already-correct code.
+
+- **lib.rs:82** `REORDER_MAX = VTime(1 << 20)` — `reorder_max_is_one_left_shifted_twenty`
+  pins the constant against `<<`→`>>` (which would zero it); a behavioral test
+  pins the flush horizon at exactly `T + L0 + (1 << 20)`.
+- **switch.rs:247** throttle window index `(now - start) / per` — driven with a
+  non-zero start that is *not* a multiple of `per`, so `now-start` and `now+start`
+  fall in different windows and the `-`→`+` mutant resets the counter at the
+  wrong time (existing tests all used `start = 0`, where `now-0 == now+0`).
+- **parse.rs:107/118/181/183** — one golden test asserts the IPv4 `conn` equals
+  the FNV-1a of `[proto, min(endpoint), max(endpoint)]`, computed by an
+  *independent* in-test FNV reference over the documented buffer layout. That
+  single exact-hash assertion kills the endpoint-sort swap (107), the
+  `endpoint_bytes` constant-returns (118), and the `fnv1a64`→`1` / `^=`→`|=`
+  mutants (181/183). A `distinct_flows_get_distinct_conns` test is a second guard
+  against the collapse-to-constant mutants.
+- **parse.rs:131** `ihl_words < 5` — a frame with IHL 4 stays L2-routable but must
+  carry `conn == 0`; the `<`→`>` mutant would parse "ports" out of the address
+  bytes and produce a non-zero conn.
+- **codec.rs:104/108/130/156/169** — exercised through `save_state`/`restore_state`.
+  Round-trips that must *succeed* (so the mutant makes restore wrongly fail): an
+  `a == b` self-partition (104), two ascending partitions (108), two ascending
+  throttle links (130), a throttle at exactly `count == max` (130), two ascending
+  held links (169). Crafted blobs that must be *rejected* (so the `||`→`&&`
+  mutant wrongly accepts): a pending `seq == next_seq` (156) and a held link
+  claiming `nframes == 0` (169), plus an `a > b` partition (104).
+
+**Equivalent mutant.** `switch.rs:201` `if held_before > 0` → `>= 0` is provably
+equivalent and cannot be killed by any test: `held_before == 0` holds *iff* the
+link has no held buffer (the codec rejects empty buffers and every path prunes
+them), and at that boundary the extra iteration is a no-op — `get_mut` is `None`,
+or a just-pushed `Reorder` buffer survives `drain(0..0)` unchanged. It is the
+lone survivor of line 201 (the `>`→`==` / `>`→`<` siblings break the
+`held_before > 0` release path and stay killed by `tests/golden.rs`). It is
+excluded in `.cargo/mutants.toml` (entry *(h)*) with this justification, matching
+the project's existing handling of equivalent mutants.
+
+**Verification.** `cargo mutants -p pv-net --file {codec,parse,switch,lib}.rs` →
+**127 caught, 0 missed, 0 timeout, 5 unviable** (the unviable ones are mutations
+that do not type-check). Before this task those files carried the 13 listed
+survivors; after, every viable mutant is caught.

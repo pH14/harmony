@@ -5,6 +5,23 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 36 — guest-kernel rebase (cmdline only here; config lives in `guest/linux/`)
+
+Task 36 rebased the guest kernel from `tinyconfig` to a Kata-class container-host config
+(cgroup-v2/overlayfs/ext4/loop/brd/namespaces for tasks 37/38), keeping `config-fragment` as
+the determinism overlay. The full rationale, provenance, capability audit, and box digests
+are in **`guest/linux/IMPLEMENTATION.md`**. The only change in this crate is the box gate's
+`DEFAULT_CMDLINE` (`tests/live_linux_boot.rs`): it gained the runtime determinism params the
+Kata base needs — `random.trust_cpu=off nokaslr nosmp maxcpus=1 nox2apic hpet=disable` — each
+a no-op against the overlay's *build* symbols, present belt-and-suspenders because Kata's base
+sets the opposite (e.g. `RANDOMIZE_BASE=y`, `SMP=y`, `X86_X2APIC=y`). No `devices.rs` change
+was needed: the larger config introduced **no** new jiffies-timeout probe stall under patched
+V-time (the task-33/34 i8042 OBF-set fast-clear in `LegacyPlatform` already covers the one
+such probe), so `state_hash` and every non-Linux path are byte-unchanged. Box milestone
+(deterministic-twice, patched, core-2-pinned then reverted to stock 1396736): two same-seed
+boots of the rebased kernel reach `GUEST_READY` bit-identically,
+`state_hash = b277bc5260144dcb22545f6350c42886f2691a0f95ffcc8e18f8dc1b44bd6847`.
+
 ## Task 30 — boot real Linux in consonance (direct 64-bit boot protocol)
 
 **Result: a real Linux 6.18.35 kernel + static-busybox initramfs boots inside the
