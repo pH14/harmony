@@ -234,6 +234,76 @@ fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
 }
 
 #[test]
+fn vmst_chunk_masks_an_unusable_segments_type() {
+    // PR #12 round 4 — the determinism gap. With `wire_snapshot_hashing()` ON, the **VMST**
+    // chunk (the typed `vm_state` record, packed by `pack_segment`) is folded into
+    // `state_hash`. `pack_segment` must canonicalize an unusable segment's `type` to 0 —
+    // mirroring `encode_segment` in the VCPU chunk — because KVM normalizes an unusable
+    // segment's don't-care `type` `0 → 1` across `KVM_SET_SREGS → KVM_GET_SREGS`, so without
+    // masking, a `save → restore → save` would perturb the VMST chunk and `state_hash` would
+    // diverge **even though the VCPU chunk is canonical**. This catches exactly that: two VMs
+    // differing ONLY in an unusable segment's raw `type` must hash identically through BOTH
+    // chunks. (The real-KVM `save → restore → save` round-trip is gate 2 on the box.)
+    let hash_of = |unusable_type: u8| -> [u8; 32] {
+        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut st = VcpuState::default();
+        // An UNUSABLE data segment carrying a (raw) non-zero hidden type — exactly the field
+        // KVM perturbs across a SET→GET round-trip.
+        st.sregs.ds = vmm_backend::Segment {
+            type_: unusable_type,
+            unusable: 1,
+            ..Default::default()
+        };
+        m.set_state(st);
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
+        );
+        v.wire_snapshot_hashing(); // fold the VMST chunk into state_hash
+        v.restore_guest_memory(&booted_image()).unwrap();
+        v.step().unwrap(); // RDTSC → synchronized
+        v.state_hash()
+    };
+    assert_eq!(
+        hash_of(0),
+        hash_of(5),
+        "an unusable segment's type must not move the state_hash through the VMST (or VCPU) chunk"
+    );
+    // Sanity: a *usable* segment's type DOES move the hash (so the assert above is a real
+    // masking property, not a hash that ignores segment type wholesale).
+    let usable_hash = |t: u8| -> [u8; 32] {
+        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut st = VcpuState::default();
+        st.sregs.ds = vmm_backend::Segment {
+            type_: t,
+            unusable: 0,
+            present: 1,
+            ..Default::default()
+        };
+        m.set_state(st);
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&booted_image()).unwrap();
+        v.step().unwrap();
+        v.state_hash()
+    };
+    assert_ne!(
+        usable_hash(0),
+        usable_hash(5),
+        "a usable segment's type reaches the hash (the unusable-mask is not masking everything)"
+    );
+}
+
+#[test]
 fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
     // With the canonical-blob hash wired, a VM restored from a snapshot has the
     // SAME state_hash as the snapshot source at that point — *same state* observable

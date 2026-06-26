@@ -306,11 +306,20 @@ fn pack_segment(s: &vmm_backend::Segment) -> Segment {
         | ((s.g & 1) << 2)
         | ((s.avl & 1) << 3)
         | ((s.unusable & 1) << 4);
+    // Canonicalize an **unusable** segment's `type` to 0 — mirror `vmm::encode_segment` (the
+    // VCPU hash chunk). An unusable segment's hidden type is architecturally don't-care (SDM
+    // Vol. 3 §24.4.1), and KVM normalizes it `0 → 1` across `KVM_SET_SREGS` → `KVM_GET_SREGS`.
+    // This typed `vm_state::Segment` rides the **VMST** hash chunk (`wire_snapshot_hashing`),
+    // so without masking here a `save → restore → save` would perturb this don't-care field
+    // and the VMST chunk's `state_hash` would diverge from the source even though the VCPU
+    // chunk is canonical (PR #12 round 4). Golden-safe: a live `KVM_GET_SREGS` already reports
+    // `type = 0` for an unusable segment, so masking is a no-op for every real capture.
+    let type_ = if s.unusable != 0 { 0 } else { s.type_ };
     Segment {
         base: s.base,
         limit: s.limit,
         selector: s.selector,
-        type_: s.type_,
+        type_,
         present_dpl_s,
         flags,
     }
@@ -1103,9 +1112,9 @@ mod tests {
 
     #[test]
     fn segment_pack_unpack_round_trips_every_bit() {
-        // EVERY 0/1 (dpl 0..=3) sub-field set to its top value, so each packed bit
-        // position is exercised with a 1 — flipping any one pack/unpack shift moves a
-        // set bit and fails the round-trip (no bit can be 0-and-invisible).
+        // Each present/dpl/s/db/l/g/avl bit set, on a **usable** segment (`unusable = 0`) so
+        // its `type_` is carried verbatim — flipping any one pack/unpack shift moves a set
+        // bit and fails the round-trip (no bit can be 0-and-invisible).
         let seg = vmm_backend::Segment {
             base: 0xDEAD_BEEF_0000_1000,
             limit: 0xFFFF_FFFF,
@@ -1118,16 +1127,45 @@ mod tests {
             l: 1,
             g: 1,
             avl: 1,
-            unusable: 1,
+            unusable: 0,
         };
         let packed = pack_segment(&seg);
         // present(1) | dpl(3)<<1 | s(1)<<3 = 1 | 6 | 8 = 0xF.
         assert_eq!(packed.present_dpl_s, 0x0F);
-        // db(1) | l(1)<<1 | g(1)<<2 | avl(1)<<3 | unusable(1)<<4 = 1|2|4|8|16 = 0x1F.
-        assert_eq!(packed.flags, 0x1F);
+        // db(1) | l(1)<<1 | g(1)<<2 | avl(1)<<3 = 1|2|4|8 = 0xF (unusable = 0).
+        assert_eq!(packed.flags, 0x0F);
+        assert_eq!(
+            packed.type_, 0xB,
+            "a usable segment carries its type verbatim"
+        );
         assert_eq!(unpack_segment(&packed), seg);
-        // A zero segment also round-trips (the all-1 case alone could mask a
-        // stuck-high bug).
+        // The `unusable` flag bit (`flags << 4`) exercised, AND its `type` canonicalized to
+        // 0 (PR #12 round 4 — mirror `encode_segment`): an unusable segment with a non-zero
+        // raw `type_` packs to `type 0`, so the VMST hash chunk matches a live `KVM_GET_SREGS`
+        // (which reports `type 0`) and a `save → restore → save` does not diverge. The
+        // round-trip is therefore to the **canonical** form, not the raw input.
+        let unusable_raw = vmm_backend::Segment {
+            type_: 5,
+            unusable: 1,
+            ..Default::default()
+        };
+        let pu = pack_segment(&unusable_raw);
+        assert_eq!(pu.flags, 0x10, "the unusable bit packs to flags << 4");
+        assert_eq!(
+            pu.type_, 0,
+            "an unusable segment's non-zero type canonicalizes to 0"
+        );
+        let unusable_canonical = vmm_backend::Segment {
+            type_: 0,
+            unusable: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            unpack_segment(&pu),
+            unusable_canonical,
+            "pack canonicalizes the unusable type; the round-trip is to the canonical form"
+        );
+        // A zero segment also round-trips (the all-1 case alone could mask a stuck-high bug).
         let zero = vmm_backend::Segment::default();
         assert_eq!(unpack_segment(&pack_segment(&zero)), zero);
     }

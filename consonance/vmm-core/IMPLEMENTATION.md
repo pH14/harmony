@@ -2336,10 +2336,17 @@ live vCPU has `type = 0`. *Why it is don't-care:* a segment whose unusable bit i
 Vol. 3 §24.4.1 "Guest Register State": the access-rights of an unusable segment are ignored; §3.4.3 /
 the segment-descriptor-cache rules). The 64-bit-relevant part (`fs`/`gs` **base**, used flat) round-trips
 **exactly**. The `0 → 1` is purely KVM's `KVM_SET_SREGS` normalization of an inert field. *Fix:* mask the
-`type` to `0` when `unusable != 0` in `encode_segment`. *Cheap + correct + golden-safe:* every
+`type` to `0` when `unusable != 0` in **both** segment encoders — `encode_segment` (the **VCPU** hash
+chunk) *and* `pack_segment` (the **VMST** hash chunk, the typed `vm_state` record folded into `state_hash`
+when `wire_snapshot_hashing()` is on). The VMST chunk was missed by rounds 2–3 (`encode_segment` only),
+so with snapshot-hashing ON a `save → restore → save` still diverged through the VMST chunk even though the
+VCPU chunk was canonical (**PR #12 round 4** — codex/GPT-5.5). *Cheap + correct + golden-safe:* every
 live-`KVM_GET` value already reports `type = 0` for unusable segments, so masking is a no-op for every
-existing golden; the segment **distinguishing** test (`event_loop::state_hash_distinguishes_…`) keys on
-`cs.base` (a usable segment's base), unaffected.
+existing golden (M1/M2/det-corpus all still green — `det_corpus_o2_digest_matches_the_observable_golden`
+unmoved); the segment **distinguishing** test keys on `cs.base` (a usable segment's base), unaffected.
+Pinned by `vmst_chunk_masks_an_unusable_segments_type` (snapshot_branch.rs — two VMs differing only in an
+unusable segment's raw `type` hash identically **with the VMST chunk wired**; verified to FAIL without the
+`pack_segment` mask) and the adjusted `segment_pack_unpack_round_trips_every_bit` (canonical inputs).
 
 **2. Inert `kvm_vcpu_events` modifier residuals (`encode_events`).** KVM leaves a stale `interrupt.nr`
 (the last-delivered vector), a stale `exception.nr`/`has_error_code`, and the GET-only validity-mask
@@ -2426,12 +2433,12 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (240), `unison`/`det-corpus` determinism (92) all green; and
+should not." Verified on Mac: `vmm-core` (241), `unison`/`det-corpus` determinism (92) all green; and
 **on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**240** tests) / `deny`. **Miri**
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**241** tests) / `deny`. **Miri**
 validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
 predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** (`cargo mutants
 --no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout**.
@@ -2463,7 +2470,9 @@ Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
 **`task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact`** — *the definitive task-41 unlock
 proof, §5: a genuine task-39-rejected in-flight injection → capture → restore → identical full
 `state_hash`, independent of the live run*; `snapshot_hashing_round_trips_at_a_residual_events_point` — the
-VMST chunk is residual-clean).
+VMST chunk is residual-clean; **`vmst_chunk_masks_an_unusable_segments_type`** — *the round-4 determinism
+fix, §1: with the VMST chunk wired, an unusable segment's raw `type` does not move `state_hash` — verified
+to FAIL without the `pack_segment` mask*).
 
 **Box (`tests/live_nonquiescent_snapshot.rs`, `#[cfg(target_os="linux")]` + `#[ignore]`):**
 - `gate1_nonquiescent_point_is_snapshottable` — scans the post-readiness Postgres workload, **seals at the
@@ -2471,10 +2480,13 @@ VMST chunk is residual-clean).
   (`has_inflight_event_injection` — the state task 39 could not represent), and quotes the **before/after
   split on the same run**: `task39_rejected` points (the `0 → N` flip, gated on the OLD predicate), of
   which `genuine_inflight` also carried a genuine in-flight *event* (LAPIC-IRR-pending / kve injection — see §5),
-  plus quiescent. Asserts `task39_rejected > 0`, then confirms `restore_vm_state` produces a **runnable** VM
-  that **cleanly completes the workload** (`internally_consistent`: final row + `GUEST_READY` + a real
-  terminal + no step error). *The genuine-injection capture→exact-restore is proven by the constructed test
-  (§5), not the live seal — see "what gate 2 does not prove."*
+  plus quiescent. Asserts `task39_rejected > 0` **and** (the scan reaches the workload's terminal)
+  `genuine_inflight >= 1` — so the gate cannot "pass" on residual canonicalization alone; the V-time
+  **deterministic** workload genuinely reaches ≥1 in-flight event every run (PR #12 round 4). Then confirms
+  `restore_vm_state` produces a **runnable** VM that **cleanly completes the workload**
+  (`internally_consistent`: final row + `GUEST_READY` + a real terminal + no step error). *The
+  genuine-injection capture→exact-restore is proven by the constructed test (§5), not the live seal — see
+  "what gate 2 does not prove."*
 - `gate2_mid_postgres_roundtrip_is_deterministic` — **the milestone:** a running Postgres is snapshotted
   **mid-workload at a task-39-rejected non-quiescent point**; the **un-snapshotted (live) continuation**
   from that seal is the reference (the spec's "un-snapshotted run"). The snapshot is restored into a fresh
@@ -2557,6 +2569,6 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 > - **Hygiene ✓** — patched `kvm 1400832` loaded per run, reverted to stock `kvm 1396736` after each
 >   (verified via `lsmod`), `kvm_intel` users checked `== 0` before loading (task 38 idle).
 > - **Standard gates on the box ✓** — `clippy -D warnings` (the box-only test file included), `fmt`,
->   `nextest` (240 non-ignored), and **public-api** (`tests/public-api.txt` matches
+>   `nextest` (241 non-ignored), and **public-api** (`tests/public-api.txt` matches
 >   `cargo +nightly public-api` exactly — the three new lines `Vmm::has_active_event_injection`,
 >   `Vmm::has_inflight_event_injection`, `Vmm::has_pending_guest_interrupt`).

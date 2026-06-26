@@ -414,6 +414,23 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
          41 captures + restores a state task 39 could not represent (the 0→N flip task 40 documented \
          as missing)"
     );
+    // PR #12 round 4 — gate rigor. When this caller **scans the run** (gate 1, with
+    // `post_seal_scan > 0` the scan window runs to the workload's terminal), require that the
+    // live workload genuinely produced **≥ 1 in-flight EVENT** (a vector pending in the LAPIC
+    // IRR / a `kvm_vcpu_events` injection) — not merely inert residuals. Otherwise the gate
+    // could "pass" on residual canonicalization alone without the live workload ever reaching
+    // a real in-flight point. The Postgres workload is V-time **deterministic**, so this count
+    // is stable run-to-run (non-flaky). gates 2/3 seal-and-return at the first task-39-rejected
+    // point and do not scan, so they do not assert this; the genuine-injection *capture* proof
+    // is the constructed `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact`.
+    if post_seal_scan > 0 {
+        assert!(
+            genuine_inflight >= 1,
+            "gate 1: the scanned run must encounter ≥1 GENUINE in-flight event (LAPIC IRR pending / \
+             kve injection), proving the live workload reaches real in-flight points — not only \
+             residuals (genuine_inflight was {genuine_inflight})"
+        );
+    }
     sealed
 }
 
