@@ -85,7 +85,7 @@ const GUEST_READY: &[u8] = b"GUEST_READY";
 /// How many extra steps to scan past the first non-quiescent seal point when tallying
 /// the before/after counts (bounded so the gate-1 scan stays quick once it has its
 /// evidence).
-const SCAN_WINDOW: u64 = 200_000;
+const SCAN_WINDOW: u64 = 50_000;
 
 fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -271,12 +271,13 @@ struct Sealed {
 }
 
 /// Drive `live` from boot until the **first V-time-synchronized, non-quiescent
-/// (interrupt-in-flight) boundary at/after `marker`** appears, and seal it. While
-/// hunting, tally the before/after split **on this same run**: how many synchronized
-/// boundaries carried an in-flight injection (the *before* count task 39 rejected) and
-/// how many are now snapshottable (the *after* count). Panics loudly if the guest
-/// terminates before any non-quiescent snapshottable point is found.
-fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8]) -> Sealed {
+/// (interrupt-in-flight) boundary at/after `marker`** appears, and seal it. When
+/// `post_seal_scan > 0`, keep scanning that many more steps **after** the seal to tally
+/// the before/after split **on the same run** (gate 1's evidence: how many synchronized
+/// boundaries carry an in-flight injection task 39 rejected vs. are now snapshottable);
+/// pass `0` to seal-and-return immediately (gates 2/3, which only need the seal point).
+/// Panics loudly if the guest terminates before any non-quiescent snapshottable point.
+fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64) -> Sealed {
     let stderr = std::io::stderr();
     let mut printed = live.serial().len();
     let mut steps = 0u64;
@@ -320,10 +321,10 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8]) -> Sealed {
                 }
             }
             if sealed.is_some() {
-                scanned_after_seal += 1;
-                if scanned_after_seal >= SCAN_WINDOW {
+                if scanned_after_seal >= post_seal_scan {
                     break;
                 }
+                scanned_after_seal += 1;
             }
         }
         match live.step() {
@@ -371,18 +372,25 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8]) -> Sealed {
     sealed
 }
 
+/// One fork's terminal observation: the full-state digest, the per-component digest
+/// breakdown (for divergence localization), and the run outcome.
+struct ForkResult {
+    hash: [u8; 32],
+    components: Vec<(&'static str, [u8; 32])>,
+    outcome: RunOutcome,
+}
+
 /// Restore base snapshot `snap` into a **fresh** patched VM, optionally reseed the
 /// entropy stream (`Some(seed)` = a branch; `None` = the base continuation replayed
-/// verbatim), resume to terminal, and return its terminal `state_hash`,
-/// per-component breakdown, and outcome. The prior live VM must already be dropped
-/// (single open work counter at a time).
+/// verbatim), resume to terminal, and return its [`ForkResult`]. The prior live VM
+/// must already be dropped (single open work counter at a time).
 fn run_fork(
     engine: &SnapshotEngine,
     snap: SnapshotId,
     kernel: &[u8],
     initramfs: &[u8],
     reseed: Option<u64>,
-) -> ([u8; 32], Vec<(&'static str, [u8; 32])>, RunOutcome) {
+) -> ForkResult {
     let mut vmm = boot_pg(kernel, initramfs, reseed.unwrap_or(BASE_SEED));
     let mapping = engine.materialize(snap).expect("materialize the base");
     let vm_state = engine.vm_state(snap).expect("decode the sealed vm_state");
@@ -393,7 +401,11 @@ fn run_fork(
             .expect("reseed the entropy stream for the branch");
     }
     let outcome = drive_to_terminal(&mut vmm);
-    (vmm.state_hash(), vmm.state_components(), outcome)
+    ForkResult {
+        hash: vmm.state_hash(),
+        components: vmm.state_components(),
+        outcome,
+    }
 }
 
 /// Restore + resume verbatim (the gate-1/2 path): just the terminal hash + outcome.
@@ -403,8 +415,8 @@ fn restore_and_resume(
     kernel: &[u8],
     initramfs: &[u8],
 ) -> ([u8; 32], RunOutcome) {
-    let (hash, _components, outcome) = run_fork(engine, snap, kernel, initramfs, None);
-    (hash, outcome)
+    let fork = run_fork(engine, snap, kernel, initramfs, None);
+    (fork.hash, fork.outcome)
 }
 
 /// A distinct, non-base entropy seed for branch `k` (same scheme as `live_branching_demo.rs`).
@@ -439,7 +451,8 @@ fn gate1_nonquiescent_point_is_snapshottable() {
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let snap = {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
-        let sealed = seal_first_nonquiescent(&mut live, &marker);
+        // Gate 1 wants the before/after tally → scan a window past the seal.
+        let sealed = seal_first_nonquiescent(&mut live, &marker, SCAN_WINDOW);
         let blob = sealed.vm_state.encode().expect("vm_state encodes");
         let snap = engine
             .snapshot_base(live.guest_memory(), &blob)
@@ -509,7 +522,7 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let snap = {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
-        let sealed = seal_first_nonquiescent(&mut live, &marker);
+        let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
         let blob = sealed.vm_state.encode().expect("vm_state encodes");
         let snap = engine
             .snapshot_base(live.guest_memory(), &blob)
@@ -580,7 +593,7 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let snap = {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
-        let sealed = seal_first_nonquiescent(&mut live, &marker);
+        let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
         let blob = sealed.vm_state.encode().expect("vm_state encodes");
         let snap = engine
             .snapshot_base(live.guest_memory(), &blob)
@@ -598,26 +611,26 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
     let mut base_digest: Option<[u8; 32]> = None;
     let mut base_components = None;
     for r in 0..n {
-        let (hash, components, outcome) = run_fork(&engine, snap, &kernel, &initramfs, None);
+        let fork = run_fork(&engine, snap, &kernel, &initramfs, None);
         assert!(
-            outcome.internally_consistent(),
+            fork.outcome.internally_consistent(),
             "base replay {r} must be internally consistent (final_row={}, guest_ready={}, \
              terminal={:?}, err={:?})",
-            outcome.final_row,
-            outcome.guest_ready,
-            outcome.reason,
-            outcome.step_error,
+            fork.outcome.final_row,
+            fork.outcome.guest_ready,
+            fork.outcome.reason,
+            fork.outcome.step_error,
         );
         match base_digest {
             None => {
-                base_digest = Some(hash);
-                base_components = Some(components);
+                base_digest = Some(fork.hash);
+                base_components = Some(fork.components);
             }
             Some(first) => assert_eq!(
-                hash,
+                fork.hash,
                 first,
                 "base replay {r} diverged from replay 0 — NOT reproducible ({} vs {})",
-                hex(&hash),
+                hex(&fork.hash),
                 hex(&first)
             ),
         }
@@ -636,27 +649,26 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
         let mut digest: Option<[u8; 32]> = None;
         let mut comps = None;
         for r in 0..n {
-            let (hash, components, outcome) =
-                run_fork(&engine, snap, &kernel, &initramfs, Some(seed));
+            let fork = run_fork(&engine, snap, &kernel, &initramfs, Some(seed));
             assert!(
-                outcome.internally_consistent(),
+                fork.outcome.internally_consistent(),
                 "branch {b} replay {r} must be internally consistent (final_row={}, \
                  guest_ready={}, terminal={:?}, err={:?})",
-                outcome.final_row,
-                outcome.guest_ready,
-                outcome.reason,
-                outcome.step_error,
+                fork.outcome.final_row,
+                fork.outcome.guest_ready,
+                fork.outcome.reason,
+                fork.outcome.step_error,
             );
             match digest {
                 None => {
-                    digest = Some(hash);
-                    comps = Some(components);
+                    digest = Some(fork.hash);
+                    comps = Some(fork.components);
                 }
                 Some(first) => assert_eq!(
-                    hash,
+                    fork.hash,
                     first,
                     "branch {b} replay {r} diverged — NOT reproducible ({} vs {})",
-                    hex(&hash),
+                    hex(&fork.hash),
                     hex(&first)
                 ),
             }
