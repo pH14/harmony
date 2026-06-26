@@ -1912,10 +1912,23 @@ after:
 taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --test-threads=1
 ```
 
-> **Box-run status:** the implementation is complete and the box gates are written and ready; the
-> box run + public-api refresh are pending (the sandbox blocked the worktree→box transfer — see the
-> PR thread). Gate 5 hygiene (revert to stock, verify `lsmod | grep kvm` = `1396736`) is coordinated
-> with the concurrent task-36 box use.
+> **Box-run results (2026-06-26, patched KVM, `taskset -c 4`, sibling cpu12 idle).** All three
+> gate tests passed; the box was reverted to stock afterward.
+>
+> - **Gate 1 (milestone) ✓** — reference and restored `state_hash` are **equal**:
+>   `53d1be2770d78c2d4edfa9c01b4468304c969533ce0ef21a8d512b3e4068dd74` (both). The restored
+>   continuation is bit-identical to the un-snapshotted reference — *same state ⇒ same future.*
+> - **Gate 3 ✓** — 1 base unique page; after 8 branches still **1** store-wide (resident 51,094 B):
+>   one read-only base shared, not 8× copied.
+> - **Gate 2 (probe)** — for a 4 MiB image: base capture 5.84 ms, **`materialize` = 27.9 µs**
+>   (dirty-set-proportional, sparse — only resident non-zero pages touch the tempfile), restore copy
+>   9.38 ms, full-memcpy baseline 1.04 ms. The materialize is already O(dirty); the O(image) restore
+>   *copy* is the memcpy-class part the `vmm-backend` memslot-swap follow-up (above) replaces to
+>   "beat memcpy". (Debug build; relative shape is the point.)
+> - **Gate 5 (hygiene) ✓** — patched `kvm 1400832` loaded for the run, reverted to stock
+>   `kvm 1396736` after (verified via `lsmod`). Task 36 was idle; the box was free.
+> - **public-api ✓** — `tests/public-api.txt` refreshed on the box (pinned nightly +
+>   `cargo public-api`); the `public_api` gate is green (the +37 lines are this task's new surface).
 
 ## Known limitations / integrator notes
 
