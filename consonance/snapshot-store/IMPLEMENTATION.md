@@ -116,3 +116,29 @@ per-snapshot `stats`, the store-wide `store_stats`, a `materialize` round-trip
 Tests + dev-dep (`proptest-state-machine`) only; no library or public-API change
 (the frozen `public-api.txt` snapshot test still passes). `Cargo.lock` is left
 untracked, matching `main`.
+
+## Task 35 — mutation hardening
+
+`tests/mutation_kills.rs` adds `seal_assigns_a_fresh_id_each_time`, which seals
+several snapshots and asserts their ids are **distinct** (and a derived child's id
+differs from its parent's). It performs **no** chain walk, so a frozen id counter
+is observed by a fast assertion rather than only by a hang.
+
+This targets `lib.rs:521`'s `self.store.next_id += 1`. The `+=`→`-=` sibling is
+caught immediately (debug-build `0u64 - 1` underflow panic). The named survivor
+`+=`→`*=` freezes the counter at 0, so every `seal` reuses id 0; a derived child
+then reuses its parent's id, leaving a **self-parented layer** whose
+`resolve`/`materialize` chain walk never terminates (`resolve` has no cycle
+break) — which is why it surfaced only as a ~372 s **timeout**, never as a
+survivor. Because the existing `stateful.rs` proptest drives derive→read
+sequences, the suite hangs under this mutation, so — like the `seeded.rs` loop
+mutants and `unison`'s loop-condition mutants — it stays **caught by timeout**, a
+non-terminating loop having no other tell. The new test still pins id
+distinctness so any *terminating* counter regression fails fast, and a scoped
+re-run bounds the timeout to cargo-mutants' auto-minimum (~30 s) rather than the
+full-tree 372 s.
+
+**Verification.** `cargo mutants -p snapshot-store --re 'in BuilderCore'` (the
+`seal`/`BuilderCore` mutants, incl. line 521) → **5 caught, 0 missed, 1 timeout**;
+the timeout is exactly `+=`→`*=`. Library and public API unchanged
+(`public-api.txt` still passes); `Cargo.lock` left untracked, matching `main`.

@@ -158,3 +158,43 @@ proptest-using crates, the clippy run surfaces the pre-existing workspace
 `clippy.toml` meta-diagnostics about the unresolvable `rand::*` disallowed-method
 paths (proptest pulls `rand` into the dev graph); they cite no crate code and do
 not fail `-D warnings`.
+
+## Task 35 — mutation hardening
+
+`tests/mutation_kills.rs` adds exact-value tests that kill the mutants the first
+full-tree `cargo mutants` run left surviving (or only timeout-caught) in this
+crate. No production logic changed.
+
+- **catalog.rs:178** `DecisionPoint::admits` scheduler bound `selection < ready`
+  — `scheduler_selection_bound_is_strict` pins it strict: `ready-1` admissible,
+  `ready` and `ready+1` not (the `<`→`<=` mutant would admit an out-of-range
+  index equal to `ready`). Checked both directly and through a `RecordedEnv`
+  override (a `ready`-valued override is ignored; an in-range one wins).
+- **codec.rs:141** `read_answer` length bound `b.len() > MAX_SUPPLY_LEN` —
+  `supply_length_bound_is_exclusive_at_max` decodes a supply of *exactly*
+  `MAX_SUPPLY_LEN` bytes (must succeed) and one byte over (must be rejected),
+  killing both `>`→`==` and `>`→`>=`.
+- **seeded.rs:67** `supply_bytes` accumulator `take = (n - out.len()).min(8)` —
+  `entropy_supply_is_exactly_the_requested_length` requests non-multiples of 8
+  greater than 8 (12, 20, 31, 100, 255, 257); the `-`→`+` mutant overshoots to
+  the next multiple of 8, so the exact-length assertion fails.
+
+**Timeout mutants (deterministically bounded, not 372 s).** `seeded.rs:65`'s loop
+bound `while out.len() < n` has two surviving mutants, `<`→`<=` and `<`→`==`.
+Both make `supply_bytes` **non-terminating** (the final `take == 0` iteration
+makes no progress, and `<`→`==` additionally hangs on `n == 0`). A non-terminating
+loop has no terminating tell, so — exactly as the `unison` crate documents for
+its loop-condition mutants — they are caught by **timeout**, not by assertion: any
+test that calls `supply_bytes` (mine included) hangs, and the existing
+`arb_point` proptests already sample `Entropy { bytes: 0 }`, so the suite hangs
+under the mutation regardless of new tests. The exact-length tests above still
+*pin* the contract, so any **terminating** off-by-one regression is caught fast
+by assertion; and because the re-run is scoped (`-p environment`), cargo-mutants'
+auto-timeout is its ~20 s minimum rather than the full-tree ~372 s, so the
+detection is deterministic and bounded. (Empirically confirmed that `--fail-fast`
+does **not** reclassify these to "caught": nextest cannot promptly kill the
+CPU-bound infinite loop in the parallel proptest binary.)
+
+**Verification.** `cargo mutants -p environment --file {catalog,codec,seeded}.rs`
+→ **90 caught, 0 missed, 2 timeouts, 8 unviable**. The 2 timeouts are exactly the
+`seeded.rs:65` loop-bound mutants above.
