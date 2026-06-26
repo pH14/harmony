@@ -1950,6 +1950,26 @@ taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --t
 
 ## PR #7 cross-model review fixes
 
+### Round 2
+
+- **[P1 — determinism] Restore re-arms the first-entry work-counter gate.** `restore_vm_state` now
+  resets `first_entry_done = false`, treating the restored VM as a **fresh spawn**: its next `step`
+  re-runs `WorkSource::start_run` (the per-VM baseline) right before VM-entry. On the shared box
+  `perf_event` counter, without this a coexisting VM's branches between the restore (which resets the
+  counter) and the restored VM's entry would be miscounted into the restored V-time — a determinism
+  bug on the explorer's N-concurrent-VM path. *(test: `start_run` fires again after restore)*
+- **[P2 — fail-closed] `save_vm_state` rejects unrepresentable `kvm_sregs2` flags/pdptrs.** These are
+  not carried by the subset and are zero for the 64-bit / paging-off determinism guest; a non-zero
+  value now fails the snapshot closed instead of being silently zeroed on restore.
+- **[P2 — fail-closed] `save_vm_state` rejects unrepresentable pending-event state.** The pending-event
+  fields outside the captured 6-field subset (in-flight exception/interrupt/NMI injection, the
+  exception payload, SMM state, a queued triple fault) fail the snapshot closed if non-zero — zero at
+  a quiescent point. The KVM validity-mask `kvm_vcpu_events.flags` is **excluded** (ioctl metadata,
+  normally non-zero). Both checks live in `snapshot::unrepresentable_state`. *(tests pin each field +
+  the flags exclusion)*
+
+### Round 1
+
 - **[P1] `save_vm_state` fails closed on a `Backend::save` error.** It no longer reads the vCPU via
   `current_vcpu` (which swallows a save error into `VcpuState::default()` for the best-effort hash);
   it reads `saved_state` or `self.backend.save()?` and propagates — a snapshot can never seal a

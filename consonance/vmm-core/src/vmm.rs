@@ -768,9 +768,12 @@ impl<B: Backend> Vmm<B> {
     /// serialize (vm-state deliberately has no plan field).
     ///
     /// # Errors
-    /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary or a
-    /// non-synchronized point; [`VmmError::Backend`] if reading the live vCPU state
-    /// fails (a snapshot **fails closed** rather than sealing a zeroed vCPU).
+    /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary, a non-synchronized
+    /// point, or if the live vCPU carries state the representable `vm_state` subset
+    /// cannot round-trip (`kvm_sregs2` flags/pdptrs, or in-flight injection / SMM /
+    /// triple-fault event bookkeeping — see [`crate::snapshot::unrepresentable_state`]);
+    /// [`VmmError::Backend`] if reading the live vCPU state fails (a snapshot **fails
+    /// closed** rather than sealing a zeroed or lossy vCPU).
     pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
         if self.rng_completion_staged {
             return Err(VmmError::ContractViolation(
@@ -795,6 +798,16 @@ impl<B: Backend> Vmm<B> {
             Some(s) => s.clone(),
             None => self.backend.save()?,
         };
+        // Fail closed on machine state the representable `vm_state` subset would
+        // silently zero on restore (`kvm_sregs2` flags/pdptrs, or pending-event
+        // injection/SMM/triple-fault bookkeeping) — sealing a lossy blob is worse
+        // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
+        // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
+        if let Some(reason) = snapshot::unrepresentable_state(&vcpu) {
+            return Err(VmmError::ContractViolation(format!(
+                "save_vm_state: {reason}"
+            )));
+        }
         Ok(self.build_vm_state(&vcpu))
     }
 
@@ -945,6 +958,17 @@ impl<B: Backend> Vmm<B> {
         self.terminal = None;
         self.saved_state = None;
         self.rng_completion_staged = false;
+        // Treat the restored VM as a **fresh spawn** for the work counter: re-arm the
+        // first-entry gate so the next `step` calls `WorkSource::start_run` right
+        // before VM-entry. The box `perf_event` counter is shared across the vCPU
+        // thread; restore reset it to 0, but if another (coexisting) VM runs before
+        // this one is entered, that VM's branches would accumulate into the shared
+        // counter and be miscounted into the restored V-time. `start_run` at entry
+        // (which only fires while `!first_entry_done`) re-establishes the per-VM
+        // baseline, excluding them. Without this re-arm a restored VM silently
+        // inherits a coexisting VM's branches (a determinism bug on the explorer's
+        // N-concurrent-VM path).
+        self.first_entry_done = false;
         Ok(())
     }
 
@@ -4519,6 +4543,122 @@ mod tests {
         assert!(
             matches!(b.restore_vm_state(&s), Err(VmmError::ContractViolation(_))),
             "a dropped legacy subrecord must be rejected, not silently skipped"
+        );
+    }
+
+    #[test]
+    fn restore_vm_state_rearms_the_first_entry_work_prepare() {
+        // A restored VM is a **fresh spawn** for the work counter: the next step must
+        // re-run `WorkSource::start_run` (the per-VM baseline) — else, on the shared
+        // perf counter, a coexisting VM's branches between restore and entry would be
+        // miscounted into the restored V-time. Resetting `first_entry_done` makes
+        // `start_run` fire again.
+        let starts = std::rc::Rc::new(Cell::new(0u32));
+        let mut v = Vmm::new(
+            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc]),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(CountingStartWork {
+                    starts: starts.clone(),
+                }),
+                1,
+            )
+            .unwrap(),
+        );
+        v.step().unwrap(); // first guest entry → start_run fires (1)
+        assert_eq!(starts.get(), 1);
+        let snap = v.save_vm_state().expect("clean synchronized boundary");
+        v.restore_vm_state(&snap).expect("restore");
+        v.step().unwrap(); // restored VM's first entry → start_run fires AGAIN (2)
+        assert_eq!(
+            starts.get(),
+            2,
+            "restore must re-arm the first-entry work prepare (treat as a fresh spawn)"
+        );
+    }
+
+    #[test]
+    fn save_vm_state_fails_closed_on_unrepresentable_sregs() {
+        // `kvm_sregs2` flags/pdptrs are not carried; the determinism guest is 64-bit /
+        // paging-off (they are 0). A non-zero value would be silently zeroed on
+        // restore, so the snapshot fails closed instead of sealing a lossy blob.
+        let mut flags = nonzero_state();
+        flags.sregs.flags = 1; // e.g. PDPTRS_VALID
+        let v = full_vmm(flags, vec![], 0, 1);
+        assert!(matches!(
+            v.save_vm_state(),
+            Err(VmmError::ContractViolation(_))
+        ));
+
+        let mut pdptr = nonzero_state();
+        pdptr.sregs.pdptrs[2] = 0xDEAD_BEEF;
+        let v2 = full_vmm(pdptr, vec![], 0, 1);
+        assert!(matches!(
+            v2.save_vm_state(),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn save_vm_state_fails_closed_on_unrepresentable_events() {
+        // Each pending-event field outside the captured subset (in-flight injection /
+        // SMM / triple-fault) fails the snapshot closed if non-zero.
+        let reject = |events: vmm_backend::VcpuEvents, name: &str| {
+            let mut st = nonzero_state();
+            st.events = events;
+            let v = full_vmm(st, vec![], 0, 1);
+            assert!(
+                matches!(v.save_vm_state(), Err(VmmError::ContractViolation(_))),
+                "a non-zero {name} must fail the snapshot closed"
+            );
+        };
+        reject(
+            vmm_backend::VcpuEvents {
+                nmi_masked: 1,
+                ..Default::default()
+            },
+            "nmi_masked",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                interrupt_injected: 1,
+                ..Default::default()
+            },
+            "interrupt_injected",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+            "exception_payload",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                triple_fault_pending: 1,
+                ..Default::default()
+            },
+            "triple_fault_pending",
+        );
+
+        // The captured subset (a pending exception/NMI/SMI + shadow) is representable,
+        // so it does NOT trip the check — and the KVM validity-mask `flags` is excluded
+        // (it is ioctl metadata, normally non-zero), so a non-zero mask alone is fine.
+        let v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
+        assert!(
+            v_ok.save_vm_state().is_ok(),
+            "a captured-subset event state must still snapshot"
+        );
+        let mut meta = nonzero_state();
+        meta.events.flags = 0x1F; // KVM_VCPUEVENT_VALID_* bits
+        let v_meta = full_vmm(meta, vec![], 0, 1);
+        assert!(
+            v_meta.save_vm_state().is_ok(),
+            "the kvm_vcpu_events validity mask must not trip the unrepresentable check"
         );
     }
 
