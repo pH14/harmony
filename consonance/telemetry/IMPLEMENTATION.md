@@ -117,14 +117,20 @@ server + `EventHub` fan-out) · `lib.rs` (crate doc, re-exports) · `main.rs` (t
 
 ## Mutation testing (quality-c)
 
-The first `cargo mutants --in-diff` run left 17 missed + 2 timeouts; all are now
-killed by exact-value/observable-post-condition tests, with one documented
-equivalent excluded:
+`cargo mutants --no-shuffle --in-diff <(git diff origin/main...HEAD)` (CI's exact
+command) reports **0 missed, 0 timeout** (60 caught, 12 unviable). The first run
+left 17 missed + 2 timeouts; all are now caught by exact-value/observable-post-
+condition tests, with one documented equivalent excluded:
 
 - **The web server made testable by factoring, not by I/O.** `read_request` now
   delegates to a generic `parse_request<R: BufRead>`, unit-tested against a
   `Cursor` that asserts the header drain stops **exactly** at the blank line
-  (leaving the body) — pinning the `n == 0 || == "\r\n" || == "\n"` boundary. The
+  (leaving the body) — pinning the `n == 0` / `== "\r\n"` / `== "\n"` boundary.
+  The parser is **bounded** (`Read::take(MAX_REQUEST_BYTES)`) and fails closed on
+  EOF/bound-before-terminator, so the `|| → &&` terminator mutant (which made the
+  drain loop spin on EOF — the CI **timeout** that counts as not-caught) now runs
+  to the bound and returns a fast `Err` the `Cursor` test asserts. That bound is
+  also a real robustness win: an unbounded HTTP request read is a DoS vector. The
   idle/keepalive counter is a pure `advance_idle(idle) -> (u32, Option<&[u8]>)`,
   unit-tested across the cadence (kills the `+= 1` and the `>=` boundary without
   waiting real time). `EventHub` is unit-tested directly (same-file `mod tests`):
