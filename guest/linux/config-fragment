@@ -43,9 +43,12 @@ CONFIG_KERNEL_GZIP=y
 ## Time
 # Periodic ticks at a fixed low rate — no dynticks machinery deciding when
 # the next tick is; the hypervisor will deliver ticks deterministically.
-# HZ_PERIODIC=y wins the "Timer tick handling" choice, deselecting Kata's
-# CONFIG_NO_HZ_FULL=y / CONFIG_NO_HZ=y (base.conf + x86_64/base.conf); build-
-# kernel.sh asserts HZ_PERIODIC=y and NO_HZ*/=off after olddefconfig.
+# HZ_PERIODIC=y wins the "Timer tick handling" choice, so NO_HZ_COMMON (the
+# dynticks machinery, which selects TICK_ONESHOT) and Kata's CONFIG_NO_HZ_FULL=y
+# (x86_64/base.conf) are both off. Kata's deprecated CONFIG_NO_HZ=y (base.conf)
+# harmlessly survives — it only sets the choice *default* and selects nothing once
+# HZ_PERIODIC is chosen. build-kernel.sh asserts HZ_PERIODIC=y and
+# NO_HZ_COMMON/NO_HZ_FULL/NO_HZ_IDLE/TICK_ONESHOT off after olddefconfig.
 CONFIG_HZ_PERIODIC=y
 CONFIG_HZ_100=y
 # No high-resolution timer reprogramming; the periodic tick is the timer.
