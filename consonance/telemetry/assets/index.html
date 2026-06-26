@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later
+     telemetry console — vanilla JS + inline CSS, no CDN/npm/build step.
+     Embedded into the `console` binary with include_str!; works offline.
+     Same renderer drives a LIVE stream (EventSource /events) and a REPLAY
+     (fetch /recording). Everything is keyed on V-time (vns), a pure function
+     of the run, so a recording re-renders identically. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>consonance · telemetry console</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --edge:#30363d; --fg:#c9d1d9;
+    --dim:#8b949e; --accent:#58a6ff; --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family:var(--mono); font-size:13px; }
+  header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+           padding:8px 14px; background:var(--panel);
+           border-bottom:1px solid var(--edge); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:14px; margin:0; font-weight:600; letter-spacing:.3px; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700;
+           text-transform:uppercase; letter-spacing:.5px; }
+  .badge.live { background:rgba(63,185,80,.15); color:var(--good);
+                border:1px solid var(--good); }
+  .badge.replay { background:rgba(210,153,34,.15); color:var(--warn);
+                  border:1px solid var(--warn); }
+  .stat { color:var(--dim); }
+  .stat b { color:var(--fg); font-variant-numeric:tabular-nums; }
+  .stat.bad b { color:var(--bad); }
+  #scrubwrap { display:flex; align-items:center; gap:10px; flex:1; min-width:280px; }
+  #scrub { flex:1; }
+  #follow { cursor:pointer; }
+  main { display:grid; gap:10px; padding:10px;
+         grid-template-columns:1fr 1fr; grid-auto-rows:min-content; }
+  .panel { background:var(--panel); border:1px solid var(--edge);
+           border-radius:6px; overflow:hidden; display:flex; flex-direction:column; }
+  .panel > h2 { margin:0; padding:6px 10px; font-size:12px; font-weight:600;
+                color:var(--dim); border-bottom:1px solid var(--edge);
+                text-transform:uppercase; letter-spacing:.5px; }
+  .wide { grid-column:1 / -1; }
+  pre#console { margin:0; padding:10px; height:240px; overflow:auto;
+                white-space:pre-wrap; word-break:break-word; color:#d6deeb; }
+  .scroll { height:200px; overflow:auto; }
+  table.counts { width:100%; border-collapse:collapse; }
+  table.counts td { padding:3px 10px; border-bottom:1px solid var(--edge);
+                    font-variant-numeric:tabular-nums; }
+  table.counts td.k { color:var(--dim); }
+  table.counts td.v { text-align:right; }
+  ul.list { list-style:none; margin:0; padding:0; }
+  ul.list li { padding:3px 10px; border-bottom:1px solid var(--edge);
+               display:flex; gap:10px; }
+  ul.list li .vns { color:var(--accent); min-width:90px;
+                    font-variant-numeric:tabular-nums; }
+  ul.list li .who { color:var(--dim); min-width:60px; }
+  .hash { font-size:11px; color:var(--good); word-break:break-all; }
+  /* virtualized timeline */
+  #tl-viewport { height:280px; overflow:auto; position:relative; }
+  #tl-spacer { position:relative; }
+  .tl-row { position:absolute; left:0; right:0; height:20px; line-height:20px;
+            padding:0 10px; display:flex; gap:10px; white-space:nowrap;
+            overflow:hidden; border-bottom:1px solid #21262d; }
+  .tl-row .vns { color:var(--accent); min-width:96px;
+                 font-variant-numeric:tabular-nums; }
+  .tl-row .seq { color:var(--dim); min-width:64px; }
+  .tl-row .k { color:var(--fg); min-width:90px; font-weight:600; }
+  .tl-row .d { color:var(--dim); overflow:hidden; text-overflow:ellipsis; }
+  .tl-row.k-Console .k { color:#79c0ff; }
+  .tl-row.k-GuestEvent .k { color:#d2a8ff; }
+  .tl-row.k-Checkpoint .k { color:var(--good); }
+  .tl-row.k-Inject .k { color:var(--warn); }
+  .tl-row.k-Terminal .k { color:var(--bad); }
+  .tl-row.k-Dropped .k { color:var(--bad); }
+  .tl-row.report { background:rgba(88,166,255,.06); }
+  canvas { width:100%; height:160px; display:block; }
+  .empty { padding:10px; color:var(--dim); font-style:italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>consonance · telemetry</h1>
+  <span id="mode" class="badge live">live</span>
+  <span class="stat">vns <b id="s-vns">0</b></span>
+  <span class="stat">wall <b id="s-wall">0.0s</b></span>
+  <span class="stat">events <b id="s-count">0</b></span>
+  <span class="stat bad">dropped <b id="s-drop">0</b></span>
+  <span id="scrubwrap">
+    <label class="stat"><input type="checkbox" id="follow" checked> follow</label>
+    <input type="range" id="scrub" min="0" max="0" value="0">
+  </span>
+</header>
+
+<main>
+  <section class="panel wide">
+    <h2>guest console — COM1 stdout/stderr (display only; M2 owns the bytes)</h2>
+    <pre id="console"></pre>
+  </section>
+
+  <section class="panel">
+    <h2>exit-rate counters (from Counts)</h2>
+    <canvas id="rateCanvas"></canvas>
+    <table class="counts" id="countsTable"><tbody></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>V-time vs wall-clock</h2>
+    <canvas id="wallCanvas"></canvas>
+    <div class="empty" id="wallNote">virtual ns vs wall seconds since first event</div>
+  </section>
+
+  <section class="panel">
+    <h2>report channel — REPORT_PORT 0x0CA2 → observable_digest</h2>
+    <ul class="list scroll" id="reportList"></ul>
+  </section>
+
+  <section class="panel">
+    <h2>guest events — hypercall Event service (id 4)</h2>
+    <ul class="list scroll" id="guestList"></ul>
+  </section>
+
+  <section class="panel wide">
+    <h2>checkpoints — state_hash per V-time (the source of truth)</h2>
+    <ul class="list scroll" id="ckptList"></ul>
+  </section>
+
+  <section class="panel wide">
+    <h2>event timeline — vns ≤ cursor (virtualized)</h2>
+    <div id="tl-viewport"><div id="tl-spacer"></div></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const REPORT_PORT = 0x0CA2;           // task 28 report channel
+const $ = (id) => document.getElementById(id);
+
+// ---- state ------------------------------------------------------------------
+let events = [];        // every event, in arrival order (vns monotonic non-decr.)
+let maxVns = 0;
+let cursor = 0;         // current scrub position in vns
+let follow = true;      // live: track the leading edge
+let dropped = 0;
+let firstWall = null;   // performance.now() of first event (live wall baseline)
+
+// derived, recomputed by rebuildTo() when scrubbing:
+const ROW_H = 20;
+
+// ---- helpers ----------------------------------------------------------------
+const kindOf = (ev) => Object.keys(ev.kind)[0];
+const body = (ev) => ev.kind[kindOf(ev)];
+const fmtVns = (v) => (v >= 1e9 ? (v/1e9).toFixed(6)+"s" : v.toLocaleString()+"ns");
+const hex = (bytes) => bytes.map(b => b.toString(16).padStart(2,"0")).join("");
+const esc = (s) => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+function shortDesc(ev) {
+  const k = kindOf(ev), p = body(ev);
+  switch (k) {
+    case "Console":    return JSON.stringify(p.text);
+    case "GuestEvent": return `id=${p.id} (${p.data.length}B)`;
+    case "Io":         return `port=0x${p.port.toString(16)} ${p.write?"OUT":"IN"} ${p.value}`;
+    case "Mmio":       return `@0x${p.addr.toString(16)} ${p.write?"ST":"LD"} ${p.value}`;
+    case "Hypercall":  return `svc=${p.service} op=${p.opcode} st=${p.status}`;
+    case "Msr":        return `idx=0x${p.index.toString(16)} ${p.write?"WR":"RD"} ${p.value}`;
+    case "Tsc":        return `tsc=${p.value}`;
+    case "Rng":        return `rng=${p.value}`;
+    case "Cpuid":      return `leaf=0x${p.leaf.toString(16)}/${p.subleaf}`;
+    case "Inject":     return `vector=${p.vector}`;
+    case "Checkpoint": return hex(p.state_hash).slice(0,16)+"…";
+    case "Counts":     return `${p.io+p.mmio+p.rdmsr+p.wrmsr+p.hypercall+p.cpuid+p.hlt} exits`;
+    case "Terminal":   return p.reason;
+    case "Dropped":    return `${p.count} events dropped`;
+    default:           return k;
+  }
+}
+const isReport = (ev) =>
+  kindOf(ev) === "Io" && body(ev).port === REPORT_PORT && body(ev).write;
+
+// ---- ingest -----------------------------------------------------------------
+function ingest(ev) {
+  ev._wall = (firstWall === null)
+    ? (firstWall = perfNow(), 0)
+    : (perfNow() - firstWall);
+  events.push(ev);
+  if (ev.vns > maxVns) maxVns = ev.vns;
+  if (kindOf(ev) === "Dropped") dropped += body(ev).count;
+  $("scrub").max = String(maxVns);
+  if (follow) { cursor = maxVns; $("scrub").value = String(maxVns); }
+  scheduleRender();
+}
+// performance.now() if present (browser); 0 baseline otherwise (display only,
+// never hashed — wall-clock lives in the UI, never in deterministic state).
+function perfNow() {
+  return (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+}
+
+// ---- rendering --------------------------------------------------------------
+let renderQueued = false;
+function scheduleRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  (typeof requestAnimationFrame !== "undefined" ? requestAnimationFrame : setTimeout)(() => {
+    renderQueued = false;
+    render();
+  });
+}
+
+function render() {
+  const upto = events.filter(e => e.vns <= cursor);
+  renderHeader(upto);
+  renderConsole(upto);
+  renderCounts(upto);
+  renderReports(upto);
+  renderGuest(upto);
+  renderCheckpoints(upto);
+  renderTimeline(upto);
+  drawRate(upto);
+  drawWall(upto);
+}
+
+function renderHeader(upto) {
+  $("s-vns").textContent = fmtVns(cursor);
+  const lastWall = upto.length ? upto[upto.length-1]._wall : 0;
+  $("s-wall").textContent = (lastWall/1000).toFixed(2)+"s";
+  $("s-count").textContent = upto.length.toLocaleString();
+  $("s-drop").textContent = dropped.toLocaleString();
+}
+
+function renderConsole(upto) {
+  let text = "";
+  for (const ev of upto) if (kindOf(ev) === "Console") text += body(ev).text;
+  const el = $("console");
+  el.textContent = text;
+  if (follow) el.scrollTop = el.scrollHeight;
+}
+
+const COUNT_KEYS = ["io","mmio","rdmsr","wrmsr","hypercall","cpuid",
+                    "rdtsc","rdtscp","rdrand","rdseed","hlt","shutdown","deadline"];
+function renderCounts(upto) {
+  let last = null;
+  for (const ev of upto) if (kindOf(ev) === "Counts") last = body(ev);
+  const tb = $("countsTable").firstElementChild;
+  if (!last) { tb.innerHTML = '<tr><td class="k">no Counts yet</td></tr>'; return; }
+  let rows = "";
+  for (const k of COUNT_KEYS) {
+    if (last[k]) rows += `<tr><td class="k">${k}</td><td class="v">${last[k].toLocaleString()}</td></tr>`;
+  }
+  rows += `<tr><td class="k"><b>total</b></td><td class="v"><b>${
+    COUNT_KEYS.reduce((a,k)=>a+last[k],0).toLocaleString()}</b></td></tr>`;
+  tb.innerHTML = rows;
+}
+
+function renderReports(upto) {
+  const rep = upto.filter(isReport);
+  $("reportList").innerHTML = rep.length
+    ? rep.map(ev => `<li><span class="vns">${fmtVns(ev.vns)}</span>`+
+        `<span>= ${body(ev).value}</span></li>`).join("")
+    : '<li class="empty">no report-channel writes yet</li>';
+}
+
+function renderGuest(upto) {
+  const g = upto.filter(ev => kindOf(ev) === "GuestEvent");
+  $("guestList").innerHTML = g.length
+    ? g.map(ev => { const p = body(ev);
+        return `<li><span class="vns">${fmtVns(ev.vns)}</span>`+
+          `<span class="who">id ${p.id}</span><span>${hex(p.data) || "∅"}</span></li>`; }).join("")
+    : '<li class="empty">no guest events yet</li>';
+}
+
+function renderCheckpoints(upto) {
+  const c = upto.filter(ev => kindOf(ev) === "Checkpoint");
+  $("ckptList").innerHTML = c.length
+    ? c.map(ev => `<li><span class="vns">${fmtVns(ev.vns)}</span>`+
+        `<span class="who">${(ev._wall/1000).toFixed(2)}s</span>`+
+        `<span class="hash">${hex(body(ev).state_hash)}</span></li>`).join("")
+    : '<li class="empty">no checkpoints yet</li>';
+}
+
+// ---- virtualized timeline ---------------------------------------------------
+let tlFiltered = [];
+function renderTimeline(upto) {
+  tlFiltered = upto;
+  $("tl-spacer").style.height = (tlFiltered.length * ROW_H) + "px";
+  if (follow) {
+    const vp = $("tl-viewport");
+    vp.scrollTop = vp.scrollHeight;
+  }
+  paintTimelineWindow();
+}
+function paintTimelineWindow() {
+  const vp = $("tl-viewport"), spacer = $("tl-spacer");
+  const top = vp.scrollTop, h = vp.clientHeight;
+  const start = Math.max(0, Math.floor(top / ROW_H) - 4);
+  const end = Math.min(tlFiltered.length, Math.ceil((top + h) / ROW_H) + 4);
+  let html = "";
+  for (let i = start; i < end; i++) {
+    const ev = tlFiltered[i], k = kindOf(ev);
+    const cls = "tl-row k-" + k + (isReport(ev) ? " report" : "");
+    html += `<div class="${cls}" style="top:${i*ROW_H}px">`+
+            `<span class="vns">${fmtVns(ev.vns)}</span>`+
+            `<span class="seq">#${ev.seq}</span>`+
+            `<span class="k">${k}</span>`+
+            `<span class="d">${esc(shortDesc(ev))}</span></div>`;
+  }
+  spacer.innerHTML = html;
+}
+$("tl-viewport").addEventListener("scroll", paintTimelineWindow);
+
+// ---- canvas graphs ----------------------------------------------------------
+function setupCanvas(cv) {
+  const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+  const w = cv.clientWidth || 300, h = cv.clientHeight || 160;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  return {ctx,w,h};
+}
+function axes(ctx,w,h) {
+  ctx.strokeStyle = "#30363d"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(34,6); ctx.lineTo(34,h-18); ctx.lineTo(w-6,h-18); ctx.stroke();
+}
+function polyline(ctx, pts, w, h, color) {
+  if (pts.length < 2) return;
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y1 = Math.max(...ys, 1);
+  const px = (x) => 34 + (x1>x0 ? (x-x0)/(x1-x0) : 0) * (w-40);
+  const py = (y) => (h-18) - (y/y1) * (h-26);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach((p,i)=> i ? ctx.lineTo(px(p[0]),py(p[1])) : ctx.moveTo(px(p[0]),py(p[1])));
+  ctx.stroke();
+  ctx.fillStyle = "#8b949e"; ctx.font = "10px monospace";
+  ctx.fillText(y1.toLocaleString(), 2, 12);
+}
+function drawRate(upto) {
+  const {ctx,w,h} = setupCanvas($("rateCanvas"));
+  axes(ctx,w,h);
+  const pts = [];
+  for (const ev of upto) if (kindOf(ev)==="Counts") {
+    const p = body(ev); pts.push([ev.vns, COUNT_KEYS.reduce((a,k)=>a+p[k],0)]);
+  }
+  polyline(ctx, pts, w, h, "#58a6ff");
+}
+function drawWall(upto) {
+  const {ctx,w,h} = setupCanvas($("wallCanvas"));
+  axes(ctx,w,h);
+  const pts = upto.map((ev,i)=>[ev._wall || i, ev.vns]);
+  polyline(ctx, pts, w, h, "#3fb950");
+}
+
+// ---- scrubber ---------------------------------------------------------------
+$("scrub").addEventListener("input", (e) => {
+  cursor = Number(e.target.value);
+  follow = false; $("follow").checked = false;
+  render();
+});
+$("follow").addEventListener("change", (e) => {
+  follow = e.target.checked;
+  if (follow) { cursor = maxVns; $("scrub").value = String(maxVns); render(); }
+});
+
+// ---- sources ----------------------------------------------------------------
+async function boot() {
+  let cfg = { mode: "live", hasRecording: false };
+  try { cfg = await (await fetch("/config")).json(); } catch (_) {}
+  const badge = $("mode");
+  badge.textContent = cfg.mode;
+  badge.className = "badge " + (cfg.mode === "replay" ? "replay" : "live");
+
+  if (cfg.mode === "replay") {
+    follow = false; $("follow").checked = false;
+    await loadRecording();
+  } else {
+    startLive();
+    if (cfg.hasRecording) loadRecording(); // also fold in any captured history
+  }
+}
+function startLive() {
+  if (typeof EventSource === "undefined") return;
+  const es = new EventSource("/events");
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); } catch (_) {} };
+  es.onerror = () => { $("mode").textContent = "live (reconnecting)"; };
+}
+async function loadRecording() {
+  let text = "";
+  try { text = await (await fetch("/recording")).text(); } catch (_) { return; }
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try { ingest(JSON.parse(t)); } catch (_) {}
+  }
+  // After a bulk load, sit at the end with the full range scrubbable.
+  cursor = maxVns; $("scrub").value = String(maxVns);
+  render();
+}
+boot();
+</script>
+</body>
+</html>
