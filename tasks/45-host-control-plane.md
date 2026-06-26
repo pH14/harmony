@@ -1,4 +1,4 @@
-# Task 44 — the host control plane: `HostFault` + `perturb` + uniform `Moment` stamping
+# Task 45 — the host control plane: `HostFault` + `perturb` + uniform `Moment` stamping
 
 > **FOLLOW-ON to the `docs/DISSONANCE.md` ruling · DO NOT AUTO-SPAWN until that lands.** This builds
 > the half of dissonance's permutation surface the single-seam `Environment` (task 24) never

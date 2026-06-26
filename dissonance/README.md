@@ -11,7 +11,7 @@ ruling: `docs/DISSONANCE.md`.
 - `explorer/` — the Variation/Theme exploration engine (task 12)
 
 The fault surface is two control planes: a flat **host control plane** (consonance-level —
-memory/clock/CPU/IRQ, task 44) and layerable **guest control planes** (per `harmony-<env>`). See
+memory/clock/CPU/IRQ, task 45) and layerable **guest control planes** (per `harmony-<env>`). See
 `docs/DISSONANCE.md`.
 
 The workspace `members` glob in the root `Cargo.toml` already includes `"dissonance/*"`, so a

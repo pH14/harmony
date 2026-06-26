@@ -1,4 +1,4 @@
-# Task 42 — `harmony-linux`: name the guest-environment tier (`guest/` → `harmony-linux/`) + audit consonance for workload assumptions
+# Task 43 — `harmony-linux`: name the guest-environment tier (`guest/` → `harmony-linux/`) + audit consonance for workload assumptions
 
 > **STRUCTURAL + AUDIT · land atomically · aims for zero runtime-behavior change.** Like the
 > rename (task 90) this is a tree-wide path move that conflicts with any branch touching `guest/`,

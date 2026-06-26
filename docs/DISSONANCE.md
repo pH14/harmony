@@ -268,7 +268,7 @@ a host-serviced hypercall; crash/restart is snapshot/branch at a `Moment`).
 - **Layer-conflict semantics** (D7): the exact rules for how a higher `harmony-<env>` layer adds vs.
   constrains a lower layer's classes are sketched (namespacing) but not pinned.
 - **Host control-plane realization**: `HostFault` + `perturb` + uniform `Moment` stamping across
-  both planes is specified here but not yet built (task 44). The existing `Environment` (task 24)
+  both planes is specified here but not yet built (task 45). The existing `Environment` (task 24)
   covers the guest planes only.
 
 ## Crates and tasks
@@ -279,7 +279,7 @@ a host-serviced hypercall; crash/restart is snapshot/branch at a `Moment`).
 | `dissonance/control-proto` | the control-transport wire types + versioned codec | `tasks/25-control-proto.md` |
 | `dissonance/pv-net` | the host L2 switch + V-time delivery scheduler + fault→schedule | `tasks/26-pv-net.md` |
 | `dissonance/explorer` | the Variation/Theme engine, corpus, scoring, strategy | `tasks/12-explorer.md` |
-| *(host plane)* | `HostFault` + `perturb` + uniform `Moment` stamping in consonance | `tasks/44-host-control-plane.md` |
+| *(host plane)* | `HostFault` + `perturb` + uniform `Moment` stamping in consonance | `tasks/45-host-control-plane.md` |
 
 `environment`, `control-proto`, `pv-net`, `explorer` are pure-logic and laptop-gate-testable. The
 frontier glue — the socket server, the reactive-suspension run loop, the `net_tx`/RX-IRQ wiring, and

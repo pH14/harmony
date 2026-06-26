@@ -1,7 +1,7 @@
-# Task 43 — workload-agnostic `load_image` in consonance; move the bzImage transform to `harmony-linux`
+# Task 44 — workload-agnostic `load_image` in consonance; move the bzImage transform to `harmony-linux`
 
-> **FOLLOW-ON to task 42 (audit finding F1) · behavioral + determinism-sensitive · DO NOT
-> AUTO-SPAWN until task 42 lands.** Depends on `harmony-linux/` existing and on the design ruling
+> **FOLLOW-ON to task 43 (audit finding F1) · behavioral + determinism-sensitive · DO NOT
+> AUTO-SPAWN until task 43 lands.** Depends on `harmony-linux/` existing and on the design ruling
 > in `docs/DISSONANCE.md` (consonance runs an *opaque* guest).
 
 Read `tasks/00-CONVENTIONS.md` and `docs/CONSONANCE-WORKLOAD-AUDIT.md` (F1) first.
