@@ -86,8 +86,7 @@ const WALL_BUDGET: Duration = Duration::from_secs(1200);
 
 /// postgres announces this once the cluster is accepting connections.
 const PG_READY: &[u8] = b"database system is ready to accept connections";
-/// The workload loop's bracketing markers (printed by `pg-init.sh`).
-const WORKLOAD_BEGIN: &[u8] = b"PG37: workload begin";
+/// The workload loop's end marker (printed by `pg-init.sh`).
 const WORKLOAD_END: &[u8] = b"PG37: workload end";
 /// The final workload row: iteration 20, v = 20*20+7 = 407, count = 20, running
 /// sum = 3010. A pure function of the loop index — pinning it proves the *query
@@ -97,7 +96,9 @@ const FINAL_ROW: &[u8] = b"row|20|407|20|3010";
 const GUEST_READY: &[u8] = b"GUEST_READY";
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
 }
 
 /// Read a built guest artifact, trying `guest/build/<name>` then `guest/linux/<name>`.
@@ -232,7 +233,14 @@ fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
     }
 }
 
-fn boot_pg(seed: u64) -> (Vmm<Box<dyn vmm_backend::Backend>>, BootOutcome) {
+/// Boot the Postgres image on the patched backend at `seed`, run it to a terminal,
+/// and return (serial capture, `state_hash`, outcome). The [`Vmm`] — and with it
+/// the `perf_event` work counter that drives V-time — is **dropped before
+/// returning**. That matters for the deterministic-twice gate: keeping the first
+/// run's `Vmm` alive while a second boots in the same process leaves two pinned PMU
+/// counters open, which multiplex and perturb the branch count → a few-step V-time
+/// skid → a divergent printk timestamp. One counter at a time keeps it exact.
+fn boot_pg(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-postgres.cpio.gz");
     let cmdline = cmdline();
@@ -246,7 +254,7 @@ fn boot_pg(seed: u64) -> (Vmm<Box<dyn vmm_backend::Backend>>, BootOutcome) {
     )
     .expect("boot_linux_selected (patched) — needs the LOADED patched KVM modules");
     let out = run_bounded(&mut vmm);
-    (vmm, out)
+    (vmm.serial().to_vec(), vmm.state_hash(), out)
 }
 
 fn report(tag: &str, out: &BootOutcome) {
@@ -275,7 +283,7 @@ fn p1_postgres_runs_and_streams_patched() {
     require_kvm();
     require_host_baseline();
     eprintln!("[pg] cmdline: {}", cmdline());
-    let (_vmm, out) = boot_pg(SEED);
+    let (_serial, _hash, out) = boot_pg(SEED);
     report("p1", &out);
     assert!(
         out.step_error.is_none(),
@@ -283,12 +291,31 @@ fn p1_postgres_runs_and_streams_patched() {
         out.step_error,
         out.steps,
     );
-    assert!(out.reason.is_some(), "Gate 1: must reach a terminal, not hang ({} steps)", out.steps);
-    assert!(out.pg_ready, "Gate 1: postgres must announce it is ready to accept connections");
-    assert!(out.workload_done, "Gate 1: the workload loop must run to completion (PG37: workload end)");
-    assert!(out.final_row, "Gate 1: the final workload row (row|20|407|20|3010) must reach the serial");
-    assert!(out.guest_ready, "Gate 1: the guest must announce GUEST_READY after a clean shutdown");
-    assert!(out.terminated_cleanly(), "Gate 1: the guest must power off cleanly within budget");
+    assert!(
+        out.reason.is_some(),
+        "Gate 1: must reach a terminal, not hang ({} steps)",
+        out.steps
+    );
+    assert!(
+        out.pg_ready,
+        "Gate 1: postgres must announce it is ready to accept connections"
+    );
+    assert!(
+        out.workload_done,
+        "Gate 1: the workload loop must run to completion (PG37: workload end)"
+    );
+    assert!(
+        out.final_row,
+        "Gate 1: the final workload row (row|20|407|20|3010) must reach the serial"
+    );
+    assert!(
+        out.guest_ready,
+        "Gate 1: the guest must announce GUEST_READY after a clean shutdown"
+    );
+    assert!(
+        out.terminated_cleanly(),
+        "Gate 1: the guest must power off cleanly within budget"
+    );
 }
 
 // --- Gate 2: deterministic twice (the milestone) ---------------------------
@@ -303,11 +330,10 @@ fn p2_postgres_deterministic_twice_patched() {
     require_kvm();
     require_host_baseline();
 
-    let (vmm_a, out_a) = boot_pg(SEED);
-    let (serial_a, hash_a) = (vmm_a.serial().to_vec(), vmm_a.state_hash());
+    // boot_pg drops run A's Vmm (and its PMU counter) before we boot run B.
+    let (serial_a, hash_a, out_a) = boot_pg(SEED);
     report("p2 run A", &out_a);
-    let (vmm_b, out_b) = boot_pg(SEED);
-    let (serial_b, hash_b) = (vmm_b.serial().to_vec(), vmm_b.state_hash());
+    let (serial_b, hash_b, out_b) = boot_pg(SEED);
     report("p2 run B", &out_b);
 
     let hex = |h: &[u8; 32]| h.iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -322,8 +348,15 @@ fn p2_postgres_deterministic_twice_patched() {
     // Both runs must actually have run the workload to GUEST_READY, so two
     // identical-but-stranded boots cannot pass this gate vacuously.
     for (tag, out) in [("A", &out_a), ("B", &out_b)] {
-        assert!(out.step_error.is_none(), "Gate 2 run {tag}: contract violation: {:?}", out.step_error);
-        assert!(out.final_row, "Gate 2 run {tag}: the workload's final row must reach the serial");
+        assert!(
+            out.step_error.is_none(),
+            "Gate 2 run {tag}: contract violation: {:?}",
+            out.step_error
+        );
+        assert!(
+            out.final_row,
+            "Gate 2 run {tag}: the workload's final row must reach the serial"
+        );
         assert!(out.guest_ready, "Gate 2 run {tag}: must reach GUEST_READY");
     }
     assert_eq!(
