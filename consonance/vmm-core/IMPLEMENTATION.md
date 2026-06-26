@@ -2349,7 +2349,13 @@ restored VM hashes identically to a never-restored one. *Cheap + correct + golde
 is a pure function (determinism preserved — two same-seed runs share identical raw events ⇒ identical
 canonical), the M1/M2/corpus paths carry **all-zero** events (`canonical == raw`, no change), and the
 event **distinguishing** test keys on `nmi_pending` (an *active* field `canonical_events` preserves),
-unaffected.
+unaffected. **The canonicalization is applied at *every* place the events reach a hash** — not just the
+default `state_hash`'s `encode_events`, but also the **typed `vm_state::VcpuEvents` record** (`fill_vcpu_state`
+projects `canonical_events(&vcpu.events)`, mirroring the device blob). The typed record rides the opt-in
+`VMST` chunk (`wire_snapshot_hashing()`), so without canonicalizing it too, a raw residual would survive a
+`save → restore → save` round-trip there and break the full-hash match *with snapshot-hashing on* at a
+residual point (PR #12 review). Pinned by `fill_vcpu_state_canonicalizes_the_typed_events_record` (unit)
+and `snapshot_hashing_round_trips_at_a_residual_events_point` (end-to-end, snapshot-hashing ON).
 
 **Why this is golden-safe without a re-bless (the key check).** No test pins an **absolute** Linux
 `state_hash` value — every `state_hash` golden is **relative**: deterministic-twice (`a == b` across two
@@ -2363,38 +2369,46 @@ should not." Verified on Mac: `vmm-core` (232), `unison`/`det-corpus` determinis
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**231** tests, +3 this task) /
-`deny`. **Miri** validates the new `put_events`/`Reader::events` byte-parsing + `has_inflight_injection`
-(pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** — exact-value tests pin the
-new surface: the full in-flight `kvm_vcpu_events` device-blob round-trip (every field a distinct
-non-zero value), the `has_inflight_injection` 14-field predicate (each field alone flips it; each
-excluded field does not), and the in-flight save/restore/re-save. **public-api** — one new line
-(`Vmm::has_inflight_event_injection`), `tests/public-api.txt` updated (refresh verified on the box).
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**234** tests) / `deny`. **Miri**
+validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
+predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** — exact-value tests
+pin the new surface: the full in-flight `kvm_vcpu_events` device-blob round-trip (every field distinct,
+non-zero), the `has_inflight_injection` 14-field predicate (each field alone flips it), and
+`canonical_events` (each SMI/NMI OR-chain operand individually — 32/32 caught after the PR-#12 hardening).
+**public-api** — one new line (`Vmm::has_inflight_event_injection`), `tests/public-api.txt` matches on the box.
 
 Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
 (`device_blob_round_trips_a_full_in_flight_events_record`,
-`has_inflight_injection_flags_exactly_the_non_quiescent_fields`), `src/vmm.rs`
+`has_inflight_injection_flags_exactly_the_non_quiescent_fields`,
+`canonical_events_collapses_residuals_and_reconstructs_flags`,
+`fill_vcpu_state_canonicalizes_the_typed_events_record`), `src/vmm.rs`
 (`save_vm_state_captures_in_flight_events_at_a_non_quiescent_point`,
 `snapshot_restore_re_derives_the_in_flight_lapic_irq`,
 `has_inflight_event_injection_reflects_the_live_vcpu`), `tests/snapshot_branch.rs`
-(`non_quiescent_in_flight_events_round_trip_through_the_engine` — the full engine path).
+(`non_quiescent_in_flight_events_round_trip_through_the_engine` — the full engine path;
+`snapshot_hashing_round_trips_at_a_residual_events_point` — the VMST chunk is residual-clean, PR #12).
 
 **Box (`tests/live_nonquiescent_snapshot.rs`, `#[cfg(target_os="linux")]` + `#[ignore]`):**
 - `gate1_nonquiescent_point_is_snapshottable` — scans the post-readiness Postgres workload and quotes
   the **before/after split on the same run** (the in-flight points task 39 rejected, now snapshottable
   — the `0 → N` flip), then snapshots one such point and confirms `restore_vm_state` produces a
-  **runnable** VM that resumes and runs the remaining workload to its final row + `GUEST_READY` + the
-  clean power-off `Hlt`.
+  **runnable** VM that **cleanly completes the workload** (`internally_consistent`: final row +
+  `GUEST_READY` + a real terminal + no step error).
 - `gate2_mid_postgres_roundtrip_is_deterministic` — **the milestone:** a running Postgres is snapshotted
   **mid-workload at a non-quiescent point**; the **un-snapshotted (live) continuation** from that seal
   is the reference (the spec's "un-snapshotted run"). The snapshot is restored into a fresh VM and
   resumed **twice** → deterministic-twice, and each restored continuation is **bit-identical** to the
-  live continuation in its **serial + `observable_digest` + every execution-relevant `state_hash`
-  component** (the only differences being the two benign `{segments, events}` quirks above). Restore is
-  exact at a non-quiescent point — *same state ⇒ same future.*
+  live continuation on the **full `state_hash`** + serial + `observable_digest`. **Both the live and each
+  restored continuation must be `internally_consistent`** (final row + `GUEST_READY` + real terminal +
+  no step error) — so the milestone cannot "pass" by comparing a shared *failed* prefix of two runs that
+  both broke the same way (a step-error / wall-budget break leaves `reason == None`; PR #12 review).
+  Restore is exact at a non-quiescent point — *same state ⇒ same future.*
 - `gate3_branching_from_a_mid_postgres_snapshot` — re-runs task 40's matrix sealed at a **mid-Postgres**
   point: each seeded fork reproducible across N replays, ≥1 divergent (a reseeded entropy stream makes
-  the terminal `state_hash` distinct), one shared read-only base.
+  the terminal `state_hash` distinct), one shared read-only base. The base continuation must be
+  `internally_consistent`; each branch must reach a **clean shutdown** (`GUEST_READY` + real terminal +
+  no step error) *without* pinning the workload row — a branch is allowed to diverge into a different
+  guest-observable future.
 
 `live_branching_demo.rs` (task 40) is left intact as the boot-entry baseline, with a doc note pointing
 to the task-41 gate for the mid-workload capability.
@@ -2426,7 +2440,10 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >   it, the sole `state_hash` delta was the inert `events` residuals — segments matched at the terminal,
 >   and the `vtim:last-intercept`/`vtim:work-raw` pair is diagnostic-only, not in the hash.) The Mac
 >   determinism suites (`unison`/`det-corpus`, 92) confirm the canonicalization preserves determinism.
->   **Same state ⇒ same future — while the system is doing work.**
+>   Re-run with the **PR-#12 clean-continuation assertions** (the milestone gate now requires both the live
+>   and each restored continuation to be `internally_consistent` — `final_row=true GUEST_READY=true
+>   step_error=None`, observed for all three): still **`live = restored` full-hash match**, `test result:
+>   ok`. **Same state ⇒ same future — while the system is doing work.**
 > - **Gate 1 (0→N flip) ✓** — on one Postgres run, **3112 of the post-readiness V-time-sync boundaries
 >   carried an in-flight `kvm_vcpu_events` state task 39 fail-closed-rejected** (the rest were
 >   non-synchronized); task 41 makes **all 3112 snapshottable**, and the restore resumes into a runnable
