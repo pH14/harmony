@@ -1,8 +1,0 @@
-consonance/vmm-core/src/snapshot.rs:509:5: replace unrepresentable_state -> Option<&'static str> with None
-consonance/vmm-core/src/snapshot.rs:516:35: replace != with == in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:544:34: replace != with == in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:509:5: replace unrepresentable_state -> Option<&'static str> with Some("")
-consonance/vmm-core/src/snapshot.rs:509:5: replace unrepresentable_state -> Option<&'static str> with Some("xyzzy")
-consonance/vmm-core/src/vmm.rs:778:9: replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())
-consonance/vmm-core/src/snapshot.rs:510:16: replace != with == in unrepresentable_state
-consonance/vmm-core/src/vmm.rs:837:9: replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())

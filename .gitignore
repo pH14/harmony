@@ -11,3 +11,5 @@
 # the tree. (The patched-KVM determinism recipe is NOT here — it lives, tracked, at
 # consonance/vmm-backend/kvm-patches/.)
 spikes/*
+/mutants.out
+/mutants.out.old
