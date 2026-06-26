@@ -1,0 +1,84 @@
+[package]
+name = "vmm-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The deterministic VMM above the Backend trait: Multiboot loader, 32-bit-PM entry state, CPUID/MSR-filter policy, bring-up device shims, and the event loop (BRINGUP M1/M2)"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Rule-2 exception (declared in tasks/15-vmm-core-skeleton.md): vmm-core is the
+# deterministic VMM *above* the `Backend` trait, so it depends on its sibling
+# `vmm-backend` for the trait + value types. Re-declaring the trait locally would
+# produce a different trait the binary's `KvmBackend` does not implement. NO
+# `kvm-ioctls`/`kvm-bindings`/`vm-memory` here — those live below the trait.
+# `version` is pinned alongside `path` so `cargo deny`'s `wildcards = "deny"`
+# (deny.toml [bans]) accepts the rule-2 sibling dependency — a bare `{ path }` is a
+# `*` requirement and would fail that gate. The path always wins for resolution.
+vmm-backend = { path = "../vmm-backend", version = "0.1.0" }
+# Rule-2 sibling exceptions (task 21): the V-time clock arithmetic and the seeded
+# entropy stream both live *above* the `Backend` trait — vmm-core computes the
+# deterministic RDTSC = `VClock::tsc(work)` and the RDRAND/RDSEED bytes from the
+# same `SeededEntropy` stream the `Entropy` hypercall uses, so RDRAND and the
+# hypercall RNG cannot diverge (R-Backend hard layering rule). Pinned `version`
+# alongside `path` to satisfy `cargo deny`'s wildcard ban (as for vmm-backend).
+vtime = { path = "../vtime", version = "0.1.0" }
+# `host` provides `SeededEntropy`/`Service` (the entropy stream RDRAND/RDSEED
+# draw from). `guest` is enabled too **only** so the dependency builds clean
+# under vmm-core's `clippy -D warnings`: with host-only, hypercall-proto's
+# `core::fmt` import and `Status::from_u16` are dead (they are exercised only by
+# the guest-side `Client`), which `-D warnings` would reject in this workspace
+# member. The guest code itself is unused here (host-side crate). [question]: a
+# host-only `feature = ["host"]` would be cleaner once hypercall-proto gates
+# those two items under `guest` — a one-line sibling fix, out of task-21 scope.
+hypercall-proto = { path = "../hypercall-proto", version = "0.1.0", features = [
+    "host",
+    "guest",
+] }
+thiserror = "2"
+# State + contract hashing (rule-5 whitelist). 32-byte SHA-256 matches
+# `unison::Machine::state_hash`.
+sha2 = "0.10"
+# Page-aligned, pinned host backing for `GuestRam` (rule-5 whitelist). Only used
+# off-Miri; under Miri `GuestRam` falls back to a `Vec<u8>` (see src/vmm.rs).
+memmap2 = "0.9"
+# Rule-2 sibling exception (corpus box-integration, task 28): the VMM-backed
+# `det-corpus` `Machine` bridge (`corpus::CorpusMachine`) lives above the trait in
+# vmm-core (the frontier glue the dissonance ruling places here), so it implements
+# `unison::Machine` directly. unison is the generic divergence bisector this
+# composes — promoted from a dev-dependency now that the adapter is library code,
+# not test-only. Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
+unison = { path = "../unison", version = "0.1.0" }
+# Rule-2 sibling exception (task 30, Linux boot): the userspace xAPIC register
+# file + V-time timer (ruling R1) lives above the `Backend` trait — vmm-core
+# routes the guest's `0xFEE0_0000` MMIO into it and drives its timer off V-time.
+# Pure-logic, no_std, no features. Pinned `version` alongside `path` for
+# `cargo deny`'s wildcard ban (as for the other siblings).
+lapic = { path = "../lapic", version = "0.1.0" }
+# bzImage / boot_params parsing for the Linux loader (task 30, rule-5 whitelist).
+# `derive` for the `#[repr(C)]` boot-protocol structs; reads of the untrusted
+# image go through zerocopy's bounds-checked `read_from_prefix` (no panic, no
+# unsafe). Same 0.8 line `vm-state` already pins.
+zerocopy = { version = "0.8", features = ["derive"] }
+
+# Linux-only: the box `perf_event` work counter (`work_perf::PerfWorkCounter`,
+# rule-5 whitelist `libc`). A macOS `cargo build -p vmm-core` never compiles it
+# (the portable `WorkSource` trait + `ScriptedWork` pull none of this). Caret
+# default, pin nothing — matches vmm-backend's frontier-dep posture.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# `mock` turns on `vmm_backend::MockBackend` — the scripted, no-`/dev/kvm`
+# substrate the pure-logic gates drive the event loop against (Mac + Linux).
+vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] }
+# Drive the corpus oracles over the VMM-backed `Machine` in the box-only
+# `box_corpus` integration test (task 28). The library bridge depends only on
+# `unison` (above); `det-corpus` is the harness that owns the manifest + O1
+# runner, used test-side. Pinned `version` alongside `path` (cargo-deny wildcard
+# ban). `default-features = false` drops its CLI deps (clap/serde_json) — the
+# test needs only the library (manifest + oracles).
+det-corpus = { path = "../det-corpus", version = "0.1.0", default-features = false }
+proptest = "1"

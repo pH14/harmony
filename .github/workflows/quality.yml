@@ -1,0 +1,196 @@
+name: quality
+
+# Enforcement runs on a SELF-HOSTED runner on the determinism box.
+# GitHub-hosted minutes are paused (out of minutes — not to be paid for), so every
+# job here is `runs-on: self-hosted`; self-hosted runners consume no GHA minutes.
+# The box is Linux (i9-9900K), so one runner covers the whole suite — the
+# cross-platform gates (fmt, clippy -D warnings, nextest, public-api), the
+# coverage/mutation/Kani gates, AND the new Miri gate for the `unsafe` crates.
+#
+# Runner: provisioned + recorded by scripts/setup-ci-runner.sh (the authoritative
+# setup record — non-root `runner` user, registration, service, toolchain incl. the
+# nightly+miri used below). It runs inside the systemd `ci.slice`
+# (`AllowedCPUs=5-7,13-15`, see docs/BOX-PINNING.md "Self-hosted CI runner
+# isolation"), so no CI job ever shares a physical core or SMT sibling with the
+# determinism measurements on cores 2/4. The correctness gates below are content
+# checks (same artifact / same hash regardless of contention), so residual
+# shared-L3/membw does not affect their verdict.
+#
+# macOS portability (conventions rule 6) is no longer exercised in CI — the box is
+# Linux-only. It is held by developers running the gates locally on macOS (everyone
+# develops on a Mac) and by the fast .githooks/pre-push hook. If a macOS self-hosted
+# runner is ever added, restore a `macos` leg to the `gates` job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Gating: fmt, clippy (enforces clippy.toml), cargo-deny, and the test suite.
+  gates:
+    name: gates
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      # CI cargo tools (cargo-nextest, cargo-deny, …) are pre-provisioned on the
+      # self-hosted box by scripts/setup-ci-runner.sh — NOT installed per-job.
+      # taiki-e/install-action raced on a shared temp across the concurrent runners
+      # (`sha256sum: tmp: No such file or directory`), flaking every gate; dropped.
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-features --all-targets -- -D warnings
+      - name: cargo deny
+        run: cargo deny check
+      # The root `cargo deny check` only sees the root workspace. License-check the
+      # out-of-workspace manifests too (guest/payloads + the cargo-fuzz harnesses), so
+      # their deps — e.g. libfuzzer-sys's NCSA-licensed LLVM runtime — are asserted
+      # AGPL-compatible against the same allow-list (task 91).
+      - name: cargo deny (guest + fuzz manifests)
+        run: |
+          cargo deny --manifest-path guest/payloads/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path dissonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path dissonance/pv-net/fuzz/Cargo.toml check --config deny.toml licenses
+      - name: cargo nextest
+        run: cargo nextest run --all-features
+
+  # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
+  # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
+  # under PR concurrency the Miri run was OOM/timeout-flaky (SIGKILL/137) and
+  # *blocked merges on resource limits, not bugs* — and across this project's history
+  # it has not caught a UB bug (most `unsafe` here is `cfg(linux)` KVM/perf syscalls +
+  # the doorbell `asm!`, which Miri cannot run; the real bugs came from the cross-model
+  # review pass, mutants, the contract audit, and the box determinism gates). Miri stays
+  # a UB *safety net*, just nightly + manually-dispatchable, not a per-PR gate.
+  # The unsafe⇒Miri review-bar rule (AGENTS.md / pr-review) still applies: when a PR's
+  # diff adds/changes `unsafe`, run Miri locally on that crate
+  # (`cargo +nightly-2026-06-16 miri test -p <crate>`) and quote it in the review.
+
+  # Gating: region-coverage floor measured from reality (docs/CODE-QUALITY.md,
+  # "Coverage baseline"). Ratchet FLOOR up as coverage improves; never pick a
+  # round number. Hardened by quality-b.
+  coverage:
+    name: coverage
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component llvm-tools-preview
+          rustup default stable
+      # tools pre-provisioned on the box (setup-ci-runner.sh); see gates job note.
+      # `--ignore-filename-regex` drops the box-only `cfg(linux)` substrate paths
+      # from the coverage denominator: the stock-KVM path
+      # (`consonance/vmm-backend/src/kvm.rs`, `…/src/kvm/`, `…/src/kvm_sys.rs`), the
+      # task-21 determinism backend (`…/src/patched_kvm.rs`), and vmm-core's
+      # `perf_event` work counter (`consonance/vmm-core/src/work_perf.rs`). This
+      # coverage job runs **without `--ignored`** (and on every crate's matrix), so
+      # the box-only `#[ignore]` integration tests that exercise the FFI / perf
+      # orchestration end-to-end never run here — counting those paths would only
+      # drag the floor, and running live KVM/perf in this job is slow + flaky. They
+      # are verified instead by those `#[ignore]` box tests and by Miri (which still
+      # *executes* `kvm.rs`'s synthetic-`kvm_run` unit tests — incl. the
+      # KVM_EXIT_DETERMINISM decode — so a logic regression still fails the suite,
+      # just not coverage-*counted*). The coverage-gated set is the portable,
+      # platform-agnostic logic the splits factored out: `region`/`run_buf`, the
+      # value types, the run-loop contract (`mock`/`run_loop`), and vmm-core's
+      # `work::WorkSource`/`ScriptedWork` + V-time completion. See the crates'
+      # IMPLEMENTATION.md.
+      - name: cargo llvm-cov (region floor 93%)
+        run: |
+          cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs)|consonance/vmm-core/src/work_perf\.rs' \
+            --fail-under-regions 93
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lcov
+          path: lcov.info
+
+  # Gating (quality-c): mutation testing on the PR diff. `--in-diff` mutates
+  # only lines the PR changed, so a PR that adds under-tested logic fails here
+  # even though full-tree mutation is too slow for per-PR CI. Config (test tool,
+  # timeouts, main.rs exclusion) lives in mutants.toml. Skipped on pushes to
+  # main, where there is no diff to compare against.
+  mutants:
+    name: mutants
+    runs-on: self-hosted
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `--in-diff` needs the merge-base, so fetch full history.
+          fetch-depth: 0
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      # tools pre-provisioned on the box (setup-ci-runner.sh); see gates job note.
+      - name: Compute PR diff
+        run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
+      - name: cargo mutants --in-diff
+        run: cargo mutants --no-shuffle --in-diff pr.diff
+
+  # Gating (quality-f): formal proofs on `vtime`'s saturating `u128`
+  # arithmetic via Kani (bounded model checking). The `#[cfg(kani)]` harnesses
+  # in `consonance/vtime/src/clock.rs` prove "never panics / law holds for ALL
+  # inputs" — strictly stronger than the proptest sampling. Kani is
+  # Linux-only, so this job runs on the Linux box. See
+  # consonance/vtime/IMPLEMENTATION.md ("Formal proofs (Kani)").
+  kani:
+    name: kani
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      - name: cargo kani (vtime + lapic)
+        run: |
+          cargo kani -p vtime
+          cargo kani -p lapic
+
+  # Gating: frozen public-API snapshots (quality-d). The per-crate
+  # `public_api` tests regenerate each crate's public surface with
+  # `cargo public-api` on the pinned nightly and diff it against the committed
+  # `tests/public-api.txt`; any drift in a frozen contract
+  # (tasks/00-CONVENTIONS.md rule 3) fails here. Keep PINNED_NIGHTLY in sync
+  # with the tests, the miri job, and docs/CODE-QUALITY.md.
+  public-api:
+    name: public-api
+    runs-on: self-hosted
+    env:
+      # cargo-public-api needs rustdoc-JSON, which is nightly-only. Pin it so
+      # the snapshot output is reproducible across runs and machines.
+      PINNED_NIGHTLY: nightly-2026-06-16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchains (stable default + pinned nightly)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal
+      # tools pre-provisioned on the box (setup-ci-runner.sh); see gates job note.
+      - name: public-api snapshot tests
+        run: |
+          cargo test \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p pv-net -p environment -p control-proto -p explorer \
+            --test public_api -- --ignored --nocapture

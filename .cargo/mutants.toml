@@ -1,0 +1,122 @@
+# cargo-mutants configuration (quality-c).
+#
+# Lives at `.cargo/mutants.toml` because that is the path cargo-mutants
+# auto-discovers; a bare `cargo mutants -p unison` (the acceptance-gate
+# command) and the CI `--in-diff` run both pick it up with no extra flag.
+#
+# Mutation testing mutates the source (flip `<` to `<=`, replace a return value
+# with Default, etc.) and checks whether the test suite notices. A surviving
+# mutant is a line the tests execute but do not actually constrain. See
+# docs/CODE-QUALITY.md and consonance/unison/IMPLEMENTATION.md ("Mutation
+# testing").
+
+# Run the nextest suite (process-isolated, faster) as the mutation oracle and
+# build/test with all features so the `cli`-gated code is included.
+test_tool = "nextest"
+additional_cargo_test_args = ["--all-features"]
+
+# A handful of mutants flip a loop condition or its index arithmetic (the
+# `while` in compare_runs / bisect_divergence) into a non-terminating loop;
+# those can only be detected by timing out. Give a generous multiplier over the
+# measured baseline so a slow-but-finite mutant or a CI hiccup is not
+# misclassified, while still bounding the infinite-loop cases.
+timeout_multiplier = 3.0
+
+# The CLI entry points are demo/debug glue (argument plumbing, JSON printing,
+# process exit codes), exercised by the cli.rs smoke test but not a unit under
+# mutation. Exclude the binary so mutation effort concentrates on library logic.
+# The Kani proof harnesses (quality-f) live in their own `#[cfg(kani)]` files
+# (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs` — each
+# a `#[path]` child module of its parent). They are not compiled by the normal
+# (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
+# — functions *and* module-level bound consts — is structurally unkillable here
+# ("missed"). They are verified by the dedicated `kani` CI job (bounded model
+# checking), a stronger gate than mutation. Excluding the whole file (not a name
+# regex) catches the const mutants too, while the real arithmetic in `clock.rs` /
+# `device.rs` stays in the mutation gate.
+#
+# The entire `cfg(linux)` KVM path in `consonance/vmm-backend` — `kvm_sys.rs` (the
+# `KvmBackend` syscall orchestration: `Backend` impl + raw `mmap`/`ioctl`
+# wrappers), `kvm.rs` (the `kvm_run`⇄`Exit` / state-conversion logic), and the
+# `kvm/` dir (its unit tests) — is excluded from the mutation gate. The `mutants`
+# job runs the `nextest` oracle **without `--ignored`**, so the box-only KVM
+# integration tests that verify the FFI end-to-end never run; counting that path
+# would surface unkillable "missed" mutants. The KVM path is verified instead by
+# those `#[ignore]` box tests + Miri (which still *runs* `kvm.rs`'s synthetic-
+# `kvm_run` unit tests, so logic regressions fail the suite — just not mutation-
+# *counted*). The mutation-gated set is the portable factored logic
+# (`region`/`run_buf`, the value types, the `MockBackend` run-loop contract).
+exclude_globs = [
+    "**/main.rs",
+    "**/clock_proofs.rs",
+    "**/device_proofs.rs",
+    "**/kvm.rs",
+    "**/kvm/**",
+    "**/kvm_sys.rs",
+    # task-21 box-only substrate, same rationale as the `kvm` path above: the
+    # `PatchedKvmBackend` syscall orchestration and vmm-core's `perf_event` work
+    # counter cannot run without the patched `/dev/kvm` + perf on bare-metal
+    # Intel, so the no-`--ignored` mutation oracle never runs them (unkillable
+    # "missed" mutants). Their logic lives in the gated pure modules
+    # (`kvm.rs`'s KVM_EXIT_DETERMINISM decode/complete; `work::WorkSource`).
+    "**/patched_kvm.rs",
+    "**/work_perf.rs",
+]
+
+# Structurally-unkillable mutants in `consonance/vmm-core`, by category. The
+# determinism anchor — `contract/parse.rs` + the §6 `contract/canonical.rs`
+# serializer — has NONE of these: every mutant there is killed by a real test.
+exclude_re = [
+    # (a) `vmm_core::hostassert::probe` — the `cfg(linux)` host-CPU probe (live
+    #     CPUID / FXSAVE / sysfs-microcode reads + the comparisons against them).
+    #     Exactly like the `kvm` path above: it cannot be value-mutation-tested on a
+    #     non-baseline CI runner (the box is an i9-9900K, not the frozen SKX
+    #     baseline, so every assertion already fails and flipping one cannot change
+    #     the refuse-verdict). Verified instead by its (non-`#[ignore]`d)
+    #     pure-decoder unit tests, the `report()` smoke test, and the box
+    #     `host_assert_report`. enforce()/report()/verdict() (cross-platform) stay
+    #     in the gate. (Matches both `… in probe::evaluate` statement mutants and
+    #     `replace probe::fmt_hex -> …` function-return mutants.)
+    "probe::",
+    # (b) Provably-equivalent disjoint-bit OR mutants in vmm-core: `a | b` ≡ `a ^ b`
+    #     whenever a,b share no set bits — true of every bitwise-flag combine here
+    #     (USER_SPACE_MSR_MASK = FILTER|UNKNOWN|INVAL; resolve_cpuid's clear-then-set
+    #     and byte-merge; CR0 = PE|NE). No test distinguishes OR from XOR for
+    #     disjoint operands. Scoped to vmm-core so sibling crates' `|` stays gated.
+    "consonance/vmm-core/src/.*replace \\| with \\^",
+    # (c) Observability-/structurally-unkillable helpers in vmm-core/vmm.rs: the §1
+    #     MSR loud-log (`loud_msr`) and the best-effort guest RIP it logs
+    #     (`guest_rip`) have no architectural effect and no test-observable return —
+    #     their content is verified by review. `GuestRam::is_empty` is always
+    #     `false` by construction (`GuestRam::new` rejects a zero length).
+    #     `current_work` (task 21) is the V-time count fed only to the `loud_msr`
+    #     log — same observability-only category (no test-observable return).
+    "consonance/vmm-core/src/vmm\\.rs.*(loud_msr|guest_rip|GuestRam::is_empty|current_work)",
+    # (d) `msr_filter_allow`'s `read == stateful && write == stateful`: every
+    #     `allow-stateful` row in the frozen contract is bidirectional (verified: 14
+    #     bidirectional, 0 one-directional), so `&&` ≡ `||` on this contract.
+    "replace && with \\|\\| in msr_filter_allow",
+    # (e) `bringup::boot_selected` (task 21) and `bringup::boot_linux_selected`
+    #     (task 30) — the `cfg(linux)` composition roots: each names the concrete
+    #     `KvmBackend`/`PatchedKvmBackend` and opens the `perf_event` counter, so it
+    #     cannot run without bare-metal KVM + perf. The no-`--ignored` mutation
+    #     oracle never runs them (only the `#[ignore]`d box P6 / M1-M2 / live-linux
+    #     tests do); same precedent as the `kvm`/`probe::` paths. The `compose_*`
+    #     helpers and `apply_*` overlays they call are mock-tested and stay gated.
+    "boot(_linux)?_selected",
+    # (f) `draw_rng` (task 21): the fail-closed `status != Ok || got != n` guard is
+    #     unreachable for the in-tree infallible `SeededEntropy` with a validated
+    #     `n ∈ 1..=8` count + `n`-byte buffer, so the `||`→`&&` mutant is provably
+    #     equivalent (both operands are always false). The `!=` halves and the
+    #     width-range guard stay mutation-gated (killed by the RNG draw / width
+    #     unit tests); only this one equivalent mutant is excluded.
+    "replace \\|\\| with && in .*draw_rng",
+    # (g) `impl Backend for Box<B>`'s `inject` forward (task 21): `inject` returns
+    #     `Result<()>` with no trait-observable effect (no getter on the trait) and
+    #     no triggerable error in the mock, so a dropped forward (`Ok(())`) cannot
+    #     be distinguished through a `Box<dyn Backend>`. Every *other* `Box<B>`
+    #     forward IS killed by `tests/dyn_backend.rs` (config→NotConfigured,
+    #     completion→PendingCompletion, map_memory→Err, run/run_until/save/counts
+    #     →observable return). Scoped to backend.rs's blanket impl.
+    "consonance/vmm-backend/src/backend\\.rs.*inject",
+]

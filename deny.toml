@@ -1,0 +1,62 @@
+# cargo-deny policy — enforces the *mechanizable* half of Convention rule-5
+# dependency hygiene (tasks/00-CONVENTIONS.md): RustSec advisories, a permissive
+# license allowlist, crates.io-only sources, and no wildcard versions.
+#
+# It does NOT hard-gate the rule-5 *crate* whitelist itself: there is no
+# `[bans] allow = [...]` allowlist, so an advisory-clean, permissively-licensed
+# crate would pass `cargo deny check`. A real allowlist would gate CI on the
+# unfixable transitive-version churn that `multiple-versions = "warn"` (below)
+# deliberately tolerates. The crate whitelist therefore stays a review-time gate
+# — "ask-by-comment for a new dep" — which a reviewer enforces by reading the
+# Cargo.toml diff (this repo does not track Cargo.lock), where any new direct
+# dependency is visible first.
+
+[advisories]
+# RustSec advisory DB: fail on known vulnerabilities and unmaintained crates.
+version = 2
+yanked = "deny"
+
+[bans]
+# Wildcard version requirements in our own crates are a hard error.
+wildcards = "deny"
+# Duplicate versions are surfaced but not gating: every current duplicate is a
+# dev-only *transitive* dep (e.g. getrandom/cpufeatures pulled at different
+# versions by proptest vs tempfile), unfixable without forking upstream, and the
+# exact set shifts with platform/feature resolution. Warning keeps them visible
+# without failing CI on churn we don't control. "deny multiple-versions where
+# reasonable" (the spec) — here it is not reasonable to gate.
+multiple-versions = "warn"
+
+[licenses]
+# Our own first-party crates are AGPL-3.0-or-later (task 91). Every *dependency*
+# must be AGPL-compatible-as-inbound — i.e. its terms may be combined into an
+# AGPLv3 work. The permissive licenses below (MIT / Apache-2.0 / BSD / Unicode /
+# NCSA) all satisfy that (GPLv3/AGPLv3 §7-compatible per the FSF license list);
+# any GPL-incompatible or unknown-licensed dependency falls through to `deny` and
+# is a blocking finding. `AGPL-3.0-or-later` itself is allowed so this crate's own
+# packages pass the check; we add no other copyleft, so a copyleft *dependency*
+# would still be denied. This policy is enforced not only on the root workspace but
+# also on the guest/payloads workspace and the cargo-fuzz manifests — see the
+# `cargo deny (guest + fuzz manifests)` CI step — so e.g. libfuzzer-sys's
+# LLVM-libFuzzer runtime (NCSA) is actually license-checked.
+version = 2
+allow = [
+  "AGPL-3.0-or-later",
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "Unicode-3.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  # NCSA (University of Illinois/NCSA Open Source License): the LLVM libFuzzer
+  # runtime pulled by libfuzzer-sys in the cargo-fuzz harnesses. Permissive,
+  # FSF-certified GPL/AGPL-compatible.
+  "NCSA",
+]
+confidence-threshold = 0.9
+
+[sources]
+# Only crates.io. No git or alternative registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

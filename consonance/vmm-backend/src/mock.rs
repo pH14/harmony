@@ -1,0 +1,442 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! `MockBackend` — a deterministic, in-process [`Backend`] for unit/property
+//! tests (behind the non-default **`mock`** feature).
+//!
+//! It proves the trait is implementable with no KVM and is **the substrate task
+//! 15 unit-tests vmm-core against** (turned on under that crate's
+//! `[dev-dependencies]`). It is scripted with a queue of [`Exit`]s and enforces
+//! the full run-loop / completion contract exactly as a live backend must:
+//! fail-closed `NotConfigured` until both config calls land, `PendingCompletion`
+//! on a missed completion, and `NoPendingRead`/`BadCompletion` on a mismatched
+//! one. It records injections and completions so a test can assert what the VMM
+//! asked the backend to do.
+//!
+//! Unlike `KvmBackend`, the mock *implements* `run_until` and `inject`: a
+//! scripted `Exit::Deadline` is returned from `run_until` with the requested
+//! deadline, and `inject` records the event (so vmm-core's injection planning is
+//! testable). Determinism: a `MockBackend` driven by the same script + same
+//! completions produces the same counters and the same saved `VcpuState`.
+
+use std::collections::VecDeque;
+
+use crate::backend::Backend;
+use crate::config::{CpuidModel, MsrFilter};
+use crate::error::{BackendError, Result};
+use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::state::VcpuState;
+use crate::types::{Gpa, Vtime};
+
+/// A completion the VMM applied to a pending exit, recorded for test assertions.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Completion {
+    /// `complete_read(value)` for a read-style exit.
+    Read(u64),
+    /// `complete_fault()` (the `deny-gp` MSR disposition).
+    Fault,
+    /// `complete_ok()` (a non-fault `Wrmsr` resolution).
+    Ok,
+    /// `complete_hypercall(rax)`.
+    Hypercall(u64),
+    /// `complete_cpuid(eax, ebx, ecx, edx)`.
+    Cpuid {
+        /// Result `EAX`.
+        eax: u32,
+        /// Result `EBX`.
+        ebx: u32,
+        /// Result `ECX`.
+        ecx: u32,
+        /// Result `EDX`.
+        edx: u32,
+    },
+}
+
+/// What the last returned exit is waiting for, if anything. Drives the
+/// completion-discipline checks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pending {
+    /// Nothing pending; `run` may resume.
+    None,
+    /// A read-style exit (`Io` IN / `Mmio` load / instruction-read): only
+    /// `complete_read` resolves it.
+    Read,
+    /// `Rdmsr`: `complete_read` (value) or `complete_fault` (deny-gp).
+    Rdmsr,
+    /// `Wrmsr`: `complete_ok` (allow/drop) or `complete_fault` (deny-gp).
+    Wrmsr,
+    /// `Hypercall`: `complete_hypercall`.
+    Hypercall,
+    /// `Cpuid`: `complete_cpuid`.
+    Cpuid,
+}
+
+/// What an exit, once returned, is waiting on (its completion discipline).
+fn pending_for(exit: &Exit) -> Pending {
+    match exit {
+        Exit::Io { write: None, .. }
+        | Exit::Mmio { write: None, .. }
+        | Exit::Rdtsc
+        | Exit::Rdtscp
+        | Exit::Rdrand { .. }
+        | Exit::Rdseed { .. } => Pending::Read,
+        Exit::Rdmsr { .. } => Pending::Rdmsr,
+        Exit::Wrmsr { .. } => Pending::Wrmsr,
+        Exit::Hypercall(_) => Pending::Hypercall,
+        Exit::Cpuid { .. } => Pending::Cpuid,
+        Exit::Io { write: Some(_), .. }
+        | Exit::Mmio { write: Some(_), .. }
+        | Exit::Hlt
+        | Exit::Shutdown
+        | Exit::Deadline { .. } => Pending::None,
+    }
+}
+
+/// Default capabilities of a fresh mock: fully deterministic (it is a controlled
+/// in-process model). Override with [`MockBackend::with_capabilities`] to test
+/// vmm-core's "refuse to claim determinism" path against a backend that reports
+/// a hole.
+const MOCK_CAPS: Capabilities = Capabilities {
+    name: "mock",
+    deterministic_tsc: true,
+    deterministic_rng: true,
+    enforces_tsc_deadline_msr: true,
+};
+
+/// A deterministic, scripted [`Backend`] with no KVM dependency.
+#[derive(Debug)]
+pub struct MockBackend {
+    caps: Capabilities,
+    cpuid: Option<CpuidModel>,
+    msr_filter: Option<MsrFilter>,
+    script: VecDeque<Exit>,
+    pending: Pending,
+    counts: ExitCounts,
+    state: VcpuState,
+    regions: Vec<(Gpa, usize)>,
+    injected: Vec<Event>,
+    /// The single pending maskable-IRQ vector ([`Backend::set_pending_irq`]),
+    /// overwritten each entry by the VMM's re-arbitration — mirroring the live
+    /// backend's one-slot `pending_irq`.
+    pending_irq: Option<u8>,
+    /// Vectors the mock has "accepted" into the guest (drained by
+    /// [`Backend::take_accepted_interrupt`]). The mock is always injectable, so a
+    /// pending vector is accepted at the next `run`/`run_until` — unless
+    /// [`Self::defer_accept`] is set.
+    accepted_irq: VecDeque<u8>,
+    /// When `true`, `run`/`run_until` do **not** accept the pending IRQ (it stays in
+    /// `pending_irq`) — modelling the live backend's interrupt-window wait, so a
+    /// test can observe a vector held pending (in the LAPIC IRR, not in service)
+    /// before acceptance.
+    defer_accept: bool,
+    completions: Vec<Completion>,
+}
+
+impl Default for MockBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockBackend {
+    /// A fresh, unconfigured mock with an empty exit script and default
+    /// (fully-deterministic) capabilities.
+    pub fn new() -> Self {
+        Self {
+            caps: MOCK_CAPS,
+            cpuid: None,
+            msr_filter: None,
+            script: VecDeque::new(),
+            pending: Pending::None,
+            counts: ExitCounts::default(),
+            state: VcpuState::default(),
+            regions: Vec::new(),
+            injected: Vec::new(),
+            pending_irq: None,
+            accepted_irq: VecDeque::new(),
+            defer_accept: false,
+            completions: Vec::new(),
+        }
+    }
+
+    /// A fresh mock reporting `caps` instead of the default.
+    pub fn with_capabilities(caps: Capabilities) -> Self {
+        Self {
+            caps,
+            ..Self::new()
+        }
+    }
+
+    /// A fresh mock pre-loaded with a script of exits to return from successive
+    /// `run`/`run_until` calls.
+    pub fn with_exits(exits: impl IntoIterator<Item = Exit>) -> Self {
+        let mut m = Self::new();
+        m.extend_exits(exits);
+        m
+    }
+
+    /// Enqueue one exit to be returned by a future `run`/`run_until`.
+    pub fn push_exit(&mut self, exit: Exit) -> &mut Self {
+        self.script.push_back(exit);
+        self
+    }
+
+    /// Enqueue several exits, in order.
+    pub fn extend_exits(&mut self, exits: impl IntoIterator<Item = Exit>) -> &mut Self {
+        self.script.extend(exits);
+        self
+    }
+
+    /// `true` once both `set_cpuid` and `set_msr_filter` have been called.
+    pub fn is_configured(&self) -> bool {
+        self.cpuid.is_some() && self.msr_filter.is_some()
+    }
+
+    /// `true` if the last returned exit still awaits a completion.
+    pub fn has_pending(&self) -> bool {
+        self.pending != Pending::None
+    }
+
+    /// The CPUID model installed by `set_cpuid`, if any (for test assertions).
+    pub fn installed_cpuid(&self) -> Option<&CpuidModel> {
+        self.cpuid.as_ref()
+    }
+
+    /// The MSR filter installed by `set_msr_filter`, if any.
+    pub fn installed_msr_filter(&self) -> Option<&MsrFilter> {
+        self.msr_filter.as_ref()
+    }
+
+    /// The events passed to `inject`, in order.
+    pub fn injected(&self) -> &[Event] {
+        &self.injected
+    }
+
+    /// The current pending maskable-IRQ vector (set by `set_pending_irq`/`inject`,
+    /// `None` once accepted or cleared) — so a test can observe the VMM's per-entry
+    /// re-arbitration (e.g. a stale vector overwritten with `None` after a TPR raise).
+    pub fn pending_irq(&self) -> Option<u8> {
+        self.pending_irq
+    }
+
+    /// The completions applied so far, in order.
+    pub fn completions(&self) -> &[Completion] {
+        &self.completions
+    }
+
+    /// The `(gpa, len)` regions recorded by `map_memory`, in order.
+    pub fn regions(&self) -> &[(Gpa, usize)] {
+        &self.regions
+    }
+
+    /// Set the `VcpuState` the next `save` will return (test convenience, outside
+    /// the `restore` path).
+    pub fn set_state(&mut self, state: VcpuState) -> &mut Self {
+        self.state = state;
+        self
+    }
+
+    /// When `true`, queued maskable IRQs are **not** accepted at `run`/`run_until`
+    /// (they stay in the pending queue) — modelling the live backend's
+    /// interrupt-window wait, so a test can observe a vector held pending before
+    /// acceptance (the userspace-LAPIC IRR→ISR deferral).
+    pub fn set_defer_accept(&mut self, defer: bool) -> &mut Self {
+        self.defer_accept = defer;
+        self
+    }
+
+    /// Fail-closed config + completion-discipline gate shared by `run`/`run_until`.
+    fn ensure_runnable(&self) -> Result<()> {
+        if !self.is_configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        Ok(())
+    }
+
+    /// Pop the next scripted exit, or fail closed if the script is exhausted (a
+    /// test bug — a live backend would block, but the mock surfaces it loudly).
+    fn next_scripted(&mut self) -> Result<Exit> {
+        self.script
+            .pop_front()
+            .ok_or(BackendError::Internal("mock run-queue empty"))
+    }
+
+    /// Account for and arm a returned exit: bump its counter and record what
+    /// completion it now awaits.
+    fn deliver(&mut self, exit: Exit) -> Exit {
+        self.counts.bump(exit.reason());
+        self.pending = pending_for(&exit);
+        exit
+    }
+
+    /// Resolve the current pending exit, recording `completion`.
+    fn finish(&mut self, completion: Completion) {
+        self.completions.push(completion);
+        self.pending = Pending::None;
+    }
+
+    /// Model interrupt acceptance at a VM-entry: the mock is always injectable, so
+    /// every queued maskable vector is accepted (moved to the accepted report that
+    /// [`Backend::take_accepted_interrupt`] drains). Mirrors the live backend
+    /// issuing `KVM_INTERRUPT` for the queued vectors.
+    fn accept_pending_irqs(&mut self) {
+        if self.defer_accept {
+            return; // model the interrupt-window wait: the pending IRQ stays pending.
+        }
+        if let Some(v) = self.pending_irq.take() {
+            self.accepted_irq.push_back(v);
+        }
+    }
+}
+
+impl Backend for MockBackend {
+    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
+        self.cpuid = Some(model.clone());
+        Ok(())
+    }
+
+    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
+        self.msr_filter = Some(filter.clone());
+        Ok(())
+    }
+
+    unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
+        // The mock performs no registration; it only records the region (no
+        // `unsafe` block — the host pointer is not retained or dereferenced).
+        // Validate the spec's invariants so a test exercises the error path.
+        if host.is_empty() {
+            return Err(BackendError::Memory("zero-length memory region"));
+        }
+        if !gpa.0.is_multiple_of(4096) {
+            return Err(BackendError::Memory("gpa is not 4 KiB-aligned"));
+        }
+        if !host.len().is_multiple_of(4096) {
+            return Err(BackendError::Memory("region length is not 4 KiB-aligned"));
+        }
+        let end = gpa
+            .0
+            .checked_add(host.len() as u64)
+            .ok_or(BackendError::Memory("region wraps the address space"))?;
+        for &(g, len) in &self.regions {
+            let g_end = g.0 + len as u64;
+            if gpa.0 < g_end && g.0 < end {
+                return Err(BackendError::Memory("region overlaps an existing map"));
+            }
+        }
+        self.regions.push((gpa, host.len()));
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<Exit> {
+        self.ensure_runnable()?;
+        self.accept_pending_irqs();
+        let exit = self.next_scripted()?;
+        Ok(self.deliver(exit))
+    }
+
+    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+        self.ensure_runnable()?;
+        self.accept_pending_irqs();
+        let exit = match self.next_scripted()? {
+            Exit::Deadline { .. } => Exit::Deadline { reached: deadline },
+            other => other,
+        };
+        Ok(self.deliver(exit))
+    }
+
+    fn inject(&mut self, event: Event) -> Result<()> {
+        self.injected.push(event);
+        // Set the pending maskable vector (overwrite) for acceptance at the next
+        // entry, mirroring the live backend. NMIs do not flow through this path.
+        if let Event::Interrupt { vector } = event {
+            self.pending_irq = Some(vector);
+        }
+        Ok(())
+    }
+
+    fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
+        self.pending_irq = vector;
+        Ok(())
+    }
+
+    fn take_accepted_interrupt(&mut self) -> Option<u8> {
+        self.accepted_irq.pop_front()
+    }
+
+    fn complete_read(&mut self, value: u64) -> Result<()> {
+        match self.pending {
+            Pending::Read | Pending::Rdmsr => {
+                self.finish(Completion::Read(value));
+                Ok(())
+            }
+            _ => Err(BackendError::NoPendingRead),
+        }
+    }
+
+    fn complete_fault(&mut self) -> Result<()> {
+        match self.pending {
+            Pending::Rdmsr | Pending::Wrmsr => {
+                self.finish(Completion::Fault);
+                Ok(())
+            }
+            _ => Err(BackendError::BadCompletion),
+        }
+    }
+
+    fn complete_ok(&mut self) -> Result<()> {
+        match self.pending {
+            Pending::Wrmsr => {
+                self.finish(Completion::Ok);
+                Ok(())
+            }
+            _ => Err(BackendError::BadCompletion),
+        }
+    }
+
+    fn complete_hypercall(&mut self, rax: u64) -> Result<()> {
+        match self.pending {
+            Pending::Hypercall => {
+                self.finish(Completion::Hypercall(rax));
+                Ok(())
+            }
+            Pending::None => Err(BackendError::NoPendingRead),
+            _ => Err(BackendError::BadCompletion),
+        }
+    }
+
+    fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()> {
+        match self.pending {
+            Pending::Cpuid => {
+                self.finish(Completion::Cpuid { eax, ebx, ecx, edx });
+                Ok(())
+            }
+            _ => Err(BackendError::BadCompletion),
+        }
+    }
+
+    fn save(&self) -> Result<VcpuState> {
+        Ok(self.state.clone())
+    }
+
+    fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        // The mock has no host to reject the blob; it accepts any well-typed
+        // `VcpuState` (the malformed-blob → `InvalidState` path is a `KvmBackend`
+        // concern). `restore` then `save` reproduces an identical state by
+        // construction.
+        self.state = state.clone();
+        Ok(())
+    }
+
+    fn exit_counts(&self) -> ExitCounts {
+        self.counts
+    }
+
+    fn reset_exit_counts(&mut self) {
+        self.counts = ExitCounts::default();
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.caps
+    }
+}

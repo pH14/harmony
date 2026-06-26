@@ -1,0 +1,50 @@
+pub mod pv_net
+pub enum pv_net::NetAnswer
+pub pv_net::NetAnswer::Corrupt
+pub pv_net::NetAnswer::Corrupt::offset: u32
+pub pv_net::NetAnswer::Corrupt::xor: u8
+pub pv_net::NetAnswer::Delay(pv_net::VTime)
+pub pv_net::NetAnswer::Deliver
+pub pv_net::NetAnswer::Drop
+pub pv_net::NetAnswer::Dup
+pub pv_net::NetAnswer::Reorder
+pub enum pv_net::NetError
+pub pv_net::NetError::Malformed
+pub struct pv_net::ConnId(pub u64)
+pub struct pv_net::FrameHdr
+pub pv_net::FrameHdr::broadcast: bool
+pub pv_net::FrameHdr::conn: pv_net::ConnId
+pub pv_net::FrameHdr::dst: pv_net::NodeId
+pub pv_net::FrameHdr::dst_mac: [u8; 6]
+pub pv_net::FrameHdr::len: u32
+pub pv_net::FrameHdr::src: pv_net::NodeId
+pub pv_net::FrameHdr::src_mac: [u8; 6]
+pub struct pv_net::NetDeliver
+pub pv_net::NetDeliver::at: pv_net::VTime
+pub pv_net::NetDeliver::dst: pv_net::NodeId
+pub pv_net::NetDeliver::frame: alloc::vec::Vec<u8>
+pub struct pv_net::NetSend
+pub pv_net::NetSend::conn: pv_net::ConnId
+pub pv_net::NetSend::dst: pv_net::NodeId
+pub pv_net::NetSend::len: u32
+pub pv_net::NetSend::src: pv_net::NodeId
+pub struct pv_net::NodeId(pub u32)
+pub struct pv_net::NodeMap
+impl pv_net::NodeMap
+pub fn pv_net::NodeMap::insert_ip(&mut self, [u8; 4], pv_net::NodeId)
+pub fn pv_net::NodeMap::insert_mac(&mut self, [u8; 6], pv_net::NodeId)
+pub fn pv_net::NodeMap::new() -> Self
+pub struct pv_net::Switch
+impl pv_net::Switch
+pub fn pv_net::Switch::due(&mut self, pv_net::VTime) -> alloc::vec::Vec<pv_net::NetDeliver>
+pub fn pv_net::Switch::new(pv_net::NodeMap, pv_net::VTime) -> Self
+pub fn pv_net::Switch::on_tx(&mut self, pv_net::VTime, alloc::vec::Vec<u8>, &mut dyn pv_net::NetOracle) -> alloc::vec::Vec<pv_net::NetDeliver>
+pub fn pv_net::Switch::restore_state(&mut self, &[u8]) -> core::result::Result<(), pv_net::NetError>
+pub fn pv_net::Switch::save_state(&self) -> alloc::vec::Vec<u8>
+pub fn pv_net::Switch::set_partition(&mut self, pv_net::NodeId, pv_net::NodeId, (pv_net::VTime, pv_net::VTime))
+pub fn pv_net::Switch::set_throttle(&mut self, (pv_net::NodeId, pv_net::NodeId), (u32, pv_net::VTime), (pv_net::VTime, pv_net::VTime))
+pub struct pv_net::VTime(pub u64)
+pub const pv_net::REORDER_MAX: pv_net::VTime
+pub trait pv_net::NetOracle
+pub fn pv_net::NetOracle::decide_send(&mut self, pv_net::VTime, &pv_net::NetSend) -> pv_net::NetAnswer
+pub fn pv_net::parse(&[u8], &pv_net::NodeMap) -> core::option::Option<pv_net::FrameHdr>

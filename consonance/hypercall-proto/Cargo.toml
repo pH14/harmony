@@ -1,0 +1,21 @@
+[package]
+name = "hypercall-proto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["host"]
+host = ["std", "dep:thiserror"]
+guest = []
+std = []
+
+[dependencies]
+thiserror = { version = "2", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+proptest-state-machine = "0.3"
+
+[lints]
+workspace = true

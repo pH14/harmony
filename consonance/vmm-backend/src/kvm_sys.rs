@@ -1,0 +1,810 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! `KvmBackend` — the **box-only syscall orchestration** for the stock-KVM
+//! [`Backend`] (`#[cfg(target_os = "linux")]`).
+//!
+//! Creates the VM with **`KVM_IRQCHIP_NONE`** (R1): no in-kernel
+//! irqchip/LAPIC/PIT, one vCPU, a single memslot for bring-up. The guest LAPIC is
+//! a userspace xAPIC whose MMIO page falls through to `KVM_EXIT_MMIO`. It is
+//! **not** determinism-complete: it cannot surface RDTSC/RDTSCP/RDRAND/RDSEED
+//! (the declared holes — `capabilities()` reports them `false`).
+//!
+//! **This module is the one excluded from the coverage + mutation gates**
+//! (`.cargo/mutants.toml` `exclude_globs`, the coverage `--ignore-filename-regex`):
+//! every function here either issues a KVM syscall (`KVM_RUN` / `KVM_GET/SET_*` /
+//! `mmap`) or is a trivial wrapper that cannot run without `/dev/kvm`, so the
+//! coverage/mutation oracles (which run with no VM) cannot reach it. All the
+//! actual translation/validation **logic is factored into [`crate::kvm`]** and is
+//! covered + mutation-tested by that module's non-`#[ignore]` synthetic-`kvm_run`
+//! tests; this file just wires those helpers to the ioctls.
+//!
+//! The two granted `unsafe` purposes (rule #7), each with a `// SAFETY:` comment:
+//! (1) `KVM_SET_USER_MEMORY_REGION` registration in [`KvmBackend::map_memory`],
+//! and (2) `mmap`-ing the `kvm_run` shared page in [`KvmBackend::new`]. The raw
+//! `mmap`/`ioctl` syscalls sit behind `#[cfg(not(miri))]` seams with `#[cfg(miri)]`
+//! stubs.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::os::fd::AsRawFd;
+
+use kvm_bindings::{
+    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL,
+    KVM_MSR_EXIT_REASON_UNKNOWN, KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_interrupt,
+    kvm_mp_state, kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
+    kvm_userspace_memory_region, kvm_xsave,
+};
+use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
+
+use crate::backend::Backend;
+use crate::config::{CpuidModel, MsrFilter};
+use crate::error::{BackendError, Result};
+use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::kvm::*;
+use crate::region::MemRegions;
+use crate::state::VcpuState;
+use crate::types::{Gpa, Vtime};
+
+/// `KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE` — apply the in-kernel allow to
+/// both directions (the `allow-stateful` rows are bidirectional).
+const KVM_MSR_FILTER_READ: u32 = 1 << 0;
+const KVM_MSR_FILTER_WRITE: u32 = 1 << 1;
+/// `kvm_msr_filter.flags` bit: deny any MSR not named by a range (→ userspace
+/// exit, given the `KVM_MSR_EXIT_REASON_FILTER` cap). This is the default-deny
+/// floor.
+const KVM_MSR_FILTER_DEFAULT_DENY: u32 = 1 << 0;
+
+/// Build a Linux ioctl request number (`_IOC` encoding): dir bits 30-31, size
+/// bits 16-29, type bits 8-15, nr bits 0-7.
+const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
+    (dir << 30) | (size << 16) | (typ << 8) | nr
+}
+
+/// `_IO(KVMIO, 0x80)` — enter guest mode. No argument.
+const KVM_RUN: u64 = ioc(0, 0xAE, 0x80, 0);
+/// `_IOW(KVMIO, 0x86, struct kvm_interrupt)` — queue a maskable IRQ for the next
+/// VM-entry (the userspace-irqchip injection path; kvm-ioctls exposes no safe
+/// wrapper for it, unlike `KVM_NMI`, so it is a direct ioctl like the MSR filter).
+const KVM_INTERRUPT: u64 = ioc(1, 0xAE, 0x86, size_of::<kvm_interrupt>() as u64);
+/// `_IOW(KVMIO, 0xC6, struct kvm_msr_filter)` — install the MSR filter.
+const KVM_X86_SET_MSR_FILTER: u64 = ioc(1, 0xAE, 0xC6, size_of::<kvm_msr_filter>() as u64);
+/// `_IOR(KVMIO, 0xCC, struct kvm_sregs2)` — read sregs incl. PDPTRs/flags.
+const KVM_GET_SREGS2: u64 = ioc(2, 0xAE, 0xCC, size_of::<kvm_sregs2>() as u64);
+/// `_IOW(KVMIO, 0xCD, struct kvm_sregs2)` — write sregs incl. PDPTRs/flags.
+const KVM_SET_SREGS2: u64 = ioc(1, 0xAE, 0xCD, size_of::<kvm_sregs2>() as u64);
+/// `_IOR(KVMIO, 0xCF, struct kvm_xsave)` — read the host-sized XSAVE2 image (the
+/// ioctl number encodes the *base* `kvm_xsave` size; the kernel copies the
+/// `KVM_CAP_XSAVE2`-reported number of bytes).
+const KVM_GET_XSAVE2: u64 = ioc(2, 0xAE, 0xCF, size_of::<kvm_xsave>() as u64);
+/// `_IOW(KVMIO, 0xA5, struct kvm_xsave)` — write the XSAVE image (same ioctl for
+/// the 4 KiB legacy and the larger XSAVE2 buffer; the kernel reads the right size).
+const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
+
+/// The stock-KVM bring-up backend. Holds the KVM/VM/vCPU handles, the `mmap`-ed
+/// `kvm_run`, the memslot table, the retained MSR filter (for `save`/`restore`),
+/// the exit counters, and the pending-completion state.
+pub struct KvmBackend {
+    // Field order matters for drop: the `mmap` is released in `Drop`, the fds
+    // close after. `kvm` is kept alive so the VM/vCPU fds stay valid.
+    vcpu: VcpuFd,
+    vm: VmFd,
+    #[allow(dead_code)] // retained so its fd outlives `vm`/`vcpu`
+    kvm: Kvm,
+    run: *mut kvm_run,
+    mmap_size: usize,
+    /// `KVM_CAP_XSAVE2`-reported XSAVE image size in bytes (`Some`, ≥ 4 KiB) on a
+    /// kernel that supports it (5.17+, incl. the determinism box); `None` falls
+    /// back to the fixed 4 KiB `kvm_xsave`. `save`/`restore` carry exactly this
+    /// many bytes so a host with dynamically-enabled XSTATE (e.g. AMX) does not
+    /// truncate guest xstate.
+    xsave2_size: Option<usize>,
+    regions: MemRegions,
+    msr_filter: Option<MsrFilter>,
+    cpuid_installed: bool,
+    msr_filter_installed: bool,
+    pending: Pending,
+    /// The single pending maskable IRQ vector ([`Backend::set_pending_irq`]),
+    /// `None` if none. Held (not issued eagerly) so [`Self::enter_guest`] runs the
+    /// userspace-irqchip handshake against the *current* post-exit
+    /// `ready_for_interrupt_injection`: queue it when the guest can take it, else
+    /// arm the interrupt window and retry on `KVM_EXIT_IRQ_WINDOW_OPEN`. **One slot,
+    /// overwritten** every entry by the VMM's re-arbitration (the LAPIC IRR is the
+    /// real queue, above the trait), so an injected vector is never stale and a
+    /// second IRQ is never dropped. Distinct from `pending` (the read/Wrmsr
+    /// completion the last exit awaits); an in-flight injection never blocks a run.
+    pending_irq: Option<u8>,
+    /// Vectors for which `KVM_INTERRUPT` has actually been issued (accepted into
+    /// the guest) since the last [`Backend::take_accepted_interrupt`] drain, in
+    /// acceptance order. The VMM reads this to complete its userspace-LAPIC
+    /// IRR→ISR transition only on confirmed acceptance. (Holds ≤1 in normal
+    /// single-source operation; a `VecDeque` for robustness.)
+    accepted_irq: VecDeque<u8>,
+    counts: ExitCounts,
+}
+
+impl KvmBackend {
+    /// Open `/dev/kvm`, `KVM_CREATE_VM` (declining the in-kernel irqchip —
+    /// `KVM_IRQCHIP_NONE`), `KVM_CREATE_VCPU` (one vCPU), and `mmap` the `kvm_run`
+    /// page. Memory is mapped separately via [`Backend::map_memory`]; CPUID and
+    /// the MSR filter via [`Backend::set_cpuid`]/[`Backend::set_msr_filter`]
+    /// before the first run. Stock KVM (no determinism intercepts).
+    pub fn new() -> Result<KvmBackend> {
+        Self::build(false)
+    }
+
+    /// Shared constructor for [`KvmBackend::new`] (stock) and `PatchedKvmBackend`
+    /// (`deterministic_intercepts = true`). The patched path opts into
+    /// `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` **before** vCPU creation (the patch
+    /// honors the cap only while `created_vcpus == 0`); default-off leaves stock
+    /// behavior byte-identical, which is why the two are distinct backends rather
+    /// than a runtime mode. The resulting backend surfaces / completes the four
+    /// determinism exits via the shared pure [`crate::kvm`] helpers; nothing
+    /// above the `Backend` trait branches on which constructor ran.
+    pub(crate) fn build(deterministic_intercepts: bool) -> Result<KvmBackend> {
+        let kvm = Kvm::new().map_err(kvm_err)?;
+        let vm = kvm.create_vm().map_err(kvm_err)?;
+        if deterministic_intercepts {
+            // Opt into RDTSC/RDTSCP/RDRAND/RDSEED → KVM_EXIT_DETERMINISM. MUST
+            // precede create_vcpu. A plain EINVAL here means the patched modules
+            // are not loaded — surface that as a clear Capability error.
+            let mut cap = kvm_enable_cap {
+                cap: KVM_CAP_X86_DETERMINISTIC_INTERCEPTS,
+                ..Default::default()
+            };
+            cap.args[0] = 1;
+            vm.enable_cap(&cap).map_err(|_| BackendError::Capability {
+                cap: "KVM_CAP_X86_DETERMINISTIC_INTERCEPTS (patched KVM not loaded?)",
+            })?;
+        }
+        // KVM_IRQCHIP_NONE: we deliberately do NOT call create_irq_chip / split
+        // irqchip. The guest LAPIC is the userspace xAPIC (R1).
+        let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
+        let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
+        if mmap_size < size_of::<kvm_run>() {
+            return Err(BackendError::Internal("kvm_run mmap size too small"));
+        }
+        // The host-sized XSAVE image (KVM_CAP_XSAVE2, 5.17+). A positive value is
+        // the full image size (≥ 4 KiB); 0 means the cap is absent → use the
+        // fixed 4 KiB `kvm_xsave`.
+        let xsave2 = vm.check_extension_int(Cap::Xsave2);
+        let xsave2_size = (xsave2 > 0).then_some(xsave2 as usize);
+        // SAFETY (granted purpose 2): map the per-vCPU shared `kvm_run` structure.
+        // `vcpu`'s fd is valid for `mmap`; offset 0 is the `kvm_run`. The
+        // resulting pointer is owned by this backend and unmapped exactly once in
+        // `Drop`. `mmap_kvm_run` returns an error (never a null/`MAP_FAILED`
+        // pointer) on failure.
+        let run = unsafe { mmap_kvm_run(vcpu.as_raw_fd(), mmap_size)? };
+        Ok(KvmBackend {
+            vcpu,
+            vm,
+            kvm,
+            run,
+            mmap_size,
+            xsave2_size,
+            regions: MemRegions::new(),
+            msr_filter: None,
+            cpuid_installed: false,
+            msr_filter_installed: false,
+            pending: Pending::None,
+            pending_irq: None,
+            accepted_irq: VecDeque::new(),
+            counts: ExitCounts::default(),
+        })
+    }
+
+    /// Copy `bytes` into guest memory at `gpa` through the registered memslots
+    /// (bounds-checked; the loader path). Errors if the range is unmapped.
+    pub fn write_guest(&mut self, gpa: Gpa, bytes: &[u8]) -> Result<()> {
+        self.regions.write(gpa.0, bytes)
+    }
+
+    /// Copy guest memory at `gpa` into `buf` (bounds-checked; the M2-hash read
+    /// path). Errors if the range is unmapped.
+    pub fn read_guest(&self, gpa: Gpa, buf: &mut [u8]) -> Result<()> {
+        self.regions.read(gpa.0, buf)
+    }
+
+    /// `true` once both config calls have landed.
+    fn configured(&self) -> bool {
+        self.cpuid_installed && self.msr_filter_installed
+    }
+
+    /// A raw view over the `mmap`-ed `kvm_run` page, handed to the pure
+    /// `decode_*`/`apply_*` functions.
+    fn run_page(&self) -> RunPage {
+        // SAFETY: `self.run` is the live `mmap` of `self.mmap_size` bytes, owned
+        // by this backend and not aliased by any live reference.
+        unsafe { RunPage::new(self.run, self.mmap_size) }
+    }
+
+    /// Issue `KVM_RUN`, then map the raw exit via the pure [`decode_exit`]. Retries
+    /// on `EINTR` and on the internally-consumed run-loop control exits — including
+    /// `KVM_EXIT_IRQ_WINDOW_OPEN`, on which the pending IRQ becomes injectable and
+    /// is queued on the next loop iteration.
+    fn enter_guest(&mut self) -> Result<Exit> {
+        loop {
+            // Userspace-irqchip injection handshake (KVM_IRQCHIP_NONE): if a
+            // maskable IRQ is queued, deliver it now when the guest can take it,
+            // else arm the interrupt window so KVM exits the instant it can. That
+            // `KVM_EXIT_IRQ_WINDOW_OPEN` is consumed below (`decode_exit` → `None`)
+            // and we re-enter here, now injectable. The decision + window-flag
+            // write is the pure [`plan_irq_entry`]; only the KVM_INTERRUPT ioctl is
+            // the box-only syscall.
+            match plan_irq_entry(self.run_page(), self.pending_irq) {
+                IrqEntry::Queue(vector) => {
+                    // SAFETY (raw ioctl seam): `KVM_INTERRUPT` queues `vector` on
+                    // the owned vCPU; `kvm_interrupt` is valid for the call.
+                    // Excluded under Miri.
+                    unsafe { raw_interrupt(self.vcpu.as_raw_fd(), u32::from(vector))? };
+                    // Accepted: clear the slot and record it for the VMM to complete
+                    // its LAPIC IRR→ISR transition (confirmed acceptance).
+                    self.pending_irq = None;
+                    self.accepted_irq.push_back(vector);
+                }
+                IrqEntry::Run => {}
+            }
+            // SAFETY (raw ioctl seam): `KVM_RUN` takes no argument; the kernel
+            // reads/writes the `mmap`-ed `kvm_run` we own. Excluded under Miri.
+            let rc = unsafe { raw_kvm_run(self.vcpu.as_raw_fd()) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue; // signal interrupted the entry; re-enter
+                }
+                return Err(BackendError::Io(err));
+            }
+            match decode_exit(self.run_page())? {
+                Some((exit, pending)) => {
+                    self.counts.bump(exit.reason());
+                    self.pending = pending;
+                    return Ok(exit);
+                }
+                None => continue, // run-loop control exit; re-enter
+            }
+        }
+    }
+
+    /// Read the `allow-stateful` MSR set via `KVM_GET_MSRS` (the index list is the
+    /// retained filter); fail-closed on a short count via [`saved_msrs`].
+    fn save_msrs(&self) -> Result<BTreeMap<u32, u64>> {
+        let Some(filter) = &self.msr_filter else {
+            return Ok(BTreeMap::new());
+        };
+        let indices: Vec<u32> = filter.allow_indices().collect();
+        if indices.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let entries: Vec<kvm_msr_entry> = indices
+            .iter()
+            .map(|&index| kvm_msr_entry {
+                index,
+                ..Default::default()
+            })
+            .collect();
+        let mut kmsrs = Msrs::from_entries(&entries)
+            .map_err(|_| BackendError::Internal("MSR list too large"))?;
+        let got = self.vcpu.get_msrs(&mut kmsrs).map_err(kvm_err)?;
+        saved_msrs(kmsrs.as_slice(), got, indices.len())
+    }
+
+    /// Write the snapshot's MSRs via `KVM_SET_MSRS`; fail-closed on a short count.
+    fn restore_msrs(&self, state: &VcpuState) -> Result<()> {
+        if state.msrs.is_empty() {
+            return Ok(());
+        }
+        let entries: Vec<kvm_msr_entry> = state
+            .msrs
+            .iter()
+            .map(|(&index, &data)| kvm_msr_entry {
+                index,
+                data,
+                ..Default::default()
+            })
+            .collect();
+        let kmsrs = Msrs::from_entries(&entries)
+            .map_err(|_| BackendError::Internal("MSR list too large"))?;
+        let set = self.vcpu.set_msrs(&kmsrs).map_err(kvm_err)?;
+        ensure_full_msr_count(set, entries.len())
+    }
+
+    /// Read the host-sized XSAVE image: `KVM_GET_XSAVE2` (the
+    /// `KVM_CAP_XSAVE2`-reported size) where available, else the fixed 4 KiB
+    /// `KVM_GET_XSAVE`. The returned bytes are `VcpuState.xsave` verbatim.
+    fn save_xsave(&self) -> Result<Vec<u8>> {
+        match self.xsave2_size {
+            // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_xsave2` allocates and
+            // fills exactly `n` bytes (`n >= size_of::<kvm_xsave>()`). Miri-excluded.
+            Some(n) => unsafe { raw_get_xsave2(self.vcpu.as_raw_fd(), n) },
+            None => Ok(xsave_to_bytes(&self.vcpu.get_xsave().map_err(kvm_err)?)),
+        }
+    }
+
+    /// Read the guest's `IA32_TSC_AUX` (`0xC000_0103`) via `KVM_GET_MSRS`, for an
+    /// `RDTSCP` determinism completion (its `ECX` is the guest's `TSC_AUX`). This
+    /// reflects guest architectural state (the contract's `allow-stateful`
+    /// `TSC_AUX`, vm_state-echoed — never a host per-core value), so it stays a
+    /// faithful instruction completion, not a contract-policy decision. Host
+    /// `KVM_GET_MSRS` bypasses the guest MSR filter, so it works regardless of
+    /// the installed policy.
+    fn read_tsc_aux(&self) -> Result<u64> {
+        const IA32_TSC_AUX: u32 = 0xC000_0103;
+        let entries = [kvm_msr_entry {
+            index: IA32_TSC_AUX,
+            ..Default::default()
+        }];
+        let mut kmsrs = Msrs::from_entries(&entries)
+            .map_err(|_| BackendError::Internal("MSR list too large"))?;
+        let got = self.vcpu.get_msrs(&mut kmsrs).map_err(kvm_err)?;
+        ensure_full_msr_count(got, 1)?;
+        Ok(kmsrs.as_slice()[0].data)
+    }
+
+    /// Restore the XSAVE image saved by [`Self::save_xsave`]. The byte length was
+    /// already validated by `validate_restore_shape`; the `None` legacy path
+    /// re-checks defensively.
+    fn restore_xsave(&self, bytes: &[u8]) -> Result<()> {
+        match self.xsave2_size {
+            // SAFETY: `vcpu` is valid; `raw_set_xsave` reads `bytes` (the validated
+            // host XSAVE2 size). Miri-excluded.
+            Some(_) => unsafe { raw_set_xsave(self.vcpu.as_raw_fd(), bytes) },
+            None => {
+                let xsave = xsave_from_bytes(bytes)?;
+                // SAFETY: `xsave` is a validated, fully-initialized 4 KiB
+                // `kvm_xsave`; `set_xsave` only reads it into the vCPU.
+                unsafe { self.vcpu.set_xsave(&xsave).map_err(kvm_err) }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The raw syscall seams (the genuinely un-CI-testable / un-Miri-able lines).
+// ---------------------------------------------------------------------------
+
+/// `mmap` the per-vCPU `kvm_run` page. Returns `Err` (never `MAP_FAILED`) on
+/// failure.
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd and `len` its `KVM_GET_VCPU_MMAP_SIZE`.
+#[cfg(not(miri))]
+unsafe fn mmap_kvm_run(fd: std::os::fd::RawFd, len: usize) -> Result<*mut kvm_run> {
+    // SAFETY: standard shared mapping of the vCPU fd at offset 0; `len` is the
+    // kernel-reported size.
+    let p = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            fd,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(p.cast::<kvm_run>())
+}
+
+/// Miri stub: the `mmap` syscall is un-interpretable. Never reached under Miri
+/// (the live `KvmBackend` tests are `#[ignore]`); present only so the crate
+/// compiles under `cargo miri test`.
+#[cfg(miri)]
+unsafe fn mmap_kvm_run(_fd: std::os::fd::RawFd, _len: usize) -> Result<*mut kvm_run> {
+    Err(BackendError::Internal("mmap unavailable under miri"))
+}
+
+/// Issue the `KVM_RUN` ioctl. Returns the raw `ioctl` result (`< 0` on error).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd whose `kvm_run` is currently mapped.
+#[cfg(not(miri))]
+unsafe fn raw_kvm_run(fd: std::os::fd::RawFd) -> libc::c_int {
+    // SAFETY: `KVM_RUN` takes no argument; the kernel uses the mapped `kvm_run`.
+    unsafe { libc::ioctl(fd, KVM_RUN as libc::c_ulong, 0) }
+}
+
+/// Miri stub for the `KVM_RUN` ioctl (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_kvm_run(_fd: std::os::fd::RawFd) -> libc::c_int {
+    -1
+}
+
+/// Issue the `KVM_X86_SET_MSR_FILTER` ioctl with a prepared `kvm_msr_filter`.
+///
+/// # Safety
+/// `fd` must be a valid VM fd; `filter`'s range bitmap pointers must be valid for
+/// the duration of the call (KVM copies them in).
+#[cfg(not(miri))]
+unsafe fn raw_set_msr_filter(fd: std::os::fd::RawFd, filter: &kvm_msr_filter) -> Result<()> {
+    // SAFETY: `filter` is a valid `kvm_msr_filter`; the ioctl reads it (and the
+    // bitmaps it points to) and copies them into the kernel.
+    let rc = unsafe {
+        libc::ioctl(
+            fd,
+            KVM_X86_SET_MSR_FILTER as libc::c_ulong,
+            filter as *const kvm_msr_filter,
+        )
+    };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Miri stub for the MSR-filter ioctl (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_set_msr_filter(_fd: std::os::fd::RawFd, _filter: &kvm_msr_filter) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// Issue the `KVM_INTERRUPT` ioctl, queueing maskable IRQ `vector` for the next
+/// VM-entry. The caller (`enter_guest`) only reaches this when
+/// `ready_for_interrupt_injection` is set (via [`plan_irq_entry`]), so KVM accepts
+/// the vector rather than rejecting it as un-injectable.
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd.
+#[cfg(not(miri))]
+unsafe fn raw_interrupt(fd: std::os::fd::RawFd, vector: u32) -> Result<()> {
+    let irq = kvm_interrupt { irq: vector };
+    // SAFETY: the ioctl reads a `kvm_interrupt` from `&irq` (valid for the call)
+    // and copies it into the kernel.
+    let rc = unsafe {
+        libc::ioctl(
+            fd,
+            KVM_INTERRUPT as libc::c_ulong,
+            &irq as *const kvm_interrupt,
+        )
+    };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Miri stub for the `KVM_INTERRUPT` ioctl (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_interrupt(_fd: std::os::fd::RawFd, _vector: u32) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// `KVM_GET_SREGS2` — read sregs incl. PDPTRs/flags (kvm-ioctls exposes no SREGS2
+/// wrapper, so this is a direct ioctl, like the MSR filter).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd.
+#[cfg(not(miri))]
+unsafe fn raw_get_sregs2(fd: std::os::fd::RawFd) -> Result<kvm_sregs2> {
+    let mut sregs2 = kvm_sregs2::default();
+    // SAFETY: the ioctl writes a full `kvm_sregs2` into our out-param.
+    let rc = unsafe {
+        libc::ioctl(
+            fd,
+            KVM_GET_SREGS2 as libc::c_ulong,
+            &mut sregs2 as *mut kvm_sregs2,
+        )
+    };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(sregs2)
+}
+
+/// Miri stub for `KVM_GET_SREGS2` (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_get_sregs2(_fd: std::os::fd::RawFd) -> Result<kvm_sregs2> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// `KVM_SET_SREGS2` — write sregs incl. PDPTRs/flags.
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd.
+#[cfg(not(miri))]
+unsafe fn raw_set_sregs2(fd: std::os::fd::RawFd, sregs2: &kvm_sregs2) -> Result<()> {
+    // SAFETY: the ioctl reads a full `kvm_sregs2` from `sregs2`.
+    let rc = unsafe {
+        libc::ioctl(
+            fd,
+            KVM_SET_SREGS2 as libc::c_ulong,
+            sregs2 as *const kvm_sregs2,
+        )
+    };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Miri stub for `KVM_SET_SREGS2` (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_set_sregs2(_fd: std::os::fd::RawFd, _sregs2: &kvm_sregs2) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// `KVM_GET_XSAVE2` — read `len` bytes of the host-sized XSAVE image into a fresh
+/// buffer (`len` is the `KVM_CAP_XSAVE2`-reported size, ≥ `size_of::<kvm_xsave>()`).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd and `len` the host's `KVM_CAP_XSAVE2` size, so the
+/// kernel's `copy_to_user` of `len` bytes stays within the buffer.
+#[cfg(not(miri))]
+unsafe fn raw_get_xsave2(fd: std::os::fd::RawFd, len: usize) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    // SAFETY: the ioctl writes exactly `len` bytes into `buf` (its capacity).
+    let rc = unsafe { libc::ioctl(fd, KVM_GET_XSAVE2 as libc::c_ulong, buf.as_mut_ptr()) };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(buf)
+}
+
+/// Miri stub for `KVM_GET_XSAVE2` (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_get_xsave2(_fd: std::os::fd::RawFd, len: usize) -> Result<Vec<u8>> {
+    Ok(vec![0u8; len])
+}
+
+/// `KVM_SET_XSAVE` — write the XSAVE image from `bytes` (the same ioctl serves the
+/// 4 KiB legacy and the larger XSAVE2 buffer; the kernel reads the host size).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd and `bytes` at least the host's XSAVE image size,
+/// so the kernel's `copy_from_user` stays within the buffer.
+#[cfg(not(miri))]
+unsafe fn raw_set_xsave(fd: std::os::fd::RawFd, bytes: &[u8]) -> Result<()> {
+    // SAFETY: the ioctl reads the host XSAVE size from `bytes` (its length is the
+    // validated `KVM_CAP_XSAVE2` size).
+    let rc = unsafe { libc::ioctl(fd, KVM_SET_XSAVE as libc::c_ulong, bytes.as_ptr()) };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Miri stub for `KVM_SET_XSAVE` (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_set_xsave(_fd: std::os::fd::RawFd, _bytes: &[u8]) -> Result<()> {
+    Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+impl Drop for KvmBackend {
+    fn drop(&mut self) {
+        // SAFETY: `self.run` came from `mmap_kvm_run(.., self.mmap_size)` and is
+        // unmapped exactly once here. Excluded under Miri (never mapped there).
+        #[cfg(not(miri))]
+        unsafe {
+            libc::munmap(self.run.cast::<libc::c_void>(), self.mmap_size);
+        }
+    }
+}
+
+impl Backend for KvmBackend {
+    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
+        let entries = cpuid_entries(model);
+        let cpuid = CpuId::from_entries(&entries)
+            .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
+        self.vcpu.set_cpuid2(&cpuid).map_err(kvm_err)?;
+        self.cpuid_installed = true;
+        Ok(())
+    }
+
+    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
+        if filter.allow_inkernel.len() > KVM_MSR_FILTER_MAX_RANGES as usize {
+            return Err(BackendError::Memory("too many MSR filter ranges"));
+        }
+        // 1) Route filtered / unknown / invalid MSR accesses to userspace.
+        let mut cap = kvm_enable_cap {
+            cap: KVM_CAP_X86_USER_SPACE_MSR,
+            ..Default::default()
+        };
+        cap.args[0] = u64::from(
+            KVM_MSR_EXIT_REASON_FILTER | KVM_MSR_EXIT_REASON_UNKNOWN | KVM_MSR_EXIT_REASON_INVAL,
+        );
+        self.vm.enable_cap(&cap).map_err(kvm_err)?;
+
+        // 2) Build the default-deny filter. Each named range gets an all-ones
+        //    bitmap (allow in-kernel for every index in the range); everything
+        //    else is denied → userspace exit. The bitmaps stay alive until the
+        //    ioctl returns (KVM copies them in).
+        let mut bitmaps: Vec<Vec<u8>> = Vec::with_capacity(filter.allow_inkernel.len());
+        let mut ranges = [kvm_msr_filter_range::default(); KVM_MSR_FILTER_MAX_RANGES as usize];
+        for (i, r) in filter.allow_inkernel.iter().enumerate() {
+            let nbytes = r.count.div_ceil(8) as usize;
+            bitmaps.push(vec![0xFFu8; nbytes]);
+            ranges[i] = kvm_msr_filter_range {
+                flags: KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE,
+                nmsrs: r.count,
+                base: r.base,
+                // KVM only reads the bitmap, but the field is typed `*mut u8`.
+                bitmap: bitmaps[i].as_mut_ptr(),
+            };
+        }
+        let kfilter = kvm_msr_filter {
+            flags: KVM_MSR_FILTER_DEFAULT_DENY,
+            ranges,
+        };
+        // SAFETY: `kfilter` and its bitmap pointers are valid for this call; KVM
+        // copies them in. Excluded under Miri.
+        unsafe { raw_set_msr_filter(self.vm.as_raw_fd(), &kfilter)? };
+
+        self.msr_filter = Some(filter.clone());
+        self.msr_filter_installed = true;
+        Ok(())
+    }
+
+    unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
+        // Validate + record via the portable seam (alignment / overlap / size).
+        // The slot index is the table's next index; we register with KVM next and
+        // roll the record back if that fails, so a failed map never leaves a stale
+        // host pointer for `read_guest`/`write_guest` to dereference.
+        let slot = self
+            .regions
+            .insert(gpa.0, host.as_mut_ptr(), host.len() as u64)?;
+        let region = kvm_userspace_memory_region {
+            slot,
+            flags: 0,
+            guest_phys_addr: gpa.0,
+            memory_size: host.len() as u64,
+            userspace_addr: host.as_ptr() as u64,
+        };
+        // SAFETY (granted purpose 1): register the host backing with KVM. The
+        // caller's `map_memory` contract guarantees `host` stays live, pinned,
+        // page-aligned, and unaliased for the backend's lifetime — KVM retains
+        // this userspace address and the guest writes through it on every run.
+        if let Err(e) = unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err) {
+            self.regions.rollback_last();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn run(&mut self) -> Result<Exit> {
+        if !self.configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.enter_guest()
+    }
+
+    fn run_until(&mut self, _deadline: Vtime) -> Result<Exit> {
+        // Phase 2: needs the PMU single-step + lapic injection seam (task 07).
+        Err(BackendError::Unsupported { what: "run_until" })
+    }
+
+    fn inject(&mut self, event: Event) -> Result<()> {
+        match event {
+            // Set the pending maskable vector (overwrite); same as set_pending_irq.
+            Event::Interrupt { vector } => {
+                self.pending_irq = Some(vector);
+                Ok(())
+            }
+            // NMIs are non-maskable; queue immediately via the KVM_NMI ioctl. (Not
+            // needed by the Linux boot — timer IRQ only — but honoured so the trait
+            // method is complete.)
+            Event::Nmi => self.vcpu.nmi().map_err(kvm_err),
+        }
+    }
+
+    fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
+        // Overwrite the single pending-IRQ slot with the VMM's freshly re-arbitrated
+        // vector. `None` clears it; the next `enter_guest` then disarms the window
+        // (via `plan_irq_entry(None)`), so a previously-armed vector that is no
+        // longer the highest deliverable (TPR raised / EOI'd / preempted) is not
+        // injected stale. The actual KVM_INTERRUPT / window handshake runs in
+        // `enter_guest` against the current `ready_for_interrupt_injection`.
+        self.pending_irq = vector;
+        Ok(())
+    }
+
+    fn take_accepted_interrupt(&mut self) -> Option<u8> {
+        self.accepted_irq.pop_front()
+    }
+
+    fn complete_read(&mut self, value: u64) -> Result<()> {
+        // A pending KVM_EXIT_DETERMINISM (patched backend) completes through the
+        // determinism payload, not the IO/MMIO/MSR data buffers. RDTSCP also
+        // needs the guest's IA32_TSC_AUX → ECX (read here, below the trait, as a
+        // faithful instruction completion); the seeded value itself is computed
+        // above the trait in vmm-core. Stock KVM never sets this pending.
+        if let Pending::Determinism { rdtscp, .. } = self.pending {
+            let aux = if rdtscp { self.read_tsc_aux()? } else { 0 };
+            apply_complete_determinism(self.run_page(), self.pending, value, aux)?;
+            self.pending = Pending::None;
+            return Ok(());
+        }
+        apply_complete_read(self.run_page(), self.pending, value)?;
+        self.pending = Pending::None;
+        Ok(())
+    }
+
+    fn complete_fault(&mut self) -> Result<()> {
+        apply_complete_fault(self.run_page(), self.pending)?;
+        self.pending = Pending::None;
+        Ok(())
+    }
+
+    fn complete_ok(&mut self) -> Result<()> {
+        apply_complete_ok(self.run_page(), self.pending)?;
+        self.pending = Pending::None;
+        Ok(())
+    }
+
+    fn complete_hypercall(&mut self, _rax: u64) -> Result<()> {
+        // Stock KVM services VMCALL in-kernel; it never surfaces Exit::Hypercall,
+        // so there is never a hypercall pending to complete.
+        Err(BackendError::NoPendingRead)
+    }
+
+    fn complete_cpuid(&mut self, _eax: u32, _ebx: u32, _ecx: u32, _edx: u32) -> Result<()> {
+        // Stock KVM answers CPUID in-kernel from the set_cpuid table; it never
+        // surfaces Exit::Cpuid.
+        Err(BackendError::BadCompletion)
+    }
+
+    fn save(&self) -> Result<VcpuState> {
+        let regs = self.vcpu.get_regs().map_err(kvm_err)?;
+        // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
+        // `kvm_sregs2` (incl. flags/PDPTRs). Excluded under Miri.
+        let sregs2 = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let dregs = self.vcpu.get_debug_regs().map_err(kvm_err)?;
+        let kevents = self.vcpu.get_vcpu_events().map_err(kvm_err)?;
+        let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
+        let xcrs = self.vcpu.get_xcrs().map_err(kvm_err)?;
+        let xsave = self.save_xsave()?;
+        let msrs = self.save_msrs()?;
+
+        Ok(VcpuState {
+            regs: from_kvm_regs(&regs),
+            sregs: from_kvm_sregs2(&sregs2),
+            xcr0: xcr0_of(&xcrs),
+            debugregs: from_kvm_debugregs(&dregs),
+            events: from_kvm_events(&kevents),
+            mp_state: mp_from_kvm(mp.mp_state),
+            msrs,
+            xsave,
+        })
+    }
+
+    fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        // Fail closed *before any `SET_*` ioctl* (no half-mutation of the live
+        // vCPU): the snapshot's MSR key set must equal the configured allow-stateful
+        // indices, and the XSAVE image must be the host image size.
+        let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
+        validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+
+        self.vcpu
+            .set_regs(&to_kvm_regs(&state.regs))
+            .map_err(kvm_err)?;
+        // SAFETY: `vcpu` is valid; `raw_set_sregs2` reads a full `kvm_sregs2`
+        // (incl. flags/PDPTRs preserved from `save`). Excluded under Miri.
+        unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), &to_kvm_sregs2(&state.sregs))? };
+        self.vcpu
+            .set_debug_regs(&to_kvm_debugregs(&state.debugregs))
+            .map_err(kvm_err)?;
+        self.vcpu
+            .set_vcpu_events(&to_kvm_events(&state.events))
+            .map_err(kvm_err)?;
+        let mp = kvm_mp_state {
+            mp_state: mp_to_kvm(state.mp_state),
+        };
+        self.vcpu.set_mp_state(mp).map_err(kvm_err)?;
+        self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
+        self.restore_xsave(&state.xsave)?;
+        self.restore_msrs(state)?;
+        Ok(())
+    }
+
+    fn exit_counts(&self) -> ExitCounts {
+        self.counts
+    }
+
+    fn reset_exit_counts(&mut self) {
+        self.counts = ExitCounts::default();
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        kvm_capabilities()
+    }
+}

@@ -1,0 +1,4 @@
+PAYLOAD insn-rng START
+OK rdrand
+OK rdseed
+PAYLOAD insn-rng PASS

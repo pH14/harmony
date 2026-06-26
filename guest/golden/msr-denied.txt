@@ -1,0 +1,3 @@
+PAYLOAD msr-denied START
+OK msr-denied-probed
+PAYLOAD msr-denied PASS

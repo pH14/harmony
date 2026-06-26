@@ -1,0 +1,5 @@
+PAYLOAD clocks START
+OK tsc-monotonic
+OK cpuid-rdtsc
+OK pit-read
+PAYLOAD clocks PASS

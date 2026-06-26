@@ -1,0 +1,3 @@
+PAYLOAD insn-rdpmc START
+OK rdpmc-trapped
+PAYLOAD insn-rdpmc PASS

@@ -1,0 +1,13 @@
+# Payloads always build for the freestanding x86_64 target; the linker script
+# and relocation model are injected per-payload by each payload's build.rs
+# (build scripts can resolve the absolute path to linker.ld; rustflags here
+# cannot). compute-core's host-side test overrides --target explicitly.
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    # The target defaults to a static PIE; we link at a fixed 1 MiB physical
+    # address with no relocation processing, so force static.
+    "-C", "relocation-model=static",
+]

@@ -1,0 +1,113 @@
+# corpus-manifest.toml — the determinism/conformance corpus registry.
+#
+# One entry per corpus item (docs/DETERMINISM-CORPUS.md "Deliverable structure"):
+# name, kind, source path (relative to repo root), the oracles it participates in,
+# and (for conformance items) the golden digest. The det-corpus harness (task 17,
+# consonance/det-corpus) parses this via load_manifest; reviewing a diff to this
+# file is how "we added/changed a determinism test" is audited. Schema + tokens:
+# consonance/det-corpus/corpus-manifest.example.toml.
+#
+#   kind     = "micro" | "workload" | "fuzz_seed"
+#   oracles  = any of:
+#                "determinism"            (O1: replay-equivalence)
+#                "conformance"            (O2: observable_digest == golden; needs `golden`)
+#                "seed_sensitivity:rng"   (O3, RNG-consuming payload)
+#                "seed_sensitivity:pure"  (O3, seed-pure payload)
+#   golden   = path to the committed 64-hex O2 digest (conformance items only)
+#
+# C1 instruction-sweep items (task 18). Each Micro item declares O1 (determinism)
+# and O3 (seed_sensitivity, with the row's tag — rng only for insn-rng, the
+# rng-consuming/control-flow-stable payload; pure for the rest).
+#
+# O2/Conformance (re-enabled by the corpus box-integration, task 28). Each
+# conformance payload reports its trap-dependent values (V-time TSC reads, seeded
+# RNG words, frozen CPUID/MSR values, retired counts) over the dedicated report
+# channel (port 0x0CA2, docs/INTEGRATION.md §1.1); the box runs it on the patched
+# backend as a det-corpus `Machine` and digests the report stream + serial banner
+# into `observable_digest`. That digest is the committed 64-hex
+# guest/golden/<name>.digest pinned here. The goldens are V-time/seeded-PRNG-
+# derived, so they are captured on the box (DETCORPUS_BLESS=1, see
+# consonance/vmm-core/tests/box_corpus.rs); they are distinct from the
+# run-tests.sh *serial-shape* goldens (guest/golden/<name>.txt).
+#
+# Conformance is declared on the **six** payloads that run to a clean
+# isa-debug-exit PASS on vmm-core's current event loop (trapped instructions /
+# MSR dispositions / in-guest faults only). Four payloads are O2-deferred —
+# they cannot reach a clean PASS on today's event loop:
+#   * insn-hlt, irq-landing, pit-pic-stub — depend on PIT/LAPIC-timer interrupt
+#     injection, LAPIC MMIO, and the idle-skip protocol (the "LAPIC timer
+#     interrupt landing" hard core, docs/DETERMINISM-CORPUS.md §C1 — a later phase).
+#   * insn-mwait — MONITOR/MWAIT are not modeled on the event loop, so the box run
+#     exits DebugExit code 1 (FAIL), not a clean PASS (same class as HLT).
+# All four keep O1/O3 (toy-registry self-test) and gain conformance once vmm-core
+# models V-time timers + IRQ injection (+ MONITOR/MWAIT); box_corpus logs them as
+# O2-deferred until then.
+
+[[item]]
+name = "insn-rdtsc"
+kind = "micro"
+source = "guest/payloads/insn-rdtsc"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "guest/golden/insn-rdtsc.digest"
+
+[[item]]
+name = "insn-rng"
+kind = "micro"
+source = "guest/payloads/insn-rng"
+oracles = ["determinism", "seed_sensitivity:rng", "conformance"]
+golden = "guest/golden/insn-rng.digest"
+
+[[item]]
+name = "insn-cpuid"
+kind = "micro"
+source = "guest/payloads/insn-cpuid"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "guest/golden/insn-cpuid.digest"
+
+[[item]]
+name = "insn-rdpmc"
+kind = "micro"
+source = "guest/payloads/insn-rdpmc"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "guest/golden/insn-rdpmc.digest"
+
+[[item]]
+name = "msr-allowed"
+kind = "micro"
+source = "guest/payloads/msr-allowed"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "guest/golden/msr-allowed.digest"
+
+[[item]]
+name = "msr-denied"
+kind = "micro"
+source = "guest/payloads/msr-denied"
+oracles = ["determinism", "seed_sensitivity:pure", "conformance"]
+golden = "guest/golden/msr-denied.digest"
+
+# --- O2-deferred: payloads that can't reach a clean PASS on today's event loop
+#     (timer/IRQ: insn-hlt/irq-landing/pit-pic-stub; MONITOR/MWAIT: insn-mwait) ---
+
+[[item]]
+name = "insn-hlt"
+kind = "micro"
+source = "guest/payloads/insn-hlt"
+oracles = ["determinism", "seed_sensitivity:pure"]
+
+[[item]]
+name = "insn-mwait"
+kind = "micro"
+source = "guest/payloads/insn-mwait"
+oracles = ["determinism", "seed_sensitivity:pure"]
+
+[[item]]
+name = "irq-landing"
+kind = "micro"
+source = "guest/payloads/irq-landing"
+oracles = ["determinism", "seed_sensitivity:pure"]
+
+[[item]]
+name = "pit-pic-stub"
+kind = "micro"
+source = "guest/payloads/pit-pic-stub"
+oracles = ["determinism", "seed_sensitivity:pure"]

@@ -1,0 +1,71 @@
+pub mod lapic
+pub enum lapic::LapicError
+pub lapic::LapicError::BadOffset(u32)
+pub lapic::LapicError::InvalidState
+pub lapic::LapicError::ReservedVector(u8)
+pub struct lapic::Lapic
+impl lapic::Lapic
+pub fn lapic::Lapic::advance_to(&mut self, u64) -> bool
+pub fn lapic::Lapic::eoi(&mut self)
+pub fn lapic::Lapic::has_deliverable(&self) -> bool
+pub fn lapic::Lapic::mmio_read(&self, u32, u64) -> core::result::Result<u32, lapic::LapicError>
+pub fn lapic::Lapic::mmio_write(&mut self, u32, u32, u64) -> core::result::Result<(), lapic::LapicError>
+pub fn lapic::Lapic::new(lapic::LapicConfig) -> core::result::Result<lapic::Lapic, lapic::LapicError>
+pub fn lapic::Lapic::next_timer_deadline(&self) -> core::option::Option<u64>
+pub fn lapic::Lapic::peek_interrupt(&self) -> core::option::Option<u8>
+pub fn lapic::Lapic::raise(&mut self, u8) -> core::result::Result<(), lapic::LapicError>
+pub fn lapic::Lapic::restore(&lapic::LapicState) -> core::result::Result<lapic::Lapic, lapic::LapicError>
+pub fn lapic::Lapic::snapshot(&self) -> lapic::LapicState
+pub fn lapic::Lapic::take_interrupt(&mut self) -> core::option::Option<u8>
+pub struct lapic::LapicConfig
+pub lapic::LapicConfig::apic_id: u32
+pub lapic::LapicConfig::timer_hz: u64
+pub struct lapic::LapicState
+pub lapic::LapicState::count_at_arm: u32
+pub lapic::LapicState::dfr: u32
+pub lapic::LapicState::divide_config: u32
+pub lapic::LapicState::esr: u32
+pub lapic::LapicState::icr_high: u32
+pub lapic::LapicState::icr_low: u32
+pub lapic::LapicState::id: u32
+pub lapic::LapicState::initial_count: u32
+pub lapic::LapicState::irr: [u32; 8]
+pub lapic::LapicState::isr: [u32; 8]
+pub lapic::LapicState::ldr: u32
+pub lapic::LapicState::lvt: [u32; 6]
+pub lapic::LapicState::svr: u32
+pub lapic::LapicState::timer_arm_vns: u64
+pub lapic::LapicState::timer_hz: u64
+pub lapic::LapicState::timer_pending: bool
+pub lapic::LapicState::timer_running: bool
+pub lapic::LapicState::tmr: [u32; 8]
+pub lapic::LapicState::tpr: u32
+pub lapic::LapicState::version: u32
+pub const lapic::APIC_BASE_DEFAULT: u64
+pub const lapic::APIC_DFR: u32
+pub const lapic::APIC_EOI: u32
+pub const lapic::APIC_ESR: u32
+pub const lapic::APIC_ICR_HIGH: u32
+pub const lapic::APIC_ICR_LOW: u32
+pub const lapic::APIC_ID: u32
+pub const lapic::APIC_IRR: u32
+pub const lapic::APIC_ISR: u32
+pub const lapic::APIC_LDR: u32
+pub const lapic::APIC_LVT_ERROR: u32
+pub const lapic::APIC_LVT_LINT0: u32
+pub const lapic::APIC_LVT_LINT1: u32
+pub const lapic::APIC_LVT_PERFMON: u32
+pub const lapic::APIC_LVT_THERMAL: u32
+pub const lapic::APIC_LVT_TIMER: u32
+pub const lapic::APIC_MAX_OFFSET: u32
+pub const lapic::APIC_MMIO_SIZE: usize
+pub const lapic::APIC_PPR: u32
+pub const lapic::APIC_SVR: u32
+pub const lapic::APIC_TDCR: u32
+pub const lapic::APIC_TMCCT: u32
+pub const lapic::APIC_TMICT: u32
+pub const lapic::APIC_TMR: u32
+pub const lapic::APIC_TPR: u32
+pub const lapic::APIC_VERSION: u32
+pub const lapic::APIC_VERSION_VALUE: u32
+pub const lapic::LAPIC_STATE_VERSION: u32

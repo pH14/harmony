@@ -1,0 +1,314 @@
+pub mod vmm_core
+pub mod vmm_core::bringup
+pub enum vmm_core::bringup::BackendKind
+pub vmm_core::bringup::BackendKind::Patched
+pub vmm_core::bringup::BackendKind::Stock
+pub enum vmm_core::bringup::ImageKind
+pub vmm_core::bringup::ImageKind::Linux
+pub vmm_core::bringup::ImageKind::Multiboot
+impl vmm_core::bringup::ImageKind
+pub fn vmm_core::bringup::ImageKind::detect(&[u8]) -> core::option::Option<vmm_core::bringup::ImageKind>
+pub fn vmm_core::bringup::boot<B: vmm_backend::backend::Backend>(B, &[u8], usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
+pub fn vmm_core::bringup::boot_linux<B: vmm_backend::backend::Backend>(B, &[u8], &[u8], usize, &str) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
+pub fn vmm_core::bringup::boot_linux_selected(vmm_core::bringup::BackendKind, &[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::bringup::boot_selected(vmm_core::bringup::BackendKind, &[u8], usize, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend>>, vmm_core::vmm::VmmError>
+pub mod vmm_core::contract
+pub enum vmm_core::contract::MsrDisposition
+pub vmm_core::contract::MsrDisposition::AllowFixed(u64)
+pub vmm_core::contract::MsrDisposition::AllowStateful
+pub vmm_core::contract::MsrDisposition::DenyGp
+pub vmm_core::contract::MsrDisposition::DenyIgnoreWrite
+pub vmm_core::contract::MsrDisposition::EmulateVtime
+pub const vmm_core::contract::MSR_EXIT_REASON_FILTER: u64
+pub const vmm_core::contract::MSR_EXIT_REASON_INVAL: u64
+pub const vmm_core::contract::MSR_EXIT_REASON_UNKNOWN: u64
+pub const vmm_core::contract::USER_SPACE_MSR_MASK: u64
+pub fn vmm_core::contract::contract_hash() -> [u8; 32]
+pub fn vmm_core::contract::cpuid_model() -> vmm_backend::config::CpuidModel
+pub fn vmm_core::contract::msr_filter_allow() -> vmm_backend::config::MsrFilter
+pub fn vmm_core::contract::rdmsr_disposition(u32) -> vmm_core::contract::MsrDisposition
+pub fn vmm_core::contract::resolve_cpuid(vmm_backend::config::CpuidEntry, u64, u64) -> vmm_backend::config::CpuidEntry
+pub fn vmm_core::contract::wrmsr_disposition(u32, u64) -> vmm_core::contract::MsrDisposition
+pub mod vmm_core::corpus
+pub struct vmm_core::corpus::CorpusMachine<B: vmm_backend::backend::Backend>
+impl<B: vmm_backend::backend::Backend> vmm_core::corpus::CorpusMachine<B>
+pub fn vmm_core::corpus::CorpusMachine<B>::new(vmm_core::vmm::Vmm<B>) -> Self
+pub fn vmm_core::corpus::CorpusMachine<B>::run_error(&self) -> core::option::Option<&str>
+pub fn vmm_core::corpus::CorpusMachine<B>::vmm(&self) -> &vmm_core::vmm::Vmm<B>
+impl<B: vmm_backend::backend::Backend> unison::Machine for vmm_core::corpus::CorpusMachine<B>
+pub fn vmm_core::corpus::CorpusMachine<B>::observable_digest(&self) -> [u8; 32]
+pub fn vmm_core::corpus::CorpusMachine<B>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn vmm_core::corpus::CorpusMachine<B>::state_hash(&self) -> [u8; 32]
+pub fn vmm_core::corpus::CorpusMachine<B>::work(&self) -> u64
+pub fn vmm_core::corpus::boot_patched_payload(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::corpus::observable_digest_of(&[u32], &[u8]) -> [u8; 32]
+pub mod vmm_core::devices
+pub struct vmm_core::devices::LegacyPlatform
+impl vmm_core::devices::LegacyPlatform
+pub fn vmm_core::devices::LegacyPlatform::config_address(&self) -> u32
+pub fn vmm_core::devices::LegacyPlatform::new() -> Self
+pub fn vmm_core::devices::LegacyPlatform::owns(u16) -> bool
+pub fn vmm_core::devices::LegacyPlatform::read(&self, u16, u8) -> u64
+pub fn vmm_core::devices::LegacyPlatform::write(&mut self, u16, u8, u32)
+pub struct vmm_core::devices::Uart8250
+impl vmm_core::devices::Uart8250
+pub fn vmm_core::devices::Uart8250::capture(&self) -> &[u8]
+pub fn vmm_core::devices::Uart8250::dlab(&self) -> bool
+pub fn vmm_core::devices::Uart8250::new() -> Self
+pub fn vmm_core::devices::Uart8250::owns(u16) -> bool
+pub fn vmm_core::devices::Uart8250::read(&self, u16) -> core::option::Option<u8>
+pub fn vmm_core::devices::Uart8250::shadow_regs(&self) -> &[u8; 8]
+pub fn vmm_core::devices::Uart8250::write(&mut self, u16, u8) -> bool
+pub const vmm_core::devices::ISA_DEBUG_EXIT_PORT: u16
+pub const vmm_core::devices::REPORT_PORT: u16
+pub const vmm_core::devices::UART_LCR_DLAB: u8
+pub const vmm_core::devices::UART_LSR_THR_EMPTY: u8
+pub const vmm_core::devices::UART_PORT_BASE: u16
+pub const vmm_core::devices::UART_PORT_LCR: u16
+pub const vmm_core::devices::UART_PORT_LSR: u16
+pub mod vmm_core::entry
+pub const vmm_core::entry::BOOT_INFO_GPA: u32
+pub fn vmm_core::entry::long_mode_entry(u64, u64, u64, u64) -> vmm_backend::state::VcpuState
+pub fn vmm_core::entry::protected_mode_entry(u32, u32) -> vmm_backend::state::VcpuState
+pub fn vmm_core::entry::write_boot_info(&mut [u8]) -> core::result::Result<u32, vmm_core::multiboot::LoadError>
+pub mod vmm_core::hostassert
+pub struct vmm_core::hostassert::Outcome
+pub vmm_core::hostassert::Outcome::actual: alloc::string::String
+pub vmm_core::hostassert::Outcome::expected: alloc::string::String
+pub vmm_core::hostassert::Outcome::key: alloc::string::String
+pub vmm_core::hostassert::Outcome::pass: bool
+pub fn vmm_core::hostassert::report() -> alloc::vec::Vec<vmm_core::hostassert::Outcome>
+pub mod vmm_core::linux_loader
+pub enum vmm_core::linux_loader::LinuxLoadError
+pub vmm_core::linux_loader::LinuxLoadError::CmdlineTooLong
+pub vmm_core::linux_loader::LinuxLoadError::CmdlineTooLong::len: usize
+pub vmm_core::linux_loader::LinuxLoadError::CmdlineTooLong::limit: usize
+pub vmm_core::linux_loader::LinuxLoadError::InitramfsDoesNotFit
+pub vmm_core::linux_loader::LinuxLoadError::InitramfsDoesNotFit::len: u64
+pub vmm_core::linux_loader::LinuxLoadError::KernelDoesNotFit
+pub vmm_core::linux_loader::LinuxLoadError::KernelDoesNotFit::end: u64
+pub vmm_core::linux_loader::LinuxLoadError::KernelDoesNotFit::load: u64
+pub vmm_core::linux_loader::LinuxLoadError::KernelDoesNotFit::ram: u64
+pub vmm_core::linux_loader::LinuxLoadError::KernelTooSmall
+pub vmm_core::linux_loader::LinuxLoadError::KernelTooSmall::len: u64
+pub vmm_core::linux_loader::LinuxLoadError::No64BitEntry
+pub vmm_core::linux_loader::LinuxLoadError::NotBzImage
+pub vmm_core::linux_loader::LinuxLoadError::RamTooSmall
+pub vmm_core::linux_loader::LinuxLoadError::RamTooSmall::ram: u64
+pub vmm_core::linux_loader::LinuxLoadError::TruncatedImage
+pub vmm_core::linux_loader::LinuxLoadError::TruncatedImage::image_len: usize
+pub vmm_core::linux_loader::LinuxLoadError::TruncatedImage::setup_bytes: usize
+pub vmm_core::linux_loader::LinuxLoadError::UnsupportedProtocol
+pub vmm_core::linux_loader::LinuxLoadError::UnsupportedProtocol::found: u16
+pub vmm_core::linux_loader::LinuxLoadError::UnsupportedProtocol::required: u16
+#[repr(C, packed(1))] pub struct vmm_core::linux_loader::BootE820Entry
+pub vmm_core::linux_loader::BootE820Entry::addr: u64
+pub vmm_core::linux_loader::BootE820Entry::size: u64
+pub vmm_core::linux_loader::BootE820Entry::type_: u32
+impl zerocopy::FromBytes for vmm_core::linux_loader::BootE820Entry where u64: zerocopy::FromBytes, u32: zerocopy::FromBytes
+impl zerocopy::FromZeros for vmm_core::linux_loader::BootE820Entry where u64: zerocopy::FromZeros, u32: zerocopy::FromZeros
+impl zerocopy::Immutable for vmm_core::linux_loader::BootE820Entry where u64: zerocopy::Immutable, u32: zerocopy::Immutable
+impl zerocopy::IntoBytes for vmm_core::linux_loader::BootE820Entry where u64: zerocopy::IntoBytes, u32: zerocopy::IntoBytes
+impl zerocopy::KnownLayout for vmm_core::linux_loader::BootE820Entry where u32: zerocopy::KnownLayout
+pub type vmm_core::linux_loader::BootE820Entry::PointerMetadata = <u32 as zerocopy::KnownLayout>::PointerMetadata
+impl zerocopy::TryFromBytes for vmm_core::linux_loader::BootE820Entry where u64: zerocopy::TryFromBytes, u32: zerocopy::TryFromBytes
+#[repr(C)] pub struct vmm_core::linux_loader::BootParams
+pub vmm_core::linux_loader::BootParams::e820_entries: u8
+pub vmm_core::linux_loader::BootParams::e820_table: [vmm_core::linux_loader::BootE820Entry; 128]
+pub vmm_core::linux_loader::BootParams::hdr: vmm_core::linux_loader::SetupHeader
+impl zerocopy::FromBytes for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::FromBytes, u8: zerocopy::FromBytes, [u8; 8]: zerocopy::FromBytes, vmm_core::linux_loader::SetupHeader: zerocopy::FromBytes, [u8; 100]: zerocopy::FromBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::FromBytes, [u8; 816]: zerocopy::FromBytes
+impl zerocopy::FromZeros for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::FromZeros, u8: zerocopy::FromZeros, [u8; 8]: zerocopy::FromZeros, vmm_core::linux_loader::SetupHeader: zerocopy::FromZeros, [u8; 100]: zerocopy::FromZeros, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::FromZeros, [u8; 816]: zerocopy::FromZeros
+impl zerocopy::Immutable for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::Immutable, u8: zerocopy::Immutable, [u8; 8]: zerocopy::Immutable, vmm_core::linux_loader::SetupHeader: zerocopy::Immutable, [u8; 100]: zerocopy::Immutable, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::Immutable, [u8; 816]: zerocopy::Immutable
+impl zerocopy::IntoBytes for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::IntoBytes, u8: zerocopy::IntoBytes, [u8; 8]: zerocopy::IntoBytes, vmm_core::linux_loader::SetupHeader: zerocopy::IntoBytes, [u8; 100]: zerocopy::IntoBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::IntoBytes, [u8; 816]: zerocopy::IntoBytes, (): zerocopy::util::macro_util::PaddingFree<Self, { _ }>
+impl zerocopy::KnownLayout for vmm_core::linux_loader::BootParams where [u8; 816]: zerocopy::KnownLayout
+pub type vmm_core::linux_loader::BootParams::PointerMetadata = <[u8; 816] as zerocopy::KnownLayout>::PointerMetadata
+impl zerocopy::TryFromBytes for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::TryFromBytes, u8: zerocopy::TryFromBytes, [u8; 8]: zerocopy::TryFromBytes, vmm_core::linux_loader::SetupHeader: zerocopy::TryFromBytes, [u8; 100]: zerocopy::TryFromBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::TryFromBytes, [u8; 816]: zerocopy::TryFromBytes
+pub struct vmm_core::linux_loader::GpaRange
+pub vmm_core::linux_loader::GpaRange::len: u64
+pub vmm_core::linux_loader::GpaRange::start: u64
+pub struct vmm_core::linux_loader::LinuxImage
+pub vmm_core::linux_loader::LinuxImage::boot_params_gpa: u64
+pub vmm_core::linux_loader::LinuxImage::cmdline_gpa: u64
+pub vmm_core::linux_loader::LinuxImage::entry_point: u64
+pub vmm_core::linux_loader::LinuxImage::gdt_gpa: u64
+pub vmm_core::linux_loader::LinuxImage::initramfs: vmm_core::linux_loader::GpaRange
+pub vmm_core::linux_loader::LinuxImage::kernel: vmm_core::linux_loader::GpaRange
+pub vmm_core::linux_loader::LinuxImage::page_table_root: u64
+#[repr(C, packed(1))] pub struct vmm_core::linux_loader::SetupHeader
+pub vmm_core::linux_loader::SetupHeader::boot_flag: u16
+pub vmm_core::linux_loader::SetupHeader::bootsect_kludge: u32
+pub vmm_core::linux_loader::SetupHeader::cmd_line_ptr: u32
+pub vmm_core::linux_loader::SetupHeader::cmdline_size: u32
+pub vmm_core::linux_loader::SetupHeader::code32_start: u32
+pub vmm_core::linux_loader::SetupHeader::ext_loader_type: u8
+pub vmm_core::linux_loader::SetupHeader::ext_loader_ver: u8
+pub vmm_core::linux_loader::SetupHeader::handover_offset: u32
+pub vmm_core::linux_loader::SetupHeader::hardware_subarch: u32
+pub vmm_core::linux_loader::SetupHeader::hardware_subarch_data: u64
+pub vmm_core::linux_loader::SetupHeader::header: u32
+pub vmm_core::linux_loader::SetupHeader::heap_end_ptr: u16
+pub vmm_core::linux_loader::SetupHeader::init_size: u32
+pub vmm_core::linux_loader::SetupHeader::initrd_addr_max: u32
+pub vmm_core::linux_loader::SetupHeader::jump: u16
+pub vmm_core::linux_loader::SetupHeader::kernel_alignment: u32
+pub vmm_core::linux_loader::SetupHeader::kernel_info_offset: u32
+pub vmm_core::linux_loader::SetupHeader::kernel_version: u16
+pub vmm_core::linux_loader::SetupHeader::loadflags: u8
+pub vmm_core::linux_loader::SetupHeader::min_alignment: u8
+pub vmm_core::linux_loader::SetupHeader::payload_length: u32
+pub vmm_core::linux_loader::SetupHeader::payload_offset: u32
+pub vmm_core::linux_loader::SetupHeader::pref_address: u64
+pub vmm_core::linux_loader::SetupHeader::ram_size: u16
+pub vmm_core::linux_loader::SetupHeader::ramdisk_image: u32
+pub vmm_core::linux_loader::SetupHeader::ramdisk_size: u32
+pub vmm_core::linux_loader::SetupHeader::realmode_swtch: u32
+pub vmm_core::linux_loader::SetupHeader::relocatable_kernel: u8
+pub vmm_core::linux_loader::SetupHeader::root_dev: u16
+pub vmm_core::linux_loader::SetupHeader::root_flags: u16
+pub vmm_core::linux_loader::SetupHeader::setup_data: u64
+pub vmm_core::linux_loader::SetupHeader::setup_move_size: u16
+pub vmm_core::linux_loader::SetupHeader::setup_sects: u8
+pub vmm_core::linux_loader::SetupHeader::start_sys_seg: u16
+pub vmm_core::linux_loader::SetupHeader::syssize: u32
+pub vmm_core::linux_loader::SetupHeader::type_of_loader: u8
+pub vmm_core::linux_loader::SetupHeader::version: u16
+pub vmm_core::linux_loader::SetupHeader::vid_mode: u16
+pub vmm_core::linux_loader::SetupHeader::xloadflags: u16
+impl zerocopy::FromBytes for vmm_core::linux_loader::SetupHeader where u8: zerocopy::FromBytes, u16: zerocopy::FromBytes, u32: zerocopy::FromBytes, u64: zerocopy::FromBytes
+impl zerocopy::FromZeros for vmm_core::linux_loader::SetupHeader where u8: zerocopy::FromZeros, u16: zerocopy::FromZeros, u32: zerocopy::FromZeros, u64: zerocopy::FromZeros
+impl zerocopy::Immutable for vmm_core::linux_loader::SetupHeader where u8: zerocopy::Immutable, u16: zerocopy::Immutable, u32: zerocopy::Immutable, u64: zerocopy::Immutable
+impl zerocopy::IntoBytes for vmm_core::linux_loader::SetupHeader where u8: zerocopy::IntoBytes, u16: zerocopy::IntoBytes, u32: zerocopy::IntoBytes, u64: zerocopy::IntoBytes
+impl zerocopy::KnownLayout for vmm_core::linux_loader::SetupHeader where u32: zerocopy::KnownLayout
+pub type vmm_core::linux_loader::SetupHeader::PointerMetadata = <u32 as zerocopy::KnownLayout>::PointerMetadata
+impl zerocopy::TryFromBytes for vmm_core::linux_loader::SetupHeader where u8: zerocopy::TryFromBytes, u16: zerocopy::TryFromBytes, u32: zerocopy::TryFromBytes, u64: zerocopy::TryFromBytes
+pub const vmm_core::linux_loader::BOOT_PARAMS_GPA: u64
+pub const vmm_core::linux_loader::CMDLINE_GPA: u64
+pub const vmm_core::linux_loader::CMDLINE_MAX: usize
+pub const vmm_core::linux_loader::ENTRY_64_OFFSET: u64
+pub const vmm_core::linux_loader::GDT_CODE64: u64
+pub const vmm_core::linux_loader::GDT_DATA: u64
+pub const vmm_core::linux_loader::GDT_GPA: u64
+pub const vmm_core::linux_loader::IDENTITY_MAP_BYTES: u64
+pub const vmm_core::linux_loader::PDPT_GPA: u64
+pub const vmm_core::linux_loader::PD_GPA: u64
+pub const vmm_core::linux_loader::PML4_GPA: u64
+pub const vmm_core::linux_loader::SETUP_HEADER_OFFSET: usize
+pub fn vmm_core::linux_loader::load(&[u8], &[u8], u64, &str, &mut [u8]) -> core::result::Result<vmm_core::linux_loader::LinuxImage, vmm_core::linux_loader::LinuxLoadError>
+pub fn vmm_core::linux_loader::parse_setup_header(&[u8]) -> core::result::Result<vmm_core::linux_loader::SetupHeader, vmm_core::linux_loader::LinuxLoadError>
+pub mod vmm_core::multiboot
+pub enum vmm_core::multiboot::LoadError
+pub vmm_core::multiboot::LoadError::BadAddressFields
+pub vmm_core::multiboot::LoadError::BadChecksum
+pub vmm_core::multiboot::LoadError::ImageTooSmall
+pub vmm_core::multiboot::LoadError::NoAddressOverride
+pub vmm_core::multiboot::LoadError::NoHeader
+pub vmm_core::multiboot::LoadError::OutOfRange(u64, u64)
+pub struct vmm_core::multiboot::LoadedImage
+pub vmm_core::multiboot::LoadedImage::bss_end_addr: u32
+pub vmm_core::multiboot::LoadedImage::entry_addr: u32
+pub vmm_core::multiboot::LoadedImage::load_addr: u32
+pub vmm_core::multiboot::LoadedImage::load_end_addr: u32
+pub struct vmm_core::multiboot::MultibootHeader
+pub vmm_core::multiboot::MultibootHeader::bss_end_addr: u32
+pub vmm_core::multiboot::MultibootHeader::entry_addr: u32
+pub vmm_core::multiboot::MultibootHeader::header_addr: u32
+pub vmm_core::multiboot::MultibootHeader::header_file_offset: u32
+pub vmm_core::multiboot::MultibootHeader::load_addr: u32
+pub vmm_core::multiboot::MultibootHeader::load_end_addr: u32
+pub const vmm_core::multiboot::MULTIBOOT_BOOTLOADER_MAGIC: u32
+pub const vmm_core::multiboot::MULTIBOOT_HEADER_MAGIC: u32
+pub const vmm_core::multiboot::MULTIBOOT_SEARCH_LEN: usize
+pub const vmm_core::multiboot::PAYLOAD_LOAD_GPA: u32
+pub fn vmm_core::multiboot::load(&[u8], &mut [u8]) -> core::result::Result<vmm_core::multiboot::LoadedImage, vmm_core::multiboot::LoadError>
+pub fn vmm_core::multiboot::parse_header(&[u8]) -> core::result::Result<vmm_core::multiboot::MultibootHeader, vmm_core::multiboot::LoadError>
+pub mod vmm_core::vmm
+pub enum vmm_core::vmm::Step
+pub vmm_core::vmm::Step::Continued
+pub vmm_core::vmm::Step::Terminal(vmm_core::vmm::TerminalReason)
+pub enum vmm_core::vmm::TerminalReason
+pub vmm_core::vmm::TerminalReason::DebugExit
+pub vmm_core::vmm::TerminalReason::DebugExit::code: u8
+pub vmm_core::vmm::TerminalReason::Hlt
+pub vmm_core::vmm::TerminalReason::Shutdown
+pub enum vmm_core::vmm::VmmError
+pub vmm_core::vmm::VmmError::Backend(vmm_backend::error::BackendError)
+pub vmm_core::vmm::VmmError::ContractViolation(alloc::string::String)
+pub vmm_core::vmm::VmmError::HostAssert(alloc::string::String)
+pub vmm_core::vmm::VmmError::LinuxLoad(vmm_core::linux_loader::LinuxLoadError)
+pub vmm_core::vmm::VmmError::Load(vmm_core::multiboot::LoadError)
+pub vmm_core::vmm::VmmError::Vtime(vtime::error::VtimeError)
+pub vmm_core::vmm::VmmError::Work(vmm_core::work::WorkError)
+pub struct vmm_core::vmm::GuestRam
+impl vmm_core::vmm::GuestRam
+pub fn vmm_core::vmm::GuestRam::as_bytes(&self) -> &[u8]
+pub fn vmm_core::vmm::GuestRam::as_mut_bytes(&mut self) -> &mut [u8]
+pub fn vmm_core::vmm::GuestRam::is_empty(&self) -> bool
+pub fn vmm_core::vmm::GuestRam::len(&self) -> usize
+pub fn vmm_core::vmm::GuestRam::new(usize) -> core::result::Result<Self, vmm_core::vmm::VmmError>
+pub struct vmm_core::vmm::RunResult
+pub vmm_core::vmm::RunResult::exit_counts: vmm_backend::exit::ExitCounts
+pub vmm_core::vmm::RunResult::reason: vmm_core::vmm::TerminalReason
+pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
+pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend>
+impl<B: vmm_backend::backend::Backend> vmm_core::vmm::Vmm<B>
+pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
+pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
+pub fn vmm_core::vmm::Vmm<B>::new(B, vmm_core::vmm::GuestRam) -> Self
+pub fn vmm_core::vmm::Vmm<B>::observable_digest(&self) -> [u8; 32]
+pub fn vmm_core::vmm::Vmm<B>::report_stream(&self) -> &[u32]
+pub fn vmm_core::vmm::Vmm<B>::restore_vtime(&mut self, &vmm_core::vmm::VtimeSnapshot) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::run(&mut self) -> core::result::Result<vmm_core::vmm::RunResult, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::save_vtime(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::VtimeSnapshot>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::serial(&self) -> &[u8]
+pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> alloc::vec::Vec<u8>
+pub fn vmm_core::vmm::Vmm<B>::state_components(&self) -> alloc::vec::Vec<(&'static str, [u8; 32])>
+pub fn vmm_core::vmm::Vmm<B>::state_hash(&self) -> [u8; 32]
+pub fn vmm_core::vmm::Vmm<B>::step(&mut self) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::terminal_reason(&self) -> core::option::Option<vmm_core::vmm::TerminalReason>
+pub fn vmm_core::vmm::Vmm<B>::vtime_wired(&self) -> bool
+pub fn vmm_core::vmm::Vmm<B>::wire_lapic(&mut self, lapic::device::Lapic) -> &mut Self
+pub fn vmm_core::vmm::Vmm<B>::wire_vtime(&mut self, vmm_core::vmm::VtimeWiring) -> &mut Self
+pub struct vmm_core::vmm::VtimeSnapshot
+pub vmm_core::vmm::VtimeSnapshot::entropy: alloc::vec::Vec<u8>
+pub vmm_core::vmm::VtimeSnapshot::tsc_adjust: u64
+pub vmm_core::vmm::VtimeSnapshot::vns: u64
+pub struct vmm_core::vmm::VtimeWiring
+impl vmm_core::vmm::VtimeWiring
+pub fn vmm_core::vmm::VtimeWiring::new(vtime::clock::VClockConfig, alloc::boxed::Box<dyn vmm_core::work::WorkSource>, u64) -> core::result::Result<vmm_core::vmm::VtimeWiring, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::contract_vclock_config() -> vtime::clock::VClockConfig
+pub mod vmm_core::work
+pub enum vmm_core::work::WorkError
+pub vmm_core::work::WorkError::Io(std::io::error::Error)
+pub vmm_core::work::WorkError::Untrustworthy(&'static str)
+pub struct vmm_core::work::ScriptedWork
+impl vmm_core::work::ScriptedWork
+pub fn vmm_core::work::ScriptedWork::advance(&mut self, u64) -> &mut Self
+pub fn vmm_core::work::ScriptedWork::at(u64) -> Self
+pub fn vmm_core::work::ScriptedWork::new() -> Self
+pub fn vmm_core::work::ScriptedWork::set(&mut self, u64) -> &mut Self
+impl vmm_core::work::WorkSource for vmm_core::work::ScriptedWork
+pub fn vmm_core::work::ScriptedWork::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work::ScriptedWork::start_run(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work::ScriptedWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+pub trait vmm_core::work::WorkSource
+pub fn vmm_core::work::WorkSource::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work::WorkSource::start_run(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work::WorkSource::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+impl vmm_core::work::WorkSource for vmm_core::work::ScriptedWork
+pub fn vmm_core::work::ScriptedWork::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work::ScriptedWork::start_run(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work::ScriptedWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+impl vmm_core::work::WorkSource for vmm_core::work_perf::PerfWorkCounter
+pub fn vmm_core::work_perf::PerfWorkCounter::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work_perf::PerfWorkCounter::start_run(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work_perf::PerfWorkCounter::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+pub mod vmm_core::work_perf
+pub struct vmm_core::work_perf::PerfWorkCounter
+impl vmm_core::work_perf::PerfWorkCounter
+pub fn vmm_core::work_perf::PerfWorkCounter::open() -> core::result::Result<vmm_core::work_perf::PerfWorkCounter, vmm_core::work::WorkError>
+impl core::ops::drop::Drop for vmm_core::work_perf::PerfWorkCounter
+pub fn vmm_core::work_perf::PerfWorkCounter::drop(&mut self)
+impl vmm_core::work::WorkSource for vmm_core::work_perf::PerfWorkCounter
+pub fn vmm_core::work_perf::PerfWorkCounter::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work_perf::PerfWorkCounter::start_run(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn vmm_core::work_perf::PerfWorkCounter::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>

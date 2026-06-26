@@ -1,0 +1,25 @@
+# Foreman read-only MSR capture from the determinism box (Intel i9-9900K, kernel 6.12.90),
+# via `ssh <det-box> 'sudo rdmsr ...'` (msr module). Used to derive the microcode-fingerprint
+# MSR rows of the det-cfl-v1 re-baseline (esp. IA32_ARCH_CAPABILITIES 0x10a).
+
+# 0x10a IA32_ARCH_CAPABILITIES — rdmsr -a (all 16 logical CPUs), identical = homogeneous:
+#   CPU 0..15: a000c09
+0x10a = 0xa000c09
+# 0x8b  IA32_BIOS_SIGN_ID — microcode rev in bits 63:32 (0xf8):
+0x8b = 0xf800000000
+# 0x48  IA32_SPEC_CTRL:
+0x48 = 0x1
+# 0x3a  IA32_FEAT_CTL — VMX lock + VMXON-outside-SMX:
+0x3a = 0x20005
+# 0xce  MSR_PLATFORM_INFO:
+0xce = 0x8080838f1012400
+# 0xcf  IA32_CORE_CAPABILITIES — #GP on read (absent):
+0xcf = <#GP / absent>
+# 0x122 IA32_TSX_CTRL — #GP on read (TSX physically absent):
+0x122 = <#GP / absent>
+# 0x1b01 IA32_UARCH_MISC_CTL (DOITM) — #GP on read (absent):
+0x1b01 = <#GP / absent>
+# 0x10b IA32_FLUSH_CMD — #GP on read (write-only MSR):
+0x10b = <#GP / write-only>
+# 0x6c0:
+0x6c0 = 0x0

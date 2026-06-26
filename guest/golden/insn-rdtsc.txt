@@ -1,0 +1,4 @@
+PAYLOAD insn-rdtsc START
+OK rdtsc-monotonic
+OK rdtscp
+PAYLOAD insn-rdtsc PASS

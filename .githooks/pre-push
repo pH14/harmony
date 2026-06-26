@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Fast local fast-feedback before the self-hosted runner does the full pass.
+# Installed by scripts/install-quality-tools.sh via `git config core.hooksPath
+# .githooks`. This is a convenience, NOT the gate of record (that is the
+# self-hosted runner / .github/workflows/quality.yml) — it runs the *fast*
+# cross-platform gates so a developer gets early signal:
+#
+#   fmt -> clippy (-D warnings) -> nextest -> miri (on the `unsafe` crates)
+#
+# Skip in a pinch with `git push --no-verify`. Keep MIRI_CRATES and PINNED_NIGHTLY
+# in sync with .github/workflows/quality.yml (the miri job).
+set -euo pipefail
+
+# Crates containing `unsafe` that must run clean under Miri (review-bar rule,
+# AGENTS.md / pr-review skill). Add every new `unsafe` crate here and in the
+# workflow's miri job.
+MIRI_CRATES=(vmcall-transport vm-state vmm-backend vmm-core)
+PINNED_NIGHTLY="nightly-2026-06-16"
+# Match the quality.yml miri job: the transport models hardware GPAs as integers and
+# round-trips them to pointers by design, so silence the benign int→ptr-cast warning.
+export MIRIFLAGS="${MIRIFLAGS:--Zmiri-permissive-provenance}"
+
+echo "== pre-push: cargo fmt --check"
+cargo fmt --all -- --check
+
+echo "== pre-push: cargo clippy -D warnings"
+cargo clippy --all-features --all-targets -- -D warnings
+
+echo "== pre-push: cargo nextest"
+if command -v cargo-nextest >/dev/null 2>&1; then
+    cargo nextest run --all-features
+else
+    echo "   (cargo-nextest not installed; falling back to cargo test)"
+    cargo test --all-features
+fi
+
+# Miri is nightly-only and ~10-100x slower; run it on just the `unsafe` crates.
+# Degrade gracefully (warn, don't block the push) if the toolchain isn't present —
+# this hook is fast-feedback, not the gate of record.
+if cargo "+${PINNED_NIGHTLY}" miri --version >/dev/null 2>&1; then
+    for crate in "${MIRI_CRATES[@]}"; do
+        echo "== pre-push: cargo +${PINNED_NIGHTLY} miri test -p ${crate} --all-features"
+        cargo "+${PINNED_NIGHTLY}" miri test -p "$crate" --all-features
+    done
+else
+    echo "== pre-push: SKIPPING miri — ${PINNED_NIGHTLY} + miri component not installed."
+    echo "   install:  rustup toolchain install ${PINNED_NIGHTLY} --component miri"
+    echo "   the self-hosted runner still enforces it; this is local fast-feedback only."
+fi
+
+echo "== pre-push: all fast gates passed"

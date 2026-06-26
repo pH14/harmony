@@ -1,0 +1,16 @@
+[package]
+name = "explorer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The Timeline/Multiverse coverage-guided exploration engine — all of dissonance policy (task 12)"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+sha2 = "0.10"
+
+[dev-dependencies]
+proptest = "1"

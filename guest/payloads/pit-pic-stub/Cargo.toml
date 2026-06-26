@@ -1,0 +1,9 @@
+[package]
+name = "pit-pic-stub"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+common = { path = "../common" }

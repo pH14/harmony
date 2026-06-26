@@ -1,0 +1,38 @@
+[package]
+name = "lapic"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Deterministic userspace xAPIC register file + V-time timer (pure logic, no_std)"
+
+[features]
+# Off by default: the core state machine compiles and passes every gate with no
+# features. `serde` derives Serialize/Deserialize on `LapicState` only — the seam
+# task 09 (`vm-state`) consumes. See tasks/13-lapic.md "Public API".
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+# `default-features = false` keeps thiserror no_std: the derive then targets
+# `core::error::Error` (stable since Rust 1.81) instead of `std::error::Error`.
+thiserror = { version = "2", default-features = false }
+# Used *only* to derive Serialize/Deserialize on `LapicState`; optional, behind
+# the `serde` feature. `default-features = false` + `alloc` keeps it no_std.
+serde = { version = "1", default-features = false, features = [
+  "derive",
+  "alloc",
+], optional = true }
+
+[dev-dependencies]
+proptest = "1"
+
+# Not `[lints] workspace = true`: this crate also registers the `kani` cfg (so
+# the standard build's `unexpected_cfgs` lint does not flag the `#[cfg(kani)]`
+# proof harnesses in `src/device.rs`), and Cargo cannot combine `lints.workspace
+# = true` with a crate-local `[lints.rust]` table. The `[lints.clippy]` table
+# below mirrors the workspace's `all = deny`. Mirrors `vtime`'s Cargo.toml.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

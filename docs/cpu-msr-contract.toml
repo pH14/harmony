@@ -1,0 +1,3338 @@
+# cpu-msr-contract.toml — machine-readable mirror of docs/CPU-MSR-CONTRACT.md
+# Generated from the §2 (CPUID) / §3 (MSR) tables and the §4 instruction / §5 timer,
+# CMOS, and xAPIC-MMIO tables. Normative columns only (Rationale/Citation live in the
+# markdown). If this file and the markdown disagree, the markdown wins.
+#
+# STRICT GRAMMAR (mechanically canonical — §6 expansion rules):
+#   * All hex lowercase. No en-dashes, no prose, no comma-in-field, no catch-all rows.
+#   * cpuid.entry: one record per leaf (or leaf-lo/leaf-hi for the one extended zero
+#     range). leaf/subleaf are 8-hex, or subleaf token '*' (all) / 'Nx+' (N and up) /
+#     'a-b' (range). eax/ebx/ecx/edx are 8-hex constants or a dyn token:
+#       dyn:osxsave:<base8hex>  dyn:level-echo:<type8hex>  dyn:xcr0-xsavesize
+#   * msr.entry: exactly one of index='0xhh' | index-lo/index-hi | index-members=[...].
+#     allow-fixed carries read-param padded to 16-hex; emulate-* rows carry a formula-id
+#     read-param/write-param (e.g. vclock.tsc, vclock.tsc.write) per §6 — hashed semantics.
+#   * EXPANSION: msr ranges/members expand to one record per index; the union of all
+#     msr index sets is PAIRWISE DISJOINT (validated). Total MSR indices: 1043.
+#   * insn mirrors markdown §4; timer/cmos/mmio mirror §5.
+
+[contract]
+version = 3
+kernel-tag = "v6.18.35"
+kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236"
+cpuid-baseline = "det-cfl-v1"
+# §6 anti-drift anchor: sha256 of the canonical serialized form (computed by
+# vmm-core's serializer, never hand-written). Re-derive on any body change + version bump.
+contract_hash = "e01f0835576444c269c6603fc4984d0b425785373f4c49613d75ce896565c832"
+# Frozen scalar constants hashed into the canonical form (§6 header records):
+tsc-hz = 2000000000
+crystal-hz = 25000000
+bus-hz = 100000000
+mxcsr-mask = "0x0000ffff"
+rtc-epoch = 1577836800
+pit-refresh-ns = 15085
+
+[cpuid]
+default = "zeroed"  # in-range gaps explicit all-zero; out-of-range redirects to all-zero max-basic-leaf 0x20
+max-basic-leaf = "0x00000020"
+max-extended-leaf = "0x80000008"
+
+[[cpuid.entry]]
+leaf = "0x00000000"
+subleaf = "0x00000000"
+eax = "0x00000020"
+ebx = "0x756e6547"
+ecx = "0x6c65746e"
+edx = "0x49656e69"
+
+[[cpuid.entry]]
+leaf = "0x00000001"
+subleaf = "0x00000000"
+eax = "0x000906ec"
+ebx = "0x00010800"
+ecx = "dyn:osxsave:0x76da3203"
+edx = "0x0f8bbb7f"
+
+[[cpuid.entry]]
+leaf = "0x00000002"
+subleaf = "0x00000000"
+eax = "0x0000ff01"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000003"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000004"
+subleaf = "0x00000000"
+eax = "0x00000121"
+ebx = "0x01c0003f"
+ecx = "0x0000003f"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000004"
+subleaf = "0x00000001"
+eax = "0x00000122"
+ebx = "0x01c0003f"
+ecx = "0x0000003f"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000004"
+subleaf = "0x00000002"
+eax = "0x00000143"
+ebx = "0x00c0003f"
+ecx = "0x000003ff"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000004"
+subleaf = "0x00000003"
+eax = "0x00000163"
+ebx = "0x03c0003f"
+ecx = "0x00003fff"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000004"
+subleaf = "0x00000004+"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000005"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000006"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000007"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x009c27ab"
+ecx = "0x00000000"
+edx = "0x20000000"
+
+[[cpuid.entry]]
+leaf = "0x00000007"
+subleaf = "0x00000001+"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000008"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000009"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000a"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000b"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000001"
+ecx = "0x00000100"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000b"
+subleaf = "0x00000001"
+eax = "0x00000000"
+ebx = "0x00000001"
+ecx = "0x00000201"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000b"
+subleaf = "0x00000002+"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "dyn:level-echo:0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000c"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000d"
+subleaf = "0x00000000"
+eax = "0x00000007"
+ebx = "dyn:xcr0-xsavesize"
+ecx = "0x00000340"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000d"
+subleaf = "0x00000001"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000d"
+subleaf = "0x00000002"
+eax = "0x00000100"
+ebx = "0x00000240"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000d"
+subleaf = "0x00000003-0x0000003f"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000e"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000000f"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000010"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000011"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000012"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000013"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000014"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000015"
+subleaf = "0x00000000"
+eax = "0x00000001"
+ebx = "0x00000050"
+ecx = "0x017d7840"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000016"
+subleaf = "0x00000000"
+eax = "0x000007d0"
+ebx = "0x000007d0"
+ecx = "0x00000064"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000017"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000018"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000019"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000001a"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000001b"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000001c"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000001d"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000001e"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x0000001f"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x00000020"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf-lo = "0x40000000"
+leaf-hi = "0x4fffffff"
+subleaf = "*"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x80000000"
+subleaf = "0x00000000"
+eax = "0x80000008"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x80000001"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000121"
+edx = "0x2c100800"
+
+[[cpuid.entry]]
+leaf = "0x80000002"
+subleaf = "0x00000000"
+eax = "0x65746544"
+ebx = "0x6e696d72"
+ecx = "0x69747369"
+edx = "0x43762063"
+
+[[cpuid.entry]]
+leaf = "0x80000003"
+subleaf = "0x00000000"
+eax = "0x28205550"
+ebx = "0x2d4c4643"
+ecx = "0x73616c63"
+edx = "0x40202973"
+
+[[cpuid.entry]]
+leaf = "0x80000004"
+subleaf = "0x00000000"
+eax = "0x302e3220"
+ebx = "0x7a484730"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x80000005"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x80000006"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x01004040"
+edx = "0x00000000"
+
+[[cpuid.entry]]
+leaf = "0x80000007"
+subleaf = "0x00000000"
+eax = "0x00000000"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000100"
+
+[[cpuid.entry]]
+leaf = "0x80000008"
+subleaf = "0x00000000"
+eax = "0x00003027"
+ebx = "0x00000000"
+ecx = "0x00000000"
+edx = "0x00000000"
+
+[msr]
+# §1 default for any index without a row, both directions (logged, off-contract):
+default-read = "deny-gp"
+default-write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "MSR_IA32_TSC"
+index = "0x10"
+read = "emulate-vtime"
+read-param = "vclock.tsc"
+write = "emulate-vtime"
+write-param = "vclock.tsc.write"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_WALL_CLOCK"
+index = "0x11"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_SYSTEM_TIME"
+index = "0x12"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "IA32_PLATFORM_ID"
+index = "0x17"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_APICBASE"
+index = "0x1b"
+read = "allow-fixed"
+read-param = "0x00000000fee00900"
+write = "deny-ignore-write"
+
+[[msr.entry]]
+class = "entropy"
+name = "MSR_SMI_COUNT"
+index = "0x34"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_CORE_THREAD_COUNT"
+index = "0x35"
+read = "allow-fixed"
+read-param = "0x0000000000010001"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_FEAT_CTL"
+index = "0x3a"
+read = "allow-fixed"
+read-param = "0x0000000000000001"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "MSR_IA32_TSC_ADJUST"
+index = "0x3b"
+read = "emulate-vtime"
+read-param = "vclock.tsc_adjust"
+write = "emulate-vtime"
+write-param = "vclock.tsc_adjust.write"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LBR_CORE_FROM"
+index = "0x40"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_IA32_SPEC_CTRL"
+index = "0x48"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_IA32_PRED_CMD"
+index = "0x49"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "other"
+name = "MSR_PPIN_CTL"
+index = "0x4e"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "other"
+name = "MSR_PPIN"
+index = "0x4f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LBR_CORE_TO"
+index = "0x60"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "microcode"
+name = "MSR_IA32_UCODE_WRITE (IA32_BIOS_UPDT_TRIG)"
+index = "0x79"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "microcode"
+name = "MSR_IA32_UCODE_REV (IA32_BIOS_SIGN_ID)"
+index = "0x8b"
+read = "allow-fixed"
+read-param = "0x0000000100000000"
+write = "deny-ignore-write"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_SMBASE"
+index = "0x9e"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0"
+index = "0xc1"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR1"
+index = "0xc2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0+2"
+index = "0xc3"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0+3"
+index = "0xc4"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0+4"
+index = "0xc5"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0+5"
+index = "0xc6"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0+6"
+index = "0xc7"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_PERFCTR0+7"
+index = "0xc8"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_PLATFORM_INFO"
+index = "0xce"
+read = "allow-fixed"
+read-param = "0x0000000000001400"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_IA32_CORE_CAPS"
+index = "0xcf"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "timing-instr"
+name = "MSR_IA32_UMWAIT_CONTROL"
+index = "0xe1"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_CST_CONFIG_CONTROL"
+index = "0xe2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_MPERF"
+index = "0xe7"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_APERF"
+index = "0xe8"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_MTRRcap"
+index = "0xfe"
+read = "allow-fixed"
+read-param = "0x0000000000000508"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_IA32_ARCH_CAPABILITIES"
+index = "0x10a"
+read = "allow-fixed"
+read-param = "0x000000000a000c09"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_IA32_FLUSH_CMD"
+index = "0x10b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_IA32_TSX_CTRL"
+index = "0x122"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_MISC_FEATURES_ENABLES"
+index = "0x140"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_SYSENTER_CS"
+index = "0x174"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_SYSENTER_ESP"
+index = "0x175"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_SYSENTER_EIP"
+index = "0x176"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "IA32_MCG_CAP"
+index = "0x179"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_MCG_STATUS"
+index = "0x17a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_MCG_CTL"
+index = "0x17b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0"
+index = "0x186"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL1"
+index = "0x187"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0+2"
+index = "0x188"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0+3"
+index = "0x189"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0+4"
+index = "0x18a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0+5"
+index = "0x18b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0+6"
+index = "0x18c"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_EVENTSEL0+7"
+index = "0x18d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_PERF_STATUS"
+index = "0x198"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_PERF_CTL"
+index = "0x199"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_THERM_CONTROL"
+index = "0x19a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_THERM_INTERRUPT"
+index = "0x19b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_THERM_STATUS"
+index = "0x19c"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_THERM2_CTL"
+index = "0x19d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_MISC_ENABLE"
+index = "0x1a0"
+read = "allow-fixed"
+read-param = "0x0000000000001801"
+write = "deny-ignore-write"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_TEMPERATURE_TARGET"
+index = "0x1a2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_OFFCORE_RSP_0"
+index = "0x1a6"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_OFFCORE_RSP_1"
+index = "0x1a7"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_TURBO_RATIO_LIMIT"
+index = "0x1ad"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_TURBO_RATIO_LIMIT1"
+index = "0x1ae"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_TURBO_RATIO_LIMIT2"
+index = "0x1af"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_ENERGY_PERF_BIAS"
+index = "0x1b0"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_PACKAGE_THERM_STATUS"
+index = "0x1b1"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_PACKAGE_THERM_INTERRUPT"
+index = "0x1b2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_XFD"
+index = "0x1c4"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_XFD_ERR"
+index = "0x1c5"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LBR_SELECT"
+index = "0x1c8"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LBR_TOS"
+index = "0x1c9"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_IA32_DEBUGCTLMSR"
+index = "0x1d9"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_IA32_LASTBRANCHFROMIP"
+index = "0x1db"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_IA32_LASTBRANCHTOIP"
+index = "0x1dc"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_IA32_LASTINTFROMIP"
+index = "0x1dd"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_IA32_LASTINTTOIP"
+index = "0x1de"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_IA32_POWER_CTL"
+index = "0x1fc"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MTRRs (PHYSBASE/PHYSMASK pairs 0x200-0x20F, fixed-range 0x250/0x258/0x259/0x268-0x26F, MTRRdefType 0x2FF)"
+index-members = ["0x200", "0x201", "0x202", "0x203", "0x204", "0x205", "0x206", "0x207", "0x208", "0x209", "0x20a", "0x20b", "0x20c", "0x20d", "0x20e", "0x20f", "0x250", "0x258", "0x259", "0x268", "0x269", "0x26a", "0x26b", "0x26c", "0x26d", "0x26e", "0x26f", "0x2ff"]
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_CR_PAT"
+index = "0x277"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "IA32_MCi_CTL2 (CMCI, banks 0-9)"
+index-lo = "0x280"
+index-hi = "0x289"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_FIXED_CTR0"
+index = "0x309"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_FIXED_CTR1"
+index = "0x30a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_ARCH_PERFMON_FIXED_CTR0+2"
+index = "0x30b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_CORE_PERF_FIXED_CTR3"
+index = "0x30c"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_PERF_METRICS"
+index = "0x329"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PERF_CAPABILITIES"
+index = "0x345"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_CORE_PERF_FIXED_CTR_CTRL"
+index = "0x38d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_CORE_PERF_GLOBAL_STATUS"
+index = "0x38e"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_CORE_PERF_GLOBAL_CTRL"
+index = "0x38f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_CORE_PERF_GLOBAL_OVF_CTRL"
+index = "0x390"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_UNC_PERF_FIXED_CTRL/CTR, MSR_UNC_CBO_CONFIG"
+index-lo = "0x394"
+index-hi = "0x396"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PEBS_ENABLE"
+index = "0x3f1"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_PEBS_DATA_CFG"
+index = "0x3f2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_PEBS_LD_LAT_THRESHOLD"
+index = "0x3f6"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_PEBS_FRONTEND"
+index = "0x3f7"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_C3_RESIDENCY / MSR_PKG_C6_RESIDENCY"
+index-lo = "0x3f8"
+index-hi = "0x3f9"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_C7_RESIDENCY (= MSR_ATOM_PKG_C6_RESIDENCY)"
+index = "0x3fa"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_CORE_C3_RESIDENCY / MSR_CORE_C6_RESIDENCY / MSR_CORE_C7_RESIDENCY"
+index-lo = "0x3fc"
+index-hi = "0x3fe"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_KNL_CORE_C6_RESIDENCY"
+index = "0x3ff"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "IA32_MCi_CTL/STATUS/ADDR/MISC (banks 0-9)"
+index-lo = "0x400"
+index-hi = "0x427"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_BASIC"
+index = "0x480"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_PINBASED_CTLS"
+index = "0x481"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_PROCBASED_CTLS"
+index = "0x482"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_EXIT_CTLS"
+index = "0x483"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_ENTRY_CTLS"
+index = "0x484"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_MISC"
+index = "0x485"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_CR0_FIXED0"
+index = "0x486"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_CR0_FIXED1"
+index = "0x487"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_CR4_FIXED0"
+index = "0x488"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_CR4_FIXED1"
+index = "0x489"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_VMCS_ENUM"
+index = "0x48a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_PROCBASED_CTLS2"
+index = "0x48b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_EPT_VPID_CAP"
+index = "0x48c"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_TRUE_PINBASED_CTLS"
+index = "0x48d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_TRUE_PROCBASED_CTLS"
+index = "0x48e"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_TRUE_EXIT_CTLS"
+index = "0x48f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_TRUE_ENTRY_CTLS"
+index = "0x490"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "boot-baseline"
+name = "MSR_IA32_VMX_VMFUNC"
+index = "0x491"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "IA32_A_PMC0-7"
+index-lo = "0x4c1"
+index-hi = "0x4c8"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_MCG_EXT_CTL"
+index = "0x4d0"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_OUTPUT_BASE"
+index = "0x560"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_OUTPUT_MASK"
+index = "0x561"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_CTL"
+index = "0x570"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_STATUS"
+index = "0x571"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_CR3_MATCH"
+index = "0x572"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR0_A"
+index = "0x580"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR0_B"
+index = "0x581"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR1_A"
+index = "0x582"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR1_B"
+index = "0x583"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR2_A"
+index = "0x584"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR2_B"
+index = "0x585"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR3_A"
+index = "0x586"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "MSR_IA32_RTIT_ADDR3_B"
+index = "0x587"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "intel-pt"
+name = "IA32_RTIT_ADDR4_A-ADDR5_B (reserved range)"
+index-lo = "0x588"
+index-hi = "0x58b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_DS_AREA"
+index = "0x600"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_RAPL_POWER_UNIT"
+index = "0x606"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_C2_RESIDENCY"
+index = "0x60d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_POWER_LIMIT"
+index = "0x610"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_ENERGY_STATUS"
+index = "0x611"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_DRAM_ENERGY_STATUS"
+index = "0x619"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PKG_C8_RESIDENCY / MSR_PKG_C9_RESIDENCY / MSR_PKG_C10_RESIDENCY"
+index-lo = "0x630"
+index-hi = "0x632"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PP0_ENERGY_STATUS"
+index = "0x639"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PP1_ENERGY_STATUS"
+index = "0x641"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PLATFORM_ENERGY_STATUS (PSYS)"
+index = "0x64d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PPERF"
+index = "0x64e"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PERF_LIMIT_REASONS"
+index = "0x64f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_SECONDARY_TURBO_RATIO_LIMIT"
+index = "0x650"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LASTBRANCH_0-15_FROM_IP"
+index-lo = "0x680"
+index-hi = "0x68f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_CORE_PERF_LIMIT_REASONS"
+index = "0x690"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_U_CET"
+index = "0x6a0"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_S_CET"
+index = "0x6a2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_PL0_SSP"
+index = "0x6a4"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_PL1_SSP"
+index = "0x6a5"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_PL2_SSP"
+index = "0x6a6"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_PL3_SSP"
+index = "0x6a7"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_INT_SSP_TAB"
+index = "0x6a8"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LASTBRANCH_0-15_TO_IP"
+index-lo = "0x6c0"
+index-hi = "0x6cf"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "MSR_IA32_TSC_DEADLINE"
+index = "0x6e0"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_PM_ENABLE"
+index = "0x770"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_HWP_CAPABILITIES"
+index = "0x771"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_HWP_REQUEST_PKG"
+index = "0x772"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_HWP_INTERRUPT"
+index = "0x773"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_HWP_REQUEST"
+index = "0x774"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "MSR_HWP_STATUS"
+index = "0x777"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "X2APIC reserved (defined-register gaps)"
+index-members = ["0x800", "0x801", "0x804", "0x805", "0x806", "0x807", "0x809", "0x80c", "0x80e", "0x829", "0x82a", "0x82b", "0x82c", "0x82d", "0x82e", "0x831", "0x83a", "0x83b", "0x83c", "0x83d"]
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_APICID"
+index = "0x802"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_VERSION"
+index = "0x803"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_TPR"
+index = "0x808"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_PPR"
+index = "0x80a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_EOI"
+index = "0x80b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LDR"
+index = "0x80d"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_SIVR"
+index = "0x80f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_ISR0-ISR7"
+index-lo = "0x810"
+index-hi = "0x817"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_TMR0-TMR7"
+index-lo = "0x818"
+index-hi = "0x81f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_IRR0-IRR7"
+index-lo = "0x820"
+index-hi = "0x827"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_ESR"
+index = "0x828"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_CMCI"
+index = "0x82f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_ICR"
+index = "0x830"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_TIMER"
+index = "0x832"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_THERMAL"
+index = "0x833"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_PMI"
+index = "0x834"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_LINT0"
+index = "0x835"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_LINT1"
+index = "0x836"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_LVT_ERROR"
+index = "0x837"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_INIT_COUNT"
+index = "0x838"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_CUR_COUNT"
+index = "0x839"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_DIV_CONF"
+index = "0x83e"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "IA32_X2APIC_SELF_IPI"
+index = "0x83f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "x2apic"
+name = "X2APIC reserved (tail)"
+index-lo = "0x840"
+index-hi = "0x8ff"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "IA32_DEBUG_INTERFACE"
+index = "0xc80"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_BNDCFGS"
+index = "0xd90"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_IA32_XSS"
+index = "0xda0"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_LBR_INFO_0"
+index-lo = "0xdc0"
+index-hi = "0xddf"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "IA32_LBR_x_INFO (architectural LBR)"
+index-lo = "0x1200"
+index-hi = "0x121f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_RELOAD_FIXED_CTR0"
+index = "0x1309"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_RELOAD_PMC0"
+index = "0x14c1"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_ARCH_LBR_CTL"
+index = "0x14ce"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "MSR_ARCH_LBR_DEPTH"
+index = "0x14cf"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "IA32_LBR_x_FROM_IP (architectural LBR)"
+index-lo = "0x1500"
+index-hi = "0x151f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "debug-lbr"
+name = "IA32_LBR_x_TO_IP (architectural LBR)"
+index-lo = "0x1600"
+index-hi = "0x161f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "IA32_HW_FEEDBACK_PTR / IA32_HW_FEEDBACK_CONFIG / IA32_THREAD_FEEDBACK_CHAR / IA32_HW_FEEDBACK_CHAR"
+index-lo = "0x17d0"
+index-hi = "0x17d4"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "power-thermal"
+name = "IA32_HRESET_ENABLE"
+index = "0x17da"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_GP0_CTR"
+index = "0x1900"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_GP0_CFG_A"
+index = "0x1901"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_GP0_CFG_B"
+index = "0x1902"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_GP0_CFG_C"
+index = "0x1903"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_FX0_CTR"
+index = "0x1980"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_FX0_CFG_B"
+index = "0x1982"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_IA32_PMC_V6_FX0_CFG_C"
+index = "0x1983"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "IA32_UARCH_MISC_CTL"
+index = "0x1b01"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_GUEST_OS_ID"
+index = "0x40000000"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_HYPERCALL"
+index = "0x40000001"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_VP_INDEX"
+index = "0x40000002"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_RESET"
+index = "0x40000003"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "HV_X64_MSR_VP_RUNTIME"
+index = "0x40000010"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "HV_X64_MSR_TIME_REF_COUNT"
+index = "0x40000020"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "HV_X64_MSR_REFERENCE_TSC"
+index = "0x40000021"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "HV_X64_MSR_TSC_FREQUENCY"
+index = "0x40000022"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "HV_X64_MSR_APIC_FREQUENCY"
+index = "0x40000023"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_EOI/ICR/TPR (synthetic APIC)"
+index-lo = "0x40000070"
+index-hi = "0x40000072"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_VP_ASSIST_PAGE"
+index = "0x40000073"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SCONTROL"
+index = "0x40000080"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SVERSION..EOM"
+index-lo = "0x40000081"
+index-hi = "0x40000084"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SINT0..SINT15"
+index-lo = "0x40000090"
+index-hi = "0x4000009f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_STIMER0_CONFIG"
+index = "0x400000b0"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_STIMER0_COUNT..STIMER3_COUNT"
+index-lo = "0x400000b1"
+index-hi = "0x400000b7"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SYNDBG_CONTROL"
+index = "0x400000f1"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SYNDBG_STATUS"
+index = "0x400000f2"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SYNDBG_SEND_BUFFER"
+index = "0x400000f3"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SYNDBG_RECV_BUFFER"
+index = "0x400000f4"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SYNDBG_PENDING_BUFFER"
+index = "0x400000f5"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_SYNDBG_OPTIONS"
+index = "0x400000ff"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_CRASH_P0"
+index = "0x40000100"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_CRASH_P1"
+index = "0x40000101"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_CRASH_P2"
+index = "0x40000102"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_CRASH_P3"
+index = "0x40000103"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_CRASH_P4"
+index = "0x40000104"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvm-exposed"
+name = "HV_X64_MSR_CRASH_CTL"
+index = "0x40000105"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "HV_X64_MSR_REENLIGHTENMENT_CONTROL"
+index = "0x40000106"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "HV_X64_MSR_TSC_EMULATION_CONTROL"
+index = "0x40000107"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "HV_X64_MSR_TSC_EMULATION_STATUS"
+index = "0x40000108"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "tsc"
+name = "HV_X64_MSR_TSC_INVARIANT_CONTROL"
+index = "0x40000118"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_WALL_CLOCK_NEW"
+index = "0x4b564d00"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_SYSTEM_TIME_NEW"
+index = "0x4b564d01"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_ASYNC_PF_EN"
+index = "0x4b564d02"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_STEAL_TIME"
+index = "0x4b564d03"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_PV_EOI_EN"
+index = "0x4b564d04"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_POLL_CONTROL"
+index = "0x4b564d05"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_ASYNC_PF_INT"
+index = "0x4b564d06"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_ASYNC_PF_ACK"
+index = "0x4b564d07"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "MSR_KVM_MIGRATION_CONTROL"
+index = "0x4b564d08"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "kvmclock"
+name = "KVM PV MSR range (reserved residual)"
+index-lo = "0x4b564d09"
+index-hi = "0x4b564dff"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_EFER"
+index = "0xc0000080"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_STAR"
+index = "0xc0000081"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_LSTAR"
+index = "0xc0000082"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_CSTAR"
+index = "0xc0000083"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_SYSCALL_MASK"
+index = "0xc0000084"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_FS_BASE"
+index = "0xc0000100"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_GS_BASE"
+index = "0xc0000101"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_KERNEL_GS_BASE"
+index = "0xc0000102"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "tsc"
+name = "MSR_TSC_AUX"
+index = "0xc0000103"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[msr.entry]]
+class = "tsc"
+name = "MSR_AMD64_TSC_RATIO"
+index = "0xc0000104"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_AMD64_PERF_CNTR_GLOBAL_STATUS"
+index = "0xc0000300"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_AMD64_PERF_CNTR_GLOBAL_CTL"
+index = "0xc0000301"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_CLR"
+index = "0xc0000302"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_AMD64_PERF_CNTR_GLOBAL_STATUS_SET"
+index = "0xc0000303"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_EVNTSEL0"
+index = "0xc0010000"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_EVNTSEL1"
+index = "0xc0010001"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_EVNTSEL2"
+index = "0xc0010002"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_EVNTSEL3"
+index = "0xc0010003"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_PERFCTR0"
+index = "0xc0010004"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_PERFCTR1"
+index = "0xc0010005"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_PERFCTR2"
+index = "0xc0010006"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_K7_PERFCTR3"
+index = "0xc0010007"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_K7_HWCR"
+index = "0xc0010015"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "arch-stateful"
+name = "MSR_VM_HSAVE_PA"
+index = "0xc0010117"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_AMD64_VIRT_SPEC_CTRL"
+index = "0xc001011f"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTL0"
+index = "0xc0010200"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTR0"
+index = "0xc0010201"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTL1"
+index = "0xc0010202"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTR1"
+index = "0xc0010203"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTL2"
+index = "0xc0010204"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTR2"
+index = "0xc0010205"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTL3"
+index = "0xc0010206"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTR3"
+index = "0xc0010207"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTL4"
+index = "0xc0010208"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTR4"
+index = "0xc0010209"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTL5"
+index = "0xc001020a"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "pmu"
+name = "MSR_F15H_PERF_CTR5"
+index = "0xc001020b"
+read = "deny-gp"
+write = "deny-gp"
+
+[[msr.entry]]
+class = "speculation"
+name = "MSR_AMD64_DE_CFG"
+index = "0xc0011029"
+read = "deny-gp"
+write = "deny-gp"
+
+[insn]
+# §4 instruction dispositions. Canonical: insn <MNEMONIC> <mechanism> <result> <determinism-class>.
+# determinism in {arch, fault-absent, intercept, invisible, scope} per §1.1.
+
+[[insn.entry]]
+mnemonic = "CPUID"
+mechanism = "vmx-exit(cpuid-unconditional)"
+result = "frozen-model-s2"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "FXRSTOR"
+mechanism = "permit-native"
+result = "arch-state"
+determinism = "arch"
+
+[[insn.entry]]
+mnemonic = "FXSAVE"
+mechanism = "permit-native"
+result = "arch-state+mxcsr-pin"
+determinism = "arch"
+
+[[insn.entry]]
+mnemonic = "HLT"
+mechanism = "vmx-exit(hlt-exiting)"
+result = "idle-skip-s3"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "HRESET"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "INVEPT"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "INVVPID"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "MONITOR"
+mechanism = "vmx-exit(monitor-exiting)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "MWAIT"
+mechanism = "vmx-exit(mwait-exiting)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "PCONFIG"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "RDPID"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "RDPKRU"
+mechanism = "cr4-pin(pke=0)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "RDPMC"
+mechanism = "vmx-exit(rdpmc-exiting)"
+result = "gp"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "RDRAND"
+mechanism = "vmx-exit(rdrand-exiting)"
+result = "seeded-prng"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "RDSEED"
+mechanism = "vmx-exit(rdseed-exiting)"
+result = "seeded-prng"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "RDTSC"
+mechanism = "vmx-exit(rdtsc-exiting)"
+result = "vclock.tsc"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "RDTSCP"
+mechanism = "vmx-exit(rdtsc-exiting)"
+result = "vclock.tsc+tsc-aux"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "SERIALIZE"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "SHA"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "TPAUSE"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "UMONITOR"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "UMWAIT"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+# VMCALL row = the VMCALL *instruction*'s disposition under the determinism backend
+# (patched/direct-VMX): it VM-exits unconditionally and is dispatched to the hypercall handler.
+# NOT stock-serviceable: stock KVM services VMCALL in-kernel (-ENOSYS for our magic) and never
+# exits to userspace. On stock KVM the hypercall channel is the port-I/O DOORBELL (KVM_EXIT_IO),
+# reworked in task 20. The doorbell's port (0x0CA1) and request/response page GPAs live in
+# INTEGRATION.md §1 ONLY — they are deliberately NOT contract rows and never enter the §6
+# canonical form / contract_hash (they carry no per-host or hidden-µarch input). See
+# CPU-MSR-CONTRACT.md §4 VMCALL row. (Fields below unchanged by task 20 → contract_hash unchanged.)
+[[insn.entry]]
+mnemonic = "VMCALL"
+mechanism = "vmx-exit(vmcall-unconditional)"
+result = "hypercall-dispatch"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMCLEAR"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMLAUNCH"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMPTRLD"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMPTRST"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMREAD"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMRESUME"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMWRITE"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMXOFF"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "VMXON"
+mechanism = "vmx-exit(vmx-instr-unconditional)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "WRPKRU"
+mechanism = "cr4-pin(pke=0)"
+result = "ud"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "XABORT"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "XBEGIN"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "XEND"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[[insn.entry]]
+mnemonic = "XGETBV0"
+mechanism = "permit-native"
+result = "xcr0"
+determinism = "arch"
+
+[[insn.entry]]
+mnemonic = "XGETBV1"
+mechanism = "native-uninterceptable"
+result = "xinuse-out-of-scope"
+determinism = "scope"
+
+[[insn.entry]]
+mnemonic = "XRSTOR"
+mechanism = "permit-native"
+result = "arch-state"
+determinism = "arch"
+
+[[insn.entry]]
+mnemonic = "XRSTORS"
+mechanism = "native-uninterceptable"
+result = "out-of-scope"
+determinism = "scope"
+
+[[insn.entry]]
+mnemonic = "XSAVE"
+mechanism = "permit-native"
+result = "arch-state+mxcsr-pin"
+determinism = "arch"
+
+[[insn.entry]]
+mnemonic = "XSAVEC"
+mechanism = "native-uninterceptable"
+result = "out-of-scope"
+determinism = "scope"
+
+[[insn.entry]]
+mnemonic = "XSAVEOPT"
+mechanism = "native-uninterceptable"
+result = "out-of-scope"
+determinism = "scope"
+
+[[insn.entry]]
+mnemonic = "XSAVES"
+mechanism = "native-uninterceptable"
+result = "out-of-scope"
+determinism = "scope"
+
+[[insn.entry]]
+mnemonic = "XSETBV"
+mechanism = "vmx-exit(xsetbv-unconditional)"
+result = "xcr0-menu{1,3,7}-else-gp"
+determinism = "intercept"
+
+[[insn.entry]]
+mnemonic = "XTEST"
+mechanism = "fault-absent"
+result = "ud"
+determinism = "fault-absent"
+
+[host-assert]
+# §1.1/§1.2 host-homogeneity assertions vmm-core checks at VM start (hashed); refuse on mismatch.
+family-model-stepping = "06_9e_0c"
+# host-microcode-rev: the PHYSICAL host microcode revision, fleet-pinned and deployment-set
+# (the det-cfl-v1 box: i9-9900K, kernel-recorded microcode 0xf8). DISTINCT from the guest-visible
+# BIOS_SIGN_ID (guest-ucode-rev, MSR 0x8b = 0x0000000100000000). Changing the pinned host rev = version bump.
+host-microcode-rev = "0x00000000000000f8"
+guest-ucode-rev = "0x0000000100000000"
+mxcsr-mask = "0x0000ffff"
+maxphyaddr-min = 39
+# rtm-disabled: on det-cfl-v1, RTM/HLE are PHYSICALLY ABSENT (CPUID.7.0:EBX[4,11]=0, IA32_TSX_CTRL
+# #GPs), so XBEGIN/XEND/XTEST/XABORT #UD natively — no host pin is installed or needed. The probe's
+# `rtm-disabled` check is satisfied by physical absence (XBEGIN #UDs); the key name is retained.
+rtm-disabled = true
+# cr4-force-reserved: bits vmm-core keeps reserved in the guest CR4 so the listed
+# features are unreachable (PKE: RDPKRU/WRPKRU #UD; PKS: IA32_PKRS unreachable). §4 RDPKRU row.
+cr4-force-reserved = ["PKE", "PKS"]
+host-absent = ["HRESET", "PCONFIG", "RDPID", "SERIALIZE", "SHA", "TPAUSE", "UMONITOR", "UMWAIT"]
+
+[timer]
+# §5 time-source surface. Canonical: timer <device> <read> <write>, fixed order.
+
+[[timer.entry]]
+device = "pit-ch0"
+location = "io:0x40"
+read = "emulate-timerqueue"
+read-param = "pit.ch0"
+write = "emulate-timerqueue"
+write-param = "pit.ch0"
+
+[[timer.entry]]
+device = "pit-ch1"
+location = "io:0x41"
+read = "emulate-device"
+read-param = "pit.ch1"
+write = "emulate-device"
+write-param = "pit.ch1"
+
+[[timer.entry]]
+device = "pit-ch2"
+location = "io:0x42"
+read = "emulate-device"
+read-param = "pit.ch2"
+write = "emulate-device"
+write-param = "pit.ch2"
+
+[[timer.entry]]
+device = "pit-cmd"
+location = "io:0x43"
+read = "emulate-device"
+read-param = "pit.cmd"
+write = "emulate-device"
+write-param = "pit.cmd"
+
+[[timer.entry]]
+device = "pit-portb"
+location = "io:0x61"
+read = "emulate-vtime"
+read-param = "pit.portb"
+write = "emulate-device"
+write-param = "pit.portb"
+
+[[timer.entry]]
+device = "rtc-cmos"
+location = "io:0x70-0x71"
+read = "emulate-device"
+read-param = "cmos.subtable"
+write = "emulate-device"
+write-param = "cmos.subtable"
+
+[[timer.entry]]
+device = "hpet"
+location = "mmio:0xfed00000"
+read = "deny-gp"
+write = "deny-gp"
+
+[[timer.entry]]
+device = "acpi-pm"
+location = "io:fadt-pm_tmr_blk(not-advertised)"
+read = "deny-gp"
+write = "deny-gp"
+
+[[timer.entry]]
+device = "lapic-timer"
+location = "mmio:0xfee00000"
+read = "emulate-vtime"
+read-param = "apic.tmcct"
+write = "emulate-timerqueue"
+write-param = "apic.timer-arm"
+
+[cmos]
+# §5 MC146818 RTC/CMOS. Canonical: cmos <port:0xNN|idx:0xNN> <read> <write>.
+
+[[cmos.entry]]
+where = "port:0x70"
+read = "emulate-device"
+read-param = "cmos.index-latch"
+write = "emulate-device"
+write-param = "cmos.index-latch"
+
+[[cmos.entry]]
+where = "port:0x71"
+read = "emulate-device"
+read-param = "cmos.data-window"
+write = "emulate-device"
+write-param = "cmos.data-window"
+
+[[cmos.entry]]
+where = "idx:0x00"
+read = "emulate-vtime"
+read-param = "cmos.tod"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x01"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x02"
+read = "emulate-vtime"
+read-param = "cmos.tod"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x03"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x04"
+read = "emulate-vtime"
+read-param = "cmos.tod"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x05"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x06-0x09"
+read = "emulate-vtime"
+read-param = "cmos.tod"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x0a"
+read = "allow-fixed"
+read-param = "0x0000000000000026"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x0b"
+read = "allow-fixed"
+read-param = "0x0000000000000002"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x0c"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x0d"
+read = "allow-fixed"
+read-param = "0x0000000000000080"
+write = "deny-ignore-write"
+
+[[cmos.entry]]
+where = "idx:0x0e-0x7f"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[mmio]
+# §5 xAPIC MMIO registers (region 0xfee00000). Canonical: mmio xapic.<offset> <read> <write>.
+# All offsets not listed are covered by mmio-default (read allow-fixed(0), write deny-ignore-write).
+region = "xapic"
+base = "0xfee00000"
+default-read = "allow-fixed"
+default-read-param = "0x0000000000000000"
+default-write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "020"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "030"
+read = "allow-fixed"
+read-param = "0x0000000000050014"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "080"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "090"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "0a0"
+read = "emulate-device"
+read-param = "apic.ppr"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "0b0"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "emulate-device"
+write-param = "apic.eoi"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "0c0"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "0d0"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "0e0"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "0f0"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "100"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "110"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "120"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "130"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "140"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "150"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "160"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "170"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "180"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "190"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "1a0"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "1b0"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "1c0"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "1d0"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "1e0"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "1f0"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "200"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "210"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "220"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "230"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "240"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "250"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "260"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "270"
+read = "allow-stateful"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "280"
+read = "emulate-device"
+read-param = "apic.esr"
+write = "emulate-device"
+write-param = "apic.esr"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "2f0"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "300"
+read = "allow-stateful"
+write = "emulate-device"
+write-param = "apic.icr"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "310"
+read = "allow-stateful"
+write = "emulate-device"
+write-param = "apic.icr"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "320"
+read = "allow-stateful"
+write = "emulate-timerqueue"
+write-param = "apic.timer-arm"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "330"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "340"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "350"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "360"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "370"
+read = "allow-stateful"
+write = "allow-stateful"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "380"
+read = "allow-stateful"
+write = "emulate-timerqueue"
+write-param = "apic.timer-arm"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "390"
+read = "emulate-vtime"
+read-param = "apic.tmcct"
+write = "deny-ignore-write"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "3e0"
+read = "allow-stateful"
+write = "emulate-timerqueue"
+write-param = "apic.timer-arm"
+
+[[mmio.entry]]
+region = "xapic"
+offset = "3f0"
+read = "allow-fixed"
+read-param = "0x0000000000000000"
+write = "deny-ignore-write"
+
+[ports]
+# Host-captured I/O ports — transport/observability lanes that are NOT trapped CPU
+# state. Like the §1 hypercall doorbell, these carry **no per-host or hidden-µarch
+# input**, so they are NOT §6-hashed rows: the canonical serializer (vmm-core's
+# parse/canonical) never reads this section, so adding it leaves contract_hash
+# unchanged. Documentary only; the normative source is docs/INTEGRATION.md.
+
+[[ports.entry]]
+# Conformance report channel (corpus box-integration, task 28). A 32-bit
+# `OUT 0x0CA2, EAX` appends EAX to the VM's ordered report stream, which vmm-core
+# digests (with the serial banner) into the O2 `observable_digest`. Distinct from
+# the 0x0CA1 hypercall doorbell (§1): a reported value can never be mistaken for a
+# doorbell ring. The reported values are already deterministic (a V-time TSC, a
+# seeded-PRNG word, a frozen CPUID/MSR value, a retired count), so the stream is a
+# pure function of the run. See docs/INTEGRATION.md "report channel".
+name = "REPORT_PORT"
+port = "0x0ca2"
+width = "dword"
+direction = "out"
+capture = "host"
+hashed = false

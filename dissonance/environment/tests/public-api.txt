@@ -1,0 +1,111 @@
+pub mod environment
+pub enum environment::Answer
+pub environment::Answer::Fault(environment::Fault)
+pub environment::Answer::Nominal
+pub environment::Answer::Supply(alloc::vec::Vec<u8>)
+impl environment::Answer
+pub fn environment::Answer::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::Answer::encode(&self) -> alloc::vec::Vec<u8>
+#[repr(u8)] pub enum environment::BlockOp
+pub environment::BlockOp::Flush = 2
+pub environment::BlockOp::Read = 0
+pub environment::BlockOp::Write = 1
+#[repr(u16)] pub enum environment::DecisionClass
+pub environment::DecisionClass::BlockIo = 5
+pub environment::DecisionClass::Entropy = 1
+pub environment::DecisionClass::NetSend = 4
+pub environment::DecisionClass::Payload = 2
+pub environment::DecisionClass::Process = 6
+pub environment::DecisionClass::Scheduler = 3
+impl environment::DecisionClass
+pub fn environment::DecisionClass::is_fault(self) -> bool
+pub fn environment::DecisionClass::is_supply(self) -> bool
+pub enum environment::DecisionPoint
+pub environment::DecisionPoint::BlockIo
+pub environment::DecisionPoint::BlockIo::lba: u64
+pub environment::DecisionPoint::BlockIo::len: u32
+pub environment::DecisionPoint::BlockIo::op: environment::BlockOp
+pub environment::DecisionPoint::Entropy
+pub environment::DecisionPoint::Entropy::bytes: u32
+pub environment::DecisionPoint::NetSend
+pub environment::DecisionPoint::NetSend::conn: environment::ConnId
+pub environment::DecisionPoint::NetSend::dst: environment::NodeId
+pub environment::DecisionPoint::NetSend::len: u32
+pub environment::DecisionPoint::NetSend::src: environment::NodeId
+pub environment::DecisionPoint::Payload
+pub environment::DecisionPoint::Payload::bytes: u32
+pub environment::DecisionPoint::Process
+pub environment::DecisionPoint::Process::node: environment::NodeId
+pub environment::DecisionPoint::Scheduler
+pub environment::DecisionPoint::Scheduler::ready: u32
+impl environment::DecisionPoint
+pub fn environment::DecisionPoint::admits(&self, &environment::Answer) -> bool
+pub fn environment::DecisionPoint::class(&self) -> environment::DecisionClass
+pub enum environment::EnvError
+pub environment::EnvError::BadVersion(u16)
+pub environment::EnvError::Malformed
+pub enum environment::EnvSpec
+pub environment::EnvSpec::Recorded
+pub environment::EnvSpec::Recorded::overrides: alloc::vec::Vec<(environment::DecisionId, environment::Answer)>
+pub environment::EnvSpec::Recorded::policy: environment::FaultPolicy
+pub environment::EnvSpec::Recorded::seed: u64
+pub environment::EnvSpec::Recorded::standing: alloc::vec::Vec<environment::StandingFault>
+pub environment::EnvSpec::Seeded
+pub environment::EnvSpec::Seeded::policy: environment::FaultPolicy
+pub environment::EnvSpec::Seeded::seed: u64
+impl environment::EnvSpec
+pub const environment::EnvSpec::BLOB_VERSION: u16
+pub fn environment::EnvSpec::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::EnvSpec::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::EnvSpec::materialize(&self) -> environment::RecordedEnv
+pub enum environment::Fault
+pub environment::Fault::BlockEio
+pub environment::Fault::BlockLatency(environment::VTime)
+pub environment::Fault::BlockNospc
+pub environment::Fault::BlockTorn(u32)
+pub environment::Fault::NetCorrupt(environment::CorruptSpec)
+pub environment::Fault::NetDelay(environment::VTime)
+pub environment::Fault::NetDrop
+pub environment::Fault::NetDup
+pub environment::Fault::NetReorder
+pub environment::Fault::ProcKill
+pub environment::Fault::ProcPause(environment::VTime)
+pub environment::Fault::ProcRestart
+impl environment::Fault
+pub fn environment::Fault::class(&self) -> environment::DecisionClass
+pub enum environment::Outcome
+pub environment::Outcome::NeedsHost
+pub environment::Outcome::Resolved(environment::Answer)
+pub struct environment::ConnId(pub u64)
+pub struct environment::CorruptSpec
+pub environment::CorruptSpec::offset: u32
+pub environment::CorruptSpec::xor: u8
+pub struct environment::DecisionId(pub u64)
+pub struct environment::FaultPolicy
+impl environment::FaultPolicy
+pub fn environment::FaultPolicy::from_bytes(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::FaultPolicy::none() -> Self
+pub fn environment::FaultPolicy::set_class(&mut self, environment::DecisionClass, u32, u32, &[environment::Fault]) -> core::result::Result<(), environment::EnvError>
+pub fn environment::FaultPolicy::to_bytes(&self) -> alloc::vec::Vec<u8>
+pub struct environment::NodeId(pub u32)
+pub struct environment::RecordedEnv
+impl environment::Environment for environment::RecordedEnv
+pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+pub struct environment::SeededEnv
+impl environment::SeededEnv
+pub fn environment::SeededEnv::new(u64, environment::FaultPolicy) -> Self
+impl environment::Environment for environment::SeededEnv
+pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+pub struct environment::StandingFault
+pub environment::StandingFault::class: environment::DecisionClass
+pub environment::StandingFault::target: alloc::vec::Vec<u8>
+pub environment::StandingFault::window: (environment::VTime, environment::VTime)
+pub struct environment::VTime(pub u64)
+pub const environment::CATALOG_VERSION: u16
+pub const environment::MAX_SUPPLY_LEN: u32
+pub trait environment::Environment
+pub fn environment::Environment::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+impl environment::Environment for environment::RecordedEnv
+pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+impl environment::Environment for environment::SeededEnv
+pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome

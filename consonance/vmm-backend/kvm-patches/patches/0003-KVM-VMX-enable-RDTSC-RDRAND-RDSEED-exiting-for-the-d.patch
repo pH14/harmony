@@ -1,0 +1,103 @@
+From 134045637e6d05b18548efe57d4ab2b6710c5fa6 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Tue, 23 Jun 2026 15:01:13 +0200
+Subject: [PATCH 3/3] KVM: VMX: enable RDTSC/RDRAND/RDSEED exiting for the
+ deterministic backend
+
+When a VM opts in via KVM_CAP_X86_DETERMINISTIC_INTERCEPTS, set
+CPU_BASED_RDTSC_EXITING (primary ctl bit 12) and force
+SECONDARY_EXEC_RDRAND_EXITING / RDSEED_EXITING (secondary bits 11/16) on
+even though the RNG features are exposed to the guest, and route the four
+exits (reasons 16/51/57/61) to the userspace emulation helpers.
+
+TSC machinery is untouched: KVM still programs the TSC offset/scaling
+fields and the in-kernel TSC-deadline timer runs off the host TSC; this
+only adds the guest-RDTSC trap, so userspace can supply RDTSC = f(V-time)
+without displacing the offset/scaling or deadline paths.  Advertised as
+available on all VMX CPUs (RDTSC-exiting is architectural); the RNG
+controls are gated by cpu_has_vmx_rdrand()/rdseed() at set time.
+
+Co-developed-for: harmony PatchedKvmBackend (docs/R-BACKEND.md)
+---
+ arch/x86/kvm/vmx/vmx.c | 37 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c
+index c084f48e2..04b9b4f60 100644
+--- a/arch/x86/kvm/vmx/vmx.c
++++ b/arch/x86/kvm/vmx/vmx.c
+@@ -4473,6 +4473,11 @@ static u32 vmx_exec_control(struct vcpu_vmx *vmx)
+ 				CPU_BASED_MONITOR_EXITING);
+ 	if (kvm_hlt_in_guest(vmx->vcpu.kvm))
+ 		exec_control &= ~CPU_BASED_HLT_EXITING;
++
++	/* Deterministic backend: trap RDTSC/RDTSCP to userspace (opt-in). */
++	if (vmx->vcpu.kvm->arch.deterministic_intercepts)
++		exec_control |= CPU_BASED_RDTSC_EXITING;
++
+ 	return exec_control;
+ }
+ 
+@@ -4630,6 +4635,18 @@ static u32 vmx_secondary_exec_control(struct vcpu_vmx *vmx)
+ 	vmx_adjust_sec_exec_exiting(vmx, &exec_control, rdrand, RDRAND);
+ 	vmx_adjust_sec_exec_exiting(vmx, &exec_control, rdseed, RDSEED);
+ 
++	/*
++	 * Deterministic backend: force RDRAND/RDSEED exiting on (opt-in) even
++	 * though the features are exposed to the guest, so userspace supplies
++	 * the value from a seeded stream.  Overrides the adjustments above.
++	 */
++	if (vmx->vcpu.kvm->arch.deterministic_intercepts) {
++		if (cpu_has_vmx_rdrand())
++			exec_control |= SECONDARY_EXEC_RDRAND_EXITING;
++		if (cpu_has_vmx_rdseed())
++			exec_control |= SECONDARY_EXEC_RDSEED_EXITING;
++	}
++
+ 	vmx_adjust_sec_exec_control(vmx, &exec_control, waitpkg, WAITPKG,
+ 				    ENABLE_USR_WAIT_PAUSE, false);
+ 
+@@ -6110,6 +6127,18 @@ static int handle_wrmsr_imm(struct kvm_vcpu *vcpu)
+  * may resume.  Otherwise they set the kvm_run parameter to indicate what needs
+  * to be done to userspace and return 0.
+  */
++static int handle_rdrand(struct kvm_vcpu *vcpu)
++{
++	return kvm_emulate_rng_intercept(vcpu, KVM_DETERMINISM_RDRAND,
++					 vmcs_read32(VM_EXIT_INSTRUCTION_LEN));
++}
++
++static int handle_rdseed(struct kvm_vcpu *vcpu)
++{
++	return kvm_emulate_rng_intercept(vcpu, KVM_DETERMINISM_RDSEED,
++					 vmcs_read32(VM_EXIT_INSTRUCTION_LEN));
++}
++
+ static int (*kvm_vmx_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+ 	[EXIT_REASON_EXCEPTION_NMI]           = handle_exception_nmi,
+ 	[EXIT_REASON_EXTERNAL_INTERRUPT]      = handle_external_interrupt,
+@@ -6154,8 +6183,10 @@ static int (*kvm_vmx_exit_handlers[])(struct kvm_vcpu *vcpu) = {
+ 	[EXIT_REASON_MONITOR_INSTRUCTION]     = kvm_emulate_monitor,
+ 	[EXIT_REASON_INVEPT]                  = handle_vmx_instruction,
+ 	[EXIT_REASON_INVVPID]                 = handle_vmx_instruction,
+-	[EXIT_REASON_RDRAND]                  = kvm_handle_invalid_op,
+-	[EXIT_REASON_RDSEED]                  = kvm_handle_invalid_op,
++	[EXIT_REASON_RDTSC]                   = kvm_emulate_rdtsc_intercept,
++	[EXIT_REASON_RDTSCP]                  = kvm_emulate_rdtscp_intercept,
++	[EXIT_REASON_RDRAND]                  = handle_rdrand,
++	[EXIT_REASON_RDSEED]                  = handle_rdseed,
+ 	[EXIT_REASON_PML_FULL]		      = handle_pml_full,
+ 	[EXIT_REASON_INVPCID]                 = handle_invpcid,
+ 	[EXIT_REASON_VMFUNC]		      = handle_vmx_instruction,
+@@ -8568,6 +8599,8 @@ __init int vmx_hardware_setup(void)
+ 	kvm_caps.tsc_scaling_ratio_frac_bits = 48;
+ 	kvm_caps.has_bus_lock_exit = cpu_has_vmx_bus_lock_detection();
+ 	kvm_caps.has_notify_vmexit = cpu_has_notify_vmexit();
++	/* RDTSC-exiting is architectural on all VMX CPUs; RNG gated at setup. */
++	kvm_caps.has_deterministic_intercepts = true;
+ 
+ 	set_bit(0, vmx_vpid_bitmap); /* 0 is reserved for host */
+ 
+-- 
+2.47.3
+

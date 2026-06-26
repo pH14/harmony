@@ -1,0 +1,5 @@
+# MXCSR_MASK observed on the determinism box (Intel i9-9900K).
+# Source: the foreman's live `host_assert_report` run (vmm-core `fxsave_mxcsr_mask`,
+# FXSAVE area offset 28) — the §1.1 `mxcsr-mask` assertion observed this value and
+# PASSed. This is that observation, not a separately-captured file.
+MXCSR_MASK=0x0000ffff

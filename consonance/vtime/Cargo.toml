@@ -1,0 +1,24 @@
+[package]
+name = "vtime"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+
+# Register the `kani` cfg (set by `cargo kani`) so the normal build's
+# `unexpected_cfgs` lint does not flag the `#[cfg(kani)]` proof harnesses in
+# `src/clock.rs`. Affects no compiled code or public API.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# Not `workspace = true`: this crate additionally denies float arithmetic
+# (tasks/05-vtime.md), and Cargo cannot combine workspace lints with
+# crate-local additions. `all = deny` mirrors the workspace table.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+float_arithmetic = "deny"

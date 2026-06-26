@@ -1,0 +1,5 @@
+[toolchain]
+# Foreman note: pin to an exact stable version once the CI box exists,
+# so all workers build with identical toolchains.
+channel = "stable"
+components = ["rustfmt", "clippy"]

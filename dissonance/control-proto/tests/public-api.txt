@@ -1,0 +1,111 @@
+pub mod control_proto
+pub mod control_proto::class_bit
+pub const control_proto::class_bit::BLOCK_IO: u16
+pub const control_proto::class_bit::ENTROPY: u16
+pub const control_proto::class_bit::NET_SEND: u16
+pub const control_proto::class_bit::PAYLOAD: u16
+pub const control_proto::class_bit::PROCESS: u16
+pub const control_proto::class_bit::SCHEDULER: u16
+pub enum control_proto::ControlError
+pub control_proto::ControlError::BadEnvVersion(u16)
+pub control_proto::ControlError::MalformedAnswer
+pub control_proto::ControlError::MalformedEnvironment
+pub control_proto::ControlError::NotQuiescent
+pub control_proto::ControlError::Protocol(control_proto::ProtocolError)
+pub control_proto::ControlError::ResolveWithoutDecision
+pub control_proto::ControlError::RestoreFailed
+pub control_proto::ControlError::SnapshotWhileArmed
+pub control_proto::ControlError::UnknownSnapshot(control_proto::SnapId)
+pub enum control_proto::CrashKind
+pub control_proto::CrashKind::Panic
+pub control_proto::CrashKind::Shutdown
+pub control_proto::CrashKind::TripleFault
+pub enum control_proto::HashScope
+pub control_proto::HashScope::Disk
+pub control_proto::HashScope::Region
+pub control_proto::HashScope::Region::base: u64
+pub control_proto::HashScope::Region::len: u64
+pub control_proto::HashScope::Whole
+pub enum control_proto::ProtocolError
+pub control_proto::ProtocolError::BadLength
+pub control_proto::ProtocolError::BadMagic
+pub control_proto::ProtocolError::BadVersion
+pub control_proto::ProtocolError::ShortFrame
+pub enum control_proto::Reply
+pub control_proto::Reply::Hash([u8; 32])
+pub control_proto::Reply::Hello(control_proto::Caps)
+pub control_proto::Reply::SnapId(control_proto::SnapId)
+pub control_proto::Reply::Stop(control_proto::StopReason)
+pub control_proto::Reply::Unit
+pub enum control_proto::Request
+pub control_proto::Request::Branch
+pub control_proto::Request::Branch::env: control_proto::Environment
+pub control_proto::Request::Branch::snap: control_proto::SnapId
+pub control_proto::Request::Drop(control_proto::SnapId)
+pub control_proto::Request::Hash
+pub control_proto::Request::Hash::scope: control_proto::HashScope
+pub control_proto::Request::Hello(control_proto::Caps)
+pub control_proto::Request::Replay(control_proto::SnapId)
+pub control_proto::Request::Run
+pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Answer>
+pub control_proto::Request::Run::until: control_proto::StopConditions
+pub control_proto::Request::Snapshot
+pub enum control_proto::StopReason
+pub control_proto::StopReason::Assertion
+pub control_proto::StopReason::Assertion::ev: control_proto::EventRef
+pub control_proto::StopReason::Assertion::vtime: control_proto::VTime
+pub control_proto::StopReason::Crash
+pub control_proto::StopReason::Crash::info: control_proto::CrashInfo
+pub control_proto::StopReason::Crash::vtime: control_proto::VTime
+pub control_proto::StopReason::Deadline
+pub control_proto::StopReason::Deadline::vtime: control_proto::VTime
+pub control_proto::StopReason::Decision
+pub control_proto::StopReason::Decision::ctx: alloc::vec::Vec<u8>
+pub control_proto::StopReason::Decision::id: control_proto::DecisionId
+pub control_proto::StopReason::Decision::vtime: control_proto::VTime
+pub control_proto::StopReason::Quiescent
+pub control_proto::StopReason::Quiescent::vtime: control_proto::VTime
+pub control_proto::StopReason::SnapshotPoint
+pub control_proto::StopReason::SnapshotPoint::vtime: control_proto::VTime
+pub struct control_proto::Answer(pub alloc::vec::Vec<u8>)
+pub struct control_proto::CapFlags(pub u32)
+impl control_proto::CapFlags
+pub const control_proto::CapFlags::GUEST_HAS_SDK: Self
+pub const control_proto::CapFlags::NONE: Self
+pub fn control_proto::CapFlags::contains(self, control_proto::CapFlags) -> bool
+pub fn control_proto::CapFlags::with(self, control_proto::CapFlags) -> Self
+pub struct control_proto::Caps
+pub control_proto::Caps::coverage: control_proto::CoverageGeometry
+pub control_proto::Caps::env_version_max: u16
+pub control_proto::Caps::env_version_min: u16
+pub control_proto::Caps::flags: control_proto::CapFlags
+pub control_proto::Caps::protocol_version: u16
+pub struct control_proto::CoverageGeometry
+pub control_proto::CoverageGeometry::map_bytes: u32
+pub control_proto::CoverageGeometry::producer: u8
+pub struct control_proto::CrashInfo
+pub control_proto::CrashInfo::detail: alloc::vec::Vec<u8>
+pub control_proto::CrashInfo::kind: control_proto::CrashKind
+pub struct control_proto::DecisionId(pub u64)
+pub struct control_proto::Environment
+pub control_proto::Environment::blob_version: u16
+pub control_proto::Environment::bytes: alloc::vec::Vec<u8>
+pub struct control_proto::EventRef
+pub control_proto::EventRef::data: alloc::vec::Vec<u8>
+pub control_proto::EventRef::id: u32
+pub struct control_proto::SnapId(pub u64)
+pub struct control_proto::StopConditions
+pub control_proto::StopConditions::deadline: core::option::Option<control_proto::VTime>
+pub control_proto::StopConditions::on: control_proto::StopMask
+pub struct control_proto::StopMask(pub u32)
+impl control_proto::StopMask
+pub const control_proto::StopMask::NONE: Self
+pub fn control_proto::StopMask::arm(self, u16) -> Self
+pub fn control_proto::StopMask::armed(&self, u16) -> bool
+pub struct control_proto::VTime(pub u64)
+pub const control_proto::MAX_FRAME_LEN: usize
+pub const control_proto::PROTO_VERSION: u16
+pub fn control_proto::decode_reply(&[u8]) -> core::result::Result<core::option::Option<(u32, core::result::Result<control_proto::Reply, control_proto::ControlError>, usize)>, control_proto::ProtocolError>
+pub fn control_proto::decode_request(&[u8]) -> core::result::Result<core::option::Option<(u32, control_proto::Request, usize)>, control_proto::ProtocolError>
+pub fn control_proto::encode_reply(u32, &core::result::Result<control_proto::Reply, control_proto::ControlError>, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), control_proto::ProtocolError>
+pub fn control_proto::encode_request(u32, &control_proto::Request, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), control_proto::ProtocolError>

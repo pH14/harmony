@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! The local xorshift64\* generator every seeded strategy draw comes from.
+//!
+//! Re-implemented locally (conventions rule 2 — no sibling dependency) and
+//! identical to the `hypercall-proto`/`environment` deterministic-entropy
+//! algorithm, so a strategy's choices are portable and golden-stable. xorshift64\*
+//! is a bijection on the nonzero state space, so a normalized seed never collapses
+//! the stream to zero. This is the *only* source of "randomness" in the engine —
+//! there is no `rand`, no wall-clock, no host entropy (conventions rule 4).
+
+/// xorshift64\* multiplier (the `hypercall-proto` constant).
+const MUL: u64 = 0x2545_F491_4F6C_DD1D;
+/// Seed substituted for a zero seed, so the nonzero-state invariant holds (the
+/// golden-ratio constant, matching `hypercall-proto`'s fallback).
+const FALLBACK: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// A deterministic xorshift64\* stream. Each [`next_u64`](Prng::next_u64) both
+/// advances the state and returns the scrambled output word.
+#[derive(Clone, Debug)]
+pub(crate) struct Prng {
+    state: u64,
+}
+
+impl Prng {
+    /// Start a stream from `seed` (zero is remapped to a fixed nonzero seed).
+    pub(crate) fn new(seed: u64) -> Self {
+        Self {
+            state: if seed == 0 { FALLBACK } else { seed },
+        }
+    }
+
+    /// Advance the stream and return the next 64-bit output.
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        self.state ^= self.state >> 12;
+        self.state ^= self.state << 25;
+        self.state ^= self.state >> 27;
+        self.state.wrapping_mul(MUL)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FALLBACK, Prng};
+
+    /// A pinned golden sequence — the exact `xorshift64*` output for `seed = 1`.
+    /// Any change to the shift amounts, directions, the `^=` folds, or the
+    /// multiply changes these words, so this locks the algorithm bit-for-bit.
+    #[test]
+    fn golden_sequence_for_seed_one() {
+        let mut p = Prng::new(1);
+        assert_eq!(p.next_u64(), 0x47E4_CE4B_896C_DD1D);
+        assert_eq!(p.next_u64(), 0xABCF_A6A8_E079_651D);
+        assert_eq!(p.next_u64(), 0xB9D1_0D8F_EB73_1F57);
+        assert_eq!(p.next_u64(), 0x4DB4_18A0_BB1B_019D);
+    }
+
+    /// A zero seed remaps to the fixed golden-ratio fallback, and yields exactly
+    /// the fallback's stream.
+    #[test]
+    fn zero_seed_remaps_to_fallback() {
+        let mut z = Prng::new(0);
+        assert_eq!(z.next_u64(), 0x0D83_B3E2_9A21_487A);
+        assert_eq!(z.next_u64(), 0x54C4_4C79_F1FE_9D67);
+
+        let mut from_zero = Prng::new(0);
+        let mut from_fallback = Prng::new(FALLBACK);
+        assert_eq!(from_zero.next_u64(), from_fallback.next_u64());
+    }
+}

@@ -1,0 +1,10 @@
+[package]
+name = "compute"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+common = { path = "../common" }
+compute-core = { path = "../compute-core" }

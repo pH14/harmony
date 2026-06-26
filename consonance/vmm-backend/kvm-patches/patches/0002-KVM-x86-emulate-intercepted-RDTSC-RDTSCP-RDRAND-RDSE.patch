@@ -1,0 +1,237 @@
+From b8915fd77351a79e01cd292380fb9379b432a440 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Tue, 23 Jun 2026 15:01:13 +0200
+Subject: [PATCH 2/3] KVM: x86: emulate intercepted RDTSC/RDTSCP/RDRAND/RDSEED
+ to userspace
+
+Add the per-VM opt-in (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS, settable
+only before vCPU creation) and the vendor-agnostic emulation helpers the
+VMX exit handlers call:
+
+  - RDTSC/RDTSCP: report the instruction, take a 64-bit value from
+    userspace into EDX:EAX (and TSC_AUX into ECX for RDTSCP), advance RIP.
+  - RDRAND/RDSEED: decode the destination register + operand width from
+    the trapped instruction bytes ([prefixes][REX] 0F C7 /6|/7), report
+    them, take the value into the destination GPR, set CF per userspace
+    (deterministic success), clear OF/SF/ZF/AF/PF, advance RIP.  When the
+    VM has not opted in, preserve stock behavior (#UD via
+    kvm_handle_invalid_op).
+
+The result is written and RIP advanced on re-entry via the standard
+complete_userspace_io path, mirroring the KVM_EXIT_X86_RDMSR round-trip.
+
+Co-developed-for: harmony PatchedKvmBackend (docs/R-BACKEND.md)
+---
+ arch/x86/include/asm/kvm_host.h |   5 ++
+ arch/x86/kvm/x86.c              | 145 ++++++++++++++++++++++++++++++++
+ arch/x86/kvm/x86.h              |   1 +
+ 3 files changed, 151 insertions(+)
+
+diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h
+index 03866683a..d786e61da 100644
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1495,6 +1495,7 @@ struct kvm_arch {
+ 	bool triple_fault_event;
+ 
+ 	bool bus_lock_detection_enabled;
++	bool deterministic_intercepts;
+ 	bool enable_pmu;
+ 
+ 	u32 notify_window;
+@@ -2236,6 +2237,10 @@ int kvm_set_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr);
+ unsigned long kvm_get_rflags(struct kvm_vcpu *vcpu);
+ void kvm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags);
+ int kvm_emulate_rdpmc(struct kvm_vcpu *vcpu);
++int kvm_emulate_rdtsc_intercept(struct kvm_vcpu *vcpu);
++int kvm_emulate_rdtscp_intercept(struct kvm_vcpu *vcpu);
++int kvm_emulate_rng_intercept(struct kvm_vcpu *vcpu, u32 insn,
++			      unsigned int insn_len);
+ 
+ void kvm_queue_exception(struct kvm_vcpu *vcpu, unsigned nr);
+ void kvm_queue_exception_e(struct kvm_vcpu *vcpu, unsigned nr, u32 error_code);
+diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
+index ad2b7158b..3d4ad0011 100644
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -2095,6 +2095,135 @@ static int complete_fast_rdmsr_imm(struct kvm_vcpu *vcpu)
+ 	return complete_fast_msr_access(vcpu);
+ }
+ 
++static int complete_deterministic_tsc(struct kvm_vcpu *vcpu)
++{
++	struct kvm_run *run = vcpu->run;
++	u64 val = run->determinism.value;
++
++	kvm_rax_write(vcpu, (u32)val);
++	kvm_rdx_write(vcpu, (u32)(val >> 32));
++	if (run->determinism.insn == KVM_DETERMINISM_RDTSCP)
++		kvm_rcx_write(vcpu, (u32)run->determinism.aux);
++
++	return kvm_skip_emulated_instruction(vcpu);
++}
++
++static int complete_deterministic_rng(struct kvm_vcpu *vcpu)
++{
++	struct kvm_run *run = vcpu->run;
++	int reg = run->determinism.dest_reg;
++	u64 val = run->determinism.value;
++	unsigned long rflags;
++
++	switch (run->determinism.width) {
++	case 2:
++		val = (kvm_register_read_raw(vcpu, reg) & ~0xffffULL) |
++		      (val & 0xffffULL);
++		break;
++	case 4:
++		val = (u32)val;
++		break;
++	default:
++		break;
++	}
++	kvm_register_write_raw(vcpu, reg, val);
++
++	/*
++	 * RDRAND/RDSEED report success in CF and clear OF/SF/ZF/AF/PF.  The
++	 * spike injects deterministic success (CF=1) via the userspace flag.
++	 */
++	rflags = kvm_get_rflags(vcpu);
++	rflags &= ~(X86_EFLAGS_CF | X86_EFLAGS_PF | X86_EFLAGS_AF |
++		    X86_EFLAGS_ZF | X86_EFLAGS_SF | X86_EFLAGS_OF);
++	if (run->determinism.flags & KVM_DETERMINISM_FLAG_CF)
++		rflags |= X86_EFLAGS_CF;
++	kvm_set_rflags(vcpu, rflags);
++
++	return kvm_skip_emulated_instruction(vcpu);
++}
++
++static int kvm_emulate_deterministic_tsc(struct kvm_vcpu *vcpu, u32 insn)
++{
++	struct kvm_run *run = vcpu->run;
++
++	if (WARN_ON_ONCE(!vcpu->kvm->arch.deterministic_intercepts))
++		return kvm_skip_emulated_instruction(vcpu);
++
++	memset(&run->determinism, 0, sizeof(run->determinism));
++	run->exit_reason = KVM_EXIT_DETERMINISM;
++	run->determinism.insn = insn;
++	run->determinism.width = 8;
++	vcpu->arch.complete_userspace_io = complete_deterministic_tsc;
++	return 0;
++}
++
++int kvm_emulate_rdtsc_intercept(struct kvm_vcpu *vcpu)
++{
++	return kvm_emulate_deterministic_tsc(vcpu, KVM_DETERMINISM_RDTSC);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_emulate_rdtsc_intercept);
++
++int kvm_emulate_rdtscp_intercept(struct kvm_vcpu *vcpu)
++{
++	return kvm_emulate_deterministic_tsc(vcpu, KVM_DETERMINISM_RDTSCP);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_emulate_rdtscp_intercept);
++
++/*
++ * Surface RDRAND/RDSEED to userspace.  The VMX exit qualification carries no
++ * operand info, so decode the destination register and width from the trapped
++ * instruction bytes: [legacy prefixes] [REX] 0F C7 /6 (RDRAND) or /7 (RDSEED).
++ */
++int kvm_emulate_rng_intercept(struct kvm_vcpu *vcpu, u32 insn,
++			      unsigned int insn_len)
++{
++	struct kvm_run *run = vcpu->run;
++	struct x86_exception e;
++	u8 buf[15], modrm;
++	unsigned int i = 0;
++	int width = 4, reg;
++	bool rex_b = false;
++
++	/* Not opted in: preserve stock behavior (#UD for an un-exposed feature). */
++	if (!vcpu->kvm->arch.deterministic_intercepts)
++		return kvm_handle_invalid_op(vcpu);
++
++	if (!insn_len || insn_len > sizeof(buf))
++		return kvm_handle_invalid_op(vcpu);
++	if (kvm_read_guest_virt(vcpu, kvm_get_linear_rip(vcpu), buf, insn_len, &e))
++		return kvm_handle_invalid_op(vcpu);
++
++	while (i < insn_len &&
++	       (buf[i] == 0x66 || buf[i] == 0x67 || buf[i] == 0xf0 ||
++		buf[i] == 0xf2 || buf[i] == 0xf3 || buf[i] == 0x2e ||
++		buf[i] == 0x36 || buf[i] == 0x3e || buf[i] == 0x26 ||
++		buf[i] == 0x64 || buf[i] == 0x65)) {
++		if (buf[i] == 0x66)
++			width = 2;
++		i++;
++	}
++	if (i < insn_len && (buf[i] & 0xf0) == 0x40) {
++		if (buf[i] & 0x08)
++			width = 8;
++		if (buf[i] & 0x01)
++			rex_b = true;
++		i++;
++	}
++	if (i + 2 >= insn_len || buf[i] != 0x0f || buf[i + 1] != 0xc7)
++		return kvm_handle_invalid_op(vcpu);
++	modrm = buf[i + 2];
++	reg = (modrm & 0x07) | (rex_b ? 0x08 : 0x00);
++
++	memset(&run->determinism, 0, sizeof(run->determinism));
++	run->exit_reason = KVM_EXIT_DETERMINISM;
++	run->determinism.insn = insn;
++	run->determinism.width = width;
++	run->determinism.dest_reg = reg;
++	vcpu->arch.complete_userspace_io = complete_deterministic_rng;
++	return 0;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_emulate_rng_intercept);
++
+ static u64 kvm_msr_reason(int r)
+ {
+ 	switch (r) {
+@@ -4894,6 +5023,9 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
+ 	case KVM_CAP_ONE_REG:
+ 		r = 1;
+ 		break;
++	case KVM_CAP_X86_DETERMINISTIC_INTERCEPTS:
++		r = kvm_caps.has_deterministic_intercepts;
++		break;
+ 	case KVM_CAP_PRE_FAULT_MEMORY:
+ 		r = tdp_enabled;
+ 		break;
+@@ -6866,6 +6998,19 @@ int kvm_vm_ioctl_enable_cap(struct kvm *kvm,
+ 		kvm->arch.user_space_msr_mask = cap->args[0];
+ 		r = 0;
+ 		break;
++	case KVM_CAP_X86_DETERMINISTIC_INTERCEPTS:
++		r = -EINVAL;
++		if (!kvm_caps.has_deterministic_intercepts || (cap->args[0] & ~1ULL))
++			break;
++		mutex_lock(&kvm->lock);
++		if (kvm->created_vcpus) {
++			r = -EINVAL;
++		} else {
++			kvm->arch.deterministic_intercepts = cap->args[0] & 1;
++			r = 0;
++		}
++		mutex_unlock(&kvm->lock);
++		break;
+ 	case KVM_CAP_X86_BUS_LOCK_EXIT:
+ 		r = -EINVAL;
+ 		if (cap->args[0] & ~KVM_BUS_LOCK_DETECTION_VALID_MODE)
+diff --git a/arch/x86/kvm/x86.h b/arch/x86/kvm/x86.h
+index c8a561c17..fbadb3a79 100644
+--- a/arch/x86/kvm/x86.h
++++ b/arch/x86/kvm/x86.h
+@@ -25,6 +25,7 @@ struct kvm_caps {
+ 	u64  default_tsc_scaling_ratio;
+ 	/* bus lock detection supported? */
+ 	bool has_bus_lock_exit;
++	bool has_deterministic_intercepts;
+ 	/* notify VM exit supported? */
+ 	bool has_notify_vmexit;
+ 	/* bit mask of VM types */
+-- 
+2.47.3
+

@@ -1,0 +1,38 @@
+name: nightly
+
+# Nightly safety-net jobs that are too slow / resource-heavy to gate every PR on the
+# shared `ci.slice`. Runs when the box is not contended by PR CI. Also manually
+# dispatchable. Moving Miri here (2026-06-24): it was OOM/timeout-flaky under PR
+# concurrency and blocked merges on resource limits, not bugs — it stays a UB safety
+# net, just off the per-PR critical path. See the note in quality.yml.
+on:
+  schedule:
+    # 08:00 UTC daily — outside typical PR-CI hours so Miri gets the box's full memory.
+    - cron: "0 8 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  miri:
+    name: miri (unsafe crates, UB safety net)
+    runs-on: self-hosted
+    # Generous ceiling: Miri interprets everything, and vmm-core has grown — the
+    # per-PR job was getting SIGKILLed (137) mid-run. Nightly has no PR contention.
+    timeout-minutes: 90
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly + miri
+        run: |
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      # Run each unsafe crate as its own step so a single crate's failure is legible
+      # and one crate's Miri memory footprint is reclaimed before the next.
+      - name: miri — vmcall-transport
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmcall-transport
+      - name: miri — vm-state
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
+      - name: miri — vmm-core
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
+      - name: miri — vmm-backend
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features

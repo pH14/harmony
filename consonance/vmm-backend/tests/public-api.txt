@@ -1,0 +1,396 @@
+pub mod vmm_backend
+pub enum vmm_backend::BackendError
+pub vmm_backend::BackendError::BadCompletion
+pub vmm_backend::BackendError::Capability
+pub vmm_backend::BackendError::Capability::cap: &'static str
+pub vmm_backend::BackendError::Internal(&'static str)
+pub vmm_backend::BackendError::InvalidState
+pub vmm_backend::BackendError::Io(std::io::error::Error)
+pub vmm_backend::BackendError::Memory(&'static str)
+pub vmm_backend::BackendError::NoPendingRead
+pub vmm_backend::BackendError::NotConfigured
+pub vmm_backend::BackendError::PendingCompletion
+pub vmm_backend::BackendError::Unsupported
+pub vmm_backend::BackendError::Unsupported::what: &'static str
+pub enum vmm_backend::Completion
+pub vmm_backend::Completion::Cpuid
+pub vmm_backend::Completion::Cpuid::eax: u32
+pub vmm_backend::Completion::Cpuid::ebx: u32
+pub vmm_backend::Completion::Cpuid::ecx: u32
+pub vmm_backend::Completion::Cpuid::edx: u32
+pub vmm_backend::Completion::Fault
+pub vmm_backend::Completion::Hypercall(u64)
+pub vmm_backend::Completion::Ok
+pub vmm_backend::Completion::Read(u64)
+pub enum vmm_backend::Event
+pub vmm_backend::Event::Interrupt
+pub vmm_backend::Event::Interrupt::vector: u8
+pub vmm_backend::Event::Nmi
+pub enum vmm_backend::Exit
+pub vmm_backend::Exit::Cpuid
+pub vmm_backend::Exit::Cpuid::leaf: u32
+pub vmm_backend::Exit::Cpuid::subleaf: u32
+pub vmm_backend::Exit::Deadline
+pub vmm_backend::Exit::Deadline::reached: vmm_backend::Vtime
+pub vmm_backend::Exit::Hlt
+pub vmm_backend::Exit::Hypercall(vmm_backend::HypercallRegs)
+pub vmm_backend::Exit::Io
+pub vmm_backend::Exit::Io::port: u16
+pub vmm_backend::Exit::Io::size: u8
+pub vmm_backend::Exit::Io::write: core::option::Option<u32>
+pub vmm_backend::Exit::Mmio
+pub vmm_backend::Exit::Mmio::gpa: vmm_backend::Gpa
+pub vmm_backend::Exit::Mmio::size: u8
+pub vmm_backend::Exit::Mmio::write: core::option::Option<u64>
+pub vmm_backend::Exit::Rdmsr
+pub vmm_backend::Exit::Rdmsr::index: u32
+pub vmm_backend::Exit::Rdrand
+pub vmm_backend::Exit::Rdrand::width: u8
+pub vmm_backend::Exit::Rdseed
+pub vmm_backend::Exit::Rdseed::width: u8
+pub vmm_backend::Exit::Rdtsc
+pub vmm_backend::Exit::Rdtscp
+pub vmm_backend::Exit::Shutdown
+pub vmm_backend::Exit::Wrmsr
+pub vmm_backend::Exit::Wrmsr::index: u32
+pub vmm_backend::Exit::Wrmsr::value: u64
+impl vmm_backend::Exit
+pub fn vmm_backend::Exit::reason(&self) -> vmm_backend::ExitReason
+pub enum vmm_backend::ExitReason
+pub vmm_backend::ExitReason::Cpuid
+pub vmm_backend::ExitReason::Deadline
+pub vmm_backend::ExitReason::Hlt
+pub vmm_backend::ExitReason::Hypercall
+pub vmm_backend::ExitReason::Io
+pub vmm_backend::ExitReason::Mmio
+pub vmm_backend::ExitReason::Rdmsr
+pub vmm_backend::ExitReason::Rdrand
+pub vmm_backend::ExitReason::Rdseed
+pub vmm_backend::ExitReason::Rdtsc
+pub vmm_backend::ExitReason::Rdtscp
+pub vmm_backend::ExitReason::Shutdown
+pub vmm_backend::ExitReason::Wrmsr
+pub enum vmm_backend::MpState
+pub vmm_backend::MpState::Halted
+pub vmm_backend::MpState::Runnable
+pub struct vmm_backend::Capabilities
+pub vmm_backend::Capabilities::deterministic_rng: bool
+pub vmm_backend::Capabilities::deterministic_tsc: bool
+pub vmm_backend::Capabilities::enforces_tsc_deadline_msr: bool
+pub vmm_backend::Capabilities::name: &'static str
+pub struct vmm_backend::CpuidEntry
+pub vmm_backend::CpuidEntry::eax: u32
+pub vmm_backend::CpuidEntry::ebx: u32
+pub vmm_backend::CpuidEntry::ecx: u32
+pub vmm_backend::CpuidEntry::edx: u32
+pub vmm_backend::CpuidEntry::leaf: u32
+pub vmm_backend::CpuidEntry::subleaf: u32
+pub vmm_backend::CpuidEntry::subleaf_significant: bool
+pub struct vmm_backend::CpuidModel
+pub vmm_backend::CpuidModel::entries: alloc::vec::Vec<vmm_backend::CpuidEntry>
+pub struct vmm_backend::DebugRegs
+pub vmm_backend::DebugRegs::db: [u64; 4]
+pub vmm_backend::DebugRegs::dr6: u64
+pub vmm_backend::DebugRegs::dr7: u64
+pub vmm_backend::DebugRegs::flags: u64
+pub struct vmm_backend::DescriptorTable
+pub vmm_backend::DescriptorTable::base: u64
+pub vmm_backend::DescriptorTable::limit: u16
+pub struct vmm_backend::ExitCounts
+pub vmm_backend::ExitCounts::cpuid: u64
+pub vmm_backend::ExitCounts::deadline: u64
+pub vmm_backend::ExitCounts::hlt: u64
+pub vmm_backend::ExitCounts::hypercall: u64
+pub vmm_backend::ExitCounts::io: u64
+pub vmm_backend::ExitCounts::mmio: u64
+pub vmm_backend::ExitCounts::rdmsr: u64
+pub vmm_backend::ExitCounts::rdrand: u64
+pub vmm_backend::ExitCounts::rdseed: u64
+pub vmm_backend::ExitCounts::rdtsc: u64
+pub vmm_backend::ExitCounts::rdtscp: u64
+pub vmm_backend::ExitCounts::shutdown: u64
+pub vmm_backend::ExitCounts::wrmsr: u64
+impl vmm_backend::ExitCounts
+pub fn vmm_backend::ExitCounts::entries(&self) -> [(vmm_backend::ExitReason, u64); 13]
+pub fn vmm_backend::ExitCounts::total(&self) -> u64
+#[repr(transparent)] pub struct vmm_backend::Gpa(pub u64)
+pub struct vmm_backend::HypercallRegs
+pub vmm_backend::HypercallRegs::rax: u64
+pub vmm_backend::HypercallRegs::rbx: u64
+pub vmm_backend::HypercallRegs::rcx: u64
+pub vmm_backend::HypercallRegs::rdx: u64
+pub struct vmm_backend::KvmBackend
+impl vmm_backend::KvmBackend
+pub fn vmm_backend::KvmBackend::new() -> vmm_backend::Result<vmm_backend::KvmBackend>
+pub fn vmm_backend::KvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
+impl core::ops::drop::Drop for vmm_backend::KvmBackend
+pub fn vmm_backend::KvmBackend::drop(&mut self)
+impl vmm_backend::Backend for vmm_backend::KvmBackend
+pub fn vmm_backend::KvmBackend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::KvmBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
+pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::KvmBackend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::KvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::KvmBackend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub struct vmm_backend::MockBackend
+impl vmm_backend::MockBackend
+pub fn vmm_backend::MockBackend::completions(&self) -> &[vmm_backend::Completion]
+pub fn vmm_backend::MockBackend::extend_exits(&mut self, impl core::iter::traits::collect::IntoIterator<Item = vmm_backend::Exit>) -> &mut Self
+pub fn vmm_backend::MockBackend::has_pending(&self) -> bool
+pub fn vmm_backend::MockBackend::injected(&self) -> &[vmm_backend::Event]
+pub fn vmm_backend::MockBackend::installed_cpuid(&self) -> core::option::Option<&vmm_backend::CpuidModel>
+pub fn vmm_backend::MockBackend::installed_msr_filter(&self) -> core::option::Option<&vmm_backend::MsrFilter>
+pub fn vmm_backend::MockBackend::is_configured(&self) -> bool
+pub fn vmm_backend::MockBackend::new() -> Self
+pub fn vmm_backend::MockBackend::pending_irq(&self) -> core::option::Option<u8>
+pub fn vmm_backend::MockBackend::push_exit(&mut self, vmm_backend::Exit) -> &mut Self
+pub fn vmm_backend::MockBackend::regions(&self) -> &[(vmm_backend::Gpa, usize)]
+pub fn vmm_backend::MockBackend::set_defer_accept(&mut self, bool) -> &mut Self
+pub fn vmm_backend::MockBackend::set_state(&mut self, vmm_backend::VcpuState) -> &mut Self
+pub fn vmm_backend::MockBackend::with_capabilities(vmm_backend::Capabilities) -> Self
+pub fn vmm_backend::MockBackend::with_exits(impl core::iter::traits::collect::IntoIterator<Item = vmm_backend::Exit>) -> Self
+impl core::default::Default for vmm_backend::MockBackend
+pub fn vmm_backend::MockBackend::default() -> Self
+impl vmm_backend::Backend for vmm_backend::MockBackend
+pub fn vmm_backend::MockBackend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::MockBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
+pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::MockBackend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::MockBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::MockBackend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub struct vmm_backend::MsrFilter
+pub vmm_backend::MsrFilter::allow_inkernel: alloc::vec::Vec<vmm_backend::MsrRange>
+impl vmm_backend::MsrFilter
+pub fn vmm_backend::MsrFilter::allow_indices(&self) -> impl core::iter::traits::iterator::Iterator<Item = u32> + '_
+pub struct vmm_backend::MsrRange
+pub vmm_backend::MsrRange::base: u32
+pub vmm_backend::MsrRange::count: u32
+pub struct vmm_backend::PatchedKvmBackend
+impl vmm_backend::PatchedKvmBackend
+pub fn vmm_backend::PatchedKvmBackend::new() -> vmm_backend::Result<vmm_backend::PatchedKvmBackend>
+pub fn vmm_backend::PatchedKvmBackend::read_guest(&self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::write_guest(&mut self, vmm_backend::Gpa, &[u8]) -> vmm_backend::Result<()>
+impl vmm_backend::Backend for vmm_backend::PatchedKvmBackend
+pub fn vmm_backend::PatchedKvmBackend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::PatchedKvmBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
+pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::PatchedKvmBackend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::PatchedKvmBackend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub struct vmm_backend::Segment
+pub vmm_backend::Segment::avl: u8
+pub vmm_backend::Segment::base: u64
+pub vmm_backend::Segment::db: u8
+pub vmm_backend::Segment::dpl: u8
+pub vmm_backend::Segment::g: u8
+pub vmm_backend::Segment::l: u8
+pub vmm_backend::Segment::limit: u32
+pub vmm_backend::Segment::present: u8
+pub vmm_backend::Segment::s: u8
+pub vmm_backend::Segment::selector: u16
+pub vmm_backend::Segment::type_: u8
+pub vmm_backend::Segment::unusable: u8
+pub struct vmm_backend::VcpuEvents
+pub vmm_backend::VcpuEvents::exception_error_code: u32
+pub vmm_backend::VcpuEvents::exception_has_error_code: u8
+pub vmm_backend::VcpuEvents::exception_has_payload: u8
+pub vmm_backend::VcpuEvents::exception_injected: u8
+pub vmm_backend::VcpuEvents::exception_nr: u8
+pub vmm_backend::VcpuEvents::exception_payload: u64
+pub vmm_backend::VcpuEvents::exception_pending: u8
+pub vmm_backend::VcpuEvents::flags: u32
+pub vmm_backend::VcpuEvents::interrupt_injected: u8
+pub vmm_backend::VcpuEvents::interrupt_nr: u8
+pub vmm_backend::VcpuEvents::interrupt_shadow: u8
+pub vmm_backend::VcpuEvents::interrupt_soft: u8
+pub vmm_backend::VcpuEvents::nmi_injected: u8
+pub vmm_backend::VcpuEvents::nmi_masked: u8
+pub vmm_backend::VcpuEvents::nmi_pending: u8
+pub vmm_backend::VcpuEvents::sipi_vector: u32
+pub vmm_backend::VcpuEvents::smi_inside_nmi: u8
+pub vmm_backend::VcpuEvents::smi_latched_init: u8
+pub vmm_backend::VcpuEvents::smi_pending: u8
+pub vmm_backend::VcpuEvents::smi_smm: u8
+pub vmm_backend::VcpuEvents::triple_fault_pending: u8
+pub struct vmm_backend::VcpuRegs
+pub vmm_backend::VcpuRegs::r10: u64
+pub vmm_backend::VcpuRegs::r11: u64
+pub vmm_backend::VcpuRegs::r12: u64
+pub vmm_backend::VcpuRegs::r13: u64
+pub vmm_backend::VcpuRegs::r14: u64
+pub vmm_backend::VcpuRegs::r15: u64
+pub vmm_backend::VcpuRegs::r8: u64
+pub vmm_backend::VcpuRegs::r9: u64
+pub vmm_backend::VcpuRegs::rax: u64
+pub vmm_backend::VcpuRegs::rbp: u64
+pub vmm_backend::VcpuRegs::rbx: u64
+pub vmm_backend::VcpuRegs::rcx: u64
+pub vmm_backend::VcpuRegs::rdi: u64
+pub vmm_backend::VcpuRegs::rdx: u64
+pub vmm_backend::VcpuRegs::rflags: u64
+pub vmm_backend::VcpuRegs::rip: u64
+pub vmm_backend::VcpuRegs::rsi: u64
+pub vmm_backend::VcpuRegs::rsp: u64
+pub struct vmm_backend::VcpuSregs
+pub vmm_backend::VcpuSregs::apic_base: u64
+pub vmm_backend::VcpuSregs::cr0: u64
+pub vmm_backend::VcpuSregs::cr2: u64
+pub vmm_backend::VcpuSregs::cr3: u64
+pub vmm_backend::VcpuSregs::cr4: u64
+pub vmm_backend::VcpuSregs::cr8: u64
+pub vmm_backend::VcpuSregs::cs: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::ds: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::efer: u64
+pub vmm_backend::VcpuSregs::es: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::flags: u64
+pub vmm_backend::VcpuSregs::fs: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::gdt: vmm_backend::DescriptorTable
+pub vmm_backend::VcpuSregs::gs: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::idt: vmm_backend::DescriptorTable
+pub vmm_backend::VcpuSregs::ldt: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::pdptrs: [u64; 4]
+pub vmm_backend::VcpuSregs::ss: vmm_backend::Segment
+pub vmm_backend::VcpuSregs::tr: vmm_backend::Segment
+pub struct vmm_backend::VcpuState
+pub vmm_backend::VcpuState::debugregs: vmm_backend::DebugRegs
+pub vmm_backend::VcpuState::events: vmm_backend::VcpuEvents
+pub vmm_backend::VcpuState::mp_state: vmm_backend::MpState
+pub vmm_backend::VcpuState::msrs: alloc::collections::btree::map::BTreeMap<u32, u64>
+pub vmm_backend::VcpuState::regs: vmm_backend::VcpuRegs
+pub vmm_backend::VcpuState::sregs: vmm_backend::VcpuSregs
+pub vmm_backend::VcpuState::xcr0: u64
+pub vmm_backend::VcpuState::xsave: alloc::vec::Vec<u8>
+#[repr(transparent)] pub struct vmm_backend::Vtime(pub u64)
+pub trait vmm_backend::Backend
+pub fn vmm_backend::Backend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::Backend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::Backend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::reset_exit_counts(&mut self)
+pub fn vmm_backend::Backend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::Backend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::Backend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::Backend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+impl vmm_backend::Backend for vmm_backend::KvmBackend
+pub fn vmm_backend::KvmBackend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::KvmBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
+pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::KvmBackend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::KvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::KvmBackend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+impl vmm_backend::Backend for vmm_backend::MockBackend
+pub fn vmm_backend::MockBackend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::MockBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
+pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::MockBackend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::MockBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::MockBackend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+impl vmm_backend::Backend for vmm_backend::PatchedKvmBackend
+pub fn vmm_backend::PatchedKvmBackend::capabilities(&self) -> vmm_backend::Capabilities
+pub fn vmm_backend::PatchedKvmBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
+pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::PatchedKvmBackend::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn vmm_backend::PatchedKvmBackend::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn vmm_backend::PatchedKvmBackend::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+impl<B: vmm_backend::Backend + ?core::marker::Sized> vmm_backend::Backend for alloc::boxed::Box<B>
+pub fn alloc::boxed::Box<B>::capabilities(&self) -> vmm_backend::Capabilities
+pub fn alloc::boxed::Box<B>::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::complete_fault(&mut self) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::complete_hypercall(&mut self, u64) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::complete_ok(&mut self) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::complete_read(&mut self, u64) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::exit_counts(&self) -> vmm_backend::ExitCounts
+pub fn alloc::boxed::Box<B>::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
+pub unsafe fn alloc::boxed::Box<B>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::reset_exit_counts(&mut self)
+pub fn alloc::boxed::Box<B>::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn alloc::boxed::Box<B>::run_until(&mut self, vmm_backend::Vtime) -> vmm_backend::Result<vmm_backend::Exit>
+pub fn alloc::boxed::Box<B>::save(&self) -> vmm_backend::Result<vmm_backend::VcpuState>
+pub fn alloc::boxed::Box<B>::set_cpuid(&mut self, &vmm_backend::CpuidModel) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::set_msr_filter(&mut self, &vmm_backend::MsrFilter) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub type vmm_backend::Result<T> = core::result::Result<T, vmm_backend::BackendError>

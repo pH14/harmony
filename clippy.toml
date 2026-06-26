@@ -1,0 +1,14 @@
+# Determinism lints — mechanize Convention rule #4 (tasks/00-CONVENTIONS.md).
+# Every hit is either a real nondeterminism bug or a reviewed, annotated
+# exception (`#[allow(...)]` + a `// not order-observable:` justification).
+disallowed-methods = [
+  { path = "std::time::Instant::now",    reason = "wall-clock leaks nondeterminism; use vtime" },
+  { path = "std::time::SystemTime::now", reason = "wall-clock leaks nondeterminism" },
+  { path = "rand::thread_rng",           reason = "unseeded RNG (rand 0.8); thread a seed explicitly" },
+  { path = "rand::rng",                  reason = "unseeded RNG (rand 0.9); thread a seed explicitly" },
+  { path = "rand::random",               reason = "unseeded RNG" },
+]
+disallowed-types = [
+  { path = "std::collections::HashMap",  reason = "iteration order can reach a hash/byte; use BTreeMap or sort" },
+  { path = "std::collections::HashSet",  reason = "iteration order can reach a hash/byte; use BTreeSet or sort" },
+]

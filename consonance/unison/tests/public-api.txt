@@ -1,0 +1,146 @@
+pub mod unison
+pub mod unison::flaky
+pub enum unison::flaky::Perturbation
+pub unison::flaky::Perturbation::ForceHalt
+pub unison::flaky::Perturbation::XorPrng
+pub unison::flaky::Perturbation::XorPrng::mask: u64
+pub unison::flaky::Perturbation::XorReg
+pub unison::flaky::Perturbation::XorReg::mask: u64
+pub unison::flaky::Perturbation::XorReg::reg: u8
+pub struct unison::flaky::FlakyFactory<F: unison::MachineFactory>
+pub unison::flaky::FlakyFactory::diverge_at: u64
+pub unison::flaky::FlakyFactory::inner: F
+pub unison::flaky::FlakyFactory::perturb: unison::flaky::Perturbation
+impl<F: unison::MachineFactory> unison::MachineFactory for unison::flaky::FlakyFactory<F> where <F as unison::MachineFactory>::M: unison::flaky::Perturbable
+pub type unison::flaky::FlakyFactory<F>::M = unison::flaky::FlakyMachine<<F as unison::MachineFactory>::M>
+pub fn unison::flaky::FlakyFactory<F>::spawn(&self, u64) -> Self::M
+pub struct unison::flaky::FlakyMachine<M: unison::flaky::Perturbable>
+impl<M: unison::flaky::Perturbable> unison::Machine for unison::flaky::FlakyMachine<M>
+pub fn unison::flaky::FlakyMachine<M>::observable_digest(&self) -> [u8; 32]
+pub fn unison::flaky::FlakyMachine<M>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn unison::flaky::FlakyMachine<M>::state_hash(&self) -> [u8; 32]
+pub fn unison::flaky::FlakyMachine<M>::work(&self) -> u64
+pub trait unison::flaky::Perturbable: unison::Machine
+pub fn unison::flaky::Perturbable::apply_perturbation(&mut self, &unison::flaky::Perturbation)
+impl unison::flaky::Perturbable for unison::toy::ToyMachine
+pub fn unison::toy::ToyMachine::apply_perturbation(&mut self, &unison::flaky::Perturbation)
+pub mod unison::toy
+pub mod unison::toy::asm
+pub fn unison::toy::asm::add(u8, u8) -> unison::toy::Instr
+pub fn unison::toy::asm::halt() -> unison::toy::Instr
+pub fn unison::toy::asm::jnz(u8, u32) -> unison::toy::Instr
+pub fn unison::toy::asm::load(u8, u8) -> unison::toy::Instr
+pub fn unison::toy::asm::loadi(u8, u64) -> unison::toy::Instr
+pub fn unison::toy::asm::out(u8) -> unison::toy::Instr
+pub fn unison::toy::asm::rand(u8) -> unison::toy::Instr
+pub fn unison::toy::asm::store(u8, u8) -> unison::toy::Instr
+pub fn unison::toy::asm::sub(u8, u8) -> unison::toy::Instr
+pub fn unison::toy::asm::xor(u8, u8) -> unison::toy::Instr
+pub enum unison::toy::Instr
+pub unison::toy::Instr::Add
+pub unison::toy::Instr::Add::rd: u8
+pub unison::toy::Instr::Add::rs: u8
+pub unison::toy::Instr::Halt
+pub unison::toy::Instr::Jnz
+pub unison::toy::Instr::Jnz::rs: u8
+pub unison::toy::Instr::Jnz::target: u32
+pub unison::toy::Instr::Load
+pub unison::toy::Instr::Load::rd: u8
+pub unison::toy::Instr::Load::rs: u8
+pub unison::toy::Instr::Loadi
+pub unison::toy::Instr::Loadi::imm: u64
+pub unison::toy::Instr::Loadi::rd: u8
+pub unison::toy::Instr::Out
+pub unison::toy::Instr::Out::rs: u8
+pub unison::toy::Instr::Rand
+pub unison::toy::Instr::Rand::rd: u8
+pub unison::toy::Instr::Store
+pub unison::toy::Instr::Store::rd: u8
+pub unison::toy::Instr::Store::rs: u8
+pub unison::toy::Instr::Sub
+pub unison::toy::Instr::Sub::rd: u8
+pub unison::toy::Instr::Sub::rs: u8
+pub unison::toy::Instr::Xor
+pub unison::toy::Instr::Xor::rd: u8
+pub unison::toy::Instr::Xor::rs: u8
+pub struct unison::toy::GeneratedProgram
+pub unison::toy::GeneratedProgram::instrs: alloc::vec::Vec<unison::toy::Instr>
+pub unison::toy::GeneratedProgram::work_to_halt: u64
+pub struct unison::toy::ToyFactory
+pub unison::toy::ToyFactory::program: alloc::vec::Vec<unison::toy::Instr>
+impl unison::MachineFactory for unison::toy::ToyFactory
+pub type unison::toy::ToyFactory::M = unison::toy::ToyMachine
+pub fn unison::toy::ToyFactory::spawn(&self, u64) -> unison::toy::ToyMachine
+pub struct unison::toy::ToyMachine
+impl unison::toy::ToyMachine
+pub fn unison::toy::ToyMachine::new(alloc::vec::Vec<unison::toy::Instr>, u64) -> Self
+impl unison::Machine for unison::toy::ToyMachine
+pub fn unison::toy::ToyMachine::observable_digest(&self) -> [u8; 32]
+pub fn unison::toy::ToyMachine::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn unison::toy::ToyMachine::state_hash(&self) -> [u8; 32]
+pub fn unison::toy::ToyMachine::work(&self) -> u64
+impl unison::flaky::Perturbable for unison::toy::ToyMachine
+pub fn unison::toy::ToyMachine::apply_perturbation(&mut self, &unison::flaky::Perturbation)
+pub const unison::toy::ADDR_MOD: u64
+pub const unison::toy::MEM_SIZE: usize
+pub const unison::toy::ZERO_SEED_STATE: u64
+pub fn unison::toy::generate_program(u64, u64) -> unison::toy::GeneratedProgram
+pub enum unison::MachineError
+pub unison::MachineError::DivergesAtLo
+pub unison::MachineError::DivergesAtLo::lo: u64
+pub unison::MachineError::EmptyInterval
+pub unison::MachineError::EmptyInterval::hi: u64
+pub unison::MachineError::EmptyInterval::lo: u64
+pub unison::MachineError::NoDivergence
+pub unison::MachineError::NoDivergence::hi: u64
+pub unison::MachineError::TargetBehind
+pub unison::MachineError::TargetBehind::current: u64
+pub unison::MachineError::TargetBehind::target: u64
+pub unison::MachineError::ZeroCheckpointInterval
+pub enum unison::RunOutcome
+pub unison::RunOutcome::Halted
+pub unison::RunOutcome::ReachedTarget
+pub enum unison::Verdict
+pub unison::Verdict::Diverged
+pub unison::Verdict::Diverged::first_mismatch: u64
+pub unison::Verdict::Diverged::last_match: core::option::Option<u64>
+pub unison::Verdict::HaltMismatch
+pub unison::Verdict::HaltMismatch::a: core::option::Option<u64>
+pub unison::Verdict::HaltMismatch::b: core::option::Option<u64>
+pub unison::Verdict::Identical
+pub struct unison::CompareReport
+pub unison::CompareReport::checkpoints_compared: u64
+pub unison::CompareReport::halted_at: core::option::Option<u64>
+pub unison::CompareReport::limit_reached: bool
+pub unison::CompareReport::verdict: unison::Verdict
+pub struct unison::DivergencePoint
+pub unison::DivergencePoint::first_divergent_work: u64
+pub unison::DivergencePoint::hash_a: [u8; 32]
+pub unison::DivergencePoint::hash_b: [u8; 32]
+pub unison::DivergencePoint::runs_executed: u64
+pub trait unison::Machine
+pub fn unison::Machine::observable_digest(&self) -> [u8; 32]
+pub fn unison::Machine::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn unison::Machine::state_hash(&self) -> [u8; 32]
+pub fn unison::Machine::work(&self) -> u64
+impl unison::Machine for unison::toy::ToyMachine
+pub fn unison::toy::ToyMachine::observable_digest(&self) -> [u8; 32]
+pub fn unison::toy::ToyMachine::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn unison::toy::ToyMachine::state_hash(&self) -> [u8; 32]
+pub fn unison::toy::ToyMachine::work(&self) -> u64
+impl<M: unison::flaky::Perturbable> unison::Machine for unison::flaky::FlakyMachine<M>
+pub fn unison::flaky::FlakyMachine<M>::observable_digest(&self) -> [u8; 32]
+pub fn unison::flaky::FlakyMachine<M>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn unison::flaky::FlakyMachine<M>::state_hash(&self) -> [u8; 32]
+pub fn unison::flaky::FlakyMachine<M>::work(&self) -> u64
+pub trait unison::MachineFactory
+pub type unison::MachineFactory::M: unison::Machine
+pub fn unison::MachineFactory::spawn(&self, u64) -> Self::M
+impl unison::MachineFactory for unison::toy::ToyFactory
+pub type unison::toy::ToyFactory::M = unison::toy::ToyMachine
+pub fn unison::toy::ToyFactory::spawn(&self, u64) -> unison::toy::ToyMachine
+impl<F: unison::MachineFactory> unison::MachineFactory for unison::flaky::FlakyFactory<F> where <F as unison::MachineFactory>::M: unison::flaky::Perturbable
+pub type unison::flaky::FlakyFactory<F>::M = unison::flaky::FlakyMachine<<F as unison::MachineFactory>::M>
+pub fn unison::flaky::FlakyFactory<F>::spawn(&self, u64) -> Self::M
+pub fn unison::bisect_divergence<FA: unison::MachineFactory, FB: unison::MachineFactory>(&FA, &FB, u64, u64, u64) -> core::result::Result<unison::DivergencePoint, unison::MachineError>
+pub fn unison::compare_runs<FA: unison::MachineFactory, FB: unison::MachineFactory>(&FA, &FB, u64, u64, u64) -> core::result::Result<unison::CompareReport, unison::MachineError>

@@ -1,0 +1,111 @@
+pub mod vm_state
+pub enum vm_state::MpState
+pub vm_state::MpState::Halted
+pub vm_state::MpState::Runnable
+pub enum vm_state::VmStateError
+pub vm_state::VmStateError::BadMagic(u32)
+pub vm_state::VmStateError::DuplicateTag(u16)
+pub vm_state::VmStateError::FractionalRatio
+pub vm_state::VmStateError::InvalidField
+pub vm_state::VmStateError::MissingSection(u16)
+pub vm_state::VmStateError::SectionOrder(u16)
+pub vm_state::VmStateError::TrailingBytes
+pub vm_state::VmStateError::Truncated
+pub vm_state::VmStateError::UnknownTag(u16)
+pub vm_state::VmStateError::UnsupportedVersion(u16)
+pub struct vm_state::DebugRegs
+pub vm_state::DebugRegs::db: [u64; 4]
+pub vm_state::DebugRegs::dr6: u64
+pub vm_state::DebugRegs::dr7: u64
+pub struct vm_state::DeviceBlob(pub alloc::vec::Vec<u8>)
+pub struct vm_state::MsrBlock(pub alloc::collections::btree::map::BTreeMap<u32, u64>)
+pub struct vm_state::Segment
+pub vm_state::Segment::base: u64
+pub vm_state::Segment::flags: u8
+pub vm_state::Segment::limit: u32
+pub vm_state::Segment::present_dpl_s: u8
+pub vm_state::Segment::selector: u16
+pub vm_state::Segment::type_: u8
+pub struct vm_state::TimerEntry
+pub vm_state::TimerEntry::deadline_vns: u64
+pub vm_state::TimerEntry::period_vns: u64
+pub vm_state::TimerEntry::seq: u64
+pub vm_state::TimerEntry::token: u64
+pub struct vm_state::TimerQueueState
+pub vm_state::TimerQueueState::entries: alloc::vec::Vec<vm_state::TimerEntry>
+pub vm_state::TimerQueueState::next_seq: u64
+pub struct vm_state::VcpuEvents
+pub vm_state::VcpuEvents::exception_error_code: u32
+pub vm_state::VcpuEvents::exception_pending: bool
+pub vm_state::VcpuEvents::exception_vector: u8
+pub vm_state::VcpuEvents::interrupt_shadow: u8
+pub vm_state::VcpuEvents::nmi_pending: bool
+pub vm_state::VcpuEvents::smi_pending: bool
+pub struct vm_state::VcpuRegs
+pub vm_state::VcpuRegs::r10: u64
+pub vm_state::VcpuRegs::r11: u64
+pub vm_state::VcpuRegs::r12: u64
+pub vm_state::VcpuRegs::r13: u64
+pub vm_state::VcpuRegs::r14: u64
+pub vm_state::VcpuRegs::r15: u64
+pub vm_state::VcpuRegs::r8: u64
+pub vm_state::VcpuRegs::r9: u64
+pub vm_state::VcpuRegs::rax: u64
+pub vm_state::VcpuRegs::rbp: u64
+pub vm_state::VcpuRegs::rbx: u64
+pub vm_state::VcpuRegs::rcx: u64
+pub vm_state::VcpuRegs::rdi: u64
+pub vm_state::VcpuRegs::rdx: u64
+pub vm_state::VcpuRegs::rflags: u64
+pub vm_state::VcpuRegs::rip: u64
+pub vm_state::VcpuRegs::rsi: u64
+pub vm_state::VcpuRegs::rsp: u64
+pub struct vm_state::VcpuSregs
+pub vm_state::VcpuSregs::apic_base: u64
+pub vm_state::VcpuSregs::cr0: u64
+pub vm_state::VcpuSregs::cr2: u64
+pub vm_state::VcpuSregs::cr3: u64
+pub vm_state::VcpuSregs::cr4: u64
+pub vm_state::VcpuSregs::cr8: u64
+pub vm_state::VcpuSregs::cs: vm_state::Segment
+pub vm_state::VcpuSregs::ds: vm_state::Segment
+pub vm_state::VcpuSregs::efer: u64
+pub vm_state::VcpuSregs::es: vm_state::Segment
+pub vm_state::VcpuSregs::fs: vm_state::Segment
+pub vm_state::VcpuSregs::gdt_base: u64
+pub vm_state::VcpuSregs::gdt_limit: u16
+pub vm_state::VcpuSregs::gs: vm_state::Segment
+pub vm_state::VcpuSregs::idt_base: u64
+pub vm_state::VcpuSregs::idt_limit: u16
+pub vm_state::VcpuSregs::ldt: vm_state::Segment
+pub vm_state::VcpuSregs::ss: vm_state::Segment
+pub vm_state::VcpuSregs::tr: vm_state::Segment
+pub struct vm_state::VmState
+pub vm_state::VmState::contract_hash: [u8; 32]
+pub vm_state::VmState::debugregs: vm_state::DebugRegs
+pub vm_state::VmState::devices: vm_state::DeviceBlob
+pub vm_state::VmState::events: vm_state::VcpuEvents
+pub vm_state::VmState::hypercall: alloc::vec::Vec<u8>
+pub vm_state::VmState::mp_state: vm_state::MpState
+pub vm_state::VmState::msrs: vm_state::MsrBlock
+pub vm_state::VmState::regs: vm_state::VcpuRegs
+pub vm_state::VmState::sregs: vm_state::VcpuSregs
+pub vm_state::VmState::timers: vm_state::TimerQueueState
+pub vm_state::VmState::vtime: vm_state::VtimeState
+pub vm_state::VmState::xcrs: vm_state::Xcrs
+pub vm_state::VmState::xsave: vm_state::XsaveImage
+impl vm_state::VmState
+pub fn vm_state::VmState::decode(&[u8]) -> core::result::Result<vm_state::VmState, vm_state::VmStateError>
+pub fn vm_state::VmState::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, vm_state::VmStateError>
+pub fn vm_state::VmState::peek_version(&[u8]) -> core::result::Result<u16, vm_state::VmStateError>
+pub struct vm_state::VtimeState
+pub vm_state::VtimeState::ratio_den: u64
+pub vm_state::VtimeState::ratio_num: u64
+pub vm_state::VtimeState::snapshot_vns: u64
+pub vm_state::VtimeState::tsc_base: u64
+pub vm_state::VtimeState::tsc_hz: u64
+pub struct vm_state::Xcrs
+pub vm_state::Xcrs::xcr0: u64
+pub struct vm_state::XsaveImage(pub alloc::vec::Vec<u8>)
+pub const vm_state::VM_STATE_MAGIC: u32
+pub const vm_state::VM_STATE_VERSION: u16

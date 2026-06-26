@@ -1,0 +1,114 @@
+pub mod explorer
+pub enum explorer::MachineError
+pub explorer::MachineError::BadEnvironment(u16)
+pub explorer::MachineError::NotQuiescent
+pub explorer::MachineError::Transport(alloc::string::String)
+pub explorer::MachineError::UnknownSnapshot(u64)
+pub enum explorer::StopReason
+pub explorer::StopReason::Assertion
+pub explorer::StopReason::Assertion::data: alloc::vec::Vec<u8>
+pub explorer::StopReason::Assertion::id: u32
+pub explorer::StopReason::Assertion::vtime: explorer::VTime
+pub explorer::StopReason::Crash
+pub explorer::StopReason::Crash::info: alloc::vec::Vec<u8>
+pub explorer::StopReason::Crash::vtime: explorer::VTime
+pub explorer::StopReason::Deadline
+pub explorer::StopReason::Deadline::vtime: explorer::VTime
+pub explorer::StopReason::Decision
+pub explorer::StopReason::Decision::ctx: alloc::vec::Vec<u8>
+pub explorer::StopReason::Decision::id: u64
+pub explorer::StopReason::Decision::vtime: explorer::VTime
+pub explorer::StopReason::Quiescent
+pub explorer::StopReason::Quiescent::vtime: explorer::VTime
+pub explorer::StopReason::SnapshotPoint
+pub explorer::StopReason::SnapshotPoint::vtime: explorer::VTime
+impl explorer::StopReason
+pub fn explorer::StopReason::is_bug(&self) -> bool
+pub fn explorer::StopReason::is_terminal(&self) -> bool
+pub fn explorer::StopReason::vtime(&self) -> explorer::VTime
+pub struct explorer::Answer(pub alloc::vec::Vec<u8>)
+pub struct explorer::Bug
+pub explorer::Bug::env: explorer::Environment
+pub explorer::Bug::fingerprint: [u8; 32]
+pub explorer::Bug::stop: explorer::StopReason
+pub struct explorer::Corpus
+impl explorer::Corpus
+pub fn explorer::Corpus::admit(&mut self, explorer::SnapId, explorer::Environment, &[u8]) -> bool
+pub fn explorer::Corpus::base_env(&self, explorer::SnapId) -> core::option::Option<&explorer::Environment>
+pub fn explorer::Corpus::drain_evicted(&mut self) -> alloc::vec::Vec<explorer::SnapId>
+pub fn explorer::Corpus::entry(&self, usize) -> core::option::Option<(explorer::SnapId, &explorer::Environment, explorer::CovScore)>
+pub fn explorer::Corpus::is_empty(&self) -> bool
+pub fn explorer::Corpus::len(&self) -> usize
+pub fn explorer::Corpus::new() -> Self
+pub fn explorer::Corpus::novelty(&self, &[u8]) -> explorer::CovScore
+pub fn explorer::Corpus::select(&self, u64) -> core::option::Option<(explorer::SnapId, &explorer::Environment)>
+pub fn explorer::Corpus::with_capacity(usize) -> Self
+impl core::default::Default for explorer::Corpus
+pub fn explorer::Corpus::default() -> Self
+pub struct explorer::CovScore(pub u64)
+pub struct explorer::CoverageStrategy
+impl explorer::CoverageStrategy
+pub fn explorer::CoverageStrategy::new(u64) -> Self
+pub fn explorer::CoverageStrategy::with_explore_period(self, u64) -> Self
+impl explorer::Strategy for explorer::CoverageStrategy
+pub fn explorer::CoverageStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
+pub fn explorer::CoverageStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
+pub struct explorer::Environment
+pub explorer::Environment::blob_version: u16
+pub explorer::Environment::bytes: alloc::vec::Vec<u8>
+pub struct explorer::Explorer<M: explorer::Machine, S: explorer::Strategy>
+impl<M: explorer::Machine, S: explorer::Strategy> explorer::Explorer<M, S>
+pub fn explorer::Explorer<M, S>::corpus(&self) -> &explorer::Corpus
+pub fn explorer::Explorer<M, S>::explore(&mut self, u64) -> core::result::Result<alloc::vec::Vec<explorer::Bug>, explorer::MachineError>
+pub fn explorer::Explorer<M, S>::genesis(&self) -> explorer::SnapId
+pub fn explorer::Explorer<M, S>::machine_mut(&mut self) -> &mut M
+pub fn explorer::Explorer<M, S>::multiverse_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
+pub fn explorer::Explorer<M, S>::new(M, S, alloc::boxed::Box<dyn explorer::EnvCodec>) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::Explorer<M, S>::set_corpus_capacity(&mut self, usize) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Explorer<M, S>::set_stop_conditions(&mut self, explorer::StopConditions)
+pub fn explorer::Explorer<M, S>::stop_conditions(&self) -> &explorer::StopConditions
+pub fn explorer::Explorer<M, S>::timeline(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
+pub struct explorer::RunOutcome
+pub explorer::RunOutcome::coverage_novelty: explorer::CovScore
+pub explorer::RunOutcome::env: explorer::Environment
+pub explorer::RunOutcome::stop: explorer::StopReason
+pub struct explorer::SeedStrategy
+impl explorer::SeedStrategy
+pub fn explorer::SeedStrategy::new(u64) -> Self
+impl explorer::Strategy for explorer::SeedStrategy
+pub fn explorer::SeedStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
+pub fn explorer::SeedStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
+pub struct explorer::SnapId(pub u64)
+pub struct explorer::StopConditions
+pub explorer::StopConditions::deadline: core::option::Option<explorer::VTime>
+pub explorer::StopConditions::on: explorer::StopMask
+pub struct explorer::StopMask(pub u32)
+impl explorer::StopMask
+pub const explorer::StopMask::ALL: explorer::StopMask
+pub const explorer::StopMask::NONE: explorer::StopMask
+pub struct explorer::VTime(pub u64)
+pub trait explorer::EnvCodec
+pub fn explorer::EnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
+pub fn explorer::EnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
+pub fn explorer::EnvCodec::seeded(&self, u64) -> explorer::Environment
+pub trait explorer::Machine
+pub fn explorer::Machine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Machine::coverage(&self) -> &[u8]
+pub fn explorer::Machine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Machine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
+pub fn explorer::Machine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::MachineError>
+pub fn explorer::Machine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Machine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
+pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub trait explorer::MachineFactory
+pub type explorer::MachineFactory::M: explorer::Machine
+pub fn explorer::MachineFactory::spawn(&self) -> Self::M
+pub trait explorer::Strategy
+pub fn explorer::Strategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
+pub fn explorer::Strategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
+impl explorer::Strategy for explorer::CoverageStrategy
+pub fn explorer::CoverageStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
+pub fn explorer::CoverageStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
+impl explorer::Strategy for explorer::SeedStrategy
+pub fn explorer::SeedStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
+pub fn explorer::SeedStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)

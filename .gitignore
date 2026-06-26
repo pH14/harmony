@@ -1,0 +1,13 @@
+/target
+/guest/build
+/guest/dl
+*.img
+*.bin
+!guest/golden/*.bin
+/.claude/skills/pr-review-workspace/
+.agent-prompt.md
+.env
+# Bring-up measurement spikes — kept on the dev box for reference, untracked from
+# the tree. (The patched-KVM determinism recipe is NOT here — it lives, tracked, at
+# consonance/vmm-backend/kvm-patches/.)
+spikes/*

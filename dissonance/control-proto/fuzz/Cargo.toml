@@ -1,0 +1,34 @@
+# cargo-fuzz harness for control-proto (task 25, acceptance gate 3 — the decoder
+# is a docs/CODE-QUALITY.md Tier-1 fuzz target). Kept inside the crate directory
+# (conventions rule 1 — touch only `dissonance/control-proto/`) rather than the
+# repo-root `fuzz/` that task 19 owns. The empty `[workspace]` table makes this
+# its own workspace root, so the parent workspace's `dissonance/*` glob never
+# pulls it in and the standard `-p control-proto` gates ignore it.
+#
+# Dependency note (ask-by-comment, per conventions rule 5): `libfuzzer-sys` is the
+# standard cargo-fuzz harness crate and is outside the dependency whitelist; it is
+# used only by this fuzz-only, nightly-only build, never by the library.
+[package]
+name = "control-proto-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.control-proto]
+path = ".."
+
+[[bin]]
+name = "decode_frame"
+path = "fuzz_targets/decode_frame.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

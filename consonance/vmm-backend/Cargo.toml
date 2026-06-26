@@ -1,0 +1,35 @@
+[package]
+name = "vmm-backend"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Non-default. Gates the in-process `MockBackend` (the deterministic `Backend`
+# substrate task 15 unit-tests vmm-core against). NOT `#[cfg(test)]`: a
+# `#[cfg(test)]` item is invisible to downstream crates, so it could not be the
+# mock task 15 turns on under `[dev-dependencies]`. The default build compiles the
+# trait + value types only. See tasks/14-backend.md §"Features".
+mock = []
+
+[dependencies]
+thiserror = "2"
+
+# Linux-only frontier deps (reviewed rule-5 whitelist EXCEPTION, recorded in
+# tasks/14-backend.md §"Dependencies" and the PR description — NOT a deny.toml
+# edit; deny.toml has no crate allowlist). These gate `KvmBackend` only; a macOS
+# `cargo build -p vmm-backend` never compiles them (the trait + value types +
+# `MockBackend` are platform-portable and pull none of these). Caret defaults,
+# pin nothing.
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls = "0.25"
+# `fam-wrappers` provides the Fam-struct builders (`CpuId`, `Msrs`) we hand to the
+# CPUID / MSR ioctls; kvm-ioctls already enables it, declared here for clarity.
+kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }
+libc = "0.2"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

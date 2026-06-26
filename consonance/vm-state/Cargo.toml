@@ -1,0 +1,16 @@
+[package]
+name = "vm-state"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Versioned, deterministic TLV codec for the non-memory vm_state snapshot blob"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+zerocopy = { version = "0.8", features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1"

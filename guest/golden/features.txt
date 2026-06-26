@@ -1,0 +1,6 @@
+PAYLOAD features START
+OK cpuid-stable
+OK rdrand
+OK rdseed
+OK rdpmc-gp
+PAYLOAD features PASS

@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+# Crates are grouped under harmony-themed top-level dirs (task 90). `consonance/`
+# is the deterministic engine — vmm-core/vmm-backend and the crates they compose,
+# plus `consonance/unison` (the determinism harness, ex-`detharness`). `dissonance/*`
+# is the bug finder built on consonance (environment/control-proto/pv-net/explorer —
+# tasks 24/25/26/12); the glob is present so the first dissonance crate gates with
+# `cargo -p <crate>` (it matches nothing until a crate lands).
+members = ["consonance/*", "dissonance/*"]
+# guest/ contains bare-metal payloads with custom targets/linker flags;
+# they build standalone, never as part of this workspace.
+exclude = ["guest"]
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[profile.release]
+debug = true

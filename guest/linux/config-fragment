@@ -1,0 +1,100 @@
+# Guest kernel config fragment, applied on top of `make ARCH=x86_64 tinyconfig`
+# (allnoconfig + tiny.config) via scripts/kconfig/merge_config.sh, then
+# olddefconfig. Comment discipline: every entry says why it is here. The
+# fragment will be iterated against the determinism harness later; this
+# version's bar is that the image boots to /init on the serial console,
+# reproducibly, with the obvious nondeterminism sources configured out.
+
+## Identity / build determinism
+# 64-bit kernel (ARCH=x86_64 forces it; pinned to document intent).
+CONFIG_64BIT=y
+# Non-relocatable kernel, KASLR impossible: load addresses must never vary.
+# (tinyconfig already leaves these off; pinned so a base change can't flip them.)
+# CONFIG_RELOCATABLE is not set
+# CONFIG_RANDOMIZE_BASE is not set
+# Empty version suffix and no git-describe: git state must not leak into the
+# binary (reproducibility lever from the task spec).
+CONFIG_LOCALVERSION=""
+# CONFIG_LOCALVERSION_AUTO is not set
+# gzip (not xz) for the kernel image: in-kernel gzip is deterministic and it
+# is one fewer host tool whose version can change the bytes.
+CONFIG_KERNEL_GZIP=y
+# CONFIG_KERNEL_XZ is not set
+
+## CPU / topology
+# Exactly one vCPU, forever: no SMP alternatives, no IPIs, no cross-CPU races.
+# CONFIG_SMP is not set
+# Single deterministic memory domain.
+# CONFIG_NUMA is not set
+# No frequency scaling: timing behavior must not drift with governors.
+# CONFIG_CPU_FREQ is not set
+
+## Time
+# Periodic ticks at a fixed low rate — no dynticks machinery deciding when
+# the next tick is; the hypervisor will deliver ticks deterministically.
+CONFIG_HZ_PERIODIC=y
+CONFIG_HZ_100=y
+# No high-resolution timer reprogramming; the periodic tick is the timer.
+# CONFIG_HIGH_RES_TIMERS is not set
+# TSC is the only fine-grained clocksource "where possible": the ACPI PM
+# timer is configured out here; HPET support cannot be (CONFIG_HPET_TIMER is
+# def_bool y on x86-64, no prompt), so the HPET is kept out at runtime
+# instead — the hypervisor will simply not expose one, and the boot gate
+# passes -machine hpet=off (alternative: the hpet=disable boot parameter).
+# CONFIG_X86_PM_TIMER is not set
+
+## Entropy / randomness
+# No hardware RNG drivers — entropy must come from our hypercall channel.
+# CONFIG_HW_RANDOM is not set
+# (CONFIG_RANDOM_TRUST_CPU was removed in kernel 6.2: RDRAND crediting is the
+# random.trust_cpu= boot parameter now — default on, so the boot gate passes
+# random.trust_cpu=off — and RDRAND itself is trapped by the hypervisor.
+# Nothing to set at build time in 6.18.)
+
+## Memory management
+# No THP/KSM daemons rewriting page tables on their own schedule.
+# CONFIG_TRANSPARENT_HUGEPAGE is not set
+# CONFIG_KSM is not set
+
+## Power states
+# The guest never sleeps or hibernates; poweroff is the only transition.
+# CONFIG_SUSPEND is not set
+# CONFIG_HIBERNATION is not set
+# ACPI so `poweroff -f` actually powers the (QEMU) machine off and the boot
+# gate can observe QEMU exiting. PCI is required with it: QEMU's DSDT
+# declares PCI config-space operation regions, and without the PCI region
+# handler ACPICA fails table load (AE_BAD_PARAMETER) and never registers
+# pm_power_off.
+CONFIG_ACPI=y
+CONFIG_PCI=y
+
+## Kernel/userspace surface the image actually needs
+# Everything is built in; no module loader, no runtime code variability.
+# CONFIG_MODULES is not set
+# printk + 8250 serial console: the only output channel (console=ttyS0).
+CONFIG_PRINTK=y
+CONFIG_TTY=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+# Run /init: a #!/bin/sh script invoking a static ELF busybox.
+CONFIG_BINFMT_ELF=y
+CONFIG_BINFMT_SCRIPT=y
+# Boot from the external gzip initramfs; no other decompressors compiled in.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+# CONFIG_RD_BZIP2 is not set
+# CONFIG_RD_LZMA is not set
+# CONFIG_RD_XZ is not set
+# CONFIG_RD_LZO is not set
+# CONFIG_RD_LZ4 is not set
+# CONFIG_RD_ZSTD is not set
+# /proc, /sys, /dev for the init script.
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_DEVTMPFS=y
+# Baseline syscall surface a static-glibc busybox expects.
+CONFIG_FUTEX=y
+CONFIG_POSIX_TIMERS=y
+# Initramfs only — no block layer, no filesystems beyond rootfs.
+# CONFIG_BLOCK is not set
+# CONFIG_EXT4_FS is not set

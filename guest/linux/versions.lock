@@ -1,0 +1,11 @@
+# Pinned upstream sources for the minimal Linux guest (task 04 Part B).
+# Pinned 2026-06-12: linux 6.18.35 was the newest longterm (LTS) release on
+# kernel.org; busybox 1.38.0 the newest stable on busybox.net. Hashes were
+# cross-checked against the upstream-published sha256 sums at pin time.
+# `make -C guest fetch` downloads into guest/dl/ and verifies before any build.
+KERNEL_VERSION=6.18.35
+KERNEL_URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz
+KERNEL_SHA256=f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236
+BUSYBOX_VERSION=1.38.0
+BUSYBOX_URL=https://busybox.net/downloads/busybox-1.38.0.tar.bz2
+BUSYBOX_SHA256=34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
