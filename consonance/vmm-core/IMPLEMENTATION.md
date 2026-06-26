@@ -2533,12 +2533,14 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >   the workload to its **final row and `GUEST_READY`** (clean `Hlt` power-off terminal). (Reproduces task
 >   40's `0 of 8392` and flips the 3112.) *Honest note (PR #12 round 3):* these captured states are KVM
 >   **modifier residuals** (a stale `interrupt.nr`, the GET-only validity flags) — `canonical_events`
->   collapses them, which is what makes the restore sound. Of the 3112, **`genuine_inflight` also carried
->   a genuine in-flight *event*** (a vector pending in the LAPIC IRR — bonus evidence; the LAPIC IRR was
->   already serialized by task 39, so it is not itself the unlock). A **genuine `kvm_vcpu_events`
->   *injection*** (`interrupt_injected=1`) lands only at a non-synchronized interrupt-window exit and so is
->   **0** at snapshottable boundaries — its capture→exact-restore is proven by the constructed
->   `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact` (§5), not the live seal.
+>   collapses them, which is what makes the restore sound. Of the 3112, **1 also carried a genuine
+>   in-flight *event*** (a vector pending in the LAPIC IRR — bonus evidence; the LAPIC IRR was already
+>   serialized by task 39, so it is not itself the unlock). A **genuine `kvm_vcpu_events` *injection***
+>   (`interrupt_injected=1`) lands only at a non-synchronized interrupt-window exit and so is **0** at
+>   snapshottable boundaries — its capture→exact-restore is proven by the constructed
+>   `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact` (§5), not the live seal. (PR #12
+>   round 3 re-run, commit `5b15dcd`: sealed at the first task-39-rejected point, step 154221; gate 1/2/3
+>   all ✓, KVM reverted to stock `1396736`.)
 > - **Gate 3 (mid-Postgres branching matrix) ✓** — sealed at the **mid-Postgres** non-quiescent point
 >   (the matrix task 40 could only seal at boot entry); base continuation + 3 entropy-fork branches,
 >   each replayed twice: **every fork reproducible** across its replays, **all four terminal digests
