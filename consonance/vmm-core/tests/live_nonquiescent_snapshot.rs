@@ -449,16 +449,17 @@ fn diag_restore_component_fidelity() {
     let marker = workload_marker();
 
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
-    let (snap, live_components) = {
+    let (snap, live_components, live_sregs) = {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
         let components = live.state_components();
+        let sregs = live.debug_sregs();
         let blob = sealed.vm_state.encode().expect("vm_state encodes");
         let snap = engine
             .snapshot_base(live.guest_memory(), &blob)
             .expect("snapshot the live guest");
         eprintln!("[diag] sealed at step {}; captured live components.", sealed.step);
-        (snap, components)
+        (snap, components, sregs)
     };
 
     // Restore into a fresh VM and capture its components BEFORE stepping.
@@ -468,6 +469,16 @@ fn diag_restore_component_fidelity() {
     b.restore_snapshot(mapping.as_slice(), &vm_state)
         .expect("restore");
     let restored_components = b.state_components();
+    let restored_sregs = b.debug_sregs();
+
+    // Field-level segment diff (live-at-seal vs restored-before-step).
+    eprintln!("[diag] === LIVE sregs (at seal) ===\n{live_sregs}");
+    eprintln!("[diag] === RESTORED sregs (after restore) ===\n{restored_sregs}");
+    for (l, r) in live_sregs.lines().zip(restored_sregs.lines()) {
+        if l != r {
+            eprintln!("[diag] SEGMENT DIFF:\n[diag]   live    : {l}\n[diag]   restored: {r}");
+        }
+    }
 
     // Diff (filter the diagnostic-only V-time anchors that legitimately reset).
     let ignore = ["vtim:last-intercept", "vtim:work-raw"];
