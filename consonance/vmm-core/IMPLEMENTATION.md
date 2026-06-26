@@ -5,6 +5,164 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 40 — single-node branching demo (the multiverse from one snapshot)
+
+Task 40 is the dissonance **join point**: where the live snapshot/branch substrate
+(task 39) meets the bare-Postgres workload (task 37) to show — by hand, not via the
+task-12 explorer — that one snapshot forks into many **reproducible** and
+**divergent** futures. The only change in this crate is a new box-only test,
+`tests/live_branching_demo.rs` (`#[cfg(target_os = "linux")]` + `#[ignore]`, like
+`live_postgres.rs` / `live_snapshot_branch.rs`). **No `src/` change** — it composes
+the existing public API (`SnapshotEngine`, `Vmm::{save_vm_state, restore_snapshot,
+reseed_entropy, state_hash, state_components}`), adds no dependency, and does not touch
+`devices.rs` / the contract / the `state_hash` schema, so M1/M2/P6 + the det-corpus
+goldens are byte-unchanged.
+
+**The demo.** Boot the task-37 Postgres image on the patched backend; seal a quiescent
+snapshot `S` (guest memory → `snapshot-store`, the non-memory machine → the `vm_state`
+codec — at the boot-entry quiescent point, for the reasons below); drop the VM (freeing
+its `perf_event` counter —
+one open at a time, per `live_postgres.rs`); then fork `S` into a **base continuation**
+(restore verbatim, no reseed) and `K` **branches** (`branch(S,seed') = restore(S) +
+reseed_entropy(seed')`, task 39 Phase 4), each materialized as its own CoW view over
+the one shared read-only base. Gate 1 (reproducibility): each fork, replayed `N`× from
+its `(S,seed)`, is **bit-identical** every time. Gate 2 (divergence): at least one
+branch's terminal `state_hash` differs from the base continuation, localized to a
+**per-component** breakdown (`Vmm::state_components`) so the divergence is *shown*.
+
+### The load-bearing finding: where `S` can be sealed (a task-39 substrate limit)
+
+The spec asks to snapshot Postgres **mid-workload**. The task-39 snapshot codec cannot:
+it captures only the **quiescent** machine — `vm-state`'s `VcpuEvents` deliberately
+omits the in-flight-interrupt-injection fields (its own doc names the **HLT** point as
+the snapshot target), and `snapshot::unrepresentable_state` fails closed on any pending
+injection / SMM / triple-fault. A *cooperative, never-halting* Postgres guest (pg-init
+avoids `HLT` because the VMM treats `HLT` as terminal) holds a **LAPIC-timer interrupt
+in flight at essentially every V-time-sync boundary** once the timer is calibrated, so
+`save_vm_state` is rejectable there. Measured directly (instrumented `seal`): of **8392**
+post-readiness boundaries, **0** were snapshummable — 5280 rejected "non-synchronized"
+(not at a V-time intercept) and **3112** rejected "in-flight injection." Task 39 only
+ever validated snapshotting a *bare Multiboot payload* (no LAPIC, no interrupts); the
+interrupt-driven Linux guest is the gap. (Reproduce the distribution with the
+`scan_snapshot_points` diagnostic in the same test file, or seal late by setting
+`SNAPSHOT_MARKER` to a post-readiness banner — the demo then panics with the rejection
+tally instead of silently degrading.)
+
+The reliably-clean boundaries are the **interrupt-free V-time reads of early boot**
+(before the timer ramps). A **second constraint converges on the same root**: the
+entropy fork only surfaces into *guest-observable* state (RAM/serial) if it happens
+**before** the kernel seeds its CRNG — which it does before the first console byte — and
+before Postgres draws its `pg_strong_random` secrets. Seal later and the branches are
+byte-identical guests differing only in host-side entropy bookkeeping ("N identical
+reruns," not a multiverse — quantified in *Box evidence* below). Both constraints point
+to the **boot-entry quiescent point**, so that is where the demo seals `S` by default.
+The forks then each run the **whole** boot→Postgres→workload forward from `S` — a real
+fork into many futures, just **rooted at boot entry rather than mid-workload**. The
+snapshot/branch mechanism exercised is identical (snapshot memory+`vm_state` →
+materialize → restore → reseed → run; the CoW store interns the base **once** and
+materializes `K` private views); only the root is early. (An explicit `SNAPSHOT_MARKER`
+seals later — at a genuinely *running*, post-console VM — to demonstrate the trade-off;
+see *Box evidence*.)
+
+This is a genuine **task-39 follow-up** (snapshot an interrupt-driven guest at an
+arbitrary point): it needs `vm-state`'s `VcpuEvents` extended to carry the in-flight
+injection (`interrupt_injected`/`interrupt_nr`/…) so a restore re-injects it exactly
+once — in the `vm-state` crate, **outside this task's directory**, and a change to a
+frozen delegated interface, so it is deliberately **not** attempted here.
+
+### Deviations considered and rejected
+
+- **Snapshot Postgres mid-workload (the literal spec).** Impossible on this substrate
+  (above): 0/8392 mid-run boundaries are snapshummable. Rejected in favour of the
+  early-boot root, documented loudly rather than worked around.
+- **Extend `vm-state` to capture in-flight injection.** The correct fix, but out of
+  this crate's directory and a frozen-interface change (Conventions rule 1 + 3); it
+  also re-opens task-39's determinism goldens. Left as a task-39 follow-up.
+- **Seal later, at a genuinely-running (post-console) VM** rather than boot entry. More
+  faithful to "snapshot a running machine," and it *is* reproducible — but past the CRNG
+  seed the entropy fork reaches only the `vtim:` bookkeeping (byte-identical guests),
+  failing gate 2's *meaningful*-divergence spirit. Rejected as the default for that
+  reason; reachable via `SNAPSHOT_MARKER` and quoted as trade-off evidence below.
+- **The crash-timing / WAL-recovery branch the spec also lists.** Needs either a
+  cooperating guest (can't modify task-37's pg-init) or the host-side fault seam
+  (`dissonance/environment` — a separate, live frontier). Out of scope; see below.
+
+### Known limitations (set expectations honestly)
+
+- **Bug class.** On RAM-backed storage the realistic divergence class is
+  **concurrency/scheduling**, **not durability/crash-consistency** — there is no
+  durable-vs-volatile split to fault against (the "fsync lied → recover wrong" class
+  rides the deferred host-side RAM-disk model, **D1**). This demo drives only the
+  **entropy-fork** knob the public branch API exposes (`reseed_entropy`); the
+  crash-timing fault is out of scope (needs the host fault seam / a cooperating guest).
+- **Restored-VM run cost.** A restored continuation runs markedly slower than a fresh
+  boot (the V-time injection planner re-arms on restore and single-steps far more — a
+  vmm-core/task-39 restore-path perf characteristic, not a demo bug). Each fork runs the
+  full workload, so the matrix is wall-clock-bounded; `BRANCHES`/`REPLAYS` are env-
+  configurable and the property is **exact** (bit-identity), so it is N-independent —
+  the quoted small matrix is not a weaker claim than a larger one.
+
+### Box evidence (`ssh <det-box>`, det-cfl-v1, patched KVM, CPU-pinned core 4)
+
+**Reproducibility matrix + meaningful divergence — boot-entry seal (the headline).**
+`K=3` branches + the base continuation, each replayed `N=3`× from its `(S, seed)`.
+Every fork is **bit-identical across its 3 replays**, all four digests are **distinct**
+(four reproducible, mutually-divergent futures from one snapshot), and every branch
+diverges from the base in **guest-observable** state (RAM + serial), not just the
+entropy bookkeeping.
+
+`S` sealed at the boot-entry quiescent point (524288 guest pages, 12076 owned). Quoted
+verbatim from the run (`finished in 2271s` ≈ 38 min, core 4):
+
+```
+ fork                       seed                 replays   digest (all equal)
+ base (verbatim replay)     0x0028c0ffee5eedc0     3/3     7ea21de2e3eb3ba2dede8370edda84a6950f97afe7469de8c990f88090845e39
+ branch 0                   0x9e1fb946911491d5     3/3     ed8e26455aaf7b1d60a61e2ffbdd13b82277eb6ccf425c902f54dae142abeb66
+ branch 1                   0x3c46338d10ca15ea     3/3     4256313e065607a43c774dd652b730f818f142661209fb565a767407840ae2c1
+ branch 2                   0xda8eadd3938199ff     3/3     6e45bac610f3492868910706ba86dfbeb7bd5e792c612e4d1ada87ff8cb580a7
+ gate 1 ✓ every fork bit-identical across its 3 replays — reproducible.
+ base shared once store-wide: 12073 unique pages after 3 branches — one read-only base.
+
+ branch 0/1/2 DIVERGE from base; differing components =
+   ["RAM:16M..","regs","control-regs","serial", "vtim:eff-vns","vtim:entropy",...]
+   guest-observable among them = ["RAM:16M..","regs","control-regs","serial"]
+ gate 2 ✓ divergence reaches guest-observable state (RAM + serial), not just bookkeeping.
+```
+
+Four reproducible, **mutually-distinct** futures from one snapshot. The forks' forward
+step counts also differ (base 162609; branches 162616 / 162569 / 162622) — the seeded
+entropy fork takes a **different execution path** (a real interleaving), not merely
+different values, then each path replays bit-identically.
+
+**Trade-off evidence — a genuinely-running-VM seal (sealed later in boot).** The
+substrate *can* also snapshot a running early-boot VM (a separate K=3×N=3 run sealed
+`S` at step 123885 — kernel mid-boot, `legacy console [ttyS0] enabled`, 25146 dirtied
+pages). There the matrix is **equally reproducible** — base `7ea21de2…`, branch0
+`4d93eecc…`, branch1 `d5d7d275…`, branch2 `b238bec8…`, each 3/3 identical and all
+distinct — but the divergence is **only in the host-side `vtim:` entropy bookkeeping**,
+not guest-observable state: the branches are byte-identical guests ("N identical
+reruns"). This is *why* the headline seals at boot entry — by step 123885 the kernel
+CRNG is already seeded, so reseeding the VMM's RDRAND stream no longer reaches Postgres'
+secrets. Same reproducibility either way; meaningful divergence needs the pre-CRNG-seed
+root. (One nice determinism corollary: the **base continuation's terminal digest is
+`7ea21de2…` regardless of where `S` is sealed** — step 0 or step 123885 — and across
+separate box runs. Same seed ⇒ same future.)
+
+**Scale note.** Digests are **exact** (bit-identity), so the property is
+N-independent — the 3/3 matrix is not a weaker claim than 100/100. `BRANCHES`/`REPLAYS`
+are env-configurable; N is bounded only by wall time, since each restored fork runs the
+full boot→workload (~160k V-time intercepts) and the restored-VM injection path runs
+markedly slower than a fresh boot (a vmm-core/task-39 restore-path characteristic). The
+boot-entry K=3×N=3 run took ~38 min on core 4 (each fork runs the full ~162.6k-step
+boot+workload); the running-VM-seal variant ~37 min.
+
+### Box hygiene
+
+Run via `run-patched-ht40.sh` (mirrors `run-patched.sh`): coordinate (abort if
+`kvm_intel` is in use by a concurrent patched run, e.g. task 38), load patched
+`kvm.ko`/`kvm-intel.ko`, run pinned to **core 4**, and **always revert to stock on
+exit** with a verified `lsmod | grep '^kvm ' == 1396736`. Every run above reverted OK.
+
 ## Task 37 — bare-Postgres workload (box gates only here; image lives in `guest/linux/`)
 
 Task 37 boots a real PostgreSQL 17 in the guest and proves it runs **bit-identically
