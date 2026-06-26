@@ -15,7 +15,7 @@
 //! `src/snapshot.rs` unit tests (device-blob byte parsing, the vCPU conversions).
 #![cfg(not(miri))]
 
-use vmm_backend::{Backend, Exit, MockBackend};
+use vmm_backend::{Backend, Exit, MockBackend, VcpuEvents, VcpuState};
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vmm::{GuestRam, Step, Vmm, VtimeWiring, contract_vclock_config};
 use vmm_core::work::ScriptedWork;
@@ -80,6 +80,62 @@ fn snapshot_then_restore_round_trips_a_running_vm() {
     b2.restore_snapshot(eng.materialize(snap).unwrap().as_slice(), &decoded)
         .unwrap();
     assert!(matches!(b2.step().unwrap(), Step::Terminal(_)));
+}
+
+#[test]
+fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
+    // Task 41 (the substrate unlock): a snapshot taken at a **non-quiescent** point —
+    // an interrupt + exception **in flight** in `kvm_vcpu_events` — survives the WHOLE
+    // engine path (vm_state encode → snapshot_base → materialize → restore_snapshot),
+    // and the restored VM's backend carries the exact in-flight events. Task 39 would
+    // have fail-closed-rejected the save here (0/8392 snapshottable on the live guest).
+    let in_flight = VcpuEvents {
+        interrupt_injected: 1,
+        interrupt_nr: 0x34,
+        exception_injected: 1,
+        exception_nr: 14,
+        exception_has_payload: 1,
+        exception_payload: 0xDEAD_BEEF_F00D,
+        nmi_masked: 1,
+        ..Default::default()
+    };
+    // A's backend reports an in-flight vCPU; advance V-time to a synchronized boundary.
+    let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
+    m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+    m.set_msr_filter(&vmm_backend::MsrFilter::default()).unwrap();
+    m.set_state(VcpuState {
+        events: in_flight,
+        ..Default::default()
+    });
+    let mut a = Vmm::new(m, GuestRam::new(RAM).unwrap());
+    a.wire_vtime(
+        VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
+    );
+    a.restore_guest_memory(&booted_image()).unwrap();
+    assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized
+
+    // Save succeeds AT the non-quiescent point and the engine seals it.
+    let mut eng = SnapshotEngine::new(RAM);
+    let vm_state = a
+        .save_vm_state()
+        .expect("a non-quiescent (interrupt-in-flight) point is now snapshottable");
+    let snap = eng
+        .snapshot_base(a.guest_memory(), &vm_state.encode().unwrap())
+        .unwrap();
+
+    // Restore into a fresh VM and confirm the in-flight events reached its backend
+    // (the KVM_SET_VCPU_EVENTS-equivalent), bit for bit.
+    let mut b = vmm(vec![], 9999, 0);
+    b.restore_snapshot(
+        eng.materialize(snap).unwrap().as_slice(),
+        &eng.vm_state(snap).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        b.save_vm_state().unwrap(),
+        vm_state,
+        "the full vm_state (incl. the in-flight events) round-trips through the engine"
+    );
 }
 
 #[test]

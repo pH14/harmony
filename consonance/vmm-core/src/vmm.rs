@@ -755,6 +755,10 @@ impl<B: Backend> Vmm<B> {
                     slave_imr: imr[1],
                 }
             }),
+            // The full `kvm_vcpu_events` (task 41): captured verbatim so an in-flight
+            // interrupt/exception injection at a **non-quiescent** point round-trips.
+            // Zero at a quiescent point, so M1/M2/corpus blobs are unchanged.
+            events: vcpu.events,
         };
         s.devices = snapshot::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -767,26 +771,33 @@ impl<B: Backend> Vmm<B> {
     /// that fills `vm-state`'s plain-data structs from the live machine and
     /// `VmState::encode`s them (task 39 Phase 1).
     ///
-    /// **Quiescent-point assertion (INTEGRATION.md §4).** A snapshot is only sound at
-    /// a quiescent point — after an exit is fully serviced, with nothing armed. So
-    /// `save_vm_state` **fails closed** (a) at an RNG mid-exit boundary
-    /// (`rng_completion_staged`: a seeded RDRAND/RDSEED draw advanced the stream but
-    /// its completion is only staged, not committed — restoring there would re-draw),
-    /// and (b), when V-time is wired, at a non-`vtime_synchronized` point (the exact
-    /// V-time the restored TSC resumes from is known only at a V-time intercept).
-    /// These are the same guards [`Vmm::save_vtime`] enforces. The LAPIC IRR /
-    /// pending-vector state is captured (it is *state*, not an armed plan), and the
-    /// backend's per-entry `set_pending_irq` slot is re-derived from the LAPIC on the
-    /// restored VM's first service — so there is no separate injection plan to
-    /// serialize (vm-state deliberately has no plan field).
+    /// **Non-quiescent capture (task 41).** A snapshot no longer requires a *quiescent*
+    /// machine: the **full** `kvm_vcpu_events` — an interrupt or exception KVM has
+    /// injected but not yet delivered, the `#PF`/`#DB` payload, SMM, triple-fault — is
+    /// captured verbatim (device blob) and re-established on restore, so a point with
+    /// an interrupt **in flight** is now snapshottable rather than fail-closed-rejected.
+    /// The LAPIC IRR/ISR is captured too, and the backend's per-entry `set_pending_irq`
+    /// slot is re-derived from the restored LAPIC / UART on the restored VM's first
+    /// service — so there is no separate injection plan to serialize.
+    ///
+    /// **Two boundary guards remain** (they are about V-time/RNG *exactness*, not about
+    /// the machine being idle). `save_vm_state` **fails closed** (a) at an RNG mid-exit
+    /// boundary (`rng_completion_staged`: a seeded RDRAND/RDSEED draw advanced the
+    /// stream but its completion is only staged, not committed — restoring there would
+    /// re-draw), and (b), when V-time is wired, at a non-`vtime_synchronized` point (the
+    /// exact V-time the restored TSC resumes from is known only at a V-time intercept).
+    /// These are the same guards [`Vmm::save_vtime`] enforces, and are the deliberate
+    /// "staged completion is defined out" choice — a non-idempotent staged completion is
+    /// excluded by snapshotting only at a clean, synchronized boundary, of which an
+    /// interrupt-driven guest has many (every RDTSC the workload takes).
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary, a non-synchronized
-    /// point, or if the live vCPU carries state the representable `vm_state` subset
-    /// cannot round-trip (`kvm_sregs2` flags/pdptrs, or in-flight injection / SMM /
-    /// triple-fault event bookkeeping — see [`crate::snapshot::unrepresentable_state`]);
-    /// [`VmmError::Backend`] if reading the live vCPU state fails (a snapshot **fails
-    /// closed** rather than sealing a zeroed or lossy vCPU).
+    /// point, or if the live vCPU carries the PAE-only `kvm_sregs2` flags/pdptrs or
+    /// `debugregs.flags` (all zero for the 64-bit determinism guest — see
+    /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
+    /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
+    /// lossy vCPU).
     pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
         if self.rng_completion_staged {
             return Err(VmmError::ContractViolation(
@@ -946,8 +957,16 @@ impl<B: Backend> Vmm<B> {
                 None
             }
         };
-        // 2. Build the vCPU state (pure).
-        let vcpu = snapshot::vcpu_state_from(s);
+        // 2. Build the vCPU state (pure). The typed records yield the reduced
+        //    `vm_state` event subset; overwrite `events` with the device blob's **full**
+        //    `kvm_vcpu_events` (task 41) so an in-flight interrupt/exception injection is
+        //    re-established exactly (`KVM_SET_VCPU_EVENTS`), not silently zeroed — the
+        //    device-blob record is a strict superset of the typed one and is
+        //    authoritative. (The inject-seam `set_pending_irq` slot is NOT serialized:
+        //    it is re-derived from the restored LAPIC IRR / UART THRE on the restored
+        //    VM's first `service_pending_irqs`, so there is no separate plan to carry.)
+        let mut vcpu = snapshot::vcpu_state_from(s);
+        vcpu.events = dev.events;
         // 3. Commit the fallible backend restore first — a failure here leaves the
         //    V-time/device state untouched (nothing below this line can reject the
         //    blob; only the hardware counter reset can fail, infrastructurally).
@@ -4720,62 +4739,118 @@ mod tests {
     }
 
     #[test]
-    fn save_vm_state_fails_closed_on_unrepresentable_events() {
-        // Each pending-event field outside the captured subset (in-flight injection /
-        // SMM / triple-fault) fails the snapshot closed if non-zero.
-        let reject = |events: vmm_backend::VcpuEvents, name: &str| {
+    fn save_vm_state_captures_in_flight_events_at_a_non_quiescent_point() {
+        // Task 41 — the headline inversion: a point with an interrupt/exception **in
+        // flight** (the very state task 39 fail-closed-rejected) is now snapshottable,
+        // and the full kvm_vcpu_events round-trips through save → restore → re-save.
+        let in_flight = |events: vmm_backend::VcpuEvents, name: &str| {
             let mut st = nonzero_state();
             st.events = events;
-            let v = full_vmm(st, vec![], 0, 1);
-            assert!(
-                matches!(v.save_vm_state(), Err(VmmError::ContractViolation(_))),
-                "a non-zero {name} must fail the snapshot closed"
+            let a = full_vmm(st, vec![], 0, 1);
+            // Save SUCCEEDS at the non-quiescent point (no fail-closed rejection).
+            let s = a
+                .save_vm_state()
+                .unwrap_or_else(|e| panic!("{name}: an in-flight point must snapshot, got {e:?}"));
+            // The full events are carried in the device blob, verbatim.
+            let dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
+            assert_eq!(dev.events, events, "{name}: full kvm_vcpu_events captured");
+            // Restore into a fresh, equivalently-wired VM and confirm the backend
+            // received the exact in-flight events (KVM_SET_VCPU_EVENTS equivalent).
+            let mut b = full_vmm(VcpuState::default(), vec![], 0, 1);
+            b.restore_vm_state(&s)
+                .expect("restore the in-flight snapshot");
+            assert_eq!(
+                b.backend.save().unwrap().events,
+                events,
+                "{name}: restore re-establishes the in-flight events on the backend"
             );
         };
-        reject(
+        // Each in-flight injection class that task 39 rejected, now captured.
+        in_flight(
             vmm_backend::VcpuEvents {
                 nmi_masked: 1,
                 ..Default::default()
             },
             "nmi_masked",
         );
-        reject(
+        in_flight(
             vmm_backend::VcpuEvents {
                 interrupt_injected: 1,
+                interrupt_nr: 0x34,
                 ..Default::default()
             },
             "interrupt_injected",
         );
-        reject(
+        in_flight(
             vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 14,
                 exception_has_payload: 1,
                 exception_payload: 0xCAFE,
                 ..Default::default()
             },
             "exception_payload",
         );
-        reject(
+        in_flight(
             vmm_backend::VcpuEvents {
                 triple_fault_pending: 1,
                 ..Default::default()
             },
             "triple_fault_pending",
         );
-
-        // The captured subset (a pending exception/NMI/SMI + shadow) is representable,
-        // so it does NOT trip the check — and the KVM validity-mask `flags` is excluded
-        // (it is ioctl metadata, normally non-zero), so a non-zero mask alone is fine.
+        // A clean quiescent point still snapshots (no regression), and the validity-mask
+        // `flags` is carried like any other field now.
         let v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
             v_ok.save_vm_state().is_ok(),
-            "a captured-subset event state must still snapshot"
+            "a quiescent point still snapshots"
         );
-        let mut meta = nonzero_state();
-        meta.events.flags = 0x1F; // KVM_VCPUEVENT_VALID_* bits
-        let v_meta = full_vmm(meta, vec![], 0, 1);
-        assert!(
-            v_meta.save_vm_state().is_ok(),
-            "the kvm_vcpu_events validity mask must not trip the unrepresentable check"
+    }
+
+    #[test]
+    fn snapshot_restore_re_derives_the_in_flight_lapic_irq() {
+        // Task 41 — the inject-seam round-trip. Snapshot a VM with a LAPIC timer vector
+        // pending in IRR but **not yet accepted** (an IRQ raised+routed but not
+        // injected — the `set_pending_irq` slot is live). The seam is NOT serialized;
+        // on restore the vector survives in the LAPIC IRR (device blob) and the restored
+        // VM's first `service_pending_irqs` re-derives the identical pending vector. So
+        // the in-flight injection is reproduced, not dropped.
+        const W: u64 = 100_000_000;
+        let mut exits = arm_timer_exits(1000);
+        exits.push(Exit::Rdtsc); // advance the anchor + synchronize (no vector yet)
+        exits.push(Exit::Rdtsc); // service fires 0x40 into IRR + sets pending; re-sync
+        let mut mock = configured_mock(exits);
+        mock.set_defer_accept(true); // hold 0x40 un-accepted → it stays pending in IRR
+        let mut a = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
+        step_n(&mut a, 5);
+        assert_eq!(
+            a.backend.pending_irq(),
+            Some(0x40),
+            "the timer vector is in flight (routed to the seam, not yet accepted)"
+        );
+
+        // Save at this non-quiescent, synchronized boundary (now permitted).
+        let s = a
+            .save_vm_state()
+            .expect("a point with an in-flight LAPIC vector is snapshottable");
+        // The in-flight vector survived in the captured LAPIC IRR (vector 0x40 → bank
+        // 0x40/32 = 2, bit 0).
+        let dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
+        let irr = dev.lapic.expect("lapic captured").irr;
+        assert_eq!(irr[2] & 1, 1, "vector 0x40 is pending in the captured IRR");
+
+        // Restore into a fresh, equivalently-wired VM and take one step: its first
+        // service must re-derive the SAME pending vector from the restored IRR.
+        let mut bmock = configured_mock(vec![Exit::Rdtsc, Exit::Hlt]);
+        bmock.set_defer_accept(true);
+        let mut b = lapic_vmm(bmock, Box::new(ScriptedWork::at(W)));
+        b.restore_vm_state(&s)
+            .expect("restore the in-flight LAPIC snapshot");
+        b.step().unwrap();
+        assert_eq!(
+            b.backend.pending_irq(),
+            Some(0x40),
+            "the restored VM re-derives the in-flight vector from the LAPIC IRR (seam re-armed)"
         );
     }
 
