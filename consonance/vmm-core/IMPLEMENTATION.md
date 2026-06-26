@@ -5,6 +5,24 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 37 — bare-Postgres workload (box gates only here; image lives in `guest/linux/`)
+
+Task 37 boots a real PostgreSQL 17 in the guest and proves it runs **bit-identically
+twice** on the patched backend. The image build + the full determinism closure are in
+**`guest/linux/IMPLEMENTATION.md`**; the only change in this crate is a new box-only
+test, `tests/live_postgres.rs` (`#[cfg(target_os = "linux")]` + `#[ignore]`, like
+`live_linux_boot.rs`): gate 1 (postgres runs + streams the workload to `ttyS0`) and
+gate 2 (deterministic-twice: bit-identical serial + `state_hash`). No `src/` change —
+`devices.rs`, the CPU/MSR contract, and the `state_hash` schema are untouched, so
+M1/M2/P6 + the det-corpus goldens are byte-unchanged. The test's `DEFAULT_CMDLINE`
+mirrors `live_linux_boot`'s with two task-37 deltas (each documented in that file):
+`random.trust_cpu=off` is **dropped** (under deterministic V-time the CRNG can only
+seed from the trapped+seeded RDRAND/RDSEED, else postgres' blocking `getrandom` hangs)
+and `reboot=t` → **`reboot=t,force`** (a plain poweroff strands in the kernel's
+`device_shutdown` once block I/O has run; the forced triple-fault is a clean terminal).
+Gate 2 also boots twice **in one process, dropping run A's `Vmm` before run B**, so only
+one `perf_event` work counter is open at a time (two would multiplex and skid V-time).
+
 ## Task 36 — guest-kernel rebase (cmdline only here; config lives in `guest/linux/`)
 
 Task 36 rebased the guest kernel from `tinyconfig` to a Kata-class container-host config
