@@ -2583,12 +2583,15 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >   (`interrupt_injected=1`) lands only at a non-synchronized interrupt-window exit and so is **0** at
 >   snapshottable boundaries — its capture→exact-restore is proven by the constructed
 >   `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact` (§5), not the live seal. (PR #12
->   round 5 re-run, commit `22cb9f3`: sealed at the first task-39-rejected point, step 154221;
+>   round 6 re-run, commit `81a0fdf`: sealed at the first task-39-rejected point, step 154221;
 >   `task39_rejected=3112`, `genuine_inflight=1` (the V-time-deterministic workload reaches exactly one
->   LAPIC-IRR-pending point every run). **All three gates now enforce `genuine_inflight >= 1`** — gate 1
->   over its own scan, gates 2/3 via the standalone `assert_run_reaches_genuine_inflight` full-run presence
->   check (`genuine-presence check ✓ — the run reached 1 genuine in-flight point(s) over 162609 steps`), so
->   no headline gate is residual-only. gate 1/2/3 all ✓, full-hash `66b4d4b4…85884164`, KVM reverted to
+>   LAPIC-IRR-pending point every run). All three gates enforce `genuine_inflight >= 1` — gate 1 over its own
+>   scan, gates 2/3 via the standalone `assert_run_reaches_genuine_inflight` full-run presence check
+>   (`genuine-presence check ✓ — the run reached 1 genuine in-flight point(s) over 162609 steps`), so no
+>   headline gate is residual-only. With the **round-6 `events_for_restore`** fix (cap-free clear-on-restore
+>   bits — §4), gate 1's restore succeeds (the first attempt forcing `TRIPLE_FAULT` was rejected
+>   `KVM_SET_VCPU_EVENTS → EINVAL`; this confirmed which validity bits the box's KVM accepts). gate 1/2/3 all
+>   ✓, full-hash `66b4d4b4…85884164` **unchanged** (fresh-target restore is byte-identical), KVM reverted to
 >   stock `1396736`.)
 > - **Gate 3 (mid-Postgres branching matrix) ✓** — sealed at the **mid-Postgres** non-quiescent point
 >   (the matrix task 40 could only seal at boot entry); base continuation + 3 entropy-fork branches,
