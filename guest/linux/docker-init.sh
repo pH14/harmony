@@ -86,6 +86,14 @@ cd "$BUNDLE" || { log "FATAL: no $BUNDLE bundle"; $BB sync; exec $BB reboot -f; 
 runc run "$CID" 2>&1 | $BB tee "$PGLOG" &
 RUNJOB=$!
 
+# Wait for runc to finish CREATING the container before the readiness loops poll
+# alive() — otherwise the first `runc state` (cooperative: a forked round-trip
+# that advances V-time) can race container creation and `alive` would
+# false-FATAL on "does not exist". Under the VMM `runc run` setup is much slower
+# than the shell reaching this point, so the race is real here (it was hidden
+# under QEMU's faster timing).
+until runc state "$CID" >/dev/null 2>&1; do : ; done
+
 # Wait for the REAL server, not the entrypoint's transient init server. The
 # official image runs initdb against a temporary unix-socket server, then prints
 # "PostgreSQL init process complete; ready for start up." and starts the final
