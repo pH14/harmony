@@ -2358,7 +2358,8 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (232), `unison`/`det-corpus` determinism (92) all green.
+should not." Verified on Mac: `vmm-core` (232), `unison`/`det-corpus` determinism (92) all green; and
+**on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
 
@@ -2415,19 +2416,17 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 > `kvm 1396736` after each run — `lsmod` checked first to coordinate with task 38, which was idle).**
 > Self-served via git (push branch → `/root/ht41` checkout → run), per the box briefing.
 >
-> - **Gate 2 (the milestone) ✓** — Postgres snapshotted **mid-workload at step 154221** (right after
->   `database system is ready to accept connections`, a non-quiescent point). The restored continuation
->   is **deterministic-twice** (two restores reach a bit-identical terminal) and **bit-identical** to the
->   un-snapshotted (live) continuation: serial equal, `observable_digest` equal, and — in the run before
->   the `encode_segment`/`encode_events` canonicalization landed — the only differing `state_hash`
->   component was the inert `events` residuals (the `vtim:last-intercept`/`vtim:work-raw` pair is
->   diagnostic-only, **not** in the hash; segments matched at the terminal). With those two
->   don't-care fields now canonicalized **in** the hash (see the restore-transparency section above),
->   gate 2 asserts the **full `state_hash`** matches; the Mac determinism suites (`unison`/`det-corpus`,
->   92) confirm the change preserves determinism. **Same state ⇒ same future — while the system is doing
->   work.** *(The full-hash gate-2 re-run was queued behind another worker's live patched run on the box;
->   the assertion follows directly from the pre-canonicalization run — the sole `state_hash` delta was
->   the events residuals, which canonicalization removes — and the determinism suites.)*
+> - **Gate 2 (the milestone) ✓ — clean FULL-`state_hash` match.** Postgres snapshotted **mid-workload at
+>   step 154221** (right after `database system is ready to accept connections`, a non-quiescent point).
+>   The restored continuation is **deterministic-twice** (two restores reach a bit-identical terminal) and
+>   **bit-identical** to the un-snapshotted (live) continuation on the **full `state_hash`**, serial, and
+>   `observable_digest`:
+>   `live = restored = 66b4d4b4a7b189606ced32568c9ed7292d259912a6ee48b4b98e157d85884164`.
+>   (With the `encode_segment`/`encode_events` canonicalization of the two don't-care fields above; before
+>   it, the sole `state_hash` delta was the inert `events` residuals — segments matched at the terminal,
+>   and the `vtim:last-intercept`/`vtim:work-raw` pair is diagnostic-only, not in the hash.) The Mac
+>   determinism suites (`unison`/`det-corpus`, 92) confirm the canonicalization preserves determinism.
+>   **Same state ⇒ same future — while the system is doing work.**
 > - **Gate 1 (0→N flip) ✓** — on one Postgres run, **3112 of the post-readiness V-time-sync boundaries
 >   carried an in-flight `kvm_vcpu_events` state task 39 fail-closed-rejected** (the rest were
 >   non-synchronized); task 41 makes **all 3112 snapshottable**, and the restore resumes into a runnable
