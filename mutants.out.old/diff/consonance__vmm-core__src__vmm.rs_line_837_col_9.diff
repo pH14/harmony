@@ -1,6 +1,6 @@
 --- consonance/vmm-core/src/vmm.rs
 +++ replace Vmm<B>::restore_vm_state -> Result<(), VmmError> with Ok(())
-@@ -816,141 +816,17 @@
+@@ -829,152 +829,17 @@
      /// [`VmmError::Snapshot`] for a contract mismatch / malformed device blob /
      /// rejected LAPIC; [`VmmError::ContractViolation`] at an RNG mid-exit boundary,
      /// a V-time wiring/rate mismatch, or a rejected entropy blob;
@@ -133,6 +133,17 @@
 -        self.terminal = None;
 -        self.saved_state = None;
 -        self.rng_completion_staged = false;
+-        // Treat the restored VM as a **fresh spawn** for the work counter: re-arm the
+-        // first-entry gate so the next `step` calls `WorkSource::start_run` right
+-        // before VM-entry. The box `perf_event` counter is shared across the vCPU
+-        // thread; restore reset it to 0, but if another (coexisting) VM runs before
+-        // this one is entered, that VM's branches would accumulate into the shared
+-        // counter and be miscounted into the restored V-time. `start_run` at entry
+-        // (which only fires while `!first_entry_done`) re-establishes the per-VM
+-        // baseline, excluding them. Without this re-arm a restored VM silently
+-        // inherits a coexisting VM's branches (a determinism bug on the explorer's
+-        // N-concurrent-VM path).
+-        self.first_entry_done = false;
 -        Ok(())
 +        Ok(()) /* ~ changed by cargo-mutants ~ */
      }

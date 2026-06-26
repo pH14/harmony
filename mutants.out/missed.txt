@@ -1,8 +1,0 @@
-consonance/vmm-core/src/snapshot.rs:539:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:538:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:537:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:534:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:533:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:530:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:529:9: replace || with && in unrepresentable_state
-consonance/vmm-core/src/snapshot.rs:528:9: replace || with && in unrepresentable_state

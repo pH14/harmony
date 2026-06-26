@@ -1,6 +1,6 @@
 --- consonance/vmm-core/src/snapshot.rs
-+++ replace unrepresentable_state -> Option<&'static str> with Some("xyzzy")
-@@ -501,58 +501,17 @@
++++ replace unrepresentable_state -> Option<&'static str> with Some("")
+@@ -501,55 +501,17 @@
  ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued
  ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md
  ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask
@@ -26,32 +26,29 @@
 -    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,
 -    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}
 -    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight
--    // injection / SMM / triple-fault state the restore would silently drop. Listed as
--    // an array (not a `||` chain) so the "any field set" predicate is a single check.
--    let dropped: [u64; 14] = [
--        u64::from(e.exception_injected),
--        u64::from(e.exception_has_error_code),
--        u64::from(e.exception_has_payload),
--        e.exception_payload,
--        u64::from(e.interrupt_injected),
--        u64::from(e.interrupt_nr),
--        u64::from(e.interrupt_soft),
--        u64::from(e.nmi_injected),
--        u64::from(e.nmi_masked),
--        u64::from(e.sipi_vector),
--        u64::from(e.smi_smm),
--        u64::from(e.smi_inside_nmi),
--        u64::from(e.smi_latched_init),
--        u64::from(e.triple_fault_pending),
--    ];
--    if dropped.iter().any(|&x| x != 0) {
+-    // injection / SMM / triple-fault state the restore would silently drop.
+-    let dropped_nonzero = e.exception_injected != 0
+-        || e.exception_has_error_code != 0
+-        || e.exception_has_payload != 0
+-        || e.exception_payload != 0
+-        || e.interrupt_injected != 0
+-        || e.interrupt_nr != 0
+-        || e.interrupt_soft != 0
+-        || e.nmi_injected != 0
+-        || e.nmi_masked != 0
+-        || e.sipi_vector != 0
+-        || e.smi_smm != 0
+-        || e.smi_inside_nmi != 0
+-        || e.smi_latched_init != 0
+-        || e.triple_fault_pending != 0;
+-    if dropped_nonzero {
 -        return Some(
 -            "pending-event state outside the captured subset is set (in-flight injection / SMM / \
 -             triple-fault) — snapshot only at a quiescent point (nothing armed)",
 -        );
 -    }
 -    None
-+    Some("xyzzy") /* ~ changed by cargo-mutants ~ */
++    Some("") /* ~ changed by cargo-mutants ~ */
  }
  
  // ---------------------------------------------------------------------------

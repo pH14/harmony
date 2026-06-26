@@ -1950,6 +1950,50 @@ taskset -c 4 cargo test -p vmm-core --test live_snapshot_branch -- --ignored --t
 
 ## PR #7 cross-model review fixes
 
+### Round 3 — and the class-closing audit
+
+Rounds 1–2 were whack-a-mole on one root cause: *the snapshot omits a live field and the restore
+silently zeros it.* Round 3 fixes the last three instances **and** audits the whole adapter so every
+field is **captured, asserted-zero at save, or rejected at restore** — the blob is provably
+lossless-or-rejected.
+
+- **[P1] Restore refuses a staged backend completion (not just RNG).** Any read-style / MSR / CPUID /
+  determinism exit leaves a reg-write/RIP-advance pending in `kvm_run` that `Backend::restore` does
+  **not** clear, so restoring into such a backend would commit the *old* exit on the next run. A new
+  `Vmm::completion_staged` flag (set each `step` from the serviced exit via `exit_stages_completion`,
+  superset of `rng_completion_staged`) makes `restore_vm_state` require a fresh/committed backend.
+  *(Save still allows a non-RNG staged completion — restore re-executes it idempotently into a fresh
+  target; only RNG, non-idempotent, is refused at save.)*
+- **[P2] Restore rejects a non-empty `timers` section.** vmm-core has no `vtime::TimerQueue` (the only
+  timer is the xAPIC timer, in the device blob), so a non-default `timers` would be silently dropped —
+  now fail-closed. (A vmm-core blob always seals it empty.)
+- **[P2] Save rejects a non-zero `kvm_debugregs.flags`.** DR0..3/DR6/DR7 are carried; the `flags`
+  field is not (KVM defines it as currently always 0) — added to `snapshot::unrepresentable_state`.
+
+**The audit — every `VcpuState` / `vm_state` field:**
+
+| Field | Disposition |
+|---|---|
+| `regs` (all GPRs/RIP/RFLAGS) | captured |
+| `sregs` segments (+ all L/DB/G/AVL/unusable/present/dpl/s bits), GDT/IDT, CR0–CR8, EFER, APIC_BASE | captured |
+| `sregs.flags`, `sregs.pdptrs` | **asserted zero at save** (PAE-only; 64-bit guest) |
+| `xcr0` | captured |
+| `debugregs.db`/`dr6`/`dr7` | captured |
+| `debugregs.flags` | **asserted zero at save** (KVM always-0) |
+| `events` — pending exc vector/code, NMI/SMI pending, interrupt shadow | captured (6-field subset) |
+| `events` — in-flight injection / payload / SMM / triple-fault (14 fields) | **asserted zero at save** |
+| `events.flags` (KVM validity mask) | **excluded** (ioctl metadata, not guest state) |
+| `mp_state`, `msrs`, `xsave` | captured |
+| V-time clock + `tsc_adjust` + entropy | captured (typed `vtime` + device blob + `hypercall`) |
+| xAPIC, 8259 IMRs, PCI latch, 8250 UART, report stream | captured (device blob) |
+| `contract_hash` | captured + compared at restore |
+| `timers` | empty at save; **rejected at restore if non-empty** |
+| staged backend completion (`kvm_run`) | **rejected at restore** (require fresh/committed backend) |
+| backend pending-IRQ slot | re-derived from the LAPIC on the restored VM's first service (not stored) |
+
+Anything added to `VcpuState`/`vm_state` later must extend `unrepresentable_state` (or be captured),
+or `save_vm_state` would seal it lossily — the audit is the contract.
+
 ### Round 2
 
 - **[P1 — determinism] Restore re-arms the first-entry work-counter gate.** `restore_vm_state` now

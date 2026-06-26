@@ -1,6 +1,6 @@
 [
   {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace unrepresentable_state -> Option<&'static str> with None\n@@ -501,55 +501,17 @@\n ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued\n ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md\n ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask\n ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally\n ///   non-zero), not guest state the future depends on.\n ///\n /// Returns `None` for a clean quiescent snapshot. Pure.\n pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {\n-    let s = &vcpu.sregs;\n-    if s.flags != 0 {\n-        return Some(\n-            \"kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \\\n-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable\",\n-        );\n-    }\n-    if s.pdptrs.iter().any(|&p| p != 0) {\n-        return Some(\n-            \"PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \\\n-             is 64-bit / paging-off, where PDPTRs are unused)\",\n-        );\n-    }\n-    let e = &vcpu.events;\n-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n-    // injection / SMM / triple-fault state the restore would silently drop.\n-    let dropped_nonzero = e.exception_injected != 0\n-        || e.exception_has_error_code != 0\n-        || e.exception_has_payload != 0\n-        || e.exception_payload != 0\n-        || e.interrupt_injected != 0\n-        || e.interrupt_nr != 0\n-        || e.interrupt_soft != 0\n-        || e.nmi_injected != 0\n-        || e.nmi_masked != 0\n-        || e.sipi_vector != 0\n-        || e.smi_smm != 0\n-        || e.smi_inside_nmi != 0\n-        || e.smi_latched_init != 0\n-        || e.triple_fault_pending != 0;\n-    if dropped_nonzero {\n-        return Some(\n-            \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n-             triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n-        );\n-    }\n-    None\n+    None /* ~ changed by cargo-mutants ~ */\n }\n \n // ---------------------------------------------------------------------------\n // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.\n //\n // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,\n // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or\n // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and\n",
+    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace unrepresentable_state -> Option<&'static str> with None\n@@ -501,58 +501,17 @@\n ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued\n ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md\n ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask\n ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally\n ///   non-zero), not guest state the future depends on.\n ///\n /// Returns `None` for a clean quiescent snapshot. Pure.\n pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {\n-    let s = &vcpu.sregs;\n-    if s.flags != 0 {\n-        return Some(\n-            \"kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \\\n-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable\",\n-        );\n-    }\n-    if s.pdptrs.iter().any(|&p| p != 0) {\n-        return Some(\n-            \"PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \\\n-             is 64-bit / paging-off, where PDPTRs are unused)\",\n-        );\n-    }\n-    let e = &vcpu.events;\n-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n-    // injection / SMM / triple-fault state the restore would silently drop. Listed as\n-    // an array (not a `||` chain) so the \"any field set\" predicate is a single check.\n-    let dropped: [u64; 14] = [\n-        u64::from(e.exception_injected),\n-        u64::from(e.exception_has_error_code),\n-        u64::from(e.exception_has_payload),\n-        e.exception_payload,\n-        u64::from(e.interrupt_injected),\n-        u64::from(e.interrupt_nr),\n-        u64::from(e.interrupt_soft),\n-        u64::from(e.nmi_injected),\n-        u64::from(e.nmi_masked),\n-        u64::from(e.sipi_vector),\n-        u64::from(e.smi_smm),\n-        u64::from(e.smi_inside_nmi),\n-        u64::from(e.smi_latched_init),\n-        u64::from(e.triple_fault_pending),\n-    ];\n-    if dropped.iter().any(|&x| x != 0) {\n-        return Some(\n-            \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n-             triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n-        );\n-    }\n-    None\n+    None /* ~ changed by cargo-mutants ~ */\n }\n \n // ---------------------------------------------------------------------------\n // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.\n //\n // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,\n // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or\n // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and\n",
     "file": "consonance/vmm-core/src/snapshot.rs",
     "function": {
       "function_name": "unrepresentable_state",
@@ -8,7 +8,7 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 548
+          "line": 551
         },
         "start": {
           "column": 1,
@@ -23,7 +23,7 @@
     "span": {
       "end": {
         "column": 9,
-        "line": 547
+        "line": 550
       },
       "start": {
         "column": 5,
@@ -32,7 +32,7 @@
     }
   },
   {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace unrepresentable_state -> Option<&'static str> with Some(\"\")\n@@ -501,55 +501,17 @@\n ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued\n ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md\n ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask\n ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally\n ///   non-zero), not guest state the future depends on.\n ///\n /// Returns `None` for a clean quiescent snapshot. Pure.\n pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {\n-    let s = &vcpu.sregs;\n-    if s.flags != 0 {\n-        return Some(\n-            \"kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \\\n-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable\",\n-        );\n-    }\n-    if s.pdptrs.iter().any(|&p| p != 0) {\n-        return Some(\n-            \"PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \\\n-             is 64-bit / paging-off, where PDPTRs are unused)\",\n-        );\n-    }\n-    let e = &vcpu.events;\n-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n-    // injection / SMM / triple-fault state the restore would silently drop.\n-    let dropped_nonzero = e.exception_injected != 0\n-        || e.exception_has_error_code != 0\n-        || e.exception_has_payload != 0\n-        || e.exception_payload != 0\n-        || e.interrupt_injected != 0\n-        || e.interrupt_nr != 0\n-        || e.interrupt_soft != 0\n-        || e.nmi_injected != 0\n-        || e.nmi_masked != 0\n-        || e.sipi_vector != 0\n-        || e.smi_smm != 0\n-        || e.smi_inside_nmi != 0\n-        || e.smi_latched_init != 0\n-        || e.triple_fault_pending != 0;\n-    if dropped_nonzero {\n-        return Some(\n-            \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n-             triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n-        );\n-    }\n-    None\n+    Some(\"\") /* ~ changed by cargo-mutants ~ */\n }\n \n // ---------------------------------------------------------------------------\n // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.\n //\n // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,\n // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or\n // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and\n",
+    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace unrepresentable_state -> Option<&'static str> with Some(\"\")\n@@ -501,58 +501,17 @@\n ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued\n ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md\n ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask\n ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally\n ///   non-zero), not guest state the future depends on.\n ///\n /// Returns `None` for a clean quiescent snapshot. Pure.\n pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {\n-    let s = &vcpu.sregs;\n-    if s.flags != 0 {\n-        return Some(\n-            \"kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \\\n-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable\",\n-        );\n-    }\n-    if s.pdptrs.iter().any(|&p| p != 0) {\n-        return Some(\n-            \"PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \\\n-             is 64-bit / paging-off, where PDPTRs are unused)\",\n-        );\n-    }\n-    let e = &vcpu.events;\n-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n-    // injection / SMM / triple-fault state the restore would silently drop. Listed as\n-    // an array (not a `||` chain) so the \"any field set\" predicate is a single check.\n-    let dropped: [u64; 14] = [\n-        u64::from(e.exception_injected),\n-        u64::from(e.exception_has_error_code),\n-        u64::from(e.exception_has_payload),\n-        e.exception_payload,\n-        u64::from(e.interrupt_injected),\n-        u64::from(e.interrupt_nr),\n-        u64::from(e.interrupt_soft),\n-        u64::from(e.nmi_injected),\n-        u64::from(e.nmi_masked),\n-        u64::from(e.sipi_vector),\n-        u64::from(e.smi_smm),\n-        u64::from(e.smi_inside_nmi),\n-        u64::from(e.smi_latched_init),\n-        u64::from(e.triple_fault_pending),\n-    ];\n-    if dropped.iter().any(|&x| x != 0) {\n-        return Some(\n-            \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n-             triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n-        );\n-    }\n-    None\n+    Some(\"\") /* ~ changed by cargo-mutants ~ */\n }\n \n // ---------------------------------------------------------------------------\n // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.\n //\n // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,\n // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or\n // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and\n",
     "file": "consonance/vmm-core/src/snapshot.rs",
     "function": {
       "function_name": "unrepresentable_state",
@@ -40,7 +40,7 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 548
+          "line": 551
         },
         "start": {
           "column": 1,
@@ -55,7 +55,7 @@
     "span": {
       "end": {
         "column": 9,
-        "line": 547
+        "line": 550
       },
       "start": {
         "column": 5,
@@ -64,7 +64,7 @@
     }
   },
   {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace unrepresentable_state -> Option<&'static str> with Some(\"xyzzy\")\n@@ -501,55 +501,17 @@\n ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued\n ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md\n ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask\n ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally\n ///   non-zero), not guest state the future depends on.\n ///\n /// Returns `None` for a clean quiescent snapshot. Pure.\n pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {\n-    let s = &vcpu.sregs;\n-    if s.flags != 0 {\n-        return Some(\n-            \"kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \\\n-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable\",\n-        );\n-    }\n-    if s.pdptrs.iter().any(|&p| p != 0) {\n-        return Some(\n-            \"PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \\\n-             is 64-bit / paging-off, where PDPTRs are unused)\",\n-        );\n-    }\n-    let e = &vcpu.events;\n-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n-    // injection / SMM / triple-fault state the restore would silently drop.\n-    let dropped_nonzero = e.exception_injected != 0\n-        || e.exception_has_error_code != 0\n-        || e.exception_has_payload != 0\n-        || e.exception_payload != 0\n-        || e.interrupt_injected != 0\n-        || e.interrupt_nr != 0\n-        || e.interrupt_soft != 0\n-        || e.nmi_injected != 0\n-        || e.nmi_masked != 0\n-        || e.sipi_vector != 0\n-        || e.smi_smm != 0\n-        || e.smi_inside_nmi != 0\n-        || e.smi_latched_init != 0\n-        || e.triple_fault_pending != 0;\n-    if dropped_nonzero {\n-        return Some(\n-            \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n-             triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n-        );\n-    }\n-    None\n+    Some(\"xyzzy\") /* ~ changed by cargo-mutants ~ */\n }\n \n // ---------------------------------------------------------------------------\n // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.\n //\n // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,\n // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or\n // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and\n",
+    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace unrepresentable_state -> Option<&'static str> with Some(\"xyzzy\")\n@@ -501,58 +501,17 @@\n ///   exception/interrupt/NMI injection, the exception payload, SMM state, a queued\n ///   triple fault): zero at the quiescent point a snapshot is taken (INTEGRATION.md\n ///   §4: after an exit is fully serviced, nothing armed). The KVM validity-mask\n ///   `kvm_vcpu_events.flags` is **excluded** — it is ioctl metadata (normally\n ///   non-zero), not guest state the future depends on.\n ///\n /// Returns `None` for a clean quiescent snapshot. Pure.\n pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {\n-    let s = &vcpu.sregs;\n-    if s.flags != 0 {\n-        return Some(\n-            \"kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \\\n-             the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable\",\n-        );\n-    }\n-    if s.pdptrs.iter().any(|&p| p != 0) {\n-        return Some(\n-            \"PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \\\n-             is 64-bit / paging-off, where PDPTRs are unused)\",\n-        );\n-    }\n-    let e = &vcpu.events;\n-    // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n-    // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n-    // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n-    // injection / SMM / triple-fault state the restore would silently drop. Listed as\n-    // an array (not a `||` chain) so the \"any field set\" predicate is a single check.\n-    let dropped: [u64; 14] = [\n-        u64::from(e.exception_injected),\n-        u64::from(e.exception_has_error_code),\n-        u64::from(e.exception_has_payload),\n-        e.exception_payload,\n-        u64::from(e.interrupt_injected),\n-        u64::from(e.interrupt_nr),\n-        u64::from(e.interrupt_soft),\n-        u64::from(e.nmi_injected),\n-        u64::from(e.nmi_masked),\n-        u64::from(e.sipi_vector),\n-        u64::from(e.smi_smm),\n-        u64::from(e.smi_inside_nmi),\n-        u64::from(e.smi_latched_init),\n-        u64::from(e.triple_fault_pending),\n-    ];\n-    if dropped.iter().any(|&x| x != 0) {\n-        return Some(\n-            \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n-             triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n-        );\n-    }\n-    None\n+    Some(\"xyzzy\") /* ~ changed by cargo-mutants ~ */\n }\n \n // ---------------------------------------------------------------------------\n // The vmm-core device blob: the bytes carried in `vm_state::DeviceBlob`.\n //\n // `vm-state`'s typed records have no home for the userspace xAPIC, the 8259 IMRs,\n // the PCI CONFIG_ADDRESS latch, the 8250 UART (registers + serial capture), or\n // `IA32_TSC_ADJUST`. INTEGRATION.md §4 places all of those in the snapshot, and\n",
     "file": "consonance/vmm-core/src/snapshot.rs",
     "function": {
       "function_name": "unrepresentable_state",
@@ -72,7 +72,7 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 548
+          "line": 551
         },
         "start": {
           "column": 1,
@@ -87,7 +87,7 @@
     "span": {
       "end": {
         "column": 9,
-        "line": 547
+        "line": 550
       },
       "start": {
         "column": 5,
@@ -104,7 +104,7 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 548
+          "line": 551
         },
         "start": {
           "column": 1,
@@ -136,7 +136,7 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 548
+          "line": 551
         },
         "start": {
           "column": 1,
@@ -160,7 +160,7 @@
     }
   },
   {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -532,17 +532,17 @@\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n-        || e.triple_fault_pending != 0;\n+        && /* ~ changed by cargo-mutants ~ */ e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n     None\n }\n",
+    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -536,17 +536,17 @@\n         u64::from(e.nmi_injected),\n         u64::from(e.nmi_masked),\n         u64::from(e.sipi_vector),\n         u64::from(e.smi_smm),\n         u64::from(e.smi_inside_nmi),\n         u64::from(e.smi_latched_init),\n         u64::from(e.triple_fault_pending),\n     ];\n-    if dropped.iter().any(|&x| x != 0) {\n+    if dropped.iter().any(|&x| x == /* ~ changed by cargo-mutants ~ */ 0) {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n     None\n }\n \n",
     "file": "consonance/vmm-core/src/snapshot.rs",
     "function": {
       "function_name": "unrepresentable_state",
@@ -168,7 +168,7 @@
       "span": {
         "end": {
           "column": 2,
-          "line": 548
+          "line": 551
         },
         "start": {
           "column": 1,
@@ -177,849 +177,17 @@
       }
     },
     "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:540:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 540
-      },
-      "start": {
-        "column": 9,
-        "line": 540
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -531,17 +531,17 @@\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n-        || e.smi_latched_init != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n     None\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:539:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 539
-      },
-      "start": {
-        "column": 9,
-        "line": 539
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -530,17 +530,17 @@\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n-        || e.smi_inside_nmi != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:538:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 538
-      },
-      "start": {
-        "column": 9,
-        "line": 538
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -529,17 +529,17 @@\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n-        || e.smi_smm != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:537:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 537
-      },
-      "start": {
-        "column": 9,
-        "line": 537
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -528,17 +528,17 @@\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n-        || e.sipi_vector != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:536:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 536
-      },
-      "start": {
-        "column": 9,
-        "line": 536
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -527,17 +527,17 @@\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n-        || e.nmi_masked != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:535:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 535
-      },
-      "start": {
-        "column": 9,
-        "line": 535
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -526,17 +526,17 @@\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n-        || e.nmi_injected != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:534:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 534
-      },
-      "start": {
-        "column": 9,
-        "line": 534
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -525,17 +525,17 @@\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n-        || e.interrupt_soft != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:533:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 533
-      },
-      "start": {
-        "column": 9,
-        "line": 533
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -524,17 +524,17 @@\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n-        || e.interrupt_nr != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:532:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 532
-      },
-      "start": {
-        "column": 9,
-        "line": 532
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -523,17 +523,17 @@\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n-        || e.interrupt_injected != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:531:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 531
-      },
-      "start": {
-        "column": 9,
-        "line": 531
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -522,17 +522,17 @@\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n-        || e.exception_payload != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:530:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 530
-      },
-      "start": {
-        "column": 9,
-        "line": 530
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -521,17 +521,17 @@\n     }\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n-        || e.exception_has_payload != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:529:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 529
-      },
-      "start": {
-        "column": 9,
-        "line": 529
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace || with && in unrepresentable_state\n@@ -520,17 +520,17 @@\n         );\n     }\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n-        || e.exception_has_error_code != 0\n+        && /* ~ changed by cargo-mutants ~ */ e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:528:9: replace || with && in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "&&",
-    "span": {
-      "end": {
-        "column": 11,
-        "line": 528
-      },
-      "start": {
-        "column": 9,
-        "line": 528
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -519,17 +519,17 @@\n              is 64-bit / paging-off, where PDPTRs are unused)\",\n         );\n     }\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n-    let dropped_nonzero = e.exception_injected != 0\n+    let dropped_nonzero = e.exception_injected == /* ~ changed by cargo-mutants ~ */ 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:527:48: replace != with == in unrepresentable_state",
+    "name": "consonance/vmm-core/src/snapshot.rs:544:34: replace != with == in unrepresentable_state",
     "package": "vmm-core",
     "replacement": "==",
     "span": {
       "end": {
-        "column": 50,
-        "line": 527
-      },
-      "start": {
-        "column": 48,
-        "line": 527
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -520,17 +520,17 @@\n         );\n     }\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n-        || e.exception_has_error_code != 0\n+        || e.exception_has_error_code == /* ~ changed by cargo-mutants ~ */ 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:528:39: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 41,
-        "line": 528
-      },
-      "start": {
-        "column": 39,
-        "line": 528
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -521,17 +521,17 @@\n     }\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n-        || e.exception_has_payload != 0\n+        || e.exception_has_payload == /* ~ changed by cargo-mutants ~ */ 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:529:36: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 38,
-        "line": 529
-      },
-      "start": {
         "column": 36,
-        "line": 529
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -522,17 +522,17 @@\n     let e = &vcpu.events;\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n-        || e.exception_payload != 0\n+        || e.exception_payload == /* ~ changed by cargo-mutants ~ */ 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:530:32: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
+        "line": 544
+      },
+      "start": {
         "column": 34,
-        "line": 530
-      },
-      "start": {
-        "column": 32,
-        "line": 530
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -523,17 +523,17 @@\n     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n-        || e.interrupt_injected != 0\n+        || e.interrupt_injected == /* ~ changed by cargo-mutants ~ */ 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:531:33: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 35,
-        "line": 531
-      },
-      "start": {
-        "column": 33,
-        "line": 531
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -524,17 +524,17 @@\n     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n-        || e.interrupt_nr != 0\n+        || e.interrupt_nr == /* ~ changed by cargo-mutants ~ */ 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:532:27: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 29,
-        "line": 532
-      },
-      "start": {
-        "column": 27,
-        "line": 532
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -525,17 +525,17 @@\n     // — EXCLUDING the validity-mask `flags`. Any non-zero value is in-flight\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n-        || e.interrupt_soft != 0\n+        || e.interrupt_soft == /* ~ changed by cargo-mutants ~ */ 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:533:29: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 31,
-        "line": 533
-      },
-      "start": {
-        "column": 29,
-        "line": 533
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -526,17 +526,17 @@\n     // injection / SMM / triple-fault state the restore would silently drop.\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n-        || e.nmi_injected != 0\n+        || e.nmi_injected == /* ~ changed by cargo-mutants ~ */ 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:534:27: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 29,
-        "line": 534
-      },
-      "start": {
-        "column": 27,
-        "line": 534
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -527,17 +527,17 @@\n     let dropped_nonzero = e.exception_injected != 0\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n-        || e.nmi_masked != 0\n+        || e.nmi_masked == /* ~ changed by cargo-mutants ~ */ 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:535:25: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 27,
-        "line": 535
-      },
-      "start": {
-        "column": 25,
-        "line": 535
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -528,17 +528,17 @@\n         || e.exception_has_error_code != 0\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n-        || e.sipi_vector != 0\n+        || e.sipi_vector == /* ~ changed by cargo-mutants ~ */ 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:536:26: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 28,
-        "line": 536
-      },
-      "start": {
-        "column": 26,
-        "line": 536
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -529,17 +529,17 @@\n         || e.exception_has_payload != 0\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n-        || e.smi_smm != 0\n+        || e.smi_smm == /* ~ changed by cargo-mutants ~ */ 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:537:22: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 24,
-        "line": 537
-      },
-      "start": {
-        "column": 22,
-        "line": 537
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -530,17 +530,17 @@\n         || e.exception_payload != 0\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n-        || e.smi_inside_nmi != 0\n+        || e.smi_inside_nmi == /* ~ changed by cargo-mutants ~ */ 0\n         || e.smi_latched_init != 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:538:29: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 31,
-        "line": 538
-      },
-      "start": {
-        "column": 29,
-        "line": 538
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -531,17 +531,17 @@\n         || e.interrupt_injected != 0\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n-        || e.smi_latched_init != 0\n+        || e.smi_latched_init == /* ~ changed by cargo-mutants ~ */ 0\n         || e.triple_fault_pending != 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n     None\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:539:31: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 33,
-        "line": 539
-      },
-      "start": {
-        "column": 31,
-        "line": 539
-      }
-    }
-  },
-  {
-    "diff": "--- consonance/vmm-core/src/snapshot.rs\n+++ replace != with == in unrepresentable_state\n@@ -532,17 +532,17 @@\n         || e.interrupt_nr != 0\n         || e.interrupt_soft != 0\n         || e.nmi_injected != 0\n         || e.nmi_masked != 0\n         || e.sipi_vector != 0\n         || e.smi_smm != 0\n         || e.smi_inside_nmi != 0\n         || e.smi_latched_init != 0\n-        || e.triple_fault_pending != 0;\n+        || e.triple_fault_pending == /* ~ changed by cargo-mutants ~ */ 0;\n     if dropped_nonzero {\n         return Some(\n             \"pending-event state outside the captured subset is set (in-flight injection / SMM / \\\n              triple-fault) — snapshot only at a quiescent point (nothing armed)\",\n         );\n     }\n     None\n }\n",
-    "file": "consonance/vmm-core/src/snapshot.rs",
-    "function": {
-      "function_name": "unrepresentable_state",
-      "return_type": "-> Option<&'static str>",
-      "span": {
-        "end": {
-          "column": 2,
-          "line": 548
-        },
-        "start": {
-          "column": 1,
-          "line": 491
-        }
-      }
-    },
-    "genre": "BinaryOperator",
-    "name": "consonance/vmm-core/src/snapshot.rs:540:35: replace != with == in unrepresentable_state",
-    "package": "vmm-core",
-    "replacement": "==",
-    "span": {
-      "end": {
-        "column": 37,
-        "line": 540
-      },
-      "start": {
-        "column": 35,
-        "line": 540
+        "line": 544
       }
     }
   },

@@ -1,13 +1,13 @@
 --- consonance/vmm-core/src/vmm.rs
 +++ replace Vmm<B>::save_vm_state -> Result<vm_state::VmState, VmmError> with Ok(Default::default())
-@@ -767,40 +767,17 @@
-     /// restored VM's first service — so there is no separate injection plan to
-     /// serialize (vm-state deliberately has no plan field).
-     ///
+@@ -770,50 +770,17 @@
      /// # Errors
-     /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary or a
-     /// non-synchronized point; [`VmmError::Backend`] if reading the live vCPU state
-     /// fails (a snapshot **fails closed** rather than sealing a zeroed vCPU).
+     /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary, a non-synchronized
+     /// point, or if the live vCPU carries state the representable `vm_state` subset
+     /// cannot round-trip (`kvm_sregs2` flags/pdptrs, or in-flight injection / SMM /
+     /// triple-fault event bookkeeping — see [`crate::snapshot::unrepresentable_state`]);
+     /// [`VmmError::Backend`] if reading the live vCPU state fails (a snapshot **fails
+     /// closed** rather than sealing a zeroed or lossy vCPU).
      pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
 -        if self.rng_completion_staged {
 -            return Err(VmmError::ContractViolation(
@@ -32,6 +32,16 @@
 -            Some(s) => s.clone(),
 -            None => self.backend.save()?,
 -        };
+-        // Fail closed on machine state the representable `vm_state` subset would
+-        // silently zero on restore (`kvm_sregs2` flags/pdptrs, or pending-event
+-        // injection/SMM/triple-fault bookkeeping) — sealing a lossy blob is worse
+-        // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
+-        // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
+-        if let Some(reason) = snapshot::unrepresentable_state(&vcpu) {
+-            return Err(VmmError::ContractViolation(format!(
+-                "save_vm_state: {reason}"
+-            )));
+-        }
 -        Ok(self.build_vm_state(&vcpu))
 +        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
      }

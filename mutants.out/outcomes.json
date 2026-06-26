@@ -8,7 +8,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 12.153617166,
+          "duration": 12.017943459,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -21,7 +21,7 @@
         },
         {
           "phase": "Test",
-          "duration": 2.50037325,
+          "duration": 2.649771416,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -49,7 +49,7 @@
                 "column": 1
               },
               "end": {
-                "line": 548,
+                "line": 551,
                 "column": 2
               }
             }
@@ -60,7 +60,7 @@
               "column": 5
             },
             "end": {
-              "line": 547,
+              "line": 550,
               "column": 9
             }
           },
@@ -74,7 +74,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 5.784952709,
+          "duration": 6.106051042,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -87,7 +87,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.688218792,
+          "duration": 0.7584985,
           "process_status": {
             "Failure": 100
           },
@@ -117,7 +117,7 @@
                 "column": 1
               },
               "end": {
-                "line": 548,
+                "line": 551,
                 "column": 2
               }
             }
@@ -142,7 +142,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 8.591044375,
+          "duration": 9.204157209,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -155,7 +155,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.874538375,
+          "duration": 0.881350666,
           "process_status": {
             "Failure": 100
           },
@@ -173,7 +173,7 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:540:9: replace || with && in unrepresentable_state",
+          "name": "consonance/vmm-core/src/snapshot.rs:544:34: replace != with == in unrepresentable_state",
           "package": "vmm-core",
           "file": "consonance/vmm-core/src/snapshot.rs",
           "function": {
@@ -185,87 +185,19 @@
                 "column": 1
               },
               "end": {
-                "line": 548,
+                "line": 551,
                 "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 540,
-              "column": 9
+              "line": 544,
+              "column": 34
             },
             "end": {
-              "line": 540,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_540_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_540_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 4.499040125,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 1.000085917,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:510:16: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 510,
-              "column": 16
-            },
-            "end": {
-              "line": 510,
-              "column": 18
+              "line": 544,
+              "column": 36
             }
           },
           "replacement": "==",
@@ -273,12 +205,12 @@
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_510_col_16.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_510_col_16.diff",
+      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_544_col_34.log",
+      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_544_col_34.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 22.545287791,
+          "duration": 4.358982084,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -291,7 +223,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.523712208,
+          "duration": 0.696220125,
           "process_status": {
             "Failure": 100
           },
@@ -321,7 +253,7 @@
                 "column": 1
               },
               "end": {
-                "line": 548,
+                "line": 551,
                 "column": 2
               }
             }
@@ -332,7 +264,7 @@
               "column": 5
             },
             "end": {
-              "line": 547,
+              "line": 550,
               "column": 9
             }
           },
@@ -341,12 +273,12 @@
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_509_col_5_001.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_509_col_5_001.diff",
+      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_509_col_5_002.log",
+      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_509_col_5_002.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 26.638292666,
+          "duration": 23.492936958,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -359,7 +291,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.460259375,
+          "duration": 0.533404042,
           "process_status": {
             "Failure": 100
           },
@@ -389,7 +321,7 @@
                 "column": 1
               },
               "end": {
-                "line": 548,
+                "line": 551,
                 "column": 2
               }
             }
@@ -400,7 +332,7 @@
               "column": 5
             },
             "end": {
-              "line": 547,
+              "line": 550,
               "column": 9
             }
           },
@@ -409,12 +341,12 @@
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_509_col_5_002.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_509_col_5_002.diff",
+      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_509_col_5_001.log",
+      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_509_col_5_001.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 31.023776875,
+          "duration": 29.363129,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -427,1759 +359,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.765603833,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:539:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 539,
-              "column": 9
-            },
-            "end": {
-              "line": 539,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_539_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_539_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 9.366471708,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 3.534847208,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:536:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 536,
-              "column": 9
-            },
-            "end": {
-              "line": 536,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_536_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_536_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 4.15343625,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.972393625,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:538:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 538,
-              "column": 9
-            },
-            "end": {
-              "line": 538,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_538_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_538_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 10.194691041,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.267235958,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:537:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 537,
-              "column": 9
-            },
-            "end": {
-              "line": 537,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_537_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_537_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 6.515298459,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.3866317089999995,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:535:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 535,
-              "column": 9
-            },
-            "end": {
-              "line": 535,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_535_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_535_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 4.259420875,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.918119959,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:534:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 534,
-              "column": 9
-            },
-            "end": {
-              "line": 534,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_534_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_534_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 3.933351833,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 2.604333709,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:532:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 532,
-              "column": 9
-            },
-            "end": {
-              "line": 532,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_532_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_532_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 9.130028458,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.886810084,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:531:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 531,
-              "column": 9
-            },
-            "end": {
-              "line": 531,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_531_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_531_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 10.065054959,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.571521,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:533:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 533,
-              "column": 9
-            },
-            "end": {
-              "line": 533,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_533_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_533_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 9.246705917,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 3.524646042,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:530:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 530,
-              "column": 9
-            },
-            "end": {
-              "line": 530,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_530_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_530_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 6.394898583,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 4.026679375,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:529:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 529,
-              "column": 9
-            },
-            "end": {
-              "line": 529,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_529_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_529_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 4.177003209,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 3.215701,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:527:48: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 527,
-              "column": 48
-            },
-            "end": {
-              "line": 527,
-              "column": 50
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_527_col_48.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_527_col_48.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 6.341041916,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.467197458,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:528:9: replace || with && in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 528,
-              "column": 9
-            },
-            "end": {
-              "line": 528,
-              "column": 11
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "MissedMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_528_col_9.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_528_col_9.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 7.002753,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 3.14187275,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:528:39: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 528,
-              "column": 39
-            },
-            "end": {
-              "line": 528,
-              "column": 41
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_528_col_39.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_528_col_39.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 7.385690125,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.512781625,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:529:36: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 529,
-              "column": 36
-            },
-            "end": {
-              "line": 529,
-              "column": 38
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_529_col_36.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_529_col_36.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.166155125,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.466150417,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:530:32: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 530,
-              "column": 32
-            },
-            "end": {
-              "line": 530,
-              "column": 34
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_530_col_32.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_530_col_32.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.831086792,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.484366,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:531:33: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 531,
-              "column": 33
-            },
-            "end": {
-              "line": 531,
-              "column": 35
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_531_col_33.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_531_col_33.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.095445834,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.474435625,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:532:27: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 532,
-              "column": 27
-            },
-            "end": {
-              "line": 532,
-              "column": 29
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_532_col_27.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_532_col_27.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.761868542,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.457972125,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:533:29: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 533,
-              "column": 29
-            },
-            "end": {
-              "line": 533,
-              "column": 31
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_533_col_29.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_533_col_29.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.839577042,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.459947333,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:534:27: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 534,
-              "column": 27
-            },
-            "end": {
-              "line": 534,
-              "column": 29
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_534_col_27.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_534_col_27.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.8058005,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.459371167,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:535:25: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 535,
-              "column": 25
-            },
-            "end": {
-              "line": 535,
-              "column": 27
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_535_col_25.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_535_col_25.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.861903292000001,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.478115709,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:536:26: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 536,
-              "column": 26
-            },
-            "end": {
-              "line": 536,
-              "column": 28
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_536_col_26.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_536_col_26.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.935333834,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.465758667,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:537:22: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 537,
-              "column": 22
-            },
-            "end": {
-              "line": 537,
-              "column": 24
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_537_col_22.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_537_col_22.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.939978458,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.471610167,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:538:29: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 538,
-              "column": 29
-            },
-            "end": {
-              "line": 538,
-              "column": 31
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_538_col_29.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_538_col_29.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.997116959,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.465779042,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:539:31: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 539,
-              "column": 31
-            },
-            "end": {
-              "line": 539,
-              "column": 33
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_539_col_31.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_539_col_31.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 9.028087542,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.461099708,
-          "process_status": {
-            "Failure": 100
-          },
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--verbose",
-            "--package=vmm-core@0.1.0",
-            "--all-features"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "consonance/vmm-core/src/snapshot.rs:540:35: replace != with == in unrepresentable_state",
-          "package": "vmm-core",
-          "file": "consonance/vmm-core/src/snapshot.rs",
-          "function": {
-            "function_name": "unrepresentable_state",
-            "return_type": "-> Option<&'static str>",
-            "span": {
-              "start": {
-                "line": 491,
-                "column": 1
-              },
-              "end": {
-                "line": 548,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 540,
-              "column": 35
-            },
-            "end": {
-              "line": 540,
-              "column": 37
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_540_col_35.log",
-      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_540_col_35.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 8.975461,
-          "process_status": "Success",
-          "argv": [
-            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "nextest",
-            "run",
-            "--no-run",
-            "--verbose",
-            "--package=vmm-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.453171459,
+          "duration": 0.46227625,
           "process_status": {
             "Failure": 100
           },
@@ -2234,7 +414,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 9.025394916,
+          "duration": 9.66614025,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -2247,7 +427,75 @@
         },
         {
           "phase": "Test",
-          "duration": 0.48044425,
+          "duration": 0.465318959,
+          "process_status": {
+            "Failure": 100
+          },
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--verbose",
+            "--package=vmm-core@0.1.0",
+            "--all-features"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "consonance/vmm-core/src/snapshot.rs:510:16: replace != with == in unrepresentable_state",
+          "package": "vmm-core",
+          "file": "consonance/vmm-core/src/snapshot.rs",
+          "function": {
+            "function_name": "unrepresentable_state",
+            "return_type": "-> Option<&'static str>",
+            "span": {
+              "start": {
+                "line": 491,
+                "column": 1
+              },
+              "end": {
+                "line": 551,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 510,
+              "column": 16
+            },
+            "end": {
+              "line": 510,
+              "column": 18
+            }
+          },
+          "replacement": "==",
+          "genre": "BinaryOperator"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/consonance__vmm-core__src__snapshot.rs_line_510_col_16.log",
+      "diff_path": "diff/consonance__vmm-core__src__snapshot.rs_line_510_col_16.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 31.947068916,
+          "process_status": "Success",
+          "argv": [
+            "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "nextest",
+            "run",
+            "--no-run",
+            "--verbose",
+            "--package=vmm-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.513268291,
           "process_status": {
             "Failure": 100
           },
@@ -2302,7 +550,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 6.956790917,
+          "duration": 8.289124375,
           "process_status": "Success",
           "argv": [
             "/Users/phemberger/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -2315,7 +563,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.566129125,
+          "duration": 0.612697584,
           "process_status": {
             "Failure": 100
           },
@@ -2331,13 +579,13 @@
       ]
     }
   ],
-  "total_mutants": 34,
-  "missed": 8,
-  "caught": 26,
+  "total_mutants": 8,
+  "missed": 0,
+  "caught": 8,
   "timeout": 0,
   "unviable": 0,
   "success": 0,
-  "start_time": "2026-06-26T05:54:03.221527Z",
-  "end_time": "2026-06-26T05:55:51.482563Z",
+  "start_time": "2026-06-26T05:56:28.161147Z",
+  "end_time": "2026-06-26T05:57:16.308402Z",
   "cargo_mutants_version": "27.1.0"
 }

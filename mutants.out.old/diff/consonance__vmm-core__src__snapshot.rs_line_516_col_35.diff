@@ -1,0 +1,21 @@
+--- consonance/vmm-core/src/snapshot.rs
++++ replace != with == in unrepresentable_state
+@@ -508,17 +508,17 @@
+ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'static str> {
+     let s = &vcpu.sregs;
+     if s.flags != 0 {
+         return Some(
+             "kvm_sregs2 flags is set (e.g. PDPTRS_VALID) — the vm_state subset does not carry it; \
+              the determinism guest is 64-bit / paging-off, so a snapshot here is unrepresentable",
+         );
+     }
+-    if s.pdptrs.iter().any(|&p| p != 0) {
++    if s.pdptrs.iter().any(|&p| p == /* ~ changed by cargo-mutants ~ */ 0) {
+         return Some(
+             "PAE PDPTRs are non-zero — not carried by the vm_state subset (the determinism guest \
+              is 64-bit / paging-off, where PDPTRs are unused)",
+         );
+     }
+     let e = &vcpu.events;
+     // Every `VcpuEvents` field NOT in the captured subset {exception_pending,
+     // exception_nr, exception_error_code, nmi_pending, smi_pending, interrupt_shadow}

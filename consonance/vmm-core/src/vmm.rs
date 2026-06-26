@@ -373,6 +373,18 @@ pub struct Vmm<B: Backend> {
     /// RDTSCP/IO/MSR/CPUID completions are **idempotent on replay** (positional
     /// work / re-queried device-or-contract value), so they do not set this.
     rng_completion_staged: bool,
+    /// `true` when the **last serviced exit staged *any* backend completion** (a
+    /// read-style IO/MMIO load, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a determinism
+    /// `Rdtsc`/`Rdtscp`/`Rdrand`/`Rdseed`) whose register-write/RIP-advance is only
+    /// committed on the **next** `KVM_RUN`. Superset of [`Self::rng_completion_staged`]
+    /// (which is the *non-idempotent* RNG subset). A snapshot may be *saved* at such a
+    /// boundary for non-RNG exits (restore re-executes the instruction idempotently),
+    /// but a snapshot must **not be restored into a backend that has one staged**: the
+    /// pending completion lives in the backend's `kvm_run`, survives `Backend::restore`,
+    /// and would commit the *old* exit's reg-write/RIP-advance on the next run — so
+    /// [`Vmm::restore_vm_state`] requires a fresh/committed backend. Set after each
+    /// `step`'s `run` from the serviced exit; `false` initially and after a restore.
+    completion_staged: bool,
     /// `true` when the current point is a **V-time intercept boundary** — the last
     /// serviced exit was a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a TSC
     /// MSR), or the VM is fresh (work 0) — so the **exact** effective V-time is known:
@@ -435,6 +447,7 @@ impl<B: Backend> Vmm<B> {
             saved_state: None,
             vtime: None,
             rng_completion_staged: false,
+            completion_staged: false,
             // A fresh VM is at work 0: the effective V-time is exactly `vns_base`, so
             // a snapshot here is exact (synchronized).
             vtime_synchronized: true,
@@ -832,12 +845,18 @@ impl<B: Backend> Vmm<B> {
     /// [`VmmError::Backend`]/[`VmmError::Vtime`]/[`VmmError::Work`] from the
     /// backend/clock/counter.
     pub fn restore_vm_state(&mut self, s: &vm_state::VmState) -> Result<(), VmmError> {
-        // 0. Refuse at an RNG mid-exit boundary (a staged, uncommitted completion
-        //    lives in the backend; restoring over it would shift the next draw).
-        if self.rng_completion_staged {
+        // 0. Refuse if **any** backend completion is staged (not just RNG). A
+        //    read-style / MSR / CPUID / determinism exit this VM serviced leaves a
+        //    pending reg-write/RIP-advance in the backend's `kvm_run`; `Backend::restore`
+        //    does not clear it, so the next run would commit the *old* exit's
+        //    completion over the restored state. Restore only into a fresh or committed
+        //    backend (step once more to commit, or restore into a freshly-booted VM).
+        if self.completion_staged {
             return Err(VmmError::ContractViolation(
-                "restore_vm_state at an RNG mid-exit boundary: a seeded RDRAND/RDSEED completion is \
-                 staged (not committed). Restore only at a clean boundary (step once more first)."
+                "restore_vm_state into a backend with a staged completion: the VM just serviced a \
+                 read/MSR/CPUID/determinism exit whose completion is pending in kvm_run and is not \
+                 cleared by restore — it would commit the old exit on the next run. Restore only \
+                 into a fresh or committed backend (step once more, or use a freshly-booted VM)."
                     .to_string(),
             ));
         }
@@ -846,6 +865,18 @@ impl<B: Backend> Vmm<B> {
         //     silently diverge on restore (INTEGRATION.md §4 `contract_hash`).
         if s.contract_hash != contract::contract_hash() {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
+        }
+        // 1a-bis. A non-empty timer queue cannot be applied: vmm-core has no
+        //     `vtime::TimerQueue` (the only timer is the xAPIC timer, carried in the
+        //     device blob), so a non-default `timers` section would be silently
+        //     dropped. Fail closed (a well-formed vmm-core blob always seals it empty).
+        if s.timers != vm_state::TimerQueueState::default() {
+            return Err(VmmError::ContractViolation(
+                "restore_vm_state: snapshot carries a non-empty timer queue, but vmm-core has no \
+                 TimerQueue to apply it — restoring would silently drop it. (A vmm-core snapshot \
+                 always seals an empty timer queue; the xAPIC timer rides the device blob.)"
+                    .to_string(),
+            ));
         }
         // 1b. Decode the vmm-core device blob (total, never panics).
         let dev = snapshot::decode_device_blob(&s.devices.0)?;
@@ -958,6 +989,9 @@ impl<B: Backend> Vmm<B> {
         self.terminal = None;
         self.saved_state = None;
         self.rng_completion_staged = false;
+        // The restored backend is fresh (the next run re-executes from the restored
+        // RIP) — no completion is pending.
+        self.completion_staged = false;
         // Treat the restored VM as a **fresh spawn** for the work counter: re-arm the
         // first-entry gate so the next `step` calls `WorkSource::start_run` right
         // before VM-entry. The box `perf_event` counter is shared across the vCPU
@@ -1063,6 +1097,12 @@ impl<B: Backend> Vmm<B> {
         // re-entry did not commit the staged completion.)
         let exit = self.backend.run()?;
         self.rng_completion_staged = false;
+        // This `run` committed any completion staged by the prior step; the exit we
+        // are about to service stages a new one iff it is a read-style / MSR / CPUID /
+        // determinism exit (its `complete_*` below). Recorded so `restore_vm_state`
+        // can refuse to restore into a backend with a pending completion (which would
+        // commit the old exit's reg-write/RIP-advance on the next run).
+        self.completion_staged = exit_stages_completion(&exit);
         // Complete delivery of any vector the backend just **accepted** (issued
         // KVM_INTERRUPT for) — *after* the entry, *before* dispatching the exit, so a
         // guest APIC read / EOI in this exit (and any snapshot) sees a LAPIC vector
@@ -1916,6 +1956,26 @@ impl<B: Backend> Vmm<B> {
         }
         v
     }
+}
+
+/// Whether servicing `exit` stages a backend completion (a register-write and/or
+/// RIP-advance committed on the next `KVM_RUN`): every read-style / MSR / CPUID /
+/// determinism exit calls a `complete_*`. Write-style (`Io`/`Mmio` store), `Hlt`,
+/// `Shutdown`, `Deadline`, and the unmodeled `Hypercall` resume with nothing pending.
+/// Drives [`Vmm::completion_staged`] (restore must not run over a staged completion).
+fn exit_stages_completion(exit: &Exit) -> bool {
+    matches!(
+        exit,
+        Exit::Io { write: None, .. }
+            | Exit::Mmio { write: None, .. }
+            | Exit::Rdmsr { .. }
+            | Exit::Wrmsr { .. }
+            | Exit::Cpuid { .. }
+            | Exit::Rdtsc
+            | Exit::Rdtscp
+            | Exit::Rdrand { .. }
+            | Exit::Rdseed { .. }
+    )
 }
 
 /// A modeled byte port (the 8250 UART block and isa-debug-exit) is
@@ -4552,10 +4612,16 @@ mod tests {
         // re-run `WorkSource::start_run` (the per-VM baseline) — else, on the shared
         // perf counter, a coexisting VM's branches between restore and entry would be
         // miscounted into the restored V-time. Resetting `first_entry_done` makes
-        // `start_run` fire again.
+        // `start_run` fire again. (The serial-OUT steps stage no completion, so the
+        // restore is at a clean boundary — see the staged-completion guard.)
         let starts = std::rc::Rc::new(Cell::new(0u32));
+        let out = |b: u8| Exit::Io {
+            port: 0x3F8,
+            size: 1,
+            write: Some(u32::from(b)),
+        };
         let mut v = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc]),
+            configured_mock(vec![out(b'x'), out(b'y')]),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(
@@ -4568,16 +4634,58 @@ mod tests {
             )
             .unwrap(),
         );
-        v.step().unwrap(); // first guest entry → start_run fires (1)
+        // Snapshot the fresh VM (synchronized, no staged completion).
+        let snap = v.save_vm_state().expect("fresh VM is a clean boundary");
+        assert_eq!(starts.get(), 0, "no guest entry yet");
+        v.step().unwrap(); // first guest entry (OUT) → start_run fires (1)
         assert_eq!(starts.get(), 1);
-        let snap = v.save_vm_state().expect("clean synchronized boundary");
-        v.restore_vm_state(&snap).expect("restore");
+        v.restore_vm_state(&snap)
+            .expect("restore at a clean (no staged completion) boundary");
         v.step().unwrap(); // restored VM's first entry → start_run fires AGAIN (2)
         assert_eq!(
             starts.get(),
             2,
             "restore must re-arm the first-entry work prepare (treat as a fresh spawn)"
         );
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_a_staged_non_rng_completion() {
+        // Restoring into a backend that just serviced a non-RNG read/MSR/CPUID/
+        // determinism exit (a completion pending in kvm_run that restore does not
+        // clear) is refused — it would commit the old exit on the next run.
+        let mut src = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
+        step_n(&mut src, 6);
+        let snap = src.save_vm_state().unwrap();
+
+        // A target VM that just serviced an RDTSC (non-RNG) has a staged completion.
+        let mut tgt = full_vmm(VcpuState::default(), vec![Exit::Rdtsc], 10, 1);
+        tgt.step().unwrap(); // RDTSC serviced → completion staged, NOT an RNG draw
+        assert!(matches!(
+            tgt.restore_vm_state(&snap),
+            Err(VmmError::ContractViolation(_))
+        ));
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_a_non_empty_timer_queue() {
+        // vmm-core has no TimerQueue, so a non-empty `timers` section can't be applied
+        // — it must be rejected, not silently dropped.
+        let mut a = full_vmm(VcpuState::default(), mutate_exits(), 500, 1);
+        step_n(&mut a, 6);
+        let mut s = a.save_vm_state().unwrap();
+        s.timers.entries.push(vm_state::TimerEntry {
+            deadline_vns: 1000,
+            seq: 0,
+            token: 7,
+            period_vns: 0,
+        });
+        s.timers.next_seq = 1;
+        let mut b = full_vmm(VcpuState::default(), vec![], 100, 1);
+        assert!(matches!(
+            b.restore_vm_state(&s),
+            Err(VmmError::ContractViolation(_))
+        ));
     }
 
     #[test]
@@ -4598,6 +4706,15 @@ mod tests {
         let v2 = full_vmm(pdptr, vec![], 0, 1);
         assert!(matches!(
             v2.save_vm_state(),
+            Err(VmmError::ContractViolation(_))
+        ));
+
+        // `kvm_debugregs.flags` (not carried) — DR0..3/DR6/DR7 ARE carried.
+        let mut dbg = nonzero_state();
+        dbg.debugregs.flags = 1;
+        let v3 = full_vmm(dbg, vec![], 0, 1);
+        assert!(matches!(
+            v3.save_vm_state(),
             Err(VmmError::ContractViolation(_))
         ));
     }
