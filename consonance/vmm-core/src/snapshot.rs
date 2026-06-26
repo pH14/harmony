@@ -627,31 +627,37 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
 }
 
 /// The canonical events to hand to `KVM_SET_VCPU_EVENTS` on **restore** — like
-/// [`canonical_events`], but with the clear-on-restore validity bits forced **on**.
+/// [`canonical_events`], but with the **cap-free** clear-on-restore validity bits forced **on**.
 ///
 /// KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as **"leave that sub-record
 /// UNCHANGED"**, not "clear it". So restoring a quiescent snapshot (no NMI-pending /
-/// interrupt-shadow / SMM / triple-fault) with those bits clear onto a **non-fresh** vCPU —
-/// a committed / previously-run vCPU, i.e. the branch or restore-in-place case — would
-/// **retain the previous occupant's stale event state**: the restored VM would depend on its
-/// predecessor, a determinism leak (PR #12 round 6, codex/GPT-5.5). Setting
-/// `NMI_PENDING | SHADOW | SMM | TRIPLE_FAULT` **unconditionally**, with the canonical
+/// interrupt-shadow / SMM) with those bits clear onto a **non-fresh** vCPU — a committed /
+/// previously-run vCPU, i.e. the branch or restore-in-place case — would **retain the previous
+/// occupant's stale event state**: the restored VM would depend on its predecessor, a
+/// determinism leak (PR #12 round 6, codex/GPT-5.5). Forcing the bits on, with the canonical
 /// payloads (which are 0 when inactive), makes restore explicitly **clear** that state, so the
 /// restored vCPU is independent of its predecessor (restore is idempotent w.r.t. target state).
 ///
-/// `SIPI_VECTOR` stays **gated** (it is SET-only — KVM never reports it on GET and applying a
-/// spurious vector-0 SIPI could perturb a wait-for-SIPI AP; round-2 handling). `PAYLOAD` stays
-/// gated on `exception_has_payload` — the exception sub-record itself (injected/nr/error_code)
-/// is applied by KVM **unconditionally**, so a clean snapshot already overwrites a stale one;
-/// only the payload interpretation is gated, and it is moot when no exception is injected.
-/// The **`state_hash`** uses [`canonical_events`] (active-only flags), not this — so forcing
-/// the bits here does **not** move any golden (the hashed form is unchanged).
+/// **Which bits can be forced is constrained by KVM's SET-side capability gating.** A validity
+/// bit whose capability is not enabled is rejected with `-EINVAL` *even with a zero payload*. We
+/// force exactly the bits this backend's KVM accepts unconditionally:
+/// - `NMI_PENDING`, `SHADOW` — core ABI, always valid.
+/// - `SMM` — supported by default (the box's `KVM_GET_VCPU_EVENTS` reports `flags` with
+///   `VALID_SMM` set: `0x0D = NMI_PENDING|SHADOW|SMM`).
+/// - `TRIPLE_FAULT` — **NOT forced**: it requires `KVM_CAP_X86_TRIPLE_FAULT_EVENT`, which this
+///   backend does not enable, so setting the bit is `-EINVAL` (the round-6 box run proved this).
+///   With the cap off there is **no** triple-fault sub-record to leak, so leaving it gated on
+///   active (via [`canonical_events`]) is both safe and complete here.
+/// - `PAYLOAD` — stays gated on `exception_has_payload` (its cap is likewise not enabled); the
+///   exception sub-record (injected/nr/error_code) is applied by KVM unconditionally anyway.
+/// - `SIPI_VECTOR` — stays gated (SET-only; round-2 handling).
+///
+/// The **`state_hash`** uses [`canonical_events`] (active-only flags), not this — so forcing the
+/// bits here does **not** move any golden (the hashed form is unchanged).
 pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::VcpuEvents {
     let mut c = canonical_events(e);
-    c.flags |= KVM_VCPUEVENT_VALID_NMI_PENDING
-        | KVM_VCPUEVENT_VALID_SHADOW
-        | KVM_VCPUEVENT_VALID_SMM
-        | KVM_VCPUEVENT_VALID_TRIPLE_FAULT;
+    c.flags |=
+        KVM_VCPUEVENT_VALID_NMI_PENDING | KVM_VCPUEVENT_VALID_SHADOW | KVM_VCPUEVENT_VALID_SMM;
     c
 }
 
@@ -1759,29 +1765,35 @@ mod tests {
             out
         }
 
-        // A vCPU left dirty by a previous occupant; a clean snapshot has NONE of those.
+        // A vCPU left dirty by a previous occupant; a clean snapshot has NONE of those. (No
+        // stale triple-fault: KVM_CAP_X86_TRIPLE_FAULT_EVENT is not enabled by this backend, so
+        // no triple-fault sub-record exists to leak — and its bit cannot be forced; see below.)
         let stale = vmm_backend::VcpuEvents {
             nmi_pending: 1,
             smi_smm: 1,
             smi_pending: 1,
             interrupt_shadow: 1,
-            triple_fault_pending: 1,
             ..Default::default()
         };
         let clean = vmm_backend::VcpuEvents::default();
 
-        // `events_for_restore` forces the gated clear-on-restore bits ON (and only those).
+        // `events_for_restore` forces the CAP-FREE clear-on-restore bits ON (NMI_PENDING |
+        // SHADOW | SMM), and ONLY those.
         let setv = events_for_restore(&clean);
-        let force = KVM_VCPUEVENT_VALID_NMI_PENDING
-            | KVM_VCPUEVENT_VALID_SHADOW
-            | KVM_VCPUEVENT_VALID_SMM
-            | KVM_VCPUEVENT_VALID_TRIPLE_FAULT;
+        let force =
+            KVM_VCPUEVENT_VALID_NMI_PENDING | KVM_VCPUEVENT_VALID_SHADOW | KVM_VCPUEVENT_VALID_SMM;
         assert_eq!(
             setv.flags & force,
             force,
-            "events_for_restore sets NMI_PENDING|SHADOW|SMM|TRIPLE_FAULT unconditionally"
+            "events_for_restore sets NMI_PENDING|SHADOW|SMM unconditionally"
         );
-        // SIPI stays gated (SET-only); PAYLOAD stays gated on exception_has_payload.
+        // TRIPLE_FAULT / PAYLOAD / SIPI stay gated — forcing TRIPLE_FAULT/PAYLOAD is -EINVAL
+        // without their caps, SIPI is SET-only. For a quiescent snapshot all three are clear.
+        assert_eq!(
+            setv.flags & KVM_VCPUEVENT_VALID_TRIPLE_FAULT,
+            0,
+            "TRIPLE_FAULT is NOT forced (cap not enabled → would be -EINVAL)"
+        );
         assert_eq!(
             setv.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR,
             0,
@@ -1793,8 +1805,9 @@ mod tests {
             "PAYLOAD stays gated on exception_has_payload"
         );
 
-        // Restoring the clean snapshot onto the STALE vCPU clears every stale sub-record, and
-        // yields the SAME result as restoring onto a fresh vCPU — restore is target-independent.
+        // Restoring the clean snapshot onto the STALE vCPU clears every (cap-free) stale
+        // sub-record, and yields the SAME result as restoring onto a fresh vCPU — restore is
+        // target-independent for the bits this KVM lets us force.
         let restored_stale = kvm_set(&stale, &setv);
         let restored_fresh = kvm_set(&vmm_backend::VcpuEvents::default(), &setv);
         assert_eq!(restored_stale.nmi_pending, 0, "stale NMI-pending cleared");
@@ -1805,21 +1818,17 @@ mod tests {
             "stale interrupt-shadow cleared"
         );
         assert_eq!(
-            restored_stale.triple_fault_pending, 0,
-            "stale triple-fault cleared"
-        );
-        assert_eq!(
             restored_stale, restored_fresh,
             "restore is independent of the prior occupant (stale target == fresh target)"
         );
 
         // Contrast — the active-only `canonical_events` would LEAK the stale state (the exact
-        // bug): its NMI_PENDING/SHADOW/SMM/TRIPLE_FAULT bits are clear for a quiescent record,
-        // so KVM leaves the prior occupant's sub-records untouched.
+        // bug): its NMI_PENDING/SHADOW/SMM bits are clear for a quiescent record, so KVM leaves
+        // the prior occupant's sub-records untouched.
         let leaked = kvm_set(&stale, &canonical_events(&clean));
         assert_ne!(
             leaked, restored_fresh,
-            "canonical_events (gated bits) leaks the prior occupant's NMI/SMM/shadow/triple-fault"
+            "canonical_events (gated bits) leaks the prior occupant's NMI/SMM/shadow"
         );
         assert_eq!(
             leaked.nmi_pending, 1,

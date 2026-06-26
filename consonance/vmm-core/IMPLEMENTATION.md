@@ -2396,17 +2396,27 @@ blob can never reintroduce the exact residuals the save path strips. Pinned by
 active-only mask `canonical_events` builds (a quiescent record → `flags = 0`) is correct for the
 **`state_hash`**, but replaying it onto a **non-fresh** vCPU — a committed / previously-run vCPU, i.e. the
 **branch or restore-in-place** case — would leave the *prior occupant's* stale NMI-pending /
-interrupt-shadow / SMM / triple-fault intact: the restored VM would depend on its predecessor. *Fix:*
-`restore_vm_state` uses **`events_for_restore`** (not `canonical_events`), which forces the
-`NMI_PENDING | SHADOW | SMM | TRIPLE_FAULT` validity bits **on** with the canonical (zero-when-inactive)
-payloads, so KVM explicitly **clears** that state — restore is idempotent w.r.t. target state. `SIPI` stays
-gated (SET-only); `PAYLOAD` stays gated on `exception_has_payload` (the exception sub-record is applied by
-KVM unconditionally). *Golden-safe:* the **`state_hash` still uses `canonical_events`** (active-only), so no
-hashed byte and no M1/M2/det-corpus golden moves (verified — `det_corpus_o2` observable golden unmoved); on
-a fresh box target the restored state is byte-identical (gate 2's `66b4d4b4…` is unchanged). Pinned by
+interrupt-shadow / SMM intact: the restored VM would depend on its predecessor. *Fix:* `restore_vm_state`
+uses **`events_for_restore`** (not `canonical_events`), which forces the clear-on-restore validity bits
+**on** with the canonical (zero-when-inactive) payloads, so KVM explicitly **clears** that state — restore
+is idempotent w.r.t. target state.
+
+*Which bits can be forced is constrained by KVM's SET-side capability gating* — a validity bit whose cap is
+not enabled is `-EINVAL` **even with a zero payload**. The first round-6 attempt forced all four
+(`NMI_PENDING|SHADOW|SMM|TRIPLE_FAULT`) and the **box rejected the restore** (`KVM_SET_VCPU_EVENTS` →
+`EINVAL`): `KVM_VCPUEVENT_VALID_TRIPLE_FAULT` requires `KVM_CAP_X86_TRIPLE_FAULT_EVENT`, which this backend
+does **not** enable (it enables only `DETERMINISTIC_INTERCEPTS` + `USER_SPACE_MSR`). So `events_for_restore`
+forces exactly the **cap-free** bits the box's KVM accepts: `NMI_PENDING | SHADOW | SMM` (the box's
+`KVM_GET_VCPU_EVENTS` reports `flags = 0x0D = NMI_PENDING|SHADOW|SMM` — direct proof these SET). `TRIPLE_FAULT`
+stays gated on active (with the cap off there is **no** triple-fault sub-record to leak, so this is complete
+here); `PAYLOAD` stays gated on `exception_has_payload`; `SIPI` stays gated (SET-only). *Golden-safe:* the
+**`state_hash` still uses `canonical_events`** (active-only), so no hashed byte and no M1/M2/det-corpus golden
+moves (verified — `det_corpus_o2` observable golden unmoved); on a fresh box target the restored state is
+byte-identical (gate 2's `66b4d4b4…` is unchanged). Pinned by
 `events_for_restore_clears_stale_target_state_regardless_of_freshness` — it models `KVM_SET_VCPU_EVENTS`
-semantics, pre-loads a stale vCPU, and proves the restore clears it + equals a fresh-target restore, while
-the old `canonical_events` form **leaks** (verified to FAIL without the forced bits).
+semantics, pre-loads a stale vCPU, and proves the restore clears the cap-free sub-records + equals a
+fresh-target restore, while the old `canonical_events` form **leaks** (verified to FAIL without the forced
+bits).
 
 **5. What gate 2 proves — and what it does *not* yet prove (the honest headline; PR #12 rounds 2–3).**
 The task-41 unlock is the **`kvm_vcpu_events` capture**: task 39 fail-closed-**rejected** every point whose
