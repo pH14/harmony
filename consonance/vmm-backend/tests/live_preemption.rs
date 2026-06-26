@@ -112,12 +112,14 @@ const SPIN_CODE: &[u8] = &[0x31, 0xC0, 0x85, 0xC0, 0x74, 0xFC];
 ///   dec cx            ; 49
 ///   jnz .loop         ; 75 FD   (3 conditional branches: taken,taken,not-taken)
 ///   mov al, 0x42      ; B0 42
-///   out 0x3F8, al     ; E6 F8   ← Exit::Io at work == 3, short of any larger deadline
+///   out 0xF8, al      ; E6 F8   (OUT imm8: 8-bit port 0xF8) ← Exit::Io at work == 3
 ///   hlt               ; F4
 /// ```
 const EXIT_EARLY_CODE: &[u8] = &[
     0xB9, 0x03, 0x00, 0x49, 0x75, 0xFD, 0xB0, 0x42, 0xE6, 0xF8, 0xF4,
 ];
+/// The port `EXIT_EARLY_CODE`'s `OUT imm8` (`E6 F8`) writes to (8-bit immediate).
+const EXIT_EARLY_PORT: u16 = 0xF8;
 
 const ENTRY: u64 = 0x1000;
 const RAM: usize = 0x10000;
@@ -203,7 +205,7 @@ fn guest_exit_before_deadline_returns_that_exit() {
     let (mut backend, _mem) = boot_with(EXIT_EARLY_CODE);
     match backend.run_until(Vtime(1_000_000)).expect("run_until") {
         Exit::Io {
-            port: 0x3F8,
+            port: EXIT_EARLY_PORT,
             size: 1,
             write: Some(v),
         } => {
