@@ -35,8 +35,10 @@ Naming them here so the dependency is explicit:
   rulings, which turned out to be one model). The guest runs against an opaque, versioned
   **`Environment`**; a fault is just an environment answering a service **non-nominally** at one
   seam, `decide(point) -> Answer` (mechanism → the services, policy → the explorer). Control
-  plane = out-of-band verbs `snapshot`/`branch`/`replay`/`run`/`hash` (no bare `restore`). The
-  two loops are the **Timeline** (one run) and the **Multiverse** (search across runs). **Network
+  transport = out-of-band verbs `snapshot`/`branch`/`replay`/`run`/`perturb`/`hash` (no bare
+  `restore`); faults split into a **host control plane** (machine-level) and layerable **guest
+  control planes**. The two loops are the **Variation** (one run) and the **Theme** (search across
+  runs). **Network
   locus = host-side `pv-net`** (no in-guest `tc`): a host L2 switch with V-time-scheduled
   delivery, every fault an op on that schedule. Spins out the four `dissonance/*` crates
   (24/25/26/12; task 24 absorbs the old "fault scheduler" row 11). **Open:** "real TCP replays
@@ -52,10 +54,10 @@ Naming them here so the dependency is explicit:
 | 09 | `vm_state` serialization framework | **specced** (`tasks/09-vm-state.md`); delegable-now | R1 ruling, **task 06 (merged)**, snapshot-store; device section folds in 13 | versioned, round-trip-tested blob codec |
 | 10 | Guest VMCALL transport shim | **merged (PR #23)** | task 01 + task 04 (both merged); §1 ABI final | `Transport` impl composing with task 01 `Client` |
 | 11 | Re-baseline CPU/MSR contract → det-cfl-v1 | **merged (PR #42)** | box | det-cfl-v1 (the old "fault scheduler" row folded into task 24) |
-| 12 | `dissonance/explorer` (Timeline/Multiverse, coverage/corpus) | **specced** (`tasks/12-explorer.md`); delegable-now | dissonance design (`docs/DISSONANCE.md`); contracts of 24/25 | pure-logic exploration engine (policy) |
+| 12 | `dissonance/explorer` (Variation/Theme, coverage/corpus) | **specced** (`tasks/12-explorer.md`); delegable-now | dissonance design (`docs/DISSONANCE.md`); contracts of 24/25 | pure-logic exploration engine (policy) |
 | 13 | `lapic` crate (userspace xAPIC + V-time timer) | **merged (PR #38)** | R1 ruling, vtime | pure-logic xAPIC register state machine + timer |
 | 24 | `dissonance/environment` (decide seam + seeded faults) | **specced** (`tasks/24-environment.md`); delegable-now | dissonance design (`docs/DISSONANCE.md`) | `Environment`/`Answer`/catalog + `SeededEnv` + recorded-replay |
-| 25 | `dissonance/control-proto` (control-plane wire types + codec) | **specced** (`tasks/25-control-proto.md`); delegable-now | dissonance design | versioned length-delimited codec; Tier-1 fuzz target |
+| 25 | `dissonance/control-proto` (control-transport wire types + codec) | **specced** (`tasks/25-control-proto.md`); delegable-now | dissonance design | versioned length-delimited codec; Tier-1 fuzz target |
 | 26 | `dissonance/pv-net` (host L2 switch + V-time fault schedule) | **specced** (`tasks/26-pv-net.md`); delegable-now | dissonance design | pure-logic switch + delivery scheduler + fault→schedule |
 | 29 | Telemetry console (out-of-band observation tap + std-only web viewer) | **specced** (`tasks/29-telemetry-console.md`); delegable-now | none — observation-only; `Observer` tap + `Event` schema defined locally | leaf `consonance/telemetry` crate + `console` SSE bin; vmm-core `step()` `emit` seam is frontier (INTEGRATION.md §8) |
 | — | vmm-core skeleton (Phase 0) | frontier | box | boots a payload, serial console |
