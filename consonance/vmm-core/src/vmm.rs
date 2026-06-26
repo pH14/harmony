@@ -540,6 +540,40 @@ impl<B: Backend> Vmm<B> {
         snapshot::has_active_event_injection(&self.current_vcpu().events)
     }
 
+    /// `true` iff a **genuine guest interrupt is pending delivery but not yet accepted** —
+    /// a real vector raised into the LAPIC IRR and re-arbitrated as deliverable (e.g. the
+    /// periodic V-time LAPIC timer), or the legacy COM1 ExtINT line asserting — held in the
+    /// inject seam awaiting the next safe VM-entry.
+    ///
+    /// This is the **architecturally in-flight event** that the determinism overlay makes
+    /// observable at a *synchronized* (snapshottable) boundary. Unlike a `kvm_vcpu_events`
+    /// `interrupt_injected` bit — which exists only at a non-synchronized interrupt-window
+    /// exit, where [`Vmm::save_vm_state`] fails closed — a vector pending in the IRR sits in
+    /// the captured LAPIC state (device blob) and is **re-derived exactly** on restore (the
+    /// IRR→ISR acceptance transition models a hypervisor-side event, so vmm-core leaves the
+    /// vector in IRR until acceptance — see [`lapic::Lapic::peek_interrupt`] and
+    /// `snapshot_restore_re_derives_the_in_flight_lapic_irq`). It is **distinct from an
+    /// inert `kvm_vcpu_events` modifier residual** (a stale post-delivery `interrupt.nr`):
+    /// this is a committed, *undelivered* interrupt. The live gate seals on this (or on
+    /// [`Vmm::has_active_event_injection`]) to prove restore of a true in-flight event.
+    ///
+    /// Re-arbitrates (`advance_to(now)`, idempotent with the run loop's per-step service)
+    /// and peeks **without** moving IRR→ISR, so it does not perturb the snapshot. Returns
+    /// `false` when no LAPIC is wired (M1/M2/corpus) and no serial line is asserting.
+    pub fn has_pending_guest_interrupt(&mut self) -> Result<bool, VmmError> {
+        if self.lapic.is_none() {
+            return Ok(self.pending_serial_vector().is_some());
+        }
+        let now = self.lapic_now_vns()?;
+        // Scope the `&mut lapic` borrow so it ends before `self.pending_serial_vector()`.
+        let lapic_pending = {
+            let lapic = self.lapic.as_mut().expect("is_some checked above");
+            lapic.advance_to(now);
+            lapic.peek_interrupt().is_some()
+        };
+        Ok(lapic_pending || self.pending_serial_vector().is_some())
+    }
+
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
     /// guest RAM size. On the box, KVM reads the guest through this same backing, so
     /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
@@ -4924,6 +4958,46 @@ mod tests {
         assert!(
             in_flight.has_active_event_injection(),
             "an injected-but-undelivered interrupt is a genuine active injection"
+        );
+    }
+
+    #[test]
+    fn has_pending_guest_interrupt_reflects_a_pending_lapic_vector() {
+        // The OTHER genuine seal condition — the one a synchronized (snapshottable)
+        // boundary can actually carry: a real interrupt raised into the LAPIC IRR but not
+        // yet accepted (the in-flight event captured in the device blob, re-derived on
+        // restore). A quiescent LAPIC is `false`; a deferred-accept timer vector pending in
+        // the IRR is `true`. Pins the wrapper (`-> true`/`-> false` mutant) and the
+        // `lapic_pending || serial` arbitration.
+        const W: u64 = 100_000_000;
+        // Quiescent: a wired LAPIC with no timer programmed → nothing pending in the IRR.
+        let mut q = lapic_vmm(
+            configured_mock(vec![Exit::Rdtsc, Exit::Hlt]),
+            Box::new(ScriptedWork::at(W)),
+        );
+        q.step().unwrap();
+        assert!(
+            !q.has_pending_guest_interrupt().unwrap(),
+            "a quiescent LAPIC has no pending guest interrupt"
+        );
+        // In flight: arm the timer, let it fire into the IRR, hold it un-accepted
+        // (defer_accept) — exactly a snapshottable in-flight point. `peek_interrupt`
+        // re-derives 0x40 without moving IRR→ISR.
+        let mut exits = arm_timer_exits(1000);
+        exits.push(Exit::Rdtsc);
+        exits.push(Exit::Rdtsc);
+        let mut mock = configured_mock(exits);
+        mock.set_defer_accept(true);
+        let mut a = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
+        step_n(&mut a, 5);
+        assert_eq!(
+            a.backend.pending_irq(),
+            Some(0x40),
+            "0x40 is in flight in the IRR (routed to the seam, not yet accepted)"
+        );
+        assert!(
+            a.has_pending_guest_interrupt().unwrap(),
+            "a vector pending in the LAPIC IRR is a genuine in-flight guest interrupt"
         );
     }
 
