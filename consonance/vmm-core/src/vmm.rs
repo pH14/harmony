@@ -770,10 +770,13 @@ impl<B: Backend> Vmm<B> {
                     slave_imr: imr[1],
                 }
             }),
-            // The full `kvm_vcpu_events` (task 41): captured verbatim so an in-flight
-            // interrupt/exception injection at a **non-quiescent** point round-trips.
-            // Zero at a quiescent point, so M1/M2/corpus blobs are unchanged.
-            events: vcpu.events,
+            // The full `kvm_vcpu_events` (task 41), **canonicalized** so an in-flight
+            // interrupt/exception injection round-trips while KVM's inert modifier
+            // residuals (a stale `interrupt.nr`/`exception.nr`, the GET-only validity
+            // bits) collapse to the clean record — replaying those raw into
+            // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
+            // point, so M1/M2/corpus blobs are unchanged.
+            events: snapshot::canonical_events(&vcpu.events),
         };
         s.devices = snapshot::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -986,7 +989,8 @@ impl<B: Backend> Vmm<B> {
         // state so the box log shows exactly which in-flight fields are set + the RIP +
         // the LAPIC IRR/ISR. Gated by env so normal runs are unaffected. Remove before
         // the final commit.
-        if std::env::var_os("NQ_DEBUG").is_some() && snapshot::has_inflight_injection(&vcpu.events) {
+        if std::env::var_os("NQ_DEBUG").is_some() && snapshot::has_inflight_injection(&vcpu.events)
+        {
             let (irr, isr) = dev
                 .lapic
                 .as_ref()
@@ -4781,18 +4785,23 @@ mod tests {
             let s = a
                 .save_vm_state()
                 .unwrap_or_else(|e| panic!("{name}: an in-flight point must snapshot, got {e:?}"));
-            // The full events are carried in the device blob, verbatim.
+            // The events are carried in the device blob in **canonical** form (active
+            // injection preserved; KVM's inert modifier residuals collapsed).
+            let want = snapshot::canonical_events(&events);
             let dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
-            assert_eq!(dev.events, events, "{name}: full kvm_vcpu_events captured");
+            assert_eq!(
+                dev.events, want,
+                "{name}: canonical kvm_vcpu_events captured"
+            );
             // Restore into a fresh, equivalently-wired VM and confirm the backend
-            // received the exact in-flight events (KVM_SET_VCPU_EVENTS equivalent).
+            // received the canonical in-flight events (KVM_SET_VCPU_EVENTS equivalent).
             let mut b = full_vmm(VcpuState::default(), vec![], 0, 1);
             b.restore_vm_state(&s)
                 .expect("restore the in-flight snapshot");
             assert_eq!(
                 b.backend.save().unwrap().events,
-                events,
-                "{name}: restore re-establishes the in-flight events on the backend"
+                want,
+                "{name}: restore re-establishes the canonical in-flight events on the backend"
             );
         };
         // Each in-flight injection class that task 39 rejected, now captured.

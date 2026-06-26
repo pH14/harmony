@@ -495,6 +495,107 @@ pub(crate) fn fill_vcpu_state(out: &mut VmState, s: &vmm_backend::VcpuState) {
     out.timers = TimerQueueState::default();
 }
 
+// `kvm_vcpu_events.flags` validity-mask bits (KVM uapi, stable ABI). On a
+// `KVM_GET_VCPU_EVENTS` KVM reports several of these set unconditionally (they mark a
+// sub-record as *present in the GET*, not *active*); on a `KVM_SET_VCPU_EVENTS` the bit
+// instead means "apply this sub-record." vmm-core carries the `flags` field through the
+// device blob, so it owns rebuilding it for the SET — see [`canonical_events`]. (The
+// backend's `to_kvm_events` passes `flags` through verbatim; vmm-core must hand it the
+// SET-meaning mask, not the GET-meaning one.)
+const KVM_VCPUEVENT_VALID_NMI_PENDING: u32 = 0x0000_0001;
+const KVM_VCPUEVENT_VALID_SIPI_VECTOR: u32 = 0x0000_0002;
+const KVM_VCPUEVENT_VALID_SHADOW: u32 = 0x0000_0004;
+const KVM_VCPUEVENT_VALID_SMM: u32 = 0x0000_0008;
+const KVM_VCPUEVENT_VALID_PAYLOAD: u32 = 0x0000_0010;
+const KVM_VCPUEVENT_VALID_TRIPLE_FAULT: u32 = 0x0000_0020;
+
+/// Reduce a live `kvm_vcpu_events` to its **canonical, restorable** form (task 41).
+///
+/// KVM leaves *stale modifier residuals* in `kvm_vcpu_events` even at a fully quiescent
+/// point: `interrupt.nr` keeps the **last-delivered** vector after delivery completes,
+/// `exception.nr`/`has_error_code`/`error_code` persist from a serviced fault, and a
+/// `GET` reports `flags` with `VALID_NMI_PENDING | VALID_SHADOW | VALID_SMM` set
+/// *unconditionally* (they mark presence in the GET, not active state). These are **not
+/// in-flight state** — they are inert (no `injected`/`pending` bit is set). Replaying
+/// them verbatim into `KVM_SET_VCPU_EVENTS` on restore corrupts the resumed guest (the
+/// box symptom was an immediate kernel `Oops` / `Attempted to kill the idle task`). The
+/// reduced subset task 39 carried happened to drop the worst of them; the full-events
+/// capture re-introduced them, so we must canonicalize.
+///
+/// Canonical form: each modifier is kept **only when its active bit is set**, and
+/// `flags` is **rebuilt from the surviving fields** to the SET-meaning mask the backend
+/// will replay (a bit set iff its sub-record is genuinely active). Restoring into a
+/// fresh vCPU (all-default) then re-establishes exactly the active state — a *true*
+/// in-flight injection (interrupt/exception/NMI/SMI/triple-fault, with its payload)
+/// round-trips faithfully, while an inert residual collapses to the clean quiescent
+/// record. Idempotent (`canonical_events(canonical_events(e)) == canonical_events(e)`).
+/// The maskable-interrupt fields are carried for fidelity, but vmm-core's LAPIC seam
+/// re-derives the actual injection on the first post-restore service either way.
+pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::VcpuEvents {
+    let mut c = vmm_backend::VcpuEvents::default();
+    // Maskable interrupt: keep nr/soft only while an injection is genuinely in flight.
+    if e.interrupt_injected != 0 {
+        c.interrupt_injected = e.interrupt_injected;
+        c.interrupt_nr = e.interrupt_nr;
+        c.interrupt_soft = e.interrupt_soft;
+    }
+    // Exception: keep vector/error-code/payload only while one is injected or pending.
+    if e.exception_injected != 0 || e.exception_pending != 0 {
+        c.exception_injected = e.exception_injected;
+        c.exception_pending = e.exception_pending;
+        c.exception_nr = e.exception_nr;
+        c.exception_has_error_code = e.exception_has_error_code;
+        c.exception_error_code = e.exception_error_code;
+        c.exception_has_payload = e.exception_has_payload;
+        c.exception_payload = e.exception_payload;
+    }
+    // NMI / interrupt-shadow / SMM / SIPI / triple-fault are genuine state, carried
+    // verbatim (each defaults to 0 at a quiescent point). `nmi_masked` rides the NMI
+    // sub-record's validity bit.
+    c.nmi_injected = e.nmi_injected;
+    c.nmi_pending = e.nmi_pending;
+    c.nmi_masked = e.nmi_masked;
+    c.interrupt_shadow = e.interrupt_shadow;
+    c.sipi_vector = e.sipi_vector;
+    c.smi_smm = e.smi_smm;
+    c.smi_pending = e.smi_pending;
+    c.smi_inside_nmi = e.smi_inside_nmi;
+    c.smi_latched_init = e.smi_latched_init;
+    c.triple_fault_pending = e.triple_fault_pending;
+    // Rebuild the SET-meaning validity mask: set a bit iff its sub-record is active, so
+    // the GET-side metadata bits (set unconditionally, with all-zero fields) are never
+    // replayed into the SET. A fresh restore target defaults every sub-record to 0, so
+    // an *unset* bit correctly leaves it cleared.
+    let smm_active =
+        c.smi_smm != 0 || c.smi_pending != 0 || c.smi_inside_nmi != 0 || c.smi_latched_init != 0;
+    c.flags = if c.nmi_injected != 0 || c.nmi_pending != 0 || c.nmi_masked != 0 {
+        KVM_VCPUEVENT_VALID_NMI_PENDING
+    } else {
+        0
+    } | if c.sipi_vector != 0 {
+        KVM_VCPUEVENT_VALID_SIPI_VECTOR
+    } else {
+        0
+    } | if c.interrupt_shadow != 0 {
+        KVM_VCPUEVENT_VALID_SHADOW
+    } else {
+        0
+    } | if smm_active {
+        KVM_VCPUEVENT_VALID_SMM
+    } else {
+        0
+    } | if c.exception_has_payload != 0 {
+        KVM_VCPUEVENT_VALID_PAYLOAD
+    } else {
+        0
+    } | if c.triple_fault_pending != 0 {
+        KVM_VCPUEVENT_VALID_TRIPLE_FAULT
+    } else {
+        0
+    };
+    c
+}
+
 /// Return `Some(reason)` if `vcpu` carries machine state the snapshot would
 /// **silently zero** on restore — so [`crate::vmm::Vmm::save_vm_state`] can **fail
 /// closed** instead of sealing a lossy blob (rather than the restore side silently
@@ -550,16 +651,20 @@ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'s
     None
 }
 
-/// `true` iff `e` carries **in-flight event-injection** state — the predicate that
-/// distinguishes a **non-quiescent** snapshot point (an interrupt or exception KVM has
-/// injected but not yet delivered, the `#PF`/`#DB` payload, a `SIPI`, SMM, or a queued
-/// triple fault) from a quiescent one. These are exactly the fields task 39's
-/// quiescent-only codec **fail-closed-rejected** (`unrepresentable_state`) and task 41
-/// now captures, so the same point is snapshottable. Excluded (always representable,
-/// never a "non-quiescent" marker): `exception_pending`/`exception_nr`/
-/// `exception_error_code`/`nmi_pending`/`smi_pending`/`interrupt_shadow` and the
-/// ioctl validity-mask `flags`. Pure; exposed via [`crate::vmm::Vmm::has_inflight_event_injection`]
-/// so a control plane / gate can quote a run's quiescent-vs-non-quiescent split.
+/// `true` iff `e` carries `kvm_vcpu_events` state **the quiescent-only task-39 codec
+/// fail-closed-rejected** (`unrepresentable_state`'s old 14-field check) — the exact
+/// predicate that decided "non-quiescent, refuse." It fires on a *genuine* in-flight
+/// injection (an interrupt/exception KVM has injected but not yet delivered, the
+/// `#PF`/`#DB` payload, a `SIPI`, SMM, or a queued triple fault) **and** on KVM's inert
+/// *modifier residuals* — a stale `interrupt.nr`/`exception.nr`/`has_error_code` KVM
+/// leaves set after an injection completes (box evidence: the post-readiness Postgres
+/// boundaries it flagged carried such residuals, the active bits all clear). Both made
+/// task 39 refuse; task 41 makes both snapshottable — the residuals collapse to the
+/// clean record under [`canonical_events`], a true injection round-trips. Excluded
+/// (never a refusal trigger): `exception_pending`/`exception_nr`/`exception_error_code`/
+/// `nmi_pending`/`smi_pending`/`interrupt_shadow` and the validity-mask `flags`. Pure;
+/// exposed via [`crate::vmm::Vmm::has_inflight_event_injection`] so a gate can quote a
+/// run's task-39-would-reject split.
 pub(crate) fn has_inflight_injection(e: &vmm_backend::VcpuEvents) -> bool {
     let fields: [u64; 14] = [
         u64::from(e.exception_injected),
@@ -1248,6 +1353,87 @@ mod tests {
                 "an in-flight field must mark a non-quiescent point: {e:?}"
             );
         }
+    }
+
+    #[test]
+    fn canonical_events_collapses_residuals_and_reconstructs_flags() {
+        // The box bug: KVM leaves inert modifier residuals (a stale interrupt.nr /
+        // exception.nr/has_error_code, the GET-only validity bits) set even at a
+        // quiescent point; replaying them raw into KVM_SET_VCPU_EVENTS corrupts the
+        // resumed guest. They must collapse to the clean record.
+        let residual = vmm_backend::VcpuEvents {
+            exception_nr: 13,
+            exception_has_error_code: 1,
+            interrupt_nr: 52,
+            flags: 0x0D, // VALID_NMI_PENDING|SHADOW|SMM with all-zero fields (GET-side)
+            ..Default::default()
+        };
+        assert_eq!(
+            canonical_events(&residual),
+            vmm_backend::VcpuEvents::default(),
+            "inert modifier residuals must collapse to the clean quiescent record"
+        );
+
+        // A genuine in-flight injection round-trips, with the SET-meaning flags rebuilt
+        // from the surviving fields.
+        let injected = vmm_backend::VcpuEvents {
+            interrupt_injected: 1,
+            interrupt_nr: 0x34,
+            interrupt_soft: 1,
+            exception_injected: 1,
+            exception_nr: 14,
+            exception_has_error_code: 1,
+            exception_error_code: 4,
+            exception_has_payload: 1,
+            exception_payload: 0xCAFE,
+            interrupt_shadow: 1,
+            nmi_masked: 1,
+            triple_fault_pending: 1,
+            flags: 0xFFFF_FFFF, // raw GET flags ignored; rebuilt below
+            ..Default::default()
+        };
+        let c = canonical_events(&injected);
+        assert_eq!(c.interrupt_injected, 1);
+        assert_eq!(c.interrupt_nr, 0x34);
+        assert_eq!(c.interrupt_soft, 1);
+        assert_eq!(c.exception_injected, 1);
+        assert_eq!(c.exception_payload, 0xCAFE);
+        assert_eq!(c.triple_fault_pending, 1);
+        // flags rebuilt: NMI_PENDING(nmi_masked) | SHADOW | PAYLOAD | TRIPLE_FAULT.
+        assert_eq!(
+            c.flags,
+            KVM_VCPUEVENT_VALID_NMI_PENDING
+                | KVM_VCPUEVENT_VALID_SHADOW
+                | KVM_VCPUEVENT_VALID_PAYLOAD
+                | KVM_VCPUEVENT_VALID_TRIPLE_FAULT
+        );
+        // Idempotent — canonicalizing twice is a no-op (a re-saved restore reproduces).
+        assert_eq!(
+            canonical_events(&c),
+            c,
+            "canonical_events must be idempotent"
+        );
+
+        // Interrupt/exception modifiers drop when no injection is active; SIPI/SMM bits
+        // appear only with their fields.
+        let no_int = vmm_backend::VcpuEvents {
+            interrupt_nr: 9,
+            ..Default::default()
+        };
+        assert_eq!(canonical_events(&no_int).interrupt_nr, 0);
+        let sipi = vmm_backend::VcpuEvents {
+            sipi_vector: 0xAB,
+            ..Default::default()
+        };
+        assert_eq!(
+            canonical_events(&sipi).flags,
+            KVM_VCPUEVENT_VALID_SIPI_VECTOR
+        );
+        let smm = vmm_backend::VcpuEvents {
+            smi_smm: 1,
+            ..Default::default()
+        };
+        assert_eq!(canonical_events(&smm).flags, KVM_VCPUEVENT_VALID_SMM);
     }
 
     #[test]
