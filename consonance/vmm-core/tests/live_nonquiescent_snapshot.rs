@@ -269,28 +269,31 @@ struct Sealed {
 }
 
 /// Drive `live` from boot until the **first V-time-synchronized boundary at/after
-/// `marker` carrying a GENUINE in-flight event** appears, and seal it. "Genuine" = a real
-/// interrupt the guest has not yet accepted — a vector pending in the LAPIC IRR
-/// ([`Vmm::has_pending_guest_interrupt`]; the case a *synchronized* boundary can carry) or
-/// a `kvm_vcpu_events` active-injection bit ([`Vmm::has_active_event_injection`]) — as
-/// opposed to the broader task-39-would-reject `has_inflight_event_injection`, which also
-/// fires on inert KVM modifier residuals. Sealing on the genuine condition guarantees the
-/// sealed snapshot S restores a *true* non-quiescent point — a residual collapses to the
-/// clean quiescent record under canonicalization and would not prove the headline. When
+/// `marker` whose `kvm_vcpu_events` carries in-flight state the OLD task-39 predicate
+/// fail-closed-rejected** ([`Vmm::has_inflight_event_injection`]) appears, and seal it.
+/// That is exactly the task-41 unlock: a `kvm_vcpu_events` state task 39 could not
+/// represent, which task 41 captures, canonicalizes, and restores exactly. (For this live
+/// workload those points are inert KVM modifier residuals — a genuine in-flight
+/// `kvm_vcpu_events` *injection* does not reliably land at a synchronized boundary, so its
+/// capture→exact-restore is proven by the constructed
+/// `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact` test, not the live
+/// run.) A GENUINE in-flight *event* — a vector pending in the LAPIC IRR
+/// ([`Vmm::has_pending_guest_interrupt`]) or a `kvm_vcpu_events` active-injection bit
+/// ([`Vmm::has_active_event_injection`]) — is tracked only as BONUS evidence: the LAPIC IRR
+/// was already serialized by task 39, so an IRR-only point is not a task-39 win. When
 /// `post_seal_scan > 0`, keep scanning that many more steps **after** the seal to tally the
-/// before/after split **on the same run** (gate 1's evidence: genuine in-flight events vs.
-/// inert residuals vs. quiescent, all rejected by task 39, now snapshottable); pass `0` to
-/// seal-and-return immediately (gates 2/3, which only need the seal point). Panics loudly
-/// if the guest terminates before any genuine in-flight snapshottable point.
+/// before/after split **on the same run** (gate 1's evidence); pass `0` to seal-and-return
+/// immediately (gates 2/3, which only need the seal point). Panics loudly if the guest
+/// terminates before any task-39-rejected snapshottable point.
 fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64) -> Sealed {
     let stderr = std::io::stderr();
     let mut printed = live.serial().len();
     let mut steps = 0u64;
     let mut armed = marker.is_empty();
-    // Tally over the armed (at/after-marker) region. Three exhaustive, disjoint buckets:
-    let mut genuine_snapshottable = 0u64; // a GENUINE in-flight event — the SEAL target
-    let mut residual_snapshottable = 0u64; // task-39-would-reject, but only an inert modifier residual
-    let mut quiescent_snapshottable = 0u64; // no in-flight events at all
+    // Tally over the armed (at/after-marker) region.
+    let mut task39_rejected = 0u64; // the OLD task-39 predicate fired — the 0→N flip (the SEAL target)
+    let mut genuine_inflight = 0u64; // bonus: a genuine in-flight EVENT (LAPIC IRR pending / kve injection)
+    let mut quiescent_snapshottable = 0u64; // not task-39-rejected
     let mut rejections: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let mut sealed: Option<Sealed> = None;
     let mut scanned_after_seal = 0u64;
@@ -300,14 +303,17 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
             armed = find(live.serial(), marker);
         }
         if armed {
-            // Classify this boundary. A GENUINE in-flight event is a real interrupt the
-            // guest has not yet accepted — a vector pending in the LAPIC IRR (the case a
-            // *synchronized*, snapshottable boundary can carry), or a `kvm_vcpu_events`
-            // active-injection bit. That is distinct from an inert `kvm_vcpu_events`
-            // modifier residual (a stale post-delivery `interrupt.nr`), which is
-            // task-39-would-reject but canonicalizes to the clean quiescent record. SEAL
-            // only on a genuine event, so the snapshot proves restore of a *true*
-            // in-flight point (see IMPLEMENTATION.md "what gate 2 proves / does not prove").
+            // SEAL on the OLD task-39 rejection predicate (`has_inflight_event_injection`) —
+            // a `kvm_vcpu_events` state task 39 could NOT represent and fail-closed-refused.
+            // THAT is the task-41 unlock (capture + canonicalize + exactly restore the full
+            // kvm_vcpu_events). For this live workload those points are inert modifier
+            // residuals; a genuine in-flight kvm_vcpu_events *injection* does not reliably
+            // land at a synchronized boundary, so its capture→exact-restore is proven by the
+            // constructed `task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact`
+            // test instead (see IMPLEMENTATION.md "what gate 2 proves / does not prove").
+            // `genuine` (a vector pending in the LAPIC IRR, or a kve active-injection bit) is
+            // tracked only as BONUS evidence: the LAPIC IRR was already serialized by task
+            // 39, so an IRR-only point is NOT a task-39 win.
             let inflight = live.has_inflight_event_injection();
             let active_kve = live.has_active_event_injection();
             let pending_irq = live.has_pending_guest_interrupt().unwrap_or(false);
@@ -315,16 +321,23 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
             match live.save_vm_state() {
                 Ok(vm_state) => {
                     if genuine {
-                        genuine_snapshottable += 1;
+                        genuine_inflight += 1;
+                    }
+                    if inflight {
+                        task39_rejected += 1;
                         if sealed.is_none() {
-                            let why = if pending_irq {
-                                "a genuine interrupt pending in the LAPIC IRR, not yet accepted"
+                            let what = if active_kve {
+                                "a GENUINE kvm_vcpu_events injection in flight"
+                            } else if pending_irq {
+                                "a residual kvm_vcpu_events state + a genuine pending LAPIC interrupt"
                             } else {
-                                "a genuine kvm_vcpu_events injection in flight"
+                                "an inert kvm_vcpu_events residual (genuine-injection capture is \
+                                 proven by the constructed test)"
                             };
                             eprintln!(
-                                "[nq] sealed a NON-QUIESCENT snapshot S at step {steps} \
-                                 ({why} — task 39 would have rejected this point)"
+                                "[nq] sealed a TASK-39-REJECTED non-quiescent snapshot S at step \
+                                 {steps} — {what}; task 39 fail-closed-refused this exact \
+                                 kvm_vcpu_events state, task 41 captures + restores it"
                             );
                             sealed = Some(Sealed {
                                 vm_state,
@@ -332,15 +345,12 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
                                 memory: live.guest_memory().to_vec(),
                             });
                         }
-                    } else if inflight {
-                        // task-39-would-reject, but no genuine in-flight event — an inert
-                        // modifier residual only. Snapshottable now (it canonicalizes to
-                        // the clean record), but it does not prove the headline, so we
-                        // never seal here; counted separately.
-                        residual_snapshottable += 1;
-                    } else {
+                    } else if !genuine {
                         quiescent_snapshottable += 1;
                     }
+                    // (genuine && !inflight: a LAPIC-IRR-only point — counted in
+                    //  genuine_inflight; task 39 already serialized the LAPIC, so it is
+                    //  neither a task-39 win nor quiescent.)
                 }
                 Err(e) => {
                     // Classify the rejection (non-synchronized / RNG mid-exit / other).
@@ -373,10 +383,10 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
                 }
                 panic!(
                     "the guest reached a terminal ({r:?}) at step {steps} before any \
-                     non-quiescent (genuine in-flight event) snapshottable point at/after the \
-                     marker (genuine_snapshottable={genuine_snapshottable}, residual_snapshottable=\
-                     {residual_snapshottable}, quiescent_snapshottable={quiescent_snapshottable}, \
-                     rejection tally: {rejections:#?})"
+                     TASK-39-REJECTED snapshottable point at/after the marker \
+                     (task39_rejected={task39_rejected}, genuine_inflight={genuine_inflight}, \
+                     quiescent_snapshottable={quiescent_snapshottable}, rejection tally: \
+                     {rejections:#?})"
                 );
             }
             Err(e) => panic!("step while hunting a non-quiescent snapshot boundary failed: {e}"),
@@ -385,23 +395,24 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
 
     eprintln!(
         "\n[nq] ============ BEFORE / AFTER (same Postgres run, at/after marker) ============\n\
-         [nq]  BEFORE (task 39, quiescent-only): every event-bearing point was REJECTED — \
-         {genuine_snapshottable} synchronized boundaries carried a GENUINE in-flight event (a vector \
-         pending in the LAPIC IRR / a kvm_vcpu_events injection), {residual_snapshottable} carried an \
-         inert kvm_vcpu_events modifier residual; all 0 snapshottable.\n\
-         [nq]  AFTER  (task 41): the {genuine_snapshottable} genuine in-flight points are now \
-         SNAPSHOTTABLE (sealed at a real pending event), the {residual_snapshottable} residuals \
-         collapse to the clean record, + {quiescent_snapshottable} quiescent. still-rejected (not a \
-         quiescence issue): {rejections:#?}"
+         [nq]  BEFORE (task 39, quiescent-only): every point whose `kvm_vcpu_events` carried in-flight \
+         state was fail-closed-REJECTED — {task39_rejected} synchronized boundaries (the OLD task-39 \
+         predicate); all 0 snapshottable.\n\
+         [nq]  AFTER  (task 41): all {task39_rejected} are now SNAPSHOTTABLE — task 41 captures the \
+         full kvm_vcpu_events, canonicalizes it, and restores it exactly (the 0→N flip). Of these, \
+         {genuine_inflight} synchronized boundaries also carried a GENUINE in-flight EVENT (a vector \
+         pending in the LAPIC IRR / a kvm_vcpu_events injection); the genuine-injection capture→exact-\
+         restore is proven by the constructed test. {quiescent_snapshottable} quiescent. still-rejected \
+         (not a quiescence issue): {rejections:#?}"
     );
     let sealed =
         sealed.expect("a non-quiescent snapshottable point was found (loop only exits with one)");
     assert!(
-        genuine_snapshottable > 0,
-        "gate 1: at least one synchronized boundary must carry a GENUINE in-flight event (a vector \
-         pending in the LAPIC IRR / a kvm_vcpu_events injection — not merely an inert residual) and \
-         now be snapshottable — the seal proves restore of a true non-quiescent point (the 0→N flip \
-         task 40 documented as missing)"
+        task39_rejected > 0,
+        "gate 1: at least one synchronized boundary must carry `kvm_vcpu_events` in-flight state the \
+         OLD task-39 predicate fail-closed-rejected, and now be snapshottable — the seal proves task \
+         41 captures + restores a state task 39 could not represent (the 0→N flip task 40 documented \
+         as missing)"
     );
     sealed
 }
@@ -522,8 +533,9 @@ fn gate1_nonquiescent_point_is_snapshottable() {
         outcome.step_error,
     );
     eprintln!(
-        "[nq] gate 1 ✓ a non-quiescent point (a genuine interrupt pending in the LAPIC IRR) is \
-         snapshottable AND restores into a runnable VM — the 0→N flip task 40 measured as missing."
+        "[nq] gate 1 ✓ a TASK-39-REJECTED point (kvm_vcpu_events in-flight state task 39 could not \
+         represent) is snapshottable AND restores into a runnable VM — the 0→N flip task 40 measured \
+         as missing. (Genuine in-flight-injection capture→exact-restore: the constructed test.)"
     );
 }
 

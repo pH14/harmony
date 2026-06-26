@@ -1034,7 +1034,14 @@ impl<B: Backend> Vmm<B> {
         //    it is re-derived from the restored LAPIC IRR / UART THRE on the restored
         //    VM's first `service_pending_irqs`, so there is no separate plan to carry.)
         let mut vcpu = snapshot::vcpu_state_from(s);
-        vcpu.events = dev.events;
+        // Canonicalize on restore too — mirror the save side (`build_vm_state`, which stores
+        // `canonical_events` in the device blob). This VM's own save path already strips KVM's
+        // inert modifier residuals, but an **external or older v3 blob** (hand-built, or from a
+        // different/buggy encoder) may carry RAW residuals; forwarding them verbatim to
+        // `KVM_SET_VCPU_EVENTS` would reintroduce the exact corruption `canonical_events` exists
+        // to prevent. Idempotent for a self-produced (already-canonical) blob, so
+        // restore-transparency is unchanged; defense-in-depth for any other source.
+        vcpu.events = snapshot::canonical_events(&dev.events);
         // 3. Commit the fallible backend restore first — a failure here leaves the
         //    V-time/device state untouched (nothing below this line can reject the
         //    blob; only the hardware counter reset can fail, infrastructurally).
@@ -4903,6 +4910,49 @@ mod tests {
         assert!(
             v_ok.save_vm_state().is_ok(),
             "a quiescent point still snapshots"
+        );
+    }
+
+    #[test]
+    fn restore_canonicalizes_raw_events_from_an_external_blob() {
+        // PR #12 round 3 — restore symmetry. This VM's own save path stores CANONICAL events
+        // in the device blob, but an *external or older* v3 blob (hand-built, or from a
+        // different/buggy encoder) may carry RAW KVM modifier residuals. `restore_vm_state`
+        // must canonicalize them (mirror the save side), so a foreign/corrupt blob cannot
+        // reintroduce the exact residuals `KVM_SET_VCPU_EVENTS` would choke on.
+        let a = full_vmm(nonzero_state(), vec![], 0, 1);
+        let mut s = a.save_vm_state().expect("quiescent save");
+        // Forge an external blob: raw inert residuals (a stale interrupt.nr / exception.nr /
+        // has_error_code + the GET-only validity flags), as a non-canonicalizing encoder
+        // would leave them. Every active bit is clear → canonical form is the clean record.
+        let raw = vmm_backend::VcpuEvents {
+            interrupt_nr: 0x34,
+            exception_nr: 13,
+            exception_has_error_code: 1,
+            flags: 0x0D,
+            ..Default::default()
+        };
+        let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
+        dev.events = raw;
+        s.devices = snapshot::encode_device_blob(&dev);
+        // Restore the forged blob: the backend must receive CANONICAL events, NOT the raw
+        // residuals — i.e. the clean record, not `raw` (which would corrupt the guest).
+        let mut b = full_vmm(VcpuState::default(), vec![], 0, 1);
+        b.restore_vm_state(&s).expect("restore the external blob");
+        let restored = b.backend.save().unwrap().events;
+        assert_eq!(
+            restored,
+            snapshot::canonical_events(&raw),
+            "restore canonicalizes external/raw events (residuals stripped, not forwarded raw)"
+        );
+        assert_eq!(
+            restored,
+            vmm_backend::VcpuEvents::default(),
+            "this all-residual record canonicalizes to the clean quiescent record on restore"
+        );
+        assert_ne!(
+            restored, raw,
+            "the raw residuals were NOT forwarded verbatim"
         );
     }
 

@@ -140,6 +140,100 @@ fn non_quiescent_in_flight_events_round_trip_through_the_engine() {
 }
 
 #[test]
+fn task39_rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
+    // THE definitive task-41 unlock proof — independent of any live run. Build a GENUINE
+    // in-flight `kvm_vcpu_events` state that task 39 fail-closed-REJECTED and could not
+    // represent (an injected #GP-with-error-code + an injected NMI — `has_inflight` AND
+    // `has_active`, NOT an inert residual), snapshot it through the FULL engine path with
+    // the canonical-blob hash wired, restore into a fresh VM, and prove the restored FULL
+    // `state_hash` equals the source's. Task 39 dropped this state (0/N snapshottable);
+    // task 41 captures every field and round-trips it bit-for-bit — proven here WITHOUT
+    // relying on the live workload ever presenting such a point at a synchronized boundary
+    // (it reliably does not; see `live_nonquiescent_snapshot.rs` + IMPLEMENTATION.md).
+    let in_flight = VcpuEvents {
+        exception_injected: 1,
+        exception_nr: 13, // #GP
+        exception_has_error_code: 1,
+        exception_error_code: 0x18,
+        nmi_injected: 1,
+        nmi_masked: 1,
+        ..Default::default()
+    };
+    // Source VM `a`: the in-flight events, V-time wired, canonical-blob hash wired.
+    let mut a = {
+        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        m.set_state(VcpuState {
+            events: in_flight,
+            ..Default::default()
+        });
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 7).unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&booted_image()).unwrap();
+        v
+    };
+    assert_eq!(a.step().unwrap(), Step::Continued); // RDTSC → synchronized
+
+    // It is exactly the state task 39's predicate rejected, and it is GENUINE (not a residual).
+    assert!(
+        a.has_inflight_event_injection(),
+        "task 39's predicate fail-closed-rejected this point"
+    );
+    assert!(
+        a.has_active_event_injection(),
+        "a genuine in-flight injection, not an inert residual"
+    );
+
+    // The in-flight event REACHES the hash: a VM carrying it hashes differently from an
+    // otherwise-identical quiescent one — so 'identical hash on restore' is a meaningful
+    // claim, not a no-op on an all-zero events record.
+    let mut q = vmm(vec![Exit::Rdtsc], 500, 7);
+    q.wire_snapshot_hashing();
+    q.restore_guest_memory(&booted_image()).unwrap();
+    q.step().unwrap();
+    assert_ne!(
+        a.state_hash(),
+        q.state_hash(),
+        "the in-flight kvm_vcpu_events state is reflected in the full state_hash"
+    );
+
+    // Snapshot through the FULL engine path; restore into a FRESH VM.
+    let mut eng = SnapshotEngine::new(RAM);
+    let vm_state = a
+        .save_vm_state()
+        .expect("a genuine in-flight (task-39-rejected) point is now snapshottable");
+    let snap = eng
+        .snapshot_base(a.guest_memory(), &vm_state.encode().unwrap())
+        .unwrap();
+    let mut b = vmm(vec![], 9999, 0);
+    b.wire_snapshot_hashing();
+    b.restore_snapshot(
+        eng.materialize(snap).unwrap().as_slice(),
+        &eng.vm_state(snap).unwrap(),
+    )
+    .unwrap();
+
+    // EXACT restore: the restored VM's FULL state_hash equals the source's at the in-flight
+    // point — capture → restore of the genuine in-flight kvm_vcpu_events is bit-for-bit.
+    assert_eq!(
+        b.state_hash(),
+        a.state_hash(),
+        "restored full state_hash == source at the genuine in-flight point"
+    );
+    // And the full kvm_vcpu_events round-tripped through save → restore → save.
+    assert_eq!(
+        b.save_vm_state().unwrap(),
+        vm_state,
+        "the full in-flight events round-trip through the engine"
+    );
+}
+
+#[test]
 fn snapshot_hashing_makes_restore_reproduce_the_state_hash() {
     // With the canonical-blob hash wired, a VM restored from a snapshot has the
     // SAME state_hash as the snapshot source at that point — *same state* observable
