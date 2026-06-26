@@ -452,7 +452,7 @@ fn diag_restore_rip_trace() {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-postgres.cpio.gz");
     let marker = workload_marker();
-    const K: usize = 40;
+    const K: usize = 60_000;
 
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let mut live_rips = Vec::new();
@@ -494,7 +494,8 @@ fn diag_restore_rip_trace() {
     .expect("restore");
     eprintln!("[rip] restored RIP (before step)={:#018x}", b.debug_rip());
     let mut b_rips = Vec::new();
-    for i in 0..K + 4 {
+    let mut b_serial_at_div = 0usize;
+    for i in 0..K + 8 {
         match b.step() {
             Ok(Step::Continued) => b_rips.push(b.debug_rip()),
             Ok(Step::Terminal(r)) => {
@@ -506,15 +507,52 @@ fn diag_restore_rip_trace() {
                 break;
             }
         }
+        b_serial_at_div = b.serial().len();
     }
-    let fmt = |v: &[u64]| {
-        v.iter()
-            .map(|r| format!("{r:#011x}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    eprintln!("[rip] live continuation RIPs:\n[rip]   {}", fmt(&live_rips));
-    eprintln!("[rip] restored continuation RIPs:\n[rip]   {}", fmt(&b_rips));
+    eprintln!(
+        "[rip] traced live={} restored={} steps; restored final serial_len={}",
+        live_rips.len(),
+        b_rips.len(),
+        b_serial_at_div
+    );
+    // restored[i+1] == live[i] when the restore is faithful (restored re-executes the
+    // seal intercept as one extra exit). Find the FIRST i where they diverge.
+    let mut diverged_at = None;
+    for i in 0..live_rips.len() {
+        if i + 1 >= b_rips.len() {
+            break;
+        }
+        if live_rips[i] != b_rips[i + 1] {
+            diverged_at = Some(i);
+            break;
+        }
+    }
+    match diverged_at {
+        None => eprintln!(
+            "[rip] NO divergence across {} aligned steps — the restored continuation matches the \
+             live future exactly. The restore is faithful this far.",
+            live_rips.len().min(b_rips.len().saturating_sub(1))
+        ),
+        Some(i) => {
+            let lo = i.saturating_sub(6);
+            let ctx = |v: &[u64], a: usize, b: usize| {
+                v[a..b.min(v.len())]
+                    .iter()
+                    .map(|r| format!("{r:#011x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            eprintln!(
+                "[rip] DIVERGENCE at aligned step {i}:\n[rip]   live    [{lo}..{}]: {}\n[rip]   \
+                 restored[{}..{}]: {}",
+                i + 6,
+                ctx(&live_rips, lo, i + 6),
+                lo + 1,
+                i + 7,
+                ctx(&b_rips, lo + 1, i + 7)
+            );
+        }
+    }
 }
 
 #[test]
