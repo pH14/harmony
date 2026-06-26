@@ -1429,11 +1429,40 @@ mod tests {
             canonical_events(&sipi).flags,
             KVM_VCPUEVENT_VALID_SIPI_VECTOR
         );
-        let smm = vmm_backend::VcpuEvents {
-            smi_smm: 1,
-            ..Default::default()
-        };
-        assert_eq!(canonical_events(&smm).flags, KVM_VCPUEVENT_VALID_SMM);
+        // VALID_SMM is set by ANY of the four SMI sub-fields; VALID_NMI_PENDING by ANY
+        // of the three NMI sub-fields. Exercise EACH operand alone so the OR-chains in
+        // `canonical_events` are pinned (a `|| → &&` mutation on any operand is caught).
+        for set_smm in [
+            |e: &mut vmm_backend::VcpuEvents| e.smi_smm = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_pending = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_inside_nmi = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.smi_latched_init = 1,
+        ] {
+            let mut e = vmm_backend::VcpuEvents::default();
+            set_smm(&mut e);
+            assert_eq!(
+                canonical_events(&e).flags & KVM_VCPUEVENT_VALID_SMM,
+                KVM_VCPUEVENT_VALID_SMM,
+                "each SMI sub-field alone sets VALID_SMM: {e:?}"
+            );
+        }
+        for set_nmi in [
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_injected = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_pending = 1,
+            |e: &mut vmm_backend::VcpuEvents| e.nmi_masked = 1,
+        ] {
+            let mut e = vmm_backend::VcpuEvents::default();
+            set_nmi(&mut e);
+            assert_eq!(
+                canonical_events(&e).flags & KVM_VCPUEVENT_VALID_NMI_PENDING,
+                KVM_VCPUEVENT_VALID_NMI_PENDING,
+                "each NMI sub-field alone sets VALID_NMI_PENDING: {e:?}"
+            );
+        }
+        // The all-quiescent record sets neither bit (the `&&`-degenerate baseline).
+        let q = canonical_events(&vmm_backend::VcpuEvents::default());
+        assert_eq!(q.flags & KVM_VCPUEVENT_VALID_SMM, 0);
+        assert_eq!(q.flags & KVM_VCPUEVENT_VALID_NMI_PENDING, 0);
     }
 
     #[test]
