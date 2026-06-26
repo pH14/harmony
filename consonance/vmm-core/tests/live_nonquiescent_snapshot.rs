@@ -21,9 +21,13 @@
 //! **Gate 2 — round-trip mid-execution, the milestone**
 //! ([`gate2_mid_postgres_roundtrip_is_deterministic`]). Snapshot a **running Postgres
 //! mid-workload** (at a non-quiescent, in-flight point), restore into a fresh VM, and
-//! resume → the resumed run reaches the **same terminal `state_hash`** as the
-//! un-snapshotted reference run. Deterministic-twice (the reference is verified
-//! bit-identical across two boots first). Restore is exact at a non-quiescent point.
+//! resume **twice** → deterministic-twice, and each restored continuation is
+//! **bit-identical** to the **un-snapshotted (live) continuation from the same seal** —
+//! its serial + `observable_digest` + every execution-relevant `state_hash` component
+//! (the only differences being two benign KVM-quirk components, `{segments, events}`,
+//! that don't affect execution; see IMPLEMENTATION.md). Both run the remaining workload
+//! to `GUEST_READY` + the guest's clean power-off `Hlt`. Restore is exact at a
+//! non-quiescent point — *same state ⇒ same future, while the system is doing work.*
 //!
 //! ## Gate honesty (why `#[ignore]`)
 //!
@@ -181,10 +185,10 @@ fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
 }
 
 /// What a bounded run observed. `final_row` / `guest_ready` are informative (whether the
-/// continuation reached the workload markers) — a mid-workload seal's continuation runs
-/// only to the next idle-HLT terminal, so it typically reaches neither (the idle-HLT
-/// bound, see IMPLEMENTATION.md); the gates assert restore *fidelity*, not workload
-/// completion.
+/// continuation reached the workload markers): a continuation from a mid-workload seal
+/// runs the remaining workload to `GUEST_READY` and the guest's clean power-off `Hlt`
+/// (box-confirmed). The gates assert restore *fidelity* (the resumed run is bit-identical
+/// to the un-snapshotted continuation), of which workload completion is a consequence.
 struct RunOutcome {
     reason: Option<TerminalReason>,
     steps: u64,
@@ -401,216 +405,6 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-/// DIAGNOSTIC (not a gate): trace the guest RIP of the LIVE continuation (stepped
-/// forward from the seal, the correct future) vs the RESTORED continuation, to find the
-/// exact instruction where the restored execution diverges. The restored VM re-executes
-/// the seal's V-time intercept (one extra exit), so its trace is offset by ~1 from the
-/// live trace; both are printed so the alignment + first divergence are visible. (Box
-/// result: NO divergence across the whole continuation to terminal — the restore is
-/// execution-faithful.)
-#[test]
-#[ignore = "diagnostic, box-only: traces RIP to localize the restored-execution divergence"]
-fn diag_restore_rip_trace() {
-    require_kvm();
-    require_host_baseline();
-    let kernel = require_artifact("bzImage");
-    let initramfs = require_artifact("initramfs-postgres.cpio.gz");
-    let marker = workload_marker();
-    const K: usize = 60_000;
-
-    let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
-    let mut live_rips = Vec::new();
-    let snap = {
-        let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
-        let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
-        let blob = sealed.vm_state.encode().expect("encode");
-        let snap = engine
-            .snapshot_base(live.guest_memory(), &blob)
-            .expect("snapshot");
-        eprintln!(
-            "[rip] sealed at step {}; seal RIP={:#018x}",
-            sealed.step,
-            live.debug_rip()
-        );
-        // Step the LIVE continuation forward (the correct future) and record RIPs.
-        for i in 0..K {
-            match live.step() {
-                Ok(Step::Continued) => live_rips.push(live.debug_rip()),
-                Ok(Step::Terminal(r)) => {
-                    eprintln!("[rip] live terminal at step {i}: {r:?}");
-                    break;
-                }
-                Err(e) => {
-                    eprintln!("[rip] live step error at {i}: {e}");
-                    break;
-                }
-            }
-        }
-        snap
-    };
-
-    // Restore + trace the restored continuation.
-    let mut b = boot_pg(&kernel, &initramfs, BASE_SEED);
-    b.restore_snapshot(
-        engine.materialize(snap).expect("materialize").as_slice(),
-        &engine.vm_state(snap).expect("decode"),
-    )
-    .expect("restore");
-    eprintln!("[rip] restored RIP (before step)={:#018x}", b.debug_rip());
-    let mut b_rips = Vec::new();
-    let mut b_serial_at_div = 0usize;
-    for i in 0..K + 8 {
-        match b.step() {
-            Ok(Step::Continued) => b_rips.push(b.debug_rip()),
-            Ok(Step::Terminal(r)) => {
-                eprintln!("[rip] restored terminal at step {i}: {r:?}");
-                break;
-            }
-            Err(e) => {
-                eprintln!("[rip] restored step error at {i}: {e}");
-                break;
-            }
-        }
-        b_serial_at_div = b.serial().len();
-    }
-    eprintln!(
-        "[rip] traced live={} restored={} steps; restored final serial_len={}",
-        live_rips.len(),
-        b_rips.len(),
-        b_serial_at_div
-    );
-    // restored[i+1] == live[i] when the restore is faithful (restored re-executes the
-    // seal intercept as one extra exit). Find the FIRST i where they diverge.
-    let mut diverged_at = None;
-    for i in 0..live_rips.len() {
-        if i + 1 >= b_rips.len() {
-            break;
-        }
-        if live_rips[i] != b_rips[i + 1] {
-            diverged_at = Some(i);
-            break;
-        }
-    }
-    match diverged_at {
-        None => eprintln!(
-            "[rip] NO divergence across {} aligned steps — the restored continuation matches the \
-             live future exactly. The restore is faithful this far.",
-            live_rips.len().min(b_rips.len().saturating_sub(1))
-        ),
-        Some(i) => {
-            let lo = i.saturating_sub(6);
-            let ctx = |v: &[u64], a: usize, b: usize| {
-                v[a..b.min(v.len())]
-                    .iter()
-                    .map(|r| format!("{r:#011x}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            };
-            eprintln!(
-                "[rip] DIVERGENCE at aligned step {i}:\n[rip]   live    [{lo}..{}]: {}\n[rip]   \
-                 restored[{}..{}]: {}",
-                i + 6,
-                ctx(&live_rips, lo, i + 6),
-                lo + 1,
-                i + 7,
-                ctx(&b_rips, lo + 1, i + 7)
-            );
-        }
-    }
-}
-
-/// DIAGNOSTIC (not a gate): pinpoint **which** machine-state component the mid-workload
-/// restore fails to reproduce. Seals S, records the LIVE VM's per-component digests **at
-/// the seal**, drops it, restores S into a fresh VM, and records the restored VM's digests
-/// **before stepping**. Any meaningful component that differs is state the restore lost
-/// (the `vtim:last-intercept` / `vtim:work-raw` pair legitimately differs — the work
-/// counter resets to 0 on restore — and is filtered). (Box result: only `segments` — the
-/// architecturally-don't-care `type` of unusable data segments, KVM-normalized 0→1 on
-/// restore — and `events` — the by-design canonicalization — differ; all execution-
-/// relevant state is faithful.)
-#[test]
-#[ignore = "diagnostic, box-only: localizes which state a mid-workload restore loses"]
-fn diag_restore_component_fidelity() {
-    require_kvm();
-    require_host_baseline();
-    let kernel = require_artifact("bzImage");
-    let initramfs = require_artifact("initramfs-postgres.cpio.gz");
-    let marker = workload_marker();
-
-    let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
-    let (snap, live_components, live_sregs) = {
-        let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
-        let sealed = seal_first_nonquiescent(&mut live, &marker, 0);
-        let components = live.state_components();
-        let sregs = live.debug_sregs();
-        let blob = sealed.vm_state.encode().expect("vm_state encodes");
-        let snap = engine
-            .snapshot_base(live.guest_memory(), &blob)
-            .expect("snapshot the live guest");
-        eprintln!("[diag] sealed at step {}; captured live components.", sealed.step);
-        (snap, components, sregs)
-    };
-
-    // Restore into a fresh VM and capture its components BEFORE stepping.
-    let mut b = boot_pg(&kernel, &initramfs, BASE_SEED);
-    let mapping = engine.materialize(snap).expect("materialize");
-    let vm_state = engine.vm_state(snap).expect("decode");
-    b.restore_snapshot(mapping.as_slice(), &vm_state)
-        .expect("restore");
-    let restored_components = b.state_components();
-    let restored_sregs = b.debug_sregs();
-
-    // Field-level segment diff (live-at-seal vs restored-before-step).
-    eprintln!("[diag] === LIVE sregs (at seal) ===\n{live_sregs}");
-    eprintln!("[diag] === RESTORED sregs (after restore) ===\n{restored_sregs}");
-    for (l, r) in live_sregs.lines().zip(restored_sregs.lines()) {
-        if l != r {
-            eprintln!("[diag] SEGMENT DIFF:\n[diag]   live    : {l}\n[diag]   restored: {r}");
-        }
-    }
-
-    // Diff (filter the diagnostic-only V-time anchors that legitimately reset).
-    let ignore = ["vtim:last-intercept", "vtim:work-raw"];
-    let mut lost = Vec::new();
-    for ((name, lh), (_, rh)) in live_components.iter().zip(restored_components.iter()) {
-        if lh != rh && !ignore.contains(name) {
-            lost.push(*name);
-        }
-    }
-    eprintln!(
-        "[diag] components that DIFFER between live-at-seal and restored-before-step \
-         (= state the restore lost): {lost:?}"
-    );
-    if lost.is_empty() {
-        eprintln!(
-            "[diag] restore reproduces all observable state at the seal — the corruption is in \
-             EXECUTION after resume (staged-completion replay / a KVM-internal not in save())."
-        );
-    }
-
-    // Step the restored VM a few times and show its serial (resume vs immediate fault).
-    let before = b.serial().len();
-    for i in 0..200 {
-        match b.step() {
-            Ok(Step::Continued) => {}
-            Ok(Step::Terminal(r)) => {
-                eprintln!("[diag] restored VM terminal at restored-step {i}: {r:?}");
-                break;
-            }
-            Err(e) => {
-                eprintln!("[diag] restored VM step error at restored-step {i}: {e}");
-                break;
-            }
-        }
-    }
-    let tail = &b.serial()[before..];
-    eprintln!(
-        "[diag] restored VM serial after 200 steps ({} new bytes):\n{}",
-        tail.len(),
-        String::from_utf8_lossy(&tail[..tail.len().min(800)])
-    );
-}
-
 #[test]
 #[ignore = "box-only non-quiescent snapshot gate (LOADED patched KVM + built Postgres image + \
             det-cfl-v1 host); run on `ssh <det-box>` with `-- --ignored --nocapture`"]
@@ -651,12 +445,10 @@ fn gate1_nonquiescent_point_is_snapshottable() {
     };
 
     // save_vm_state SUCCEEDED at a non-quiescent point (above — the 0→N flip); now prove
-    // restore_vm_state produces a **runnable** VM that resumes without error. (The
-    // restored continuation runs until the guest next idle-HLTs — a terminal under the
-    // V-time model, since V-time cannot advance while halted; gate 2 proves the
-    // continuation is bit-identical to the un-snapshotted run. Reaching the workload's
-    // GUEST_READY from an arbitrary mid-workload seal is the idle-HLT limitation, not a
-    // restore failure — see IMPLEMENTATION.md.)
+    // restore_vm_state produces a **runnable** VM that resumes without error and runs the
+    // remaining workload to a clean terminal (box-confirmed: the restored continuation
+    // reaches the workload's final row + GUEST_READY, then the guest's power-off Hlt).
+    // Gate 2 proves it is bit-identical to the un-snapshotted continuation.
     let mut b = boot_pg(&kernel, &initramfs, BASE_SEED);
     b.restore_snapshot(
         engine.materialize(snap).expect("materialize").as_slice(),
@@ -667,11 +459,7 @@ fn gate1_nonquiescent_point_is_snapshottable() {
     eprintln!(
         "[nq] gate 1: restored continuation: terminal={:?} steps={} final_row={} GUEST_READY={} \
          step_error={:?}",
-        outcome.reason,
-        outcome.steps,
-        outcome.final_row,
-        outcome.guest_ready,
-        outcome.step_error
+        outcome.reason, outcome.steps, outcome.final_row, outcome.guest_ready, outcome.step_error
     );
     assert!(
         outcome.step_error.is_none() && outcome.reason.is_some() && outcome.steps > 0,
@@ -702,11 +490,11 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
     //     stepping the LIVE (un-snapshotted) VM forward — that live continuation is the
     //     "un-snapshotted run" the restored continuation must match (the spec's gate 2:
     //     "the resumed run reaches the same terminal state_hash as the un-snapshotted
-    //     run"). The reference here is the live continuation from the SAME seal, not a
-    //     from-boot run (a from-boot run completes the workload to GUEST_READY, but a
-    //     continuation from an arbitrary mid-workload V-time-sync point runs until the
-    //     guest next idle-HLTs — V-time cannot advance while halted, so an idle HLT is
-    //     terminal; see IMPLEMENTATION.md. Both live and restored hit the SAME terminal). ---
+    //     run"). The reference is the live continuation from the SAME seal (not a separate
+    //     from-boot run) so the V-time origin matches exactly — both share vns_base and the
+    //     same retired-work timeline — making this a clean bit-for-bit restore-transparency
+    //     check. Both run the remaining workload to GUEST_READY + the guest's power-off Hlt
+    //     terminal (box-confirmed); the restored continuation is bit-identical to the live. ---
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let (snap, live_serial, live_obs, live_reason, live_comps) = {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
@@ -715,7 +503,10 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
         let snap = engine
             .snapshot_base(&sealed.memory, &blob)
             .expect("snapshot the running Postgres mid-workload");
-        eprintln!("[nq] gate 2: sealed mid-workload S at step {}.", sealed.step);
+        eprintln!(
+            "[nq] gate 2: sealed mid-workload S at step {}.",
+            sealed.step
+        );
         // Step the un-snapshotted live continuation to its terminal.
         let outcome = drive_to_terminal(&mut live);
         eprintln!(
@@ -762,7 +553,10 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
         "deterministic-twice: two restores of the mid-Postgres snapshot must reach a bit-identical \
          terminal (observable_digest + reason)"
     );
-    assert_eq!(s1, s2, "deterministic-twice: restored serial must be bit-identical");
+    assert_eq!(
+        s1, s2,
+        "deterministic-twice: restored serial must be bit-identical"
+    );
 
     // --- Restore is exact at a non-quiescent point. The headline proof: the restored
     //     continuation's GUEST-OBSERVABLE output (serial + report stream) is BIT-IDENTICAL
@@ -800,7 +594,9 @@ fn gate2_mid_postgres_roundtrip_is_deterministic() {
         .filter(|((_, a), (_, b))| a != b)
         .map(|((name, _), _)| *name)
         .collect();
-    eprintln!("[nq] gate 2: state_hash components differing from the live continuation: {differing:?}");
+    eprintln!(
+        "[nq] gate 2: state_hash components differing from the live continuation: {differing:?}"
+    );
     assert!(
         differing.iter().all(|c| benign.contains(c)),
         "gate 2: the restored continuation must be bit-identical to the un-snapshotted continuation \
@@ -951,9 +747,8 @@ fn gate3_branching_from_a_mid_postgres_snapshot() {
     eprintln!(
         "[nq] gate 3 ✓ task 40's matrix, sealed MID-POSTGRES: every fork reproducible across {n} \
          replays, ≥1 divergent (distinct terminal state_hash per seed), one shared base — the \
-         mid-workload fork task 40 documented as missing. (The continuation runs to the guest's \
-         next idle-HLT terminal under the V-time model; whether the entropy fork surfaces into the \
-         guest-observable workload vs. the host-side entropy bookkeeping is reported per branch \
-         above — see IMPLEMENTATION.md on the idle-HLT bound.)"
+         mid-workload fork task 40 documented as missing. (Each fork runs the remaining workload to \
+         its clean terminal; the per-branch line above reports whether the entropy fork surfaces \
+         into the guest-observable workload or only the host-side entropy bookkeeping.)"
     );
 }

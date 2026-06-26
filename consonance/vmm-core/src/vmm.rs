@@ -524,37 +524,6 @@ impl<B: Backend> Vmm<B> {
         snapshot::has_inflight_injection(&self.current_vcpu().events)
     }
 
-    /// TEMP DIAGNOSTIC (task 41 box debugging): the live guest RIP. Remove before the
-    /// final commit.
-    pub fn debug_rip(&self) -> u64 {
-        self.current_vcpu().regs.rip
-    }
-
-    /// TEMP DIAGNOSTIC (task 41 box debugging): a formatted dump of the live vCPU's 8
-    /// segments, so a box gate can localize a segment field the restore round-trip
-    /// fails to reproduce. Remove before the final commit.
-    pub fn debug_sregs(&self) -> String {
-        let s = self.current_vcpu().sregs;
-        let seg = |name: &str, g: &vmm_backend::Segment| {
-            format!(
-                "{name}: sel={:#06x} base={:#018x} limit={:#010x} type={:#x} p={} dpl={} s={} db={} l={} g={} avl={} unus={}",
-                g.selector, g.base, g.limit, g.type_, g.present, g.dpl, g.s, g.db, g.l, g.g, g.avl, g.unusable
-            )
-        };
-        format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\ncr0={:#x} cr3={:#x} cr4={:#x} efer={:#x} apic_base={:#x}",
-            seg("cs", &s.cs),
-            seg("ds", &s.ds),
-            seg("es", &s.es),
-            seg("fs", &s.fs),
-            seg("gs", &s.gs),
-            seg("ss", &s.ss),
-            seg("tr", &s.tr),
-            seg("ldt", &s.ldt),
-            s.cr0, s.cr3, s.cr4, s.efer, s.apic_base
-        )
-    }
-
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
     /// guest RAM size. On the box, KVM reads the guest through this same backing, so
     /// the restored memory is live on the next `KVM_RUN` — the host-side restore the
@@ -1016,22 +985,6 @@ impl<B: Backend> Vmm<B> {
         //    VM's first `service_pending_irqs`, so there is no separate plan to carry.)
         let mut vcpu = snapshot::vcpu_state_from(s);
         vcpu.events = dev.events;
-        // TEMP DIAGNOSTIC (task 41 box debugging): dump the captured non-quiescent
-        // state so the box log shows exactly which in-flight fields are set + the RIP +
-        // the LAPIC IRR/ISR. Gated by env so normal runs are unaffected. Remove before
-        // the final commit.
-        if std::env::var_os("NQ_DEBUG").is_some() && snapshot::has_inflight_injection(&vcpu.events)
-        {
-            let (irr, isr) = dev
-                .lapic
-                .as_ref()
-                .map(|l| (l.irr, l.isr))
-                .unwrap_or(([0; 8], [0; 8]));
-            eprintln!(
-                "[nq-debug] restore non-quiescent: rip={:#018x} rflags={:#x}\n[nq-debug]   events={:?}\n[nq-debug]   lapic.irr={:08x?}\n[nq-debug]   lapic.isr={:08x?}",
-                vcpu.regs.rip, vcpu.regs.rflags, vcpu.events, irr, isr
-            );
-        }
         // 3. Commit the fallible backend restore first — a failure here leaves the
         //    V-time/device state untouched (nothing below this line can reject the
         //    blob; only the hardware counter reset can fail, infrastructurally).
