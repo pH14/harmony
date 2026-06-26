@@ -10,40 +10,41 @@
 //! `guest/build/initramfs-docker.cpio.gz`, built by
 //! `guest/linux/build-docker-image.sh`) via
 //! [`vmm_core::bringup::boot_linux_selected`]. The guest `/init`
-//! (`docker-init.sh`) brings up cgroup-v2 and runs the **official postgres
-//! image** as a real OCI container with **`runc`** (the low-level runtime
-//! dockerd/containerd invoke under the hood; the full Docker static stack is
-//! baked too), with a fresh empty network namespace (`--network none`), then
-//! drives the SAME fixed insert/select workload as task 37 against the
-//! containerized DB over its local unix socket (via `runc exec`). The container's
+//! (`docker-init.sh`) brings up cgroup-v2 and runs the **official postgres OCI
+//! image** as a real container — `unshare`d mount/uts/ipc/net/pid namespaces +
+//! chroot into the image rootfs + a per-container cgroup (`--network none` = a
+//! fresh empty net namespace) — and the container drives the SAME fixed
+//! insert/select workload as task 37 over its local unix socket. The container's
 //! + the loop's stdout/stderr stream to `ttyS0`.
 //!
-//! **Why runc-direct, not dockerd (the load-bearing finding — see
+//! **Why unshare, not runc/dockerd (the load-bearing finding — see
 //! `guest/linux/IMPLEMENTATION.md`).** Under consonance's single-vCPU / V-time
-//! model, V-time advances only at VM-exits; the long-running **dockerd daemon
-//! busy-spins with no VM-exit** (its Go runtime spin-waits on containerd over
-//! gRPC), freezing V-time → the LAPIC tick never fires → deadlock. `runc` is not
-//! a daemon — it runs the identical official-image container to completion, so
-//! there is no idle daemon to spin.
+//! model, V-time advances only when the guest executes RDTSC/RDMSR(IA32_TSC); any
+//! busy-wait without RDTSC freezes V-time → the tick never fires → deadlock.
+//! **dockerd** busy-spins on gRPC (frozen at "containerd successfully booted");
+//! **runc itself** deadlocks its container-init — the container reaches "created"
+//! but its Go init never execs the command (verified with a trivial `/bin/sh -c
+//! echo`). So we build the container with `unshare`/`chroot`/`setpriv` (plain
+//! syscalls, no Go init, no exec-fifo) and run the task-37 flow inside it. The
+//! full Docker/runc stack stays baked (present, but it can't run here).
 //!
-//! **Why the container is deterministic (the delta over task 37).** `runc` (Go)
-//! reads kernel entropy (`AT_RANDOM`/`getrandom`) at startup to seed map-iteration
-//! randomization; if that weren't bit-identical, Go map order would diverge.
-//! Under the patched backend RDRAND/RDSEED trap to the **seeded stream** and
-//! credit the kernel CRNG deterministically (the same root task 37's
-//! `pg_strong_random` and initdb ride), so `AT_RANDOM`/`getrandom` are on the
-//! seeded stream. cgroup-v2 setup + the rootfs assembly are deterministic given
-//! V-time + seeded entropy. Gate 2 passing through the full container stack is
-//! the empirical proof; `docker-init.sh` also prints `boot_id` (the CRNG's UUID)
-//! as an explicit identical-twice witness.
+//! **Why the container is deterministic (the delta over task 37).** The container
+//! setup (Go-free syscalls) + the in-container postgres flow read kernel entropy
+//! (`AT_RANDOM`/`getrandom`) only through the seeded CRNG: under the patched
+//! backend RDRAND/RDSEED trap to the **seeded stream** and credit the CRNG
+//! deterministically (the same root task 37's `pg_strong_random` and the
+//! build-time initdb ride). namespace/cgroup setup + the postgres flow are
+//! deterministic given V-time + seeded entropy. Gate 2 passing through the full
+//! container surface is the empirical proof; `docker-init.sh` also prints
+//! `boot_id` (the CRNG's UUID) as an explicit identical-twice witness.
 //!
 //! **Blame boundary.** Task 37 (bare Postgres) isolates the *database*
-//! determinism surface; this task adds only the *container-stack* surface on top,
-//! so a future divergence localizes to a layer.
+//! determinism surface; this task adds only the *container* surface on top, so a
+//! future divergence localizes to a layer.
 //!
-//! **Gate 1 — Dockerized Postgres runs + streams
+//! **Gate 1 — Postgres-in-a-container runs + streams
 //! ([`p1_docker_postgres_runs_and_streams_patched`]).** One patched boot must
-//! bring the OCI container up, have postgres announce it is ready, run the
+//! bring the OCI-image container up, have postgres announce it is ready, run the
 //! workload (the streamed `row|…` lines + `database system is ready to accept
 //! connections` reach the serial), reach `GUEST_READY`, and power off cleanly.
 //!

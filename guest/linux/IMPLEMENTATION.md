@@ -1,183 +1,213 @@
 # guest/linux — implementation notes
 
-## Task 38 — Postgres-in-Docker, deterministic-twice
+## Task 38 — Postgres as an OCI container, deterministic-twice
 
 ### What landed
 
-The **Postgres-in-Docker workload image** (consonance workload stream, step 3 of
-3 — the credibility money-shot): the *unchanged* task-36 container-class
+The **Postgres-in-a-container workload image** (consonance workload stream, step
+3 of 3 — the credibility money-shot): the *unchanged* task-36 container-class
 `bzImage` + a new `initramfs-docker.cpio.gz` that runs the **official
-`postgres:17` Docker image** as a real OCI container and drives the SAME fixed
-insert/select workload as task 37, **bit-identically twice** on the patched
-backend. New files: `build-docker-image.sh`, `docker-init.sh`; `versions.lock` /
-`fetch.sh` pin+fetch the Docker static bundle and the postgres image; the box
-gates live in `consonance/vmm-core/tests/live_postgres_docker.rs`.
+`postgres:17` OCI image** as a real container — namespace + cgroup isolation of
+the image's own rootfs — and drives the SAME fixed insert/select workload as task
+37, **bit-identically twice** on the patched backend. New files:
+`build-docker-image.sh`, `docker-init.sh`, `container-setup.sh`,
+`pg-container-run.sh`; `versions.lock`/`fetch.sh` pin+fetch the Docker static
+bundle and the postgres image; the box gates live in
+`consonance/vmm-core/tests/live_postgres_docker.rs`.
 
-### The load-bearing finding: real `dockerd` deadlocks the V-time model → run via `runc`
+> **Framing (per the integrator):** the goal is **running OCI images**, not
+> docker-the-daemon. So this runs the official postgres **OCI image** in a real
+> container (the same image `docker run postgres` pulls), with real isolation —
+> just not via the docker daemon, for the load-bearing reason below.
 
-> **This is the most important result of the task.** We bake the *full* Docker
-> static stack (dockerd + containerd + containerd-shim-runc-v2 + runc) into the
-> rootfs, but the deterministic run drives the container with **`runc` directly**
-> — the same low-level OCI runtime dockerd/containerd invoke under the hood. The
-> container that runs is the *identical* official-image container `docker run`
-> would produce; we keep the image + the runtime and drop only the long-running
-> daemon.
+### The load-bearing finding: dockerd AND runc both deadlock under the V-time VMM
 
-**Why dockerd can't run here.** Under consonance's single-vCPU / V-time model,
-**V-time advances only at VM-exits** (RDTSC/IO/MMIO; a plain userspace loop
-retires branches but triggers no exit, so the skid-free `last_intercept_work`
-anchor the LAPIC timer reads stays frozen). A long-running Go **daemon** is fatal
-to this: empirically, once `dockerd`'s embedded `containerd` booted, dockerd's Go
-runtime entered a **busy-spin with no VM-exit** (spin-waiting on containerd over
-gRPC). V-time froze → the periodic LAPIC tick never fired → the scheduler never
-preempted → nothing else ever ran → permanent deadlock (core pinned at 99.9 %,
-serial frozen at "containerd successfully booted"). This is exactly task 37's
-documented hazard — *"a busy spin starves everything; there is no preemption
-tick"* — now hit by a daemon we don't control instead of our own init. It is a
-genuine, general result: **heavy long-running Go daemons are incompatible with a
-work-driven deterministic VM**, because their internal spin-wait/park machinery
-assumes a free-running clock that advances independently of guest progress.
+> **This is the most important result of the task**, and it is a general one
+> about container runtimes vs. a work-driven deterministic VM.
 
-**Why `runc` avoids it.** `runc` is **not** a daemon. It sets the container up
-(namespaces, cgroups, rootfs) and **runs to completion** — its only inter-process
-wait is the parent↔init handshake over a socketpair, which is *blocking I/O* (a
-voluntary park → a clean context switch, not a spin). Once it `exec`s the
-entrypoint, the container is just postgres — a cooperative C workload, exactly
-like task 37. So the whole run is cooperative: every wait is a blocking `runc
-exec` round-trip (the container is doing work = exiting = advancing V-time) or a
-poll that forks a command each iteration; never a `sleep`, never a spin.
+Under consonance's single-vCPU / V-time model, **V-time advances only when the
+guest executes `RDTSC`/`RDTSCP` (or `RDMSR(IA32_TSC)`)** — those are the only
+exits that update the skid-free `last_intercept_work` anchor the V-time LAPIC
+timer reads (`vmm.rs`: `complete_tsc` / `rdmsr_vtime`). Plain IO/MMIO exits,
+syscalls, and userspace loops do **not** advance it. So any guest code that
+busy-waits *without doing RDTSC* freezes V-time → the periodic tick never fires →
+the single vCPU is never preempted → permanent deadlock (core pinned at 99.9 %,
+serial frozen). This is task 37's *"a busy spin starves everything; there is no
+preemption tick"*, made precise.
 
-The user approved this pivot; the spec explicitly permits *"a documented lighter
-OCI path if dockerd proves intractable."*
+Two consequences, both observed empirically on the box:
+
+1. **`dockerd` deadlocks.** Its embedded `containerd` boots (Go programs *can*
+   run + produce output here), but then dockerd's Go runtime **busy-spins with no
+   RDTSC** while creating its containerd client (gRPC) — frozen at *"containerd
+   successfully booted"*. A long-running Go **daemon** assumes a free-running
+   clock that advances independently of guest progress; consonance's clock does
+   not. (This is why the user/integrator agreed dockerd is the wrong primitive.)
+
+2. **`runc` itself deadlocks** — the deeper finding. `runc` is not a daemon, but
+   its **container-init (Go) deadlocks the create→exec transition**: the
+   container reaches state `"created"` but **never execs its command**. Verified
+   with even a trivial `/bin/sh -c 'echo …'` as the container command — the marker
+   never prints. runc's Go init + the exec-fifo handshake between `runc run`
+   (parent) and the container-init child needs a free-running clock to make
+   progress; under frozen V-time it never completes. We tried hard to drive
+   V-time from the guest init around it — `runc state`/`runc exec` polls (they
+   *hang*, taking runc's per-container lock that the spinning init holds), and a
+   `cat /proc/uptime` RDTSC-driver loop — none unstick it, because runc-init's
+   wait is internal to a process we don't control.
+
+**Why `unshare` works.** We therefore build the container's isolation
+**directly with `unshare` + `chroot` + `setpriv`** — plain *syscalls*, no Go init,
+no exec-fifo. The container's PID 1 is a busybox shell that sets up the namespace
+view and execs the **cooperative task-37 flow inside the container**: start the
+postgres binary, drive it with a local `psql` `SELECT 1` loop, run the workload,
+`pg_ctl` stop. That loop advances V-time for exactly the reason task 37's did — a
+blocking `psql` connect yields the vCPU to the starting postmaster, whose RDTSCs
+(log timestamps, sched_clock) trap → VM-exits → V-time advances → the tick fires →
+postgres is scheduled and reaches "ready". The guest `/init` just `unshare`s the
+container and `wait`s; the container is the only runnable work and is busy
+throughout (no idle-HLT), so nothing has to be driven from outside. **The full
+Docker/runc stack is still baked into the rootfs** (the OCI runtime is present —
+the finding is that it can't *run* here), and a valid OCI bundle (`/oci` with
+`config.json` + the image rootfs) is generated for the record.
 
 ### Build (`build-docker-image.sh`, root + Linux only)
 
 1. **Docker static bundle** (`versions.lock`, sha256-verified like the
-   kernel/busybox): `dockerd`/`containerd`/shim/`runc`/`docker`/`ctr` are all
-   **statically linked**, so — unlike task 37 — the guest rootfs needs **no
-   glibc closure** (the container ships its own userland inside the image).
-2. **Official postgres image → OCI bundle.** `fetch.sh` pulls
-   `postgres:17` **by registry digest** (content-addressed; the integrity
-   anchor) with the box's `ctr` into an isolated namespace and exports a
-   `docker load`-format tar. The build extracts that image's layers (in order,
-   with best-effort whiteout handling) into `oci/rootfs`, and generates
-   `oci/config.json` from the image's **own** runtime config (entrypoint = `["docker-entrypoint.sh","postgres"]`,
-   env incl. its `PATH`/`PGDATA`, cwd) via `runc spec` + `jq`. The container
-   rootfs lives in the initramfs tmpfs → **PGDATA is RAM-backed** (fsync is a
-   noop; no durability-fault surface — deferred to D1, as in task 37).
-3. **`config.json` deltas** the off-the-shelf image needs to run under `runc` in
-   this guest (each isolated on the box):
-   - **`--no-pivot`** (a baked `/usr/local/bin/runc` wrapper injecting it into
-     `create`/`run`): the container rootfs is on the **initramfs ramdisk, whose
-     root mount has no parent**, so runc's default `pivot_root` `EINVAL`s
-     ("pivot_root: invalid argument"); `--no-pivot` uses `MS_MOVE`+`chroot`, the
-     documented ramdisk path.
-   - **capabilities**: the bare `runc spec` grants only 3 caps; the postgres
-     entrypoint chowns PGDATA and `gosu`s to the postgres user, so we grant
-     **docker's default 14-cap set** (CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/…),
-     else `chown: Operation not permitted`.
-   - **device cgroup allow-all + `noNewPrivileges:false`** (docker's defaults):
-     the bare `runc spec` device cgroup is **default-deny** (`[{allow:false}]`),
-     and on the guest kernel (cgroup-v2 device control = an eBPF filter) that
-     **silently kills the container's PID 1 at exec** — it reaches *"init: about
-     to wait on exec fifo"* then "container process is already dead", even for a
-     trivial `/bin/echo`. Allow-all is appropriate for a trusted single-purpose
-     determinism gate.
-4. **Workload** baked into the container rootfs (`/workload.sql`): the same
-   `CREATE TABLE ledger` + N=20 `INSERT`/`SELECT` loop as task 37, printing
-   `row|i|v|count|sum` — values a pure function of the loop index.
+   kernel/busybox): `dockerd`/`containerd`/shim/`runc`/`ctr` — all statically
+   linked, baked under `/usr/local/bin` (present, but unused at runtime per the
+   finding). A `--no-pivot` runc wrapper is baked too (it was the fix for an
+   earlier runc bring-up: the initramfs root mount has no parent so runc's
+   `pivot_root` `EINVAL`s — moot now that runc isn't run).
+2. **Official postgres image → rootfs.** `fetch.sh` pulls `postgres:17` **by
+   registry digest** (content-addressed — the integrity anchor) with the box's
+   `ctr` and exports a `docker load`-format tar; the build extracts the image's
+   layers (in order, best-effort whiteouts) into `/oci/rootfs`. NO glibc closure
+   to copy (unlike task 37) — the image ships its own userland.
+3. **Pre-`initdb`'d PGDATA baked in** (like task 37, and load-bearing the same
+   way). Running the image's *entrypoint* would `initdb` at container start — both
+   crushingly slow under the single-stepping VMM AND it re-execs through `gosu`,
+   a Go program whose runtime busy-spins (the dockerd failure mode again). So
+   build-time `initdb` runs once into the rootfs's PGDATA (`chroot --userspec=999`
+   + the host /dev/proc bound in; a fixed, snapshotted cluster system id), and the
+   container runs the `postgres` binary directly — a cooperative C workload, no
+   Go. A determinism overlay (socket-only, pinned TZ/locale, `[pg %p]` pid prefix,
+   autovacuum off) is appended to `postgresql.conf`, mirroring task 37.
+4. **Ownership preserved in the cpio** (no `--owner=0:0`): the guest-side files
+   are root-owned, while the OCI rootfs keeps the image's ownerships + PGDATA
+   owned by uid 999, which the container's postgres (uid 999) needs.
+5. The workload (`/workload.sql`, == task 37) and the two scripts are baked:
+   `pg-container-run.sh` → `/oci/rootfs/run-workload.sh` (runs *inside* the
+   container) and `container-setup.sh` → `/container-setup.sh` (the unshared
+   PID 1, *before* chroot).
 
-### `docker-init.sh` (the runc-direct /init) — the control-flow findings
+### The container (`container-setup.sh` + `pg-container-run.sh`)
 
-- **`--network none` by construction.** The generated `config.json` has the
-  default fresh, empty **network namespace** (no veth) — loopback only — which is
-  precisely `--network none`. The workload reaches postgres over the **local unix
-  socket**, never TCP.
-- **cgroup-v2 setup.** Mount the unified hierarchy, move init into a leaf
-  (`/sys/fs/cgroup/init`) so the root can delegate controllers, enable
-  `cpu/io/memory/pids` in the root subtree (cpuset is absent — it depends on SMP,
-  off per the task-36 audit; runc degrades over it). `cgroup_no_v1=all` on the
-  cmdline keeps every controller available to v2.
-- **No busy keepalive (re-confirmed the hard way).** A first cut used a
-  `while :; do :; done` keepalive to "prevent idle"; it **deadlocked the VMM**
-  immediately — a pure userspace spin retires branches but triggers no VM-exit,
-  freezing V-time exactly as dockerd did. Removed. The cooperative round-trips
-  below keep V-time advancing instead.
-- **Wait for the container to *exist* before polling readiness.** Right after
-  `runc run … | tee &`, poll `until runc state "$CID"` (cooperative — each forked
-  `runc state` is a VM-exit). Under the VMM, runc's container setup is much slower
-  than the shell, so an earlier readiness check would race creation and
-  false-`FATAL` on "does not exist" (a bug invisible under QEMU's faster timing).
-- **Skip the entrypoint's transient init server.** The official image runs
-  `initdb` against a temporary unix-socket server, prints *"PostgreSQL init
-  process complete; ready for start up."*, stops it, then starts the real server.
-  We gate on that marker (PGDATA is fresh each boot → init always runs), then on
-  `pg_isready`, so the workload never races the temp server's shutdown.
-- **Shutdown from *inside* the container.** A host-side `runc kill` cannot stop
-  postgres: it is **PID 1 of the container's pid namespace**, and the kernel
-  drops signals sent to a namespace's PID 1 from an **ancestor** namespace
-  (verified on the box: `runc kill … SIGINT` returns 0 but postgres ignores it).
-  So we stop it the task-37 way — from *within* the namespace via
-  `runc exec … gosu postgres pg_ctl -m fast -W stop` — whose signal is delivered
-  and handled; the shell's `wait` then blocks on the run job so the shutdown
-  checkpoint gets the vCPU and its logs reach `ttyS0`.
-- **Terminal.** As in task 37, `poweroff` strands in `device_shutdown` once block
-  I/O has run; the cmdline's `reboot=t,force` + `reboot -f` make a clean
-  triple-fault terminal.
+`docker-init.sh` mounts the kernel filesystems + cgroup-v2, creates a
+`pg-container` cgroup and moves init into it, then:
+
+```
+unshare --mount --uts --ipc --net --pid -f --propagation private  sh /container-setup.sh
+```
+
+— fresh **mount / UTS / IPC / NET / PID** namespaces (`-f` forks so the script is
+PID 1 of the new pid ns; `--net` with no veth = **`--network none`**, loopback
+only). `container-setup.sh` (PID 1) mounts the container's own `/proc` (new pid
+ns), `--rbind`s the host devtmpfs into `/dev` (a `nodev` tmpfs can't host mknod'd
+nodes), mounts a fresh `/dev/shm` (postgres POSIX shm) + `/tmp`, then
+`chroot`s into the image rootfs and `setpriv`s to uid 999 (the image's own
+`setpriv` — C, no `/proc/self/exe`) to exec `run-workload.sh`. That script is the
+task-37 flow verbatim, now inside the container: `postgres -D PGDATA &`, the
+cooperative `psql SELECT 1` readiness loop, the insert/select workload (over the
+container-local unix socket), `pg_ctl -m fast -W stop` + `wait`.
 
 ### Determinism closure (each item traces to the seed / V-time)
 
 - **The Go-runtime entropy path is on the seeded CRNG** (the spec's load-bearing
-  item). `runc` (Go) reads `AT_RANDOM`/`getrandom` at startup to seed
-  map-iteration + hash randomization; if that diverged, Go map order — and thus
-  every map-ordered output byte — would diverge. Under the patched backend
-  RDRAND/RDSEED trap to the **seeded stream** and credit the kernel CRNG
-  deterministically (the same root as task 37's `pg_strong_random` and the
-  in-container `initdb`). The kernel CRNG mixes `random_get_entropy()` = the TSC
-  at add-time, which is the **V-time TSC** (every in-guest RDTSC, including the
-  userspace vDSO, traps to V-time — never a laundered host value). `docker-init.sh`
-  prints `boot_id` (the CRNG's own UUID) as an explicit identical-twice witness;
-  the overall bit-identical serial proves the map-ordered remainder.
-- **cgroup-v2 setup + the rootfs assembly** are deterministic given V-time
-  (deterministic timestamps) + seeded entropy — both are pure functions of guest
-  execution under the single vCPU, with no probe-spin (the runc/postgres
-  processes are cooperative; the i8042 fast-fail from task 34 is unchanged).
-- **Multiprocess is deterministic by construction** — the postgres entrypoint
-  forks `initdb`, a temp server, then the real postmaster + its background
-  workers; a single vCPU kills SMP races, fork order is sequential, and timer
-  wakeups ride the V-time tick. The serial is bit-identical twice — empirical
-  proof.
+  item). `runc`/`unshare`-adjacent code and the kernel read `AT_RANDOM`/
+  `getrandom` at process startup to seed map-iteration randomization; under the
+  patched backend RDRAND/RDSEED trap to the **seeded stream** and credit the
+  kernel CRNG deterministically (the same root as task 37's `pg_strong_random` and
+  the build-time `initdb`). The kernel CRNG mixes `random_get_entropy()` = the TSC
+  at add-time, which is the **V-time TSC** (every in-guest RDTSC, incl. the vDSO,
+  traps — never a laundered host value). `docker-init.sh` prints `boot_id` (the
+  CRNG's UUID) as the explicit identical-twice witness; the bit-identical serial
+  proves the rest.
+- **Namespace + cgroup setup is a pure function of guest execution** (syscalls
+  under a single vCPU, no probe-spin), and the postgres flow is multiprocess but
+  deterministic by construction (single vCPU kills SMP races, sequential fork
+  PIDs, V-time-driven background workers) — exactly as task 37 documented.
+- **The terminal is a forced triple-fault** (`reboot=t,force` + `reboot -f`);
+  note it takes a bounded-but-non-trivial number of VM-steps to reach the `Hlt`
+  terminal after `GUEST_READY` (the kernel reboot path), all deterministic.
 
 ### Blame boundary (the spec's gate 3)
 
 Task 37 (bare Postgres) isolates the **database** determinism surface; this task
-adds only the **container-stack** surface (runc's namespace/cgroup/rootfs setup +
-the Go entropy seeding) on top of it. The DB workload, locale, and final-row
-golden are identical to task 37 by construction, so a future divergence localizes
-cleanly to a layer: if the `row|…` values match task 37 but the run diverges, the
-fault is in the container surface, not the DB.
+adds only the **container surface** — the namespace/cgroup isolation + the
+container-internal driving — on top of it. The DB workload, locale, and
+final-row golden are **identical to task 37 by construction**, so a divergence
+localizes cleanly to a layer: if the `row|…` values match task 37 but the run
+diverges, the fault is in the container surface, not the DB.
 
-<!-- ACCEPTANCE-GATE EVIDENCE: filled in after the box gates pass. -->
+### Acceptance-gate evidence (box, `ssh hetzner`, core-2-pinned, reverted to stock 1396736)
+
+Built with `make -C guest fetch && make -C guest/linux docker-image` on the box;
+patched 6.12.90 proxy modules loaded, `taskset -c 2`, **always reverted to stock
+KVM (`1396736`) after each run and verified** (`run-patched-ht38.sh`'s trap).
+
+- **Gate 1 — Dockerized Postgres runs + streams** (`p1_docker_postgres_runs_and_streams_patched`):
+  one patched boot brought up the OCI container, postgres announced ready, the
+  workload streamed, `GUEST_READY`, clean terminal — `test result: ok`:
+
+  ```
+  [p1] steps=162728 terminal=Some(Hlt) container_up=true pg_ready=true
+       workload_done=true final_row=true GUEST_READY=true step_error=None
+  ```
+  (final_row = `row|20|407|20|3010`, the same pure-function-of-the-index row task
+  37 pins; ~162.7k steps, ≈ task 37's 162.6k — the container surface adds almost
+  no VM-steps.)
+
+- **Gate 2 — deterministic twice (the milestone)** (`p2_docker_postgres_deterministic_twice_patched`):
+  two same-seed patched boots through the full container surface → **bit-identical**
+  serial (incl. the `row|…` query output) **and** `state_hash`:
+
+  ```
+  [p2 run A] steps=162728 terminal=Some(Hlt)  container_up pg_ready workload_done final_row GUEST_READY = all true
+  [p2 run B] steps=162728 terminal=Some(Hlt)  container_up pg_ready workload_done final_row GUEST_READY = all true
+  serial A == serial B  (16094 bytes, including the row|… query output)
+  state_hash A = state_hash B =
+    ab6635f93cd65d9a5c647507482849b22959cd4c377082b41a544a1a16b362a0
+  ```
+  (Run A and Run B retire the *same* 162728 VM-steps — the container surface is
+  fully deterministic — and `test result: ok` confirms the bit-identical serial +
+  `state_hash`.)
+
+- **Gate 3 — blame boundary documented** (above): task 37 isolates the DB
+  surface, this task adds only the container surface.
+
+- **No regression / box hygiene:** only `guest/linux/` + the box-only
+  `live_postgres_docker.rs` changed; the kernel / minimal image / `devices.rs` /
+  contract are untouched, so M1/M2/P6 + the det-corpus goldens + the `state_hash`
+  schema are byte-unchanged. Every patched run reverted to stock KVM (`1396736`)
+  and was verified.
 
 ### Deviations considered / limitations
 
-- **runc-direct instead of `dockerd`** — forced by the deadlock above; the user
-  approved it and the spec permits the lighter OCI path. The full Docker stack is
-  still baked (the image *is* docker-capable); only the daemon is bypassed at
-  runtime. A future task could retry dockerd if the VMM ever grows a
-  forced-exit/preemption mechanism (out of scope — "build on 34, don't
-  re-architect the seam").
-- **Storage = the image rootfs in the initramfs tmpfs** (RAM-backed), not a
-  `vfs`/`overlay2` docker graph. With runc-direct there is no docker daemon to
-  manage a storage driver; the OCI bundle's rootfs is the storage, and it lives
-  in RAM exactly as the spec's "RAM-backed" intent requires. (vfs-on-tmpfs and
-  overlay2-on-a-loop-ext4 were the dockerd-path options; moot once dockerd is
-  dropped.)
-- **Image not byte-reproducible across separate builds** (the registry export tar
-  + initdb-at-container-start mint build/run-time randomness) — runtime
-  determinism, the gate, is unaffected. The integrity anchor is the digest-pinned
-  pull.
-- **`--network none` drops the entire bridge/netfilter surface** (config *and*
+- **Containers via `unshare`, not runc/dockerd** — forced by the deadlock finding
+  above (runc-init never execs under frozen V-time), confirmed by the integrator's
+  "OCI images, not docker" framing. It is still the official postgres OCI image in
+  real namespace + cgroup isolation; only the OCI *tooling* is bypassed. The full
+  docker/runc stack stays baked and a valid OCI bundle is generated, so the
+  finding is reproducible and a future VMM with a forced-preemption/exit mechanism
+  could revisit runc.
+- **Pre-baked PGDATA + direct `postgres`** (not the image entrypoint): the
+  entrypoint's runtime `initdb` + `gosu` (Go) deadlock/slow the VMM; pre-baking is
+  task 37's proven pattern. The image is otherwise off-the-shelf.
+- **Image not byte-reproducible across separate builds** (registry export +
+  build-time initdb system id) — runtime determinism, the gate, is unaffected; the
+  integrity anchor is the digest-pinned pull.
+- **`--network none`** drops the entire bridge/netfilter surface (config *and*
   nondeterminism); single-node has no network anyway. No durability-fault surface
   (RAM-backed PGDATA; deferred to D1).
 

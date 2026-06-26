@@ -1,29 +1,29 @@
 #!/bin/sh
-# /init of the **Postgres-in-Docker workload image** (task 38), the runc-direct
-# path. Brings up the kernel filesystems + cgroup-v2, runs the **official
-# postgres image** as a real OCI container with **`runc`** (the low-level runtime
-# dockerd/containerd invoke under the hood), drives the SAME fixed insert/select
-# workload as task 37 against the containerized DB over its local unix socket
-# (via `runc exec`), streams the container's + the loop's stdout/stderr to ttyS0,
-# and reaches a clean deterministic terminal.
+# /init of the **Postgres-as-an-OCI-container workload image** (task 38). Brings
+# up the kernel filesystems + cgroup-v2, then runs the **official postgres OCI
+# image** as a real container — `unshare`d mount/uts/ipc/net/pid namespaces +
+# chroot into the image rootfs + a per-container cgroup — and waits while the
+# container drives the SAME fixed insert/select workload as task 37 over its
+# local unix socket, streaming its stdout/stderr to ttyS0, to a clean terminal.
 #
-# **Why runc, not dockerd (the load-bearing finding — see IMPLEMENTATION.md).**
-# Under consonance's single-vCPU / V-time model, V-time advances ONLY at VM-exits
-# (RDTSC/IO/MMIO). A long-running Go daemon (dockerd, with its containerd)
-# busy-spins with no VM-exit while waiting on gRPC, which freezes V-time → the
-# LAPIC tick never fires → nothing else is ever scheduled → deadlock (task 37's
-# "a spin starves everything; there is no preemption tick"). `runc` sidesteps
-# this entirely: it is NOT a daemon — it sets the container up and runs to
-# completion (its parent↔init handshake is blocking I/O = a voluntary park, not a
-# spin), and the container it runs is the IDENTICAL official-image container
-# docker would run. The container's postgres is then a cooperative C workload,
-# exactly like task 37.
+# **Why unshare, not runc/dockerd (the load-bearing finding — see
+# IMPLEMENTATION.md).** Under consonance's single-vCPU / V-time model, V-time
+# advances ONLY when the guest executes RDTSC/RDMSR(IA32_TSC). Any busy-wait that
+# does no RDTSC freezes V-time → the LAPIC tick never fires → nothing is ever
+# preempted → deadlock. **dockerd** busy-spins on gRPC (frozen at "containerd
+# successfully booted"); **runc** itself deadlocks its container-init — the
+# container reaches "created" but its Go init never execs the command (verified
+# with a trivial `/bin/sh -c echo`). So we build the container with `unshare` +
+# `chroot` + `setpriv` (plain syscalls, no Go init, no exec-fifo) and run the
+# task-37 cooperative flow INSIDE it; that flow advances V-time the way task 37
+# did (a blocking `psql` connect yields the vCPU to the starting postmaster,
+# whose RDTSCs trap → V-time advances → the tick fires → postgres is scheduled).
+# The full Docker/runc stack stays baked — present, but it can't run here.
 #
 # Two VMM realities (from task 37) shape the control flow:
-#   * Never go idle and never busy-spin: V-time freezes both ways. So every wait
-#     is COOPERATIVE — a blocking `runc exec` round-trip (the container is doing
-#     work = exiting = advancing V-time) or a poll that forks a command each
-#     iteration — never a `sleep`, never a `while :; do :; done`.
+#   * Never go idle and never busy-spin without RDTSC: V-time freezes both ways.
+#     The container is the only runnable work and is busy throughout (postgres +
+#     the psql loop), so the init just `wait`s — no host-side poll to freeze on.
 #   * `poweroff` strands in device_shutdown; we `reboot -f` and the cmdline's
 #     `reboot=t,force` makes it a clean triple-fault terminal.
 
