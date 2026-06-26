@@ -589,8 +589,13 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     c.triple_fault_pending = e.triple_fault_pending;
     // Rebuild the SET-meaning validity mask: set a bit iff its sub-record is active, so
     // the GET-side metadata bits (set unconditionally, with all-zero fields) are never
-    // replayed into the SET. A fresh restore target defaults every sub-record to 0, so
-    // an *unset* bit correctly leaves it cleared.
+    // replayed. This is the form used for the **`state_hash`** (active-only, so two
+    // same-seed runs and a quiescent record both hash to `flags = 0` — no golden moves).
+    // NOTE: the **restore** path does NOT use these flags directly — see
+    // [`events_for_restore`]. KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as
+    // "leave that sub-record UNCHANGED", not "clear it", so restoring this active-only mask
+    // onto a non-fresh vCPU would retain the prior occupant's stale state. `events_for_restore`
+    // forces the gated clear-on-restore bits on; this function stays active-only for the hash.
     let smm_active =
         c.smi_smm != 0 || c.smi_pending != 0 || c.smi_inside_nmi != 0 || c.smi_latched_init != 0;
     c.flags = if c.nmi_injected != 0 || c.nmi_pending != 0 || c.nmi_masked != 0 {
@@ -618,6 +623,35 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
     } else {
         0
     };
+    c
+}
+
+/// The canonical events to hand to `KVM_SET_VCPU_EVENTS` on **restore** — like
+/// [`canonical_events`], but with the clear-on-restore validity bits forced **on**.
+///
+/// KVM treats a *clear* validity bit on `KVM_SET_VCPU_EVENTS` as **"leave that sub-record
+/// UNCHANGED"**, not "clear it". So restoring a quiescent snapshot (no NMI-pending /
+/// interrupt-shadow / SMM / triple-fault) with those bits clear onto a **non-fresh** vCPU —
+/// a committed / previously-run vCPU, i.e. the branch or restore-in-place case — would
+/// **retain the previous occupant's stale event state**: the restored VM would depend on its
+/// predecessor, a determinism leak (PR #12 round 6, codex/GPT-5.5). Setting
+/// `NMI_PENDING | SHADOW | SMM | TRIPLE_FAULT` **unconditionally**, with the canonical
+/// payloads (which are 0 when inactive), makes restore explicitly **clear** that state, so the
+/// restored vCPU is independent of its predecessor (restore is idempotent w.r.t. target state).
+///
+/// `SIPI_VECTOR` stays **gated** (it is SET-only — KVM never reports it on GET and applying a
+/// spurious vector-0 SIPI could perturb a wait-for-SIPI AP; round-2 handling). `PAYLOAD` stays
+/// gated on `exception_has_payload` — the exception sub-record itself (injected/nr/error_code)
+/// is applied by KVM **unconditionally**, so a clean snapshot already overwrites a stale one;
+/// only the payload interpretation is gated, and it is moot when no exception is injected.
+/// The **`state_hash`** uses [`canonical_events`] (active-only flags), not this — so forcing
+/// the bits here does **not** move any golden (the hashed form is unchanged).
+pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::VcpuEvents {
+    let mut c = canonical_events(e);
+    c.flags |= KVM_VCPUEVENT_VALID_NMI_PENDING
+        | KVM_VCPUEVENT_VALID_SHADOW
+        | KVM_VCPUEVENT_VALID_SMM
+        | KVM_VCPUEVENT_VALID_TRIPLE_FAULT;
     c
 }
 
@@ -1670,6 +1704,150 @@ mod tests {
         let q = canonical_events(&vmm_backend::VcpuEvents::default());
         assert_eq!(q.flags & KVM_VCPUEVENT_VALID_SMM, 0);
         assert_eq!(q.flags & KVM_VCPUEVENT_VALID_NMI_PENDING, 0);
+    }
+
+    #[test]
+    fn events_for_restore_clears_stale_target_state_regardless_of_freshness() {
+        // PR #12 round 6 (codex/GPT-5.5) — restore must be independent of the prior occupant.
+        // KVM treats a CLEAR validity bit on `KVM_SET_VCPU_EVENTS` as "leave that sub-record
+        // UNCHANGED", so restoring a quiescent snapshot onto a NON-fresh vCPU (the branch /
+        // restore-in-place case) would RETAIN its stale NMI-pending / interrupt-shadow / SMM /
+        // triple-fault — a determinism leak. `events_for_restore` forces those validity bits ON
+        // so restore explicitly clears that state.
+
+        // Model `KVM_SET_VCPU_EVENTS`: a clear validity bit leaves the sub-record unchanged; the
+        // always-applied fields (interrupt/exception/NMI injected + nmi.masked) overwrite.
+        fn kvm_set(
+            prev: &vmm_backend::VcpuEvents,
+            set: &vmm_backend::VcpuEvents,
+        ) -> vmm_backend::VcpuEvents {
+            let mut out = *prev;
+            // Unconditionally applied by KVM:
+            out.interrupt_injected = set.interrupt_injected;
+            out.interrupt_nr = set.interrupt_nr;
+            out.interrupt_soft = set.interrupt_soft;
+            out.exception_injected = set.exception_injected;
+            out.exception_pending = set.exception_pending;
+            out.exception_nr = set.exception_nr;
+            out.exception_has_error_code = set.exception_has_error_code;
+            out.exception_error_code = set.exception_error_code;
+            out.nmi_injected = set.nmi_injected;
+            out.nmi_masked = set.nmi_masked;
+            // Validity-gated (a clear bit leaves the sub-record UNCHANGED):
+            if set.flags & KVM_VCPUEVENT_VALID_NMI_PENDING != 0 {
+                out.nmi_pending = set.nmi_pending;
+            }
+            if set.flags & KVM_VCPUEVENT_VALID_SHADOW != 0 {
+                out.interrupt_shadow = set.interrupt_shadow;
+            }
+            if set.flags & KVM_VCPUEVENT_VALID_SMM != 0 {
+                out.smi_smm = set.smi_smm;
+                out.smi_pending = set.smi_pending;
+                out.smi_inside_nmi = set.smi_inside_nmi;
+                out.smi_latched_init = set.smi_latched_init;
+            }
+            if set.flags & KVM_VCPUEVENT_VALID_TRIPLE_FAULT != 0 {
+                out.triple_fault_pending = set.triple_fault_pending;
+            }
+            if set.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR != 0 {
+                out.sipi_vector = set.sipi_vector;
+            }
+            if set.flags & KVM_VCPUEVENT_VALID_PAYLOAD != 0 {
+                out.exception_has_payload = set.exception_has_payload;
+                out.exception_payload = set.exception_payload;
+            }
+            out
+        }
+
+        // A vCPU left dirty by a previous occupant; a clean snapshot has NONE of those.
+        let stale = vmm_backend::VcpuEvents {
+            nmi_pending: 1,
+            smi_smm: 1,
+            smi_pending: 1,
+            interrupt_shadow: 1,
+            triple_fault_pending: 1,
+            ..Default::default()
+        };
+        let clean = vmm_backend::VcpuEvents::default();
+
+        // `events_for_restore` forces the gated clear-on-restore bits ON (and only those).
+        let setv = events_for_restore(&clean);
+        let force = KVM_VCPUEVENT_VALID_NMI_PENDING
+            | KVM_VCPUEVENT_VALID_SHADOW
+            | KVM_VCPUEVENT_VALID_SMM
+            | KVM_VCPUEVENT_VALID_TRIPLE_FAULT;
+        assert_eq!(
+            setv.flags & force,
+            force,
+            "events_for_restore sets NMI_PENDING|SHADOW|SMM|TRIPLE_FAULT unconditionally"
+        );
+        // SIPI stays gated (SET-only); PAYLOAD stays gated on exception_has_payload.
+        assert_eq!(
+            setv.flags & KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+            0,
+            "SIPI stays gated on restore"
+        );
+        assert_eq!(
+            setv.flags & KVM_VCPUEVENT_VALID_PAYLOAD,
+            0,
+            "PAYLOAD stays gated on exception_has_payload"
+        );
+
+        // Restoring the clean snapshot onto the STALE vCPU clears every stale sub-record, and
+        // yields the SAME result as restoring onto a fresh vCPU — restore is target-independent.
+        let restored_stale = kvm_set(&stale, &setv);
+        let restored_fresh = kvm_set(&vmm_backend::VcpuEvents::default(), &setv);
+        assert_eq!(restored_stale.nmi_pending, 0, "stale NMI-pending cleared");
+        assert_eq!(restored_stale.smi_smm, 0, "stale SMM cleared");
+        assert_eq!(restored_stale.smi_pending, 0, "stale SMI-pending cleared");
+        assert_eq!(
+            restored_stale.interrupt_shadow, 0,
+            "stale interrupt-shadow cleared"
+        );
+        assert_eq!(
+            restored_stale.triple_fault_pending, 0,
+            "stale triple-fault cleared"
+        );
+        assert_eq!(
+            restored_stale, restored_fresh,
+            "restore is independent of the prior occupant (stale target == fresh target)"
+        );
+
+        // Contrast — the active-only `canonical_events` would LEAK the stale state (the exact
+        // bug): its NMI_PENDING/SHADOW/SMM/TRIPLE_FAULT bits are clear for a quiescent record,
+        // so KVM leaves the prior occupant's sub-records untouched.
+        let leaked = kvm_set(&stale, &canonical_events(&clean));
+        assert_ne!(
+            leaked, restored_fresh,
+            "canonical_events (gated bits) leaks the prior occupant's NMI/SMM/shadow/triple-fault"
+        );
+        assert_eq!(
+            leaked.nmi_pending, 1,
+            "the leak: stale NMI-pending survives the active-only mask"
+        );
+
+        // A genuine active injection still round-trips: events_for_restore preserves real state,
+        // it only forces the validity bits + canonical (zero-when-inactive) payloads.
+        let active = vmm_backend::VcpuEvents {
+            nmi_injected: 1,
+            nmi_pending: 1,
+            interrupt_shadow: 1,
+            ..Default::default()
+        };
+        let setv_active = events_for_restore(&active);
+        assert_eq!(
+            setv_active.nmi_pending, 1,
+            "an active NMI-pending is preserved"
+        );
+        assert_eq!(
+            setv_active.interrupt_shadow, 1,
+            "an active interrupt-shadow is preserved"
+        );
+        assert_eq!(
+            kvm_set(&stale, &setv_active).nmi_pending,
+            1,
+            "an active NMI-pending is applied on restore (not zeroed)"
+        );
     }
 
     #[test]

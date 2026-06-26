@@ -1038,10 +1038,14 @@ impl<B: Backend> Vmm<B> {
         // `canonical_events` in the device blob). This VM's own save path already strips KVM's
         // inert modifier residuals, but an **external or older v3 blob** (hand-built, or from a
         // different/buggy encoder) may carry RAW residuals; forwarding them verbatim to
-        // `KVM_SET_VCPU_EVENTS` would reintroduce the exact corruption `canonical_events` exists
-        // to prevent. Idempotent for a self-produced (already-canonical) blob, so
-        // restore-transparency is unchanged; defense-in-depth for any other source.
-        vcpu.events = snapshot::canonical_events(&dev.events);
+        // `KVM_SET_VCPU_EVENTS` would reintroduce the exact corruption canonicalization exists
+        // to prevent. Use `events_for_restore` (not `canonical_events`): it additionally forces
+        // the NMI_PENDING/SHADOW/SMM/TRIPLE_FAULT validity bits ON, so KVM **clears** any stale
+        // NMI-pending / interrupt-shadow / SMM / triple-fault left on a NON-fresh target vCPU
+        // (a clear bit means "leave unchanged" to `KVM_SET_VCPU_EVENTS`) — restore is then
+        // independent of the prior occupant (the branch / restore-in-place case; PR #12 round 6).
+        // Idempotent for a self-produced blob; the `state_hash` still uses `canonical_events`.
+        vcpu.events = snapshot::events_for_restore(&dev.events);
         // 3. Commit the fallible backend restore first — a failure here leaves the
         //    V-time/device state untouched (nothing below this line can reject the
         //    blob; only the hardware counter reset can fail, infrastructurally).
@@ -4860,15 +4864,17 @@ mod tests {
                 dev.events, want,
                 "{name}: canonical kvm_vcpu_events captured"
             );
-            // Restore into a fresh, equivalently-wired VM and confirm the backend
-            // received the canonical in-flight events (KVM_SET_VCPU_EVENTS equivalent).
+            // Restore into a fresh, equivalently-wired VM and confirm the backend received the
+            // restore-form events: canonical payloads, but with the clear-on-restore validity
+            // bits forced on (`events_for_restore` — PR #12 round 6) so KVM clears stale state
+            // on a non-fresh target. The active injection is preserved either way.
             let mut b = full_vmm(VcpuState::default(), vec![], 0, 1);
             b.restore_vm_state(&s)
                 .expect("restore the in-flight snapshot");
             assert_eq!(
                 b.backend.save().unwrap().events,
-                want,
-                "{name}: restore re-establishes the canonical in-flight events on the backend"
+                snapshot::events_for_restore(&events),
+                "{name}: restore re-establishes the in-flight events (restore form) on the backend"
             );
         };
         // Each in-flight injection class that task 39 rejected, now captured.
@@ -4935,20 +4941,25 @@ mod tests {
         let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
         dev.events = raw;
         s.devices = snapshot::encode_device_blob(&dev);
-        // Restore the forged blob: the backend must receive CANONICAL events, NOT the raw
-        // residuals — i.e. the clean record, not `raw` (which would corrupt the guest).
+        // Restore the forged blob: the backend must receive the RESTORE-FORM events — the
+        // residuals stripped (clean payloads), with the clear-on-restore validity bits forced
+        // on (`events_for_restore` — PR #12 round 6), NOT the raw residuals (which would
+        // corrupt the guest).
         let mut b = full_vmm(VcpuState::default(), vec![], 0, 1);
         b.restore_vm_state(&s).expect("restore the external blob");
         let restored = b.backend.save().unwrap().events;
         assert_eq!(
             restored,
-            snapshot::canonical_events(&raw),
-            "restore canonicalizes external/raw events (residuals stripped, not forwarded raw)"
+            snapshot::events_for_restore(&raw),
+            "restore strips the residuals and forces the clear-on-restore validity bits"
         );
+        // The residual PAYLOADS are stripped (the stale interrupt.nr / exception.nr /
+        // has_error_code are gone), even though the validity-mask flags are set:
+        assert_eq!(restored.interrupt_nr, 0, "stale interrupt.nr stripped");
+        assert_eq!(restored.exception_nr, 0, "stale exception.nr stripped");
         assert_eq!(
-            restored,
-            vmm_backend::VcpuEvents::default(),
-            "this all-residual record canonicalizes to the clean quiescent record on restore"
+            restored.exception_has_error_code, 0,
+            "stale has_error_code stripped"
         );
         assert_ne!(
             restored, raw,

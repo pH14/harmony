@@ -2383,14 +2383,30 @@ single-vCPU guest never carries a SIPI. Pinned by the SIPI cases in
 `canonical_events_collapses_residuals_and_reconstructs_flags` (residual-with-vector dropped, valid-with-
 vector carried, **valid-with-vector-0 kept**).
 
-**4. The restore path canonicalizes too — restore/save symmetry (`restore_vm_state`, PR #12 round 3).**
-The save path stores `canonical_events` in the device blob (§2); `restore_vm_state` now also applies
-`canonical_events(&dev.events)` before `KVM_SET_VCPU_EVENTS`. For a self-produced (already-canonical) blob
-this is idempotent — restore-transparency is unchanged — but an **external or older v3 blob** (hand-built,
-or from a different/buggy encoder) could carry RAW residuals; canonicalizing on restore too means a
-foreign/corrupt blob can never reintroduce the exact residuals the save path strips. Pinned by
-`restore_canonicalizes_raw_events_from_an_external_blob` (a forged device blob with raw residuals restores
-to the clean record on the backend, *not* the raw bytes).
+**4. The restore path canonicalizes too — restore/save symmetry (`restore_vm_state`, PR #12 round 3/6).**
+The save path stores `canonical_events` in the device blob (§2); `restore_vm_state` applies the canonical
+events before `KVM_SET_VCPU_EVENTS`. For a self-produced (already-canonical) blob this is idempotent —
+restore-transparency is unchanged — but an **external or older v3 blob** (hand-built, or from a
+different/buggy encoder) could carry RAW residuals; canonicalizing on restore too means a foreign/corrupt
+blob can never reintroduce the exact residuals the save path strips. Pinned by
+`restore_canonicalizes_raw_events_from_an_external_blob`.
+
+**Round 6 sharpened this into a real determinism leak (`events_for_restore`, codex/GPT-5.5).** KVM treats a
+*clear* validity bit on `KVM_SET_VCPU_EVENTS` as **"leave that sub-record UNCHANGED"**, not "clear it". The
+active-only mask `canonical_events` builds (a quiescent record → `flags = 0`) is correct for the
+**`state_hash`**, but replaying it onto a **non-fresh** vCPU — a committed / previously-run vCPU, i.e. the
+**branch or restore-in-place** case — would leave the *prior occupant's* stale NMI-pending /
+interrupt-shadow / SMM / triple-fault intact: the restored VM would depend on its predecessor. *Fix:*
+`restore_vm_state` uses **`events_for_restore`** (not `canonical_events`), which forces the
+`NMI_PENDING | SHADOW | SMM | TRIPLE_FAULT` validity bits **on** with the canonical (zero-when-inactive)
+payloads, so KVM explicitly **clears** that state — restore is idempotent w.r.t. target state. `SIPI` stays
+gated (SET-only); `PAYLOAD` stays gated on `exception_has_payload` (the exception sub-record is applied by
+KVM unconditionally). *Golden-safe:* the **`state_hash` still uses `canonical_events`** (active-only), so no
+hashed byte and no M1/M2/det-corpus golden moves (verified — `det_corpus_o2` observable golden unmoved); on
+a fresh box target the restored state is byte-identical (gate 2's `66b4d4b4…` is unchanged). Pinned by
+`events_for_restore_clears_stale_target_state_regardless_of_freshness` — it models `KVM_SET_VCPU_EVENTS`
+semantics, pre-loads a stale vCPU, and proves the restore clears it + equals a fresh-target restore, while
+the old `canonical_events` form **leaks** (verified to FAIL without the forced bits).
 
 **5. What gate 2 proves — and what it does *not* yet prove (the honest headline; PR #12 rounds 2–3).**
 The task-41 unlock is the **`kvm_vcpu_events` capture**: task 39 fail-closed-**rejected** every point whose
@@ -2433,12 +2449,12 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (241), `unison`/`det-corpus` determinism (92) all green; and
+should not." Verified on Mac: `vmm-core` (242), `unison`/`det-corpus` determinism (92) all green; and
 **on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**241** tests) / `deny`. **Miri**
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**242** tests) / `deny`. **Miri**
 validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
 predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** (`cargo mutants
 --no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout**.
@@ -2458,7 +2474,9 @@ Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
 `has_inflight_injection_flags_exactly_the_non_quiescent_fields`,
 `has_active_event_injection_flags_only_genuine_injections_not_residuals`,
 `canonical_events_collapses_residuals_and_reconstructs_flags`,
-`fill_vcpu_state_canonicalizes_the_typed_events_record`), `src/vmm.rs`
+**`events_for_restore_clears_stale_target_state_regardless_of_freshness`** — *the round-6 determinism-leak
+fix, §4: restore clears a non-fresh target's stale NMI/SMM/shadow/triple-fault; verified to FAIL without the
+forced validity bits*; `fill_vcpu_state_canonicalizes_the_typed_events_record`), `src/vmm.rs`
 (`save_vm_state_captures_in_flight_events_at_a_non_quiescent_point`,
 `restore_canonicalizes_raw_events_from_an_external_blob` — **the round-3 restore/save symmetry, §4**;
 `snapshot_restore_re_derives_the_in_flight_lapic_irq`,
@@ -2578,6 +2596,6 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 > - **Hygiene ✓** — patched `kvm 1400832` loaded per run, reverted to stock `kvm 1396736` after each
 >   (verified via `lsmod`), `kvm_intel` users checked `== 0` before loading (task 38 idle).
 > - **Standard gates on the box ✓** — `clippy -D warnings` (the box-only test file included), `fmt`,
->   `nextest` (241 non-ignored), and **public-api** (`tests/public-api.txt` matches
+>   `nextest` (242 non-ignored), and **public-api** (`tests/public-api.txt` matches
 >   `cargo +nightly public-api` exactly — the three new lines `Vmm::has_active_event_injection`,
 >   `Vmm::has_inflight_event_injection`, `Vmm::has_pending_guest_interrupt`).
