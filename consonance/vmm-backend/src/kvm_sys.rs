@@ -438,10 +438,15 @@ impl KvmBackend {
     }
 
     /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` (once per `run_until`).
+    /// Also disarms the PMU overflow + drains its ring: phase 1's overflow already
+    /// fired, so for the (≤ skid_margin) exact-landing steps the counter must only
+    /// count (no second overflow could fire mid-skid-margin, and the phase-1 record
+    /// is consumed so a long run never fills the ring).
     fn enable_single_step(&mut self) -> Result<()> {
         if self.single_step_armed {
             return Ok(());
         }
+        self.pmu_disarm();
         let dbg = kvm_guest_debug {
             control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
             ..Default::default()
@@ -1117,6 +1122,15 @@ impl Backend for KvmBackend {
         self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
         self.restore_xsave(&state.xsave)?;
         self.restore_msrs(state)?;
+        // Snapshot restore zeroes the V-time work counter (vmm-core resets its
+        // `PerfWorkCounter`; the restored VClock carries the effective V-time in
+        // `vns_base`). Reset the backend's `run_until` counter in lockstep so the
+        // B≡A invariant survives a restore (a deadline on A's axis still lands
+        // exactly on B). Best-effort: a counter that cannot reset only affects a
+        // later `run_until`, never this restore.
+        if let Some(pmu) = self.pmu.as_mut() {
+            let _ = pmu.reset();
+        }
         Ok(())
     }
 

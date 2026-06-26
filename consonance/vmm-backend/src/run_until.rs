@@ -212,6 +212,18 @@ mod tests {
         })
     }
 
+    /// Proptest config: far fewer cases under Miri (10–100× slower interpreted), and
+    /// **no failure-persistence** there (its regression-file path resolution uses
+    /// `getcwd`, which Miri's fs isolation rejects). Mirrors the crate's other
+    /// proptest helpers (`tests/run_loop.rs`).
+    fn cases(native: u32) -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 8 } else { native });
+        if cfg!(miri) {
+            cfg.failure_persistence = None;
+        }
+        cfg
+    }
+
     #[test]
     fn lands_exactly_at_deadline_with_no_guest_exit() {
         // A representative spread of densities + skids (skid ≤ margin).
@@ -340,9 +352,7 @@ mod tests {
     }
 
     proptest! {
-        // Far fewer cases under Miri (10–100× slower interpreted), per conventions;
-        // the full 256 run on stable.
-        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
+        #![proptest_config(cases(256))]
 
         /// THE count-neutrality + exactness property (gate 1): for any seed, event
         /// density, and skid within the margin, the arm-overflow-then-single-step
