@@ -20,7 +20,8 @@
 use crate::error::ProtocolError;
 use crate::types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
-    EventRef, HashScope, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+    EventRef, HashScope, HostFault, Moment, Reply, Request, SnapId, StopConditions, StopMask,
+    StopReason, VTime,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
@@ -37,6 +38,7 @@ const REQ_BRANCH: u8 = 4;
 const REQ_REPLAY: u8 = 5;
 const REQ_RUN: u8 = 6;
 const REQ_HASH: u8 = 7;
+const REQ_PERTURB: u8 = 8;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -226,6 +228,14 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             w.push(REQ_HASH);
             write_hash_scope(w, scope);
         }
+        Request::Perturb {
+            fault: HostFault(bytes),
+            at: Moment(at),
+        } => {
+            w.push(REQ_PERTURB);
+            put_bytes(w, bytes);
+            put_u64(w, *at);
+        }
     }
 }
 
@@ -245,6 +255,10 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         },
         REQ_HASH => Request::Hash {
             scope: read_hash_scope(r)?,
+        },
+        REQ_PERTURB => Request::Perturb {
+            fault: HostFault(r.bytes()?.to_vec()),
+            at: Moment(r.u64()?),
         },
         _ => return Err(ProtocolError::ShortFrame),
     })

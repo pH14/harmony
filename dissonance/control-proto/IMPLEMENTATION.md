@@ -28,6 +28,26 @@ so no Miri obligation.
   from the header alone, a body that doesn't consume exactly `len` bytes rejected,
   never a panic or an out-of-bounds read.
 
+### Task 45 — the host-plane `perturb` verb
+
+Task 45 (the host control plane) added the spec's control-transport verb
+`perturb(fault: HostFault, at: Moment) -> Result<(), ControlError>` (task-45 spec
+lines 41–42). It mirrors the existing `Branch` verb pattern:
+
+- **`Request::Perturb { fault: HostFault, at: Moment }`** stages a host-plane fault
+  at a `Moment`, replied to with `Reply::Unit` (an ack, like `Branch`/`Replay`).
+  The host plane rides this **out-of-band** channel — the guest never sees it; the
+  backend decodes `fault` and applies it at its `Moment` during a `Run`.
+- **`HostFault(pub Vec<u8>)`** is a new opaque carried unit — the host-plane
+  analogue of `Answer`, schema-blind (its structure is `environment::HostFault`'s
+  contract; the backend decodes it, never the codec). **`Moment(pub u64)`** mirrors
+  `environment::Moment` (rule 2, defined locally).
+- **Wire format:** body = `REQ_PERTURB(8) · fault(u32-len-prefixed bytes) · at:u64`,
+  canonical and length-delimited like every other verb. Round-trip, golden
+  (`req_perturb`), loopback (a staged host fault over the wire), and
+  adversarial/streaming coverage all extend to it; the `public-api.txt` snapshot
+  is refreshed.
+
 ### Module layout
 
 `error.rs` (`ControlError` / `ProtocolError`) · `types.rs` (the plain wire data +

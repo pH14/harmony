@@ -11,12 +11,24 @@
 
 use crate::catalog::{Answer, CorruptSpec, Fault};
 use crate::error::EnvError;
+use crate::host::{Action, BitMask, HostFault, Ratio};
 use crate::{MAX_SUPPLY_LEN, VTime};
 
 // Answer tags.
 const ANS_NOMINAL: u8 = 0;
 const ANS_SUPPLY: u8 = 1;
 const ANS_FAULT: u8 = 2;
+
+// Action plane tags — which control plane an override belongs to.
+const ACT_HOST: u8 = 0;
+const ACT_GUEST: u8 = 1;
+
+// HostFault tags — stable discriminants; a recorded reproducer's replay depends
+// on them, exactly like the guest `Fault` tags above.
+const HF_SKEW_TIME: u8 = 0;
+const HF_SET_CLOCK_RATE: u8 = 1;
+const HF_CORRUPT_MEMORY: u8 = 2;
+const HF_INJECT_INTERRUPT: u8 = 3;
 
 // Fault tags — stable discriminants; a recorded EnvSpec replay depends on them.
 const F_NET_DROP: u8 = 0;
@@ -144,6 +156,78 @@ pub(crate) fn read_answer(r: &mut Reader) -> Result<Answer, EnvError> {
             Answer::Supply(b.to_vec())
         }
         ANS_FAULT => Answer::Fault(read_fault(r)?),
+        _ => return Err(EnvError::Malformed),
+    };
+    Ok(a)
+}
+
+/// Serialize one [`HostFault`].
+pub(crate) fn write_host_fault(w: &mut Vec<u8>, f: &HostFault) {
+    match f {
+        HostFault::SkewTime(VTime(d)) => {
+            w.push(HF_SKEW_TIME);
+            put_u64(w, *d);
+        }
+        HostFault::SetClockRate(r) => {
+            w.push(HF_SET_CLOCK_RATE);
+            put_u64(w, r.num());
+            put_u64(w, r.den());
+        }
+        HostFault::CorruptMemory {
+            gpa,
+            mask: BitMask(mask),
+        } => {
+            w.push(HF_CORRUPT_MEMORY);
+            put_u64(w, *gpa);
+            put_u64(w, *mask);
+        }
+        HostFault::InjectInterrupt { vector } => {
+            w.push(HF_INJECT_INTERRUPT);
+            w.push(*vector);
+        }
+    }
+}
+
+/// Deserialize one [`HostFault`]. A zero `Ratio` denominator is rejected (a
+/// constructed `Ratio` can never hold one), so a mutated blob cannot smuggle in a
+/// divide-by-zero.
+pub(crate) fn read_host_fault(r: &mut Reader) -> Result<HostFault, EnvError> {
+    let f = match r.u8()? {
+        HF_SKEW_TIME => HostFault::SkewTime(VTime(r.u64()?)),
+        HF_SET_CLOCK_RATE => {
+            let num = r.u64()?;
+            let den = r.u64()?;
+            HostFault::SetClockRate(Ratio::new(num, den).ok_or(EnvError::Malformed)?)
+        }
+        HF_CORRUPT_MEMORY => HostFault::CorruptMemory {
+            gpa: r.u64()?,
+            mask: BitMask(r.u64()?),
+        },
+        HF_INJECT_INTERRUPT => HostFault::InjectInterrupt { vector: r.u8()? },
+        _ => return Err(EnvError::Malformed),
+    };
+    Ok(f)
+}
+
+/// Serialize one [`Action`] (a one-byte plane tag, then the plane's encoding).
+pub(crate) fn write_action(w: &mut Vec<u8>, a: &Action) {
+    match a {
+        Action::Host(f) => {
+            w.push(ACT_HOST);
+            write_host_fault(w, f);
+        }
+        Action::Guest(ans) => {
+            w.push(ACT_GUEST);
+            write_answer(w, ans);
+        }
+    }
+}
+
+/// Deserialize one [`Action`].
+pub(crate) fn read_action(r: &mut Reader) -> Result<Action, EnvError> {
+    let a = match r.u8()? {
+        ACT_HOST => Action::Host(read_host_fault(r)?),
+        ACT_GUEST => Action::Guest(read_answer(r)?),
         _ => return Err(EnvError::Malformed),
     };
     Ok(a)

@@ -26,8 +26,9 @@ timeout_multiplier = 3.0
 # process exit codes), exercised by the cli.rs smoke test but not a unit under
 # mutation. Exclude the binary so mutation effort concentrates on library logic.
 # The Kani proof harnesses (quality-f) live in their own `#[cfg(kani)]` files
-# (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs` — each
-# a `#[path]` child module of its parent). They are not compiled by the normal
+# (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs`,
+# `dissonance/environment/src/envcodec_proofs.rs` — each a `#[path]` child module of
+# its parent). They are not compiled by the normal
 # (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
 # — functions *and* module-level bound consts — is structurally unkillable here
 # ("missed"). They are verified by the dedicated `kani` CI job (bounded model
@@ -50,6 +51,7 @@ exclude_globs = [
     "**/main.rs",
     "**/clock_proofs.rs",
     "**/device_proofs.rs",
+    "**/envcodec_proofs.rs",
     "**/kvm.rs",
     "**/kvm/**",
     "**/kvm_sys.rs",

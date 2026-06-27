@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Shared test helpers: proptest strategies over the catalog and the reproducer,
-//! a canonicalizer, and a reference admissibility check independent of the
-//! crate's own (so the override-semantics gate is a real cross-check, not a
-//! tautology). Each `tests/*.rs` pulls only what it needs.
+//! Shared test helpers: proptest strategies over the catalog, the host plane,
+//! and the reproducer; a canonicalizer; a reference admissibility check
+//! independent of the crate's own (so the override-semantics gate is a real
+//! cross-check, not a tautology); and a frontier-simulating runner that drives a
+//! `RecordedEnv` over a `Moment`-stamped schedule. Each `tests/*.rs` pulls only
+//! what it needs.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -10,8 +12,9 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 
 use environment::{
-    Answer, BlockOp, ConnId, CorruptSpec, DecisionClass, DecisionId, DecisionPoint, EnvSpec, Fault,
-    FaultPolicy, NodeId, StandingFault, VTime,
+    Action, Answer, BlockOp, ConnId, CorruptSpec, DecisionClass, DecisionPoint, EnvSpec,
+    Environment, Fault, FaultPolicy, HostFault, Moment, NodeId, Outcome, Ratio, StandingFault,
+    VTime,
 };
 
 /// Proptest config: spec case count, cut hard under Miri (kept for portability
@@ -24,7 +27,7 @@ pub fn config(cases: u32) -> ProptestConfig {
     cfg
 }
 
-// ---- faults, by class -----------------------------------------------------
+// ---- guest faults, by class -----------------------------------------------
 
 pub fn arb_net_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![
@@ -56,6 +59,35 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
 
 pub fn arb_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![arb_net_fault(), arb_block_fault(), arb_proc_fault()]
+}
+
+// ---- host plane -----------------------------------------------------------
+
+/// A non-zero-denominator [`Ratio`] (every constructed ratio is valid).
+pub fn arb_ratio() -> impl Strategy<Value = Ratio> {
+    (any::<u64>(), 1u64..=u64::MAX)
+        .prop_map(|(num, den)| Ratio::new(num, den).expect("den >= 1 by strategy bound"))
+}
+
+pub fn arb_host_fault() -> impl Strategy<Value = HostFault> {
+    prop_oneof![
+        any::<u64>().prop_map(|d| HostFault::SkewTime(VTime(d))),
+        arb_ratio().prop_map(HostFault::SetClockRate),
+        (any::<u64>(), any::<u64>()).prop_map(|(gpa, mask)| HostFault::CorruptMemory {
+            gpa,
+            mask: environment::BitMask(mask),
+        }),
+        any::<u8>().prop_map(|vector| HostFault::InjectInterrupt { vector }),
+    ]
+}
+
+/// An arbitrary action from either plane (guest answers may be inadmissible — for
+/// override/codec fuzzing).
+pub fn arb_action() -> impl Strategy<Value = Action> {
+    prop_oneof![
+        arb_host_fault().prop_map(Action::Host),
+        arb_answer().prop_map(Action::Guest),
+    ]
 }
 
 // ---- answers, policies, points --------------------------------------------
@@ -155,15 +187,21 @@ pub fn arb_standing() -> impl Strategy<Value = StandingFault> {
         })
 }
 
-/// An arbitrary reproducer spec (overrides/standing in arbitrary order; use
-/// [`canon`] before a structural round-trip comparison).
+/// An arbitrary `Moment`-keyed override map (host and guest actions on one axis).
+pub fn arb_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
+    prop::collection::btree_map(any::<u64>(), arb_action(), 0..12)
+}
+
+/// An arbitrary reproducer spec (standing in arbitrary order; use [`canon`]
+/// before a structural round-trip comparison — the override map is already
+/// canonical, being a `BTreeMap`).
 pub fn arb_spec() -> impl Strategy<Value = EnvSpec> {
     prop_oneof![
         (any::<u64>(), arb_policy()).prop_map(|(seed, policy)| EnvSpec::Seeded { seed, policy }),
         (
             any::<u64>(),
             arb_policy(),
-            prop::collection::vec((any::<u64>().prop_map(DecisionId), arb_answer()), 0..12),
+            arb_overrides(),
             prop::collection::vec(arb_standing(), 0..6),
         )
             .prop_map(|(seed, policy, overrides, standing)| EnvSpec::Recorded {
@@ -175,9 +213,9 @@ pub fn arb_spec() -> impl Strategy<Value = EnvSpec> {
     ]
 }
 
-/// Canonicalize a spec the way [`EnvSpec::encode`] does: sort overrides by id and
-/// standing by its key, dropping duplicates. `decode(encode(canon(s)))` equals
-/// `canon(s)`.
+/// Canonicalize a spec the way [`EnvSpec::encode`] does: sort standing by its
+/// key, dropping duplicates. (The override map is a `BTreeMap`, so it is already
+/// canonical.) `decode(encode(canon(s)))` equals `canon(s)`.
 pub fn canon(spec: EnvSpec) -> EnvSpec {
     match spec {
         EnvSpec::Recorded {
@@ -186,14 +224,6 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
             overrides,
             mut standing,
         } => {
-            // Dedup overrides by id, last-wins — identically to `EnvSpec::encode`
-            // and `materialize` (a `BTreeMap` built in vector order).
-            let mut map: BTreeMap<u64, Answer> = BTreeMap::new();
-            for (id, ans) in overrides {
-                map.insert(id.0, ans);
-            }
-            let overrides: Vec<(DecisionId, Answer)> =
-                map.into_iter().map(|(k, v)| (DecisionId(k), v)).collect();
             standing.sort_by(|a, b| standing_key(a).cmp(&standing_key(b)));
             standing.dedup_by(|a, b| standing_key(a) == standing_key(b));
             EnvSpec::Recorded {
@@ -214,6 +244,25 @@ fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
         s.window.0.0,
         s.window.1.0,
     )
+}
+
+// ---- a frontier-simulating runner -----------------------------------------
+
+/// Drive a `RecordedEnv` over a `Moment`-stamped guest schedule the way the
+/// frontier would: set the `Moment` for each decision, then `decide`. Returns the
+/// answer sequence. This is the pure-crate stand-in for a real reactive run — the
+/// frontier supplies the retired-instruction count; here the test does.
+pub fn run_guest_schedule(
+    env: &mut environment::RecordedEnv,
+    sched: &[(Moment, DecisionPoint)],
+) -> Vec<Outcome> {
+    sched
+        .iter()
+        .map(|(at, p)| {
+            env.set_moment(*at);
+            env.decide(p)
+        })
+        .collect()
 }
 
 // ---- a reference admissibility check, independent of the crate's own -------

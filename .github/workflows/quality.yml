@@ -144,12 +144,16 @@ jobs:
       - name: cargo mutants --in-diff
         run: cargo mutants --no-shuffle --in-diff pr.diff
 
-  # Gating (quality-f): formal proofs on `vtime`'s saturating `u128`
-  # arithmetic via Kani (bounded model checking). The `#[cfg(kani)]` harnesses
-  # in `consonance/vtime/src/clock.rs` prove "never panics / law holds for ALL
-  # inputs" — strictly stronger than the proptest sampling. Kani is
-  # Linux-only, so this job runs on the Linux box. See
-  # consonance/vtime/IMPLEMENTATION.md ("Formal proofs (Kani)").
+  # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
+  # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
+  # `consonance/vtime/src/clock.rs`, `consonance/lapic/src/device.rs`, and
+  # `dissonance/environment/src/envcodec.rs` prove "never panics / law holds for
+  # ALL inputs" — strictly stronger than the proptest sampling. Kani is
+  # Linux-only, so this job runs on the Linux box. The proof files are
+  # `cfg(kani)`-only (not compiled by the normal test suite, excluded from the
+  # mutation gate in `.cargo/mutants.toml`), so this job is their *only* CI check
+  # — every crate with proofs must appear below. See each crate's
+  # IMPLEMENTATION.md ("Formal proofs (Kani)").
   kani:
     name: kani
     runs-on: self-hosted
@@ -163,10 +167,11 @@ jobs:
         run: |
           cargo install --locked kani-verifier
           cargo kani setup
-      - name: cargo kani (vtime + lapic)
+      - name: cargo kani (vtime + lapic + environment)
         run: |
           cargo kani -p vtime
           cargo kani -p lapic
+          cargo kani -p environment
 
   # Gating: frozen public-API snapshots (quality-d). The per-crate
   # `public_api` tests regenerate each crate's public surface with

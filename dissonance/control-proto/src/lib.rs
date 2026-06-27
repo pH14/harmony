@@ -45,8 +45,8 @@ pub use codec::{decode_reply, decode_request, encode_reply, encode_request};
 pub use error::{ControlError, ProtocolError};
 pub use types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
-    EventRef, HashScope, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
-    class_bit,
+    EventRef, HashScope, HostFault, Moment, Reply, Request, SnapId, StopConditions, StopMask,
+    StopReason, VTime, class_bit,
 };
 
 /// The wire-format version carried in every frame header. Bumps only when the

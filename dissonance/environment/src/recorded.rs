@@ -1,22 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The reproducer: [`EnvSpec`] (the serialized blob R2 carries as an opaque
-//! environment) and [`RecordedEnv`] (the backing it materializes into — a seeded
-//! base plus sparse, admissibility-guarded overrides).
+//! The reproducer: [`EnvSpec`] (the serialized blob the control transport
+//! carries as an opaque environment) and [`RecordedEnv`] (the
+//! [`decide`](Environment::decide) backing it materializes into — a seeded base
+//! plus sparse, admissibility-guarded *guest* overrides).
+//!
+//! This is the dissonance ruling's one [`Moment`]-keyed reproducer: a
+//! `BTreeMap<Moment, Action>` carries host- and guest-plane overrides on the
+//! single retired-instruction axis. Guest overrides ([`Action::Guest`]) are
+//! answered at the [`decide`](Environment::decide) seam; host overrides
+//! ([`Action::Host`]) are applied imperatively by the frontier at their
+//! `Moment`, exactly like a [`StandingFault`] — they never flow through
+//! [`decide`](Environment::decide).
 
 use std::collections::BTreeMap;
 
 use crate::catalog::{Answer, DecisionClass, DecisionPoint};
 use crate::codec::{self, Reader};
 use crate::error::EnvError;
+use crate::host::{Action, HostFault, Moment};
 use crate::policy::FaultPolicy;
 use crate::seeded::SeededEnv;
-use crate::{DecisionId, Environment, Outcome, VTime};
+use crate::{Environment, Outcome, VTime};
 
-/// Container magic, `"DEV1"` read little-endian.
-const MAGIC: u32 = u32::from_le_bytes(*b"DEV1");
+/// Container magic, `"DEV2"` read little-endian. Bumped from `DEV1` (task 24)
+/// because the recorded value type widened from a guest `Answer` to an
+/// [`Action`] keyed by [`Moment`] — a blob from the old layout no longer
+/// decodes, and the magic makes that an explicit, loud rejection.
+const MAGIC: u32 = u32::from_le_bytes(*b"DEV2");
 
-/// A correlated, V-time-windowed fault that is **not** a per-decision
-/// [`Answer`] — e.g. a network partition (a link and a window where all frames
+/// A correlated, V-time-windowed fault that is **not** a per-`Moment`
+/// [`Action`] — e.g. a network partition (a link and a window where all frames
 /// drop together). It is part of the reproducer so a `Branch`/`Replay`
 /// re-applies it deterministically: the frontier translates each entry into the
 /// service's standing-fault API (e.g. pv-net `Switch::set_partition`) on branch.
@@ -35,9 +48,18 @@ pub struct StandingFault {
     pub window: (VTime, VTime),
 }
 
-/// The serialized reproducer. Both variants carry the [`FaultPolicy`]: a seed
-/// alone cannot reproduce a campaign whose answer sequence depended on the
-/// eligible faults and probabilities.
+/// The serialized reproducer — the dissonance ruling's `Environment { seed,
+/// overrides }`, here an enum so the all-seed campaign (no overrides) is an
+/// explicit, smaller blob. Both variants carry the [`FaultPolicy`]: a seed alone
+/// cannot reproduce a campaign whose answer sequence depended on the eligible
+/// faults and probabilities.
+///
+/// > **Naming.** The ruling overloads `Environment` for *both* the
+/// > [`decide`](Environment::decide) seam (a trait) and this reproducer (a
+/// > struct). Task 24 resolved the clash by keeping the trait as `Environment`
+/// > and naming the reproducer `EnvSpec`; this amendment keeps that resolution
+/// > and only widens the recorded value type (`Answer` → [`Action`]) and re-keys
+/// > the map (decision index → [`Moment`]).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum EnvSpec {
     /// Pure DST: seed plus policy, no overrides.
@@ -48,20 +70,19 @@ pub enum EnvSpec {
         policy: FaultPolicy,
     },
     /// A recorded reactive session: the seed auto-answers the high-frequency
-    /// decisions; the explorer's sparse, per-decision `overrides` pin the
-    /// interesting faults; `standing` carries the correlated V-time-windowed
-    /// faults the frontier re-applies imperatively.
+    /// decisions; the explorer's sparse, per-`Moment` `overrides` pin the
+    /// interesting faults from *either* plane; `standing` carries the correlated
+    /// V-time-windowed faults the frontier re-applies imperatively.
     Recorded {
         /// The base seed.
         seed: u64,
         /// The fault policy.
         policy: FaultPolicy,
-        /// Per-decision overrides, keyed by [`DecisionId`]. Order is irrelevant:
-        /// [`encode`](EnvSpec::encode) and [`materialize`](EnvSpec::materialize)
-        /// both deduplicate by id (last write wins) and sort, so the blob is
-        /// always canonical. A decoded spec therefore always has unique,
-        /// strictly-ascending ids.
-        overrides: Vec<(DecisionId, Answer)>,
+        /// Per-`Moment` overrides, host and guest on one axis. A
+        /// [`BTreeMap`](std::collections::BTreeMap) so the map is inherently
+        /// canonical — sorted, unique keys — and no insertion order can reach
+        /// an encoded byte.
+        overrides: BTreeMap<Moment, Action>,
         /// Correlated, V-time-windowed faults.
         standing: Vec<StandingFault>,
     },
@@ -71,11 +92,85 @@ impl EnvSpec {
     /// The reproducer blob format version. Bumps when the blob layout changes;
     /// [`decode`](EnvSpec::decode) rejects any other version with
     /// [`EnvError::BadVersion`].
-    pub const BLOB_VERSION: u16 = 1;
+    pub const BLOB_VERSION: u16 = 2;
 
-    /// Serialize to a versioned, byte-deterministic blob. Overrides and standing
-    /// faults are written in canonical (sorted) order, so equal specs — even
-    /// with their `Vec`s built in different orders — always yield identical
+    /// The seed every backing draws from.
+    pub fn seed(&self) -> u64 {
+        match self {
+            Self::Seeded { seed, .. } | Self::Recorded { seed, .. } => *seed,
+        }
+    }
+
+    /// The fault policy carried by this spec.
+    pub fn policy(&self) -> &FaultPolicy {
+        match self {
+            Self::Seeded { policy, .. } | Self::Recorded { policy, .. } => policy,
+        }
+    }
+
+    /// The `Moment`-keyed overrides (empty for [`Seeded`](EnvSpec::Seeded)). The
+    /// merged host+guest timeline the Theme manipulates uniformly.
+    pub fn overrides(&self) -> &BTreeMap<Moment, Action> {
+        match self {
+            Self::Recorded { overrides, .. } => overrides,
+            Self::Seeded { .. } => {
+                // A process-wide empty map; `Seeded` has no overrides, so a
+                // shared empty borrow is correct and allocation-free.
+                static EMPTY: BTreeMap<Moment, Action> = BTreeMap::new();
+                &EMPTY
+            }
+        }
+    }
+
+    /// Every host-plane perturbation, in `Moment` order — the frontier enforces
+    /// these imperatively at each `Moment` during a run (they never reach
+    /// [`decide`](Environment::decide)). The guest-plane half is consumed via
+    /// [`materialize`](EnvSpec::materialize).
+    pub fn host_faults(&self) -> impl Iterator<Item = (Moment, HostFault)> + '_ {
+        self.overrides()
+            .iter()
+            .filter_map(|(m, a)| a.host_fault().map(|f| (*m, f)))
+    }
+
+    /// Stamp `action` at `at` on the single [`Moment`] axis — the uniform
+    /// recording primitive for *both* planes (a guest decision at the count it
+    /// surfaced, a host fault at the chosen count). Promotes a
+    /// [`Seeded`](EnvSpec::Seeded) spec to [`Recorded`](EnvSpec::Recorded) on
+    /// first use; a later stamp at the same `Moment` overwrites (last write
+    /// wins), so the map stays one-action-per-`Moment`.
+    pub fn record(&mut self, at: Moment, action: Action) {
+        self.overrides_mut().insert(at, action);
+    }
+
+    /// Stage a host-plane [`HostFault`] at `at`, recorded into this environment —
+    /// the recording half of the control transport's `perturb(fault, moment)`
+    /// verb (the transport adds the wire/`ControlError` semantics in
+    /// `control-proto`). Convenience for `record(at, Action::Host(fault))`.
+    pub fn perturb(&mut self, fault: HostFault, at: Moment) {
+        self.record(at, Action::Host(fault));
+    }
+
+    /// `&mut` access to the override map, promoting a [`Seeded`](EnvSpec::Seeded)
+    /// spec into an empty [`Recorded`](EnvSpec::Recorded) one in place.
+    fn overrides_mut(&mut self) -> &mut BTreeMap<Moment, Action> {
+        if let Self::Seeded { seed, policy } = self {
+            *self = Self::Recorded {
+                seed: *seed,
+                policy: policy.clone(),
+                overrides: BTreeMap::new(),
+                standing: Vec::new(),
+            };
+        }
+        match self {
+            Self::Recorded { overrides, .. } => overrides,
+            // Unreachable: the block above converted any `Seeded` to `Recorded`.
+            Self::Seeded { .. } => unreachable!("Seeded was just promoted to Recorded"),
+        }
+    }
+
+    /// Serialize to a versioned, byte-deterministic blob. Overrides are written
+    /// in `Moment` order (the `BTreeMap` is already canonical) and standing
+    /// faults in canonical (sorted) order, so equal specs always yield identical
     /// bytes (no iteration order reaches a byte).
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Vec::new();
@@ -97,24 +192,18 @@ impl EnvSpec {
                 codec::put_u64(&mut w, *seed);
                 codec::put_bytes(&mut w, &policy.to_bytes());
 
-                // Deduplicate overrides by id (last write wins, identically to
-                // `materialize`'s `BTreeMap`) and emit them in ascending id
-                // order. Deduping on encode keeps the blob canonical: a duplicate
-                // id can never reach the bytes, where it would break the
-                // strictly-ascending round-trip on decode.
-                let mut ov: BTreeMap<u64, &Answer> = BTreeMap::new();
-                for (id, ans) in overrides {
-                    ov.insert(id.0, ans);
-                }
-                codec::put_len(&mut w, ov.len());
-                for (id, ans) in &ov {
-                    codec::put_u64(&mut w, *id);
-                    codec::put_bytes(&mut w, &ans.encode());
+                // The map is inherently canonical (sorted, unique keys), so a
+                // plain iteration emits ascending `Moment`s and the
+                // strictly-ascending round-trip on decode holds.
+                codec::put_len(&mut w, overrides.len());
+                for (m, action) in overrides {
+                    codec::put_u64(&mut w, *m);
+                    codec::put_bytes(&mut w, &action.encode());
                 }
 
                 // Deduplicate standing faults by their full canonical key
                 // (identical entries collapse) and emit them in ascending-key
-                // order, for the same round-trip reason.
+                // order, so input order cannot reach the bytes.
                 let mut st: Vec<&StandingFault> = standing.iter().collect();
                 st.sort_by(|a, b| standing_key(a).cmp(&standing_key(b)));
                 st.dedup_by(|a, b| standing_key(a) == standing_key(b));
@@ -131,10 +220,11 @@ impl EnvSpec {
     }
 
     /// Decode a blob from [`encode`](EnvSpec::encode). Never panics on arbitrary
-    /// or mutated bytes; off-version is [`EnvError::BadVersion`], every other
-    /// defect (bad magic, truncation, trailing bytes, an unknown variant or
-    /// class tag, non-ascending/duplicate overrides or standing faults) is
-    /// [`EnvError::Malformed`].
+    /// or mutated bytes; off-version (including a task-24 `DEV1` blob, whose
+    /// magic differs) is [`EnvError::BadVersion`] or [`EnvError::Malformed`],
+    /// and every other defect (bad magic, truncation, trailing bytes, an unknown
+    /// variant/plane/class tag, non-ascending/duplicate `Moment`s or standing
+    /// faults) is [`EnvError::Malformed`].
     pub fn decode(b: &[u8]) -> Result<Self, EnvError> {
         let mut r = Reader::new(b);
         if r.u32()? != MAGIC {
@@ -172,29 +262,20 @@ impl EnvSpec {
         }
     }
 
-    /// Materialize an [`Environment`] backing. Standing faults are not part of
-    /// [`decide`](Environment::decide) (the frontier applies them imperatively),
-    /// so they are read off this [`EnvSpec`] directly and do not enter the
-    /// [`RecordedEnv`]. Duplicate override ids collapse (last in the `Vec`
-    /// wins); a decoded spec never has duplicates.
+    /// Materialize an [`Environment`] backing for the [`decide`](Environment::decide)
+    /// seam. Only the **guest** overrides ([`Action::Guest`]) enter the
+    /// [`RecordedEnv`]; **host** overrides ([`Action::Host`]) and standing faults
+    /// are applied imperatively by the frontier (read via
+    /// [`host_faults`](EnvSpec::host_faults) / [`StandingFault`]), so they are
+    /// not part of `decide`.
     pub fn materialize(&self) -> RecordedEnv {
-        match self {
-            Self::Seeded { seed, policy } => {
-                RecordedEnv::new(*seed, policy.clone(), BTreeMap::new())
-            }
-            Self::Recorded {
-                seed,
-                policy,
-                overrides,
-                standing: _,
-            } => {
-                let mut map = BTreeMap::new();
-                for (id, ans) in overrides {
-                    map.insert(id.0, ans.clone());
-                }
-                RecordedEnv::new(*seed, policy.clone(), map)
+        let mut guest: BTreeMap<Moment, Answer> = BTreeMap::new();
+        for (m, action) in self.overrides() {
+            if let Some(ans) = action.guest_answer() {
+                guest.insert(*m, ans.clone());
             }
         }
+        RecordedEnv::new(self.seed(), self.policy().clone(), guest)
     }
 }
 
@@ -208,17 +289,22 @@ fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
     )
 }
 
-/// Read the per-decision overrides, requiring strictly-ascending ids.
-fn read_overrides(r: &mut Reader) -> Result<Vec<(DecisionId, Answer)>, EnvError> {
+/// Read the per-`Moment` overrides into a canonical map, requiring
+/// strictly-ascending `Moment`s (so a hand-crafted blob with a duplicate or
+/// out-of-order key — which `encode` never emits — is rejected, not silently
+/// collapsed).
+fn read_overrides(r: &mut Reader) -> Result<BTreeMap<Moment, Action>, EnvError> {
     let n = r.u32()?;
-    let mut overrides: Vec<(DecisionId, Answer)> = Vec::new();
+    let mut overrides: BTreeMap<Moment, Action> = BTreeMap::new();
+    let mut prev: Option<Moment> = None;
     for _ in 0..n {
-        let id = r.u64()?;
-        if overrides.last().is_some_and(|(prev, _)| id <= prev.0) {
+        let m = r.u64()?;
+        if prev.is_some_and(|p| m <= p) {
             return Err(EnvError::Malformed);
         }
-        let ans = Answer::decode(r.bytes()?)?;
-        overrides.push((DecisionId(id), ans));
+        prev = Some(m);
+        let action = Action::decode(r.bytes()?)?;
+        overrides.insert(m, action);
     }
     Ok(overrides)
 }
@@ -247,39 +333,56 @@ fn read_standing(r: &mut Reader) -> Result<Vec<StandingFault>, EnvError> {
     Ok(standing)
 }
 
-/// Answers from overrides first, else falls back to the seeded base, recording
-/// the decision index so the right override applies at the right decision.
+/// Answers a guest decision from a [`Moment`]-keyed override first, else from the
+/// seeded base.
 ///
-/// An override whose [`Answer`] is **inadmissible for the decision** is
-/// deterministically ignored — the seeded base answers instead — so a mutated or
-/// hostile [`EnvSpec`] can never hand a service an impossible answer or panic
-/// [`decide`](Environment::decide) (conventions rule 4). See
-/// [`DecisionPoint::admits`] for the exact rule. The base stream advances only on
-/// a fallback (an admissible override consumes no PRNG), exactly as a recorded
-/// reactive session did, so replay is bit-identical.
+/// The frontier sets the current [`Moment`] (retired-instruction count) with
+/// [`set_moment`](RecordedEnv::set_moment) before a guest decision surfaces, so
+/// the right override fires at the right count — the same matching the real
+/// reactive session did, now on the one `Moment` axis rather than a branch-local
+/// decision index. An override whose [`Answer`] is **inadmissible for the
+/// decision** is deterministically ignored (the seeded base answers instead), so
+/// a mutated or hostile reproducer can never hand a service an impossible answer
+/// or panic [`decide`](Environment::decide) (conventions rule 4); see
+/// [`DecisionPoint::admits`]. The base stream advances **only on a fallback** (an
+/// admissible override consumes no PRNG), exactly as a recorded reactive session
+/// did, so replay is bit-identical.
 #[derive(Clone, Debug)]
 pub struct RecordedEnv {
     base: SeededEnv,
-    overrides: BTreeMap<u64, Answer>,
-    counter: u64,
+    overrides: BTreeMap<Moment, Answer>,
+    moment: Moment,
 }
 
 impl RecordedEnv {
-    /// Build from a seeded base and an override map keyed by decision index.
-    fn new(seed: u64, policy: FaultPolicy, overrides: BTreeMap<u64, Answer>) -> Self {
+    /// Build from a seeded base and a guest-override map keyed by [`Moment`].
+    fn new(seed: u64, policy: FaultPolicy, overrides: BTreeMap<Moment, Answer>) -> Self {
         Self {
             base: SeededEnv::new(seed, policy),
             overrides,
-            counter: 0,
+            moment: 0,
         }
+    }
+
+    /// Set the current [`Moment`] the next [`decide`](Environment::decide) is
+    /// answering for. The frontier calls this before surfacing each guest
+    /// decision (it knows the retired-instruction count); the count is what a
+    /// `Moment`-keyed override matches against. Defaults to `0` until first set;
+    /// a [`Seeded`](EnvSpec::Seeded)-materialized env has no overrides, so the
+    /// `Moment` is irrelevant for it.
+    pub fn set_moment(&mut self, at: Moment) {
+        self.moment = at;
+    }
+
+    /// The current [`Moment`].
+    pub fn moment(&self) -> Moment {
+        self.moment
     }
 }
 
 impl Environment for RecordedEnv {
     fn decide(&mut self, point: &DecisionPoint) -> Outcome {
-        let id = self.counter;
-        self.counter = self.counter.wrapping_add(1);
-        if let Some(ans) = self.overrides.get(&id)
+        if let Some(ans) = self.overrides.get(&self.moment)
             && point.admits(ans)
         {
             return Outcome::Resolved(ans.clone());

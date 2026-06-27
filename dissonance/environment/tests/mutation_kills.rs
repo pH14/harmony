@@ -9,9 +9,11 @@
 //! makes the test fail rather than silently pass — or, for the loop bounds,
 //! fail *fast by assertion* on a small input instead of only by the ~372 s hang.
 
+use std::collections::BTreeMap;
+
 use environment::{
-    Answer, DecisionPoint as P, EnvError, Environment, FaultPolicy, MAX_SUPPLY_LEN, Outcome,
-    SeededEnv,
+    Action, Answer, DecisionPoint as P, EnvError, Environment, FaultPolicy, MAX_SUPPLY_LEN, Moment,
+    Outcome, SeededEnv,
 };
 
 /// Pull the `Supply` bytes a `SeededEnv` gives for an `Entropy { bytes: n }`
@@ -23,7 +25,7 @@ fn entropy_supply(env: &mut SeededEnv, n: u32) -> Vec<u8> {
     }
 }
 
-/// `catalog.rs:178` `DecisionPoint::admits` — the scheduler-selection bound is
+/// `catalog.rs` `DecisionPoint::admits` — the scheduler-selection bound is
 /// `selection < ready` (strict). A `<`→`<=` mutant would wrongly admit a
 /// selection *equal to* `ready` (an out-of-range index `0..ready`). Pin the exact
 /// boundary: `ready-1` admissible, `ready` and `ready+1` not.
@@ -44,6 +46,7 @@ fn scheduler_selection_bound_is_strict() {
     // is ignored, so the seeded base answers; a `ready-1` override wins.
     let at_bound = supply(5);
     let mut env = recorded_with_override(7, 0, at_bound);
+    env.set_moment(0);
     let mut base = SeededEnv::new(7, FaultPolicy::none());
     assert_eq!(
         env.decide(&p),
@@ -53,6 +56,7 @@ fn scheduler_selection_bound_is_strict() {
 
     let in_range = supply(4);
     let mut env2 = recorded_with_override(7, 0, in_range.clone());
+    env2.set_moment(0);
     assert_eq!(
         env2.decide(&p),
         Outcome::Resolved(in_range),
@@ -60,18 +64,18 @@ fn scheduler_selection_bound_is_strict() {
     );
 }
 
-/// A `RecordedEnv` whose only override is `ans` at decision `id`.
-fn recorded_with_override(seed: u64, id: u64, ans: Answer) -> environment::RecordedEnv {
+/// A `RecordedEnv` whose only override is the guest `ans` at `Moment` `at`.
+fn recorded_with_override(seed: u64, at: Moment, ans: Answer) -> environment::RecordedEnv {
     environment::EnvSpec::Recorded {
         seed,
         policy: FaultPolicy::none(),
-        overrides: vec![(environment::DecisionId(id), ans)],
+        overrides: BTreeMap::from([(at, Action::Guest(ans))]),
         standing: vec![],
     }
     .materialize()
 }
 
-/// `codec.rs:141` `read_answer` — a decoded `Supply` is rejected only when its
+/// `codec.rs` `read_answer` — a decoded `Supply` is rejected only when its
 /// length is `> MAX_SUPPLY_LEN`. A `>`→`==` mutant would reject *only* the exact
 /// max (admitting an oversize one); a `>`→`>=` mutant would reject the exact max
 /// too. Pin both sides: a `MAX_SUPPLY_LEN`-byte supply decodes, a `+1` one is
@@ -92,8 +96,8 @@ fn supply_length_bound_is_exclusive_at_max() {
     );
 }
 
-/// `seeded.rs:65` (loop bound `out.len() < n`) and `seeded.rs:67`
-/// (`take = (n - out.len()).min(8)`). The supplied vector must be **exactly** the
+/// `seeded.rs` `supply_bytes` (loop bound `out.len() < n` and
+/// `take = (n - out.len()).min(8)`). The supplied vector must be **exactly** the
 /// requested length:
 ///
 /// * `<`→`==` makes the loop body never run for `n > 0` → an empty vector

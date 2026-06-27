@@ -1,28 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 2 — override semantics. For every overridden `DecisionId` the override
-//! wins **iff** its `Answer` is admissible for that decision; an inadmissible
-//! override is deterministically ignored (the seeded base answers); every other
-//! decision is the seeded base; the decision counter advances by exactly one per
-//! `decide`. The general property checks the implementation against an
-//! independent restatement of the rule ([`ref_admissible`]); targeted cases pin
-//! each inadmissibility class.
+//! Gate 2 — override semantics. For every overridden `Moment` a **guest**
+//! override wins **iff** its `Answer` is admissible for the decision surfacing at
+//! that `Moment`; an inadmissible (or host-plane) override is deterministically
+//! ignored (the seeded base answers); every other decision is the seeded base.
+//! The general property checks the implementation against an independent
+//! restatement of the rule ([`ref_admissible`]); targeted cases pin each
+//! inadmissibility class.
 
 mod common;
 
-use common::{arb_answer, arb_point, arb_policy, config, ref_admissible};
+use std::collections::BTreeMap;
+
+use common::{arb_action, arb_point, arb_policy, config, ref_admissible};
 use environment::{
-    Answer, ConnId, DecisionClass, DecisionId, DecisionPoint as P, EnvSpec, Environment, Fault,
-    FaultPolicy, NodeId, Outcome, SeededEnv,
+    Action, Answer, ConnId, DecisionClass, DecisionPoint as P, EnvSpec, Environment, Fault,
+    FaultPolicy, HostFault, Moment, NodeId, Outcome, RecordedEnv, SeededEnv,
 };
 use proptest::prelude::*;
 
-/// Build an `EnvSpec::Recorded` and its materialized env from a seed/policy and
-/// a single override at `id`.
-fn one_override(seed: u64, policy: FaultPolicy, id: u64, ans: Answer) -> environment::RecordedEnv {
+/// Build a materialized env from a seed/policy and a single **guest** override at
+/// `Moment` `at`.
+fn one_guest_override(seed: u64, policy: FaultPolicy, at: Moment, ans: Answer) -> RecordedEnv {
     EnvSpec::Recorded {
         seed,
         policy,
-        overrides: vec![(DecisionId(id), ans)],
+        overrides: BTreeMap::from([(at, Action::Guest(ans))]),
         standing: vec![],
     }
     .materialize()
@@ -35,26 +37,29 @@ proptest! {
     /// `RecordedEnv` and the frontier both use) agrees with the independent
     /// restatement of the rule for every point/answer pairing.
     #[test]
-    fn admits_matches_reference(p in arb_point(), ans in arb_answer()) {
+    fn admits_matches_reference(p in arb_point(), ans in common::arb_answer()) {
         prop_assert_eq!(p.admits(&ans), ref_admissible(&p, &ans));
     }
 
     /// The general rule, cross-checked against `ref_admissible` and an
-    /// independently-advanced seeded base.
+    /// independently-advanced seeded base. Each decision `i` runs at `Moment i`;
+    /// overrides (host or guest) are keyed by `Moment`. A guest override fires
+    /// iff admissible (consuming no PRNG); a host override or an inadmissible one
+    /// falls through to the base.
     #[test]
     fn override_wins_iff_admissible(
         seed in any::<u64>(),
         policy in arb_policy(),
         (seq, overrides) in prop::collection::vec(arb_point(), 1..30).prop_flat_map(|seq| {
             let len = seq.len() as u64;
-            let ov = prop::collection::btree_map(0u64..len, arb_answer(), 0..=seq.len());
+            let ov = prop::collection::btree_map(0u64..len, arb_action(), 0..=seq.len());
             (Just(seq), ov)
         }),
     ) {
         let spec = EnvSpec::Recorded {
             seed,
             policy: policy.clone(),
-            overrides: overrides.iter().map(|(k, v)| (DecisionId(*k), v.clone())).collect(),
+            overrides: overrides.clone(),
             standing: vec![],
         };
         let mut env = spec.materialize();
@@ -62,33 +67,38 @@ proptest! {
         let mut base = SeededEnv::new(seed, policy);
 
         for (i, p) in seq.iter().enumerate() {
-            let id = i as u64;
-            let expected = match overrides.get(&id) {
+            let at = i as u64;
+            // Only an admissible *guest* override fires; a host action at this
+            // Moment is filtered out of `decide`.
+            let guest = overrides.get(&at).and_then(Action::guest_answer);
+            let expected = match guest {
                 Some(a) if ref_admissible(p, a) => a.clone(),
                 _ => match base.decide(p) {
                     Outcome::Resolved(ans) => ans,
                     Outcome::NeedsHost => unreachable!("seeded base never suspends"),
                 },
             };
+            env.set_moment(at);
             prop_assert_eq!(env.decide(p), Outcome::Resolved(expected));
         }
     }
 }
 
-/// An admissible override fires at exactly its decision index and nowhere else —
-/// proving the counter advances by exactly one per `decide`.
+/// An admissible guest override fires at exactly its `Moment` and nowhere else —
+/// and consumes no PRNG, so the base stays in lockstep for every other Moment.
 #[test]
-fn override_fires_at_its_index_only() {
+fn override_fires_at_its_moment_only() {
     let seed = 42;
     let policy = FaultPolicy::none();
     let seq: Vec<P> = (0..10).map(|_| P::Scheduler { ready: 8 }).collect();
 
-    // A recognizable admissible scheduler selection (index 3) at decision 5.
+    // A recognizable admissible scheduler selection (index 3) at Moment 5.
     let marker = Answer::Supply(3u32.to_le_bytes().to_vec());
-    let mut env = one_override(seed, policy.clone(), 5, marker.clone());
+    let mut env = one_guest_override(seed, policy.clone(), 5, marker.clone());
     let mut base = SeededEnv::new(seed, policy);
 
     for (i, p) in seq.iter().enumerate() {
+        env.set_moment(i as u64);
         let got = env.decide(p);
         if i == 5 {
             // The override fires here and does NOT advance the base, so `base`
@@ -96,7 +106,7 @@ fn override_fires_at_its_index_only() {
             assert_eq!(
                 got,
                 Outcome::Resolved(marker.clone()),
-                "override at its index"
+                "override at its Moment"
             );
         } else {
             assert_eq!(got, base.decide(p), "base everywhere else");
@@ -104,12 +114,13 @@ fn override_fires_at_its_index_only() {
     }
 }
 
-// ---- targeted inadmissibility cases (no prior overrides shift the base) ----
+// ---- targeted inadmissibility cases (override at Moment 0, no prior shift) ----
 
-/// Run `point` as the first decision with `override0` installed, and a parallel
-/// bare `SeededEnv`; return `(env answer, base answer)`.
+/// Run `point` at `Moment 0` with a single guest `override0` installed, and a
+/// parallel bare `SeededEnv`; return `(env answer, base answer)`.
 fn first(point: &P, seed: u64, policy: FaultPolicy, override0: Answer) -> (Answer, Answer) {
-    let mut env = one_override(seed, policy.clone(), 0, override0);
+    let mut env = one_guest_override(seed, policy.clone(), 0, override0);
+    env.set_moment(0);
     let mut base = SeededEnv::new(seed, policy);
     let Outcome::Resolved(got) = env.decide(point) else {
         unreachable!()
@@ -249,4 +260,25 @@ fn nominal_on_fault_class_is_admissible() {
         .unwrap();
     let (got, _base) = first(&P::Process { node: NodeId(9) }, 7, policy, Answer::Nominal);
     assert_eq!(got, Answer::Nominal);
+}
+
+#[test]
+fn host_action_at_a_decision_moment_is_ignored_by_decide() {
+    // A host-plane override sharing a Moment with a guest decision is never
+    // surfaced as a guest answer — the base answers, exactly as if absent.
+    let seed = 7;
+    let at = 3u64;
+    let mut env = EnvSpec::Recorded {
+        seed,
+        policy: FaultPolicy::none(),
+        overrides: BTreeMap::from([(at, Action::Host(HostFault::InjectInterrupt { vector: 9 }))]),
+        standing: vec![],
+    }
+    .materialize();
+    env.set_moment(at);
+    let point = P::Process { node: NodeId(1) };
+    let got = env.decide(&point);
+
+    let mut base = SeededEnv::new(seed, FaultPolicy::none());
+    assert_eq!(got, base.decide(&point));
 }

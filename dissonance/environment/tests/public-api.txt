@@ -1,4 +1,16 @@
 pub mod environment
+pub enum environment::Action
+pub environment::Action::Guest(environment::Answer)
+pub environment::Action::Host(environment::HostFault)
+impl environment::Action
+pub fn environment::Action::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::Action::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::Action::guest_answer(&self) -> core::option::Option<&environment::Answer>
+pub fn environment::Action::host_fault(&self) -> core::option::Option<environment::HostFault>
+impl core::convert::From<environment::Answer> for environment::Action
+pub fn environment::Action::from(environment::Answer) -> Self
+impl core::convert::From<environment::HostFault> for environment::Action
+pub fn environment::Action::from(environment::HostFault) -> Self
 pub enum environment::Answer
 pub environment::Answer::Fault(environment::Fault)
 pub environment::Answer::Nominal
@@ -6,6 +18,8 @@ pub environment::Answer::Supply(alloc::vec::Vec<u8>)
 impl environment::Answer
 pub fn environment::Answer::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
 pub fn environment::Answer::encode(&self) -> alloc::vec::Vec<u8>
+impl core::convert::From<environment::Answer> for environment::Action
+pub fn environment::Action::from(environment::Answer) -> Self
 #[repr(u8)] pub enum environment::BlockOp
 pub environment::BlockOp::Flush = 2
 pub environment::BlockOp::Read = 0
@@ -44,9 +58,11 @@ pub fn environment::DecisionPoint::class(&self) -> environment::DecisionClass
 pub enum environment::EnvError
 pub environment::EnvError::BadVersion(u16)
 pub environment::EnvError::Malformed
+pub environment::EnvError::Overflow
+pub environment::EnvError::UnsupportedComposition
 pub enum environment::EnvSpec
 pub environment::EnvSpec::Recorded
-pub environment::EnvSpec::Recorded::overrides: alloc::vec::Vec<(environment::DecisionId, environment::Answer)>
+pub environment::EnvSpec::Recorded::overrides: alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
 pub environment::EnvSpec::Recorded::policy: environment::FaultPolicy
 pub environment::EnvSpec::Recorded::seed: u64
 pub environment::EnvSpec::Recorded::standing: alloc::vec::Vec<environment::StandingFault>
@@ -57,7 +73,13 @@ impl environment::EnvSpec
 pub const environment::EnvSpec::BLOB_VERSION: u16
 pub fn environment::EnvSpec::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
 pub fn environment::EnvSpec::encode(&self) -> alloc::vec::Vec<u8>
+pub fn environment::EnvSpec::host_faults(&self) -> impl core::iter::traits::iterator::Iterator<Item = (environment::Moment, environment::HostFault)> + '_
 pub fn environment::EnvSpec::materialize(&self) -> environment::RecordedEnv
+pub fn environment::EnvSpec::overrides(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
+pub fn environment::EnvSpec::perturb(&mut self, environment::HostFault, environment::Moment)
+pub fn environment::EnvSpec::policy(&self) -> &environment::FaultPolicy
+pub fn environment::EnvSpec::record(&mut self, environment::Moment, environment::Action)
+pub fn environment::EnvSpec::seed(&self) -> u64
 pub enum environment::Fault
 pub environment::Fault::BlockEio
 pub environment::Fault::BlockLatency(environment::VTime)
@@ -73,14 +95,32 @@ pub environment::Fault::ProcPause(environment::VTime)
 pub environment::Fault::ProcRestart
 impl environment::Fault
 pub fn environment::Fault::class(&self) -> environment::DecisionClass
+pub enum environment::HostFault
+pub environment::HostFault::CorruptMemory
+pub environment::HostFault::CorruptMemory::gpa: u64
+pub environment::HostFault::CorruptMemory::mask: environment::BitMask
+pub environment::HostFault::InjectInterrupt
+pub environment::HostFault::InjectInterrupt::vector: u8
+pub environment::HostFault::SetClockRate(environment::Ratio)
+pub environment::HostFault::SkewTime(environment::VTime)
+impl environment::HostFault
+pub fn environment::HostFault::decode(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::HostFault::encode(&self) -> alloc::vec::Vec<u8>
+impl core::convert::From<environment::HostFault> for environment::Action
+pub fn environment::Action::from(environment::HostFault) -> Self
 pub enum environment::Outcome
 pub environment::Outcome::NeedsHost
 pub environment::Outcome::Resolved(environment::Answer)
+pub struct environment::BitMask(pub u64)
 pub struct environment::ConnId(pub u64)
 pub struct environment::CorruptSpec
 pub environment::CorruptSpec::offset: u32
 pub environment::CorruptSpec::xor: u8
-pub struct environment::DecisionId(pub u64)
+pub struct environment::EnvCodec
+impl environment::EnvCodec
+pub fn environment::EnvCodec::compose(&environment::EnvSpec, &environment::EnvSpec, environment::Moment) -> core::result::Result<environment::EnvSpec, environment::EnvError>
+pub fn environment::EnvCodec::mutate(&environment::EnvSpec, u64) -> environment::EnvSpec
+pub fn environment::EnvCodec::seeded(u64, environment::FaultPolicy) -> environment::EnvSpec
 pub struct environment::FaultPolicy
 impl environment::FaultPolicy
 pub fn environment::FaultPolicy::from_bytes(&[u8]) -> core::result::Result<Self, environment::EnvError>
@@ -88,7 +128,15 @@ pub fn environment::FaultPolicy::none() -> Self
 pub fn environment::FaultPolicy::set_class(&mut self, environment::DecisionClass, u32, u32, &[environment::Fault]) -> core::result::Result<(), environment::EnvError>
 pub fn environment::FaultPolicy::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub struct environment::NodeId(pub u32)
+pub struct environment::Ratio
+impl environment::Ratio
+pub fn environment::Ratio::den(self) -> u64
+pub fn environment::Ratio::new(u64, u64) -> core::option::Option<Self>
+pub fn environment::Ratio::num(self) -> u64
 pub struct environment::RecordedEnv
+impl environment::RecordedEnv
+pub fn environment::RecordedEnv::moment(&self) -> environment::Moment
+pub fn environment::RecordedEnv::set_moment(&mut self, environment::Moment)
 impl environment::Environment for environment::RecordedEnv
 pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 pub struct environment::SeededEnv
@@ -109,3 +157,4 @@ impl environment::Environment for environment::RecordedEnv
 pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 impl environment::Environment for environment::SeededEnv
 pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
+pub type environment::Moment = u64

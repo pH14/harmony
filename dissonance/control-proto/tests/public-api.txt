@@ -45,6 +45,9 @@ pub control_proto::Request::Drop(control_proto::SnapId)
 pub control_proto::Request::Hash
 pub control_proto::Request::Hash::scope: control_proto::HashScope
 pub control_proto::Request::Hello(control_proto::Caps)
+pub control_proto::Request::Perturb
+pub control_proto::Request::Perturb::at: control_proto::Moment
+pub control_proto::Request::Perturb::fault: control_proto::HostFault
 pub control_proto::Request::Replay(control_proto::SnapId)
 pub control_proto::Request::Run
 pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Answer>
@@ -93,6 +96,8 @@ pub control_proto::Environment::bytes: alloc::vec::Vec<u8>
 pub struct control_proto::EventRef
 pub control_proto::EventRef::data: alloc::vec::Vec<u8>
 pub control_proto::EventRef::id: u32
+pub struct control_proto::HostFault(pub alloc::vec::Vec<u8>)
+pub struct control_proto::Moment(pub u64)
 pub struct control_proto::SnapId(pub u64)
 pub struct control_proto::StopConditions
 pub control_proto::StopConditions::deadline: core::option::Option<control_proto::VTime>
