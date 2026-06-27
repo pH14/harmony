@@ -720,6 +720,23 @@ impl<B: Backend> Vmm<B> {
                     .to_string(),
             ));
         }
+        // P2 round-8: `restore_vtime` resets vmm-core's `WorkSource` (the V-time counter
+        // `A`) to a new zero point, but the backend's `run_until` PMU (the SEPARATE
+        // counter `B`) is re-armed only by a FULL `Backend::restore`. With a LAPIC timer
+        // armed (the `run_until` preemption path), a small post-restore deadline would be
+        // read against a STALE `B` → immediate/late deadlines. Fail closed: V-time-only
+        // restore is unsupported on the timer-preemption path; use a full backend restore
+        // (`restore_snapshot` / `restore_vm_state`), which re-arms `B`'s baseline too.
+        if self.preemption_deadline().is_some() {
+            return Err(VmmError::ContractViolation(
+                "restore_vtime is unsupported with a LAPIC timer armed (the run_until \
+                 preemption path): it resets V-time but not the backend's separate run_until \
+                 PMU baseline, which only a full Backend::restore re-arms — a small \
+                 post-restore deadline would hit a stale counter. Use restore_snapshot / \
+                 restore_vm_state."
+                    .to_string(),
+            ));
+        }
         let vt = self.vtime.as_mut().ok_or_else(|| {
             VmmError::ContractViolation("restore_vtime called but V-time is not wired".to_string())
         })?;
@@ -4067,6 +4084,42 @@ mod tests {
             v.vtime.as_ref().unwrap().last_intercept_work > 0,
             "the preemption deadline advanced the last-intercept anchor"
         );
+    }
+
+    #[test]
+    fn restore_vtime_refused_with_a_lapic_timer_armed() {
+        // P2 round-8: `restore_vtime` (V-time-only) resets vmm-core's WorkSource (the
+        // V-time counter A) but NOT the backend's SEPARATE run_until PMU baseline (B),
+        // which only a full `Backend::restore` re-arms. With a LAPIC timer armed (the
+        // run_until preemption path), a small post-restore deadline would be read against
+        // a STALE B → immediate/late deadlines. `restore_vtime` must fail closed,
+        // directing the caller to a full backend restore.
+        let mut v = lapic_vmm(
+            configured_mock(arm_timer_exits(1000)),
+            Box::new(ScriptedWork::at(0)),
+        );
+        // A clean snapshot BEFORE arming the timer (nothing stepped → synchronized).
+        let snap = v.save_vtime().expect("clean save").expect("V-time wired");
+        assert!(
+            v.preemption_deadline().is_none(),
+            "no timer armed yet → the run_until path is inactive, restore_vtime would be allowed"
+        );
+        // Arm the LAPIC timer (SVR, LVT, TMICT) → the run_until path becomes active.
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued));
+        }
+        assert!(
+            v.preemption_deadline().is_some(),
+            "timer armed → run_until path active"
+        );
+        // V-time-only restore on the run_until path is refused (B would be left stale).
+        match v.restore_vtime(&snap) {
+            Err(VmmError::ContractViolation(msg)) => assert!(
+                msg.contains("run_until") && msg.contains("Backend::restore"),
+                "the error directs to a full Backend::restore: {msg}"
+            ),
+            other => panic!("restore_vtime must refuse with a LAPIC timer armed, got {other:?}"),
+        }
     }
 
     #[test]

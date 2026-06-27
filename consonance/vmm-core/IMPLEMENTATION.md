@@ -2736,3 +2736,14 @@ trait in `vmm-backend` (task 47 there); this crate only decides *when* to preemp
   proves the wiring end-to-end (arm timer → `run_until` → `Exit::Deadline` → anchor
   advances → timer delivered). Gates 2/3 (live busy-spin + runc/Postgres,
   deterministic-twice) are box-only — see `vmm-backend/IMPLEMENTATION.md`.
+
+## Task 47 — round-8: V-time-only restore is unsupported on the run_until path (P2)
+
+`restore_vtime` (the public V-time-only restore) resets the `WorkSource` (V-time counter
+`A`) but NOT the backend's separate `run_until` PMU baseline (`B`), which only a full
+`Backend::restore` re-arms. With a LAPIC timer armed (the run_until preemption path), a
+small post-restore deadline would read a stale `B` → immediate/late deadlines. So
+`restore_vtime` now **fails closed when `preemption_deadline().is_some()`** (a timer is
+armed), directing the caller to a full `Backend::restore` (`restore_snapshot` /
+`restore_vm_state`). The V-time-only path remains valid for non-LAPIC contexts (the
+branching/exploration paths without a timer). Test: `restore_vtime_refused_with_a_lapic_timer_armed`.

@@ -218,6 +218,41 @@ pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExit
     }
 }
 
+/// **The complete `run_until` contract (P1 round-8) — deadline vs current work.** A
+/// pure decision so it is covered, mutation-tested, and the box `run_until` reads it
+/// once at entry. The three cases (and what each does) are the explicit contract,
+/// documented as a table in IMPLEMENTATION.md:
+///
+/// | `deadline` vs `current` | meaning | action |
+/// |---|---|---|
+/// | `>`  | the timer is ahead | drive the planner: arm overflow, single-step to EXACTLY the deadline (precision invariant) |
+/// | `==` | already at the deadline | return `Exit::Deadline` with **ZERO guest steps toward the deadline** — never step a guest instruction past it |
+/// | `<`  | the deadline is in the past | **invalid** — the LAPIC timer deadline is always in the future; fail closed (cannot run backward) |
+///
+/// The `==` case does the first-entry baseline reset (the caller's `ensure_first_run`)
+/// but executes **no** guest instruction toward the deadline. A completion staged by
+/// the prior step is left in the run page and committed by the NEXT entry's `KVM_RUN`
+/// (it is not lost on re-entry); the caller contract is to commit it on a normal entry
+/// (a `>` deadline, or `run`) BEFORE a save, never to save across an owed completion.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RunUntilStart {
+    /// `deadline > current`: drive the planner to exactly the deadline.
+    Drive,
+    /// `deadline == current`: return `Deadline` with zero guest steps.
+    AlreadyAtDeadline,
+    /// `deadline < current`: invalid — fail closed.
+    DeadlineInPast,
+}
+
+/// Classify a `run_until` deadline against the current work count. Pure arithmetic.
+pub(crate) fn classify_run_until(deadline: u64, current: u64) -> RunUntilStart {
+    match deadline.cmp(&current) {
+        std::cmp::Ordering::Greater => RunUntilStart::Drive,
+        std::cmp::Ordering::Equal => RunUntilStart::AlreadyAtDeadline,
+        std::cmp::Ordering::Less => RunUntilStart::DeadlineInPast,
+    }
+}
+
 /// The free-run phase's decision after **any non-guest-exit** `KVM_RUN` stop — a
 /// signal kick (EINTR / `KVM_EXIT_INTR`) **or** an `KVM_EXIT_IRQ_WINDOW_OPEN`
 /// control exit: has the overflow reached the armed count?
@@ -558,6 +593,37 @@ mod tests {
         assert_eq!(free_run_decision(99, 100), None, "below armed → re-enter");
         assert_eq!(free_run_decision(100, 100), Some(100), "at armed → stop");
         assert_eq!(free_run_decision(150, 100), Some(150), "past armed → stop");
+    }
+
+    /// P1 round-8 — the complete `run_until` contract for ALL deadline-vs-current
+    /// cases: `>` drives the planner; `==` is already at the deadline (zero guest
+    /// steps); `<` is invalid (can't run backward — fail closed).
+    #[test]
+    fn classify_run_until_covers_every_deadline_vs_current_case() {
+        // deadline > current → drive the planner to exactly the deadline.
+        assert_eq!(classify_run_until(101, 100), RunUntilStart::Drive);
+        assert_eq!(
+            classify_run_until(1, 0),
+            RunUntilStart::Drive,
+            "fresh VM, future deadline"
+        );
+        // deadline == current → already there, zero guest steps.
+        assert_eq!(
+            classify_run_until(0, 0),
+            RunUntilStart::AlreadyAtDeadline,
+            "fresh run_until(Vtime(0)): at the deadline, NO guest step"
+        );
+        assert_eq!(
+            classify_run_until(100, 100),
+            RunUntilStart::AlreadyAtDeadline
+        );
+        // deadline < current → invalid (the timer deadline is always in the future).
+        assert_eq!(
+            classify_run_until(99, 100),
+            RunUntilStart::DeadlineInPast,
+            "a past deadline can't be run to — fail closed"
+        );
+        assert_eq!(classify_run_until(0, 1), RunUntilStart::DeadlineInPast);
     }
 
     fn planner() -> InjectionPlanner {

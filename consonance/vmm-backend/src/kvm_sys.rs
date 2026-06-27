@@ -44,7 +44,8 @@ use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::MemRegions;
 use crate::run_until::{
-    FirstEntryReset, PreemptCpu, SKID_MARGIN, drive_run_until, free_run_decision,
+    FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until, drive_run_until,
+    free_run_decision,
 };
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
@@ -473,24 +474,6 @@ impl KvmBackend {
                 StepStop::Interrupted | StepStop::Reenter => continue,
                 StepStop::GuestExit => return self.take_guest_exit_stop(),
             }
-        }
-    }
-
-    /// P1 round-7: the `run_until` path for a degenerate deadline already at/before the
-    /// current count (the eliminated zero-step shortcut). A single `single_step_once`
-    /// issues the `KVM_RUN` the old shortcut skipped — which **commits any completion
-    /// staged by the prior step** (the run-loop contract: a completed read-style exit is
-    /// committed by the next entry) and lands at the next instruction boundary — then
-    /// the overdue `Deadline` is delivered there. A genuine guest exit surfacing on that
-    /// step is delivered, never dropped (round-4). (The first-entry baseline reset is
-    /// already done by `ensure_first_run` in `run_until`; `run_until`'s shared cleanup
-    /// disables single-step afterwards.)
-    fn commit_step_overdue(&mut self) -> Result<Exit> {
-        match self.single_step_once()? {
-            LiveStop::Count(work) => Ok(Exit::Deadline {
-                reached: Vtime(work),
-            }),
-            LiveStop::Guest { exit, .. } => Ok(exit),
         }
     }
 
@@ -1038,37 +1021,45 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        // First-entry baseline reset (always — every `run_until` enters the guest now;
-        // see the zero-step elimination below).
+        // First-entry baseline reset (always, before reading `start`).
         self.ensure_first_run()?;
         // Read the current work first (the planner's only `work()` call) and prove
         // the PMU is present + readable before entering the guest.
         let start = self.pmu_work()?;
+        // P1 round-8 — the complete run_until contract (deadline vs current work), a
+        // pure decision in the gated portable layer; see `classify_run_until`.
         // Scope the adapter's `&mut self` borrow so cleanup can use `self` after.
         let outcome = {
-            if deadline.0 <= start {
-                // P1 round-7: the deadline is already at/before the current count, so no
-                // planner run would issue a `KVM_RUN`. The OLD zero-step shortcut
-                // returned `Deadline` without entering the guest — which (a) never
-                // committed a completion staged by the prior step (stale state across
-                // save/restore) and (b) needed special-casing to not spend the
-                // first-entry reset (round-5 P2b). KILL the shortcut: single-step ONCE
-                // to commit any staged completion (the first `KVM_RUN`) + land, then
-                // deliver the overdue `Deadline`. This removes the whole zero-step
-                // edge-case class. (The degenerate `deadline <= start` case is rare.)
-                self.commit_step_overdue()
-            } else {
-                let planner = InjectionPlanner::new(PlannerConfig {
-                    skid_margin: SKID_MARGIN,
-                });
-                let mut cpu = LiveCpu {
-                    backend: self,
-                    deadline: deadline.0,
-                    work_cache: start,
-                    pending_exit: None,
-                    err: None,
-                };
-                drive_run_until(&planner, &mut cpu, deadline.0)
+            match classify_run_until(deadline.0, start) {
+                // deadline > current: drive the planner to EXACTLY the deadline.
+                RunUntilStart::Drive => {
+                    let planner = InjectionPlanner::new(PlannerConfig {
+                        skid_margin: SKID_MARGIN,
+                    });
+                    let mut cpu = LiveCpu {
+                        backend: self,
+                        deadline: deadline.0,
+                        work_cache: start,
+                        pending_exit: None,
+                        err: None,
+                    };
+                    drive_run_until(&planner, &mut cpu, deadline.0)
+                }
+                // deadline == current: already at the deadline → deliver it with ZERO
+                // guest steps toward it (never step a guest instruction past the
+                // deadline — round-8 P1). The first-entry reset was already applied
+                // above; a completion staged by the prior step stays in the run page
+                // and is committed by the NEXT entry's `KVM_RUN` (the caller commits
+                // owed completions on a normal entry before a save — see the contract).
+                RunUntilStart::AlreadyAtDeadline => Ok(Exit::Deadline {
+                    reached: Vtime(start),
+                }),
+                // deadline < current: the LAPIC timer deadline is always in the future,
+                // so a past deadline is misuse — fail closed (cannot run backward).
+                RunUntilStart::DeadlineInPast => Err(BackendError::Internal(
+                    "run_until: deadline is in the past (< current work) — invalid; the LAPIC \
+                     timer deadline is always in the future",
+                )),
             }
         };
         // Cleanup MUST run and MUST succeed (P2): a failed single-step disarm leaves

@@ -269,29 +269,31 @@ fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
     );
 }
 
+/// `in al, 0xF8` (a READ-style port exit → completed via `complete_read`) followed by
+/// the busy-spin. After the IN traps, completing it stages AL into the run page; the
+/// NEXT entry commits it (RIP past the IN), then the spin retires counted branches.
+const IN_THEN_SPIN_CODE: &[u8] = &[0xE4, 0xF8, 0x31, 0xC0, 0x85, 0xC0, 0x74, 0xFC];
+
+/// P1 round-8 — the complete `run_until` contract, case `deadline == current`: deliver
+/// `Exit::Deadline` with ZERO guest steps toward the deadline (never overstep). On a
+/// fresh VM `run_until(Vtime(0))` lands at EXACTLY 0 (round-7's single-step would have
+/// landed at 0 or 1 — an overstep); a subsequent `run_until` off that sane baseline
+/// lands exactly. Bit-identical across two VMs.
 #[test]
 #[ignore = "live KVM + perf; run on the box with --ignored"]
-fn zero_step_run_until_enters_commits_and_is_deterministic() {
-    // P1 round-7: a `run_until` whose deadline is already at/before the current count
-    // (here `Vtime(0)` on a fresh VM) NO LONGER takes the old no-KVM_RUN zero-step
-    // shortcut. It enters the guest (single-step) — committing any completion staged by
-    // the prior step and resetting the first-entry baseline — then delivers the overdue
-    // Deadline. Verify it (a) returns Deadline (the guest entered) and (b) the SUBSEQUENT
-    // run_until lands at EXACTLY 50_000 (the baseline established at the zero-step entry
-    // is sane), bit-identical across two independent VMs (the landing is a pure function
-    // of the instruction stream, not of host timing).
+fn run_until_at_current_deadline_takes_zero_steps() {
     let land = || -> (u64, u64) {
         let (mut b, _m) = boot_with(SPIN_CODE);
         let z = match b
             .run_until(Vtime(0))
-            .expect("zero-step run_until(0) enters the guest")
+            .expect("run_until(0) at current deadline")
         {
             Exit::Deadline { reached } => reached.0,
             other => panic!("expected Deadline from run_until(0), got {other:?}"),
         };
         let d = match b
             .run_until(Vtime(50_000))
-            .expect("run_until after the zero-step entry")
+            .expect("run_until after the zero-step")
         {
             Exit::Deadline { reached } => reached.0,
             other => panic!("expected Deadline at 50000, got {other:?}"),
@@ -301,19 +303,79 @@ fn zero_step_run_until_enters_commits_and_is_deterministic() {
     let (z1, d1) = land();
     let (z2, d2) = land();
     assert_eq!(
-        z1, z2,
-        "the zero-step landing is deterministic ({z1} == {z2})"
+        z1, 0,
+        "deadline==current took ZERO guest steps (no overstep) — got {z1}"
     );
-    assert_eq!(
-        d1, d2,
-        "the subsequent deadline landing is deterministic ({d1} == {d2})"
-    );
+    assert_eq!(z1, z2, "the zero-step landing is deterministic");
+    assert_eq!(d1, d2, "the subsequent deadline landing is deterministic");
     assert_eq!(
         d1, 50_000,
-        "the run_until after the zero-step lands at EXACTLY 50000 (baseline sane) — got {d1}"
+        "the run_until after the zero-step lands at EXACTLY 50000"
     );
+    eprintln!("[p1-r8] run_until(Vtime(0)) took zero steps (reached {z1}); next landed at {d1}");
+}
+
+/// P1 round-8 — case `deadline < current`: a past deadline is invalid (the LAPIC timer
+/// deadline is always in the future; we cannot run backward) → fail closed, never an
+/// immediate/late deadline.
+#[test]
+#[ignore = "live KVM + perf; run on the box with --ignored"]
+fn run_until_past_deadline_fails_closed() {
+    let (mut b, _m) = boot_with(SPIN_CODE);
+    match b.run_until(Vtime(10_000)).expect("advance to 10000") {
+        Exit::Deadline { reached } => assert_eq!(reached.0, 10_000),
+        other => panic!("expected Deadline at 10000, got {other:?}"),
+    }
+    // The current work is now 10_000; a deadline of 5_000 is in the past.
+    match b.run_until(Vtime(5_000)) {
+        Err(e) => eprintln!("[p1-r8] run_until(past deadline) failed closed: {e:?}"),
+        Ok(exit) => panic!("a past deadline must fail closed, got {exit:?}"),
+    }
+}
+
+/// P1 round-8 — case `deadline == current` WITH an owed completion: the prior step's
+/// read-style exit was completed (staged in the run page). `run_until(current)` takes
+/// ZERO guest steps (no overstep) AND does not lose the staged completion: the NEXT
+/// (future-deadline) `run_until` commits it (the guest progresses past the IN, no
+/// re-trap) and lands exactly. Proves round-7's preservation + round-8's no-overstep.
+#[test]
+#[ignore = "live KVM + perf; run on the box with --ignored"]
+fn run_until_at_current_deadline_preserves_owed_completion() {
+    let (mut b, _m) = boot_with(IN_THEN_SPIN_CODE);
+    // First entry: the IN (read-style) traps before any counted branch (work 0).
+    match b.run().expect("run to the IN") {
+        Exit::Io {
+            port, write: None, ..
+        } => assert_eq!(port, EXIT_EARLY_PORT, "the IN reads port 0xF8"),
+        other => panic!("expected a read-style Io exit from the IN, got {other:?}"),
+    }
+    b.complete_read(0x42)
+        .expect("complete the IN (stages AL=0x42)"); // owed completion
+    // deadline == current (0): ZERO steps, no overstep, owed completion preserved.
+    match b
+        .run_until(Vtime(0))
+        .expect("run_until(0) with an owed completion")
+    {
+        Exit::Deadline { reached } => assert_eq!(
+            reached.0, 0,
+            "deadline==current with an owed completion still takes zero steps — got {}",
+            reached.0
+        ),
+        other => panic!("expected Deadline at 0, got {other:?}"),
+    }
+    // The NEXT entry commits the owed IN completion (RIP past it) + spins to 5_000. If the
+    // completion had been lost/overstepped, the IN would re-trap (an Io exit) instead.
+    match b
+        .run_until(Vtime(5_000))
+        .expect("run_until after committing the owed read")
+    {
+        Exit::Deadline { reached } => assert_eq!(
+            reached.0, 5_000,
+            "the owed read was committed (guest progressed past the IN) and landed exactly"
+        ),
+        other => panic!("expected Deadline at 5000 (owed read committed), got {other:?}"),
+    }
     eprintln!(
-        "[p1-r7] zero-step run_until(0) entered + committed (landed at {z1}); the next run_until \
-         landed at exactly {d1} — no shortcut, baseline established at the real entry"
+        "[p1-r8] deadline==current preserved the owed completion; next run_until committed it"
     );
 }

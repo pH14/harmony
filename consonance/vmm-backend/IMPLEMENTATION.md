@@ -1039,3 +1039,43 @@ all land at exactly the deadline, bit-identical across the skid (signal-timing) 
   time-slices a VM back in after another ran without a snapshot restore). Verified the
   oracle is not vacuous: breaking `FirstEntryReset::rearm` makes the SUT inherit foreign
   branches → it diverges from the independent tally → the test fails.
+
+### PR #15 round-8 (cross-model): the complete run_until contract (1 P1) + V-time-only restore guard (1 P2)
+
+We circled the degenerate `deadline <= current` case three times (round-5 baseline,
+round-7 staged-completion, round-8 overstep), so this defines the **complete `run_until`
+contract** for ALL deadline-vs-current cases in one pass (a pure `classify_run_until`,
+covered + mutation-tested), instead of point-fixing.
+
+**P1 — the contract (deadline vs current work):**
+
+| `deadline` vs `current` | meaning | action |
+|---|---|---|
+| `> current` | the timer is ahead | **drive the planner**: arm overflow, single-step to EXACTLY the deadline (the converged precision invariant) → `Exit::Deadline` (or a genuine guest exit before it) |
+| `== current` | already at the deadline | return `Exit::Deadline` with **ZERO guest steps toward the deadline** — never step a guest instruction past it. The first-entry baseline reset (`ensure_first_run`) still runs |
+| `< current` | the deadline is in the past | **invalid → fail closed** — the LAPIC timer deadline is always in the future; we cannot run backward |
+
+The round-7 bug: for `deadline <= current` it single-stepped ONE guest instruction
+(`commit_step_overdue`), which at `== current` **oversteps** (a counted branch →
+`reached > deadline`, or a side effect/exit → guest-visible work before the timer). The
+fix: `== current` takes **zero** guest steps. A completion staged by the prior step
+(e.g. a completed `RDMSR`/`IN`) lives in the **run page**, not lost on re-entry — the
+NEXT entry's `KVM_RUN` commits it. **Caller contract:** commit an owed completion on a
+normal entry (a `> current` deadline, or `run`) — never `save` across an owed completion
+at a current deadline (the run page is not part of the saved vCPU state). Tests:
+portable `classify_run_until_covers_every_deadline_vs_current_case`; box
+`run_until_at_current_deadline_takes_zero_steps` (fresh → `reached == 0`, no overstep),
+`run_until_past_deadline_fails_closed`, and
+`run_until_at_current_deadline_preserves_owed_completion` (IN read → complete → zero-step
+`run_until(0)` → next `run_until` commits the read, guest progresses, no re-trap).
+
+**P2 — guard the V-time-only restore against the run_until path.** `Vmm::restore_vtime`
+resets vmm-core's `WorkSource` (the V-time counter `A`) to a new zero point, but the
+backend's `run_until` PMU (the SEPARATE counter `B`) is re-armed only by a FULL
+`Backend::restore`. A LAPIC-armed VM (the run_until path) would then pass small
+post-restore deadlines to a STALE `B` → with the P1 contract that surfaces as a `<
+current` fail-closed, but with a confusing message. `restore_vtime` now fails closed
+**up front** if `preemption_deadline().is_some()` (a LAPIC timer is armed), directing the
+caller to a full `Backend::restore` (`restore_snapshot` / `restore_vm_state`), which
+re-arms `B`'s baseline. Documented in `vmm-core`'s notes; test
+`restore_vtime_refused_with_a_lapic_timer_armed`.
