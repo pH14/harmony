@@ -102,33 +102,44 @@ impl EnvCodec {
         }
     }
 
-    /// **Compose** two environments on the single [`Moment`] axis: keep `base` as
-    /// the genesis prefix `[0, at)` and splice `tail` in at `at`, re-keying every
-    /// `tail` override's `Moment` by `+ at`. Because `Moment` is one axis for
-    /// *both* planes, this re-keying is plain integer arithmetic — not a
-    /// cross-plane merge (the task-93 simplification).
+    /// **Compose** two environments on the single [`Moment`] axis. `compose`
+    /// supports exactly the case it can represent **faithfully**: an
+    /// *override-only* `tail` with the **same seed and policy** as `base`. For
+    /// that case it keeps `base`'s genesis prefix `[0, at)` and splices `tail` in
+    /// at `at`, re-keying every `tail` override's `Moment` by `+ at`. Because
+    /// `Moment` is one axis for *both* planes, this re-keying is plain integer
+    /// arithmetic; the result is genesis-complete and collision-free (`base`
+    /// contributes only `m < at`, `tail` only `m + at ≥ at`) and carries `base`'s
+    /// seed and policy (which equal `tail`'s).
     ///
-    /// The result is genesis-complete and collision-free: `base` contributes only
-    /// `m < at`, `tail` only `m + at ≥ at`. The seed and policy come from `base`
-    /// (the run starts there).
+    /// It **fails closed** ([`EnvError::UnsupportedComposition`]) for the cases the
+    /// current model cannot represent, rather than emit a wrong reproducer:
     ///
-    /// **Standing faults are filtered to match the kept timeline on both sides.**
-    /// A `base` standing fault is kept only if its window *starts* before `at`
-    /// (i.e. it was active in the kept genesis prefix `[0, at)`); one starting
-    /// at/after `at` is dropped (it lives in the discarded `[at, ∞)` region, and
-    /// leaking it would replay the composed run under an unrelated future fault
-    /// from the old branch). A kept window extending past `at` is **truncated** to
-    /// `at` — beyond the splice the timeline belongs to `tail`. The `tail`'s
-    /// standing faults are then carried in, their V-time windows shifted by `+ at`
-    /// (V-time being a derived view of the same retired-count axis), so a bug
-    /// caused by a branch-local standing fault (e.g. a partition) still replays
-    /// from the composed genesis. `tail`'s seed and policy are not composed.
+    /// - **Either input carries a [`StandingFault`].** A standing fault's window
+    ///   is in [`VTime`] (retired *branches*), a different clock than the `Moment`
+    ///   splice offset `at` (retired *instructions*); statically shifting a V-time
+    ///   window by a `Moment` is wrong, and doing it correctly needs a
+    ///   `Moment → VTime` mapping that is a runtime property of the specific
+    ///   execution, which `compose` does not have.
+    /// - **`tail`'s seed or policy differs from `base`'s.** A single `EnvSpec`
+    ///   carries one seed and one policy, so it structurally cannot represent a
+    ///   piecewise `base`-seed-then-`tail`-seed stream; using `base`'s seed for the
+    ///   fallback is only correct when the seeds (and policies) match.
     ///
-    /// Returns [`EnvError::Overflow`] if any re-keying (`m + at`, or a tail
-    /// standing window bound `+ at`) would exceed [`u64::MAX`]; rejecting is
-    /// mandatory because saturating would silently collapse distinct overrides
-    /// onto one key, breaking the collision-free replay contract.
+    /// Both are the under-designed parts of the compose model deferred to **task
+    /// 93** (the `EnvCodec::compose` vs genesis-only revisit). Overflow of a
+    /// supported re-keying (`m + at` past [`u64::MAX`]) is [`EnvError::Overflow`].
     pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {
+        // Fail closed on the cases compose cannot faithfully represent (task 93).
+        if !standing_of(base).is_empty() || !standing_of(tail).is_empty() {
+            return Err(EnvError::UnsupportedComposition);
+        }
+        if tail.seed() != base.seed() || tail.policy() != base.policy() {
+            return Err(EnvError::UnsupportedComposition);
+        }
+
+        // Supported case: override-only, same seed/policy. Re-key on the one
+        // Moment axis — base keeps its prefix [0, at), tail shifts into [at, ∞).
         let mut overrides: BTreeMap<Moment, Action> = base
             .overrides()
             .iter()
@@ -140,50 +151,20 @@ impl EnvCodec {
             overrides.insert(key, a.clone());
         }
 
-        // base's standing faults are filtered to the kept genesis prefix
-        // `[0, at)` — the window analogue of the `m < at` override filter above. A
-        // window starting at/after `at` lives entirely in the discarded `[at, ∞)`
-        // region and is dropped (else an unrelated future fault from the old
-        // branch would leak into the composed genesis). A window that starts
-        // before `at` but extends past it is truncated back to `at`: only the part
-        // active in `[0, at)` is kept; beyond the splice the timeline belongs to
-        // the tail, not the base.
-        let mut standing: Vec<StandingFault> = match base {
-            EnvSpec::Recorded { standing, .. } => standing
-                .iter()
-                .filter(|s| s.window.0.0 < at)
-                .map(|s| StandingFault {
-                    class: s.class,
-                    target: s.target.clone(),
-                    window: (s.window.0, VTime(s.window.1.0.min(at))),
-                })
-                .collect(),
-            EnvSpec::Seeded { .. } => Vec::new(),
-        };
-        // tail's standing faults are appended, their V-time windows shifted by
-        // +at into the post-splice region (overflow rejects, never saturates).
-        if let EnvSpec::Recorded {
-            standing: tail_standing,
-            ..
-        } = tail
-        {
-            for s in tail_standing {
-                let w0 = s.window.0.0.checked_add(at).ok_or(EnvError::Overflow)?;
-                let w1 = s.window.1.0.checked_add(at).ok_or(EnvError::Overflow)?;
-                standing.push(StandingFault {
-                    class: s.class,
-                    target: s.target.clone(),
-                    window: (VTime(w0), VTime(w1)),
-                });
-            }
-        }
-
         Ok(EnvSpec::Recorded {
             seed: base.seed(),
             policy: base.policy().clone(),
             overrides,
-            standing,
+            standing: Vec::new(),
         })
+    }
+}
+
+/// The standing faults of a spec (`Seeded` has none).
+fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
+    match spec {
+        EnvSpec::Recorded { standing, .. } => standing,
+        EnvSpec::Seeded { .. } => &[],
     }
 }
 

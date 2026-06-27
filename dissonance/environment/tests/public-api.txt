@@ -59,6 +59,7 @@ pub enum environment::EnvError
 pub environment::EnvError::BadVersion(u16)
 pub environment::EnvError::Malformed
 pub environment::EnvError::Overflow
+pub environment::EnvError::UnsupportedComposition
 pub enum environment::EnvSpec
 pub environment::EnvSpec::Recorded
 pub environment::EnvSpec::Recorded::overrides: alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>

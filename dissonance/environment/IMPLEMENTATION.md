@@ -217,29 +217,31 @@ The old per-decision `DecisionId` key is **removed** — superseded by `Moment`
 `EnvCodec::{seeded, mutate, compose}` is the vocabulary-aware seam the Theme calls
 (it "cannot invent a legal `HostFault`/`Answer`, so it asks the codec").
 
-`compose(base, tail, at) -> Result<EnvSpec, EnvError>` keeps `base`'s genesis
-prefix `[0, at)` and splices `tail` in at `at`, re-keying every tail `Moment` by
-`+at` — the collision-free, genesis-complete **one-axis integer arithmetic**
-task 93's update calls for (no cross-plane merge).
+`compose(base, tail, at) -> Result<EnvSpec, EnvError>` **fails closed** — it
+supports only the composition it can represent faithfully and rejects the rest,
+rather than emit a wrong reproducer. This is the integrator ruling for the
+under-designed parts of the compose model, which belong to **task 93** (the
+`EnvCodec::compose` vs genesis-only revisit, deferred). Earlier rounds tried to
+patch the hard cases (carry/filter/shift standing faults across the splice); the
+PR #16 cross-model pass showed those are *structurally* wrong, not edge cases:
 
-**Standing faults are filtered to the kept timeline on both sides** — the window
-analogue of the `m < at` override-prefix filter:
+- **Standing faults are on a different clock.** `StandingFault.window` is in
+  `VTime` (retired *branches*); the splice offset `at` is a `Moment` (retired
+  *instructions*). Statically shifting a V-time window by a Moment is wrong, and
+  doing it correctly needs a `Moment → VTime` mapping that is a runtime property of
+  the specific execution — not available to an offline codec. So **any input
+  carrying a `StandingFault` is rejected** with `EnvError::UnsupportedComposition`.
+- **One `EnvSpec` carries one seed + one policy**, so it cannot represent a
+  piecewise `base`-seed-then-`tail`-seed stream; `base`'s seed is only a correct
+  fallback when the seeds match. So a **`tail` whose seed or policy differs from
+  `base`'s is rejected** with `EnvError::UnsupportedComposition`.
 
-- *Tail* standing faults are carried in, their V-time windows shifted by the same
-  `+at` (V-time being a derived view of the same retired-count axis), so a bug
-  caused by a branch-local standing fault (e.g. a partition) still replays from
-  the composed genesis — *the round-1 P1 fix; tail standing faults were previously
-  dropped.*
-- *Base* standing faults are kept **only if their window starts before `at`**
-  (active in the kept prefix `[0, at)`); one starting at/after `at` is dropped, and
-  one straddling `at` is truncated back to `at` — *the round-2 P1 fix; previously
-  all base standing faults were cloned wholesale, leaking unrelated faults from the
-  discarded `[at, ∞)` region of the old branch into the composed genesis.*
-
-Re-keying is **checked, not saturating**: an offset that would push a tail
-`Moment` or standing window bound past `u64::MAX` returns `EnvError::Overflow`
-rather than collapsing distinct overrides onto one key (*the round-1 P2 fix;
-`saturating_add` previously merged them silently*).
+What `compose` *does* support — the genuinely one-axis case — is an **override-only
+tail with the same seed and policy as `base`**: it keeps `base`'s prefix `[0, at)`
+(`m < at`), re-keys every tail override's `Moment` by `+at`, and carries `base`'s
+seed/policy with no standing faults. That re-keying is checked, not saturating: an
+`m + at` past `u64::MAX` returns `EnvError::Overflow` rather than collapsing
+distinct overrides onto one key.
 
 `mutate(env, salt)` is deterministic and **host-only**: it inserts, moves, or
 removes an `Action::Host` override (always legal — a `HostFault` needs no
@@ -320,21 +322,21 @@ contract not at all — the invariant holds.
   determinism contract (`SkewTime`/`SetClockRate` integer/fixed-point;
   `CorruptMemory` = pure `word ^ mask` at `(Moment, gpa)`) is what makes that
   enforcement bit-identical on replay.
-- **`compose` is genesis-complete for both planes and fallible.** It keeps
-  `base`'s seed/policy, keeps the prefix `[0, at)` of *both* the override map
-  (`m < at`) and the base standing faults (window start `< at`, truncated at the
-  splice), and appends `tail`'s overrides/standing shifted by `+at`; it returns
-  `Err(EnvError::Overflow)` if any re-keying would exceed `u64::MAX`. The single
-  offset `at` shifts *both* the `Moment` override keys and the V-time standing
-  windows — `compose` assumes the tail is uniformly branch-local and V-time is a
-  derived view of the same timeline. If the integration ever needs distinct
-  Moment- vs V-time offsets, that is a follow-on (a second offset parameter), not a
-  silent drop or leak.
+- **`compose` is fallible and fails closed; the hard model is task 93's.** It
+  supports an override-only, same-seed/same-policy `tail` (re-key `m + at` on the
+  one Moment axis, `Err(EnvError::Overflow)` past `u64::MAX`) and **rejects**
+  (`Err(EnvError::UnsupportedComposition)`) any input with a `StandingFault`
+  (V-time ≠ Moment clock — needs a runtime `Moment → VTime` map) or a `tail`
+  seed/policy ≠ `base`'s (one `EnvSpec` cannot carry a piecewise-seeded stream).
+  Full cross-clock standing-fault composition and piecewise-seed composition are
+  deferred to **task 93** (the compose-model revisit). The integrator should treat
+  `UnsupportedComposition` as "branch from a genesis-complete env instead of
+  composing" until task 93 lands — never as a soft failure to paper over.
 
 ## Gates
 
 `cargo build/nextest/clippy(-D warnings)/fmt -p environment --all-features` and
-`cargo deny check` all pass: 81 tests, including the task-45 acceptance properties
+`cargo deny check` all pass: 80 tests, including the task-45 acceptance properties
 — `mixed_host_guest_replays_bit_identically` (256-case record→replay round-trip
 with host overrides present) and `compose_rekeys_moments_and_carries_standing`
 (256-case one-axis re-keying that now also asserts tail standing faults survive

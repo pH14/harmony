@@ -32,10 +32,22 @@ pub enum EnvError {
     #[error("malformed environment blob")]
     Malformed,
     /// A re-keying arithmetic overflowed — a [`Moment`](crate::Moment) override
-    /// key or a V-time standing-fault window bound exceeded [`u64::MAX`] when
-    /// shifted by a [`compose`](crate::EnvCodec::compose) offset. Rejected rather
-    /// than saturated, so the result can never silently drop an override onto a
+    /// key exceeded [`u64::MAX`] when shifted by a
+    /// [`compose`](crate::EnvCodec::compose) offset. Rejected rather than
+    /// saturated, so the result can never silently drop an override onto a
     /// colliding key.
-    #[error("environment composition offset overflowed the Moment/V-time axis")]
+    #[error("environment composition offset overflowed the Moment axis")]
     Overflow,
+    /// A [`compose`](crate::EnvCodec::compose) was asked for a composition it
+    /// cannot faithfully represent and therefore **fails closed** rather than
+    /// emit a wrong reproducer: either input carries a [`StandingFault`] (its
+    /// V-time window lives on a different clock than the `Moment` splice offset —
+    /// no static re-keying is correct), or the `tail`'s seed or policy differs
+    /// from the `base`'s (one `EnvSpec` cannot carry a piecewise-seeded stream).
+    /// These are the under-designed cases deferred to task 93 (the compose-model
+    /// revisit); `compose` supports override-only, same-seed/same-policy tails.
+    ///
+    /// [`StandingFault`]: crate::StandingFault
+    #[error("unsupported environment composition (deferred to task 93)")]
+    UnsupportedComposition,
 }
