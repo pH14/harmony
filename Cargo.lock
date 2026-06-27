@@ -853,6 +853,7 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "proptest",
+ "proptest-state-machine",
  "thiserror",
  "vtime",
 ]
