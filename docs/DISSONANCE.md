@@ -236,6 +236,15 @@ perturbation is a **host**-plane interrupt-timing fault (`InjectInterrupt @ mome
 SDK-cooperative "which runnable thread next?" is a **guest**-plane decision. Same concept, placed by
 cooperation level.
 
+> **⚠ Superseded by `tasks/50-net-fault-boundary.md` — the host *decides*, the guest *enforces*.**
+> Routing every frame through a `net_tx` hypercall to a host switch puts the hypervisor in the packet
+> data path and is the one place this model has the host *perform* a fault instead of *decide* one.
+> Tasks 38/49 ship "nodes" as containers/pods whose traffic stays on the **intra-guest CNI** (it never
+> reaches the host) and is **already deterministic** — so the switch sees nothing to switch and
+> determinizes nothing the substrate doesn't already. Task 50 reshapes networking into a per-flow
+> `net_decide` guest-plane decision enforced in-guest, retires `pv-net`, and dissolves the
+> "Plane ≠ enforcement locus" rule below. The text in this subsection is retained until task 50 lands.
+
 **Network locus: host-side `pv-net`.** Because single-vCPU determinism rules out one-VM-per-node,
 the "nodes" of a distributed system are containers in one guest, and inter-node traffic is
 guest-internal. We route it through a `net_tx` hypercall to a **host L2 switch**, so the host sees
