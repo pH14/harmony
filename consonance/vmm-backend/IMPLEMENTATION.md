@@ -790,3 +790,59 @@ Confirmed GREEN on the box (Linux — the exact CI invocation): `cargo llvm-cov 
 --all-features … --fail-under-regions 93` → exit 0, 813 tests passed, lcov.info
 generated. (Process: the slow gates — `cargo mutants --in-diff`, `cargo kani`, `cargo
 llvm-cov` — are now all run locally before push.)
+
+### PR #15 round-2 (cross-model): unify run_until exit handling (2 P1 + 2 P2)
+
+Root cause: inconsistent exit-vs-deadline handling across the KVM exit paths. Fixed
+the four and did the unifying audit so every path obeys the same four invariants:
+(1) read `pmu_work()` and compare to `armed_at`/`deadline` before deciding; (2) NEVER
+drop/absorb a real guest exit; (3) preserve any pending injectable IRQ; (4) fail
+closed on any ioctl error.
+
+- **P1(a) — deliver real exits at the deadline.** `drive_run_until` no longer absorbs
+  a guest exit at `work == deadline` into `Exit::Deadline` (that dropped PIO/MMIO
+  writes / read-style state). A real exit at-or-before the deadline is **delivered**;
+  the timer still fires on the VMM's next entry (the PMU is then at the deadline →
+  next `run_until` returns `Deadline` immediately). Only `work > deadline` (overshoot)
+  fails closed. Portable test `real_guest_exit_at_or_before_deadline_is_delivered_not_dropped`.
+- **P1(b) — PMU check on IRQ-window re-entry.** `run_armed` now applies the SAME
+  `free_run_decision(work, armed_at)` to the `KVM_EXIT_IRQ_WINDOW_OPEN` control exit as
+  to the signal path — if the overflow already crossed `armed_at`, stop instead of
+  re-entering (which would overshoot / inject a stale IRQ past the deadline). The
+  decision is the portable, tested `free_run_decision`.
+- **P2(a) — preserve pending IRQ in the step phase.** `single_step_once` runs the same
+  `inject_pending()` handshake as the free-run phase (was: cleared the window with
+  `plan_irq_entry(None)`), so a pending injectable serial/LAPIC vector is delivered at
+  the next entry per the `set_pending_irq` contract, not delayed past the deadline.
+- **P2(b) — propagate PMU reset failures.** `ensure_first_run` now returns the
+  `RESET` error (and re-arms so a later entry retries) instead of ignoring it; `run`/
+  `run_until` call it with `?`. A failed reset would leave a stale counter (foreign
+  branches) → past/late deadlines.
+
+**Unifying audit — every run_until exit path → PMU check → action** (all four
+invariants hold; a real exit is never dropped; every ioctl error fails closed):
+
+| Phase | KVM stop | PMU check | Action |
+|---|---|---|---|
+| free-run | EINTR (signal) | `work ≥ armed_at`? | yes → stop (`Count`); no → re-enter |
+| free-run | `KVM_EXIT_INTR` | `work ≥ armed_at`? | yes → stop; no → re-enter |
+| free-run | `KVM_EXIT_IRQ_WINDOW_OPEN` | `work ≥ armed_at`? **(P1(b))** | yes → stop; no → re-enter (inject pending) |
+| free-run | `KVM_EXIT_DEBUG` | — | fail closed (single-step not armed here) |
+| free-run | real guest exit (IO/MMIO/MSR/HLT/…) | read `work@exit` | deliver if `work ≤ deadline`; fail closed if `> deadline` **(P1(a))** |
+| free-run | `KVM_RUN` errno (non-EINTR) | — | fail closed (`Io`) |
+| step | `KVM_EXIT_DEBUG` (trap) | read `work` | `Count(work)` (planner compares to deadline) |
+| step | EINTR / `INTR` / `IRQ_WINDOW_OPEN` | — (overflow disarmed) | re-enter, injecting pending **(P2(a))** |
+| step | real guest exit | read `work@exit` | deliver if `work ≤ deadline`; else fail closed |
+| step | `KVM_RUN` errno (non-EINTR) | — | fail closed |
+| planner | `ReadyToInject` (no guest exit) | planner ensured `work == deadline` | `Exit::Deadline` |
+| planner | `TargetInPast` | `work > deadline` at entry (overdue) | `Exit::Deadline{reached: now}` |
+| planner | `SkidExceeded` | — | fail closed |
+| pre-entry | first-entry / post-restore reset | — | reset PMU; **fail closed on reset error (P2(b))** |
+
+Cross-cutting: the injection handshake (`inject_pending`) is shared by both phases, so
+a pending IRQ is preserved everywhere (invariant 3); every PMU/KVM ioctl returns
+`Result` and is `?`-propagated (invariant 4). Tests: P1(a) + `free_run_decision`
+(P1(b)) are portable + property/mutation-tested; the box gates 1/2/4 exercise the live
+`run_armed`/`single_step_once` paths (the IRQ-window-past-armed and near-deadline
+pending-IRQ races are box-only timing and validated there + by the shared, tested
+`free_run_decision`/`plan_irq_entry` decisions they call).

@@ -96,17 +96,19 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
             // work-vs-target stepping; "guest exit" is not a vtime concept, so its
             // disposition lives in this seam.
             Some((exit, work)) => match classify_guest_exit(work, deadline) {
-                // BEFORE the deadline: a true early exit — return it (short of
-                // `deadline`), pending-completion already armed on the backend like `run`.
-                GuestExitDisposition::Early => Ok(exit),
-                // AT the deadline: the overflow reached the timer instant first (its
-                // SIGIO just hadn't landed) → preempt; the exit is absorbed (`run_until`
-                // clears the pending).
-                GuestExitDisposition::AtDeadline => Ok(Exit::Deadline {
-                    reached: Vtime(deadline),
-                }),
-                // PAST the deadline: the free-run ran beyond the exact injection point
-                // (skid exceeded the margin) → a loud determinism error, never absorbed.
+                // P1(a): a real guest exit AT OR BEFORE the deadline is **delivered**
+                // to the VMM, NEVER absorbed/dropped — a PIO/MMIO write or read-style
+                // exit at the exact timer count carries guest-visible state. Pending-
+                // completion is already armed on the backend, exactly like a plain
+                // `run`. At exactly the deadline the timer is NOT lost either: the
+                // backend's PMU is now at the deadline, so the VMM's *next* `run_until`
+                // returns `Deadline` immediately (`TargetInPast`) and injects the timer
+                // — so the exit is serviced AND the timer fires at the deadline.
+                GuestExitDisposition::Early | GuestExitDisposition::AtDeadline => Ok(exit),
+                // PAST the deadline: the free-run executed BEYOND the exact injection
+                // point (the overflow skid exceeded the margin) — the deterministic
+                // instant was missed. Fail closed (loud), never silently absorb or
+                // deliver-late. `skid_margin` is sized so this is vanishingly rare.
                 GuestExitDisposition::PastDeadline => Err(BackendError::Internal(
                     "run_until: a guest exit landed past the deadline (overflow skid exceeded the \
                      margin) — the exact V-time injection point was missed",
@@ -143,13 +145,14 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
 /// and property-tested (the box-only FFI never makes this call).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum GuestExitDisposition {
-    /// `work_at_exit < deadline`: a true early exit, returned to the VMM.
+    /// `work_at_exit < deadline`: a true early exit — delivered to the VMM.
     Early,
-    /// `work_at_exit == deadline`: the overflow reached the timer instant first →
-    /// preempt (`Exit::Deadline`); the exit is absorbed.
+    /// `work_at_exit == deadline`: a real exit exactly at the timer count — also
+    /// **delivered** (never absorbed/dropped); the timer then fires on the VMM's
+    /// next entry, when the PMU is already at the deadline (P1(a) round-2).
     AtDeadline,
     /// `work_at_exit > deadline`: the free-run executed past the exact injection
-    /// point → a loud determinism error.
+    /// point → a loud determinism error (fail closed).
     PastDeadline,
 }
 
@@ -160,6 +163,20 @@ pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExit
         std::cmp::Ordering::Equal => GuestExitDisposition::AtDeadline,
         std::cmp::Ordering::Greater => GuestExitDisposition::PastDeadline,
     }
+}
+
+/// The free-run phase's decision after **any non-guest-exit** `KVM_RUN` stop — a
+/// signal kick (EINTR / `KVM_EXIT_INTR`) **or** an `KVM_EXIT_IRQ_WINDOW_OPEN`
+/// control exit: has the overflow reached the armed count?
+///
+/// `Some(work)` ⇒ stop the free-run here (the overflow fired; hand off to the
+/// single-step phase). `None` ⇒ re-enter the guest (a spurious pre-overflow signal,
+/// or an IRQ-window re-entry). Applying this UNIFORMLY to every such stop — not just
+/// the signal path — is the round-2 P1(b) fix: an IRQ-window re-entry that ignores a
+/// crossed overflow would overshoot the exact preemption point. Pure (the box code
+/// supplies the real `pmu_work()`), so the comparison is covered + tested here.
+pub(crate) fn free_run_decision(work: u64, armed_at: u64) -> Option<u64> {
+    (work >= armed_at).then_some(work)
 }
 
 /// The first-entry **PMU-reset discipline** for the backend's shared-thread
@@ -356,25 +373,28 @@ mod tests {
     }
 
     /// P1(a): a guest exit at `work >= deadline` (overflow reached the deadline before
-    /// the natural exit surfaced — the SIGIO-delay race) is the **deadline**, not an
-    /// early exit; past the deadline it is a loud determinism error; only `< deadline`
-    /// is genuinely early.
+    /// P1(a): a real guest exit at or before the deadline is **delivered** to the VMM
+    /// (never absorbed/dropped — that would lose a PIO/MMIO write or read-style state);
+    /// only a guest exit PAST the deadline (an overshoot beyond the exact injection
+    /// point) is a loud determinism error.
     #[test]
-    fn guest_exit_at_or_past_deadline_is_not_treated_as_early() {
+    fn real_guest_exit_at_or_before_deadline_is_delivered_not_dropped() {
         let d = 1_000_000;
-        // strictly before → the guest exit is returned (genuinely early).
+        // strictly before → the guest exit is delivered (genuinely early).
         let mut early = ExitAtCpu::new(d - 1, d);
         assert_eq!(
             drive_run_until(&planner(), &mut early, d).unwrap(),
             GUEST_EXIT,
-            "a guest exit before the deadline is returned as the early exit"
+            "a guest exit before the deadline is delivered"
         );
-        // exactly at the deadline → Deadline (the timer instant was reached).
+        // exactly at the deadline → the exit is STILL delivered, NOT absorbed into a
+        // Deadline (the timer fires on the VMM's next entry, when the PMU is at the
+        // deadline). This is the P1(a) round-2 fix: never drop a real exit.
         let mut at = ExitAtCpu::new(d, d);
         assert_eq!(
             drive_run_until(&planner(), &mut at, d).unwrap(),
-            Exit::Deadline { reached: Vtime(d) },
-            "a guest exit AT the deadline is the Deadline, not an early exit (P1(a))"
+            GUEST_EXIT,
+            "a guest exit AT the deadline must be DELIVERED, not absorbed into Deadline (P1(a))"
         );
         // past the deadline → loud determinism error (the exact instant was missed).
         let mut past = ExitAtCpu::new(d + 5, d);
@@ -385,6 +405,17 @@ mod tests {
             ),
             other => panic!("a guest exit past the deadline must be a loud error, got {other:?}"),
         }
+    }
+
+    /// Round-2 P1(b): `free_run_decision` stops the free-run iff the overflow reached
+    /// the armed count — the uniform check the box applies to EINTR / KVM_EXIT_INTR /
+    /// IRQ_WINDOW_OPEN alike (so an IRQ-window re-entry can't overshoot a crossed
+    /// overflow).
+    #[test]
+    fn free_run_decision_stops_only_at_or_past_armed() {
+        assert_eq!(free_run_decision(99, 100), None, "below armed → re-enter");
+        assert_eq!(free_run_decision(100, 100), Some(100), "at armed → stop");
+        assert_eq!(free_run_decision(150, 100), Some(150), "past armed → stop");
     }
 
     fn planner() -> InjectionPlanner {
@@ -563,9 +594,9 @@ mod tests {
             prop_assert_eq!(cpu.work(), deadline);
         }
 
-        /// P1(a) property: for ALL (work_at_exit, deadline), the pure classifier and
-        /// `drive_run_until`'s mapping agree with the work-vs-deadline comparison —
-        /// early (return the exit), at-deadline (Deadline), past-deadline (loud error).
+        /// P1(a) property: for ALL (work_at_exit, deadline), the pure classifier
+        /// matches the comparison, and `drive_run_until` DELIVERS the real exit at or
+        /// before the deadline (never drops it) and fails closed only past it.
         #[test]
         fn drive_run_until_classifies_any_guest_exit(
             deadline in 1u64..=1_000_000,
@@ -579,12 +610,11 @@ mod tests {
             let mut cpu = ExitAtCpu::new(work_at_exit, deadline);
             let got = drive_run_until(&planner(), &mut cpu, deadline);
             match disp {
-                GuestExitDisposition::Early => {
+                // At OR before the deadline: the real guest exit is delivered.
+                GuestExitDisposition::Early | GuestExitDisposition::AtDeadline => {
                     prop_assert!(matches!(got, Ok(ref e) if *e == GUEST_EXIT));
                 }
-                GuestExitDisposition::AtDeadline => {
-                    prop_assert_eq!(got.unwrap(), Exit::Deadline { reached: Vtime(deadline) });
-                }
+                // Past the deadline: fail closed.
                 GuestExitDisposition::PastDeadline => {
                     prop_assert!(matches!(got, Err(BackendError::Internal(_))));
                 }

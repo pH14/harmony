@@ -43,7 +43,9 @@ use crate::exit::{Capabilities, Event, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::MemRegions;
-use crate::run_until::{FirstEntryReset, PreemptCpu, SKID_MARGIN, drive_run_until};
+use crate::run_until::{
+    FirstEntryReset, PreemptCpu, SKID_MARGIN, drive_run_until, free_run_decision,
+};
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
 
@@ -302,14 +304,37 @@ impl KvmBackend {
     /// V-time `PerfWorkCounter` does the same via `start_run`). No-op if perf is
     /// unavailable; touches only the unhashed PMU counter, so `run()`'s observable
     /// state stays byte-identical.
-    fn ensure_first_run(&mut self) {
+    fn ensure_first_run(&mut self) -> Result<()> {
         // `take_reset()` always runs (and disarms); the reset only fires when armed
         // AND a counter exists. (No-op when perf is unavailable.)
         if self.reset_arm.take_reset()
             && let Some(pmu) = self.pmu.as_mut()
+            && let Err(e) = pmu.reset()
         {
-            let _ = pmu.reset();
+            // P2(b): a failed RESET would leave a stale counter (foreign branches
+            // from a coexisting VM) → past/late deadlines. Re-arm so a later entry
+            // retries the reset, and fail closed now rather than continuing stale.
+            self.reset_arm.rearm();
+            return Err(e);
         }
+        Ok(())
+    }
+
+    /// The userspace-irqchip injection handshake run before **every** `KVM_RUN` in
+    /// `run_until` (free-run AND single-step): deliver a pending, injectable maskable
+    /// vector now (recording acceptance), else arm/clear the interrupt window. Shared
+    /// by both phases so a pending injectable IRQ (queued by `service_pending_irqs`
+    /// before `run_until`) is delivered at the next entry in BOTH — the
+    /// `set_pending_irq` next-entry contract (P2(a)) — and never injected stale.
+    fn inject_pending(&mut self, fd: std::os::fd::RawFd) -> Result<()> {
+        if let IrqEntry::Queue(vector) = plan_irq_entry(self.run_page(), self.pending_irq) {
+            // SAFETY (raw ioctl seam): queue `vector` on the owned vCPU; `enter`'s
+            // `ready_for_interrupt_injection` was just checked by `plan_irq_entry`.
+            unsafe { raw_interrupt(fd, u32::from(vector))? };
+            self.pending_irq = None;
+            self.accepted_irq.push_back(vector);
+        }
+        Ok(())
     }
 
     /// The backend PMU work count (run_until's V-time axis). Errors if the counter
@@ -352,43 +377,35 @@ impl KvmBackend {
         self.pmu_arm(armed_at)?;
         let fd = self.vcpu.as_raw_fd();
         loop {
-            // Same userspace-irqchip injection handshake as `enter_guest`: deliver a
-            // pre-existing pending vector when the guest can take it (deterministic
-            // delivery point), else arm the interrupt window.
-            match plan_irq_entry(self.run_page(), self.pending_irq) {
-                IrqEntry::Queue(vector) => {
-                    // SAFETY (raw ioctl seam): queue `vector` on the owned vCPU.
-                    unsafe { raw_interrupt(fd, u32::from(vector))? };
-                    self.pending_irq = None;
-                    self.accepted_irq.push_back(vector);
-                }
-                IrqEntry::Run => {}
-            }
+            // Deliver any pending injectable vector (or arm the window). P2(a): the
+            // same handshake the single-step phase uses, so a pending IRQ is never
+            // delayed past the deadline.
+            self.inject_pending(fd)?;
             // SAFETY (raw ioctl seam): `KVM_RUN` on the owned vCPU.
             let rc = unsafe { raw_kvm_run(fd) };
             if rc < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
-                    // A signal broke us out. The overflow kick fires at-or-past the
-                    // armed count; a spurious signal before it just re-enters.
-                    let work = self.pmu_work()?;
-                    if work >= armed_at {
-                        return Ok(LiveStop::Count(work));
+                    // A signal broke us out (the overflow kick, or a spurious one).
+                    if let Some(stop) = self.free_run_stop(armed_at)? {
+                        return Ok(stop);
                     }
                     continue;
                 }
                 return Err(BackendError::Io(err));
             }
             match classify_step_exit(self.run_page()) {
-                // The overflow surfaced as KVM_EXIT_INTR rather than the ioctl EINTR.
-                StepStop::Interrupted => {
-                    let work = self.pmu_work()?;
-                    if work >= armed_at {
-                        return Ok(LiveStop::Count(work));
+                // P1(b): EVERY non-guest-exit stop — the signal-as-KVM_EXIT_INTR path
+                // AND the IRQ_WINDOW_OPEN re-entry — reads the PMU and stops if the
+                // overflow already crossed `armed_at`, rather than blindly re-entering
+                // (which would overshoot the exact preemption point / inject a stale
+                // IRQ past the deadline).
+                StepStop::Interrupted | StepStop::Reenter => {
+                    if let Some(stop) = self.free_run_stop(armed_at)? {
+                        return Ok(stop);
                     }
                     continue;
                 }
-                StepStop::Reenter => continue, // IRQ window opened; re-enter.
                 // Single-step is not armed during the free-run; a debug exit here is
                 // a contract violation, never silently treated as progress.
                 StepStop::SingleStepTrap => {
@@ -396,34 +413,43 @@ impl KvmBackend {
                         "run_until: unexpected single-step debug exit during free-run",
                     ));
                 }
-                StepStop::GuestExit => {
-                    let (exit, pending) = decode_exit(self.run_page())?.ok_or(
-                        BackendError::Internal("run_until: control exit misclassified as guest"),
-                    )?;
-                    // Read the work AT the exit (no guest code runs between the exit
-                    // and this read). The adapter/`drive_run_until` use it to tell an
-                    // early exit (work < deadline) from the SIGIO-delay race where the
-                    // overflow already reached the deadline (work >= deadline) — P1(a).
-                    let work = self.pmu_work()?;
-                    self.pending = pending;
-                    return Ok(LiveStop::Guest { exit, work });
-                }
+                StepStop::GuestExit => return self.take_guest_exit_stop(),
             }
         }
     }
 
+    /// Shared free-run check (P1(b)): read the PMU and decide stop-vs-reenter via the
+    /// portable [`free_run_decision`]. `Some` ⇒ the overflow reached `armed_at`.
+    fn free_run_stop(&self, armed_at: u64) -> Result<Option<LiveStop>> {
+        Ok(free_run_decision(self.pmu_work()?, armed_at).map(LiveStop::Count))
+    }
+
+    /// Decode the genuine guest exit, record its pending-completion, and capture the
+    /// work AT the exit (no guest code runs between the exit and this read), so
+    /// `drive_run_until` can tell deliver (work ≤ deadline) from overshoot
+    /// (work > deadline) — P1(a). Shared by both phases; a real exit is NEVER dropped.
+    fn take_guest_exit_stop(&mut self) -> Result<LiveStop> {
+        let (exit, pending) = decode_exit(self.run_page())?.ok_or(BackendError::Internal(
+            "run_until: control exit misclassified as guest",
+        ))?;
+        let work = self.pmu_work()?;
+        self.pending = pending;
+        Ok(LiveStop::Guest { exit, work })
+    }
+
     /// Planner phase 2: single-step **one** instruction (`KVM_GUESTDBG_SINGLESTEP`)
     /// to land at the exact deadline despite skid. Returns the new work count, or a
-    /// genuine guest exit taken by the stepped instruction. Does **not** inject (the
-    /// interrupt window is cleared) so the skid-margin steps land cleanly at the
-    /// deadline; a held pending vector is delivered after the deadline by the VMM.
+    /// genuine guest exit taken by the stepped instruction. P2(a): it runs the SAME
+    /// injection handshake as the free-run phase ([`Self::inject_pending`]), so a
+    /// pending injectable vector (queued before `run_until`) is delivered at the next
+    /// entry rather than delayed past the deadline + reordered.
     fn single_step_once(&mut self) -> Result<LiveStop> {
         self.enable_single_step()?;
         let fd = self.vcpu.as_raw_fd();
         loop {
-            // Clear any interrupt-window request so a window-open exit cannot loop
-            // (and so we do not inject mid-skid-margin).
-            let _ = plan_irq_entry(self.run_page(), None);
+            // Preserve + deliver any pending injectable IRQ (P2(a)); clears the window
+            // when none is pending, so an IRQ-window exit cannot loop.
+            self.inject_pending(fd)?;
             // SAFETY (raw ioctl seam): single-stepped `KVM_RUN` on the owned vCPU.
             let rc = unsafe { raw_kvm_run(fd) };
             if rc < 0 {
@@ -434,17 +460,12 @@ impl KvmBackend {
                 return Err(BackendError::Io(err));
             }
             match classify_step_exit(self.run_page()) {
+                // The single-step trap is the stop signal (one instruction retired);
+                // the overflow is disarmed in this phase, so a signal/IRQ-window exit
+                // is just a re-entry (the planner bounds progress via the work count).
                 StepStop::SingleStepTrap => return Ok(LiveStop::Count(self.pmu_work()?)),
-                StepStop::Interrupted => continue, // overflow is disarmed; re-step.
-                StepStop::Reenter => continue,
-                StepStop::GuestExit => {
-                    let (exit, pending) = decode_exit(self.run_page())?.ok_or(
-                        BackendError::Internal("run_until: control exit misclassified as guest"),
-                    )?;
-                    let work = self.pmu_work()?; // work at the exit (P1(a))
-                    self.pending = pending;
-                    return Ok(LiveStop::Guest { exit, work });
-                }
+                StepStop::Interrupted | StepStop::Reenter => continue,
+                StepStop::GuestExit => return self.take_guest_exit_stop(),
             }
         }
     }
@@ -972,7 +993,7 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        self.ensure_first_run();
+        self.ensure_first_run()?;
         self.enter_guest()
     }
 
@@ -989,7 +1010,7 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        self.ensure_first_run();
+        self.ensure_first_run()?;
         // Read the current work first (the planner's only `work()` call) and prove
         // the PMU is present + readable before entering the guest.
         let start = self.pmu_work()?;
@@ -1017,14 +1038,10 @@ impl Backend for KvmBackend {
         step_cleanup?;
         pmu_cleanup?;
         let exit = outcome?;
-        // P1(a): a guest exit absorbed at exactly the deadline left a pending
-        // completion, but the timer preempts instead, so clear it (`Deadline` needs
-        // no completion). A normal `Deadline` already has `pending == None`, so this
-        // is a no-op there; a genuinely-early guest exit (returned, not `Deadline`)
-        // keeps its pending so the VMM services it.
-        if matches!(exit, Exit::Deadline { .. }) {
-            self.pending = Pending::None;
-        }
+        // P1(a): a real guest exit is now always DELIVERED (never absorbed into
+        // `Deadline`), so its pending-completion is left armed for the VMM to service
+        // — no clearing here. A `Deadline` result carries no guest exit, so its
+        // `pending` is already `None`.
         self.counts.bump(exit.reason());
         Ok(exit)
     }
