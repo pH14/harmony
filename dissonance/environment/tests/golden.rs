@@ -114,10 +114,10 @@ const EXPECTED: &[&str] = &[
     "0100000000",                 // Payload{0}    → Supply(0)
     "010400000004000000",         // Scheduler{5}  → Supply(idx=4)
     "010400000000000000",         // Scheduler{1}  → Supply(idx=0)
-    "020101000200",               // NetFlow       → Fault(NetLoss{num:1,den:2})
+    "020d01000200",               // NetFlow       → Fault(NetLoss{num:1,den:2}) (tag 13)
     "00",                         // NetFlow       → Nominal
     "00",                         // NetFlow       → Nominal
-    "02006400000000000000",       // NetFlow       → Fault(NetLatency(100))
+    "020c6400000000000000",       // NetFlow       → Fault(NetLatency(100)) (tag 12)
     "020708000000",               // BlockIo Read  → Fault(BlockTorn(8))
     "00",                         // BlockIo Write → Nominal
     "00",                         // BlockIo Flush → Nominal
@@ -236,10 +236,10 @@ fn golden_action_wire_format() {
     );
 
     let guest = Action::Guest(Answer::Fault(Fault::NetReset));
-    // 01 (guest) + 02 (Answer::Fault) + 03 (Fault::NetReset).
+    // 01 (guest) + 02 (Answer::Fault) + 0f (Fault::NetReset, tag 15).
     assert_eq!(
         to_hex(&guest.encode()),
-        "010203",
+        "01020f",
         "guest plane tag 01 + payload"
     );
 }

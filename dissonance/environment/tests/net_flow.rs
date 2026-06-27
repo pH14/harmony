@@ -107,17 +107,18 @@ fn stopmask_arming_network_class_selects_netflow_only() {
 #[test]
 fn net_fault_wire_bytes_are_pinned() {
     // Per-variant golden wire bytes for the flow policies — the stable
-    // discriminants a recorded reproducer's replay depends on. Tag 4 is reserved
-    // (the retired per-frame `NetCorrupt`).
+    // discriminants a recorded reproducer's replay depends on. The per-flow net
+    // tags are FRESH (12..=15), disjoint from the retired per-frame net tags 0..=4
+    // (now undefined), so a stale net byte rejects on every decode path.
     let cases: &[(Fault, &str)] = &[
-        // ANS_FAULT(02) + F_NET_LATENCY(00) + VTime u64 (100 = 0x64, LE).
-        (Fault::NetLatency(VTime(100)), "02006400000000000000"),
-        // ANS_FAULT(02) + F_NET_LOSS(01) + num u16 (1) + den u16 (3).
-        (Fault::NetLoss { num: 1, den: 3 }, "020101000300"),
-        // ANS_FAULT(02) + F_NET_THROTTLE(02) + bps u32 (1_000_000 = 0x0F4240, LE).
-        (Fault::NetThrottle { bps: 1_000_000 }, "020240420f00"),
-        // ANS_FAULT(02) + F_NET_RESET(03).
-        (Fault::NetReset, "0203"),
+        // ANS_FAULT(02) + F_NET_LATENCY(0c=12) + VTime u64 (100 = 0x64, LE).
+        (Fault::NetLatency(VTime(100)), "020c6400000000000000"),
+        // ANS_FAULT(02) + F_NET_LOSS(0d=13) + num u16 (1) + den u16 (3).
+        (Fault::NetLoss { num: 1, den: 3 }, "020d01000300"),
+        // ANS_FAULT(02) + F_NET_THROTTLE(0e=14) + bps u32 (1_000_000 = 0x0F4240, LE).
+        (Fault::NetThrottle { bps: 1_000_000 }, "020e40420f00"),
+        // ANS_FAULT(02) + F_NET_RESET(0f=15).
+        (Fault::NetReset, "020f"),
     ];
     for (f, expected) in cases {
         let enc = Answer::Fault(*f).encode();
@@ -167,6 +168,57 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
         EnvSpec::decode(&bytes),
         Err(environment::EnvError::BadVersion(2)),
         "a v2 blob must reject, never reinterpret an old net fault"
+    );
+}
+
+#[test]
+fn retired_net_tags_reject_on_every_ungated_decode_path() {
+    // Root-cause fix (review r2): the reshaped per-flow net faults got FRESH byte
+    // tags (12..=15); the retired per-frame net tags 0..=4 (`NetDrop`/`NetDelay`/
+    // `NetReorder`/`NetDup`/`NetCorrupt`) are UNDEFINED. So a stale byte carrying an
+    // old net tag hard-fails at `read_fault` on EVERY decode path — no per-path
+    // version guard needed. The dangerous case was old `NetDup` (tag 3,
+    // payload-free): under the round-1 numbering it was byte-identical to a reused
+    // tag-3 variant and silently reinterpreted; now tag 3 is undefined.
+    //
+    // These paths are NOT version-gated (or are reached with a current version), so
+    // they prove the *tag* check — not the version bump — closes the hazard.
+    for old_tag in 0u8..=4 {
+        // (1) Answer::decode — also the path control-proto's `Run { resolve }` uses
+        // (vmm-core decodes the opaque resolve bytes through `Answer::decode`).
+        // ANS_FAULT = 2, then the retired fault tag.
+        assert_eq!(
+            Answer::decode(&[2, old_tag]),
+            Err(environment::EnvError::Malformed),
+            "Answer::decode (and thus Run::resolve) must reject retired net tag {old_tag}"
+        );
+
+        // (2) Action::decode — the `EnvSpec` override value path (ACT_GUEST = 1,
+        // then the Answer above).
+        assert_eq!(
+            Action::decode(&[1, 2, old_tag]),
+            Err(environment::EnvError::Malformed),
+            "Action::decode must reject retired net tag {old_tag}"
+        );
+    }
+
+    // (3) Standalone FaultPolicy net-eligible list, at the CURRENT version — so it
+    // is the undefined-tag check, not the version gate, that rejects. Encode a
+    // valid policy whose net eligible set is [NetReset] (tag 15 = 0x0f, the sole
+    // 0x0f in the blob), then rewrite that tag to the retired NetDup tag (3).
+    let mut p = FaultPolicy::none();
+    p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
+        .unwrap();
+    let mut bytes = p.to_bytes();
+    let pos = bytes
+        .iter()
+        .position(|&b| b == 0x0f)
+        .expect("the NetReset tag (0x0f) is present");
+    bytes[pos] = 3; // retired NetDup tag
+    assert_eq!(
+        FaultPolicy::from_bytes(&bytes),
+        Err(environment::EnvError::Malformed),
+        "a current-version FaultPolicy carrying a retired net tag is rejected by the tag check"
     );
 }
 

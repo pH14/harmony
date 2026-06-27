@@ -51,13 +51,20 @@ exception** — every guest-plane fault is now host-decided and guest-enforced.
 | Faults | `NetDrop`, `NetDelay(VTime)`, `NetReorder`, `NetDup`, `NetCorrupt(CorruptSpec)` | `NetLatency(VTime)`, `NetLoss { num, den }`, `NetThrottle { bps }`, `NetReset` |
 | Removed | — | `CorruptSpec` (was only `NetCorrupt`'s payload) |
 
-`Fault` byte tags: the four flow policies take tags `0..=3` (`NetLatency`=0,
-`NetLoss`=1, `NetThrottle`=2, `NetReset`=3); **tag 4 is reserved** (the retired
-per-frame `NetCorrupt`); the block/process tags `5..=11` are **unchanged**, so a
-recorded block/process fault keeps its exact bytes. `StandingFault` is structurally
-unchanged — a partition/throttle is still a correlated, V-time-windowed link policy
-in `EnvSpec::Recorded.standing`, but it is now **enforced guest-side** (e.g. an
-nftables rule) rather than consulted by a host switch.
+`Fault` byte tags — **fresh, non-overlapping (the round-2 root-cause fix).** The
+four flow policies take **fresh tags `12..=15`** (`NetLatency`=12, `NetLoss`=13,
+`NetThrottle`=14, `NetReset`=15); the retired per-frame net tags `0..=4`
+(`NetDrop`/`NetDelay`/`NetReorder`/`NetDup`/`NetCorrupt`) are left **undefined**.
+This is what closes the silent-reinterpretation hazard at the *root* rather than
+per-decode-path: because no new variant reuses an old tag, a stale byte carrying an
+old net tag hard-fails in `read_fault` (→ `Malformed`) on **every** decode path at
+once — `Answer::decode`, `FaultPolicy::from_bytes`, `Action::decode`/`EnvSpec::decode`,
+and the control-proto `Run { resolve }` path (which funnels through `Answer::decode`).
+The block/process tags `5..=11` are **unchanged** (their vocabulary did not change),
+so a recorded block/process fault keeps its exact bytes. `StandingFault` is
+structurally unchanged — a partition/throttle is still a correlated, V-time-windowed
+link policy in `EnvSpec::Recorded.standing`, but it is now **enforced guest-side**
+(e.g. an nftables rule) rather than consulted by a host switch.
 
 ### The `net_decide` request/response shape (contract only)
 
@@ -82,19 +89,33 @@ the future utility is held to it. The crate enforces the data side of this: a
 sampling PRNG is the seeded xorshift64\* fault stream. Empirical proof the premise
 holds: task 49 runs a full k8s network stack intra-guest, deterministic-twice.
 
-### Versioning
+### Incompatibility handling — non-overlapping tags first, version bumps as defense
 
-`CATALOG_VERSION` 2 → **3** (the network vocabulary reshaped). `EnvSpec::BLOB_VERSION`
-2 → **3** as well — a *deliberate strengthening beyond the spec's literal "bump
-`CATALOG_VERSION`"*: the container layout is unchanged, but the net `Fault` byte
-vocabulary changed incompatibly, and one reuse (old `NetDup` tag 3 = new `NetReset`
-tag 3, both payload-free) would otherwise let a stale task-45 `v2` blob *silently
-reinterpret* an old net fault as a new flow policy. Bumping `BLOB_VERSION` makes any
-`v2` blob reject with `BadVersion` instead (tested in `tests/net_flow.rs`). The
-`DEV2` container magic is kept (the layout is the same). `control-proto`'s
-`class_bit::NET_SEND = 4` const is **not** renamed: the discriminant (and thus the
-`StopMask` bit) is preserved, so the wire is unaffected — only its doc comment was
-corrected.
+The reshape is byte-incompatible with the task-45 net vocabulary. It is handled at
+two levels, in order of importance:
+
+1. **Non-overlapping fault tags (the root-cause fix).** The new net faults use
+   fresh tags `12..=15`; the old net tags `0..=4` are undefined (see the tag table
+   above). A stale old-net byte therefore rejects with `Malformed` on **every**
+   decode path automatically — there is no decode path to forget to version-gate.
+   This is the round-2 review outcome: version-gating each path individually
+   (`EnvSpec`, then `FaultPolicy`, then `Answer::decode`/`Run::resolve`…) was
+   whack-a-mole; disjoint tags close them all at the `read_fault` chokepoint.
+   Tests in `tests/net_flow.rs` exercise the un-gated paths specifically
+   (`Answer::decode`, `Action::decode`, and a *current-version* `FaultPolicy`
+   net-eligible list, so the *tag* check — not a version gate — is what rejects).
+
+2. **Version bumps (defense in depth + a clean rejection message).**
+   `CATALOG_VERSION` 2 → **3**; `EnvSpec::BLOB_VERSION` 2 → **3**; the standalone
+   `FaultPolicy` format version 1 → **2**. A whole stale blob rejects loudly with
+   `BadVersion` at its container boundary (a clearer signal than a mid-stream
+   `Malformed`), and the version gate also covers the block/process sub-vocabulary
+   (whose tags did *not* change, so the tag check alone would accept them). The
+   `DEV2`/`FPL1` container magics are kept (the layouts are unchanged).
+
+`control-proto`'s `class_bit::NET_SEND = 4` const is **not** renamed: the
+discriminant (and thus the `StopMask` bit) is preserved, so the wire is unaffected
+— only its doc comment was corrected.
 
 ### Gates added for task 50
 
@@ -102,9 +123,11 @@ corrected.
 round-trip (arming the network class selects it and nothing else); per-variant
 golden wire bytes for the flow policies; a property test that a `NetFlow` decision
 sequence replays bit-identically and the reshaped catalog round-trips through
-`EnvSpec::encode`/`decode` (≥256 cases); and the stale-`v2`-blob rejection. The
-golden answer sequence (`tests/golden.rs`) and `tests/public-api.txt` were
-regenerated for the reshape.
+`EnvSpec::encode`/`decode` (≥256 cases); the stale-`v2`-blob rejection; and
+`retired_net_tags_reject_on_every_ungated_decode_path` (the root-cause guarantee).
+`tests/policy.rs` adds `from_bytes_rejects_stale_v1_net_policy`. The golden answer
+sequence (`tests/golden.rs`) and `tests/public-api.txt` were regenerated for the
+reshape.
 
 ## What was built
 
