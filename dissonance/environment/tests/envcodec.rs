@@ -30,6 +30,11 @@ fn arb_bounded_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
 /// A standing fault whose V-time window bounds are strictly below [`BOUND`], so
 /// shifting by `+ BOUND` cannot overflow.
 fn arb_bounded_standing() -> impl Strategy<Value = StandingFault> {
+    arb_standing_upto(BOUND)
+}
+
+/// A standing fault whose V-time window bounds are in `0..max`.
+fn arb_standing_upto(max: u64) -> impl Strategy<Value = StandingFault> {
     (
         prop_oneof![
             Just(DecisionClass::NetSend),
@@ -37,8 +42,8 @@ fn arb_bounded_standing() -> impl Strategy<Value = StandingFault> {
             Just(DecisionClass::Process),
         ],
         prop::collection::vec(any::<u8>(), 0..8),
-        0u64..BOUND,
-        0u64..BOUND,
+        0u64..max,
+        0u64..max,
     )
         .prop_map(|(class, target, a, b)| StandingFault {
             class,
@@ -46,6 +51,10 @@ fn arb_bounded_standing() -> impl Strategy<Value = StandingFault> {
             window: (VTime(a), VTime(b)),
         })
 }
+
+/// The splice point for the prefix-filter property: base windows straddle it
+/// (`0..2*SPLIT`), tail windows stay in `0..SPLIT` so `+SPLIT` cannot overflow.
+const SPLIT: Moment = 1_000;
 
 fn recorded_with(overrides: BTreeMap<Moment, Action>, standing: Vec<StandingFault>) -> EnvSpec {
     EnvSpec::Recorded {
@@ -116,6 +125,35 @@ proptest! {
                 "tail standing fault dropped from genesis"
             );
         }
+    }
+
+    /// With base AND tail standing faults straddling the splice point, the
+    /// composed genesis applies EXACTLY `{base faults active in [0, SPLIT),
+    /// truncated to SPLIT} ∪ {tail faults shifted by +SPLIT}` — no base fault
+    /// from the discarded `[SPLIT, ∞)` region leaks in, and nothing is dropped.
+    #[test]
+    fn compose_standing_is_exactly_kept_prefix_union_shifted_tail(
+        base_st in prop::collection::vec(arb_standing_upto(2 * SPLIT), 0..6),
+        tail_st in prop::collection::vec(arb_standing_upto(SPLIT), 0..6),
+    ) {
+        let base = recorded_with(BTreeMap::new(), base_st.clone());
+        let tail = recorded_with(BTreeMap::new(), tail_st.clone());
+        let composed = EnvCodec::compose(&base, &tail, SPLIT).expect("tail < SPLIT, no overflow");
+
+        // The exact expected set, built independently of compose, in compose's
+        // order (filtered/truncated base, then shifted tail).
+        let expected: Vec<StandingFault> = base_st
+            .iter()
+            .filter(|s| s.window.0.0 < SPLIT) // drop windows starting in [SPLIT, ∞)
+            .map(|s| StandingFault {
+                class: s.class,
+                target: s.target.clone(),
+                window: (s.window.0, VTime(s.window.1.0.min(SPLIT))), // truncate to SPLIT
+            })
+            .chain(tail_st.iter().map(|s| shifted(s, SPLIT)))
+            .collect();
+
+        prop_assert_eq!(standing_of(&composed), expected.as_slice());
     }
 
     /// `mutate` is a pure function of `(env, salt)`: identical inputs give the
@@ -214,6 +252,46 @@ fn compose_keeps_base_seed_policy_and_merges_standing() {
         "tail standing carried, shifted by +at"
     );
     assert_eq!(st.len(), 2, "no standing fault dropped or duplicated");
+}
+
+#[test]
+fn compose_drops_base_standing_in_the_discarded_region() {
+    // Concrete cases at the splice boundary at=100:
+    //   [10, 50)  — wholly before  → kept whole
+    //   [80, 150) — straddles      → truncated to [80, 100)
+    //   [100,120) — starts AT at   → dropped (window prefix is half-open [0,100))
+    //   [200,300) — wholly after   → dropped (lives in the discarded region)
+    let at: Moment = 100;
+    let sf = |c, lo, hi| StandingFault {
+        class: c,
+        target: vec![1],
+        window: (VTime(lo), VTime(hi)),
+    };
+    let base = recorded_with(
+        BTreeMap::new(),
+        vec![
+            sf(DecisionClass::NetSend, 10, 50),
+            sf(DecisionClass::BlockIo, 80, 150),
+            sf(DecisionClass::Process, 100, 120),
+            sf(DecisionClass::NetSend, 200, 300),
+        ],
+    );
+    // One tail fault, shifted to [at+5, at+15).
+    let tail = recorded_with(BTreeMap::new(), vec![sf(DecisionClass::BlockIo, 5, 15)]);
+
+    let composed = EnvCodec::compose(&base, &tail, at).unwrap();
+    let got = standing_of(&composed);
+
+    let expected = vec![
+        sf(DecisionClass::NetSend, 10, 50),   // kept whole
+        sf(DecisionClass::BlockIo, 80, 100),  // truncated from [80,150)
+        sf(DecisionClass::BlockIo, 105, 115), // tail [5,15) shifted by +100
+    ];
+    assert_eq!(
+        got,
+        expected.as_slice(),
+        "no leak from [at, ∞), no drop, exact truncation"
+    );
 }
 
 #[test]

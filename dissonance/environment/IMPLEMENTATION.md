@@ -220,15 +220,26 @@ The old per-decision `DecisionId` key is **removed** — superseded by `Moment`
 `compose(base, tail, at) -> Result<EnvSpec, EnvError>` keeps `base`'s genesis
 prefix `[0, at)` and splices `tail` in at `at`, re-keying every tail `Moment` by
 `+at` — the collision-free, genesis-complete **one-axis integer arithmetic**
-task 93's update calls for (no cross-plane merge). It is **genesis-complete for
-both planes**: the tail's standing faults are carried too, their V-time windows
-shifted by the same `+at` (V-time being a derived view of the same retired-count
-axis), so a bug caused by a branch-local standing fault (e.g. a partition) still
-replays from the composed genesis — *the PR #16 P1 fix; tail standing faults were
-previously dropped.* Re-keying is **checked, not saturating**: an offset that
-would push a tail `Moment` or standing window bound past `u64::MAX` returns
-`EnvError::Overflow` rather than collapsing distinct overrides onto one key (*the
-P2 fix; `saturating_add` previously merged them silently*).
+task 93's update calls for (no cross-plane merge).
+
+**Standing faults are filtered to the kept timeline on both sides** — the window
+analogue of the `m < at` override-prefix filter:
+
+- *Tail* standing faults are carried in, their V-time windows shifted by the same
+  `+at` (V-time being a derived view of the same retired-count axis), so a bug
+  caused by a branch-local standing fault (e.g. a partition) still replays from
+  the composed genesis — *the round-1 P1 fix; tail standing faults were previously
+  dropped.*
+- *Base* standing faults are kept **only if their window starts before `at`**
+  (active in the kept prefix `[0, at)`); one starting at/after `at` is dropped, and
+  one straddling `at` is truncated back to `at` — *the round-2 P1 fix; previously
+  all base standing faults were cloned wholesale, leaking unrelated faults from the
+  discarded `[at, ∞)` region of the old branch into the composed genesis.*
+
+Re-keying is **checked, not saturating**: an offset that would push a tail
+`Moment` or standing window bound past `u64::MAX` returns `EnvError::Overflow`
+rather than collapsing distinct overrides onto one key (*the round-1 P2 fix;
+`saturating_add` previously merged them silently*).
 
 `mutate(env, salt)` is deterministic and **host-only**: it inserts, moves, or
 removes an `Action::Host` override (always legal — a `HostFault` needs no
@@ -310,18 +321,20 @@ contract not at all — the invariant holds.
   `CorruptMemory` = pure `word ^ mask` at `(Moment, gpa)`) is what makes that
   enforcement bit-identical on replay.
 - **`compose` is genesis-complete for both planes and fallible.** It keeps
-  `base`'s seed/policy, and merges `base`'s standing faults with `tail`'s standing
-  faults shifted by `+at`; it returns `Err(EnvError::Overflow)` if any re-keying
-  would exceed `u64::MAX`. The single offset `at` shifts *both* the `Moment`
-  override keys and the V-time standing windows — `compose` assumes the tail is
-  uniformly branch-local and V-time is a derived view of the same timeline. If the
-  integration ever needs distinct Moment- vs V-time offsets, that is a follow-on
-  (a second offset parameter), not a silent drop.
+  `base`'s seed/policy, keeps the prefix `[0, at)` of *both* the override map
+  (`m < at`) and the base standing faults (window start `< at`, truncated at the
+  splice), and appends `tail`'s overrides/standing shifted by `+at`; it returns
+  `Err(EnvError::Overflow)` if any re-keying would exceed `u64::MAX`. The single
+  offset `at` shifts *both* the `Moment` override keys and the V-time standing
+  windows — `compose` assumes the tail is uniformly branch-local and V-time is a
+  derived view of the same timeline. If the integration ever needs distinct
+  Moment- vs V-time offsets, that is a follow-on (a second offset parameter), not a
+  silent drop or leak.
 
 ## Gates
 
 `cargo build/nextest/clippy(-D warnings)/fmt -p environment --all-features` and
-`cargo deny check` all pass: 78 tests, including the task-45 acceptance properties
+`cargo deny check` all pass: 80 tests, including the task-45 acceptance properties
 — `mixed_host_guest_replays_bit_identically` (256-case record→replay round-trip
 with host overrides present) and `compose_rekeys_moments_and_carries_standing`
 (256-case one-axis re-keying that now also asserts tail standing faults survive

@@ -110,8 +110,16 @@ impl EnvCodec {
     ///
     /// The result is genesis-complete and collision-free: `base` contributes only
     /// `m < at`, `tail` only `m + at ≥ at`. The seed and policy come from `base`
-    /// (the run starts there). **`tail`'s standing faults are carried too** —
-    /// their V-time windows shift by `+ at` consistently with the overrides
+    /// (the run starts there).
+    ///
+    /// **Standing faults are filtered to match the kept timeline on both sides.**
+    /// A `base` standing fault is kept only if its window *starts* before `at`
+    /// (i.e. it was active in the kept genesis prefix `[0, at)`); one starting
+    /// at/after `at` is dropped (it lives in the discarded `[at, ∞)` region, and
+    /// leaking it would replay the composed run under an unrelated future fault
+    /// from the old branch). A kept window extending past `at` is **truncated** to
+    /// `at` — beyond the splice the timeline belongs to `tail`. The `tail`'s
+    /// standing faults are then carried in, their V-time windows shifted by `+ at`
     /// (V-time being a derived view of the same retired-count axis), so a bug
     /// caused by a branch-local standing fault (e.g. a partition) still replays
     /// from the composed genesis. `tail`'s seed and policy are not composed.
@@ -132,12 +140,28 @@ impl EnvCodec {
             overrides.insert(key, a.clone());
         }
 
-        // base's standing faults are kept whole; tail's are appended, their
-        // V-time windows shifted by +at (overflow rejects, never saturates).
+        // base's standing faults are filtered to the kept genesis prefix
+        // `[0, at)` — the window analogue of the `m < at` override filter above. A
+        // window starting at/after `at` lives entirely in the discarded `[at, ∞)`
+        // region and is dropped (else an unrelated future fault from the old
+        // branch would leak into the composed genesis). A window that starts
+        // before `at` but extends past it is truncated back to `at`: only the part
+        // active in `[0, at)` is kept; beyond the splice the timeline belongs to
+        // the tail, not the base.
         let mut standing: Vec<StandingFault> = match base {
-            EnvSpec::Recorded { standing, .. } => standing.clone(),
+            EnvSpec::Recorded { standing, .. } => standing
+                .iter()
+                .filter(|s| s.window.0.0 < at)
+                .map(|s| StandingFault {
+                    class: s.class,
+                    target: s.target.clone(),
+                    window: (s.window.0, VTime(s.window.1.0.min(at))),
+                })
+                .collect(),
             EnvSpec::Seeded { .. } => Vec::new(),
         };
+        // tail's standing faults are appended, their V-time windows shifted by
+        // +at into the post-splice region (overflow rejects, never saturates).
         if let EnvSpec::Recorded {
             standing: tail_standing,
             ..
