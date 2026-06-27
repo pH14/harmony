@@ -311,6 +311,22 @@ pub(crate) fn free_run_decision(work: u64, armed_at: u64) -> Option<u64> {
 /// at restore time would let those foreign branches accumulate into this VM's
 /// counter (diverging it from vmm-core's V-time counter — the branching/multiverse
 /// path). Deferring the reset to the next entry excludes them.
+///
+/// # The first-entry-reset invariant (task 47, stated globally — round-11)
+///
+/// **The pending reset is consumed (the counter zeroed and the flag disarmed) by an
+/// ACTUAL guest entry — a real `KVM_RUN` — and by nothing else.** No
+/// zero-step / `AlreadyAtDeadline` / `DeadlineInPast` / `restore` / any
+/// `Deadline`-without-entry path may consume or disarm it; it stays **pending** until
+/// a real entry occurs. The reason is the contamination above: if a no-entry path
+/// disarmed it, a coexisting VM running on the shared thread before this VM's *next*
+/// real entry would be folded into this VM's baseline (`B ≢ A`). This recurred across
+/// rounds because the rule lived only at call sites; it is now enforced structurally:
+/// the sole consumer ([`KvmBackend::ensure_first_run`]) is called **only** on a path
+/// that immediately performs a `KVM_RUN` (`run` → `enter_guest`; `run_until`'s `Drive`
+/// branch → `drive_run_until`), never before the `run_until` classify that may pick a
+/// no-entry branch. No-entry paths read the *deferred* baseline (work `0` while
+/// [`is_pending`](Self::is_pending) holds) without touching the flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FirstEntryReset {
     /// Whether the next guest entry must reset the counter to re-baseline.
@@ -328,8 +344,16 @@ impl FirstEntryReset {
         self.pending = true;
     }
 
-    /// Called at each guest entry: returns whether the counter must be reset **now**,
-    /// and disarms (so the reset fires exactly once per arming).
+    /// Non-consuming peek: is a first-entry reset still pending? Used by `run_until` to
+    /// read the *deferred* baseline (work `0`) on a no-entry path WITHOUT disarming the
+    /// reset — preserving the invariant that only a real `KVM_RUN` consumes it.
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending
+    }
+
+    /// Called at a REAL guest entry (a `KVM_RUN`): returns whether the counter must be
+    /// reset **now**, and disarms (so the reset fires exactly once per arming). Per the
+    /// invariant above, call this ONLY immediately before an actual entry.
     pub(crate) fn take_reset(&mut self) -> bool {
         std::mem::replace(&mut self.pending, false)
     }
@@ -940,17 +964,24 @@ mod tests {
     }
 
     /// P1(b): the reset fires at the very first entry, then only after a `rearm`
-    /// (restore) — never spontaneously.
+    /// (restore) — never spontaneously. P1 round-11: `is_pending` peeks the armed state
+    /// WITHOUT consuming it (the seam that lets `run_until`'s no-entry branches read the
+    /// deferred baseline while leaving the reset armed for the next real entry).
     #[test]
     fn first_entry_reset_fires_once_then_only_after_rearm() {
         let mut r = FirstEntryReset::new();
+        // `is_pending` is a non-consuming peek: it reports armed and leaves it armed.
+        assert!(r.is_pending(), "a fresh VM is armed");
+        assert!(r.is_pending(), "peeking does not consume — still armed");
         assert!(
             r.take_reset(),
             "the very first entry resets (per-VM baseline)"
         );
+        assert!(!r.is_pending(), "consumed by the entry — no longer pending");
         assert!(!r.take_reset(), "no reset on subsequent entries");
         assert!(!r.take_reset());
         r.rearm();
+        assert!(r.is_pending(), "restore re-arms — pending again");
         assert!(
             r.take_reset(),
             "restore re-arms: the next entry resets again"

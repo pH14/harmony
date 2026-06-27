@@ -351,6 +351,56 @@ fn run_until_at_current_deadline_takes_zero_steps() {
     eprintln!("[p1-r8] run_until(Vtime(0)) took zero steps (reached {z1}); next landed at {d1}");
 }
 
+/// P1 round-11 — the first-entry-reset INVARIANT: a zero-step `run_until` (the
+/// `AlreadyAtDeadline` branch, no `KVM_RUN`) must NOT consume the pending first-entry
+/// reset; it stays armed until a REAL entry. Otherwise a coexisting VM on the shared
+/// pinned thread between the zero-step and this VM's first real entry contaminates this
+/// VM's baseline (the same contamination `restore_re_arms_pmu_reset_excluding_foreign_branches`
+/// guards for restore — here for the zero-step path). This is the round-10 regression the
+/// invariant closes.
+#[test]
+#[ignore = "live KVM + perf; run on the box with --ignored"]
+fn zero_step_run_until_keeps_first_entry_reset_pending() {
+    // B1 fresh: a zero-step run_until(0) — AlreadyAtDeadline, no KVM_RUN. Per the
+    // invariant this must leave the first-entry reset PENDING (not consume it).
+    let (mut b1, _m1) = boot_with(SPIN_CODE);
+    match b1.run_until(Vtime(0)).expect("b1 zero-step run_until(0)") {
+        Exit::Deadline { reached } => assert_eq!(reached.0, 0, "zero-step lands at 0"),
+        other => panic!("expected Deadline at 0, got {other:?}"),
+    }
+
+    // A DIFFERENT VM runs on the SAME thread, retiring ~100k guest branches into the
+    // shared exclude_host PMU counter.
+    {
+        let (mut b2, _m2) = boot_with(SPIN_CODE);
+        match b2.run_until(Vtime(100_000)).expect("b2 run_until") {
+            Exit::Deadline { reached } => assert_eq!(reached.0, 100_000),
+            other => panic!("expected Deadline at 100000, got {other:?}"),
+        }
+    }
+
+    // B1's FIRST REAL entry now fires the still-pending reset, excluding B2's foreign
+    // branches, so run_until(50_000) lands at EXACTLY 50_000. With the round-10 bug (the
+    // zero-step consumed the reset), B1's counter would already read ~100_000 here and
+    // run_until(50_000) would fail closed as a past deadline.
+    match b1
+        .run_until(Vtime(50_000))
+        .expect("b1 first real entry after the zero-step + foreign VM")
+    {
+        Exit::Deadline { reached } => assert_eq!(
+            reached.0, 50_000,
+            "the zero-step left the first-entry reset pending, so B1's first real entry \
+             excludes the foreign VM's branches — got {}",
+            reached.0
+        ),
+        other => panic!("expected Deadline at 50000, got {other:?}"),
+    }
+    eprintln!(
+        "[p1-r11] zero-step run_until(0) kept the first-entry reset pending; B1's first real \
+         entry landed at exactly 50000 despite a foreign VM (no contamination)"
+    );
+}
+
 /// P1 round-8 — case `deadline < current`: a past deadline is invalid (the LAPIC timer
 /// deadline is always in the future; we cannot run backward) → fail closed, never an
 /// immediate/late deadline.

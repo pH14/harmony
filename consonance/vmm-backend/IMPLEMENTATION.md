@@ -1129,3 +1129,34 @@ re-arms `B`'s baseline. Documented in `vmm-core`'s notes; test
   `run_until(small)` lands exactly, not against a stale `B`); the broader
   `restore_re_arms_pmu_reset_excluding_foreign_branches` already pins the save+restore re-arm
   against a coexisting VM's foreign branches.
+
+### PR #15 round-11 (cross-model): the first-entry-reset invariant, stated globally + enforced (P1)
+
+- **The recurring bug.** The shared `exclude_host` PMU counter accrues every VM's guest
+  branches on the pinned thread, so each VM re-baselines (`FirstEntryReset`) at its first
+  entry. Across rounds, individual no-entry paths kept consuming that reset without a real
+  `KVM_RUN` — letting a coexisting VM contaminate the baseline. Round-10 left the last one:
+  `run_until` called `ensure_first_run()` (which `take_reset()`s + zeroes the PMU)
+  **unconditionally before `classify_run_until`**, so the `AlreadyAtDeadline` (zero-step)
+  and `DeadlineInPast` branches — which do NO `KVM_RUN` — consumed it anyway.
+- **The invariant (now stated on [`FirstEntryReset`] and enforced structurally).** *The
+  pending first-entry reset is consumed (counter zeroed, flag disarmed) by an ACTUAL guest
+  entry — a real `KVM_RUN` — and by nothing else.* No zero-step / `AlreadyAtDeadline` /
+  `DeadlineInPast` / `restore` / `Deadline`-without-entry path may consume or disarm it; it
+  stays **pending** until a real entry. `ensure_first_run` is documented as the SOLE
+  consumer and is now called only on entering paths: `run` → `enter_guest`, and
+  `run_until`'s `Drive` branch → `drive_run_until`. The no-entry branches read the
+  **deferred** baseline via a new non-consuming `FirstEntryReset::is_pending()` peek: when
+  pending, `run_until` takes `start = 0` (the next real entry will zero `B`) without
+  touching the flag — and still reads `pmu_work()` first to prove the PMU is present.
+- **Audit (every `reset_arm` consumer gated on a real entry).** `take_reset` is called
+  ONLY in `ensure_first_run`; `ensure_first_run` is called ONLY at `run`'s pre-`enter_guest`
+  point and `run_until`'s `Drive` branch (both immediately precede a `KVM_RUN`); `rearm` is
+  called on a reset-failure retry and on `restore` (deferring to the next entry). Nothing
+  consumes it off a no-entry path.
+- **Tests.** Portable: `first_entry_reset_fires_once_then_only_after_rearm` extended to
+  cover the non-consuming `is_pending` peek (kills both `is_pending` mutants). Box:
+  `zero_step_run_until_keeps_first_entry_reset_pending` — a zero-step `run_until(0)`, then a
+  foreign VM retires ~100k branches on the same thread, then B1's first REAL entry lands
+  `run_until(50_000)` at EXACTLY 50_000 (the still-pending reset excludes the foreign
+  branches; with the round-10 bug it would fail closed as a past deadline).

@@ -23,7 +23,7 @@ fi
 
 PAYLOADS="hello compute clocks interrupts features \
 insn-rdtsc insn-rng insn-cpuid insn-rdpmc insn-hlt insn-mwait \
-msr-allowed msr-denied irq-landing irq-landing-rng pit-pic-stub"
+msr-allowed msr-denied irq-landing pit-pic-stub"
 BIN=target/x86_64-unknown-none/release
 
 echo "== building payloads (x86_64-unknown-none, release)"

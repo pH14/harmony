@@ -720,24 +720,46 @@ impl<B: Backend> Vmm<B> {
                     .to_string(),
             ));
         }
-        let vt = self.vtime.as_mut().ok_or_else(|| {
-            VmmError::ContractViolation("restore_vtime called but V-time is not wired".to_string())
-        })?;
         // 1. Validate, committing nothing. Rebuild the clock (validates the cfg)
         //    and validate the entropy blob into a CLONE (its `restore_state`
         //    rejects a malformed/untrusted blob without touching the live stream).
-        let mut cfg = vt.cfg;
-        cfg.vns_base = snap.vns;
-        let clock = VClock::new(cfg)?;
-        let mut entropy = vt.entropy.clone();
-        entropy.restore_state(&snap.entropy).map_err(|e| {
-            VmmError::ContractViolation(format!("entropy snapshot rejected on restore: {e:?}"))
+        //    Scoped read-only borrow of `self.vtime`, dropped before any mutation.
+        let (clock, cfg, entropy) = {
+            let vt = self.vtime.as_ref().ok_or_else(|| {
+                VmmError::ContractViolation(
+                    "restore_vtime called but V-time is not wired".to_string(),
+                )
+            })?;
+            let mut cfg = vt.cfg;
+            cfg.vns_base = snap.vns;
+            let clock = VClock::new(cfg)?;
+            let mut entropy = vt.entropy.clone();
+            entropy.restore_state(&snap.entropy).map_err(|e| {
+                VmmError::ContractViolation(format!("entropy snapshot rejected on restore: {e:?}"))
+            })?;
+            (clock, cfg, entropy)
+        };
+        // 2. ATOMICITY (P2 round-11): do the FALLIBLE backend round-trip BEFORE any
+        //    V-time mutation. Round-10 placed this save/restore AFTER the work-counter
+        //    reset + clock/entropy commit, so a failure here left V-time HALF-restored
+        //    (work zeroed, clock/entropy/first_entry already replaced). Doing it first —
+        //    with `work.reset()` as the LAST fallible step and the field commit infallible
+        //    below it — makes the V-time state all-or-nothing: if ANY fallible step errors,
+        //    no V-time field has changed. The round-trip re-arms the backend's run_until
+        //    PMU baseline (counter `B`): `restore` re-arms the first-entry reset as a side
+        //    effect (consumed only by the next real entry — the round-11 invariant), and
+        //    `save`->`restore` is an identity on vCPU state, so the hash is unchanged. (B
+        //    is unreachable directly — the production backend is `Box<dyn Backend>` and the
+        //    FROZEN trait must not grow a re-arm method — so the round-trip is the seam.)
+        let vcpu = self.backend.save()?;
+        self.backend.restore(&vcpu)?;
+        // 3. Reset the hardware work counter (counter `A`) — THE LAST fallible step.
+        //    Below this line nothing can fail, so the field commit is atomic.
+        let vt = self.vtime.as_mut().ok_or_else(|| {
+            VmmError::ContractViolation("restore_vtime called but V-time is not wired".to_string())
         })?;
-        // 2. Reset the hardware counter — the last fallible step. A failure here
-        //    leaves clock/cfg/entropy at their old, consistent values (nothing
-        //    below this line can fail).
         vt.work.reset()?;
-        // 3. Commit the validated state (all infallible). The hardware counter
+        // 4. Commit the validated state (all infallible). The hardware counter
         //    restarts at 0 and the snapshot's effective V-time now lives in
         //    `cfg.vns_base`, so the last-intercept anchor for the hash resets to 0
         //    too (effective V-time = `vns_base` until the next intercept advances
@@ -754,22 +776,12 @@ impl<B: Backend> Vmm<B> {
         // synchronized point — an immediate `save_vtime` is exact. (`vt`'s borrow of
         // `self.vtime` has ended by this disjoint-field write.)
         self.vtime_synchronized = true;
-        // P1 round-10: a V-time restore zeroes vmm-core's work clock (counter `A`) above,
-        // so BOTH counters must re-baseline at the next entry, else a coexisting VM on the
-        // shared pinned thread contaminates one but not the other (B≡A breaks → V-time vs
-        // preemption deadlines drift). There is no third counter, so re-arming both closes
-        // it:
-        //  - Counter A (vmm-core `WorkSource`): re-arm the first-entry gate so the next
-        //    `step` calls `WorkSource::start_run` (exactly like a full `restore_vm_state`).
+        // Counter A (vmm-core `WorkSource`) re-baselines at the next entry: re-arm the
+        // first-entry gate so the next `step` calls `WorkSource::start_run` (exactly like
+        // a full `restore_vm_state`). Counter B was re-armed by the `restore` in step 2;
+        // both reset at the next REAL entry, so a coexisting VM on the shared pinned
+        // thread in between contaminates neither (B≡A holds).
         self.first_entry_done = false;
-        //  - Counter B (the backend's separate `run_until` PMU): re-armed only by a full
-        //    `Backend::restore`. The backend is type-erased (`Box<dyn Backend>`), so we
-        //    cannot reach a concrete re-arm method — and the FROZEN `Backend` trait must
-        //    not grow one. Re-use the existing trait: round-trip the vCPU through
-        //    `save`+`restore`, whose `restore` re-arms the PMU baseline as a side effect
-        //    while leaving the vCPU state byte-identical (so the hash is unchanged).
-        let vcpu = self.backend.save()?;
-        self.backend.restore(&vcpu)?;
         Ok(())
     }
 
@@ -2961,6 +2973,43 @@ mod tests {
             v.state_hash(),
             before,
             "a rejected snapshot must leave the V-time/entropy state untouched"
+        );
+    }
+
+    /// P2 round-11: `restore_vtime` is atomic even when the FALLIBLE backend step fails.
+    /// Round-10 placed the backend save/restore round-trip (the counter-B re-arm) AFTER
+    /// the work-counter reset + clock/entropy/first_entry commit, so a backend failure
+    /// left V-time HALF-restored. The round-trip now runs FIRST (before any V-time
+    /// mutation); a failing `Backend::save` must abort with NOTHING changed. The snapshot
+    /// is deliberately state-CHANGING (`vns` shifted), so a non-atomic restore would move
+    /// `vns_base` and change the hash — proving the unchanged hash is not vacuous.
+    #[test]
+    fn restore_vtime_atomic_on_backend_failure() {
+        let mut v = Vmm::new(
+            SaveFailBackend(configured_mock(vec![])),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        v.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(7)), 1).unwrap(),
+        );
+        // A VALID snapshot (so validation passes and the failure is at the backend step),
+        // but with a SHIFTED vns so a successful restore WOULD change the hash.
+        let snap0 = v.save_vtime().expect("clean save").expect("V-time wired");
+        let snap = VtimeSnapshot {
+            vns: snap0.vns + 4_096,
+            tsc_adjust: snap0.tsc_adjust,
+            entropy: snap0.entropy.clone(),
+        };
+        let before = v.state_hash();
+        assert!(
+            matches!(v.restore_vtime(&snap), Err(VmmError::Backend(_))),
+            "a failing Backend::save during the round-trip must make restore_vtime fail closed"
+        );
+        assert_eq!(
+            v.state_hash(),
+            before,
+            "backend failure must leave the V-time state untouched (atomic): the work counter, \
+             clock/vns_base, entropy, and tsc_adjust are all unchanged"
         );
     }
 

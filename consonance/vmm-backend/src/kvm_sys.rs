@@ -313,6 +313,12 @@ impl KvmBackend {
     /// V-time `PerfWorkCounter` does the same via `start_run`). No-op if perf is
     /// unavailable; touches only the unhashed PMU counter, so `run()`'s observable
     /// state stays byte-identical.
+    ///
+    /// INVARIANT (see [`FirstEntryReset`]): this is the SOLE consumer of the pending
+    /// first-entry reset, and it MUST be called only immediately before an actual
+    /// `KVM_RUN` — `run`'s `enter_guest` and `run_until`'s `Drive` branch. A no-entry
+    /// path (`AlreadyAtDeadline`/`DeadlineInPast`/`restore`) must NOT call it, or a
+    /// coexisting VM would contaminate this VM's baseline before its next real entry.
     /// Fail closed if a prior `run_until` decoded a guest exit whose post-exit PMU read
     /// failed (P2 round-9): that exit was consumed by KVM but never delivered, so
     /// re-entering would skip it. The poison latches until an exit is delivered cleanly.
@@ -1048,11 +1054,19 @@ impl Backend for KvmBackend {
             return Err(BackendError::PendingCompletion);
         }
         self.check_not_poisoned()?;
-        // First-entry baseline reset (always, before reading `start`).
-        self.ensure_first_run()?;
-        // Read the current work first (the planner's only `work()` call) and prove
-        // the PMU is present + readable before entering the guest.
-        let start = self.pmu_work()?;
+        // Read the current work — proves the PMU is present + readable — but DEFER the
+        // first-entry reset: per the `FirstEntryReset` invariant it is consumed only by
+        // a real `KVM_RUN`, NOT here (where the classify below may pick a no-entry
+        // branch). When the reset is still pending, the next real entry zeroes the
+        // counter, so the run STARTS at work 0 regardless of the current (possibly
+        // foreign-contaminated) reading; on a no-entry branch the reset stays pending so
+        // a later real entry still re-baselines.
+        let current = self.pmu_work()?;
+        let start = if self.reset_arm.is_pending() {
+            0
+        } else {
+            current
+        };
         // P1 round-8 — the complete run_until contract (deadline vs current work), a
         // pure decision in the gated portable layer; see `classify_run_until`.
         // Scope the adapter's `&mut self` borrow so cleanup can use `self` after.
@@ -1060,6 +1074,10 @@ impl Backend for KvmBackend {
             match classify_run_until(deadline.0, start) {
                 // deadline > current: drive the planner to EXACTLY the deadline.
                 RunUntilStart::Drive => {
+                    // A real entry follows → NOW consume the first-entry reset (the only
+                    // place run_until may, per the invariant). After the reset the
+                    // counter reads 0, matching `start` on the pending path.
+                    self.ensure_first_run()?;
                     let planner = InjectionPlanner::new(PlannerConfig {
                         skid_margin: SKID_MARGIN,
                     });
@@ -1074,10 +1092,11 @@ impl Backend for KvmBackend {
                 }
                 // deadline == current: already at the deadline → deliver it with ZERO
                 // guest steps toward it (never step a guest instruction past the
-                // deadline — round-8 P1). The first-entry reset was already applied
-                // above; a completion staged by the prior step stays in the run page
-                // and is committed by the NEXT entry's `KVM_RUN` (the caller commits
-                // owed completions on a normal entry before a save — see the contract).
+                // deadline — round-8 P1). NO `KVM_RUN` happens, so the first-entry reset
+                // is left PENDING (invariant): a later real entry re-baselines, and a
+                // coexisting VM in between cannot contaminate this VM's counter. Any
+                // completion staged by the prior step stays in the run page and is
+                // committed by the NEXT entry's `KVM_RUN`.
                 RunUntilStart::AlreadyAtDeadline => Ok(Exit::Deadline {
                     reached: Vtime(start),
                 }),

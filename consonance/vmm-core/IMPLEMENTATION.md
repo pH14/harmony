@@ -2801,3 +2801,26 @@ neither of which the PASS-only check verified.
   AND **DIFFERENT** serial (= different preemption branch counts) across seeds — the
   non-vacuous seed-DEPENDENT direction. The two gates together pin both directions of the
   contract.
+
+  Round-11 follow-up (box-validation found the gate-2 seed legs asserted on `serial`, but
+  `report()` values ride the report STREAM, not the serial banner — both payloads' serial
+  is just `START/OK/PASS`). Both gate-2 tests now assert on `vmm.report_stream()` (the armed
+  deadlines = the preemption branch counts): pure `irq-landing` ⇒ deadlines IDENTICAL across
+  seeds; `irq-landing-rng` ⇒ deadlines `[9834,13272,10724,3436]` vs `[7283,9671,7570,8053]`
+  across seeds (box-confirmed). Also: `irq-landing-rng` is box-only (unconditional RDRAND, no
+  QEMU golden), so it is NOT in the QEMU Part-A `run-tests.sh` list — it runs via the box
+  gate only.
+
+## Task 47 — round-11: restore_vtime atomicity on backend failure (P2)
+
+Round-10's counter-B realign added a backend `save()`+`restore()` round-trip at the END of
+`restore_vtime` — AFTER the work-counter reset and the clock/entropy/`first_entry_done`
+commit. A failure there left V-time HALF-restored (work zeroed + clock/entropy/gate replaced,
+but the backend leg failed), violating "all fallible steps before any live mutation". The
+round-trip now runs FIRST — after validation, before ANY V-time mutation — with `work.reset()`
+as the LAST fallible step and the field commit infallible below it. So the V-time state is
+all-or-nothing: if any fallible step errors, no V-time field changed. (`restore` still re-arms
+counter B as a side effect; per the round-11 first-entry-reset invariant it is consumed only
+by the next real entry. `save`→`restore` is a vCPU identity, so the hash is unchanged.) Test:
+`restore_vtime_atomic_on_backend_failure` — a `SaveFailBackend` + a state-CHANGING snapshot
+(shifted `vns`) ⇒ `restore_vtime` returns `Err(Backend)` with the `state_hash` UNCHANGED.
