@@ -264,12 +264,12 @@ fn golden_recorded_blob_with_host_overrides() {
         assert_eq!(
             hex,
             // "DEV2"(44455632) + version(0300) + variant(01) + seed(00×8) +
-            // length-prefixed policy(FPL1 baseline, len 0x2a=42) +
+            // length-prefixed policy(FPL1 magic + version 0200, baseline, len 0x2a=42) +
             // overrides count(02000000) +
             //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80) = [00 03 80] +
             //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
             // standing count(00000000).
-            "4445563203000100000000000000002a00000046504c31010000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000",
+            "4445563203000100000000000000002a00000046504c31020000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);
