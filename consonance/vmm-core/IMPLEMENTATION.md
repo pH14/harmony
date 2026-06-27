@@ -2700,3 +2700,179 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 >   `nextest` (245 non-ignored), and **public-api** (`tests/public-api.txt` matches
 >   `cargo +nightly public-api` exactly — the three new lines `Vmm::has_active_event_injection`,
 >   `Vmm::has_inflight_event_injection`, `Vmm::has_pending_guest_interrupt`).
+
+## Task 47 — preemption-timer VMM wiring (`run_until`)
+
+The run loop becomes V-time **active**: when the determinism-complete path is wired and a
+LAPIC timer is armed, `step()` runs to the timer's V-time deadline via
+`Backend::run_until` instead of an open-ended `run()`, so a guest that takes no natural
+VM-exit (a busy-spin) is still preempted at the seed-deterministic retired-branch count
+and the timer fires. The live PMU-overflow + KVM single-step machinery lives below the
+trait in `vmm-backend` (task 47 there); this crate only decides *when* to preempt and
+*what to do* with the resulting `Exit::Deadline`.
+
+- **`preemption_deadline()`** returns `Some(work)` — the next timer deadline (vns)
+  converted to a retired-branch work count via `VClock::work_for_vns` (which rounds
+  **up**, so the post-preemption anchor reaches the deadline) — **only** on the
+  `deterministic_tsc` backend with a wired LAPIC whose timer is armed. Otherwise `None`
+  → plain `run()`. This gating is what makes the path **strictly additive**:
+  M1/M2/P6/corpus/multiboot (no LAPIC) and stock KVM (live-work clock, natural-exit
+  timer — Phase B.1) never take it, so their `state_hash`/goldens are byte-for-byte
+  unchanged (confirmed: vmm-core 227/227, det-corpus + unison 92/92).
+- **`on_deadline(reached)`** advances the skid-free last-intercept anchor
+  (`last_intercept_work = reached`) — a deterministic V-time intercept, like an RDTSC
+  trap — and marks V-time synchronized, so the next `step`'s `service_pending_irqs` sees
+  `lapic_now_vns` at the timer deadline, fires the timer into the LAPIC IRR, and injects
+  it (via the existing re-arbitrated `set_pending_irq` seam) at the first injectable
+  entry. A `Deadline` arriving with **no V-time wired** is a backend contract violation
+  → fail closed (it only ever answers a `run_until`, which is never issued off the
+  determinism path) — this preserves `deadline_exit_fails_closed`.
+- The A≡B counter invariant (the backend's `run_until` counter equals this crate's
+  V-time `PerfWorkCounter`) is documented in `vmm-backend`'s notes and is the key
+  box-validation item. A mid-`run_until` determinism exit (e.g. RDTSC) is dispatched by
+  the normal `step()` path, reading the live counter — consistent because both counters
+  advance with the same guest execution during `run_until`.
+- Test: `run_until_deadline_advances_anchor_and_fires_the_timer` (portable, MockBackend)
+  proves the wiring end-to-end (arm timer → `run_until` → `Exit::Deadline` → anchor
+  advances → timer delivered). Gates 2/3 (live busy-spin + runc/Postgres,
+  deterministic-twice) are box-only — see `vmm-backend/IMPLEMENTATION.md`.
+
+## Task 47 — round-8: V-time-only restore is unsupported on the run_until path (P2)
+
+`restore_vtime` (the public V-time-only restore) resets the `WorkSource` (V-time counter
+`A`) but NOT the backend's separate `run_until` PMU baseline (`B`), which only a full
+`Backend::restore` re-arms. With a LAPIC timer armed (the run_until preemption path), a
+small post-restore deadline would read a stale `B` → immediate/late deadlines. So
+`restore_vtime` now **fails closed when `preemption_deadline().is_some()`** (a timer is
+armed), directing the caller to a full `Backend::restore` (`restore_snapshot` /
+`restore_vm_state`). The V-time-only path remains valid for non-LAPIC contexts (the
+branching/exploration paths without a timer). Test: `restore_vtime_refused_with_a_lapic_timer_armed`.
+
+## Task 47 — round-9: V-time-only restore re-aligns the backend run_until baseline (P1)
+
+Round-8 *rejected* `restore_vtime` only while a LAPIC timer was currently armed. But a
+deterministic LAPIC-wired VM can V-time-restore BEFORE arming its timer; the backend's
+separate `run_until` PMU baseline would stay stale, and a LATER timer-arm + `run_until`
+would preempt against it → past/immediate deadlines. `restore_vtime` now calls the new
+`Backend::rearm_vtime_baseline()` **unconditionally** (after resetting its own work clock),
+so the next entry re-baselines the backend counter regardless of when the timer is armed
+(the round-8 guard is removed). Test: `restore_vtime_realigns_the_backend_run_until_baseline`.
+
+Gate-2's seed leg (`live_preemption.rs`) was vacuous (it only asserted seed B reaches
+PASS). The fix asserts BOTH halves of what the seed controls — and box-validation caught
+an initial wrong assumption: (1) seed B's `state_hash` **DIFFERS** from seed A's, because
+the seed keys the seeded-entropy stream that is part of the hashed state (so the seed
+genuinely matters even though `irq-landing` consumes no RNG); (2) seed B's **serial is
+IDENTICAL** to seed A's, because `irq-landing` is O3:pure — its preemption instants and
+observable control flow are timer/branch-driven, independent of the RNG seed. Together
+this proves the seed matters AND the preemption path does not leak seed-dependence —
+neither of which the PASS-only check verified.
+
+## Task 47 — round-10: re-arm BOTH counters on V-time restore (P1); revert the frozen-API regression (P2); a seed-DEPENDENT preemption gate (P2)
+
+- **P1 — re-arm counter `A` too, not just `B`.** Round-9 re-baselined the backend's
+  `run_until` PMU (`B`) on `restore_vtime` but left vmm-core's own `WorkSource` (`A`) with
+  `first_entry_done == true`: a V-time restore zeroes `A`'s clock, but the first-entry gate
+  stayed latched, so a coexisting VM running on the shared pinned thread before this VM's
+  next entry would contaminate one counter but not the other (`B≡A` breaks → V-time and the
+  preemption deadlines drift apart). `restore_vtime` now sets `self.first_entry_done = false`
+  so the **next** `step` re-runs `WorkSource::start_run` — re-baselining `A` exactly as a full
+  `restore_vm_state` does. With `B` also re-armed (below), **both** counters reset at the next
+  entry, excluding any foreign branches in between. Portable test:
+  `restore_vtime_rearms_counter_a_first_entry_baseline` (`start_run` fires again at the entry
+  after `restore_vtime`); box test pins the `B` side.
+- **P2 (blocking) — revert the round-9 `Backend` trait method (frozen-API violation).** The
+  round-9 fix re-armed `B` via a NEW `Backend::rearm_vtime_baseline()` — a change to the
+  FROZEN `Backend` trait, which task 47 forbids. Reverted. `restore_vtime` now re-arms `B`
+  through the EXISTING trait: `let vcpu = self.backend.save()?; self.backend.restore(&vcpu)?;`
+  — `restore` re-arms the first-entry PMU reset as a side effect, and `save`→`restore` is an
+  identity on vCPU state, so the hash is unchanged. This is also the only mechanism that works
+  on the production path, where the backend is `Box<dyn Backend>` (type-erased) and a concrete
+  re-arm method is unreachable. `tests/public-api.txt` regenerated → no `Backend` trait drift.
+- **P2 — a genuinely seed-DEPENDENT preemption gate.** The round-9 seed leg used the pure
+  `irq-landing`, whose deadlines are fixed, so its preemption instants are seed-INVARIANT by
+  construction — asserting "preemption branch counts differ across seeds" on it is impossible.
+  The pure gate is kept but reframed as the **seed-purity** direction (serial identical across
+  seeds ⇒ `run_until` does not leak the seed into preemption; state_hash differs ⇒ the seed
+  plumbs through to entropy, explicitly labelled NOT a preemption signal). A new seed-consuming
+  payload, **`irq-landing-rng`**, derives each armed deadline from a seeded RDRAND draw, so the
+  preemption instant is a pure function of the seed; the new gate
+  `preemption_instant_is_a_pure_function_of_the_seed` asserts deterministic-twice at one seed
+  AND **DIFFERENT** serial (= different preemption branch counts) across seeds — the
+  non-vacuous seed-DEPENDENT direction. The two gates together pin both directions of the
+  contract.
+
+  Round-11 follow-up (box-validation found the gate-2 seed legs asserted on `serial`, but
+  `report()` values ride the report STREAM, not the serial banner — both payloads' serial
+  is just `START/OK/PASS`). Both gate-2 tests now assert on `vmm.report_stream()` (the armed
+  deadlines = the preemption branch counts): pure `irq-landing` ⇒ deadlines IDENTICAL across
+  seeds; `irq-landing-rng` ⇒ deadlines `[9834,13272,10724,3436]` vs `[7283,9671,7570,8053]`
+  across seeds (box-confirmed). Also: `irq-landing-rng` is box-only (unconditional RDRAND, no
+  QEMU golden), so it is NOT in the QEMU Part-A `run-tests.sh` list — it runs via the box
+  gate only.
+
+## Task 47 — round-11: restore_vtime atomicity on backend failure (P2)
+
+Round-10's counter-B realign added a backend `save()`+`restore()` round-trip at the END of
+`restore_vtime` — AFTER the work-counter reset and the clock/entropy/`first_entry_done`
+commit. A failure there left V-time HALF-restored (work zeroed + clock/entropy/gate replaced,
+but the backend leg failed), violating "all fallible steps before any live mutation". The
+round-trip now runs FIRST — after validation, before ANY V-time mutation — with `work.reset()`
+as the LAST fallible step and the field commit infallible below it. So the V-time state is
+all-or-nothing: if any fallible step errors, no V-time field changed. (`restore` still re-arms
+counter B as a side effect; per the round-11 first-entry-reset invariant it is consumed only
+by the next real entry. `save`→`restore` is a vCPU identity, so the hash is unchanged.) Test:
+`restore_vtime_atomic_on_backend_failure` — a `SaveFailBackend` + a state-CHANGING snapshot
+(shifted `vns`) ⇒ `restore_vtime` returns `Err(Backend)` with the `state_hash` UNCHANGED.
+
+## Task 47 — round-12: restore_vtime atomicity, refined — one hard-fallible mutation (P2)
+
+Round-11 still had TWO hard-fallible mutations: the backend `save`+`restore` round-trip
+(counter B's re-arm) AND `vt.work.reset()` (counter A). If `work.reset()` failed AFTER the
+round-trip, B was re-armed but A was not → the next entry re-baselined only B → B≡A broke on
+a failed restore. The refinement makes the round-trip the SOLE hard-fallible mutation, run
+before any commit (`restore`'s `reset_arm.rearm()` is its last step, so a failure leaves B
+unchanged → the VM is byte-for-byte untouched). A's counter reset is demoted to BEST-EFFORT
+*after* the (now infallible) commit: it gives the portable `ScriptedWork` its immediate zero
+(`ScriptedWork::reset` is infallible, and its `start_run` is a no-op, so the explicit reset is
+needed there — `snapshot_restore_continues_the_clock_and_rng_exactly` requires it), while the
+box `PerfWorkCounter` ALSO re-zeroes at the next entry via `start_run` (== the same
+`IOC_RESET`, because `first_entry_done = false`), so a failed `IOC_RESET` here is recovered
+(and re-surfaced) at that entry. Nothing reads live `work()` before the next entry
+(save_vtime/state_hash use `last_intercept_work` = 0), so the deferral is invisible. Net: B's
+re-arm, A's re-arm (`first_entry_done = false`), and the V-time commit are all-or-nothing —
+either the round-trip succeeds and all commit, or it fails and nothing changes. New test
+`restore_vtime_failure_leaves_counter_a_not_rearmed` (a backend failure ⇒ `start_run` does
+NOT re-fire at the next entry — A is not re-armed, so neither A nor B is, on failure).
+
+## Task 47 — round-13: the comprehensive zero-step invariant (P1) + a measured seed gate (P2)
+
+- **P1 — NO GUEST ENTRY ⇒ NO ENTRY-SIDE STATE CHANGE (vmm-core side).** Round-12's overdue
+  /at-deadline `run_until` returns `Exit::Deadline` with NO `KVM_RUN`, but `step` still
+  cleared `rng_completion_staged` / `completion_staged` and set `first_entry_done` as though
+  an entry had occurred — so a staged completion + a zero-step deadline dropped the
+  snapshot/restore guards while the old completion was still pending (it commits on the next
+  REAL entry → restored-state corruption). The invariant (the vmm-core half of the
+  backend-side round-7/11 `reset_arm` rule, now stated globally): **if `run_until` did NOT
+  enter the guest, do NOT touch ANY entry-side state.** `step` now computes `entered`
+  (`run()` and a `run_until` guest exit always entered; a `run_until` `Deadline` entered iff
+  `reached > work_before`, the work read just before the call — the no-entry zero-step returns
+  `reached == work_before` with no `KVM_RUN`) and gates EVERY entry-side mutation on it:
+  `first_entry_done`, `rng_completion_staged`, `completion_staged`. The first-entry counter
+  PREP (`start_run`) still runs before the entry (idempotent), but the GATE is consumed only
+  on a real entry. Test `no_entry_zero_step_deadline_keeps_entry_side_state` (both no-entry
+  boundaries — overdue and at-deadline — hold the guards across the zero-step, and a real
+  entry then commits the completion).
+- **P2 — the seed gate measures LANDED work, not programmed deadlines.** Gate-2 compared the
+  guest's reported ICRs (what the payload PROGRAMMED) — vacuous, since a backend that
+  ignored the deadline but still delivered IRQs would have seed-varying reports anyway (the
+  RDRAND inputs differ). New `Vmm::preemption_landings()` records the VMM/backend-MEASURED
+  landing work — the `reached` retired-branch count at which `run_until` actually delivered
+  each timer (`on_deadline`), capped at `PREEMPTION_TRACE_CAP` (diagnostic, not hashed, like
+  the report stream). Both gate-2 legs now assert on the measured landings: `irq-landing`
+  (pure) ⇒ landings IDENTICAL across seeds (seed-pure preemption work); `irq-landing-rng` ⇒
+  landings DIFFER across seeds (`run_until` preempted at different retired-branch counts —
+  seed-dependent preemption). The cap's `<`→`<=` off-by-one is a provably-equivalent
+  untestable mutant (excluded in `.cargo/mutants.toml`, entry (j)); the `<`→`==`/`>` siblings
+  are killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
+  `preemption_landings() == &[reached]` assertion.

@@ -58,6 +58,18 @@ was driven" tests.
   started from when nothing was armed. Unreachable with a contract-honoring backend
   (from below the target, +0/+1 steps cannot skip it); covered by a unit test with a
   deliberately broken backend.
+- **The precision invariant (task 47, PR #15 round-6): the overflow must stop STRICTLY
+  before the target.** `stop_at`'s Phase 1 treats an overflow stop at `stopped >= target`
+  (not just `> target`) as `SkidExceeded`. The overflow (perf/SIGIO) is not
+  instruction-precise at the boundary — non-counted instructions after the target's
+  counted event may already have retired while the counter reads `== target` — so an
+  overflow landing exactly on the target must NOT be injected raw; the exact single-step
+  phase (which lands on the precise instruction boundary) must always run. With
+  `skid_margin` STRICTLY greater than the worst-case skid this never fires in practice;
+  it is the loud backstop. Tests: `overflow_exactly_on_target_is_skid_exceeded` and
+  `overflow_one_before_target_single_steps_to_exact`. (Consumers signalling a non-skid
+  early stop — e.g. a guest exit — must report a count `< target` from
+  `run_until_overflow`, never the target itself; see `vmm-backend`'s `LiveCpu`.)
 - **Planner termination** relies on the backend contract (work monotonic, counted
   events keep occurring). A guest that never retires another counted event would step
   forever — same as real hardware, where that deadline work count is simply never

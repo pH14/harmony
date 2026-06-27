@@ -27,19 +27,26 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL,
-    KVM_MSR_EXIT_REASON_UNKNOWN, KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_interrupt,
-    kvm_mp_state, kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
+    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+    KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL, KVM_MSR_EXIT_REASON_UNKNOWN,
+    KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_guest_debug, kvm_interrupt, kvm_mp_state,
+    kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
     kvm_userspace_memory_region, kvm_xsave,
 };
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
+use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Event, Exit, ExitCounts};
 use crate::kvm::*;
+use crate::pmu_sys::PmuBranchCounter;
 use crate::region::MemRegions;
+use crate::run_until::{
+    ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
+    drive_run_until, free_run_decision,
+};
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
 
@@ -118,6 +125,35 @@ pub struct KvmBackend {
     /// single-source operation; a `VecDeque` for robustness.)
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    /// The backend-owned retired-conditional-branch counter driving
+    /// [`Backend::run_until`]'s overflow-early phase (task 47, the live
+    /// [`vtime::CpuBackend`]). Opened **lazily-at-build but non-fatally**: `None`
+    /// when `perf_event` is unavailable (no Intel PMU / `perf_event_paranoid` too
+    /// high), in which case `run_until` returns a clear [`BackendError::Capability`]
+    /// and the `run()`-only paths (M1/M2/corpus) are unaffected. Opened with the
+    /// **same** event/flags/baseline as vmm-core's V-time `PerfWorkCounter`, on the
+    /// same thread, so on a deterministic guest stream the two read identical work
+    /// counts (the box-validation invariant — see `pmu` module docs).
+    pmu: Option<PmuBranchCounter>,
+    /// Whether `KVM_GUESTDBG_SINGLESTEP` is currently armed on the vCPU, so the
+    /// single-step ioctl is issued once per `run_until` (not per step) and always
+    /// disarmed before the next `run`.
+    single_step_armed: bool,
+    /// The first-entry PMU-reset discipline (P1(b)): resets the shared-thread branch
+    /// counter at the first `run`/`run_until` of this VM's life — and again at the
+    /// first entry after a `restore` — so it shares vmm-core's work-counter baseline
+    /// and excludes a coexisting VM's branches. The discipline (and the determinism
+    /// invariant it encodes) lives in the portable, mutation/stateful-tested
+    /// [`FirstEntryReset`]; this field is just its state. (Touches only the unhashed
+    /// PMU counter — the `run()` path's observable state stays byte-identical.)
+    reset_arm: FirstEntryReset,
+    /// Fail-closed poison for a guest exit decoded during `run_until` (consumed by KVM,
+    /// guest-visible) whose post-exit PMU read then failed (P2 round-9). Armed before the
+    /// read, cleared on success; if it stays armed, the next `run`/`run_until` fails
+    /// closed so a no-completion exit (PIO OUT / MMIO write / HLT / shutdown) the VMM
+    /// never observed is not silently skipped. State only; the discipline is in the
+    /// portable, tested [`ExitPoison`].
+    exit_poison: ExitPoison,
 }
 
 impl KvmBackend {
@@ -187,6 +223,14 @@ impl KvmBackend {
             pending_irq: None,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            // Open the run_until branch counter now (before any guest entry, so it
+            // shares vmm-core's V-time counter baseline) but never let its absence
+            // fail VM creation — only `run_until` needs it. `.ok()`: a box without
+            // perf access still creates a backend that can `run()`/save/restore.
+            pmu: PmuBranchCounter::open().ok(),
+            single_step_armed: false,
+            reset_arm: FirstEntryReset::new(),
+            exit_poison: ExitPoison::default(),
         })
     }
 
@@ -260,6 +304,244 @@ impl KvmBackend {
                 None => continue, // run-loop control exit; re-enter
             }
         }
+    }
+
+    // -- run_until (§2 inversion seam: PMU overflow-early + single-step) --------
+
+    /// On the FIRST guest entry of this VM's life (via `run` or `run_until`), reset
+    /// the backend PMU counter so it shares vmm-core's first-entry baseline (the
+    /// V-time `PerfWorkCounter` does the same via `start_run`). No-op if perf is
+    /// unavailable; touches only the unhashed PMU counter, so `run()`'s observable
+    /// state stays byte-identical.
+    ///
+    /// INVARIANT (see [`FirstEntryReset`]): this is the SOLE consumer of the pending
+    /// first-entry reset, and it MUST be called only immediately before an actual
+    /// `KVM_RUN` — `run`'s `enter_guest` and `run_until`'s `Drive` branch. A no-entry
+    /// path (`AtOrPastDeadline`/`restore`) must NOT call it, or a coexisting VM would
+    /// contaminate this VM's baseline before its next real entry.
+    /// Fail closed if a prior `run_until` decoded a guest exit whose post-exit PMU read
+    /// failed (P2 round-9): that exit was consumed by KVM but never delivered, so
+    /// re-entering would skip it. The poison latches until an exit is delivered cleanly.
+    fn check_not_poisoned(&self) -> Result<()> {
+        if self.exit_poison.is_poisoned() {
+            return Err(BackendError::Internal(
+                "backend poisoned: a prior guest exit was decoded but its PMU read failed — its \
+                 state is unreliable and re-entering would skip a consumed exit (fail closed)",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_first_run(&mut self) -> Result<()> {
+        // `take_reset()` always runs (and disarms); the reset only fires when armed
+        // AND a counter exists. (No-op when perf is unavailable.)
+        if self.reset_arm.take_reset()
+            && let Some(pmu) = self.pmu.as_mut()
+            && let Err(e) = pmu.reset()
+        {
+            // P2(b): a failed RESET would leave a stale counter (foreign branches
+            // from a coexisting VM) → past/late deadlines. Re-arm so a later entry
+            // retries the reset, and fail closed now rather than continuing stale.
+            self.reset_arm.rearm();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The userspace-irqchip injection handshake run before **every** `KVM_RUN` in
+    /// `run_until` (free-run AND single-step): deliver a pending, injectable maskable
+    /// vector now (recording acceptance), else arm/clear the interrupt window. Shared
+    /// by both phases so a pending injectable IRQ (queued by `service_pending_irqs`
+    /// before `run_until`) is delivered at the next entry in BOTH — the
+    /// `set_pending_irq` next-entry contract (P2(a)) — and never injected stale.
+    fn inject_pending(&mut self, fd: std::os::fd::RawFd) -> Result<()> {
+        if let IrqEntry::Queue(vector) = plan_irq_entry(self.run_page(), self.pending_irq) {
+            // SAFETY (raw ioctl seam): queue `vector` on the owned vCPU; `enter`'s
+            // `ready_for_interrupt_injection` was just checked by `plan_irq_entry`.
+            unsafe { raw_interrupt(fd, u32::from(vector))? };
+            self.pending_irq = None;
+            self.accepted_irq.push_back(vector);
+        }
+        Ok(())
+    }
+
+    /// The backend PMU work count (run_until's V-time axis). Errors if the counter
+    /// is unavailable (perf open failed at build) or unreadable.
+    fn pmu_work(&self) -> Result<u64> {
+        self.pmu
+            .as_ref()
+            .ok_or(BackendError::Capability {
+                cap: "perf_event PMU branch counter (run_until)",
+            })?
+            .work()
+    }
+
+    /// Arm the PMU overflow at absolute work `armed_at` (planner phase 1).
+    fn pmu_arm(&self, armed_at: u64) -> Result<()> {
+        self.pmu
+            .as_ref()
+            .ok_or(BackendError::Capability {
+                cap: "perf_event PMU branch counter (run_until)",
+            })?
+            .arm_overflow(armed_at)
+    }
+
+    /// Disarm the PMU overflow + drain its ring buffer. Fallible so a disarm failure
+    /// is propagated (P2) rather than silently leaving the overflow armed for the
+    /// next `run()`. `Ok` when there is no counter (nothing to disarm).
+    fn pmu_disarm(&self) -> Result<()> {
+        match self.pmu.as_ref() {
+            Some(pmu) => pmu.disarm(),
+            None => Ok(()),
+        }
+    }
+
+    /// Planner phase 1: arm the overflow at `armed_at`, free-run the guest until the
+    /// overflow signal kicks `KVM_RUN` out (an `EINTR`) at-or-past `armed_at`, or a
+    /// genuine guest exit happens first. A pending maskable IRQ set before
+    /// `run_until` rides this entry via the normal injection handshake. The overflow
+    /// is disarmed by the caller.
+    fn run_armed(&mut self, armed_at: u64) -> Result<LiveStop> {
+        self.pmu_arm(armed_at)?;
+        let fd = self.vcpu.as_raw_fd();
+        loop {
+            // Deliver any pending injectable vector (or arm the window). P2(a): the
+            // same handshake the single-step phase uses, so a pending IRQ is never
+            // delayed past the deadline.
+            self.inject_pending(fd)?;
+            // SAFETY (raw ioctl seam): `KVM_RUN` on the owned vCPU.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    // A signal broke us out (the overflow kick, or a spurious one).
+                    if let Some(stop) = self.free_run_stop(armed_at)? {
+                        return Ok(stop);
+                    }
+                    continue;
+                }
+                return Err(BackendError::Io(err));
+            }
+            match classify_step_exit(self.run_page()) {
+                // P1(b): EVERY non-guest-exit stop — the signal-as-KVM_EXIT_INTR path
+                // AND the IRQ_WINDOW_OPEN re-entry — reads the PMU and stops if the
+                // overflow already crossed `armed_at`, rather than blindly re-entering
+                // (which would overshoot the exact preemption point / inject a stale
+                // IRQ past the deadline).
+                StepStop::Interrupted | StepStop::Reenter => {
+                    if let Some(stop) = self.free_run_stop(armed_at)? {
+                        return Ok(stop);
+                    }
+                    continue;
+                }
+                // Single-step is not armed during the free-run; a debug exit here is
+                // a contract violation, never silently treated as progress.
+                StepStop::SingleStepTrap => {
+                    return Err(BackendError::Internal(
+                        "run_until: unexpected single-step debug exit during free-run",
+                    ));
+                }
+                StepStop::GuestExit => return self.take_guest_exit_stop(),
+            }
+        }
+    }
+
+    /// Shared free-run check (P1(b)): read the PMU and decide stop-vs-reenter via the
+    /// portable [`free_run_decision`]. `Some` ⇒ the overflow reached `armed_at`.
+    fn free_run_stop(&self, armed_at: u64) -> Result<Option<LiveStop>> {
+        Ok(free_run_decision(self.pmu_work()?, armed_at).map(LiveStop::Count))
+    }
+
+    /// Decode the genuine guest exit, record its pending-completion, and capture the
+    /// work AT the exit (no guest code runs between the exit and this read), so
+    /// `drive_run_until` can tell deliver (work ≤ deadline) from overshoot
+    /// (work > deadline) — P1(a). Shared by both phases; a real exit is NEVER dropped.
+    fn take_guest_exit_stop(&mut self) -> Result<LiveStop> {
+        let (exit, pending) = decode_exit(self.run_page())?.ok_or(BackendError::Internal(
+            "run_until: control exit misclassified as guest",
+        ))?;
+        // Record state BEFORE the fallible `pmu_work()` so a PMU-read failure leaves the
+        // backend FAIL-CLOSED — the exit was already consumed by KVM (guest-visible), and
+        // a retry must not re-enter past it. Two mechanisms, both armed first:
+        //  - P2(a) round-5: a read-style exit (IN/RDMSR/…) sets the pending completion, so
+        //    a retry hits the `PendingCompletion` guard.
+        //  - P2 round-9: ALL exits (incl. no-completion — PIO OUT, MMIO write, HLT,
+        //    shutdown, which leave `pending == None`) arm the exit poison, so a retry
+        //    fails closed there.
+        // P2 round-12: the poison stays armed THROUGH every fallible step that still stands
+        // between here and the exit being RETURNED — the `pmu_work()` below, but ALSO
+        // `drive_run_until`'s at/past-deadline rejection and `run_until`'s cleanup. It is
+        // cleared (`delivered()`) ONLY when `run_until` is about to hand the exit to the
+        // caller, so any error path in between stays fail-closed (a retry won't re-enter
+        // past a consumed-but-undelivered exit).
+        self.pending = pending;
+        self.exit_poison.arm();
+        let work = self.pmu_work()?;
+        Ok(LiveStop::Guest { exit, work })
+    }
+
+    /// Planner phase 2: single-step **one** instruction (`KVM_GUESTDBG_SINGLESTEP`)
+    /// to land at the exact deadline despite skid. Returns the new work count, or a
+    /// genuine guest exit taken by the stepped instruction. P2(a): it runs the SAME
+    /// injection handshake as the free-run phase ([`Self::inject_pending`]), so a
+    /// pending injectable vector (queued before `run_until`) is delivered at the next
+    /// entry rather than delayed past the deadline + reordered.
+    fn single_step_once(&mut self) -> Result<LiveStop> {
+        self.enable_single_step()?;
+        let fd = self.vcpu.as_raw_fd();
+        loop {
+            // Preserve + deliver any pending injectable IRQ (P2(a)); clears the window
+            // when none is pending, so an IRQ-window exit cannot loop.
+            self.inject_pending(fd)?;
+            // SAFETY (raw ioctl seam): single-stepped `KVM_RUN` on the owned vCPU.
+            let rc = unsafe { raw_kvm_run(fd) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue; // spurious signal during a step; re-step.
+                }
+                return Err(BackendError::Io(err));
+            }
+            match classify_step_exit(self.run_page()) {
+                // The single-step trap is the stop signal (one instruction retired);
+                // the overflow is disarmed in this phase, so a signal/IRQ-window exit
+                // is just a re-entry (the planner bounds progress via the work count).
+                StepStop::SingleStepTrap => return Ok(LiveStop::Count(self.pmu_work()?)),
+                StepStop::Interrupted | StepStop::Reenter => continue,
+                StepStop::GuestExit => return self.take_guest_exit_stop(),
+            }
+        }
+    }
+
+    /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` (once per `run_until`).
+    /// Also disarms the PMU overflow + drains its ring: phase 1's overflow already
+    /// fired, so for the (≤ skid_margin) exact-landing steps the counter must only
+    /// count (no second overflow could fire mid-skid-margin, and the phase-1 record
+    /// is consumed so a long run never fills the ring).
+    fn enable_single_step(&mut self) -> Result<()> {
+        if self.single_step_armed {
+            return Ok(());
+        }
+        self.pmu_disarm()?;
+        let dbg = kvm_guest_debug {
+            control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
+            ..Default::default()
+        };
+        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        self.single_step_armed = true;
+        Ok(())
+    }
+
+    /// Disarm guest-debug single-step, restoring normal execution for the next
+    /// `run`. No-op if it was never armed.
+    fn disable_single_step(&mut self) -> Result<()> {
+        if !self.single_step_armed {
+            return Ok(());
+        }
+        let dbg = kvm_guest_debug::default(); // control = 0: disable
+        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        self.single_step_armed = false;
+        Ok(())
     }
 
     /// Read the `allow-stateful` MSR set via `KVM_GET_MSRS` (the index list is the
@@ -578,6 +860,99 @@ impl Drop for KvmBackend {
     }
 }
 
+/// Where a single planner-driven `KVM_RUN` (free-run or single-step) stopped.
+enum LiveStop {
+    /// Stopped at this work count (overflow kick or single-step trap) — no guest
+    /// exit; the planner advances toward the deadline.
+    Count(u64),
+    /// A genuine guest exit was taken; `work` is the retired-branch count **at** the
+    /// exit (P1(a)). Its pending-completion was armed on the backend. The planner is
+    /// told it reached the deadline (so it stops); `drive_run_until` then compares
+    /// `work` to the deadline — only `work < deadline` is a true early exit.
+    Guest { exit: Exit, work: u64 },
+}
+
+/// The live [`vtime::CpuBackend`] (+ [`PreemptCpu`]): a thin adapter binding the
+/// pure precise-injection planner to the real PMU counter + KVM single-step on a
+/// borrowed [`KvmBackend`]. `work()` is infallible (the trait demands it), so the
+/// current count is cached from the fallible read `run_until` did up front and
+/// refreshed after each overflow-run/single-step; a guest exit / syscall error is
+/// stashed for `run_until` to recover after the planner returns.
+struct LiveCpu<'a> {
+    backend: &'a mut KvmBackend,
+    deadline: u64,
+    work_cache: u64,
+    /// A stashed genuine guest exit + the real work count at it (P1(a)).
+    pending_exit: Option<(Exit, u64)>,
+    err: Option<BackendError>,
+}
+
+impl CpuBackend for LiveCpu<'_> {
+    fn work(&self) -> u64 {
+        self.work_cache
+    }
+
+    fn run_until_overflow(
+        &mut self,
+        armed_at: u64,
+    ) -> std::result::Result<u64, vtime::BackendError> {
+        match self.backend.run_armed(armed_at) {
+            Ok(LiveStop::Count(work)) => {
+                self.work_cache = work;
+                Ok(work)
+            }
+            // A guest exit during the FREE-RUN: report a count STRICTLY BELOW the
+            // deadline so the planner does NOT mistake this sentinel for an overflow
+            // skid (round-6: an overflow stop `>= target` is `SkidExceeded`). The
+            // single-step phase then short-circuits to the deadline (below), stopping
+            // the planner at ReadyToInject; the real exit + its work are recovered via
+            // `take_guest_exit` (P1 classifies early/at/past from the WORK, not this
+            // sentinel — so an at/past-deadline exit still fails closed there).
+            Ok(LiveStop::Guest { exit, work }) => {
+                self.pending_exit = Some((exit, work));
+                Ok(self.deadline.saturating_sub(1))
+            }
+            Err(e) => {
+                self.err = Some(e);
+                Err(vtime::BackendError::new(
+                    "run_until_overflow: KVM/PMU failure",
+                ))
+            }
+        }
+    }
+
+    fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
+        // Once a guest exit is captured, stop advancing (never re-enter past a
+        // pending-completion exit): tell the planner the deadline was reached.
+        if self.pending_exit.is_some() {
+            return Ok(self.deadline);
+        }
+        match self.backend.single_step_once() {
+            Ok(LiveStop::Count(work)) => {
+                self.work_cache = work;
+                Ok(work)
+            }
+            Ok(LiveStop::Guest { exit, work }) => {
+                self.pending_exit = Some((exit, work));
+                Ok(self.deadline)
+            }
+            Err(e) => {
+                self.err = Some(e);
+                Err(vtime::BackendError::new("single_step: KVM/PMU failure"))
+            }
+        }
+    }
+}
+
+impl PreemptCpu for LiveCpu<'_> {
+    fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+        self.pending_exit.take()
+    }
+    fn take_error(&mut self) -> Option<BackendError> {
+        self.err.take()
+    }
+}
+
 impl Backend for KvmBackend {
     fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
         let entries = cpuid_entries(model);
@@ -665,12 +1040,106 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        self.check_not_poisoned()?;
+        self.ensure_first_run()?;
         self.enter_guest()
     }
 
-    fn run_until(&mut self, _deadline: Vtime) -> Result<Exit> {
-        // Phase 2: needs the PMU single-step + lapic injection seam (task 07).
-        Err(BackendError::Unsupported { what: "run_until" })
+    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+        // The §2 inversion seam (task 47): drive the pure precise-injection planner
+        // over the live PMU + KVM single-step. Arm the retired-branch overflow at
+        // `deadline − skid_margin`, free-run until it kicks `KVM_RUN` out, then
+        // single-step to land at EXACTLY `deadline` retired branches → `Exit::Deadline`.
+        // A genuine guest exit before the deadline returns that exit instead, short
+        // of `deadline`. Completion/observability discipline matches `run`.
+        if !self.configured() {
+            return Err(BackendError::NotConfigured);
+        }
+        if self.pending != Pending::None {
+            return Err(BackendError::PendingCompletion);
+        }
+        self.check_not_poisoned()?;
+        // Read the current work — proves the PMU is present + readable — but DEFER the
+        // first-entry reset: per the `FirstEntryReset` invariant it is consumed only by
+        // a real `KVM_RUN`, NOT here (where the classify below may pick a no-entry
+        // branch). When the reset is still pending, the next real entry zeroes the
+        // counter, so the run STARTS at work 0 regardless of the current (possibly
+        // foreign-contaminated) reading; on a no-entry branch the reset stays pending so
+        // a later real entry still re-baselines.
+        let current = self.pmu_work()?;
+        let start = if self.reset_arm.is_pending() {
+            0
+        } else {
+            current
+        };
+        // P1 round-8 — the complete run_until contract (deadline vs current work), a
+        // pure decision in the gated portable layer; see `classify_run_until`.
+        // Scope the adapter's `&mut self` borrow so cleanup can use `self` after.
+        let outcome = {
+            match classify_run_until(deadline.0, start) {
+                // deadline > current: drive the planner to EXACTLY the deadline.
+                RunUntilStart::Drive => {
+                    // A real entry follows → NOW consume the first-entry reset (the only
+                    // place run_until may, per the invariant). After the reset the
+                    // counter reads 0, matching `start` on the pending path.
+                    self.ensure_first_run()?;
+                    let planner = InjectionPlanner::new(PlannerConfig {
+                        skid_margin: SKID_MARGIN,
+                    });
+                    let mut cpu = LiveCpu {
+                        backend: self,
+                        deadline: deadline.0,
+                        work_cache: start,
+                        pending_exit: None,
+                        err: None,
+                    };
+                    drive_run_until(&planner, &mut cpu, deadline.0)
+                }
+                // deadline <= current: at OR PAST the deadline → fire the timer NOW with
+                // ZERO guest steps (never step a guest instruction past the deadline —
+                // round-8 P1). The `<` (overdue) case is LEGITIMATE, not an error
+                // (round-12 P1): `preemption_deadline()` derives the absolute deadline
+                // from a stale `last_intercept_work`, so the live count can already be
+                // past it (Postgres/Linux re-arm LAPIC one-shots constantly) — an overdue
+                // timer fires immediately, the VM does NOT abort. Same fire-now outcome as
+                // the planner's `TargetInPast` for the in-flight skid case. NO `KVM_RUN`
+                // happens, so the first-entry reset stays PENDING (round-11 invariant): a
+                // later real entry re-baselines, so a coexisting VM in between cannot
+                // contaminate this VM's counter. Any completion staged by the prior step
+                // stays in the run page and is committed by the NEXT entry's `KVM_RUN`.
+                RunUntilStart::AtOrPastDeadline => Ok(Exit::Deadline {
+                    reached: Vtime(start),
+                }),
+            }
+        };
+        // Cleanup MUST run and MUST succeed (P2): a failed single-step disarm leaves
+        // the vCPU single-stepping and a failed PMU disarm leaves the overflow armed,
+        // either of which corrupts the next `run()` (a stray `KVM_EXIT_DEBUG` / SIGIO).
+        // Attempt both, then propagate the first failure — fail closed, never return
+        // the exit as success over a backend left in a broken state.
+        let step_cleanup = self.disable_single_step();
+        let pmu_cleanup = self.pmu_disarm();
+        step_cleanup?;
+        pmu_cleanup?;
+        let exit = outcome?;
+        // P2 round-12: the exit is now genuinely DELIVERED to the caller (cleanup succeeded,
+        // `drive_run_until` did not reject it) — clear the exit poison here, the single
+        // point past every fallible step. If `take_guest_exit_stop` armed it for a decoded
+        // guest exit, this is where it is consumed; for a `Deadline` outcome (no guest exit
+        // decoded) the poison was never armed and this is a no-op.
+        self.exit_poison.delivered();
+        // P1 round-4: a `Deadline` is ONLY ever the no-guest-exit land (the single-step
+        // stopped AT the deadline branch), so it never carries a pending completion —
+        // a real exit at/ past the deadline now fails closed in `drive_run_until`
+        // instead of being absorbed. So there is nothing to clear here. (If a future
+        // regression ever left a stale pending, the `PendingCompletion` guard at the
+        // top of the next `run`/`run_until` fails closed loudly — never a silent drop.)
+        debug_assert!(
+            !matches!(exit, Exit::Deadline { .. }) || self.pending == Pending::None,
+            "a Deadline must not carry a pending completion (it is the no-exit land)"
+        );
+        self.counts.bump(exit.reason());
+        Ok(exit)
     }
 
     fn inject(&mut self, event: Event) -> Result<()> {
@@ -793,6 +1262,17 @@ impl Backend for KvmBackend {
         self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
         self.restore_xsave(&state.xsave)?;
         self.restore_msrs(state)?;
+        // P1(b): re-arm the first-entry PMU reset rather than resetting now. Snapshot
+        // restore zeroes the V-time work counter, but the box `perf_event` counter is
+        // shared across the vCPU thread: if another (coexisting) VM runs between this
+        // restore and the restored VM's NEXT entry, resetting *here* would let that
+        // VM's guest branches accumulate into the backend counter, diverging it from
+        // vmm-core's V-time counter (which re-arms its own first-entry reset — see
+        // `Vmm::restore_vm_state`). Deferring the reset to `ensure_first_run` at the
+        // next entry excludes the foreign branches and keeps the B≡A invariant across
+        // a restore (the explorer / branching N-VM path, task 48). The discipline is
+        // pinned by [`FirstEntryReset`]'s portable stateful property test.
+        self.reset_arm.rearm();
         Ok(())
     }
 

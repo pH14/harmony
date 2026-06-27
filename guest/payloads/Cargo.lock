@@ -101,6 +101,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "irq-landing-rng"
+version = "0.1.0"
+dependencies = [
+ "common",
+]
+
+[[package]]
 name = "msr-allowed"
 version = "0.1.0"
 dependencies = [

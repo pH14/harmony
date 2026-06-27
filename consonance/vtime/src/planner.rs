@@ -90,8 +90,11 @@ impl InjectionPlanner {
     ///   steps (the normal case right after an idle warp made a deadline
     ///   current);
     /// - if `target - now > skid_margin`: arm at `target - skid_margin`,
-    ///   run, then single-step (instruction by instruction) until work
-    ///   reaches `target`;
+    ///   run to the overflow (which, with `skid_margin` STRICTLY above the
+    ///   worst-case skid, stops STRICTLY BEFORE `target`), then single-step
+    ///   (instruction by instruction) the rest of the way to `target` — so the
+    ///   landing is always positioned by the exact single-step, never by the
+    ///   instruction-imprecise overflow;
     /// - if `0 < target - now <= skid_margin`: single-step the whole way
     ///   (again: loop until WORK reaches `target`, not a fixed number of
     ///   steps);
@@ -105,12 +108,13 @@ impl InjectionPlanner {
     ///
     /// # Errors
     ///
-    /// - [`VtimeError::SkidExceeded`] if the backend overshoots the target
-    ///   despite the margin (real-hardware skid exceeded the configured
-    ///   margin). This is a determinism-destroying event and is loud, never
-    ///   papered over. (Defensively, a backend whose `single_step` violates
-    ///   the 0-or-1 contract and jumps past the target is reported the same
-    ///   way.)
+    /// - [`VtimeError::SkidExceeded`] if the overflow stops AT or PAST the
+    ///   target (`stopped >= target`) — the skid consumed the whole margin, so
+    ///   no room is left for the precise single-step and the overflow's
+    ///   instruction-imprecise stop would otherwise be injected raw. This is a
+    ///   determinism-destroying event and is loud, never papered over.
+    ///   (Defensively, a backend whose `single_step` violates the 0-or-1
+    ///   contract and jumps past the target is reported the same way.)
     /// - [`VtimeError::Backend`] if a backend call fails.
     pub fn stop_at(
         &self,
@@ -123,15 +127,26 @@ impl InjectionPlanner {
         }
 
         // Phase 1: if the target is farther away than the skid margin, let
-        // the counter overflow carry us most of the way. `armed_at + skid`
-        // is then guaranteed (margin permitting) to land in
-        // [target - skid_margin, target].
+        // the counter overflow carry us most of the way. With `skid_margin`
+        // STRICTLY greater than the worst-case skid, `armed_at + skid` lands in
+        // [target - skid_margin, target) — i.e. STRICTLY BEFORE the target — so
+        // Phase 2's single-step always runs and walks precisely to the exact
+        // instruction boundary at `target`.
+        //
+        // The overflow (perf/SIGIO) is NOT instruction-precise at the boundary:
+        // non-counted instructions after the target's counted event can already
+        // have retired while the counter still reads `== target`. So an overflow
+        // that stops at `stopped >= target` is a SKID VIOLATION (the margin failed
+        // to leave room for the precise single-step) — reported loudly via
+        // [`VtimeError::SkidExceeded`], NEVER accepted as a (raw, imprecise)
+        // landing. This is the precision invariant: every `ReadyToInject` reached
+        // through Phase 1 has been positioned by the exact single-step phase.
         let mut current = now;
         let mut armed_at = now; // diagnostic value when nothing is armed
         if target - now > self.cfg.skid_margin {
             let arm = target - self.cfg.skid_margin;
             let stopped = backend.run_until_overflow(arm)?;
-            if stopped > target {
+            if stopped >= target {
                 return Err(VtimeError::SkidExceeded {
                     armed_at: arm,
                     target,
@@ -295,6 +310,44 @@ mod tests {
                 armed_at: 96,
                 target: 100,
                 stopped_at: 103
+            }
+        );
+    }
+
+    /// The precision invariant: an overflow landing EXACTLY on the target (skid ==
+    /// margin) is a SkidExceeded violation, NOT a raw landing — the overflow is
+    /// instruction-imprecise at the boundary, so the exact single-step must always
+    /// finish the walk. `stopped == target` leaves it no room → loud error.
+    #[test]
+    fn overflow_exactly_on_target_is_skid_exceeded() {
+        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let mut backend = cpu(0);
+        backend.overflow_stops_at = Some(100); // skid == margin 4 → stops AT the target
+        let err = planner.stop_at(&mut backend, 100).unwrap_err();
+        assert_eq!(
+            err,
+            VtimeError::SkidExceeded {
+                armed_at: 96,
+                target: 100,
+                stopped_at: 100
+            }
+        );
+    }
+
+    /// The complementary case: an overflow strictly before the target (skid < margin)
+    /// IS single-stepped precisely to the exact boundary (`single_steps_used > 0`).
+    #[test]
+    fn overflow_one_before_target_single_steps_to_exact() {
+        let planner = InjectionPlanner::new(PlannerConfig { skid_margin: 4 });
+        let mut backend = cpu(0);
+        backend.overflow_stops_at = Some(99); // skid 3 < margin 4 → one short
+        let outcome = planner.stop_at(&mut backend, 100).unwrap();
+        assert_eq!(
+            outcome,
+            PlanOutcome::ReadyToInject {
+                target: 100,
+                stopped_at: 100,
+                single_steps_used: 1
             }
         );
     }

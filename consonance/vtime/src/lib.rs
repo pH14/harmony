@@ -50,12 +50,16 @@
 //! two-phase:
 //!
 //! 1. **Arm early.** Program the overflow at `target − skid_margin`, with
-//!    `skid_margin` greater than the worst-case skid. The overflow then
-//!    stops the vCPU somewhere in `[target − skid_margin, target]` — near
-//!    the target, but never past it.
+//!    `skid_margin` STRICTLY greater than the worst-case skid. The overflow
+//!    then stops the vCPU somewhere in `[target − skid_margin, target)` —
+//!    near the target, but always STRICTLY BEFORE it (the overflow/SIGIO is
+//!    not instruction-precise at the boundary, so it must leave room for the
+//!    single-step). A stop at or past the target consumed the whole margin and
+//!    is a [`VtimeError::SkidExceeded`] violation, never injected raw.
 //! 2. **Single-step to exactness.** From there, execute one instruction at a
 //!    time, checking the work counter at each instruction boundary, and stop
-//!    at the first boundary where `work == target`. Now inject.
+//!    at the first boundary where `work == target`. Now inject. Every landing
+//!    is positioned by THIS exact step, never by the imprecise overflow.
 //!
 //! The counted-event distance covered by stepping is at most `skid_margin`,
 //! but the *instruction* count is bounded only by the guest's event density:

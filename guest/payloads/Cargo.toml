@@ -22,6 +22,7 @@ members = [
     "msr-allowed",
     "msr-denied",
     "irq-landing",
+    "irq-landing-rng",
     "pit-pic-stub",
 ]
 

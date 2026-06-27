@@ -376,7 +376,9 @@ fn step_after_terminal_is_idempotent() {
 
 #[test]
 fn deadline_exit_fails_closed() {
-    // A `run_until` deadline exit cannot occur this milestone (no V-time) → loud.
+    // A `Deadline` only ever answers `run_until`, which the VMM issues solely on the
+    // V-time-wired determinism path (task 47). One arriving with **no V-time wired**
+    // (this bring-up VMM) is a backend contract violation → loud, never absorbed.
     let mut vmm = vmm_with(vec![Exit::Deadline { reached: Vtime(0) }]);
     assert!(matches!(vmm.run(), Err(VmmError::ContractViolation(_))));
 }

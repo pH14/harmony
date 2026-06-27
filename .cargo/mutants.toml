@@ -63,6 +63,12 @@ exclude_globs = [
     # (`kvm.rs`'s KVM_EXIT_DETERMINISM decode/complete; `work::WorkSource`).
     "**/patched_kvm.rs",
     "**/work_perf.rs",
+    # task-47 box-only substrate, same rationale: `pmu_sys.rs` is the
+    # `PmuBranchCounter` syscall orchestration (perf_event/fcntl/mmap + the SIGIO
+    # overflow seam) for `run_until`; it cannot run without perf on the box. Its
+    # PURE config — the `PerfEventAttr` builder + bit constants — lives in `pmu.rs`,
+    # which is NOT excluded and is exact-value mutation-tested.
+    "**/pmu_sys.rs",
 ]
 
 # Structurally-unkillable mutants in `consonance/vmm-core`, by category. The
@@ -136,4 +142,14 @@ exclude_re = [
     #     asserts a dropped server stops accepting); only this one Drop-shadowed
     #     mutant is excluded. See consonance/telemetry/IMPLEMENTATION.md.
     "consonance/telemetry/src/server\\.rs.*replace RunningServer::shutdown with \\(\\)",
+    # (j) `Vmm::on_deadline`'s diagnostic-trace cap `self.preemption_landings.len() <
+    #     PREEMPTION_TRACE_CAP` → `<=` (task 47 round-13): provably equivalent. The two
+    #     differ ONLY at exactly `len == PREEMPTION_TRACE_CAP` (4096), where `<=` records ONE
+    #     extra landing (4097 total) before stopping — a harmless off-by-one on a trace that
+    #     is OBSERVABILITY ONLY (not hashed, not determinism-affecting; the seed-gate reads
+    #     the first few). Killing it would require a 4097-preemption unit test (impractical),
+    #     and the behavior is identical for every realistic run. The `<`→`==`/`>` siblings
+    #     (which would empty the trace) ARE killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
+    #     `preemption_landings() == &[reached]` assertion. Scoped to vmm.rs's on_deadline.
+    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*on_deadline",
 ]

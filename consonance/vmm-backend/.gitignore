@@ -1,0 +1,2 @@
+# proptest failure-persistence seeds (transient dev artifacts; not checked in).
+proptest-regressions/

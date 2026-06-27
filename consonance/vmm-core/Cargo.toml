@@ -95,4 +95,11 @@ vmm-backend = { path = "../vmm-backend", version = "0.1.0", features = ["mock"] 
 # ban). `default-features = false` drops its CLI deps (clap/serde_json) — the
 # test needs only the library (manifest + oracles).
 det-corpus = { path = "../det-corpus", version = "0.1.0", default-features = false }
+# Wire the userspace xAPIC in the box-only `live_preemption` gate (task 47): that
+# test boots the bare `irq-landing` payload on the patched backend, `wire_lapic`s a
+# timer, and proves preemption lands the LAPIC-timer interrupt mid-busy-spin. `lapic`
+# is already a (non-dev) sibling dependency; declared here so the integration test
+# (a separate crate) can name `lapic::{Lapic, LapicConfig}`. Pinned `version`
+# alongside `path` (cargo-deny wildcard ban).
+lapic = { path = "../lapic", version = "0.1.0" }
 proptest = "1"
