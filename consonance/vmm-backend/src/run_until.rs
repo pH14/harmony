@@ -122,19 +122,19 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
         Ok(PlanOutcome::TargetInPast { now, .. }) => Ok(Exit::Deadline {
             reached: Vtime(now),
         }),
-        // A genuine guest exit can also be stashed alongside a planner *error* path
-        // only via the backend; here the planner returned an error, so prefer the
-        // typed backend error when the cause was a syscall.
-        Err(VtimeError::Backend(_)) => Err(cpu
-            .take_error()
-            .unwrap_or(BackendError::Internal("run_until: cpu backend failure"))),
         // Skid past the target despite the margin: a determinism hazard. Loud.
         Err(VtimeError::SkidExceeded { .. }) => Err(BackendError::Internal(
             "run_until: PMU skid exceeded the configured margin (determinism hazard)",
         )),
-        // The remaining `VtimeError`s are VClock/sim-config faults that cannot arise
-        // here (no clock is built in this path); fail closed if one ever does.
-        Err(_) => Err(BackendError::Internal("run_until: planner error")),
+        // The only other error `stop_at` returns is `VtimeError::Backend` (a cpu
+        // syscall failure) — recover its typed error. (The remaining `VtimeError`s
+        // are VClock/sim-config faults that cannot arise here, since no clock is
+        // built in this path; they fall through to the same fail-closed default.)
+        // One arm, so it stays covered by the backend-failure test rather than
+        // splitting off an unreachable catch-all.
+        Err(_) => Err(cpu
+            .take_error()
+            .unwrap_or(BackendError::Internal("run_until: planner error"))),
     }
 }
 
@@ -609,6 +609,8 @@ mod tests {
             "restore re-arms: the next entry resets again"
         );
         assert!(!r.take_reset(), "and only that next entry");
+        // `Default` == `new` (a fresh VM resets on its first entry).
+        assert!(FirstEntryReset::default().take_reset());
     }
 }
 
