@@ -268,3 +268,51 @@ fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
          same thread — no foreign-branch contamination"
     );
 }
+
+#[test]
+#[ignore = "live KVM + perf; run on the box with --ignored"]
+fn zero_step_run_until_keeps_first_entry_reset_armed_excluding_foreign_branches() {
+    // P2(b) round-5: a first `run_until(Vtime(0))` is a ZERO-STEP — the deadline is
+    // already at the freshly-reset count, so it returns Deadline WITHOUT any KVM_RUN
+    // (the guest never enters). It must NOT spend the first-entry PMU reset on that
+    // no-op: the reset stays armed so the REAL first entry still re-baselines the
+    // shared, pinned-thread counter (a coexisting VM in between would otherwise
+    // contaminate the baseline — the branch/multiverse path).
+    let (mut b1, _m1) = boot_with(SPIN_CODE);
+    match b1.run_until(Vtime(0)).expect("b1 zero-step run_until(0)") {
+        // Zero-step: lands at 0 immediately, no guest code executed.
+        Exit::Deadline { reached } => assert_eq!(reached.0, 0, "zero-step lands at 0, no KVM_RUN"),
+        other => panic!("expected Deadline at 0 (zero-step), got {other:?}"),
+    }
+
+    // A DIFFERENT VM runs ~100k guest branches on the SAME thread → they land in B1's
+    // shared, exclude_host PMU counter too (B1's real first entry has not happened yet).
+    {
+        let (mut b2, _m2) = boot_with(SPIN_CODE);
+        match b2.run_until(Vtime(100_000)).expect("b2 run_until") {
+            Exit::Deadline { reached } => assert_eq!(reached.0, 100_000),
+            other => panic!("expected Deadline at 100000, got {other:?}"),
+        }
+    }
+
+    // B1's REAL first entry: the first-entry reset (kept armed through the zero-step)
+    // fires HERE, excluding B2's foreign branches, so run_until(50_000) lands at
+    // EXACTLY 50_000. WITHOUT the P2(b) fix the zero-step would have consumed the reset,
+    // B1's counter would already read ~100_000, and this would report an overdue
+    // Deadline at ~100_000 — a corrupted, foreign-contaminated baseline.
+    match b1
+        .run_until(Vtime(50_000))
+        .expect("b1 real first entry after foreign VM")
+    {
+        Exit::Deadline { reached } => assert_eq!(
+            reached.0, 50_000,
+            "the real first entry must re-baseline (zero-step kept the reset armed) — got {}",
+            reached.0
+        ),
+        other => panic!("expected Deadline at 50000, got {other:?}"),
+    }
+    eprintln!(
+        "[p2b] zero-step run_until(0) kept the first-entry reset armed; the real first entry \
+         landed at exactly 50000 after a foreign VM ran — no baseline contamination"
+    );
+}

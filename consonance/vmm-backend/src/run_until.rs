@@ -237,9 +237,16 @@ impl FirstEntryReset {
         Self { pending: true }
     }
 
-    /// Re-arm the reset for the next entry (call on restore — P1(b)).
+    /// Re-arm the reset for the next entry (call on restore — P1(b); or after a
+    /// zero-step `run_until` that consumed it without entering the guest — P2(b) r5).
     pub(crate) fn rearm(&mut self) {
         self.pending = true;
+    }
+
+    /// Whether the reset is currently armed, **without** consuming it. Used to detect
+    /// "this is the first run" before `ensure_first_run` spends the arm (P2(b)).
+    pub(crate) fn is_armed(&self) -> bool {
+        self.pending
     }
 
     /// Called at each guest entry: returns whether the counter must be reset **now**,
@@ -247,6 +254,18 @@ impl FirstEntryReset {
     pub(crate) fn take_reset(&mut self) -> bool {
         std::mem::replace(&mut self.pending, false)
     }
+}
+
+/// P2(b) round-5: should the first-entry PMU reset be **kept armed** after this
+/// `run_until`? True iff this was the first run (`was_first`) AND the call was a
+/// zero-step deadline (`deadline <= start` — already at/before the freshly-reset count,
+/// e.g. `run_until(Vtime(0))`), which issues NO `KVM_RUN`. In that case the guest never
+/// entered, so spending the first-entry reset on it would let a coexisting VM's branches
+/// (shared pinned-thread counter) contaminate THIS backend's baseline before its real
+/// first entry — keep the reset armed so that real entry re-baselines. Pure decision,
+/// kept in the gated portable layer (the box `run_until` only supplies the live counts).
+pub(crate) fn keep_reset_armed_for_zero_step(was_first: bool, start: u64, deadline: u64) -> bool {
+    was_first && deadline <= start
 }
 
 impl Default for FirstEntryReset {
@@ -709,13 +728,16 @@ mod tests {
     #[test]
     fn first_entry_reset_fires_once_then_only_after_rearm() {
         let mut r = FirstEntryReset::new();
+        assert!(r.is_armed(), "a fresh VM is armed (first entry will reset)");
         assert!(
             r.take_reset(),
             "the very first entry resets (per-VM baseline)"
         );
+        assert!(!r.is_armed(), "take_reset consumed the arm");
         assert!(!r.take_reset(), "no reset on subsequent entries");
         assert!(!r.take_reset());
         r.rearm();
+        assert!(r.is_armed(), "rearm re-arms (non-consuming check agrees)");
         assert!(
             r.take_reset(),
             "restore re-arms: the next entry resets again"
@@ -723,6 +745,37 @@ mod tests {
         assert!(!r.take_reset(), "and only that next entry");
         // `Default` == `new` (a fresh VM resets on its first entry).
         assert!(FirstEntryReset::default().take_reset());
+    }
+
+    /// P2(b) round-5: the first-entry reset is kept armed ONLY for a first-run
+    /// zero-step `run_until` (deadline already at/before the freshly-reset count → no
+    /// `KVM_RUN`). A real-step first run (deadline ahead) spends it; a non-first run
+    /// never re-arms (its baseline is already established).
+    #[test]
+    fn keep_reset_armed_only_for_first_run_zero_step() {
+        // First run (was_first = true):
+        assert!(
+            keep_reset_armed_for_zero_step(true, 0, 0),
+            "first run_until(Vtime(0)) on a fresh (reset) counter → zero-step → keep armed"
+        );
+        assert!(
+            keep_reset_armed_for_zero_step(true, 5, 5),
+            "deadline == start → zero-step → keep armed"
+        );
+        assert!(
+            keep_reset_armed_for_zero_step(true, 9, 3),
+            "deadline < start (overdue) → zero-step → keep armed"
+        );
+        assert!(
+            !keep_reset_armed_for_zero_step(true, 0, 1),
+            "deadline ahead of start → a real KVM_RUN enters the guest → spend the reset"
+        );
+        // Not the first run (was_first = false): never re-arm, even on a zero-step.
+        assert!(
+            !keep_reset_armed_for_zero_step(false, 5, 5),
+            "an established baseline is not re-armed by a later zero-step run_until"
+        );
+        assert!(!keep_reset_armed_for_zero_step(false, 0, 0));
     }
 }
 

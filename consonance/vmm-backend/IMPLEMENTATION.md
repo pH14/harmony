@@ -933,3 +933,31 @@ pass). Factored into the pure `pmu::drain_ring_at(base: *mut u8)` (with the
 exercises it over a **test-owned** u64-aligned page (`drain_ring_at_copies_head_to_tail`)
 with real provenance + alignment, and it joins the coverage + mutation gates. `pmu_sys`
 keeps only the box-only `mmap` and passes the real control-page base.
+
+### PR #15 round-5 (cross-model): two narrow fail-closed / baselining edges (2 P2)
+
+- **P2(a) — record the pending completion BEFORE the fallible PMU read.**
+  `take_guest_exit_stop` decoded a read-style guest exit (IN/RDMSR/…), then read
+  `pmu_work()`, then stored `self.pending`. If the PMU read failed in between, it
+  returned the error WITHOUT recording the pending — but the KVM run page still held
+  the uncompleted exit, so a retry would pass the `PendingCompletion` guard and
+  re-enter with **stale completion data** (not fail-closed). Fixed by storing
+  `self.pending` *before* the fallible read, so a PMU-read failure leaves the backend
+  fail-closed (a retry hits `PendingCompletion`). (Box-only reorder; the happy path is
+  exercised by gate 1's `guest_exit_before_deadline_returns_that_exit`, the failure
+  path needs PMU fault-injection so it is review-verified.)
+- **P2(b) — keep the first-entry reset armed for a zero-step `run_until`.** A first
+  `run_until(Vtime(0))` (deadline already at the freshly-reset count) returns
+  `Exit::Deadline` with **no `KVM_RUN`** — the guest never enters — yet
+  `ensure_first_run` had already consumed the first-entry PMU reset. A coexisting VM on
+  the shared pinned thread could then contaminate this backend's baseline before its
+  *real* first entry (the baseline no longer resets) — and that coexisting-VM scenario
+  IS the branch/multiverse path (task 48/49). Fixed: snapshot `reset_arm.is_armed()`
+  before `ensure_first_run`, and after reading `start` re-arm via the pure, gated
+  `keep_reset_armed_for_zero_step(was_first, start, deadline)` (`was_first && deadline
+  <= start`) when the call is a first-run zero-step. The reset it already performed is
+  idempotent; the re-arm makes the real first entry re-baseline. Tests: portable
+  `keep_reset_armed_only_for_first_run_zero_step` (the decision across first/non-first ×
+  zero/real-step) + the box `zero_step_run_until_keeps_first_entry_reset_armed_excluding_foreign_branches`
+  (zero-step → a foreign VM runs ~100k branches on the same thread → the real first
+  entry lands at exactly 50 000, no contamination).

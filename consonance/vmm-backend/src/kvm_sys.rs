@@ -45,6 +45,7 @@ use crate::pmu_sys::PmuBranchCounter;
 use crate::region::MemRegions;
 use crate::run_until::{
     FirstEntryReset, PreemptCpu, SKID_MARGIN, drive_run_until, free_run_decision,
+    keep_reset_armed_for_zero_step,
 };
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
@@ -432,8 +433,14 @@ impl KvmBackend {
         let (exit, pending) = decode_exit(self.run_page())?.ok_or(BackendError::Internal(
             "run_until: control exit misclassified as guest",
         ))?;
-        let work = self.pmu_work()?;
+        // P2(a) round-5: record the pending-completion BEFORE the fallible `pmu_work()`
+        // read. A read-style exit (IN/RDMSR/…) left the KVM run page holding an
+        // uncompleted exit; if the PMU read then fails and we returned the error WITHOUT
+        // recording it, a retry would pass the `PendingCompletion` guard and re-enter
+        // with STALE completion data (not fail-closed). Storing it first leaves the
+        // backend fail-closed on a PMU-read failure (the retry hits `PendingCompletion`).
         self.pending = pending;
+        let work = self.pmu_work()?;
         Ok(LiveStop::Guest { exit, work })
     }
 
@@ -1010,10 +1017,23 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        // P2(b) round-5: snapshot whether this is the first run (reset armed) BEFORE
+        // `ensure_first_run` consumes it — a zero-step `run_until` (below) must not
+        // spend the first-entry reset on a no-op that never enters the guest.
+        let was_first_run = self.reset_arm.is_armed();
         self.ensure_first_run()?;
         // Read the current work first (the planner's only `work()` call) and prove
         // the PMU is present + readable before entering the guest.
         let start = self.pmu_work()?;
+        // P2(b): a zero-step deadline (already at/before the freshly-reset count, e.g. a
+        // first `run_until(Vtime(0))`) drives NO `KVM_RUN` — the guest never enters — yet
+        // `ensure_first_run` just consumed the first-entry reset. Re-arm it so the REAL
+        // first guest entry still re-baselines the shared, pinned-thread PMU counter (a
+        // coexisting VM could otherwise contaminate the baseline in between). The reset
+        // it already performed is harmless (idempotent).
+        if keep_reset_armed_for_zero_step(was_first_run, start, deadline.0) {
+            self.reset_arm.rearm();
+        }
         let planner = InjectionPlanner::new(PlannerConfig {
             skid_margin: SKID_MARGIN,
         });
