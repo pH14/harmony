@@ -111,7 +111,7 @@ fn override_map_permutation_is_byte_identical() {
         (1u64, Action::Guest(Answer::Nominal)),
         (5, Action::Guest(Answer::Supply(vec![1, 2, 3, 4]))),
         (9, Action::Host(HostFault::InjectInterrupt { vector: 7 })),
-        (2, Action::Guest(Answer::Fault(Fault::NetDrop))),
+        (2, Action::Guest(Answer::Fault(Fault::NetReset))),
     ];
     let forward: BTreeMap<Moment, Action> = entries.iter().cloned().collect();
     let shuffled: BTreeMap<Moment, Action> = entries.iter().rev().cloned().collect();
@@ -132,12 +132,12 @@ fn standing_vec_permutation_is_byte_identical() {
         standing,
     };
     let a = mk(vec![
-        sf(DecisionClass::NetSend, vec![0, 1], 0, 10),
+        sf(DecisionClass::NetFlow, vec![0, 1], 0, 10),
         sf(DecisionClass::BlockIo, vec![9], 5, 6),
     ]);
     let b = mk(vec![
         sf(DecisionClass::BlockIo, vec![9], 5, 6),
-        sf(DecisionClass::NetSend, vec![0, 1], 0, 10),
+        sf(DecisionClass::NetFlow, vec![0, 1], 0, 10),
     ]);
     assert_eq!(a.encode(), b.encode());
 }

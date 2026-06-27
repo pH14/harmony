@@ -113,9 +113,9 @@ proptest! {
         seed in any::<u64>(),
         at in 1u64..BOUND,
     ) {
-        // Nominal is admissible on a fault-class NetSend point, so every override
+        // Nominal is admissible on a fault-class NetFlow point, so every override
         // fires and the seed is never drawn — no cross-splice desync.
-        let net = P::NetSend { src: NodeId(0), dst: NodeId(1), conn: ConnId(0), len: 64 };
+        let net = P::NetFlow { src: NodeId(0), dst: NodeId(1), conn: ConnId(0), event: environment::FlowEvent::Open };
         let tail_ov: BTreeMap<Moment, Action> =
             moments.iter().map(|m| (*m, Action::Guest(Answer::Nominal))).collect();
         let tail = EnvSpec::Recorded {
@@ -141,7 +141,7 @@ proptest! {
         at in 0u64..BOUND,
     ) {
         let plain = recorded(ov.clone());
-        let with_standing = recorded_with(ov, vec![sf(DecisionClass::NetSend)]);
+        let with_standing = recorded_with(ov, vec![sf(DecisionClass::NetFlow)]);
         prop_assert_eq!(
             EnvCodec::compose(&with_standing, &plain, at),
             Err(EnvError::UnsupportedComposition)
@@ -198,7 +198,12 @@ fn compose_rekeys_at_nonzero_concrete() {
     // [10, ∞). A base override >= at is dropped (it is in the discarded suffix).
     let mut policy = FaultPolicy::none();
     policy
-        .set_class(DecisionClass::NetSend, 1, 2, &[environment::Fault::NetDrop])
+        .set_class(
+            DecisionClass::NetFlow,
+            1,
+            2,
+            &[environment::Fault::NetReset],
+        )
         .unwrap();
     let base = EnvSpec::Recorded {
         seed: 0xABCD,
@@ -292,7 +297,7 @@ fn compose_rejects_seeded_input() {
 fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
     // Standing fault (V-time axis ≠ Moment offset) → reject. Both Recorded so the
     // Seeded check does not preempt; the cause is the standing fault.
-    let base_standing = recorded_with(BTreeMap::new(), vec![sf(DecisionClass::NetSend)]);
+    let base_standing = recorded_with(BTreeMap::new(), vec![sf(DecisionClass::NetFlow)]);
     let plain = recorded(BTreeMap::new()); // seed 0, policy none, no standing
     assert_eq!(
         EnvCodec::compose(&base_standing, &plain, 0),
@@ -368,15 +373,18 @@ fn compose_override_only_reproduces_at_nonzero() {
     // The spec's task-93 property for the override-covered case: a branch-local
     // delta composed onto a base at at > 0 reproduces its run at the re-keyed
     // Moments. All overrides admissible (always fire) → no seed draw → no desync.
-    let net = P::NetSend {
+    let net = P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
         conn: ConnId(0),
-        len: 64,
+        event: environment::FlowEvent::Open,
     };
     let delta = recorded(BTreeMap::from([
         (0, Action::Guest(Answer::Nominal)),
-        (3, Action::Guest(Answer::Fault(environment::Fault::NetDrop))),
+        (
+            3,
+            Action::Guest(Answer::Fault(environment::Fault::NetReset)),
+        ),
         (7, Action::Guest(Answer::Nominal)),
     ]));
     let base = recorded(BTreeMap::new()); // seed 0, policy none — matches delta
@@ -436,7 +444,7 @@ fn mutate_never_disturbs_a_guest_only_spec() {
         (10, Action::Guest(Answer::Nominal)),
         (
             20,
-            Action::Guest(Answer::Fault(environment::Fault::NetDrop)),
+            Action::Guest(Answer::Fault(environment::Fault::NetReset)),
         ),
         (30, Action::Guest(Answer::Supply(vec![1, 2, 3, 4]))),
     ]);

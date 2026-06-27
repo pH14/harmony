@@ -18,18 +18,14 @@ const SEED: u64 = 0x0123_4567_89AB_CDEF;
 fn policy() -> FaultPolicy {
     let mut p = FaultPolicy::none();
     p.set_class(
-        DecisionClass::NetSend,
+        DecisionClass::NetFlow,
         3,
         4,
         &[
-            Fault::NetDrop,
-            Fault::NetDelay(VTime(100)),
-            Fault::NetReorder,
-            Fault::NetDup,
-            Fault::NetCorrupt(environment::CorruptSpec {
-                offset: 2,
-                xor: 0xFF,
-            }),
+            Fault::NetLatency(VTime(100)),
+            Fault::NetLoss { num: 1, den: 2 },
+            Fault::NetThrottle { bps: 1_000_000 },
+            Fault::NetReset,
         ],
     )
     .unwrap();
@@ -62,11 +58,11 @@ fn policy() -> FaultPolicy {
 /// The decision sequence — at least one of every class, fault classes repeated
 /// so the sampling distribution is exercised.
 fn sequence() -> Vec<P> {
-    let net = |c: u64| P::NetSend {
+    let net = |c: u64| P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
         conn: ConnId(c),
-        len: 64,
+        event: environment::FlowEvent::Open,
     };
     let io = |op, lba| P::BlockIo { op, lba, len: 4096 };
     vec![
@@ -118,10 +114,10 @@ const EXPECTED: &[&str] = &[
     "0100000000",                 // Payload{0}    → Supply(0)
     "010400000004000000",         // Scheduler{5}  → Supply(idx=4)
     "010400000000000000",         // Scheduler{1}  → Supply(idx=0)
-    "0203",                       // NetSend       → Fault(NetDup)
-    "00",                         // NetSend       → Nominal
-    "00",                         // NetSend       → Nominal
-    "0200",                       // NetSend       → Fault(NetDrop)
+    "020101000200",               // NetFlow       → Fault(NetLoss{num:1,den:2})
+    "00",                         // NetFlow       → Nominal
+    "00",                         // NetFlow       → Nominal
+    "02006400000000000000",       // NetFlow       → Fault(NetLatency(100))
     "020708000000",               // BlockIo Read  → Fault(BlockTorn(8))
     "00",                         // BlockIo Write → Nominal
     "00",                         // BlockIo Flush → Nominal
@@ -239,11 +235,11 @@ fn golden_action_wire_format() {
         "host plane tag 00 + payload"
     );
 
-    let guest = Action::Guest(Answer::Fault(Fault::NetDrop));
-    // 01 (guest) + 02 (Answer::Fault) + 00 (Fault::NetDrop).
+    let guest = Action::Guest(Answer::Fault(Fault::NetReset));
+    // 01 (guest) + 02 (Answer::Fault) + 03 (Fault::NetReset).
     assert_eq!(
         to_hex(&guest.encode()),
-        "010200",
+        "010203",
         "guest plane tag 01 + payload"
     );
 }
@@ -267,13 +263,13 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            // "DEV2"(44455632) + version(0200) + variant(01) + seed(00×8) +
+            // "DEV2"(44455632) + version(0300) + variant(01) + seed(00×8) +
             // length-prefixed policy(FPL1 baseline, len 0x2a=42) +
             // overrides count(02000000) +
             //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80) = [00 03 80] +
             //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
             // standing count(00000000).
-            "4445563202000100000000000000002a00000046504c31010000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000",
+            "4445563203000100000000000000002a00000046504c31010000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);

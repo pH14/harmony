@@ -52,7 +52,7 @@ mod prng;
 mod recorded;
 mod seeded;
 
-pub use catalog::{Answer, BlockOp, CorruptSpec, DecisionClass, DecisionPoint, Fault};
+pub use catalog::{Answer, BlockOp, DecisionClass, DecisionPoint, Fault, FlowEvent};
 pub use envcodec::EnvCodec;
 pub use error::EnvError;
 pub use host::{Action, BitMask, HostFault, Moment, Ratio};
@@ -61,12 +61,17 @@ pub use recorded::{EnvSpec, RecordedEnv, StandingFault};
 pub use seeded::SeededEnv;
 
 /// The catalog version. Bumps whenever a [`DecisionClass`], [`Fault`], or
-/// [`HostFault`] is added; it pins the shared vocabulary that the control plane
-/// (which names classes in its `StopMask`) and every service agree on. Stable
-/// [`DecisionClass`] / [`Fault`] / [`HostFault`] discriminants mean a recorded
-/// [`EnvSpec`] keeps replaying across a version bump. Bumped to `2` by task 45,
-/// which added the host control plane ([`HostFault`], [`Action`]).
-pub const CATALOG_VERSION: u16 = 2;
+/// [`HostFault`] is added *or reshaped*; it pins the shared vocabulary that the
+/// control plane (which names classes in its `StopMask`) and every service agree
+/// on. Stable [`DecisionClass`] / [`HostFault`] discriminants mean a recorded
+/// [`EnvSpec`] keeps replaying across a version bump *when the byte forms are
+/// compatible*. Bumped to `2` by task 45 (the host control plane: [`HostFault`],
+/// [`Action`]); bumped to `3` by task 50, which reshaped the network class from
+/// per-frame `NetSend` to per-flow [`NetFlow`](DecisionClass::NetFlow) — the
+/// [`DecisionClass`] discriminant `4` is preserved, but the net [`Fault`] byte
+/// vocabulary changed incompatibly, so [`EnvSpec::BLOB_VERSION`] bumped in step to
+/// reject a stale blob rather than silently reinterpret an old net fault.
+pub const CATALOG_VERSION: u16 = 3;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service
@@ -116,14 +121,14 @@ pub trait Environment {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct NodeId(pub u32);
 
-/// A connection identity derived from a frame's 5-tuple, used only for fault
-/// *targeting* in a [`DecisionPoint::NetSend`]. Mirrors the integration type.
+/// A connection identity derived from a flow's 5-tuple, used only for fault
+/// *targeting* in a [`DecisionPoint::NetFlow`]. Mirrors the integration type.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct ConnId(pub u64);
 
 /// V-time: a count of retired conditional branches — a *derived view* of the
 /// [`Moment`] axis, used for fault delays and windows. Mirrors the integration
-/// type. Fault delays ([`Fault::NetDelay`], [`Fault::BlockLatency`],
+/// type. Fault delays ([`Fault::NetLatency`], [`Fault::BlockLatency`],
 /// [`Fault::ProcPause`]) and [`HostFault::SkewTime`] are in these branch-count
 /// units.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]

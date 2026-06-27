@@ -27,7 +27,7 @@ pub environment::BlockOp::Write = 1
 #[repr(u16)] pub enum environment::DecisionClass
 pub environment::DecisionClass::BlockIo = 5
 pub environment::DecisionClass::Entropy = 1
-pub environment::DecisionClass::NetSend = 4
+pub environment::DecisionClass::NetFlow = 4
 pub environment::DecisionClass::Payload = 2
 pub environment::DecisionClass::Process = 6
 pub environment::DecisionClass::Scheduler = 3
@@ -41,11 +41,11 @@ pub environment::DecisionPoint::BlockIo::len: u32
 pub environment::DecisionPoint::BlockIo::op: environment::BlockOp
 pub environment::DecisionPoint::Entropy
 pub environment::DecisionPoint::Entropy::bytes: u32
-pub environment::DecisionPoint::NetSend
-pub environment::DecisionPoint::NetSend::conn: environment::ConnId
-pub environment::DecisionPoint::NetSend::dst: environment::NodeId
-pub environment::DecisionPoint::NetSend::len: u32
-pub environment::DecisionPoint::NetSend::src: environment::NodeId
+pub environment::DecisionPoint::NetFlow
+pub environment::DecisionPoint::NetFlow::conn: environment::ConnId
+pub environment::DecisionPoint::NetFlow::dst: environment::NodeId
+pub environment::DecisionPoint::NetFlow::event: environment::FlowEvent
+pub environment::DecisionPoint::NetFlow::src: environment::NodeId
 pub environment::DecisionPoint::Payload
 pub environment::DecisionPoint::Payload::bytes: u32
 pub environment::DecisionPoint::Process
@@ -85,16 +85,20 @@ pub environment::Fault::BlockEio
 pub environment::Fault::BlockLatency(environment::VTime)
 pub environment::Fault::BlockNospc
 pub environment::Fault::BlockTorn(u32)
-pub environment::Fault::NetCorrupt(environment::CorruptSpec)
-pub environment::Fault::NetDelay(environment::VTime)
-pub environment::Fault::NetDrop
-pub environment::Fault::NetDup
-pub environment::Fault::NetReorder
+pub environment::Fault::NetLatency(environment::VTime)
+pub environment::Fault::NetLoss
+pub environment::Fault::NetLoss::den: u16
+pub environment::Fault::NetLoss::num: u16
+pub environment::Fault::NetReset
+pub environment::Fault::NetThrottle
+pub environment::Fault::NetThrottle::bps: u32
 pub environment::Fault::ProcKill
 pub environment::Fault::ProcPause(environment::VTime)
 pub environment::Fault::ProcRestart
 impl environment::Fault
 pub fn environment::Fault::class(&self) -> environment::DecisionClass
+#[repr(u16)] pub enum environment::FlowEvent
+pub environment::FlowEvent::Open = 0
 pub enum environment::HostFault
 pub environment::HostFault::CorruptMemory
 pub environment::HostFault::CorruptMemory::gpa: u64
@@ -113,9 +117,6 @@ pub environment::Outcome::NeedsHost
 pub environment::Outcome::Resolved(environment::Answer)
 pub struct environment::BitMask(pub u64)
 pub struct environment::ConnId(pub u64)
-pub struct environment::CorruptSpec
-pub environment::CorruptSpec::offset: u32
-pub environment::CorruptSpec::xor: u8
 pub struct environment::EnvCodec
 impl environment::EnvCodec
 pub fn environment::EnvCodec::compose(&environment::EnvSpec, &environment::EnvSpec, environment::Moment) -> core::result::Result<environment::EnvSpec, environment::EnvError>

@@ -29,11 +29,13 @@ use crate::{Environment, Outcome, VTime};
 const MAGIC: u32 = u32::from_le_bytes(*b"DEV2");
 
 /// A correlated, V-time-windowed fault that is **not** a per-`Moment`
-/// [`Action`] — e.g. a network partition (a link and a window where all frames
-/// drop together). It is part of the reproducer so a `Branch`/`Replay`
-/// re-applies it deterministically: the frontier translates each entry into the
-/// service's standing-fault API (e.g. pv-net `Switch::set_partition`) on branch.
-/// It is applied imperatively by the frontier, never through
+/// [`Action`] — e.g. a network partition (a link and a window where all traffic
+/// drops together). It is part of the reproducer so a `Branch`/`Replay`
+/// re-applies it deterministically: the frontier hands each entry to the guest
+/// utility, which **enforces** it on the intra-guest CNI for the window (e.g. an
+/// nftables rule), exactly as it enforces a per-flow [`NetFlow`](DecisionClass::NetFlow)
+/// answer — there is no host switch to consult (task 50 retired `pv-net`). It is
+/// applied imperatively by the frontier, never through
 /// [`decide`](Environment::decide) and never armed out-of-band where it would
 /// escape replay. `target` is service-interpreted (it encodes, e.g., the
 /// `(NodeId, NodeId)` link); its bytes are deterministic and no `HashMap` order
@@ -96,10 +98,15 @@ pub enum EnvSpec {
 }
 
 impl EnvSpec {
-    /// The reproducer blob format version. Bumps when the blob layout changes;
+    /// The reproducer blob format version. Bumps when the blob layout changes
+    /// **or** when an inner byte vocabulary changes incompatibly;
     /// [`decode`](EnvSpec::decode) rejects any other version with
-    /// [`EnvError::BadVersion`].
-    pub const BLOB_VERSION: u16 = 2;
+    /// [`EnvError::BadVersion`]. Bumped to `3` by task 50: the container layout
+    /// (magic, [`Action`] map, standing faults) is unchanged, but the network
+    /// [`Fault`](crate::Fault) byte vocabulary was reshaped (per-frame → per-flow),
+    /// so a task-45 `v2` blob carrying an old net fault must reject rather than
+    /// silently reinterpret it as a new flow policy.
+    pub const BLOB_VERSION: u16 = 3;
 
     /// The seed every backing draws from.
     pub fn seed(&self) -> u64 {

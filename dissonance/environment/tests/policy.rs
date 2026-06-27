@@ -34,19 +34,27 @@ fn equal_policies_built_differently_encode_identically() {
     // in different orders → identical bytes (the eligible list is canonicalized).
     let mut a = FaultPolicy::none();
     a.set_class(
-        DecisionClass::NetSend,
+        DecisionClass::NetFlow,
         1,
         4,
-        &[Fault::NetDup, Fault::NetDrop, Fault::NetDelay(VTime(5))],
+        &[
+            Fault::NetReset,
+            Fault::NetLatency(VTime(5)),
+            Fault::NetThrottle { bps: 1000 },
+        ],
     )
     .unwrap();
 
     let mut b = FaultPolicy::none();
     b.set_class(
-        DecisionClass::NetSend,
+        DecisionClass::NetFlow,
         1,
         4,
-        &[Fault::NetDelay(VTime(5)), Fault::NetDrop, Fault::NetDup],
+        &[
+            Fault::NetThrottle { bps: 1000 },
+            Fault::NetLatency(VTime(5)),
+            Fault::NetReset,
+        ],
     )
     .unwrap();
 
@@ -81,12 +89,12 @@ fn set_class_rejects_misuse() {
     );
     // Zero denominator.
     assert_eq!(
-        p.set_class(DecisionClass::NetSend, 1, 0, &[]),
+        p.set_class(DecisionClass::NetFlow, 1, 0, &[]),
         Err(EnvError::Malformed)
     );
     // Foreign-class fault in a class's eligible set.
     assert_eq!(
-        p.set_class(DecisionClass::NetSend, 1, 2, &[Fault::BlockEio]),
+        p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::BlockEio]),
         Err(EnvError::Malformed)
     );
 }
@@ -120,10 +128,10 @@ fn from_bytes_rejects_bad_magic_and_trailing_bytes() {
 
 #[test]
 fn from_bytes_rejects_zero_denominator() {
-    // Encode a policy with den=2, then zero the NetSend denominator in place.
+    // Encode a policy with den=2, then zero the NetFlow denominator in place.
     // Layout after magic(4)+version(2): net{ num:u32, den:u32, count:u32, ... }.
     let mut p = FaultPolicy::none();
-    p.set_class(DecisionClass::NetSend, 1, 2, &[Fault::NetDrop])
+    p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
         .unwrap();
     let mut bytes = p.to_bytes();
     // num at offset 6..10, den at 10..14.

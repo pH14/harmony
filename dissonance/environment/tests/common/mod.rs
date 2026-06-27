@@ -12,9 +12,8 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 
 use environment::{
-    Action, Answer, BlockOp, ConnId, CorruptSpec, DecisionClass, DecisionPoint, EnvSpec,
-    Environment, Fault, FaultPolicy, HostFault, Moment, NodeId, Outcome, Ratio, StandingFault,
-    VTime,
+    Action, Answer, BlockOp, ConnId, DecisionClass, DecisionPoint, EnvSpec, Environment, Fault,
+    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, StandingFault, VTime,
 };
 
 /// Proptest config: spec case count, cut hard under Miri (kept for portability
@@ -31,12 +30,12 @@ pub fn config(cases: u32) -> ProptestConfig {
 
 pub fn arb_net_fault() -> impl Strategy<Value = Fault> {
     prop_oneof![
-        Just(Fault::NetDrop),
-        any::<u64>().prop_map(|d| Fault::NetDelay(VTime(d))),
-        Just(Fault::NetReorder),
-        Just(Fault::NetDup),
-        (any::<u32>(), any::<u8>())
-            .prop_map(|(offset, xor)| Fault::NetCorrupt(CorruptSpec { offset, xor })),
+        any::<u64>().prop_map(|d| Fault::NetLatency(VTime(d))),
+        // `den >= 1` so the fault round-trips through `set_class` and the codec
+        // and never asks the enforcer to divide by zero.
+        (any::<u16>(), 1u16..=u16::MAX).prop_map(|(num, den)| Fault::NetLoss { num, den }),
+        any::<u32>().prop_map(|bps| Fault::NetThrottle { bps }),
+        Just(Fault::NetReset),
     ]
 }
 
@@ -123,7 +122,7 @@ pub fn arb_policy() -> impl Strategy<Value = FaultPolicy> {
     )
         .prop_map(|(net, block, proc)| {
             let mut p = FaultPolicy::none();
-            p.set_class(DecisionClass::NetSend, net.0, net.1, &net.2)
+            p.set_class(DecisionClass::NetFlow, net.0, net.1, &net.2)
                 .expect("net class is a fault class with in-class faults");
             p.set_class(DecisionClass::BlockIo, block.0, block.1, &block.2)
                 .expect("block class is a fault class with in-class faults");
@@ -146,7 +145,7 @@ pub fn arb_class() -> impl Strategy<Value = DecisionClass> {
         Just(DecisionClass::Entropy),
         Just(DecisionClass::Payload),
         Just(DecisionClass::Scheduler),
-        Just(DecisionClass::NetSend),
+        Just(DecisionClass::NetFlow),
         Just(DecisionClass::BlockIo),
         Just(DecisionClass::Process),
     ]
@@ -159,13 +158,11 @@ pub fn arb_point() -> impl Strategy<Value = DecisionPoint> {
         (0u32..=4096).prop_map(|bytes| DecisionPoint::Entropy { bytes }),
         (0u32..=4096).prop_map(|bytes| DecisionPoint::Payload { bytes }),
         (0u32..=64).prop_map(|ready| DecisionPoint::Scheduler { ready }),
-        (any::<u32>(), any::<u32>(), any::<u64>(), any::<u32>()).prop_map(|(s, d, c, l)| {
-            DecisionPoint::NetSend {
-                src: NodeId(s),
-                dst: NodeId(d),
-                conn: ConnId(c),
-                len: l,
-            }
+        (any::<u32>(), any::<u32>(), any::<u64>()).prop_map(|(s, d, c)| DecisionPoint::NetFlow {
+            src: NodeId(s),
+            dst: NodeId(d),
+            conn: ConnId(c),
+            event: FlowEvent::Open,
         }),
         (arb_blockop(), any::<u64>(), any::<u32>())
             .prop_map(|(op, lba, len)| DecisionPoint::BlockIo { op, lba, len }),
@@ -282,7 +279,7 @@ pub fn ref_admissible(point: &DecisionPoint, ans: &Answer) -> bool {
             }
             _ => false,
         },
-        DecisionPoint::NetSend { .. } | DecisionPoint::Process { .. } => match ans {
+        DecisionPoint::NetFlow { .. } | DecisionPoint::Process { .. } => match ans {
             Answer::Nominal => true,
             Answer::Fault(f) => f.class() == point.class(),
             Answer::Supply(_) => false,

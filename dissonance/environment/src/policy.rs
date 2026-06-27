@@ -55,7 +55,7 @@ impl ClassPolicy {
 
 /// Per-class fault eligibility and probability, sampled by
 /// [`SeededEnv`](crate::SeededEnv). Only the three fault classes
-/// ([`NetSend`](DecisionClass::NetSend) / [`BlockIo`](DecisionClass::BlockIo) /
+/// ([`NetFlow`](DecisionClass::NetFlow) / [`BlockIo`](DecisionClass::BlockIo) /
 /// [`Process`](DecisionClass::Process)) carry a policy; the supply classes never
 /// fault. The whole policy is part of a reproducer artifact (carried by every
 /// [`EnvSpec`](crate::EnvSpec) variant), because a seed alone cannot reproduce a
@@ -144,7 +144,7 @@ impl FaultPolicy {
         if v != VERSION {
             return Err(EnvError::BadVersion(v));
         }
-        let net = read_class(&mut r, DecisionClass::NetSend)?;
+        let net = read_class(&mut r, DecisionClass::NetFlow)?;
         let block = read_class(&mut r, DecisionClass::BlockIo)?;
         let process = read_class(&mut r, DecisionClass::Process)?;
         if !r.at_end() {
@@ -162,7 +162,7 @@ impl FaultPolicy {
     /// [`Answer::Nominal`] without drawing.
     pub(crate) fn sample(&self, class: DecisionClass, rng: &mut Prng) -> Answer {
         match class {
-            DecisionClass::NetSend => self.net.sample(rng),
+            DecisionClass::NetFlow => self.net.sample(rng),
             DecisionClass::BlockIo => self.block.sample(rng),
             DecisionClass::Process => self.process.sample(rng),
             _ => Answer::Nominal,
@@ -175,7 +175,7 @@ impl FaultPolicy {
         match class {
             DecisionClass::BlockIo => &mut self.block,
             DecisionClass::Process => &mut self.process,
-            // NetSend (and, unreachably, supply classes) land here.
+            // NetFlow (and, unreachably, supply classes) land here.
             _ => &mut self.net,
         }
     }
