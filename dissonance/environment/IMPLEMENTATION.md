@@ -216,14 +216,29 @@ The old per-decision `DecisionId` key is **removed** — superseded by `Moment`
 
 `EnvCodec::{seeded, mutate, compose}` is the vocabulary-aware seam the Theme calls
 (it "cannot invent a legal `HostFault`/`Answer`, so it asks the codec").
-`compose(base, tail, at)` keeps `base`'s genesis prefix `[0, at)` and splices
-`tail` in at `at`, re-keying every tail `Moment` by `+at` (saturating) — the
-collision-free, genesis-complete, **one-axis integer arithmetic** task 93's update
-calls for (no cross-plane merge). `mutate(env, salt)` is deterministic and only
-ever proposes *host*-plane actions (always legal — a `HostFault` needs no
-`DecisionPoint`); guest-plane mutation needs the live decision context the
-explorer supplies, out of scope for this offline codec. `seeded` is the pure DST
-constructor.
+
+`compose(base, tail, at) -> Result<EnvSpec, EnvError>` keeps `base`'s genesis
+prefix `[0, at)` and splices `tail` in at `at`, re-keying every tail `Moment` by
+`+at` — the collision-free, genesis-complete **one-axis integer arithmetic**
+task 93's update calls for (no cross-plane merge). It is **genesis-complete for
+both planes**: the tail's standing faults are carried too, their V-time windows
+shifted by the same `+at` (V-time being a derived view of the same retired-count
+axis), so a bug caused by a branch-local standing fault (e.g. a partition) still
+replays from the composed genesis — *the PR #16 P1 fix; tail standing faults were
+previously dropped.* Re-keying is **checked, not saturating**: an offset that
+would push a tail `Moment` or standing window bound past `u64::MAX` returns
+`EnvError::Overflow` rather than collapsing distinct overrides onto one key (*the
+P2 fix; `saturating_add` previously merged them silently*).
+
+`mutate(env, salt)` is deterministic and **host-only**: it inserts, moves, or
+removes an `Action::Host` override (always legal — a `HostFault` needs no
+`DecisionPoint`), and **every `Action::Guest` override is preserved verbatim** —
+never removed, relocated, or overwritten (the destination of an insert/move skips
+any guest-occupied `Moment` via `free_non_guest_slot`). This is *the P2 mutate
+fix*: previously the move/remove victim was drawn from the whole merged map, so a
+guest answer could be relocated out of the `DecisionPoint` context the codec
+lacks. Guest-plane mutation stays the explorer's job (it has the live decision
+context). `seeded` is the pure DST constructor.
 
 ### The D4 invariant (no Theme/explorer change to consume `HostFault`)
 
@@ -255,6 +270,17 @@ contract not at all — the invariant holds.
   round-trips, and no `SetClockRate` can smuggle a divide-by-zero into the
   frontier (rule 4). The decoder also rejects a zero denominator from mutated
   bytes.
+- **`compose` saturating the offset / dropping tail standing faults** (the
+  original PR #16 findings) — rejected. Saturating `m + at` collapses distinct
+  overrides onto `u64::MAX`, and dropping the tail's standing faults loses
+  reproducer state below a snapshot; both silently violate the genesis-complete,
+  collision-free replay contract. Now `compose` carries the tail standing
+  (shifted by `+at`) and returns `Err(EnvError::Overflow)` on any out-of-range
+  re-keying — fallible by necessity, not silently lossy.
+- **`mutate` selecting move/remove victims from the whole map** (PR #16) —
+  rejected: it can relocate an `Action::Guest` away from the `DecisionPoint`
+  context the codec lacks, forcing a wrong/ignored guest answer on replay. Victims
+  are now host-only and guest overrides are preserved verbatim.
 
 ### Integrator notes (task 45)
 
@@ -268,22 +294,31 @@ contract not at all — the invariant holds.
   determinism contract (`SkewTime`/`SetClockRate` integer/fixed-point;
   `CorruptMemory` = pure `word ^ mask` at `(Moment, gpa)`) is what makes that
   enforcement bit-identical on replay.
-- **`compose` does not compose `standing`** (V-time axis ≠ the `Moment` axis);
-  it takes `base`'s seed/policy/standing. If cross-env V-time-window composition
-  is ever needed, that is a separate axis the integrator handles.
+- **`compose` is genesis-complete for both planes and fallible.** It keeps
+  `base`'s seed/policy, and merges `base`'s standing faults with `tail`'s standing
+  faults shifted by `+at`; it returns `Err(EnvError::Overflow)` if any re-keying
+  would exceed `u64::MAX`. The single offset `at` shifts *both* the `Moment`
+  override keys and the V-time standing windows — `compose` assumes the tail is
+  uniformly branch-local and V-time is a derived view of the same timeline. If the
+  integration ever needs distinct Moment- vs V-time offsets, that is a follow-on
+  (a second offset parameter), not a silent drop.
 
 ## Gates
 
 `cargo build/nextest/clippy(-D warnings)/fmt -p environment --all-features` and
-`cargo deny check` all pass: 63 tests, including the two task-45 acceptance
-properties — `mixed_host_guest_replays_bit_identically` (256-case
-record→replay round-trip with host overrides present) and
-`compose_rekeys_moments` (256-case one-axis re-keying) — plus the carried-forward
-guest gates (override semantics cross-checked against an independent rule; per-class
-golden answer sequence; host-plane wire golden; codec round-trip +
-never-panic-on-arbitrary-bytes + off-version `BadVersion`; `FaultPolicy`
-byte-determinism; no-order-leakage permutation tests) and the ignored,
-nightly-only public-api guard. Suite runtime ≈ 0.5 s. As with the other
+`cargo deny check` all pass: 67 tests, including the task-45 acceptance properties
+— `mixed_host_guest_replays_bit_identically` (256-case record→replay round-trip
+with host overrides present) and `compose_rekeys_moments_and_carries_standing`
+(256-case one-axis re-keying that now also asserts tail standing faults survive
+into genesis) — plus the PR #16 round-1 hardening:
+`mutate_preserves_every_guest_override` (256-case host-only invariant),
+`compose_offset_overflow_is_rejected` / `compose_standing_overflow_is_rejected`
+(the `u64::MAX` boundary), and `compose_keeps_base_seed_policy_and_merges_standing`.
+The carried-forward guest gates remain (override semantics cross-checked against an
+independent rule; per-class golden answer sequence; host-plane wire golden; codec
+round-trip + never-panic-on-arbitrary-bytes + off-version `BadVersion`;
+`FaultPolicy` byte-determinism; no-order-leakage permutation tests) alongside the
+ignored, nightly-only public-api guard. Suite runtime ≈ 0.5 s. As with the other
 proptest-using crates, the clippy run surfaces the pre-existing workspace
 `clippy.toml` meta-diagnostics about the unresolvable `rand::*` disallowed-method
 paths (proptest pulls `rand` into the dev graph); they cite no crate code and do

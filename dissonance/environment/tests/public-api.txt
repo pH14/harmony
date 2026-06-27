@@ -58,6 +58,7 @@ pub fn environment::DecisionPoint::class(&self) -> environment::DecisionClass
 pub enum environment::EnvError
 pub environment::EnvError::BadVersion(u16)
 pub environment::EnvError::Malformed
+pub environment::EnvError::Overflow
 pub enum environment::EnvSpec
 pub environment::EnvSpec::Recorded
 pub environment::EnvSpec::Recorded::overrides: alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
@@ -116,7 +117,7 @@ pub environment::CorruptSpec::offset: u32
 pub environment::CorruptSpec::xor: u8
 pub struct environment::EnvCodec
 impl environment::EnvCodec
-pub fn environment::EnvCodec::compose(&environment::EnvSpec, &environment::EnvSpec, environment::Moment) -> environment::EnvSpec
+pub fn environment::EnvCodec::compose(&environment::EnvSpec, &environment::EnvSpec, environment::Moment) -> core::result::Result<environment::EnvSpec, environment::EnvError>
 pub fn environment::EnvCodec::mutate(&environment::EnvSpec, u64) -> environment::EnvSpec
 pub fn environment::EnvCodec::seeded(u64, environment::FaultPolicy) -> environment::EnvSpec
 pub struct environment::FaultPolicy

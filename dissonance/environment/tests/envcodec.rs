@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Gate 7 — `EnvCodec`, the proposal seam. `compose` re-keys `Moment`s correctly
-//! (one-axis arithmetic — the task-45 acceptance gate, ≥256 cases) and the
-//! re-keyed delta reproduces its run; `seeded` is a pure seeded env; `mutate` is
-//! deterministic and proposes only legal actions.
+//! (one-axis arithmetic — the task-45 acceptance gate, ≥256 cases), carries the
+//! tail's standing faults into genesis, and rejects offset overflow; the re-keyed
+//! delta reproduces its run; `seeded` is a pure seeded env; `mutate` is
+//! deterministic, host-only, and never relocates a guest override out of context.
 
 mod common;
 
@@ -10,14 +11,15 @@ use std::collections::BTreeMap;
 
 use common::{arb_action, arb_spec, config, run_guest_schedule};
 use environment::{
-    Action, Answer, ConnId, DecisionPoint as P, EnvCodec, EnvSpec, Environment, FaultPolicy,
-    Moment, NodeId, Outcome, StandingFault, VTime,
+    Action, Answer, ConnId, DecisionClass, DecisionPoint as P, EnvCodec, EnvError, EnvSpec,
+    Environment, FaultPolicy, Moment, NodeId, Outcome, StandingFault, VTime,
 };
 use proptest::prelude::*;
 
-/// The disjointness bound: all generated `Moment`s stay below it, and `compose`
-/// is called at exactly this offset, so `base` (`m < BOUND`) and `tail`
-/// (`m + BOUND`) never collide — making the re-keying exactly checkable.
+/// The disjointness bound: all generated `Moment`s and standing-window bounds
+/// stay below it, and `compose` is called at exactly this offset, so `base`
+/// (`m < BOUND`) and `tail` (`m + BOUND`) never collide and `+ BOUND` never
+/// overflows — making the re-keying exactly checkable.
 const BOUND: Moment = 1 << 20;
 
 /// A `Moment`-keyed override map with every `Moment` strictly below [`BOUND`].
@@ -25,12 +27,52 @@ fn arb_bounded_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
     prop::collection::btree_map(0u64..BOUND, arb_action(), 0..12)
 }
 
-fn recorded(overrides: BTreeMap<Moment, Action>) -> EnvSpec {
+/// A standing fault whose V-time window bounds are strictly below [`BOUND`], so
+/// shifting by `+ BOUND` cannot overflow.
+fn arb_bounded_standing() -> impl Strategy<Value = StandingFault> {
+    (
+        prop_oneof![
+            Just(DecisionClass::NetSend),
+            Just(DecisionClass::BlockIo),
+            Just(DecisionClass::Process),
+        ],
+        prop::collection::vec(any::<u8>(), 0..8),
+        0u64..BOUND,
+        0u64..BOUND,
+    )
+        .prop_map(|(class, target, a, b)| StandingFault {
+            class,
+            target,
+            window: (VTime(a), VTime(b)),
+        })
+}
+
+fn recorded_with(overrides: BTreeMap<Moment, Action>, standing: Vec<StandingFault>) -> EnvSpec {
     EnvSpec::Recorded {
         seed: 0,
         policy: FaultPolicy::none(),
         overrides,
-        standing: vec![],
+        standing,
+    }
+}
+
+fn recorded(overrides: BTreeMap<Moment, Action>) -> EnvSpec {
+    recorded_with(overrides, vec![])
+}
+
+/// Shift a standing fault's window by `+at` (for asserting tail survival).
+fn shifted(s: &StandingFault, at: Moment) -> StandingFault {
+    StandingFault {
+        class: s.class,
+        target: s.target.clone(),
+        window: (VTime(s.window.0.0 + at), VTime(s.window.1.0 + at)),
+    }
+}
+
+fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
+    match spec {
+        EnvSpec::Recorded { standing, .. } => standing,
+        EnvSpec::Seeded { .. } => &[],
     }
 }
 
@@ -38,28 +80,41 @@ proptest! {
     #![proptest_config(config(256))]
 
     /// `compose(base, tail, BOUND)` keeps every `base` entry (all `m < BOUND`) at
-    /// its `Moment` and places every `tail` entry at `m + BOUND` — one-axis
-    /// integer arithmetic, collision-free, genesis-complete.
+    /// its `Moment`, places every `tail` entry at `m + BOUND`, keeps every `base`
+    /// standing fault, and carries every `tail` standing fault shifted by `+BOUND`
+    /// — one-axis arithmetic, collision-free, genesis-complete (nothing dropped).
     #[test]
-    fn compose_rekeys_moments(
+    fn compose_rekeys_moments_and_carries_standing(
         base_ov in arb_bounded_overrides(),
+        base_st in prop::collection::vec(arb_bounded_standing(), 0..4),
         tail_ov in arb_bounded_overrides(),
+        tail_st in prop::collection::vec(arb_bounded_standing(), 0..4),
     ) {
-        let base = recorded(base_ov.clone());
-        let tail = recorded(tail_ov.clone());
-        let composed = EnvCodec::compose(&base, &tail, BOUND);
+        let base = recorded_with(base_ov.clone(), base_st.clone());
+        let tail = recorded_with(tail_ov.clone(), tail_st.clone());
+        let composed = EnvCodec::compose(&base, &tail, BOUND).expect("all < BOUND, no overflow");
         let out = composed.overrides();
 
         // Disjoint ranges ⇒ exact union, no entry lost or merged.
         prop_assert_eq!(out.len(), base_ov.len() + tail_ov.len());
-
-        // Every base entry survives unmoved (it is in the [0, BOUND) prefix).
         for (m, a) in &base_ov {
             prop_assert_eq!(out.get(m), Some(a));
         }
-        // Every tail entry is re-keyed by +BOUND, value unchanged.
         for (m, a) in &tail_ov {
             prop_assert_eq!(out.get(&(m + BOUND)), Some(a));
+        }
+
+        // Standing faults: every base one survives, every tail one survives
+        // shifted by +BOUND (none silently dropped — the genesis-completeness fix).
+        let result_standing = standing_of(&composed);
+        for s in &base_st {
+            prop_assert!(result_standing.contains(s), "base standing fault dropped");
+        }
+        for s in &tail_st {
+            prop_assert!(
+                result_standing.contains(&shifted(s, BOUND)),
+                "tail standing fault dropped from genesis"
+            );
         }
     }
 
@@ -78,6 +133,25 @@ proptest! {
         let decoded = EnvSpec::decode(&a.encode()).expect("legal blob");
         prop_assert_eq!(decoded.encode(), a.encode(), "byte-stable round-trip");
     }
+
+    /// `mutate` is **host-only**: every guest override in the input survives
+    /// verbatim (same `Moment`, same `Answer`) in the output — it is never
+    /// removed, relocated, or overwritten, so no out-of-context guest answer can
+    /// be fabricated.
+    #[test]
+    fn mutate_preserves_every_guest_override(spec in arb_spec(), salt in any::<u64>()) {
+        let mutated = EnvCodec::mutate(&spec, salt);
+        let out = mutated.overrides();
+        for (m, a) in spec.overrides() {
+            if let Action::Guest(_) = a {
+                prop_assert_eq!(
+                    out.get(m),
+                    Some(a),
+                    "a guest override was moved/removed/overwritten by mutate"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -89,7 +163,7 @@ fn compose_truncates_base_at_the_splice_point() {
         (20, Action::Guest(Answer::Supply(vec![1]))), // >= at, dropped
     ]));
     let tail = recorded(BTreeMap::from([(0, Action::Guest(Answer::Nominal))]));
-    let composed = EnvCodec::compose(&base, &tail, 10);
+    let composed = EnvCodec::compose(&base, &tail, 10).unwrap();
     let out = composed.overrides();
 
     assert!(out.contains_key(&5), "prefix entry kept");
@@ -102,18 +176,13 @@ fn compose_truncates_base_at_the_splice_point() {
 }
 
 #[test]
-fn compose_keeps_base_seed_policy_and_standing() {
+fn compose_keeps_base_seed_policy_and_merges_standing() {
     let mut policy = FaultPolicy::none();
     policy
-        .set_class(
-            environment::DecisionClass::NetSend,
-            1,
-            2,
-            &[environment::Fault::NetDrop],
-        )
+        .set_class(DecisionClass::NetSend, 1, 2, &[environment::Fault::NetDrop])
         .unwrap();
-    let standing = vec![StandingFault {
-        class: environment::DecisionClass::NetSend,
+    let base_standing = vec![StandingFault {
+        class: DecisionClass::NetSend,
         target: vec![1, 2],
         window: (VTime(0), VTime(9)),
     }];
@@ -121,19 +190,80 @@ fn compose_keeps_base_seed_policy_and_standing() {
         seed: 0xABCD,
         policy: policy.clone(),
         overrides: BTreeMap::new(),
-        standing: standing.clone(),
+        standing: base_standing.clone(),
     };
-    let tail = EnvSpec::Seeded {
+    // Tail carries its OWN standing fault (the P1 case).
+    let tail_standing = StandingFault {
+        class: DecisionClass::BlockIo,
+        target: vec![7],
+        window: (VTime(3), VTime(8)),
+    };
+    let tail = EnvSpec::Recorded {
         seed: 0x9999,
         policy: FaultPolicy::none(),
+        overrides: BTreeMap::new(),
+        standing: vec![tail_standing.clone()],
     };
-    let composed = EnvCodec::compose(&base, &tail, 100);
+    let composed = EnvCodec::compose(&base, &tail, 100).unwrap();
     assert_eq!(composed.seed(), 0xABCD, "base seed wins");
     assert_eq!(composed.policy(), &policy, "base policy wins");
-    let EnvSpec::Recorded { standing: st, .. } = &composed else {
-        panic!("compose yields Recorded");
+    let st = standing_of(&composed);
+    assert!(st.contains(&base_standing[0]), "base standing kept");
+    assert!(
+        st.contains(&shifted(&tail_standing, 100)),
+        "tail standing carried, shifted by +at"
+    );
+    assert_eq!(st.len(), 2, "no standing fault dropped or duplicated");
+}
+
+#[test]
+fn compose_offset_overflow_is_rejected() {
+    // P2 boundary: an offset that maps a tail Moment past u64::MAX must reject,
+    // never saturate two overrides onto one colliding key.
+    let tail = recorded(BTreeMap::from([
+        (0, Action::Guest(Answer::Nominal)),
+        (1, Action::Guest(Answer::Supply(vec![9]))),
+    ]));
+    let base = EnvSpec::Seeded {
+        seed: 0,
+        policy: FaultPolicy::none(),
     };
-    assert_eq!(st, &standing, "base standing faults kept");
+
+    // at = u64::MAX: Moment 0 → u64::MAX (fits), Moment 1 → overflow.
+    assert_eq!(
+        EnvCodec::compose(&base, &tail, u64::MAX),
+        Err(EnvError::Overflow),
+        "a tail Moment shifted past u64::MAX is rejected, not saturated"
+    );
+
+    // Exactly representable: a single tail Moment 0 at u64::MAX lands at u64::MAX.
+    let single = recorded(BTreeMap::from([(0, Action::Guest(Answer::Nominal))]));
+    let ok = EnvCodec::compose(&base, &single, u64::MAX).unwrap();
+    assert!(ok.overrides().contains_key(&u64::MAX));
+    assert_eq!(ok.overrides().len(), 1);
+}
+
+#[test]
+fn compose_standing_overflow_is_rejected() {
+    // A tail standing-fault window bound that overflows when shifted must also
+    // reject (the V-time axis re-keys consistently with the Moment axis).
+    let base = EnvSpec::Seeded {
+        seed: 0,
+        policy: FaultPolicy::none(),
+    };
+    let tail = recorded_with(
+        BTreeMap::new(),
+        vec![StandingFault {
+            class: DecisionClass::NetSend,
+            target: vec![],
+            window: (VTime(1), VTime(2)),
+        }],
+    );
+    assert_eq!(
+        EnvCodec::compose(&base, &tail, u64::MAX),
+        Err(EnvError::Overflow),
+        "a tail standing window shifted past u64::MAX is rejected"
+    );
 }
 
 #[test]
@@ -164,7 +294,7 @@ fn composed_delta_reproduces_its_run() {
         seed: 0xDEAD_BEEF,
         policy: FaultPolicy::none(),
     };
-    let composed = EnvCodec::compose(&base, &delta, at);
+    let composed = EnvCodec::compose(&base, &delta, at).unwrap();
     let shifted_sched: Vec<(Moment, P)> = delta_sched.iter().map(|(m, p)| (m + at, *p)).collect();
     let composed_trace = run_guest_schedule(&mut composed.materialize(), &shifted_sched);
 
@@ -208,6 +338,34 @@ fn mutate_of_empty_inserts_one_host_fault() {
     );
     // It must also be a legal, round-tripping blob.
     assert_eq!(EnvSpec::decode(&mutated.encode()).unwrap(), mutated);
+}
+
+#[test]
+fn mutate_never_disturbs_a_guest_only_spec() {
+    // A spec with only guest overrides: across many salts, every guest entry is
+    // preserved and the only change mutate can make is to *add* a host action.
+    let guest = BTreeMap::from([
+        (10, Action::Guest(Answer::Nominal)),
+        (
+            20,
+            Action::Guest(Answer::Fault(environment::Fault::NetDrop)),
+        ),
+        (30, Action::Guest(Answer::Supply(vec![1, 2, 3, 4]))),
+    ]);
+    let spec = recorded(guest.clone());
+    for salt in 0u64..64 {
+        let mutated = EnvCodec::mutate(&spec, salt);
+        let out = mutated.overrides();
+        for (m, a) in &guest {
+            assert_eq!(
+                out.get(m),
+                Some(a),
+                "guest override preserved at salt {salt}"
+            );
+        }
+        // The only legal op on a host-free map is insert (one host action added).
+        assert_eq!(out.len(), guest.len() + 1, "exactly one host action added");
+    }
 }
 
 #[test]

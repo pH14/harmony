@@ -10,10 +10,11 @@
 use std::collections::BTreeMap;
 
 use crate::VTime;
+use crate::error::EnvError;
 use crate::host::{Action, BitMask, HostFault, Moment, Ratio};
 use crate::policy::FaultPolicy;
 use crate::prng::Prng;
-use crate::recorded::EnvSpec;
+use crate::recorded::{EnvSpec, StandingFault};
 
 /// Domain separation for `mutate`'s PRNG, so a mutation salt and a base seed that
 /// happen to coincide do not draw the same stream.
@@ -38,11 +39,14 @@ impl EnvCodec {
 
     /// Deterministically **mutate** an environment: one tweak to the merged
     /// override map, selected by `salt` (same `(env, salt)` ⇒ same result). The
-    /// mutation is always *legal* — it inserts, moves, or removes a host-plane
-    /// [`Action::Host`] override, which carries no admissibility constraint (a
-    /// host fault needs no [`DecisionPoint`](crate::DecisionPoint)). Guest-plane
-    /// mutation requires the live decision context the explorer supplies at
-    /// `decide` time, not this offline codec, so it is out of scope here.
+    /// mutation operates **only on the host plane** — it inserts, moves, or
+    /// removes an [`Action::Host`] override, which carries no admissibility
+    /// constraint (a host fault needs no [`DecisionPoint`](crate::DecisionPoint)).
+    /// Guest-plane mutation requires the live decision context the explorer
+    /// supplies at `decide` time, not this offline codec; therefore **every
+    /// [`Action::Guest`] override is preserved verbatim** — `mutate` never
+    /// removes, relocates, or overwrites one, so it can never fabricate an
+    /// out-of-context guest answer.
     ///
     /// Always returns a [`Recorded`](EnvSpec::Recorded) spec (inserting a host
     /// fault into a [`Seeded`](EnvSpec::Seeded) base promotes it); the base's
@@ -55,31 +59,38 @@ impl EnvCodec {
         };
         let mut rng = Prng::new(salt ^ MUTATE_DOMAIN);
 
-        // With an empty map only "insert" is possible; otherwise pick among
-        // insert (0), remove (1), move (2).
-        let op = if overrides.is_empty() {
+        // Only host actions are legal move/remove victims. With none present, the
+        // only available op is "insert"; otherwise pick insert (0)/remove
+        // (1)/move (2).
+        let host_keys: Vec<Moment> = overrides
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::Host(_)))
+            .map(|(m, _)| *m)
+            .collect();
+        let op = if host_keys.is_empty() {
             0
         } else {
             rng.next_u64() % 3
         };
         match op {
             1 => {
-                let key = nth_key(&overrides, rng.next_u64());
-                if let Some(k) = key {
-                    overrides.remove(&k);
-                }
+                // Remove a host victim (guest actions are never removed).
+                let k = host_keys[(rng.next_u64() % host_keys.len() as u64) as usize];
+                overrides.remove(&k);
             }
             2 => {
-                let key = nth_key(&overrides, rng.next_u64());
-                if let Some(k) = key
-                    && let Some(action) = overrides.remove(&k)
-                {
-                    overrides.insert(rng.next_u64(), action);
+                // Move a host victim to a fresh slot that does not clobber a guest
+                // action (it may overwrite another host action, or land free).
+                let k = host_keys[(rng.next_u64() % host_keys.len() as u64) as usize];
+                if let Some(action) = overrides.remove(&k) {
+                    let dst = free_non_guest_slot(&overrides, &mut rng);
+                    overrides.insert(dst, action);
                 }
             }
             _ => {
-                let at = rng.next_u64();
-                overrides.insert(at, Action::Host(host_fault_from(&mut rng)));
+                // Insert a fresh host fault, again never clobbering a guest action.
+                let dst = free_non_guest_slot(&overrides, &mut rng);
+                overrides.insert(dst, Action::Host(host_fault_from(&mut rng)));
             }
         }
 
@@ -93,16 +104,23 @@ impl EnvCodec {
 
     /// **Compose** two environments on the single [`Moment`] axis: keep `base` as
     /// the genesis prefix `[0, at)` and splice `tail` in at `at`, re-keying every
-    /// `tail` override's `Moment` by `+ at` (saturating at [`u64::MAX`]). Because
-    /// `Moment` is one axis for *both* planes, this re-keying is plain integer
-    /// arithmetic — not a cross-plane merge (the task-93 simplification).
+    /// `tail` override's `Moment` by `+ at`. Because `Moment` is one axis for
+    /// *both* planes, this re-keying is plain integer arithmetic — not a
+    /// cross-plane merge (the task-93 simplification).
     ///
     /// The result is genesis-complete and collision-free: `base` contributes only
-    /// `m < at`, `tail` only `m + at ≥ at`. The seed, policy, and standing faults
-    /// come from `base` (the run starts there); `tail`'s seed/policy/standing are
-    /// not composed (standing faults live on the separate V-time axis — see
-    /// [`StandingFault`](crate::StandingFault)).
-    pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> EnvSpec {
+    /// `m < at`, `tail` only `m + at ≥ at`. The seed and policy come from `base`
+    /// (the run starts there). **`tail`'s standing faults are carried too** —
+    /// their V-time windows shift by `+ at` consistently with the overrides
+    /// (V-time being a derived view of the same retired-count axis), so a bug
+    /// caused by a branch-local standing fault (e.g. a partition) still replays
+    /// from the composed genesis. `tail`'s seed and policy are not composed.
+    ///
+    /// Returns [`EnvError::Overflow`] if any re-keying (`m + at`, or a tail
+    /// standing window bound `+ at`) would exceed [`u64::MAX`]; rejecting is
+    /// mandatory because saturating would silently collapse distinct overrides
+    /// onto one key, breaking the collision-free replay contract.
+    pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {
         let mut overrides: BTreeMap<Moment, Action> = base
             .overrides()
             .iter()
@@ -110,29 +128,52 @@ impl EnvCodec {
             .map(|(m, a)| (*m, a.clone()))
             .collect();
         for (m, a) in tail.overrides() {
-            overrides.insert(m.saturating_add(at), a.clone());
+            let key = m.checked_add(at).ok_or(EnvError::Overflow)?;
+            overrides.insert(key, a.clone());
         }
-        let standing = match base {
+
+        // base's standing faults are kept whole; tail's are appended, their
+        // V-time windows shifted by +at (overflow rejects, never saturates).
+        let mut standing: Vec<StandingFault> = match base {
             EnvSpec::Recorded { standing, .. } => standing.clone(),
             EnvSpec::Seeded { .. } => Vec::new(),
         };
-        EnvSpec::Recorded {
+        if let EnvSpec::Recorded {
+            standing: tail_standing,
+            ..
+        } = tail
+        {
+            for s in tail_standing {
+                let w0 = s.window.0.0.checked_add(at).ok_or(EnvError::Overflow)?;
+                let w1 = s.window.1.0.checked_add(at).ok_or(EnvError::Overflow)?;
+                standing.push(StandingFault {
+                    class: s.class,
+                    target: s.target.clone(),
+                    window: (VTime(w0), VTime(w1)),
+                });
+            }
+        }
+
+        Ok(EnvSpec::Recorded {
             seed: base.seed(),
             policy: base.policy().clone(),
             overrides,
             standing,
-        }
+        })
     }
 }
 
-/// The key at position `idx % len` of a non-empty map (used by `mutate` to pick a
-/// victim entry deterministically). `None` only when the map is empty.
-fn nth_key(map: &BTreeMap<Moment, Action>, idx: u64) -> Option<Moment> {
-    let len = map.len();
-    if len == 0 {
-        return None;
+/// A deterministic [`Moment`] slot that does **not** hold a guest action — used
+/// by `mutate` to place a host action without ever clobbering a guest override.
+/// Draws one PRNG word, then scans upward (wrapping) past any guest-occupied
+/// slot; it may land on a free slot or overwrite another host action, both legal.
+/// Terminates because guest actions are finite.
+fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment {
+    let mut d = rng.next_u64();
+    while matches!(map.get(&d), Some(Action::Guest(_))) {
+        d = d.wrapping_add(1);
     }
-    map.keys().nth((idx % len as u64) as usize).copied()
+    d
 }
 
 /// Draw one legal [`HostFault`] from `rng`. Every host fault is unconditionally
