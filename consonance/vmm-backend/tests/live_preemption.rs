@@ -220,3 +220,51 @@ fn guest_exit_before_deadline_returns_that_exit() {
         other => panic!("expected Exit::Io (the guest's OUT), got {other:?}"),
     }
 }
+
+#[test]
+#[ignore = "live KVM + perf; run on the box with --ignored"]
+fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
+    // P1(b): after a restore, the backend PMU counter's reset must fire at the NEXT
+    // entry (not at restore time), so a coexisting VM running on the same pinned
+    // thread in between does not contaminate the restored VM's run_until counter.
+    //
+    // B1: a busy-spin VM, run a bit, snapshot, restore.
+    let (mut b1, _m1) = boot_with(SPIN_CODE);
+    match b1.run_until(Vtime(20_000)).expect("b1 run_until") {
+        Exit::Deadline { reached } => assert_eq!(reached.0, 20_000),
+        other => panic!("expected Deadline at 20000, got {other:?}"),
+    }
+    let snap = b1.save().expect("save b1");
+    b1.restore(&snap).expect("restore b1"); // P1(b): re-arms the first-entry reset
+
+    // A DIFFERENT VM runs on the SAME (test) thread, retiring ~100k guest branches —
+    // which land in B1's shared, exclude_host PMU counter too.
+    {
+        let (mut b2, _m2) = boot_with(SPIN_CODE);
+        match b2.run_until(Vtime(100_000)).expect("b2 run_until") {
+            Exit::Deadline { reached } => assert_eq!(reached.0, 100_000),
+            other => panic!("expected Deadline at 100000, got {other:?}"),
+        }
+    }
+
+    // Re-enter the restored B1: its PMU reset fires at THIS entry, excluding B2's
+    // foreign branches, so run_until(50_000) lands at EXACTLY 50_000 — not 50_000 +
+    // B2's ~100_000. Without the P1(b) re-arm, B1's counter would already read
+    // ~100_000 here and run_until(50_000) would report a past-deadline (≈100_000).
+    match b1
+        .run_until(Vtime(50_000))
+        .expect("b1 run_until after foreign VM")
+    {
+        Exit::Deadline { reached } => assert_eq!(
+            reached.0, 50_000,
+            "restored VM's run_until must count only ITS branches (foreign-VM \
+             contamination excluded by the first-entry reset re-arm) — got {}",
+            reached.0
+        ),
+        other => panic!("expected Deadline at 50000, got {other:?}"),
+    }
+    eprintln!(
+        "[p1b] restored VM run_until landed at exactly 50000 after a foreign VM ran on the \
+         same thread — no foreign-branch contamination"
+    );
+}

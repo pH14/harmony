@@ -330,10 +330,13 @@ impl KvmBackend {
             .arm_overflow(armed_at)
     }
 
-    /// Disarm the PMU overflow + drain its ring buffer (best-effort cleanup).
-    fn pmu_disarm(&self) {
-        if let Some(pmu) = self.pmu.as_ref() {
-            let _ = pmu.disarm();
+    /// Disarm the PMU overflow + drain its ring buffer. Fallible so a disarm failure
+    /// is propagated (P2) rather than silently leaving the overflow armed for the
+    /// next `run()`. `Ok` when there is no counter (nothing to disarm).
+    fn pmu_disarm(&self) -> Result<()> {
+        match self.pmu.as_ref() {
+            Some(pmu) => pmu.disarm(),
+            None => Ok(()),
         }
     }
 
@@ -394,8 +397,13 @@ impl KvmBackend {
                     let (exit, pending) = decode_exit(self.run_page())?.ok_or(
                         BackendError::Internal("run_until: control exit misclassified as guest"),
                     )?;
+                    // Read the work AT the exit (no guest code runs between the exit
+                    // and this read). The adapter/`drive_run_until` use it to tell an
+                    // early exit (work < deadline) from the SIGIO-delay race where the
+                    // overflow already reached the deadline (work >= deadline) — P1(a).
+                    let work = self.pmu_work()?;
                     self.pending = pending;
-                    return Ok(LiveStop::Guest(exit));
+                    return Ok(LiveStop::Guest { exit, work });
                 }
             }
         }
@@ -430,8 +438,9 @@ impl KvmBackend {
                     let (exit, pending) = decode_exit(self.run_page())?.ok_or(
                         BackendError::Internal("run_until: control exit misclassified as guest"),
                     )?;
+                    let work = self.pmu_work()?; // work at the exit (P1(a))
                     self.pending = pending;
-                    return Ok(LiveStop::Guest(exit));
+                    return Ok(LiveStop::Guest { exit, work });
                 }
             }
         }
@@ -446,7 +455,7 @@ impl KvmBackend {
         if self.single_step_armed {
             return Ok(());
         }
-        self.pmu_disarm();
+        self.pmu_disarm()?;
         let dbg = kvm_guest_debug {
             control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
             ..Default::default()
@@ -789,10 +798,11 @@ enum LiveStop {
     /// Stopped at this work count (overflow kick or single-step trap) — no guest
     /// exit; the planner advances toward the deadline.
     Count(u64),
-    /// A genuine guest exit was taken before the deadline; its pending-completion
-    /// was already armed on the backend. The planner is told it reached the
-    /// deadline (so it stops), and `run_until` returns this exit instead.
-    Guest(Exit),
+    /// A genuine guest exit was taken; `work` is the retired-branch count **at** the
+    /// exit (P1(a)). Its pending-completion was armed on the backend. The planner is
+    /// told it reached the deadline (so it stops); `drive_run_until` then compares
+    /// `work` to the deadline — only `work < deadline` is a true early exit.
+    Guest { exit: Exit, work: u64 },
 }
 
 /// The live [`vtime::CpuBackend`] (+ [`PreemptCpu`]): a thin adapter binding the
@@ -805,7 +815,8 @@ struct LiveCpu<'a> {
     backend: &'a mut KvmBackend,
     deadline: u64,
     work_cache: u64,
-    pending_exit: Option<Exit>,
+    /// A stashed genuine guest exit + the real work count at it (P1(a)).
+    pending_exit: Option<(Exit, u64)>,
     err: Option<BackendError>,
 }
 
@@ -823,10 +834,11 @@ impl CpuBackend for LiveCpu<'_> {
                 self.work_cache = work;
                 Ok(work)
             }
-            // A guest exit: report the deadline so the planner stops cleanly; the
-            // real exit is recovered via `take_guest_exit`.
-            Ok(LiveStop::Guest(exit)) => {
-                self.pending_exit = Some(exit);
+            // A guest exit: report the deadline so the planner stops cleanly; the real
+            // exit + its work are recovered via `take_guest_exit` (P1(a) decides
+            // early/at/past from the work).
+            Ok(LiveStop::Guest { exit, work }) => {
+                self.pending_exit = Some((exit, work));
                 Ok(self.deadline)
             }
             Err(e) => {
@@ -849,8 +861,8 @@ impl CpuBackend for LiveCpu<'_> {
                 self.work_cache = work;
                 Ok(work)
             }
-            Ok(LiveStop::Guest(exit)) => {
-                self.pending_exit = Some(exit);
+            Ok(LiveStop::Guest { exit, work }) => {
+                self.pending_exit = Some((exit, work));
                 Ok(self.deadline)
             }
             Err(e) => {
@@ -862,7 +874,7 @@ impl CpuBackend for LiveCpu<'_> {
 }
 
 impl PreemptCpu for LiveCpu<'_> {
-    fn take_guest_exit(&mut self) -> Option<Exit> {
+    fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
         self.pending_exit.take()
     }
     fn take_error(&mut self) -> Option<BackendError> {
@@ -992,12 +1004,24 @@ impl Backend for KvmBackend {
             };
             drive_run_until(&planner, &mut cpu, deadline.0)
         };
-        // Always restore normal execution + disarm the overflow, success or error.
-        let _ = self.disable_single_step();
-        self.pmu_disarm();
+        // Cleanup MUST run and MUST succeed (P2): a failed single-step disarm leaves
+        // the vCPU single-stepping and a failed PMU disarm leaves the overflow armed,
+        // either of which corrupts the next `run()` (a stray `KVM_EXIT_DEBUG` / SIGIO).
+        // Attempt both, then propagate the first failure — fail closed, never return
+        // the exit as success over a backend left in a broken state.
+        let step_cleanup = self.disable_single_step();
+        let pmu_cleanup = self.pmu_disarm();
+        step_cleanup?;
+        pmu_cleanup?;
         let exit = outcome?;
-        // Count the exit (a guest exit's pending was armed inside the adapter;
-        // `Deadline` needs no completion, leaving `pending == None`).
+        // P1(a): a guest exit absorbed at exactly the deadline left a pending
+        // completion, but the timer preempts instead, so clear it (`Deadline` needs
+        // no completion). A normal `Deadline` already has `pending == None`, so this
+        // is a no-op there; a genuinely-early guest exit (returned, not `Deadline`)
+        // keeps its pending so the VMM services it.
+        if matches!(exit, Exit::Deadline { .. }) {
+            self.pending = Pending::None;
+        }
         self.counts.bump(exit.reason());
         Ok(exit)
     }
@@ -1122,15 +1146,16 @@ impl Backend for KvmBackend {
         self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
         self.restore_xsave(&state.xsave)?;
         self.restore_msrs(state)?;
-        // Snapshot restore zeroes the V-time work counter (vmm-core resets its
-        // `PerfWorkCounter`; the restored VClock carries the effective V-time in
-        // `vns_base`). Reset the backend's `run_until` counter in lockstep so the
-        // B≡A invariant survives a restore (a deadline on A's axis still lands
-        // exactly on B). Best-effort: a counter that cannot reset only affects a
-        // later `run_until`, never this restore.
-        if let Some(pmu) = self.pmu.as_mut() {
-            let _ = pmu.reset();
-        }
+        // P1(b): re-arm the first-entry PMU reset rather than resetting now. Snapshot
+        // restore zeroes the V-time work counter, but the box `perf_event` counter is
+        // shared across the vCPU thread: if another (coexisting) VM runs between this
+        // restore and the restored VM's NEXT entry, resetting *here* would let that
+        // VM's guest branches accumulate into the backend counter, diverging it from
+        // vmm-core's V-time counter (which re-arms its own first-entry reset — see
+        // `Vmm::restore_vm_state`). Deferring the reset to `ensure_first_run` at the
+        // next entry excludes the foreign branches and keeps the B≡A invariant across
+        // a restore (the explorer / branching N-VM path, task 48).
+        self.first_run_done = false;
         Ok(())
     }
 

@@ -45,11 +45,15 @@ pub(crate) const SKID_MARGIN: u64 = 128;
 /// The live impl is `KvmBackend`'s box-only adapter; the tests use a
 /// [`vtime::sim::SimCpu`] wrapper.
 pub(crate) trait PreemptCpu: CpuBackend {
-    /// Take the guest exit captured during the most recent
-    /// `run_until_overflow`/`single_step`, if one occurred. When `Some`, the work
-    /// counts those calls reported are a sentinel (the deadline, to stop the
-    /// planner) — the real stop point is *this* exit, short of the deadline.
-    fn take_guest_exit(&mut self) -> Option<Exit>;
+    /// Take the genuine guest exit captured during the most recent
+    /// `run_until_overflow`/`single_step`, **with the real work count at that
+    /// exit**, if one occurred. When `Some`, the work value those calls returned to
+    /// the planner is a sentinel (the deadline, to stop it) — the *real* stop is
+    /// this exit at `work`. [`drive_run_until`] compares `work` to the deadline:
+    /// only an exit at `work < deadline` is genuinely early; one at `work >=
+    /// deadline` (the SIGIO-delay race — the overflow already reached the deadline
+    /// before a natural exit surfaced) is the deadline, not an early exit (P1(a)).
+    fn take_guest_exit(&mut self) -> Option<(Exit, u64)>;
 
     /// Take the typed [`BackendError`] behind the most recent
     /// [`VtimeError::Backend`] (a failed syscall), so `run_until` returns the real
@@ -61,14 +65,21 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// Drive `cpu` to **exactly** `deadline` retired-branch work units via the
 /// arm-overflow-early → single-step planner, then map the outcome to an [`Exit`]:
 ///
-/// - a genuine guest exit before the deadline → **that** exit (short of `deadline`);
-/// - otherwise → [`Exit::Deadline`] at exactly `deadline` (or at `now`, if the
+/// - a genuine guest exit **strictly before** the deadline → **that** exit (short
+///   of `deadline`);
+/// - a guest exit at `work == deadline` (the SIGIO-delay race: the overflow reached
+///   the deadline before the natural exit surfaced) → [`Exit::Deadline`] at the
+///   deadline, **not** an early exit — the timer instant was reached, so the timer
+///   takes precedence (P1(a));
+/// - a guest exit at `work > deadline` → a loud [`BackendError::Internal`]: the
+///   free-run executed *past* the exact V-time injection point, a determinism
+///   violation (the overflow skid exceeded the margin), reported, never absorbed;
+/// - no guest exit → [`Exit::Deadline`] at exactly `deadline` (or at `now`, if the
 ///   deadline was already in the past when `run_until` was entered — the timer is
 ///   overdue, deliver it immediately; never *past* a future deadline);
 /// - a backend syscall failure → its typed [`BackendError`];
-/// - [`VtimeError::SkidExceeded`] (the overflow overshot the margin) → a loud
-///   [`BackendError::Internal`]: a determinism-destroying event, reported, never
-///   papered over by widening a tolerance.
+/// - [`VtimeError::SkidExceeded`] (the overflow overshot the margin with no guest
+///   exit) → a loud [`BackendError::Internal`], same posture.
 ///
 /// Issues no syscall; all I/O is inside `cpu`'s trait methods.
 pub(crate) fn drive_run_until<C: PreemptCpu>(
@@ -78,9 +89,24 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
 ) -> Result<Exit> {
     match planner.stop_at(cpu, deadline) {
         Ok(PlanOutcome::ReadyToInject { stopped_at, .. }) => match cpu.take_guest_exit() {
-            // The guest exited before the deadline: return it (short of `deadline`),
-            // pending-completion already armed on the backend like a plain `run`.
-            Some(exit) => Ok(exit),
+            // A natural guest exit BEFORE the deadline: return it (short of
+            // `deadline`), pending-completion already armed on the backend like `run`.
+            Some((exit, work)) if work < deadline => Ok(exit),
+            // P1(a): a natural guest exit at-or-past the deadline is NOT early — the
+            // overflow reached the deadline first (its SIGIO just hadn't landed). At
+            // exactly the deadline the timer instant is reached → preempt (the exit is
+            // absorbed; `run_until` clears the pending). Past it, the free-run ran
+            // beyond the exact injection point → a loud determinism error.
+            Some((_exit, work)) if work == deadline => Ok(Exit::Deadline {
+                reached: Vtime(deadline),
+            }),
+            Some((_exit, work)) => {
+                debug_assert!(work > deadline);
+                Err(BackendError::Internal(
+                    "run_until: a guest exit landed past the deadline (overflow skid exceeded the \
+                     margin) — the exact V-time injection point was missed",
+                ))
+            }
             // No guest exit: the planner landed at exactly `deadline` branches.
             None => Ok(Exit::Deadline {
                 reached: Vtime(stopped_at),
@@ -128,7 +154,8 @@ mod tests {
         inner: SimCpu,
         guest_exit_at: Option<u64>,
         deadline: u64,
-        pending_exit: Option<Exit>,
+        /// The stashed (exit, real-work-at-exit) — see [`PreemptCpu::take_guest_exit`].
+        pending_exit: Option<(Exit, u64)>,
         fail: bool,
     }
 
@@ -152,14 +179,14 @@ mod tests {
             self.fail = true;
             self
         }
-        /// Stash a guest exit + return the deadline sentinel iff work crossed the
-        /// threshold; else return the real work count.
+        /// Stash a guest exit **with its real work count** + return the deadline
+        /// sentinel iff work crossed the threshold; else return the real work count.
         fn maybe_exit(&mut self, work: u64) -> u64 {
             if let Some(at) = self.guest_exit_at
                 && work >= at
                 && self.pending_exit.is_none()
             {
-                self.pending_exit = Some(GUEST_EXIT);
+                self.pending_exit = Some((GUEST_EXIT, work));
                 return self.deadline;
             }
             work
@@ -196,13 +223,97 @@ mod tests {
     }
 
     impl PreemptCpu for SimPreempt {
-        fn take_guest_exit(&mut self) -> Option<Exit> {
+        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
             self.pending_exit.take()
         }
         fn take_error(&mut self) -> Option<BackendError> {
             // The sim's failures are opaque; model "no typed cause" so the caller
             // falls back to the Internal placeholder.
             None
+        }
+    }
+
+    /// A minimal [`PreemptCpu`] that stashes a guest exit at a **fixed** work count
+    /// on the first `run_until_overflow`, to test [`drive_run_until`]'s P1(a) decision
+    /// (early vs at-deadline vs past-deadline) directly, independent of the planner's
+    /// stepping. Models the SIGIO-delay race: a natural exit surfaced at `work_at_exit`.
+    struct ExitAtCpu {
+        work_at_exit: u64,
+        stashed: Option<(Exit, u64)>,
+    }
+    impl CpuBackend for ExitAtCpu {
+        fn work(&self) -> u64 {
+            0
+        }
+        fn run_until_overflow(
+            &mut self,
+            _armed_at: u64,
+        ) -> std::result::Result<u64, vtime::BackendError> {
+            self.stashed = Some((GUEST_EXIT, self.work_at_exit));
+            Ok(self.deadline_sentinel())
+        }
+        fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
+            Ok(self.deadline_sentinel())
+        }
+    }
+    impl ExitAtCpu {
+        // The sentinel the live `LiveCpu` adapter returns on a guest exit: EXACTLY the
+        // deadline, so the planner always reaches ReadyToInject (never its own
+        // SkidExceeded) and `drive_run_until` makes the real early/at/past decision
+        // from the stashed work.
+        fn deadline_sentinel(&self) -> u64 {
+            EXIT_AT_DEADLINE
+        }
+    }
+    impl PreemptCpu for ExitAtCpu {
+        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+            self.stashed.take()
+        }
+        fn take_error(&mut self) -> Option<BackendError> {
+            None
+        }
+    }
+    /// The deadline used by the P1(a) decision test.
+    const EXIT_AT_DEADLINE: u64 = 1_000_000;
+
+    /// P1(a): a guest exit at `work >= deadline` (overflow reached the deadline before
+    /// the natural exit surfaced — the SIGIO-delay race) is the **deadline**, not an
+    /// early exit; past the deadline it is a loud determinism error; only `< deadline`
+    /// is genuinely early.
+    #[test]
+    fn guest_exit_at_or_past_deadline_is_not_treated_as_early() {
+        let d = EXIT_AT_DEADLINE;
+        // strictly before → the guest exit is returned (genuinely early).
+        let mut early = ExitAtCpu {
+            work_at_exit: d - 1,
+            stashed: None,
+        };
+        assert_eq!(
+            drive_run_until(&planner(), &mut early, d).unwrap(),
+            GUEST_EXIT,
+            "a guest exit before the deadline is returned as the early exit"
+        );
+        // exactly at the deadline → Deadline (the timer instant was reached).
+        let mut at = ExitAtCpu {
+            work_at_exit: d,
+            stashed: None,
+        };
+        assert_eq!(
+            drive_run_until(&planner(), &mut at, d).unwrap(),
+            Exit::Deadline { reached: Vtime(d) },
+            "a guest exit AT the deadline is the Deadline, not an early exit (P1(a))"
+        );
+        // past the deadline → loud determinism error (the exact instant was missed).
+        let mut past = ExitAtCpu {
+            work_at_exit: d + 5,
+            stashed: None,
+        };
+        match drive_run_until(&planner(), &mut past, d) {
+            Err(BackendError::Internal(msg)) => assert!(
+                msg.contains("past the deadline"),
+                "the error names the past-deadline overshoot: {msg}"
+            ),
+            other => panic!("a guest exit past the deadline must be a loud error, got {other:?}"),
         }
     }
 
