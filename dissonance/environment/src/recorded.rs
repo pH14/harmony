@@ -82,6 +82,13 @@ pub enum EnvSpec {
         /// [`BTreeMap`](std::collections::BTreeMap) so the map is inherently
         /// canonical — sorted, unique keys — and no insertion order can reach
         /// an encoded byte.
+        ///
+        /// **Merged-plane seam.** The value type is [`Action`] = [`Host`](Action::Host)
+        /// ∪ [`Guest`](Action::Guest), keyed by [`Moment`]: a host perturbation and
+        /// a guest [`Answer`] share one ordered timeline. This widened from the
+        /// task-24 guest-only `Answer` value when the host control plane landed
+        /// (task 45) — so the widening task 46's clarifying pass anticipated as a
+        /// forward-compat note is already realized here, not pending.
         overrides: BTreeMap<Moment, Action>,
         /// Correlated, V-time-windowed faults.
         standing: Vec<StandingFault>,

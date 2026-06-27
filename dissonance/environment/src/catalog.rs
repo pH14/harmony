@@ -1,17 +1,38 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The versioned catalog — the shared vocabulary every service and the explorer
-//! agree on: decision [classes](DecisionClass), the concrete
-//! [points](DecisionPoint) a service surfaces, the [answers](Answer) the
-//! platform returns, and the per-class [faults](Fault).
+//! The versioned **guest** catalog — the shared vocabulary every service and the
+//! explorer agree on: decision [classes](DecisionClass), the concrete
+//! [points](DecisionPoint) a service surfaces, the [answers](Answer) the platform
+//! returns, and the per-class [faults](Fault). Every class here is a **guest**
+//! control-plane class: it exists only because the guest *requested* a service
+//! (conventions: the litmus is "does the guest have to *ask* for this?"). The
+//! workload-agnostic host plane ([`HostFault`](crate::HostFault)) is **not** in
+//! this catalog — it has no service point and no [`decide`](crate::Environment::decide)
+//! entry; see [`HostFault`](crate::HostFault) and `tasks/45-host-control-plane.md`.
+//!
+//! **Guest, namespaced, layerable (D7).** Per the dissonance ruling
+//! (`docs/DISSONANCE.md`, "The guest control planes"), guest decision classes are
+//! *namespaced per `harmony-<env>` layer* (`linux.net.drop`, `kube.net.partition`,
+//! …) and they **layer**: a higher guest environment may *add* or *constrain* a
+//! lower layer's classes but never silently reinterpret them. The proper division
+//! of labour is that `environment` owns the **seam**
+//! ([`Environment::decide`](crate::Environment::decide)) and the **codec** (the
+//! byte-exact, version-stable [`Answer`]/[`Fault`] forms), while a *concrete*
+//! catalog is **contributed by a guest environment**, not hardcoded in the engine.
+//! The flat enumeration below is therefore the crate's **built-in reference
+//! catalog** — the convergent FoundationDB/Antithesis vocabulary — standing in
+//! until the per-layer, namespaced catalogs the `harmony-<env>` crates supply.
 
 use crate::codec::{self, Reader};
 use crate::error::EnvError;
 use crate::{ConnId, NodeId, VTime};
 
-/// The class of a decision: which service surfaced it and, therefore, which
-/// answers are admissible. `#[repr(u16)]` with stable discriminants — a recorded
-/// [`EnvSpec`](crate::EnvSpec) replays across a [`CATALOG_VERSION`](crate::CATALOG_VERSION)
-/// bump only because these numbers never move.
+/// The class of a **guest** decision: which guest-requested service surfaced it
+/// and, therefore, which answers are admissible. `#[repr(u16)]` with stable
+/// discriminants — a recorded [`EnvSpec`](crate::EnvSpec) replays across a
+/// [`CATALOG_VERSION`](crate::CATALOG_VERSION) bump only because these numbers
+/// never move. These are guest-plane classes only; the host plane
+/// ([`HostFault`](crate::HostFault)) has no class here (see the module note on
+/// the guest/namespaced/layerable framing).
 ///
 /// The first three are **supply** classes (the environment supplies a value, and
 /// they never fault); the last three are **fault** classes (the service proceeds
@@ -259,7 +280,11 @@ impl Fault {
     }
 }
 
-/// The answer the platform returns at a decision point.
+/// The **guest** control-plane answer the platform returns at a
+/// [`DecisionPoint`] — the value a guest-requested service receives, nominally or
+/// not. A host-plane perturbation is **not** an `Answer` (it has no decision
+/// point); it is a [`HostFault`](crate::HostFault), the other arm of
+/// [`Action`](crate::Action) in the [`Moment`](crate::Moment)-keyed reproducer.
 ///
 /// - **Supply classes** ([`Entropy`](DecisionClass::Entropy) /
 ///   [`Payload`](DecisionClass::Payload) / [`Scheduler`](DecisionClass::Scheduler)):
