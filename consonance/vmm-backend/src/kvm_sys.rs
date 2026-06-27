@@ -43,7 +43,7 @@ use crate::exit::{Capabilities, Event, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::pmu::PmuBranchCounter;
 use crate::region::MemRegions;
-use crate::run_until::{PreemptCpu, SKID_MARGIN, drive_run_until};
+use crate::run_until::{FirstEntryReset, PreemptCpu, SKID_MARGIN, drive_run_until};
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
 
@@ -136,12 +136,14 @@ pub struct KvmBackend {
     /// single-step ioctl is issued once per `run_until` (not per step) and always
     /// disarmed before the next `run`.
     single_step_armed: bool,
-    /// Set on the FIRST `run`/`run_until` of this VM's life, mirroring vmm-core's
-    /// first-entry [`WorkSource::start_run`]: the backend PMU counter is reset there
-    /// so it shares vmm-core's work-counter baseline even when a coexisting VM ran
-    /// on this (shared) thread first. (Touches only the unhashed PMU counter — the
-    /// `run()` path's observable state stays byte-identical.)
-    first_run_done: bool,
+    /// The first-entry PMU-reset discipline (P1(b)): resets the shared-thread branch
+    /// counter at the first `run`/`run_until` of this VM's life — and again at the
+    /// first entry after a `restore` — so it shares vmm-core's work-counter baseline
+    /// and excludes a coexisting VM's branches. The discipline (and the determinism
+    /// invariant it encodes) lives in the portable, mutation/stateful-tested
+    /// [`FirstEntryReset`]; this field is just its state. (Touches only the unhashed
+    /// PMU counter — the `run()` path's observable state stays byte-identical.)
+    reset_arm: FirstEntryReset,
 }
 
 impl KvmBackend {
@@ -217,7 +219,7 @@ impl KvmBackend {
             // perf access still creates a backend that can `run()`/save/restore.
             pmu: PmuBranchCounter::open().ok(),
             single_step_armed: false,
-            first_run_done: false,
+            reset_arm: FirstEntryReset::new(),
         })
     }
 
@@ -301,11 +303,12 @@ impl KvmBackend {
     /// unavailable; touches only the unhashed PMU counter, so `run()`'s observable
     /// state stays byte-identical.
     fn ensure_first_run(&mut self) {
-        if !self.first_run_done {
-            if let Some(pmu) = self.pmu.as_mut() {
-                let _ = pmu.reset();
-            }
-            self.first_run_done = true;
+        // `take_reset()` always runs (and disarms); the reset only fires when armed
+        // AND a counter exists. (No-op when perf is unavailable.)
+        if self.reset_arm.take_reset()
+            && let Some(pmu) = self.pmu.as_mut()
+        {
+            let _ = pmu.reset();
         }
     }
 
@@ -1154,8 +1157,9 @@ impl Backend for KvmBackend {
         // vmm-core's V-time counter (which re-arms its own first-entry reset — see
         // `Vmm::restore_vm_state`). Deferring the reset to `ensure_first_run` at the
         // next entry excludes the foreign branches and keeps the B≡A invariant across
-        // a restore (the explorer / branching N-VM path, task 48).
-        self.first_run_done = false;
+        // a restore (the explorer / branching N-VM path, task 48). The discipline is
+        // pinned by [`FirstEntryReset`]'s portable stateful property test.
+        self.reset_arm.rearm();
         Ok(())
     }
 

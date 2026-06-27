@@ -89,24 +89,29 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
 ) -> Result<Exit> {
     match planner.stop_at(cpu, deadline) {
         Ok(PlanOutcome::ReadyToInject { stopped_at, .. }) => match cpu.take_guest_exit() {
-            // A natural guest exit BEFORE the deadline: return it (short of
-            // `deadline`), pending-completion already armed on the backend like `run`.
-            Some((exit, work)) if work < deadline => Ok(exit),
-            // P1(a): a natural guest exit at-or-past the deadline is NOT early — the
-            // overflow reached the deadline first (its SIGIO just hadn't landed). At
-            // exactly the deadline the timer instant is reached → preempt (the exit is
-            // absorbed; `run_until` clears the pending). Past it, the free-run ran
-            // beyond the exact injection point → a loud determinism error.
-            Some((_exit, work)) if work == deadline => Ok(Exit::Deadline {
-                reached: Vtime(deadline),
-            }),
-            Some((_exit, work)) => {
-                debug_assert!(work > deadline);
-                Err(BackendError::Internal(
+            // P1(a): classify the guest exit by its real work count vs the deadline —
+            // the determinism-critical decision, a pure comparison kept HERE in the
+            // covered + mutation-tested portable layer (the box `LiveCpu` is the thin
+            // FFI that only *reports* the PMU read). The planner (vtime) handles the
+            // work-vs-target stepping; "guest exit" is not a vtime concept, so its
+            // disposition lives in this seam.
+            Some((exit, work)) => match classify_guest_exit(work, deadline) {
+                // BEFORE the deadline: a true early exit — return it (short of
+                // `deadline`), pending-completion already armed on the backend like `run`.
+                GuestExitDisposition::Early => Ok(exit),
+                // AT the deadline: the overflow reached the timer instant first (its
+                // SIGIO just hadn't landed) → preempt; the exit is absorbed (`run_until`
+                // clears the pending).
+                GuestExitDisposition::AtDeadline => Ok(Exit::Deadline {
+                    reached: Vtime(deadline),
+                }),
+                // PAST the deadline: the free-run ran beyond the exact injection point
+                // (skid exceeded the margin) → a loud determinism error, never absorbed.
+                GuestExitDisposition::PastDeadline => Err(BackendError::Internal(
                     "run_until: a guest exit landed past the deadline (overflow skid exceeded the \
                      margin) — the exact V-time injection point was missed",
-                ))
-            }
+                )),
+            },
             // No guest exit: the planner landed at exactly `deadline` branches.
             None => Ok(Exit::Deadline {
                 reached: Vtime(stopped_at),
@@ -130,6 +135,74 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
         // The remaining `VtimeError`s are VClock/sim-config faults that cannot arise
         // here (no clock is built in this path); fail closed if one ever does.
         Err(_) => Err(BackendError::Internal("run_until: planner error")),
+    }
+}
+
+/// The disposition of a genuine guest exit relative to the requested deadline — the
+/// P1(a) decision, isolated as a pure comparison so it is covered, mutation-tested,
+/// and property-tested (the box-only FFI never makes this call).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum GuestExitDisposition {
+    /// `work_at_exit < deadline`: a true early exit, returned to the VMM.
+    Early,
+    /// `work_at_exit == deadline`: the overflow reached the timer instant first →
+    /// preempt (`Exit::Deadline`); the exit is absorbed.
+    AtDeadline,
+    /// `work_at_exit > deadline`: the free-run executed past the exact injection
+    /// point → a loud determinism error.
+    PastDeadline,
+}
+
+/// Classify a guest exit at `work_at_exit` against `deadline`. Pure arithmetic.
+pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExitDisposition {
+    match work_at_exit.cmp(&deadline) {
+        std::cmp::Ordering::Less => GuestExitDisposition::Early,
+        std::cmp::Ordering::Equal => GuestExitDisposition::AtDeadline,
+        std::cmp::Ordering::Greater => GuestExitDisposition::PastDeadline,
+    }
+}
+
+/// The first-entry **PMU-reset discipline** for the backend's shared-thread
+/// retired-branch counter (P1(b)), factored out of the box-only `KvmBackend` so the
+/// determinism invariant it encodes is covered + mutation-tested + stateful-property-
+/// tested, not box-only review.
+///
+/// The box `perf_event` counter is shared across the (CPU-pinned) vCPU thread and
+/// `exclude_host`, so it accumulates **every** VM's guest branches on that thread.
+/// Each VM establishes its own baseline by resetting the counter at its **first
+/// guest entry** (mirroring vmm-core's V-time `WorkSource::start_run`). A snapshot
+/// **restore** must re-arm that reset for the *next* entry: a coexisting VM may run
+/// on the shared thread between the restore and this VM's next entry, and resetting
+/// at restore time would let those foreign branches accumulate into this VM's
+/// counter (diverging it from vmm-core's V-time counter — the branching/multiverse
+/// path). Deferring the reset to the next entry excludes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FirstEntryReset {
+    /// Whether the next guest entry must reset the counter to re-baseline.
+    pending: bool,
+}
+
+impl FirstEntryReset {
+    /// A fresh VM: the very first entry resets (establishing the per-VM baseline).
+    pub(crate) fn new() -> Self {
+        Self { pending: true }
+    }
+
+    /// Re-arm the reset for the next entry (call on restore — P1(b)).
+    pub(crate) fn rearm(&mut self) {
+        self.pending = true;
+    }
+
+    /// Called at each guest entry: returns whether the counter must be reset **now**,
+    /// and disarms (so the reset fires exactly once per arming).
+    pub(crate) fn take_reset(&mut self) -> bool {
+        std::mem::replace(&mut self.pending, false)
+    }
+}
+
+impl Default for FirstEntryReset {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -239,7 +312,25 @@ mod tests {
     /// stepping. Models the SIGIO-delay race: a natural exit surfaced at `work_at_exit`.
     struct ExitAtCpu {
         work_at_exit: u64,
+        deadline: u64,
         stashed: Option<(Exit, u64)>,
+    }
+    impl ExitAtCpu {
+        fn new(work_at_exit: u64, deadline: u64) -> Self {
+            Self {
+                work_at_exit,
+                deadline,
+                stashed: None,
+            }
+        }
+        /// Stash the guest exit (once) at its real work; return the deadline sentinel
+        /// the live `LiveCpu` adapter returns on a guest exit — EXACTLY the deadline,
+        /// so the planner always reaches ReadyToInject (never its own SkidExceeded)
+        /// and `drive_run_until` makes the real early/at/past decision from the work.
+        fn sentinel(&mut self) -> u64 {
+            self.stashed.get_or_insert((GUEST_EXIT, self.work_at_exit));
+            self.deadline
+        }
     }
     impl CpuBackend for ExitAtCpu {
         fn work(&self) -> u64 {
@@ -249,20 +340,10 @@ mod tests {
             &mut self,
             _armed_at: u64,
         ) -> std::result::Result<u64, vtime::BackendError> {
-            self.stashed = Some((GUEST_EXIT, self.work_at_exit));
-            Ok(self.deadline_sentinel())
+            Ok(self.sentinel())
         }
         fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
-            Ok(self.deadline_sentinel())
-        }
-    }
-    impl ExitAtCpu {
-        // The sentinel the live `LiveCpu` adapter returns on a guest exit: EXACTLY the
-        // deadline, so the planner always reaches ReadyToInject (never its own
-        // SkidExceeded) and `drive_run_until` makes the real early/at/past decision
-        // from the stashed work.
-        fn deadline_sentinel(&self) -> u64 {
-            EXIT_AT_DEADLINE
+            Ok(self.sentinel())
         }
     }
     impl PreemptCpu for ExitAtCpu {
@@ -273,8 +354,6 @@ mod tests {
             None
         }
     }
-    /// The deadline used by the P1(a) decision test.
-    const EXIT_AT_DEADLINE: u64 = 1_000_000;
 
     /// P1(a): a guest exit at `work >= deadline` (overflow reached the deadline before
     /// the natural exit surfaced — the SIGIO-delay race) is the **deadline**, not an
@@ -282,32 +361,23 @@ mod tests {
     /// is genuinely early.
     #[test]
     fn guest_exit_at_or_past_deadline_is_not_treated_as_early() {
-        let d = EXIT_AT_DEADLINE;
+        let d = 1_000_000;
         // strictly before → the guest exit is returned (genuinely early).
-        let mut early = ExitAtCpu {
-            work_at_exit: d - 1,
-            stashed: None,
-        };
+        let mut early = ExitAtCpu::new(d - 1, d);
         assert_eq!(
             drive_run_until(&planner(), &mut early, d).unwrap(),
             GUEST_EXIT,
             "a guest exit before the deadline is returned as the early exit"
         );
         // exactly at the deadline → Deadline (the timer instant was reached).
-        let mut at = ExitAtCpu {
-            work_at_exit: d,
-            stashed: None,
-        };
+        let mut at = ExitAtCpu::new(d, d);
         assert_eq!(
             drive_run_until(&planner(), &mut at, d).unwrap(),
             Exit::Deadline { reached: Vtime(d) },
             "a guest exit AT the deadline is the Deadline, not an early exit (P1(a))"
         );
         // past the deadline → loud determinism error (the exact instant was missed).
-        let mut past = ExitAtCpu {
-            work_at_exit: d + 5,
-            stashed: None,
-        };
+        let mut past = ExitAtCpu::new(d + 5, d);
         match drive_run_until(&planner(), &mut past, d) {
             Err(BackendError::Internal(msg)) => assert!(
                 msg.contains("past the deadline"),
@@ -492,5 +562,214 @@ mod tests {
             prop_assert_eq!(exit, Exit::Deadline { reached: Vtime(deadline) });
             prop_assert_eq!(cpu.work(), deadline);
         }
+
+        /// P1(a) property: for ALL (work_at_exit, deadline), the pure classifier and
+        /// `drive_run_until`'s mapping agree with the work-vs-deadline comparison —
+        /// early (return the exit), at-deadline (Deadline), past-deadline (loud error).
+        #[test]
+        fn drive_run_until_classifies_any_guest_exit(
+            deadline in 1u64..=1_000_000,
+            work_at_exit in 0u64..=2_000_000,
+        ) {
+            let disp = classify_guest_exit(work_at_exit, deadline);
+            prop_assert_eq!(disp == GuestExitDisposition::Early, work_at_exit < deadline);
+            prop_assert_eq!(disp == GuestExitDisposition::AtDeadline, work_at_exit == deadline);
+            prop_assert_eq!(disp == GuestExitDisposition::PastDeadline, work_at_exit > deadline);
+
+            let mut cpu = ExitAtCpu::new(work_at_exit, deadline);
+            let got = drive_run_until(&planner(), &mut cpu, deadline);
+            match disp {
+                GuestExitDisposition::Early => {
+                    prop_assert!(matches!(got, Ok(ref e) if *e == GUEST_EXIT));
+                }
+                GuestExitDisposition::AtDeadline => {
+                    prop_assert_eq!(got.unwrap(), Exit::Deadline { reached: Vtime(deadline) });
+                }
+                GuestExitDisposition::PastDeadline => {
+                    prop_assert!(matches!(got, Err(BackendError::Internal(_))));
+                }
+            }
+        }
+    }
+
+    /// P1(b): the reset fires at the very first entry, then only after a `rearm`
+    /// (restore) — never spontaneously.
+    #[test]
+    fn first_entry_reset_fires_once_then_only_after_rearm() {
+        let mut r = FirstEntryReset::new();
+        assert!(
+            r.take_reset(),
+            "the very first entry resets (per-VM baseline)"
+        );
+        assert!(!r.take_reset(), "no reset on subsequent entries");
+        assert!(!r.take_reset());
+        r.rearm();
+        assert!(
+            r.take_reset(),
+            "restore re-arms: the next entry resets again"
+        );
+        assert!(!r.take_reset(), "and only that next entry");
+    }
+}
+
+/// Stateful (model-based) property test for the P1(b) first-entry PMU-reset
+/// discipline: random restore/run sequences over N VMs sharing one pinned thread,
+/// with the real [`FirstEntryReset`] as the system-under-test and an INDEPENDENT
+/// reference that recomputes each VM's own-branches-since-reset. It pins the
+/// determinism invariant — a VM's `run_until` counter sees only ITS OWN branches,
+/// never a coexisting VM's — that the box-only FFI (`kvm_sys`) cannot have covered
+/// by llvm-cov / cargo-mutants. A regression in the discipline (e.g. a `rearm` that
+/// stops re-arming) surfaces as a SUT/reference divergence on CI, not only on the
+/// box. Miri-excluded: pure arithmetic, no `unsafe` to scrutinize.
+#[cfg(all(test, not(miri)))]
+mod reset_discipline_stateful {
+    use crate::run_until::FirstEntryReset;
+    use proptest::prelude::*;
+    use proptest::test_runner::Config;
+    use proptest_state_machine::{ReferenceStateMachine, StateMachineTest, prop_state_machine};
+
+    /// VMs sharing one CPU-pinned thread (the box `perf_event` `exclude_host`
+    /// counter accumulates every VM's guest branches on that thread).
+    const N_VMS: usize = 3;
+
+    /// One VM in the independent reference: an INDEPENDENT shared-thread counter
+    /// (vmm-core's V-time counter `A`), reset at its baseline points by a discipline
+    /// encoded DIRECTLY here (not via `FirstEntryReset`). Effective work is
+    /// `total − reset_at` — the shared counter legitimately includes foreign branches
+    /// retired between this VM's runs (so does the backend counter `B`); what must
+    /// match is the **reset point**, so `B`'s reset discipline equals `A`'s.
+    #[derive(Clone, Debug)]
+    struct RefVm {
+        reset_at: u64,
+        entered: bool,
+        restore_pending: bool,
+    }
+    #[derive(Clone, Debug)]
+    struct RefState {
+        /// The shared thread's total retired guest branches (`A`'s raw count).
+        total: u64,
+        vms: Vec<RefVm>,
+        /// (vm, expected `A` work) of the most recent `Enter`, for the SUT assert.
+        last_enter: Option<(usize, u64)>,
+    }
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        /// A VM enters the guest and retires `branches` guest branches on the thread.
+        Enter { vm: usize, branches: u64 },
+        /// A snapshot restore re-arms the VM's next-entry reset.
+        Restore { vm: usize },
+    }
+
+    struct RefMachine;
+    impl ReferenceStateMachine for RefMachine {
+        type State = RefState;
+        type Transition = Op;
+        fn init_state() -> BoxedStrategy<RefState> {
+            Just(RefState {
+                total: 0,
+                vms: vec![
+                    RefVm {
+                        reset_at: 0,
+                        entered: false,
+                        restore_pending: false,
+                    };
+                    N_VMS
+                ],
+                last_enter: None,
+            })
+            .boxed()
+        }
+        fn transitions(_: &RefState) -> BoxedStrategy<Op> {
+            prop_oneof![
+                3 => (0..N_VMS, 1u64..10_000).prop_map(|(vm, branches)| Op::Enter { vm, branches }),
+                1 => (0..N_VMS).prop_map(|vm| Op::Restore { vm }),
+            ]
+            .boxed()
+        }
+        fn apply(mut s: RefState, op: &Op) -> RefState {
+            match *op {
+                Op::Enter { vm, branches } => {
+                    // The correct discipline: re-baseline at the first entry and at
+                    // the first entry after a restore (`A` re-arms its first-entry
+                    // reset on `restore_vm_state`).
+                    let total = s.total;
+                    let v = &mut s.vms[vm];
+                    if !v.entered || v.restore_pending {
+                        v.reset_at = total;
+                        v.entered = true;
+                        v.restore_pending = false;
+                    }
+                    s.total = total.saturating_add(branches);
+                    s.last_enter = Some((vm, s.total - s.vms[vm].reset_at));
+                }
+                Op::Restore { vm } => {
+                    s.vms[vm].restore_pending = true;
+                    s.last_enter = None;
+                }
+            }
+            s
+        }
+    }
+
+    /// One VM's view of the shared counter in the SUT: the real `FirstEntryReset`
+    /// plus the counter's reset point (`work = shared_total - reset_at`).
+    struct SutVm {
+        arm: FirstEntryReset,
+        reset_at: u64,
+    }
+    struct Sut {
+        /// All VMs' guest branches retired on the shared thread (the perf counter).
+        total: u64,
+        vms: Vec<SutVm>,
+    }
+
+    struct Machine;
+    impl StateMachineTest for Machine {
+        type SystemUnderTest = Sut;
+        type Reference = RefMachine;
+        fn init_test(_: &RefState) -> Sut {
+            Sut {
+                total: 0,
+                vms: (0..N_VMS)
+                    .map(|_| SutVm {
+                        arm: FirstEntryReset::new(),
+                        reset_at: 0,
+                    })
+                    .collect(),
+            }
+        }
+        fn apply(mut sut: Sut, ref_state: &RefState, op: Op) -> Sut {
+            match op {
+                Op::Enter { vm, branches } => {
+                    // First-entry / post-restore reset re-baselines the shared counter.
+                    if sut.vms[vm].arm.take_reset() {
+                        sut.vms[vm].reset_at = sut.total;
+                    }
+                    sut.total = sut.total.saturating_add(branches);
+                    let work = sut.total - sut.vms[vm].reset_at;
+                    // The backend counter `B`'s effective work must equal vmm-core's
+                    // V-time counter `A`'s — i.e. their reset points agree across the
+                    // save/restore/run interleaving (P1(b)). A regression in the reset
+                    // discipline (e.g. a `rearm` that no longer re-arms) diverges them.
+                    let (rv, expected) = ref_state.last_enter.expect("ref tracked the enter");
+                    assert_eq!(rv, vm);
+                    assert_eq!(
+                        work, expected,
+                        "vm {vm}: backend run_until counter B diverged from V-time counter A \
+                         (B work {work} != A work {expected}) — reset-point desync"
+                    );
+                }
+                Op::Restore { vm } => sut.vms[vm].arm.rearm(),
+            }
+            sut
+        }
+        fn check_invariants(_: &Sut, _: &RefState) {}
+    }
+
+    prop_state_machine! {
+        #![proptest_config(Config { cases: 256, ..Config::default() })]
+        #[test]
+        fn first_entry_reset_excludes_foreign_branches(sequential 1..50 => Machine);
     }
 }

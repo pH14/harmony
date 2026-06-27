@@ -39,6 +39,11 @@ libc = "0.2"
 
 [dev-dependencies]
 proptest = "1"
+# Model-based (stateful) property test for the first-entry PMU-reset discipline
+# (`run_until`'s P1(b) fix): random save/restore/run sequences over N VMs sharing one
+# pinned thread, checked against an independent reference (quality-e's `proptest-
+# state-machine`, already used by snapshot-store / hypercall-proto).
+proptest-state-machine = "0.3"
 
 [lints]
 workspace = true

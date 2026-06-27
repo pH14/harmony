@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4158ae970528991d7bc99aca7acc3189dcf19c63480e68f0186fe14f44ac9e10 # shrinks to (initial_state, transitions, seen_counter) = (RefState { vms: [RefVm { own_since_reset: 0, entered: false, restore_pending: false }, RefVm { own_since_reset: 0, entered: false, restore_pending: false }, RefVm { own_since_reset: 0, entered: false, restore_pending: false }], last_enter: None }, [Enter { vm: 0, branches: 1 }, Enter { vm: 1, branches: 1 }, Enter { vm: 0, branches: 1 }], None)
