@@ -827,13 +827,13 @@ invariants hold; a real exit is never dropped; every ioctl error fails closed):
 | free-run | `KVM_EXIT_INTR` | `work ≥ armed_at`? | yes → stop; no → re-enter |
 | free-run | `KVM_EXIT_IRQ_WINDOW_OPEN` | `work ≥ armed_at`? **(P1(b))** | yes → stop; no → re-enter (inject pending) |
 | free-run | `KVM_EXIT_DEBUG` | — | fail closed (single-step not armed here) |
-| free-run | real guest exit (IO/MMIO/MSR/HLT/…) | read `work@exit` | `<`: deliver · `==`: Deadline (timer wins) · `>`: fail closed **(P1 r3)** |
+| free-run | real guest exit (IO/MMIO/MSR/HLT/…) | read `work@exit` | `<`: deliver · `==`: **fail closed** · `>`: fail closed **(P1 r4)** |
 | free-run | `KVM_RUN` errno (non-EINTR) | — | fail closed (`Io`) |
 | step | `KVM_EXIT_DEBUG` (trap) | read `work` | `Count(work)` (planner compares to deadline) |
 | step | EINTR / `INTR` / `IRQ_WINDOW_OPEN` | — (overflow disarmed) | re-enter, injecting pending **(P2(a))** |
-| step | real guest exit | read `work@exit` | `<`: deliver · `==`: Deadline (timer wins) · `>`: fail closed **(P1 r3)** |
+| step | real guest exit | read `work@exit` | `<`: deliver · `==`: **fail closed** · `>`: fail closed **(P1 r4)** |
 | step | `KVM_RUN` errno (non-EINTR) | — | fail closed |
-| planner | `ReadyToInject` (no guest exit) | planner ensured `work == deadline` | `Exit::Deadline` |
+| planner | `ReadyToInject` (**no** guest exit) | planner stopped AT `work == deadline` | `Exit::Deadline` (**timer wins** — P1 r4) |
 | planner | `TargetInPast` | `work > deadline` at entry (overdue) | `Exit::Deadline{reached: now}` |
 | planner | `SkidExceeded` | — | fail closed |
 | pre-entry | first-entry / post-restore reset | — | reset PMU; **fail closed on reset error (P2(b))** |
@@ -885,3 +885,51 @@ a pending IRQ is preserved everywhere (invariant 3); every PMU/KVM ioctl returns
 `run_armed`/`single_step_once` paths (the IRQ-window-past-armed and near-deadline
 pending-IRQ races are box-only timing and validated there + by the shared, tested
 `free_run_decision`/`plan_irq_entry` decisions they call).
+
+### PR #15 round-4 (cross-model): the COMPLETE 3-case boundary rule (1 P1) + Miri ring (1 P2)
+
+**P1 — the other horn.** Round-3's "timer wins at `work == deadline`" was correct only
+for *one* sub-case. The flaw: a `pmu_work() == deadline` read does NOT distinguish
+"single-step stopped AT the deadline branch" from "a non-counted instruction past the
+branch already executed" — an IO/MMIO/HLT/read retires no conditional branch, so it can
+run (and **commit a guest-visible side effect** / have its exit reported + consumed)
+while the counter still reads `deadline`. Round-3 mapped *that* (a reported exit at
+`work == deadline`) to `Exit::Deadline`, which makes `KvmBackend::run_until` drop the
+pending completion → the VMM never services the already-executed effect and resumes
+*past* it = dropped state + determinism leak. (The skid check can't catch it: a
+non-counted instruction advances no branch, so `work` is not `> deadline`.)
+
+The decision therefore turns on **whether a guest exit was reported**, not the count
+alone. The complete rule (`drive_run_until`):
+
+| outcome | meaning | action |
+|---|---|---|
+| guest exit, `work < deadline` | genuinely early | **deliver** the exit |
+| **no** guest exit (stopped AT the branch) | nothing ran past the deadline | `Exit::Deadline` (**timer wins**) — runs the next instr after the ISR |
+| guest exit, `work == deadline` | a non-counted instr past the branch already ran (side effect committed) | **FAIL CLOSED** (loud) — never absorb/drop |
+| guest exit, `work > deadline` | counted instrs ran past the branch (worse overshoot) | **FAIL CLOSED** (loud) |
+
+PRIMARY structural guarantee (unchanged): with `skid_margin (128) > max_skid` the
+free-run stops *strictly before* the deadline branch and the single-step lands exactly
+ON it (stopping before the next instruction), so a non-counted post-deadline
+instruction is **never free-run-executed** — the two fail-closed arms are unreachable
+in normal operation; they are the loud backstop if that invariant is ever violated. So
+a returned `Deadline` is always the no-exit land → carries **no** pending completion
+(the round-3 "clear pending on Deadline" is gone; a stale pending would now trip the
+next-entry `PendingCompletion` guard loudly, never a silent drop — plus a
+`debug_assert`). Tests: `post_deadline_io_is_not_executed_across_signal_timing` (a
+guest exit modeled at `deadline + 1` — the instr right after the branch — is never
+reached; `Deadline`, IO un-executed, bit-identical across the full skid range);
+`reported_guest_exit_at_or_past_the_deadline_fails_closed` (the constructed overshoot →
+loud error); `lands_exactly_at_deadline_with_no_guest_exit` (timer-wins land); and the
+`drive_run_until_classifies_any_guest_exit` property (all `work`×`deadline`).
+
+**P2 — make the PMU-ring `unsafe` Miri-exercisable.** The overflow ring-drain's volatile
+offset arithmetic (`data_tail := data_head`) was inline in box-only `pmu_sys.rs`,
+reachable only via `PmuBranchCounter::open` — which is `cfg(miri)`-stubbed to fail — so
+Miri never ran the pointer code (a vacuous unsafe gate; a bad offset/provenance would
+pass). Factored into the pure `pmu::drain_ring_at(base: *mut u8)` (with the
+`DATA_HEAD_OFF`/`DATA_TAIL_OFF` constants), so `cargo miri test -p vmm-backend` now
+exercises it over a **test-owned** u64-aligned page (`drain_ring_at_copies_head_to_tail`)
+with real provenance + alignment, and it joins the coverage + mutation gates. `pmu_sys`
+keeps only the box-only `mmap` and passes the real control-page base.

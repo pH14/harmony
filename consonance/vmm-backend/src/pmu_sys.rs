@@ -27,7 +27,7 @@
 //! stalls — is the foreman's box gate (see IMPLEMENTATION.md).
 
 use crate::error::{BackendError, Result};
-use crate::pmu::{DISARM_PERIOD, PerfEventAttr, branch_counter_attr};
+use crate::pmu::{DISARM_PERIOD, PerfEventAttr, branch_counter_attr, drain_ring_at};
 
 /// `PERF_FLAG_FD_CLOEXEC`.
 const PERF_FLAG_FD_CLOEXEC: libc::c_ulong = 8;
@@ -53,13 +53,6 @@ const OVERFLOW_SIGNAL: libc::c_int = libc::SIGIO;
 /// (overflow records with `sample_type = 0` are header-only) but drained on every
 /// disarm so it never fills on a long run.
 const RING_DATA_PAGES: usize = 8;
-
-/// `perf_event_mmap_page` control-field byte offsets (include/uapi/linux/perf_event.h):
-/// the data-ring head/tail are at fixed offsets within the first page. Draining =
-/// `data_tail := data_head`. **Box-validation:** these offsets are the documented
-/// uapi layout (head @ 1024, tail @ 1032); a uapi change would desync them.
-const DATA_HEAD_OFF: usize = 1024;
-const DATA_TAIL_OFF: usize = 1032;
 
 /// A guest-only retired-conditional-branch counter on the calling (vCPU) thread, in
 /// **sampling** mode so it can overflow-kick `KVM_RUN`. Owns one `perf_event` fd and
@@ -198,18 +191,14 @@ impl PmuBranchCounter {
         Ok(())
     }
 
-    /// Drain consumed overflow records: `data_tail := data_head`. A plain volatile
-    /// store is sufficient here (single producer = the kernel, single consumer =
-    /// this thread; we only need the tail to advance so the buffer never fills).
+    /// Drain consumed overflow records (`data_tail := data_head`) so a long run never
+    /// stalls on a full buffer. The pointer arithmetic + volatile access lives in the
+    /// pure, Miri-/coverage-/mutation-gated [`drain_ring_at`]; this only supplies the
+    /// real `mmap`'d control-page base.
     fn drain_ring(&self) {
-        // SAFETY: `ring` maps `ring_len` ≥ one control page; the head/tail live in
-        // that first page at the documented uapi offsets. Volatile to defeat
-        // reordering against the kernel's writes.
-        unsafe {
-            let base = self.ring.cast::<u8>();
-            let head = std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>());
-            std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), head);
-        }
+        // SAFETY: `ring` maps `ring_len` = (1 control + 2^n data) pages ≥ one
+        // page-aligned control page, so it covers `DATA_TAIL_OFF + 8` 8-aligned bytes.
+        unsafe { drain_ring_at(self.ring.cast::<u8>()) }
     }
 }
 

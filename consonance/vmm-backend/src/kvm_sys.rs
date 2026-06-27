@@ -1038,17 +1038,16 @@ impl Backend for KvmBackend {
         step_cleanup?;
         pmu_cleanup?;
         let exit = outcome?;
-        // P1 round-3 boundary tie-break: a real exit BEFORE the deadline is delivered
-        // with its pending-completion armed (the VMM services it); a `Deadline` means
-        // the timer won. In the normal land (single-step stopped at the deadline
-        // branch) there is no guest exit, so `pending` is already `None`. In the
-        // should-never-happen edge where the free-run trapped an exit at exactly the
-        // deadline, `drive_run_until` returns `Deadline` (timer wins) and that exit's
-        // pending must be cleared so the next entry is not blocked on a completion the
-        // VMM will never service.
-        if matches!(exit, Exit::Deadline { .. }) {
-            self.pending = Pending::None;
-        }
+        // P1 round-4: a `Deadline` is ONLY ever the no-guest-exit land (the single-step
+        // stopped AT the deadline branch), so it never carries a pending completion —
+        // a real exit at/ past the deadline now fails closed in `drive_run_until`
+        // instead of being absorbed. So there is nothing to clear here. (If a future
+        // regression ever left a stale pending, the `PendingCompletion` guard at the
+        // top of the next `run`/`run_until` fails closed loudly — never a silent drop.)
+        debug_assert!(
+            !matches!(exit, Exit::Deadline { .. }) || self.pending == Pending::None,
+            "a Deadline must not carry a pending completion (it is the no-exit land)"
+        );
         self.counts.bump(exit.reason());
         Ok(exit)
     }

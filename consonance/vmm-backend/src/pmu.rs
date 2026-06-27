@@ -59,6 +59,39 @@ pub(crate) const ATTR_FLAGS: u64 = F_DISABLED + F_PINNED + F_EXCLUDE_HOST;
 /// working. (`2^56` guest branches ≈ never.)
 pub(crate) const DISARM_PERIOD: u64 = 1 << 56;
 
+/// `perf_event_mmap_page` control-field byte offsets (include/uapi/linux/perf_event.h):
+/// the data-ring head/tail live at fixed offsets within the ring's first (control)
+/// page. Draining the consumed overflow records is `data_tail := data_head`.
+/// **Box-validation:** these are the documented uapi layout (head @ 1024, tail @ 1032);
+/// a uapi change would desync them. Pure constants → exact-value tested below.
+pub(crate) const DATA_HEAD_OFF: usize = 1024;
+pub(crate) const DATA_TAIL_OFF: usize = 1032;
+
+/// Drain consumed overflow records from a perf ring-buffer control page at `base`:
+/// copy `data_head` → `data_tail` so the single kernel producer never sees a full
+/// buffer. A plain volatile load/store suffices (single producer = the kernel, single
+/// consumer = the owning thread; we only need the tail to advance).
+///
+/// Factored HERE — the pure, gate-covered half — rather than inline in the box-only
+/// [`crate::pmu_sys`], so the offset math + volatile pointer provenance is exercised
+/// by `cargo miri test` (and coverage + mutation) over a TEST-OWNED page; `pmu_sys`
+/// only supplies the real `mmap`'d `base`. A bad offset or a swapped head/tail is then
+/// caught by Miri + the unit test, not just on the box (it was previously reachable
+/// only via the `cfg(miri)`-stubbed `PmuBranchCounter::open`, a vacuous unsafe gate).
+///
+/// # Safety
+/// `base` must point to at least `DATA_TAIL_OFF + 8` bytes of a valid, writable,
+/// 8-aligned mapping (the perf control page is page-aligned and ≥ 4 KiB).
+pub(crate) unsafe fn drain_ring_at(base: *mut u8) {
+    // SAFETY: the caller guarantees `base` covers the control page; head/tail are at
+    // the documented uapi offsets, 8-aligned. Volatile to defeat reordering against
+    // the kernel's writes.
+    unsafe {
+        let head = std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>());
+        std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), head);
+    }
+}
+
 /// `perf_event_attr`, version-5 layout (112 bytes); fields beyond what we set are
 /// left zero. Identical layout to `vmm-core`'s `work_perf` (no perf wrapper crate
 /// is whitelisted). Fields are private; `pmu_sys` hands the whole struct to the
@@ -138,6 +171,40 @@ mod tests {
             FORMAT_TOTAL_TIME_ENABLED | FORMAT_TOTAL_TIME_RUNNING
         );
         assert_eq!(ATTR_FLAGS, F_DISABLED | F_PINNED | F_EXCLUDE_HOST);
+    }
+
+    /// `drain_ring_at` copies `data_head` → `data_tail` over a TEST-OWNED control
+    /// page, so the box-only ring drain's offset math + volatile pointer access runs
+    /// under `cargo miri test` (real provenance + alignment) and the coverage +
+    /// mutation gates — no longer a vacuous unsafe gate reachable only via the
+    /// `cfg(miri)`-stubbed `PmuBranchCounter::open`.
+    #[test]
+    fn drain_ring_at_copies_head_to_tail() {
+        // A u64-aligned in-process stand-in for the perf control page (≥ DATA_TAIL_OFF
+        // + 8 bytes). All accesses go through `base` (single provenance for Miri).
+        let mut page = vec![0u64; (DATA_TAIL_OFF / 8) + 1];
+        let base = page.as_mut_ptr().cast::<u8>();
+        let head_val = 0xdead_beef_0000_1234u64;
+        // SAFETY: `page` is u64-aligned and covers DATA_TAIL_OFF + 8 bytes; `base` is
+        // its sole live pointer for the duration of this block.
+        unsafe {
+            std::ptr::write_volatile(base.add(DATA_HEAD_OFF).cast::<u64>(), head_val);
+            std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), 0);
+            drain_ring_at(base);
+            assert_eq!(
+                std::ptr::read_volatile(base.add(DATA_TAIL_OFF).cast::<u64>()),
+                head_val,
+                "tail advanced to head (records drained)"
+            );
+            assert_eq!(
+                std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>()),
+                head_val,
+                "head is untouched (drain only writes the tail)"
+            );
+        }
+        // The offsets are the documented uapi layout.
+        assert_eq!(DATA_HEAD_OFF, 1024);
+        assert_eq!(DATA_TAIL_OFF, 1032);
     }
 
     /// The built attr is the exact `BR_INST_RETIRED.CONDITIONAL` sampling config —
