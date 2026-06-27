@@ -63,17 +63,33 @@ pub(crate) trait PreemptCpu: CpuBackend {
 }
 
 /// Drive `cpu` to **exactly** `deadline` retired-branch work units via the
-/// arm-overflow-early → single-step planner, then map the outcome to an [`Exit`]:
+/// arm-overflow-early → single-step planner, then map the outcome to an [`Exit`].
 ///
-/// - a genuine guest exit **strictly before** the deadline → **that** exit (short
-///   of `deadline`);
-/// - a guest exit at `work == deadline` (the SIGIO-delay race: the overflow reached
-///   the deadline before the natural exit surfaced) → [`Exit::Deadline`] at the
-///   deadline, **not** an early exit — the timer instant was reached, so the timer
-///   takes precedence (P1(a));
-/// - a guest exit at `work > deadline` → a loud [`BackendError::Internal`]: the
-///   free-run executed *past* the exact V-time injection point, a determinism
-///   violation (the overflow skid exceeded the margin), reported, never absorbed;
+/// **The boundary tie-break (P1 round-3).** A guest exit's mapping is decided PURELY
+/// by its retired-branch work count vs `deadline` — and the `== deadline` case must
+/// be host-timing-independent, because *whether a coincident natural exit is even
+/// reported* depends on SIGIO latency. (Concretely: a conditional branch reaches
+/// `deadline`, and the very next instruction is a non-counted exit (PIO/MMIO/HLT —
+/// retires no conditional branch, so work stays `== deadline`). Whether the
+/// overflow's SIGIO interrupts `KVM_RUN` *before* that instruction retires (→ the
+/// planner single-steps to the branch and stops, no guest exit) or *after* it traps
+/// (→ a guest exit at `work == deadline`) is pure host timing.) So:
+///
+/// - `work < deadline` → **deliver** that exit (genuinely BEFORE the deadline; it
+///   carries guest-visible PIO/MMIO/read state and is never dropped);
+/// - `work == deadline` → [`Exit::Deadline`] — **the timer wins**, NEVER the
+///   coincident exit, so the timer-vs-exit ordering at the boundary is deterministic.
+///   The post-deadline instruction's side effects are NOT lost: the single-step
+///   stops AT the deadline branch, BEFORE that instruction retires (RIP sits on it,
+///   un-executed), so the guest runs it on the next entry — AFTER the timer ISR.
+///   With `skid_margin > max_skid` the free-run stops strictly before the deadline
+///   branch, so a *trapped guest exit* at `work == deadline` is should-never-happen;
+///   this arm is the deterministic tie-break for that edge, and `run_until` clears
+///   the would-be-dropped pending so the next entry is clean;
+/// - `work > deadline` → a loud [`BackendError::Internal`]: the free-run executed
+///   *past* the exact branch. The single-step never overshoots, so this is impossible
+///   unless skid grossly exceeded the margin — a determinism violation, reported,
+///   never absorbed or delivered-late;
 /// - no guest exit → [`Exit::Deadline`] at exactly `deadline` (or at `now`, if the
 ///   deadline was already in the past when `run_until` was entered — the timer is
 ///   overdue, deliver it immediately; never *past* a future deadline);
@@ -96,19 +112,27 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
             // work-vs-target stepping; "guest exit" is not a vtime concept, so its
             // disposition lives in this seam.
             Some((exit, work)) => match classify_guest_exit(work, deadline) {
-                // P1(a): a real guest exit AT OR BEFORE the deadline is **delivered**
-                // to the VMM, NEVER absorbed/dropped — a PIO/MMIO write or read-style
-                // exit at the exact timer count carries guest-visible state. Pending-
+                // work < deadline: a real exit genuinely BEFORE the deadline —
+                // **deliver** it (a PIO/MMIO write or read-style exit short of the
+                // timer count carries guest-visible state; never dropped). Pending-
                 // completion is already armed on the backend, exactly like a plain
-                // `run`. At exactly the deadline the timer is NOT lost either: the
-                // backend's PMU is now at the deadline, so the VMM's *next* `run_until`
-                // returns `Deadline` immediately (`TargetInPast`) and injects the timer
-                // — so the exit is serviced AND the timer fires at the deadline.
-                GuestExitDisposition::Early | GuestExitDisposition::AtDeadline => Ok(exit),
-                // PAST the deadline: the free-run executed BEYOND the exact injection
-                // point (the overflow skid exceeded the margin) — the deterministic
-                // instant was missed. Fail closed (loud), never silently absorb or
-                // deliver-late. `skid_margin` is sized so this is vanishingly rare.
+                // `run`, so the VMM services it and resumes.
+                GuestExitDisposition::Early => Ok(exit),
+                // work == deadline: the TIMER WINS (P1 round-3) — return Deadline,
+                // NEVER the coincident exit, so timer-vs-exit ordering at the boundary
+                // does not depend on host SIGIO latency. With `skid_margin > max_skid`
+                // the free-run stops strictly before the deadline branch, so a trapped
+                // exit here is should-never-happen; this is the deterministic tie-break
+                // for that edge. `run_until` clears the (would-be-dropped) pending. The
+                // post-deadline instruction itself was NOT executed in the normal land
+                // (single-step stops at the branch), so it runs after the timer ISR.
+                GuestExitDisposition::AtDeadline => Ok(Exit::Deadline {
+                    reached: Vtime(deadline),
+                }),
+                // work > deadline: the free-run executed BEYOND the exact branch. The
+                // single-step never overshoots, so this is impossible unless skid
+                // grossly exceeded the margin — fail closed (loud), never absorb or
+                // deliver-late. The matching test asserts this overshoot is handled.
                 GuestExitDisposition::PastDeadline => Err(BackendError::Internal(
                     "run_until: a guest exit landed past the deadline (overflow skid exceeded the \
                      margin) — the exact V-time injection point was missed",
@@ -147,9 +171,10 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
 pub(crate) enum GuestExitDisposition {
     /// `work_at_exit < deadline`: a true early exit — delivered to the VMM.
     Early,
-    /// `work_at_exit == deadline`: a real exit exactly at the timer count — also
-    /// **delivered** (never absorbed/dropped); the timer then fires on the VMM's
-    /// next entry, when the PMU is already at the deadline (P1(a) round-2).
+    /// `work_at_exit == deadline`: a real exit exactly at the timer count → the
+    /// **timer wins** (`Exit::Deadline`), never the coincident exit, so the boundary
+    /// ordering is host-timing-independent (P1 round-3). Should-never-happen with
+    /// `skid_margin > max_skid` (the free-run stops before the deadline branch).
     AtDeadline,
     /// `work_at_exit > deadline`: the free-run executed past the exact injection
     /// point → a loud determinism error (fail closed).
@@ -372,13 +397,12 @@ mod tests {
         }
     }
 
-    /// P1(a): a guest exit at `work >= deadline` (overflow reached the deadline before
-    /// P1(a): a real guest exit at or before the deadline is **delivered** to the VMM
-    /// (never absorbed/dropped — that would lose a PIO/MMIO write or read-style state);
-    /// only a guest exit PAST the deadline (an overshoot beyond the exact injection
-    /// point) is a loud determinism error.
+    /// P1 round-3 boundary tie-break: `work < deadline` delivers the real exit;
+    /// `work == deadline` → the TIMER WINS (`Deadline`, never the coincident exit,
+    /// so the boundary ordering is host-SIGIO-timing-independent); `work > deadline`
+    /// → a loud determinism error (an overshoot beyond the exact branch).
     #[test]
-    fn real_guest_exit_at_or_before_deadline_is_delivered_not_dropped() {
+    fn guest_exit_boundary_is_a_deterministic_timer_win() {
         let d = 1_000_000;
         // strictly before → the guest exit is delivered (genuinely early).
         let mut early = ExitAtCpu::new(d - 1, d);
@@ -387,14 +411,15 @@ mod tests {
             GUEST_EXIT,
             "a guest exit before the deadline is delivered"
         );
-        // exactly at the deadline → the exit is STILL delivered, NOT absorbed into a
-        // Deadline (the timer fires on the VMM's next entry, when the PMU is at the
-        // deadline). This is the P1(a) round-2 fix: never drop a real exit.
+        // EXACTLY at the deadline → the TIMER WINS: `Deadline`, NOT the coincident
+        // exit. An IO/MMIO/HLT exit reported at exactly the deadline count must NOT
+        // be returned — otherwise two same-seed runs would diverge on whether SIGIO
+        // let that instruction trap before the overflow kicked (P1 round-3).
         let mut at = ExitAtCpu::new(d, d);
         assert_eq!(
             drive_run_until(&planner(), &mut at, d).unwrap(),
-            GUEST_EXIT,
-            "a guest exit AT the deadline must be DELIVERED, not absorbed into Deadline (P1(a))"
+            Exit::Deadline { reached: Vtime(d) },
+            "an exit at exactly the deadline must return Deadline (timer wins), not the exit"
         );
         // past the deadline → loud determinism error (the exact instant was missed).
         let mut past = ExitAtCpu::new(d + 5, d);
@@ -594,9 +619,10 @@ mod tests {
             prop_assert_eq!(cpu.work(), deadline);
         }
 
-        /// P1(a) property: for ALL (work_at_exit, deadline), the pure classifier
-        /// matches the comparison, and `drive_run_until` DELIVERS the real exit at or
-        /// before the deadline (never drops it) and fails closed only past it.
+        /// P1 round-3 property: for ALL (work_at_exit, deadline), the pure classifier
+        /// matches the comparison, and `drive_run_until` enforces the boundary rule —
+        /// deliver strictly before, TIMER WINS at exactly the deadline, fail closed
+        /// past it.
         #[test]
         fn drive_run_until_classifies_any_guest_exit(
             deadline in 1u64..=1_000_000,
@@ -610,9 +636,14 @@ mod tests {
             let mut cpu = ExitAtCpu::new(work_at_exit, deadline);
             let got = drive_run_until(&planner(), &mut cpu, deadline);
             match disp {
-                // At OR before the deadline: the real guest exit is delivered.
-                GuestExitDisposition::Early | GuestExitDisposition::AtDeadline => {
+                // Strictly before the deadline: the real guest exit is delivered.
+                GuestExitDisposition::Early => {
                     prop_assert!(matches!(got, Ok(ref e) if *e == GUEST_EXIT));
+                }
+                // Exactly at the deadline: the timer wins (Deadline, not the exit) —
+                // host-timing-independent.
+                GuestExitDisposition::AtDeadline => {
+                    prop_assert_eq!(got.unwrap(), Exit::Deadline { reached: Vtime(deadline) });
                 }
                 // Past the deadline: fail closed.
                 GuestExitDisposition::PastDeadline => {

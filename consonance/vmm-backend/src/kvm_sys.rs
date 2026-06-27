@@ -1038,10 +1038,17 @@ impl Backend for KvmBackend {
         step_cleanup?;
         pmu_cleanup?;
         let exit = outcome?;
-        // P1(a): a real guest exit is now always DELIVERED (never absorbed into
-        // `Deadline`), so its pending-completion is left armed for the VMM to service
-        // — no clearing here. A `Deadline` result carries no guest exit, so its
-        // `pending` is already `None`.
+        // P1 round-3 boundary tie-break: a real exit BEFORE the deadline is delivered
+        // with its pending-completion armed (the VMM services it); a `Deadline` means
+        // the timer won. In the normal land (single-step stopped at the deadline
+        // branch) there is no guest exit, so `pending` is already `None`. In the
+        // should-never-happen edge where the free-run trapped an exit at exactly the
+        // deadline, `drive_run_until` returns `Deadline` (timer wins) and that exit's
+        // pending must be cleared so the next entry is not blocked on a completion the
+        // VMM will never service.
+        if matches!(exit, Exit::Deadline { .. }) {
+            self.pending = Pending::None;
+        }
         self.counts.bump(exit.reason());
         Ok(exit)
     }

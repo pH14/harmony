@@ -799,12 +799,11 @@ the four and did the unifying audit so every path obeys the same four invariants
 drop/absorb a real guest exit; (3) preserve any pending injectable IRQ; (4) fail
 closed on any ioctl error.
 
-- **P1(a) — deliver real exits at the deadline.** `drive_run_until` no longer absorbs
-  a guest exit at `work == deadline` into `Exit::Deadline` (that dropped PIO/MMIO
-  writes / read-style state). A real exit at-or-before the deadline is **delivered**;
-  the timer still fires on the VMM's next entry (the PMU is then at the deadline →
-  next `run_until` returns `Deadline` immediately). Only `work > deadline` (overshoot)
-  fails closed. Portable test `real_guest_exit_at_or_before_deadline_is_delivered_not_dropped`.
+- **P1(a) — don't absorb real exits before the deadline.** `drive_run_until` no longer
+  drops a guest exit by collapsing it into `Exit::Deadline`. A real exit *strictly
+  before* the deadline (`work < deadline`) is **delivered** (it carries guest-visible
+  PIO/MMIO/read state). _(The `work == deadline` boundary was further refined in
+  round-3 below — the timer wins there.)_
 - **P1(b) — PMU check on IRQ-window re-entry.** `run_armed` now applies the SAME
   `free_run_decision(work, armed_at)` to the `KVM_EXIT_IRQ_WINDOW_OPEN` control exit as
   to the signal path — if the overflow already crossed `armed_at`, stop instead of
@@ -828,16 +827,56 @@ invariants hold; a real exit is never dropped; every ioctl error fails closed):
 | free-run | `KVM_EXIT_INTR` | `work ≥ armed_at`? | yes → stop; no → re-enter |
 | free-run | `KVM_EXIT_IRQ_WINDOW_OPEN` | `work ≥ armed_at`? **(P1(b))** | yes → stop; no → re-enter (inject pending) |
 | free-run | `KVM_EXIT_DEBUG` | — | fail closed (single-step not armed here) |
-| free-run | real guest exit (IO/MMIO/MSR/HLT/…) | read `work@exit` | deliver if `work ≤ deadline`; fail closed if `> deadline` **(P1(a))** |
+| free-run | real guest exit (IO/MMIO/MSR/HLT/…) | read `work@exit` | `<`: deliver · `==`: Deadline (timer wins) · `>`: fail closed **(P1 r3)** |
 | free-run | `KVM_RUN` errno (non-EINTR) | — | fail closed (`Io`) |
 | step | `KVM_EXIT_DEBUG` (trap) | read `work` | `Count(work)` (planner compares to deadline) |
 | step | EINTR / `INTR` / `IRQ_WINDOW_OPEN` | — (overflow disarmed) | re-enter, injecting pending **(P2(a))** |
-| step | real guest exit | read `work@exit` | deliver if `work ≤ deadline`; else fail closed |
+| step | real guest exit | read `work@exit` | `<`: deliver · `==`: Deadline (timer wins) · `>`: fail closed **(P1 r3)** |
 | step | `KVM_RUN` errno (non-EINTR) | — | fail closed |
 | planner | `ReadyToInject` (no guest exit) | planner ensured `work == deadline` | `Exit::Deadline` |
 | planner | `TargetInPast` | `work > deadline` at entry (overdue) | `Exit::Deadline{reached: now}` |
 | planner | `SkidExceeded` | — | fail closed |
 | pre-entry | first-entry / post-restore reset | — | reset PMU; **fail closed on reset error (P2(b))** |
+
+### PR #15 round-3 (cross-model): the boundary tie-break (1 P1)
+
+Round-2 stopped *absorbing* real exits — correct — but then **delivered** an exit at
+`work == deadline`, and *that* is host-timing-dependent. A conditional branch reaches
+the deadline (`pmu_work() == deadline`) and the very next instruction is a non-counted
+exit (PIO/MMIO/HLT — retires no conditional branch, so work stays `== deadline`). Two
+same-seed runs diverge on SIGIO latency: if the overflow's SIGIO interrupts `KVM_RUN`
+*before* that instruction retires, the planner single-steps to the branch and returns
+`Deadline` (timer first); if SIGIO is delayed until *after* it traps, round-2 returned
+the IO/MMIO exit (exit first). So timer-vs-exit **ordering at the boundary** depended
+on host signal timing — a same-seed determinism leak.
+
+**The precise rule (now airtight):**
+
+- `work < deadline` → **deliver** the real exit (genuinely before the deadline).
+- `work == deadline` → **`Exit::Deadline` — the timer wins**, never the coincident
+  exit. Boundary ordering is now host-timing-independent.
+- `work > deadline` → **impossible**; fail closed loudly (the single-step never
+  overshoots — only a gross skid past the margin could reach here).
+
+**Why nothing is dropped (the side-effect guarantee).** The single-step phase stops
+*at* the deadline branch, **before** the post-deadline instruction retires — RIP sits
+on that instruction, un-executed. So returning `Deadline` does not commit or drop its
+side effects: the guest executes it on the **next** entry, *after* the timer ISR.
+Because `skid_margin (128) > max_skid` (task-07 measured: margin = max × safety), the
+free-run stops *strictly before* the deadline branch and the single-step alone reaches
+it — so a *trapped guest exit* at `work == deadline` (the only case that could lose an
+already-committed effect) is should-never-happen. The `== deadline` arm is the
+**deterministic tie-break** for that edge; `run_until` clears its would-be-dropped
+pending so the next entry is clean. This closes round-2's "drop" concern from the
+other direction: the IO instruction *never executes before the deadline*, so there is
+nothing to drop — it just runs after the ISR.
+
+Tests: portable `guest_exit_boundary_is_a_deterministic_timer_win` (an exit reported
+at exactly the deadline count → `Deadline`, not the exit) + the
+`drive_run_until_classifies_any_guest_exit` property (all `work`×`deadline`: deliver
+below, timer-win at, fail-closed above). The live single-step-stops-before-the-branch
+guarantee is exercised by box gates 1/2 (the busy-spin preemption lands at the exact
+branch, deterministic-twice).
 
 Cross-cutting: the injection handshake (`inject_pending`) is shared by both phases, so
 a pending IRQ is preserved everywhere (invariant 3); every PMU/KVM ioctl returns
