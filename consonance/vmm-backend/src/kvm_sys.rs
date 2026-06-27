@@ -41,7 +41,7 @@ use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Event, Exit, ExitCounts};
 use crate::kvm::*;
-use crate::pmu::PmuBranchCounter;
+use crate::pmu_sys::PmuBranchCounter;
 use crate::region::MemRegions;
 use crate::run_until::{FirstEntryReset, PreemptCpu, SKID_MARGIN, drive_run_until};
 use crate::state::VcpuState;

@@ -63,6 +63,12 @@ exclude_globs = [
     # (`kvm.rs`'s KVM_EXIT_DETERMINISM decode/complete; `work::WorkSource`).
     "**/patched_kvm.rs",
     "**/work_perf.rs",
+    # task-47 box-only substrate, same rationale: `pmu_sys.rs` is the
+    # `PmuBranchCounter` syscall orchestration (perf_event/fcntl/mmap + the SIGIO
+    # overflow seam) for `run_until`; it cannot run without perf on the box. Its
+    # PURE config — the `PerfEventAttr` builder + bit constants — lives in `pmu.rs`,
+    # which is NOT excluded and is exact-value mutation-tested.
+    "**/pmu_sys.rs",
 ]
 
 # Structurally-unkillable mutants in `consonance/vmm-core`, by category. The

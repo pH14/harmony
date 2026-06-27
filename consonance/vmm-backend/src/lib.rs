@@ -50,13 +50,18 @@ mod mock;
 mod kvm;
 #[cfg(target_os = "linux")]
 mod kvm_sys;
-// `pmu` is the box-only backend-owned `perf_event` branch counter that drives
-// `run_until`'s overflow-early phase (the live `vtime::CpuBackend` underneath the
-// portable `run_until` orchestration). Like `kvm_sys` it is box-only syscall
-// orchestration excluded from the coverage + mutation gates; its raw syscalls sit
-// behind `#[cfg(not(miri))]` seams.
-#[cfg(target_os = "linux")]
+// `pmu` is the **pure** `perf_event` config for the run_until branch counter (the
+// `PerfEventAttr` builder + exact bit constants): no syscall, no `libc`, so it
+// compiles everywhere and STAYS in the coverage + mutation gates (exact-value
+// tested). `pmu_sys` is the box-only syscall orchestration (`PmuBranchCounter` +
+// the raw `perf_event`/`fcntl`/`mmap` seams) that opens that config — like `kvm_sys`
+// it cannot run without perf and is excluded from coverage + mutation, behind
+// `#[cfg(not(miri))]` seams. Dead on a non-test, non-Linux build (only `pmu_sys`
+// uses `pmu`), hence the conditional allow.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 mod pmu;
+#[cfg(target_os = "linux")]
+mod pmu_sys;
 // `patched_kvm` is the box-only syscall orchestration for the determinism
 // backend (the `KVM_EXIT_DETERMINISM` decode/complete logic it drives is the
 // pure, unit-tested `kvm` module); like `kvm_sys` it is excluded from the
