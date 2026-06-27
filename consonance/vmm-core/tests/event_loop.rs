@@ -444,3 +444,53 @@ fn state_hash_distinguishes_segment_and_event_fields() {
         "event field reaches the hash"
     );
 }
+
+#[test]
+fn state_hash_masks_only_an_unusable_segments_type() {
+    // `encode_segment` canonicalizes the `type` of an **unusable** segment to 0: it is
+    // architecturally don't-care (SDM Vol. 3 §24.4.1 — an unusable segment is treated as
+    // absent, its hidden type/attr never consulted) and KVM perturbs it across a GET/SET
+    // round-trip, so hashing it raw would break restore-transparency. The mask is
+    // `if seg.unusable != 0 { 0 } else { seg.type_ }`. This pins **both halves**, killing
+    // the `!= -> ==` mutant (which inverts the predicate — masking *usable* types while
+    // leaking *unusable* ones) from either direction:
+    //   * a **usable** segment's `type` MUST reach the hash (live architectural state);
+    //   * an **unusable** segment's `type` must NOT (the masked don't-care field).
+    let hash_with = |mutate: &dyn Fn(&mut VcpuState)| {
+        let mut mock = MockBackend::with_exits(vec![Exit::Hlt]);
+        mock.set_cpuid(&cpuid_model()).unwrap();
+        mock.set_msr_filter(&msr_filter_allow()).unwrap();
+        let mut st = VcpuState::default();
+        mutate(&mut st);
+        mock.set_state(st);
+        let mut v = Vmm::new(mock, GuestRam::new(4096).unwrap());
+        v.run().unwrap();
+        v.state_hash()
+    };
+    // Usable (unusable = 0): the type is live state → it MUST move the hash.
+    // Original keeps `seg.type_` (0 vs 5 differ); the `==` mutant masks both to 0 (equal).
+    assert_ne!(
+        hash_with(&|s| {
+            s.sregs.cs.unusable = 0;
+            s.sregs.cs.type_ = 0;
+        }),
+        hash_with(&|s| {
+            s.sregs.cs.unusable = 0;
+            s.sregs.cs.type_ = 5;
+        }),
+        "a usable segment's type reaches the hash (== mutant masks it to 0 -> equal)"
+    );
+    // Unusable (unusable = 1): the type is don't-care → it must NOT move the hash.
+    // Original masks both to 0 (equal); the `==` mutant leaks `seg.type_` (0 vs 5 differ).
+    assert_eq!(
+        hash_with(&|s| {
+            s.sregs.cs.unusable = 1;
+            s.sregs.cs.type_ = 0;
+        }),
+        hash_with(&|s| {
+            s.sregs.cs.unusable = 1;
+            s.sregs.cs.type_ = 5;
+        }),
+        "an unusable segment's type is masked out of the hash (== mutant leaks it -> differ)"
+    );
+}

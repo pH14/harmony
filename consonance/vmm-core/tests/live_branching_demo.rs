@@ -32,6 +32,14 @@
 //!    boot→Postgres→workload forward from `S` — a real fork into many futures, rooted
 //!    at boot entry rather than mid-workload (a task-39 substrate limit, not a choice).
 //!
+//!    **Superseded by task 41 (the non-quiescent-snapshot unlock).** The "0 of 8392"
+//!    measurement and the boot-entry-only seal below reflect task 39's *quiescent-only*
+//!    codec. Task 41 captures the in-flight `kvm_vcpu_events` task 39 dropped, so those
+//!    in-flight points are now snapshottable and `S` can be sealed **mid-workload** —
+//!    see `tests/live_nonquiescent_snapshot.rs` (the mid-Postgres round-trip + the
+//!    mid-Postgres branching matrix). This demo's boot-entry seal is left intact as the
+//!    task-40 baseline; the mid-workload capability lives in the task-41 gate.
+//!
 //! 2. Forks `S` into a **base continuation** (replay `S` verbatim — restore, no
 //!    reseed) and `K` **branches**, each `branch(S, seed') = restore(S) +
 //!    reseed_entropy(seed')` (task 39 Phase 4). Every fork materializes its own
