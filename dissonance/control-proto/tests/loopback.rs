@@ -10,8 +10,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, Environment, HashScope,
-    PROTO_VERSION, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime, class_bit,
-    decode_reply, decode_request, encode_reply, encode_request,
+    HostFault, Moment, PROTO_VERSION, Reply, Request, SnapId, StopConditions, StopMask, StopReason,
+    VTime, class_bit, decode_reply, decode_request, encode_reply, encode_request,
 };
 
 fn caps() -> Caps {
@@ -59,7 +59,10 @@ impl StubServer {
                 self.next_snap += 1;
                 Ok(Reply::SnapId(SnapId(id)))
             }
-            Request::Drop(_) | Request::Branch { .. } | Request::Replay(_) => Ok(Reply::Unit),
+            Request::Drop(_)
+            | Request::Branch { .. }
+            | Request::Replay(_)
+            | Request::Perturb { .. } => Ok(Reply::Unit),
             Request::Run { resolve, .. } => {
                 if resolve.is_some() {
                     // A resolve with no outstanding decision is a loud error,
@@ -167,6 +170,11 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     replies.push(lb.exchange(Request::Hash {
         scope: HashScope::Whole,
     }));
+    // Stage a host-plane fault over the wire (the perturb verb).
+    replies.push(lb.exchange(Request::Perturb {
+        fault: HostFault(vec![0x02, 0x80]), // opaque environment::HostFault bytes
+        at: Moment(1_234),
+    }));
     // resolve with no outstanding decision -> loud ControlError
     replies.push(lb.exchange(Request::Run {
         until: conds(),
@@ -194,6 +202,7 @@ fn loopback_exercises_every_verb_with_expected_replies() {
             Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(500) })),
             Ok(Reply::Unit), // Replay
             Ok(Reply::Hash([0x42; 32])),
+            Ok(Reply::Unit), // Perturb
             Err(ControlError::ResolveWithoutDecision),
             Ok(Reply::Unit), // Drop
         ]

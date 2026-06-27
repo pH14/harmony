@@ -8,8 +8,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Environment, EventRef, HashScope, ProtocolError, Reply, Request, SnapId, StopConditions,
-    StopMask, StopReason, VTime,
+    Environment, EventRef, HashScope, HostFault, Moment, ProtocolError, Reply, Request, SnapId,
+    StopConditions, StopMask, StopReason, VTime,
 };
 use proptest::prelude::*;
 
@@ -80,6 +80,10 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
             }
         }),
         arb_hash_scope().prop_map(|scope| Request::Hash { scope }),
+        (arb_bytes(), any::<u64>()).prop_map(|(fault, at)| Request::Perturb {
+            fault: HostFault(fault),
+            at: Moment(at),
+        }),
     ]
 }
 

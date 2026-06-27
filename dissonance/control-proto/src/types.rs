@@ -26,6 +26,19 @@ pub struct Environment {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Answer(pub Vec<u8>);
 
+/// An opaque host-plane perturbation, carried schema-blind — the host-plane
+/// analogue of [`Answer`]. Its structure is `environment::HostFault`'s contract
+/// (the bytes of `HostFault::encode`); the backend decodes and applies it, never
+/// the codec. Staged by [`Perturb`](Request::Perturb).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HostFault(pub Vec<u8>);
+
+/// A moment on the single deterministic axis — a retired-instruction count.
+/// Mirrors `environment::Moment` (conventions rule 2 — defined locally, not
+/// imported); a host fault is staged at one via [`Perturb`](Request::Perturb).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct Moment(pub u64);
+
 /// A pool-wide snapshot handle returned by [`Snapshot`](Request::Snapshot).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct SnapId(pub u64);
@@ -155,6 +168,17 @@ pub enum Request {
     Hash {
         /// What to hash.
         scope: HashScope,
+    },
+    /// Stage a host-plane [`HostFault`] at `at`, recorded into the active
+    /// environment → [`Unit`](Reply::Unit). The host plane rides this out-of-band
+    /// channel (the guest never sees it); the backend decodes `fault` and applies
+    /// it at its `Moment` during a `Run`. Mirrors the dissonance ruling's
+    /// `perturb(fault, at)` verb.
+    Perturb {
+        /// The opaque host fault to stage (`environment::HostFault` bytes).
+        fault: HostFault,
+        /// The `Moment` (retired-instruction count) to apply it at.
+        at: Moment,
     },
 }
 

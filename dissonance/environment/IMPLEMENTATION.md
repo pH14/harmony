@@ -159,26 +159,28 @@ The frozen public surface is in `tests/public-api.txt`.
 ### Formal proofs (Kani)
 
 `src/envcodec_proofs.rs` (`#[cfg(kani)]`, a child of `envcodec`) proves the bounded
-integer invariant the host plane (and so `SetClockRate`) rests on, over fully
-symbolic `u64` inputs (strictly stronger than the proptest sampling). It verifies
-(`cargo kani -p environment` → 1 harness, 0 failures):
+integer invariants `compose` (and the host plane) rests on, over fully symbolic
+`u64` inputs (strictly stronger than the proptest sampling). All three verify
+(`cargo kani -p environment` → 3 harnesses, 0 failures):
 
 - `ratio_new_rejects_exactly_zero_denominator` — `Ratio::new` is total and returns
   `Some` iff `den != 0`, and every constructed `Ratio` round-trips its fields with
   `den() != 0` (the no-divide-by-zero invariant behind `SetClockRate` and the
   codec's `den == 0` rejection).
+- `rekey_moment_is_exact_or_rejects_overflow` — the `compose` re-key returns the
+  exact non-wrapping `m + at`, or `Err(Overflow)` iff the sum exceeds `u64::MAX`;
+  it never wraps.
+- `rekey_moment_is_injective` — distinct source `Moment`s that both re-key
+  successfully map to distinct keys (the collision-free guarantee a wrapping add
+  would violate).
 
-The round-4 fail-close reduced `compose` to the genesis splice (`at == 0`), so the
-`m + at` re-key and its overflow guard are gone — and with them the round-1 `rekey`
-helper and its two Kani proofs.
-
-**The proof is checked by exactly one CI gate, and it is now wired.** The
-`#[cfg(kani)]` harness is not compiled by the non-kani test suite cargo-mutants
-uses as its oracle, so it must be excluded from mutation
+**The proofs are checked by exactly one CI gate, and it is now wired.** The
+`#[cfg(kani)]` harnesses are not compiled by the non-kani test suite cargo-mutants
+uses as its oracle, so they must be excluded from mutation
 (`**/envcodec_proofs.rs` in `.cargo/mutants.toml`, beside `clock_proofs.rs` /
 `device_proofs.rs`) **and** run by the kani job (`cargo kani -p environment` added
 to `quality.yml`). Excluding from mutation without wiring kani would leave the
-proof checked by nothing — the round-4 P2; both edits land together.
+proofs checked by nothing — the round-4 P2; both edits land together.
 
 ## Task 45 — the host control plane (`HostFault` + `perturb` + `Moment` stamping)
 
@@ -243,41 +245,40 @@ The old per-decision `DecisionId` key is **removed** — superseded by `Moment`
 `EnvCodec::{seeded, mutate, compose}` is the vocabulary-aware seam the Theme calls
 (it "cannot invent a legal `HostFault`/`Answer`, so it asks the codec").
 
-`compose(base, tail, at) -> Result<EnvSpec, EnvError>` returns `Ok` **only for the
-one composition it can prove bit-identical** and otherwise **fails closed**
-(`EnvError::UnsupportedComposition`), rather than emit a wrong reproducer. This is
-the integrator ruling: the rich compose model belongs to **task 93** (the
-`EnvCodec::compose` vs genesis-only revisit, deferred). Rounds 1–3 tried to patch
-the hard cases (carry/filter/shift standing faults; re-key at `at > 0`); the PR #16
-cross-model pass showed each is *structurally* wrong, not an edge case.
+`compose(base, tail, at) -> Result<EnvSpec, EnvError>` is the **task-45 acceptance
+gate (spec line 67): one-axis `Moment` *override* re-keying.** It keeps `base`'s
+genesis prefix `[0, at)` and splices `tail` in at `at`, re-keying every `tail`
+override's `Moment` by `+ at` (collision-free; `base` contributes only `m < at`,
+`tail` only `m + at ≥ at`), carrying `base`'s seed/policy and no standing faults.
+This succeeds at **any** `at`, genesis or not — it is how the explorer rebases a
+branch-local delta onto a base below a snapshot. (Round 4 over-corrected to
+`at == 0` only; the spec's "one-axis arithmetic — see task 93" makes clear the
+override re-key is in scope at any offset, and only the *multi-axis* cases are
+task 93's.)
 
-**What `compose` supports (the provable Ok-set):** a **genesis splice — `at == 0` —
-of an override-only `tail` with the same seed and policy as `base`.** The `[0, 0)`
-base prefix is empty, so the result is exactly the `tail`'s overrides under the
-shared seed/policy, with no standing faults — a genesis-complete reproducer that
-replays bit-identically to the `tail` (proven by property over arbitrary
-schedules, including seed-serviced decisions).
+It **fails closed** (`EnvError::UnsupportedComposition`) for the cases outside the
+one-axis override scope — the genuinely task-93 ones:
 
-**Why everything else fails closed:**
-
-- **A non-genesis splice (`at != 0`)** — the round-4 P1. The composed reproducer
-  has one `SeededEnv`; replaying its `[0, at)` prefix advances the shared PRNG
-  before the tail starts, but a branch-local `tail` materializes its seeded streams
-  *fresh* (word 0). Any unoverridden (seed-serviced) decision in `[0, at)` desyncs
-  every later seed-serviced answer → not bit-identical. The fix needs the PRNG
-  **state** captured at the splice (task 93); `compose` cannot capture it, and
-  cannot statically know whether the prefix draws the seed, so it rejects **all**
-  `at != 0`. (This also subsumes the round-1 overflow case — overflow needed
-  `at > 0`, now uniformly rejected — so the `Overflow` variant is removed.)
 - **Either input carries a `StandingFault`** — its window is `VTime` (retired
-  *branches*), a different clock than the `Moment` offset; correct re-keying needs
-  a runtime `Moment → VTime` map `compose` lacks.
+  *branches*), a **different axis** than the `Moment` (retired *instructions*)
+  offset; correct re-keying needs a runtime `Moment → VTime` map `compose` lacks.
+- **Either input is a pure `Seeded` environment** — every one of its decisions is
+  seed-serviced, so splicing it at `at > 0` would desync the tail's fresh PRNG
+  stream (the prefix advances the shared seed before the tail starts). This is the
+  statically-detectable "seeded composition" deferred to task 93; the round-4 P1.
 - **`tail`'s seed or policy differs from `base`'s** — one `EnvSpec` carries one
   seed/policy, so it cannot hold a piecewise stream.
 
-Until task 93, the integrator should **branch from a genesis-complete env** rather
-than compose across a non-genesis snapshot; `UnsupportedComposition` is the loud
-signal to do so, never a soft failure to paper over.
+A re-key past `u64::MAX` is `EnvError::Overflow` (rejected, never saturated — a wrap
+would collapse distinct overrides onto one key).
+
+**Scope boundary (round-5).** This is one-axis `Moment` *override* re-keying. A
+`Recorded` input is treated as override-driven; if a composed run draws the seed
+for an *unoverridden* decision across a non-genesis splice, that is the seeded
+composition deferred to task 93 — the explorer composes override-covered
+reproducers, and `compose` rejects the statically-detectable seeded inputs (the
+`Seeded` variant). The bit-identical-replay property test exercises exactly the
+override-covered case at `at > 0`.
 
 `mutate(env, salt)` is deterministic and **host-only**: it inserts, moves, or
 removes an `Action::Host` override (always legal — a `HostFault` needs no
@@ -298,11 +299,10 @@ PRNG stream to its exact `HostFault` (low byte chosen ≠ 0x00/0xFF so `& 0xFF` 
 distinguishable from `|`/`^`); `free_non_guest_slot` returns the drawn word (never
 `Default`) and skips a guest-occupied slot by exactly one; and each `mutate` op is
 selected by a computed salt and asserted to its distinct effect (remove → len 0,
-move → len 1 with the action preserved, insert → len 2). The round-4 fail-close
-removed the `compose` prefix filter and the `checked_add` overflow path (no longer
-reached), so the round-2/3 tests for those are gone; the `compose` Ok/reject set is
-now covered by `tests/envcodec.rs`. `cargo mutants --in-diff` over the PR diff
-reports **0 missed**.
+move → len 1 with the action preserved, insert → len 2). The `compose` override
+re-key (the `m < at` prefix filter and the `checked_add` overflow guard) and its
+Ok/reject set are covered by `tests/envcodec.rs`. `cargo mutants --in-diff` over
+the PR diff reports **0 missed**.
 
 ### The D4 invariant (no Theme/explorer change to consume `HostFault`)
 
@@ -358,30 +358,31 @@ contract not at all — the invariant holds.
   determinism contract (`SkewTime`/`SetClockRate` integer/fixed-point;
   `CorruptMemory` = pure `word ^ mask` at `(Moment, gpa)`) is what makes that
   enforcement bit-identical on replay.
-- **`compose` is fallible and fails closed; the hard model is task 93's.** It
-  returns `Ok` only for a **genesis splice** (`at == 0`) of an override-only,
-  same-seed/same-policy `tail` (result ≡ the tail, provably bit-identical), and
-  **rejects** (`Err(EnvError::UnsupportedComposition)`) every `at != 0` (a `[0,at)`
-  prefix can desync the tail's fresh seed stream), any `StandingFault` (V-time ≠
-  Moment clock), and any `tail` seed/policy ≠ `base`'s (one `EnvSpec` cannot carry a
-  piecewise-seeded stream). All are deferred to **task 93** (the compose-model
-  revisit). The integrator should treat `UnsupportedComposition` as "branch from a
-  genesis-complete env instead of composing" until task 93 lands — never as a soft
-  failure to paper over.
+- **`compose` is the one-axis `Moment` override re-key (the spec gate), fallible.**
+  It re-keys the override map for **any** `at` (override-only, same-seed/policy:
+  `base` prefix `m < at`, `tail` shifted `m + at`, `Err(Overflow)` past `u64::MAX`)
+  and **rejects** (`Err(EnvError::UnsupportedComposition)`) the multi-axis/seeded
+  cases deferred to **task 93**: any `StandingFault` (V-time ≠ Moment axis), any
+  pure `Seeded` input (all-seed-serviced → PRNG desync at `at > 0`), and any `tail`
+  seed/policy ≠ `base`'s. The explorer composes override-covered `Recorded`
+  reproducers; an unoverridden seed-serviced decision across a non-genesis splice
+  is the seeded composition `UnsupportedComposition`/task-93 boundary, not a silent
+  wrong reproducer.
 
 ## Gates
 
 `cargo build/nextest/clippy(-D warnings)/fmt -p environment --all-features` and
-`cargo deny check` all pass: 79 tests, including the task-45 acceptance property
-`mixed_host_guest_replays_bit_identically` (256-case record→replay round-trip with
-host overrides present) and the `compose` Ok/reject set:
-`compose_genesis_splice_is_bit_identical_to_tail` (256-case — the accepted `at == 0`
-case replays bit-identical, seed-serviced decisions included),
-`compose_rejects_every_nonzero_splice` and `compose_rejects_any_standing_fault`
-(256-case fail-close), plus targeted `compose_rejects_non_genesis_splice` /
-`compose_fails_closed_on_standing_seed_or_policy_mismatch`. The PR #16 host-only
-`mutate` hardening stays (`mutate_preserves_every_guest_override` 256-case + the
-in-source exact-value mutant kills). The carried-forward guest gates remain
+`cargo deny check` all pass: 81 tests, including the task-45 acceptance properties
+`mixed_host_guest_replays_bit_identically` (256-case record→replay with host
+overrides) and the `compose` spec gate + Ok/reject set:
+`compose_rekeys_overrides_at_any_offset` (256-case one-axis re-key, any `at`),
+`compose_override_only_replays_bit_identical` (256-case bit-identical replay at
+`at > 0`), `compose_rejects_any_standing_fault` (256-case), plus targeted
+`compose_rekeys_at_nonzero_concrete` / `compose_prefix_filter_is_strict_less_than`
+/ `compose_rejects_seeded_input` / `compose_fails_closed_on_standing_seed_or_policy_mismatch`
+/ `compose_offset_overflow_is_rejected` / `compose_override_only_reproduces_at_nonzero`.
+The host-only `mutate` hardening stays (`mutate_preserves_every_guest_override`
+256-case + the in-source exact-value mutant kills). The carried-forward guest gates remain
 (override semantics cross-checked against an independent rule; per-class golden
 answer sequence; host-plane wire golden; codec round-trip +
 never-panic-on-arbitrary-bytes + off-version `BadVersion`; `FaultPolicy`

@@ -30,17 +30,23 @@ pub enum EnvError {
     /// The bytes are not a valid, canonical encoding of the expected value.
     #[error("malformed environment blob")]
     Malformed,
-    /// A [`compose`](crate::EnvCodec::compose) was asked for a composition it
-    /// cannot prove **bit-identical** and therefore **fails closed** rather than
-    /// emit a wrong reproducer. Three things take it outside the provable set:
-    /// either input carries a [`StandingFault`] (its V-time window is a different
-    /// clock than the `Moment` splice offset — no static re-keying is correct);
-    /// the `tail`'s seed or policy differs from the `base`'s (one `EnvSpec` cannot
-    /// carry a piecewise-seeded stream); or a non-genesis splice (`at != 0`),
-    /// whose `[0, at)` prefix can advance the seeded PRNG and desync the tail's
-    /// fresh stream. All are the under-designed cases deferred to task 93 (the
-    /// compose-model revisit); `compose` supports only the genesis splice
-    /// (`at == 0`) of an override-only, same-seed/same-policy tail.
+    /// A [`compose`](crate::EnvCodec::compose) `Moment` re-key overflowed
+    /// `u64::MAX` (a tail override `Moment` shifted by `at` past the axis). Rejected
+    /// rather than saturated, so two distinct overrides can never collapse onto one
+    /// key (collision-free replay).
+    #[error("environment composition offset overflowed the Moment axis")]
+    Overflow,
+    /// A [`compose`](crate::EnvCodec::compose) was asked for a composition outside
+    /// its task-45 scope (one-axis `Moment` override re-keying) and therefore
+    /// **fails closed** rather than emit a wrong reproducer. The cases deferred to
+    /// task 93 (the compose-model revisit): either input carries a
+    /// [`StandingFault`] (its V-time window is a *different axis* than the `Moment`
+    /// offset — no one-axis re-key is correct); either input is a pure
+    /// [`Seeded`](crate::EnvSpec::Seeded) environment (every decision is
+    /// seed-serviced, so splicing it would desync the fresh PRNG stream); or the
+    /// `tail`'s seed or policy differs from the `base`'s (one `EnvSpec` cannot
+    /// carry a piecewise-seeded stream). `compose` supports the override-only,
+    /// same-seed/same-policy case at any `at`.
     ///
     /// [`StandingFault`]: crate::StandingFault
     #[error("unsupported environment composition (deferred to task 93)")]

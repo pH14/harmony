@@ -11,9 +11,9 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Environment, EventRef, HashScope, PROTO_VERSION, ProtocolError, Reply, Request, SnapId,
-    StopConditions, StopMask, StopReason, VTime, class_bit, decode_reply, decode_request,
-    encode_reply, encode_request,
+    Environment, EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply,
+    Request, SnapId, StopConditions, StopMask, StopReason, VTime, class_bit, decode_reply,
+    decode_request, encode_reply, encode_request,
 };
 
 const MAGIC: [u8; 4] = *b"CTL1";
@@ -224,6 +224,23 @@ fn req_hash_whole_and_disk() {
             scope: HashScope::Disk,
         },
         &[0x07, 0x01],
+    );
+}
+
+#[test]
+fn req_perturb() {
+    check_req(
+        10,
+        Request::Perturb {
+            fault: HostFault(vec![0xAB, 0xCD]),
+            at: Moment(0x42),
+        },
+        &[
+            0x08, // REQ_PERTURB
+            0x02, 0x00, 0x00, 0x00, // fault bytes len = 2
+            0xAB, 0xCD, // fault bytes
+            0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // at = 0x42
+        ],
     );
 }
 
