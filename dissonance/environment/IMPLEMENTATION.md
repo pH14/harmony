@@ -6,9 +6,11 @@ one `Moment`-keyed reproducer — the heart of dissonance's fault model
 no host entropy, no sibling-crate dependencies. Builds and passes every gate on
 macOS and Linux. No `unsafe`, so no Miri obligation.
 
-> **Read the task-45 section first** (below) — it is the most recent amendment
-> and explains the naming decision, the `Moment` re-keying, and the breaking
-> public-API change to the merged reproducer.
+> **Task 46 (latest) is a docs-only clarifying pass** — see "Task 46" at the end;
+> it reconciles the crate's framing with the host/guest split and changes **no**
+> public API. The substantive amendment is **task 45** (read that section next) —
+> the naming decision, the `Moment` re-keying, and the breaking public-API change
+> to the merged reproducer.
 
 ## What was built
 
@@ -435,3 +437,75 @@ CPU-bound infinite loop in the parallel proptest binary.)
 **Verification.** `cargo mutants -p environment --file {catalog,codec,seeded}.rs`
 → **90 caught, 0 missed, 2 timeouts, 8 unviable** (from the original task-35 run).
 The 2 timeouts are exactly the `supply_bytes` loop-bound mutants above.
+
+## Task 46 — clarify the *guest* control-plane framing (docs only)
+
+A behavior-neutral clarifying pass: make the crate's docs read as the **guest**
+control-plane seam (one of two planes), not "*the* fault surface." **No code, no
+types, no signatures, no behavior change** — the `tests/public-api.txt` snapshot
+is byte-identical (the `cargo public-api` gate passes), as the spec requires.
+
+### Reconciliation — the spec predates task 45's merge
+
+The task-46 spec was written assuming `dissonance/environment` was still the
+task-24, **guest-only** crate and that the host plane "lands separately (task
+45)." In this worktree **task 45 has already merged** (`0e6a1fd`) and it landed
+the host plane *into this crate* — `HostFault`, `Action`, and the
+`BTreeMap<Moment, Action>` reproducer are already here, and the crate-level doc
+already states the two-plane framing. So the spec's three points were applied to
+the *post-45* reality:
+
+1. **Guest-plane framing (done).** The crate-level doc already names both planes
+   (task 45). This pass adds the missing **item-level** reinforcement so the seam
+   items read unambiguously as guest-plane: `Environment` (the "guest
+   control-plane seam"), `decide` (answers a guest `DecisionPoint`; a `HostFault`
+   is never surfaced here), `Outcome` ("for a guest decision"), and `Answer` ("the
+   guest control-plane answer"; a host perturbation is a `HostFault`, the other
+   arm of `Action`). Each cross-references the host plane and
+   `tasks/45-host-control-plane.md`.
+2. **Catalog framing (the real new content).** `catalog.rs`'s module doc now
+   states the decision classes are **guest**, **namespaced**, and **layerable**
+   per `harmony-<env>` (D7); that `environment` owns the **seam + codec** while a
+   *concrete* catalog is **contributed by a guest environment**; and that the flat
+   enumeration in this file is the crate's **built-in reference catalog** standing
+   in until the per-layer namespaced catalogs. `DecisionClass`/`Answer` docs echo
+   the guest-plane scoping.
+3. **Override-map seam marker (reframed, not a stale TODO).** The spec asked for a
+   `// TODO(task 45):` at the override-map definition. Task 45 has landed, so a
+   forward-looking TODO would now be **false**. Instead the `EnvSpec::Recorded.
+   overrides` field doc carries a *realized* back-reference: it states the value
+   type widened from the task-24 guest `Answer` to `Action` (Host ∪ Guest) keyed
+   by `Moment` when the host plane landed — the seam the forward-compat note
+   anticipated, now done.
+
+### Deviations considered and rejected
+
+- **Adding the literal `// TODO(task 45):` marker** — rejected. Task 45 is merged;
+  a forward-looking TODO for completed work is misleading. Replaced with a
+  realized back-reference at the same location (the override-map definition), which
+  serves the spec's stated goal ("so the seam is obvious") truthfully.
+- **Writing the spec's literal "`HostFault` … are not here"** — rejected as false:
+  `HostFault` lives in this crate post-45. Reframed to the *true* distinction the
+  spec intends — host faults are **not at the `decide` seam** and have **no class
+  in the guest catalog** — which is what makes `environment` the guest seam.
+- **Removing/relocating the hardcoded concrete catalog** to literally honor "not
+  hardcoded here" — rejected: that is a behavior/API change and an explicit
+  non-goal ("defining a concrete guest catalog"). The existing enumeration is
+  instead *framed* as the built-in reference catalog pending per-layer catalogs.
+- **Rewriting the crate-level doc** — unnecessary: task 45 already states the
+  two-plane framing there. Scope was kept to item-level docs + the catalog note to
+  avoid churn and the risk of contradicting the landed task-45 prose.
+- **New intra-doc links to the private `host`/`catalog` modules** — avoided. New
+  cross-references point at the **public** `HostFault`/`Action`/`Moment` re-exports
+  (not `crate::host`), so the pass adds **zero** new rustdoc warnings; the three
+  pre-existing `private_intra_doc_links` warnings (lib.rs module-layout doc, lines
+  35/36/43) are untouched and out of scope.
+
+### Gates
+
+All standard gates green, doc-only: `cargo build` / `cargo nextest run` (81
+passed) / `cargo clippy --all-targets -D warnings` / `cargo fmt --check` /
+`cargo deny check`, and — the task's specific gate — `cargo public-api` matches
+`tests/public-api.txt` **unchanged**. `cargo doc` adds no new warnings (the 3
+pre-existing private-module-link warnings remain). No `unsafe`, so no Miri
+obligation.

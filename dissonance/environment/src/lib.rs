@@ -76,11 +76,11 @@ pub const CATALOG_VERSION: u16 = 2;
 /// rule 4). The seeded backing also clamps defensively.
 pub const MAX_SUPPLY_LEN: u32 = 1 << 20; // 1 MiB
 
-/// What [`Environment::decide`] yields. A pure backing ([`SeededEnv`],
-/// [`RecordedEnv`]) always returns [`Outcome::Resolved`]; the (frontier, out of
-/// scope) reactive backing may return [`Outcome::NeedsHost`] to suspend the run
-/// and ask the explorer over a socket. The variant lives here so the seam is
-/// stable across both backings.
+/// What [`Environment::decide`] yields for a **guest** decision. A pure backing
+/// ([`SeededEnv`], [`RecordedEnv`]) always returns [`Outcome::Resolved`]; the
+/// (frontier, out of scope) reactive backing may return [`Outcome::NeedsHost`] to
+/// suspend the run and ask the explorer over a socket. The variant lives here so
+/// the seam is stable across both backings.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Outcome {
     /// The decision was answered locally; carries the [`Answer`].
@@ -89,12 +89,24 @@ pub enum Outcome {
     NeedsHost,
 }
 
-/// The one seam between fault *policy* (the explorer) and fault *mechanism* (the
-/// services). A faultable service consults [`decide`](Environment::decide) before
-/// any side effect and acts on the [`Answer`].
+/// The **guest** control-plane seam: the one boundary between fault *policy* (the
+/// explorer) and fault *mechanism* (the services the guest *requests*). A
+/// faultable service consults [`decide`](Environment::decide) before any side
+/// effect and acts on the [`Answer`] — answering a guest-requested service
+/// non-nominally (an [`Answer::Fault`] in place of [`Answer::Nominal`]) *is* the
+/// guest fault.
+///
+/// This trait models the **guest** plane only. Host-plane perturbations
+/// ([`HostFault`]: memory/clock/CPU/IRQ) have no service point — the guest never
+/// asks for them — so they never flow through [`decide`](Environment::decide); the
+/// frontier applies them imperatively at a [`Moment`] (see [`HostFault`] and
+/// `tasks/45-host-control-plane.md`). Both planes nonetheless record into one
+/// [`Moment`]-keyed reproducer ([`EnvSpec`]) as the merged [`Action`].
 pub trait Environment {
-    /// Answer one [`DecisionPoint`]. Deterministic given the backing's own state
-    /// and the point; never panics, even on a hostile point.
+    /// Answer one **guest** [`DecisionPoint`] with an [`Answer`]. Deterministic
+    /// given the backing's own state and the point; never panics, even on a
+    /// hostile point. A [`HostFault`] is never surfaced here — it has no decision
+    /// point.
     fn decide(&mut self, point: &DecisionPoint) -> Outcome;
 }
 
