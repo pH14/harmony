@@ -258,16 +258,9 @@ impl FirstEntryReset {
         Self { pending: true }
     }
 
-    /// Re-arm the reset for the next entry (call on restore — P1(b); or after a
-    /// zero-step `run_until` that consumed it without entering the guest — P2(b) r5).
+    /// Re-arm the reset for the next entry (call on restore — P1(b)).
     pub(crate) fn rearm(&mut self) {
         self.pending = true;
-    }
-
-    /// Whether the reset is currently armed, **without** consuming it. Used to detect
-    /// "this is the first run" before `ensure_first_run` spends the arm (P2(b)).
-    pub(crate) fn is_armed(&self) -> bool {
-        self.pending
     }
 
     /// Called at each guest entry: returns whether the counter must be reset **now**,
@@ -275,18 +268,6 @@ impl FirstEntryReset {
     pub(crate) fn take_reset(&mut self) -> bool {
         std::mem::replace(&mut self.pending, false)
     }
-}
-
-/// P2(b) round-5: should the first-entry PMU reset be **kept armed** after this
-/// `run_until`? True iff this was the first run (`was_first`) AND the call was a
-/// zero-step deadline (`deadline <= start` — already at/before the freshly-reset count,
-/// e.g. `run_until(Vtime(0))`), which issues NO `KVM_RUN`. In that case the guest never
-/// entered, so spending the first-entry reset on it would let a coexisting VM's branches
-/// (shared pinned-thread counter) contaminate THIS backend's baseline before its real
-/// first entry — keep the reset armed so that real entry re-baselines. Pure decision,
-/// kept in the gated portable layer (the box `run_until` only supplies the live counts).
-pub(crate) fn keep_reset_armed_for_zero_step(was_first: bool, start: u64, deadline: u64) -> bool {
-    was_first && deadline <= start
 }
 
 impl Default for FirstEntryReset {
@@ -840,16 +821,13 @@ mod tests {
     #[test]
     fn first_entry_reset_fires_once_then_only_after_rearm() {
         let mut r = FirstEntryReset::new();
-        assert!(r.is_armed(), "a fresh VM is armed (first entry will reset)");
         assert!(
             r.take_reset(),
             "the very first entry resets (per-VM baseline)"
         );
-        assert!(!r.is_armed(), "take_reset consumed the arm");
         assert!(!r.take_reset(), "no reset on subsequent entries");
         assert!(!r.take_reset());
         r.rearm();
-        assert!(r.is_armed(), "rearm re-arms (non-consuming check agrees)");
         assert!(
             r.take_reset(),
             "restore re-arms: the next entry resets again"
@@ -858,48 +836,32 @@ mod tests {
         // `Default` == `new` (a fresh VM resets on its first entry).
         assert!(FirstEntryReset::default().take_reset());
     }
-
-    /// P2(b) round-5: the first-entry reset is kept armed ONLY for a first-run
-    /// zero-step `run_until` (deadline already at/before the freshly-reset count → no
-    /// `KVM_RUN`). A real-step first run (deadline ahead) spends it; a non-first run
-    /// never re-arms (its baseline is already established).
-    #[test]
-    fn keep_reset_armed_only_for_first_run_zero_step() {
-        // First run (was_first = true):
-        assert!(
-            keep_reset_armed_for_zero_step(true, 0, 0),
-            "first run_until(Vtime(0)) on a fresh (reset) counter → zero-step → keep armed"
-        );
-        assert!(
-            keep_reset_armed_for_zero_step(true, 5, 5),
-            "deadline == start → zero-step → keep armed"
-        );
-        assert!(
-            keep_reset_armed_for_zero_step(true, 9, 3),
-            "deadline < start (overdue) → zero-step → keep armed"
-        );
-        assert!(
-            !keep_reset_armed_for_zero_step(true, 0, 1),
-            "deadline ahead of start → a real KVM_RUN enters the guest → spend the reset"
-        );
-        // Not the first run (was_first = false): never re-arm, even on a zero-step.
-        assert!(
-            !keep_reset_armed_for_zero_step(false, 5, 5),
-            "an established baseline is not re-armed by a later zero-step run_until"
-        );
-        assert!(!keep_reset_armed_for_zero_step(false, 0, 0));
-    }
 }
 
-/// Stateful (model-based) property test for the P1(b) first-entry PMU-reset
-/// discipline: random restore/run sequences over N VMs sharing one pinned thread,
-/// with the real [`FirstEntryReset`] as the system-under-test and an INDEPENDENT
-/// reference that recomputes each VM's own-branches-since-reset. It pins the
-/// determinism invariant — a VM's `run_until` counter sees only ITS OWN branches,
-/// never a coexisting VM's — that the box-only FFI (`kvm_sys`) cannot have covered
-/// by llvm-cov / cargo-mutants. A regression in the discipline (e.g. a `rearm` that
-/// stops re-arming) surfaces as a SUT/reference divergence on CI, not only on the
-/// box. Miri-excluded: pure arithmetic, no `unsafe` to scrutinize.
+/// Stateful (model-based) property test for the first-entry PMU-reset discipline
+/// (P1(b)): random run/restore sequences over N VMs sharing one pinned thread, with
+/// the real [`FirstEntryReset`] as the system-under-test (SUT) and an **INDEPENDENT**
+/// reference that tracks each VM's OWN retired branches directly — NOT derived from the
+/// shared counter.
+///
+/// **Round-7 P2.** A reference that computed the expected work as the *shared* total
+/// minus the reset point would MIRROR the implementation: for any interleaving it would
+/// include exactly the foreign branches the SUT includes, so the test would pass even
+/// WITH the contamination its name claims to disprove. So the reference here keeps a
+/// per-VM `own` tally (incremented only when THAT vm runs) and the expected work is
+/// `own − own_baseline` — computed with no reference to the shared counter. The
+/// invariant: a VM's `run_until` counter (the backend's `B`, modelled as the shared
+/// `total − reset_at`) sees only ITS OWN branches, equal to that independent tally. A
+/// regression in the discipline (e.g. a `rearm` that no longer re-arms) makes the SUT
+/// include a coexisting VM's branches → it diverges from the own-branch reference → the
+/// test fails on CI, not only on the box.
+///
+/// Transitions model the REAL execution: a VM (re)enters only when the discipline
+/// re-baselines it on entry — it is the VM currently running (continuing its own run),
+/// is fresh (first entry auto-resets), or was just restored (restore re-arms). The VMM
+/// never time-slices a VM back in after another ran WITHOUT a snapshot restore
+/// (branching IS restore), so that contaminating interleaving is not generated.
+/// Miri-excluded: pure arithmetic, no `unsafe` to scrutinize.
 #[cfg(all(test, not(miri)))]
 mod reset_discipline_stateful {
     use crate::run_until::FirstEntryReset;
@@ -911,33 +873,40 @@ mod reset_discipline_stateful {
     /// counter accumulates every VM's guest branches on that thread).
     const N_VMS: usize = 3;
 
-    /// One VM in the independent reference: an INDEPENDENT shared-thread counter
-    /// (vmm-core's V-time counter `A`), reset at its baseline points by a discipline
-    /// encoded DIRECTLY here (not via `FirstEntryReset`). Effective work is
-    /// `total − reset_at` — the shared counter legitimately includes foreign branches
-    /// retired between this VM's runs (so does the backend counter `B`); what must
-    /// match is the **reset point**, so `B`'s reset discipline equals `A`'s.
+    /// One VM in the INDEPENDENT reference: its OWN retired-branch tally (`own`), the
+    /// tally at its last baseline reset (`own_baseline`), and the discipline flags. The
+    /// expected `run_until` work is `own − own_baseline` — computed WITHOUT the shared
+    /// counter, so it can never inherit a coexisting VM's branches.
     #[derive(Clone, Debug)]
     struct RefVm {
-        reset_at: u64,
+        own: u64,
+        own_baseline: u64,
         entered: bool,
         restore_pending: bool,
     }
     #[derive(Clone, Debug)]
     struct RefState {
-        /// The shared thread's total retired guest branches (`A`'s raw count).
-        total: u64,
+        /// The VM currently running (for realistic transition generation).
+        active: Option<usize>,
         vms: Vec<RefVm>,
-        /// (vm, expected `A` work) of the most recent `Enter`, for the SUT assert.
+        /// (vm, expected OWN-branch work) of the most recent `Enter`, for the SUT assert.
         last_enter: Option<(usize, u64)>,
     }
 
     #[derive(Clone, Debug)]
     enum Op {
-        /// A VM enters the guest and retires `branches` guest branches on the thread.
+        /// A VM enters the guest and retires `branches` of ITS OWN guest branches.
         Enter { vm: usize, branches: u64 },
         /// A snapshot restore re-arms the VM's next-entry reset.
         Restore { vm: usize },
+    }
+
+    /// A VM may Enter iff the discipline re-baselines it on this entry: it is active
+    /// (continuing its own run), fresh (first entry resets), or restore_pending
+    /// (restore re-armed). This is exactly the real VMM's execution — a VM is never
+    /// time-sliced back in after another ran without a restore.
+    fn may_enter(s: &RefState, vm: usize) -> bool {
+        s.active == Some(vm) || !s.vms[vm].entered || s.vms[vm].restore_pending
     }
 
     struct RefMachine;
@@ -946,10 +915,11 @@ mod reset_discipline_stateful {
         type Transition = Op;
         fn init_state() -> BoxedStrategy<RefState> {
             Just(RefState {
-                total: 0,
+                active: None,
                 vms: vec![
                     RefVm {
-                        reset_at: 0,
+                        own: 0,
+                        own_baseline: 0,
                         entered: false,
                         restore_pending: false,
                     };
@@ -959,28 +929,28 @@ mod reset_discipline_stateful {
             })
             .boxed()
         }
-        fn transitions(_: &RefState) -> BoxedStrategy<Op> {
-            prop_oneof![
-                3 => (0..N_VMS, 1u64..10_000).prop_map(|(vm, branches)| Op::Enter { vm, branches }),
-                1 => (0..N_VMS).prop_map(|vm| Op::Restore { vm }),
-            ]
-            .boxed()
+        fn transitions(s: &RefState) -> BoxedStrategy<Op> {
+            let enterable: Vec<usize> = (0..N_VMS).filter(|&vm| may_enter(s, vm)).collect();
+            let enter = (proptest::sample::select(enterable), 1u64..10_000)
+                .prop_map(|(vm, branches)| Op::Enter { vm, branches });
+            let restore = (0..N_VMS).prop_map(|vm| Op::Restore { vm });
+            prop_oneof![3 => enter, 1 => restore].boxed()
         }
         fn apply(mut s: RefState, op: &Op) -> RefState {
             match *op {
                 Op::Enter { vm, branches } => {
-                    // The correct discipline: re-baseline at the first entry and at
-                    // the first entry after a restore (`A` re-arms its first-entry
-                    // reset on `restore_vm_state`).
-                    let total = s.total;
                     let v = &mut s.vms[vm];
+                    // Re-baseline the OWN tally at the first entry and the first entry
+                    // after a restore (the real discipline's reset points).
                     if !v.entered || v.restore_pending {
-                        v.reset_at = total;
+                        v.own_baseline = v.own;
                         v.entered = true;
                         v.restore_pending = false;
                     }
-                    s.total = total.saturating_add(branches);
-                    s.last_enter = Some((vm, s.total - s.vms[vm].reset_at));
+                    v.own = v.own.saturating_add(branches);
+                    let work = v.own - v.own_baseline;
+                    s.active = Some(vm);
+                    s.last_enter = Some((vm, work));
                 }
                 Op::Restore { vm } => {
                     s.vms[vm].restore_pending = true;
@@ -989,10 +959,18 @@ mod reset_discipline_stateful {
             }
             s
         }
+        fn preconditions(s: &RefState, op: &Op) -> bool {
+            // Enforced during generation AND shrinking: an `Enter` is valid only for a
+            // VM the discipline re-baselines on entry (see `may_enter`).
+            match *op {
+                Op::Enter { vm, .. } => may_enter(s, vm),
+                Op::Restore { .. } => true,
+            }
+        }
     }
 
-    /// One VM's view of the shared counter in the SUT: the real `FirstEntryReset`
-    /// plus the counter's reset point (`work = shared_total - reset_at`).
+    /// The SUT faithfully models the backend: a SHARED `total` counter, the real
+    /// `FirstEntryReset` per VM, and the counter's reset point (`work = total − reset_at`).
     struct SutVm {
         arm: FirstEntryReset,
         reset_at: u64,
@@ -1027,16 +1005,17 @@ mod reset_discipline_stateful {
                     }
                     sut.total = sut.total.saturating_add(branches);
                     let work = sut.total - sut.vms[vm].reset_at;
-                    // The backend counter `B`'s effective work must equal vmm-core's
-                    // V-time counter `A`'s — i.e. their reset points agree across the
-                    // save/restore/run interleaving (P1(b)). A regression in the reset
-                    // discipline (e.g. a `rearm` that no longer re-arms) diverges them.
+                    // The backend counter `B` (shared `total − reset_at`) must equal the
+                    // INDEPENDENT own-branch tally. A regression in the reset discipline
+                    // (e.g. a `rearm` that no longer re-arms) leaves `reset_at` stale, so
+                    // `B` inherits a coexisting VM's branches and diverges from the tally.
                     let (rv, expected) = ref_state.last_enter.expect("ref tracked the enter");
                     assert_eq!(rv, vm);
                     assert_eq!(
                         work, expected,
-                        "vm {vm}: backend run_until counter B diverged from V-time counter A \
-                         (B work {work} != A work {expected}) — reset-point desync"
+                        "vm {vm}: backend counter B (shared total − reset_at = {work}) diverged \
+                         from the INDEPENDENT own-branch tally {expected} — foreign-branch \
+                         contamination / reset-point desync"
                     );
                 }
                 Op::Restore { vm } => sut.vms[vm].arm.rearm(),
@@ -1050,5 +1029,57 @@ mod reset_discipline_stateful {
         #![proptest_config(Config { cases: 256, ..Config::default() })]
         #[test]
         fn first_entry_reset_excludes_foreign_branches(sequential 1..50 => Machine);
+    }
+
+    /// Direct unit test of the transition validity (`preconditions`/`may_enter`): a VM
+    /// may re-enter only when the discipline re-baselines it (active / fresh /
+    /// just-restored), so the property test never models the contaminating
+    /// "re-enter after a foreign VM without a restore" interleaving.
+    #[test]
+    fn preconditions_reject_a_non_rebaselined_reenter() {
+        let entered = |restore_pending| RefVm {
+            own: 1,
+            own_baseline: 0,
+            entered: true,
+            restore_pending,
+        };
+        // vm0 already ran; vm1 is the active (running) VM; vm2 is fresh.
+        let s = RefState {
+            active: Some(1),
+            vms: vec![
+                entered(false),
+                entered(false),
+                RefVm {
+                    own: 0,
+                    own_baseline: 0,
+                    entered: false,
+                    restore_pending: false,
+                },
+            ],
+            last_enter: None,
+        };
+        // vm0 re-entering after vm1 ran, WITHOUT a restore, would inherit vm1's branches
+        // → rejected (not a real scenario, and not re-baselined).
+        assert!(!RefMachine::preconditions(
+            &s,
+            &Op::Enter { vm: 0, branches: 1 }
+        ));
+        // The active VM continues, a fresh VM first-enters, a restore is always valid.
+        assert!(RefMachine::preconditions(
+            &s,
+            &Op::Enter { vm: 1, branches: 1 }
+        ));
+        assert!(RefMachine::preconditions(
+            &s,
+            &Op::Enter { vm: 2, branches: 1 }
+        ));
+        assert!(RefMachine::preconditions(&s, &Op::Restore { vm: 0 }));
+        // And after a restore, vm0 may re-enter (re-baselined).
+        let mut restored = s;
+        restored.vms[0].restore_pending = true;
+        assert!(RefMachine::preconditions(
+            &restored,
+            &Op::Enter { vm: 0, branches: 1 }
+        ));
     }
 }

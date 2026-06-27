@@ -1007,3 +1007,35 @@ still classifies early/at/past from the WORK). Test:
 the deadline → loud error; one strictly before → single-stepped to the exact boundary),
 and `lands_exactly_at_deadline_with_no_guest_exit` exercises skids up to 255 (< 256) →
 all land at exactly the deadline, bit-identical across the skid (signal-timing) range.
+
+### PR #15 round-7 (cross-model): kill the zero-step shortcut (1 P1) + independent test oracle (1 P2)
+
+- **P1 — eliminate the zero-step `run_until` shortcut.** When `deadline <= start`,
+  `run_until` used to return `Exit::Deadline` WITHOUT any `KVM_RUN`. That skipped the
+  entry that COMMITS a completion staged by the prior step (a completed read-style/MSR/
+  CPUID exit is committed by the next `KVM_RUN`; `self.pending` is already `None`), so a
+  caller could save/restore or re-enter with the staged completion uncommitted = stale
+  state / broken run-loop contract. The shortcut also needed special-casing to not spend
+  the first-entry reset (round-5 P2b). **Root-cause fix: kill the shortcut.** For
+  `deadline <= start`, `run_until` now single-steps ONCE (`commit_step_overdue` →
+  `single_step_once`): the first `KVM_RUN` commits any staged completion, the
+  (unconditional) `ensure_first_run` resets the baseline, and the overdue `Deadline` is
+  delivered at the resulting count. A genuine guest exit on that step is delivered, never
+  dropped (round-4). This removes the whole zero-step edge-case class — the round-5 P2b
+  machinery (`keep_reset_armed_for_zero_step`, `is_armed`, the snapshot/re-arm dance) is
+  GONE; every `run_until` now enters the guest and resets at first entry. The degenerate
+  `deadline <= start` case is rare; the planner path (`deadline > start`) is unchanged
+  (gate-2/4 digests identical). Box test
+  `zero_step_run_until_enters_commits_and_is_deterministic`.
+- **P2 — make the foreign-branch stateful test's oracle INDEPENDENT.** The reference
+  computed the expected work as the *shared* `total − reset_at`, which for a
+  VM0→VM1→VM0 interleaving INCLUDES VM1's branches — exactly the contamination the
+  test's name claims impossible. The reference **mirrored the impl** instead of checking
+  it, so the test passed with contamination. Fixed: the reference now tracks each VM's
+  OWN retired-branch tally (`own − own_baseline`), computed WITHOUT the shared counter,
+  so it can never inherit a coexisting VM's branches; the SUT's shared `total − reset_at`
+  must equal it. Transitions are constrained to the REAL execution (a VM re-enters only
+  when the discipline re-baselines it: active / fresh / just-restored — the VMM never
+  time-slices a VM back in after another ran without a snapshot restore). Verified the
+  oracle is not vacuous: breaking `FirstEntryReset::rearm` makes the SUT inherit foreign
+  branches → it diverges from the independent tally → the test fails.

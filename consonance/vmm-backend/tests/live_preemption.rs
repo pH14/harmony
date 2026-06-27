@@ -271,48 +271,49 @@ fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
 
 #[test]
 #[ignore = "live KVM + perf; run on the box with --ignored"]
-fn zero_step_run_until_keeps_first_entry_reset_armed_excluding_foreign_branches() {
-    // P2(b) round-5: a first `run_until(Vtime(0))` is a ZERO-STEP — the deadline is
-    // already at the freshly-reset count, so it returns Deadline WITHOUT any KVM_RUN
-    // (the guest never enters). It must NOT spend the first-entry PMU reset on that
-    // no-op: the reset stays armed so the REAL first entry still re-baselines the
-    // shared, pinned-thread counter (a coexisting VM in between would otherwise
-    // contaminate the baseline — the branch/multiverse path).
-    let (mut b1, _m1) = boot_with(SPIN_CODE);
-    match b1.run_until(Vtime(0)).expect("b1 zero-step run_until(0)") {
-        // Zero-step: lands at 0 immediately, no guest code executed.
-        Exit::Deadline { reached } => assert_eq!(reached.0, 0, "zero-step lands at 0, no KVM_RUN"),
-        other => panic!("expected Deadline at 0 (zero-step), got {other:?}"),
-    }
-
-    // A DIFFERENT VM runs ~100k guest branches on the SAME thread → they land in B1's
-    // shared, exclude_host PMU counter too (B1's real first entry has not happened yet).
-    {
-        let (mut b2, _m2) = boot_with(SPIN_CODE);
-        match b2.run_until(Vtime(100_000)).expect("b2 run_until") {
-            Exit::Deadline { reached } => assert_eq!(reached.0, 100_000),
-            other => panic!("expected Deadline at 100000, got {other:?}"),
-        }
-    }
-
-    // B1's REAL first entry: the first-entry reset (kept armed through the zero-step)
-    // fires HERE, excluding B2's foreign branches, so run_until(50_000) lands at
-    // EXACTLY 50_000. WITHOUT the P2(b) fix the zero-step would have consumed the reset,
-    // B1's counter would already read ~100_000, and this would report an overdue
-    // Deadline at ~100_000 — a corrupted, foreign-contaminated baseline.
-    match b1
-        .run_until(Vtime(50_000))
-        .expect("b1 real first entry after foreign VM")
-    {
-        Exit::Deadline { reached } => assert_eq!(
-            reached.0, 50_000,
-            "the real first entry must re-baseline (zero-step kept the reset armed) — got {}",
-            reached.0
-        ),
-        other => panic!("expected Deadline at 50000, got {other:?}"),
-    }
+fn zero_step_run_until_enters_commits_and_is_deterministic() {
+    // P1 round-7: a `run_until` whose deadline is already at/before the current count
+    // (here `Vtime(0)` on a fresh VM) NO LONGER takes the old no-KVM_RUN zero-step
+    // shortcut. It enters the guest (single-step) — committing any completion staged by
+    // the prior step and resetting the first-entry baseline — then delivers the overdue
+    // Deadline. Verify it (a) returns Deadline (the guest entered) and (b) the SUBSEQUENT
+    // run_until lands at EXACTLY 50_000 (the baseline established at the zero-step entry
+    // is sane), bit-identical across two independent VMs (the landing is a pure function
+    // of the instruction stream, not of host timing).
+    let land = || -> (u64, u64) {
+        let (mut b, _m) = boot_with(SPIN_CODE);
+        let z = match b
+            .run_until(Vtime(0))
+            .expect("zero-step run_until(0) enters the guest")
+        {
+            Exit::Deadline { reached } => reached.0,
+            other => panic!("expected Deadline from run_until(0), got {other:?}"),
+        };
+        let d = match b
+            .run_until(Vtime(50_000))
+            .expect("run_until after the zero-step entry")
+        {
+            Exit::Deadline { reached } => reached.0,
+            other => panic!("expected Deadline at 50000, got {other:?}"),
+        };
+        (z, d)
+    };
+    let (z1, d1) = land();
+    let (z2, d2) = land();
+    assert_eq!(
+        z1, z2,
+        "the zero-step landing is deterministic ({z1} == {z2})"
+    );
+    assert_eq!(
+        d1, d2,
+        "the subsequent deadline landing is deterministic ({d1} == {d2})"
+    );
+    assert_eq!(
+        d1, 50_000,
+        "the run_until after the zero-step lands at EXACTLY 50000 (baseline sane) — got {d1}"
+    );
     eprintln!(
-        "[p2b] zero-step run_until(0) kept the first-entry reset armed; the real first entry \
-         landed at exactly 50000 after a foreign VM ran — no baseline contamination"
+        "[p1-r7] zero-step run_until(0) entered + committed (landed at {z1}); the next run_until \
+         landed at exactly {d1} — no shortcut, baseline established at the real entry"
     );
 }
