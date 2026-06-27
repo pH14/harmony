@@ -228,9 +228,10 @@ pub struct VtimeWiring {
     /// instead carries the non-deterministic post-last-intercept exit-path skid.
     /// [`encode_vtime`] hashes the effective V-time derived from **this** value, so
     /// the `VTIM` chunk is byte-identical twice; it is **never** a live hash-time
-    /// read. Reset to `0` by [`Vmm::restore_vtime`] (the counter restarts at 0 and
-    /// the effective V-time moves into `vns_base`). Starts at `0`: before the first
-    /// intercept the effective V-time is exactly `vns_base`.
+    /// read. Reset to `0` by [`Vmm::restore_vtime`] (the effective V-time moves into
+    /// `vns_base`; the work counter itself re-baselines at the NEXT guest entry via
+    /// `start_run`, round-12). Starts at `0`: before the first intercept the effective
+    /// V-time is exactly `vns_base`.
     last_intercept_work: u64,
     /// `IA32_TSC_ADJUST` (MSR `0x3b`): the architectural signed offset added to the
     /// base V-time TSC to form the **guest-visible** TSC (`visible = VClock::tsc +
@@ -247,9 +248,9 @@ impl VtimeWiring {
     ///
     /// **Fails closed on a fractional work→ns ratio** (`ratio_den != 1`):
     /// [`save_vtime`](Vmm::save_vtime) records V-time in whole nanoseconds
-    /// (`snapshot_vns`) and [`restore_vtime`](Vmm::restore_vtime) resets the work
-    /// counter to 0, so a fractional ratio's sub-ns remainder
-    /// `(work · num) mod den` would be silently lost across a snapshot — a
+    /// (`snapshot_vns`) and [`restore_vtime`](Vmm::restore_vtime) re-baselines the work
+    /// counter (anchor to 0, effective V-time → `vns_base`), so a fractional ratio's
+    /// sub-ns remainder `(work · num) mod den` would be silently lost across a snapshot — a
     /// restored clock would lag an un-snapshotted run. INTEGRATION.md §4 requires
     /// `ratio_den == 1` for any snapshot-bearing config (carrying the remainder is
     /// the §6 open question, deferred); the det-cfl-v1 contract clock is exact, so
@@ -739,48 +740,55 @@ impl<B: Backend> Vmm<B> {
             })?;
             (clock, cfg, entropy)
         };
-        // 2. ATOMICITY (P2 round-11): do the FALLIBLE backend round-trip BEFORE any
-        //    V-time mutation. Round-10 placed this save/restore AFTER the work-counter
-        //    reset + clock/entropy commit, so a failure here left V-time HALF-restored
-        //    (work zeroed, clock/entropy/first_entry already replaced). Doing it first —
-        //    with `work.reset()` as the LAST fallible step and the field commit infallible
-        //    below it — makes the V-time state all-or-nothing: if ANY fallible step errors,
-        //    no V-time field has changed. The round-trip re-arms the backend's run_until
-        //    PMU baseline (counter `B`): `restore` re-arms the first-entry reset as a side
-        //    effect (consumed only by the next real entry — the round-11 invariant), and
-        //    `save`->`restore` is an identity on vCPU state, so the hash is unchanged. (B
-        //    is unreachable directly — the production backend is `Box<dyn Backend>` and the
-        //    FROZEN trait must not grow a re-arm method — so the round-trip is the seam.)
+        // 2. ATOMICITY (P3 round-12, refined). The backend save+restore round-trip — which
+        //    re-arms counter B — is the SOLE HARD-FALLIBLE mutation, done BEFORE any commit.
+        //    Round-11 had TWO hard-fallible mutations (this round-trip for B AND
+        //    `vt.work.reset()` for A): if `work.reset()` failed AFTER the round-trip, B was
+        //    re-armed but A was not → the next entry reset only B → B≡A broke on a failed
+        //    restore. The fix demotes A's counter reset to BEST-EFFORT (step 4 below), so the
+        //    round-trip is the only thing that can fail-and-abort here: `restore`'s
+        //    `reset_arm.rearm()` is its LAST step, so a failure leaves B unchanged → if the
+        //    round-trip errors, NOTHING below runs and the VM is byte-for-byte untouched
+        //    (true all-or-nothing). `save`->`restore` is a vCPU identity, so the hash is
+        //    unchanged. (B is unreachable directly — the production backend is
+        //    `Box<dyn Backend>` and the FROZEN trait must not grow a re-arm method.)
         let vcpu = self.backend.save()?;
         self.backend.restore(&vcpu)?;
-        // 3. Reset the hardware work counter (counter `A`) — THE LAST fallible step.
-        //    Below this line nothing can fail, so the field commit is atomic.
+        // 3. Commit the validated state — ALL infallible (the round-trip above was the last
+        //    HARD-fallible step), so the commit is true all-or-nothing. The snapshot's
+        //    effective V-time lives in `cfg.vns_base` and the last-intercept anchor resets to
+        //    0 (effective V-time = `vns_base` until the next intercept advances work) —
+        //    keeping a restored VM byte-identical to a fresh one at the same effective V-time
+        //    (task-27 item 2). `IA32_TSC_ADJUST` is re-applied from the snapshot.
         let vt = self.vtime.as_mut().ok_or_else(|| {
             VmmError::ContractViolation("restore_vtime called but V-time is not wired".to_string())
         })?;
-        vt.work.reset()?;
-        // 4. Commit the validated state (all infallible). The hardware counter
-        //    restarts at 0 and the snapshot's effective V-time now lives in
-        //    `cfg.vns_base`, so the last-intercept anchor for the hash resets to 0
-        //    too (effective V-time = `vns_base` until the next intercept advances
-        //    work) — keeping a restored VM byte-identical to a fresh one at the
-        //    same effective V-time (task-27 item 2, restore-transparency).
-        //    `IA32_TSC_ADJUST` is re-applied from the snapshot (the contract carries
-        //    it in `vm_state`).
         vt.clock = clock;
         vt.cfg = cfg;
         vt.entropy = entropy;
         vt.last_intercept_work = 0;
         vt.tsc_adjust = snap.tsc_adjust;
-        // The restored VM is at work 0 with effective V-time exactly `vns_base`, a
-        // synchronized point — an immediate `save_vtime` is exact. (`vt`'s borrow of
-        // `self.vtime` has ended by this disjoint-field write.)
+        // 4. Re-baseline counter A. `vt.work.reset()` is BEST-EFFORT (its error is NOT a
+        //    hard failure — that is what keeps the round-trip above the SOLE abort point, so
+        //    A and B can never end up re-armed-XOR-not): it gives the portable `ScriptedWork`
+        //    (whose `start_run` is a no-op) its immediate zero — and `ScriptedWork::reset` is
+        //    infallible, so it never actually fails there. The box `PerfWorkCounter` ALSO
+        //    re-zeroes at the next entry via `start_run` (== the same `IOC_RESET`) because
+        //    `first_entry_done = false` below, so a failed `IOC_RESET` here is recovered (and
+        //    re-surfaced) at that entry, and nothing reads live `work()` before it
+        //    (save_vtime / state_hash use `last_intercept_work` = 0).
+        let _ = vt.work.reset();
+        // The restored VM's effective V-time is exactly `vns_base` (anchored at
+        // `last_intercept_work = 0`), a synchronized point — an immediate `save_vtime` is
+        // exact. (`vt`'s borrow of `self.vtime` has ended by this disjoint-field write.)
         self.vtime_synchronized = true;
-        // Counter A (vmm-core `WorkSource`) re-baselines at the next entry: re-arm the
-        // first-entry gate so the next `step` calls `WorkSource::start_run` (exactly like
-        // a full `restore_vm_state`). Counter B was re-armed by the `restore` in step 2;
-        // both reset at the next REAL entry, so a coexisting VM on the shared pinned
-        // thread in between contaminates neither (B≡A holds).
+        // Counter A re-baselines at the next entry: re-arm the first-entry gate so the next
+        // `step` calls `WorkSource::start_run` (exactly like a full `restore_vm_state`).
+        // Counter B was re-armed by the `restore` in step 2. Both re-baseline at the next
+        // REAL entry, so a coexisting VM on the shared pinned thread in between contaminates
+        // neither (B≡A) — and because this re-arm and the V-time commit are INFALLIBLE and
+        // run only AFTER the sole hard-fallible round-trip, B and A are re-armed together or
+        // not at all.
         self.first_entry_done = false;
         Ok(())
     }
@@ -4172,6 +4180,47 @@ mod tests {
             2,
             "restore_vtime re-armed counter A: the next entry re-baselines the WorkSource \
              (excluding any coexisting VM's branches), keeping B≡A"
+        );
+    }
+
+    /// P3 round-12: `restore_vtime`'s counter re-arms are all-or-NOTHING. A backend failure
+    /// during the (sole fallible) save/restore round-trip must leave counter A NOT re-armed
+    /// — `first_entry_done` is set `false` only in the INFALLIBLE commit AFTER the
+    /// round-trip succeeds, so a failure cannot re-arm A while leaving B un-re-armed (the
+    /// `B re-armed but A not` bug round-11 still had). Proof: `start_run` does NOT re-fire
+    /// at the entry after a FAILED restore (A's first-entry gate was never reset).
+    #[test]
+    fn restore_vtime_failure_leaves_counter_a_not_rearmed() {
+        let starts = std::rc::Rc::new(Cell::new(0u32));
+        let mut v = Vmm::new(
+            SaveFailBackend(configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt])),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(CountingStartWork {
+                    starts: starts.clone(),
+                }),
+                1,
+            )
+            .unwrap(),
+        );
+        v.step().expect("step 1"); // first entry → start_run #1 (first_entry_done now true)
+        assert_eq!(starts.get(), 1, "start_run fires at the first entry");
+        let snap = v.save_vtime().expect("clean save").expect("V-time wired");
+        // The backend `save()` in the round-trip fails → restore_vtime aborts BEFORE the
+        // commit, so `first_entry_done` stays true (A is NOT re-armed).
+        assert!(
+            matches!(v.restore_vtime(&snap), Err(VmmError::Backend(_))),
+            "a failing backend round-trip must make restore_vtime fail closed"
+        );
+        v.step().expect("step 2"); // entry after the FAILED restore
+        assert_eq!(
+            starts.get(),
+            1,
+            "a FAILED restore_vtime must NOT re-arm counter A — start_run does not re-fire \
+             (all-or-nothing: neither A nor B is re-armed on failure)"
         );
     }
 

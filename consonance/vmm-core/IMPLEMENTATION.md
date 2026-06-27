@@ -2824,3 +2824,23 @@ counter B as a side effect; per the round-11 first-entry-reset invariant it is c
 by the next real entry. `save`→`restore` is a vCPU identity, so the hash is unchanged.) Test:
 `restore_vtime_atomic_on_backend_failure` — a `SaveFailBackend` + a state-CHANGING snapshot
 (shifted `vns`) ⇒ `restore_vtime` returns `Err(Backend)` with the `state_hash` UNCHANGED.
+
+## Task 47 — round-12: restore_vtime atomicity, refined — one hard-fallible mutation (P2)
+
+Round-11 still had TWO hard-fallible mutations: the backend `save`+`restore` round-trip
+(counter B's re-arm) AND `vt.work.reset()` (counter A). If `work.reset()` failed AFTER the
+round-trip, B was re-armed but A was not → the next entry re-baselined only B → B≡A broke on
+a failed restore. The refinement makes the round-trip the SOLE hard-fallible mutation, run
+before any commit (`restore`'s `reset_arm.rearm()` is its last step, so a failure leaves B
+unchanged → the VM is byte-for-byte untouched). A's counter reset is demoted to BEST-EFFORT
+*after* the (now infallible) commit: it gives the portable `ScriptedWork` its immediate zero
+(`ScriptedWork::reset` is infallible, and its `start_run` is a no-op, so the explicit reset is
+needed there — `snapshot_restore_continues_the_clock_and_rng_exactly` requires it), while the
+box `PerfWorkCounter` ALSO re-zeroes at the next entry via `start_run` (== the same
+`IOC_RESET`, because `first_entry_done = false`), so a failed `IOC_RESET` here is recovered
+(and re-surfaced) at that entry. Nothing reads live `work()` before the next entry
+(save_vtime/state_hash use `last_intercept_work` = 0), so the deferral is invisible. Net: B's
+re-arm, A's re-arm (`first_entry_done = false`), and the V-time commit are all-or-nothing —
+either the round-trip succeeds and all commit, or it fails and nothing changes. New test
+`restore_vtime_failure_leaves_counter_a_not_rearmed` (a backend failure ⇒ `start_run` does
+NOT re-fire at the next entry — A is not re-armed, so neither A nor B is, on failure).

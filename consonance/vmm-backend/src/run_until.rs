@@ -218,51 +218,65 @@ pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExit
     }
 }
 
-/// **The complete `run_until` contract (P1 round-8) — deadline vs current work.** A
-/// pure decision so it is covered, mutation-tested, and the box `run_until` reads it
-/// once at entry. The three cases (and what each does) are the explicit contract,
-/// documented as a table in IMPLEMENTATION.md:
+/// **The complete `run_until` contract (P1 round-8, REVISED round-12) — deadline vs
+/// current work.** A pure decision so it is covered, mutation-tested, and the box
+/// `run_until` reads it once at entry. The two cases (and what each does) are the
+/// explicit contract, documented as a table in IMPLEMENTATION.md:
 ///
 /// | `deadline` vs `current` | meaning | action |
 /// |---|---|---|
 /// | `>`  | the timer is ahead | drive the planner: arm overflow, single-step to EXACTLY the deadline (precision invariant) |
-/// | `==` | already at the deadline | return `Exit::Deadline` with **ZERO guest steps toward the deadline** — never step a guest instruction past it |
-/// | `<`  | the deadline is in the past | **invalid** — the LAPIC timer deadline is always in the future; fail closed (cannot run backward) |
+/// | `<=` | at OR past the deadline | fire the timer NOW: return `Exit::Deadline` with **ZERO guest steps** — never step a guest instruction past it |
 ///
-/// The `==` case does the first-entry baseline reset (the caller's `ensure_first_run`)
-/// but executes **no** guest instruction toward the deadline. A completion staged by
-/// the prior step is left in the run page and committed by the NEXT entry's `KVM_RUN`
-/// (it is not lost on re-entry); the caller contract is to commit it on a normal entry
-/// (a `>` deadline, or `run`) BEFORE a save, never to save across an owed completion.
+/// **Round-12 fix (P1):** `deadline < current` is **NOT invalid** — it is an *overdue*
+/// timer that fires now. `preemption_deadline()` computes the LAPIC one-shot's absolute
+/// deadline from `last_intercept_work` (the work at the last V-time intercept), but the
+/// guest retires work since then, so the live count can already be PAST it (Postgres /
+/// Linux arm LAPIC one-shots constantly). Round-8 wrongly turned this into an `Internal`
+/// error → the VM aborted. An at-or-past deadline now fires immediately (the same
+/// fire-now outcome as the planner's [`PlanOutcome::TargetInPast`] for the in-flight skid
+/// case), delivering `Exit::Deadline { reached: current }`. Only genuinely-impossible
+/// backend states fail closed — never a late timer.
+///
+/// The `<=` case takes the no-entry path: it does NOT call `ensure_first_run`, so the
+/// first-entry reset stays pending (the round-11 invariant — consumed only by a real
+/// `KVM_RUN`). A completion staged by the prior step is left in the run page and
+/// committed by the NEXT entry's `KVM_RUN` (not lost on re-entry); the caller contract is
+/// to commit it on a normal entry (a `>` deadline, or `run`) BEFORE a save.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RunUntilStart {
     /// `deadline > current`: drive the planner to exactly the deadline.
     Drive,
-    /// `deadline == current`: return `Deadline` with zero guest steps.
-    AlreadyAtDeadline,
-    /// `deadline < current`: invalid — fail closed.
-    DeadlineInPast,
+    /// `deadline <= current`: at or past the deadline — fire the timer NOW with zero
+    /// guest steps (`Exit::Deadline { reached: current }`). Covers the round-8 "already
+    /// at the deadline" (`==`) AND the round-12 "overdue timer" (`<`) cases — both are
+    /// legitimate and deliver immediately; neither errors.
+    AtOrPastDeadline,
 }
 
 /// Classify a `run_until` deadline against the current work count. Pure arithmetic.
 pub(crate) fn classify_run_until(deadline: u64, current: u64) -> RunUntilStart {
-    match deadline.cmp(&current) {
-        std::cmp::Ordering::Greater => RunUntilStart::Drive,
-        std::cmp::Ordering::Equal => RunUntilStart::AlreadyAtDeadline,
-        std::cmp::Ordering::Less => RunUntilStart::DeadlineInPast,
+    if deadline > current {
+        RunUntilStart::Drive
+    } else {
+        // deadline <= current: at the deadline OR overdue — fire now (never error).
+        RunUntilStart::AtOrPastDeadline
     }
 }
 
 /// Fail-closed poison for a guest exit that was **decoded** (consumed by KVM — the
 /// instruction retired, the exit is guest-visible) but **not yet delivered** to the VMM
 /// (P2 round-9, generalizing the round-5 read-style fix to no-completion exits). The box
-/// backend `arm`s it BEFORE the fallible post-exit PMU read and marks it `delivered` on
-/// success; if that read fails, it stays armed, so the next entry `is_poisoned()` and
-/// fails closed — a retry never re-enters PAST a consumed exit the VMM never observed
-/// (e.g. a PIO `OUT`/MMIO-write whose device side effect was never dispatched, a
-/// `HLT`/shutdown never reported). Read-style exits ALSO set a pending completion (the
-/// `PendingCompletion` guard), but a no-completion exit has no pending — this poison is
-/// its fail-closed. Factored here so the state machine is covered + mutation-tested.
+/// backend `arm`s it BEFORE the fallible post-exit PMU read and marks it `delivered` ONLY
+/// when the exit is actually RETURNED to the caller. It stays armed through EVERY fallible
+/// step in between — the post-exit PMU read, `drive_run_until`'s at/past-deadline
+/// rejection, AND `run_until`'s cleanup (P2 round-12) — so ANY error on the way out leaves
+/// the next entry `is_poisoned()` and failing closed; a retry never re-enters PAST a
+/// consumed exit the VMM never observed (e.g. a PIO `OUT`/MMIO-write whose device side
+/// effect was never dispatched, a `HLT`/shutdown never reported). Read-style exits ALSO set
+/// a pending completion (the `PendingCompletion` guard), but a no-completion exit has no
+/// pending — this poison is its fail-closed. Factored here so the state machine is covered
+/// + mutation-tested.
 #[derive(Default)]
 pub(crate) struct ExitPoison {
     armed: bool,
@@ -272,7 +286,8 @@ impl ExitPoison {
     pub(crate) fn arm(&mut self) {
         self.armed = true;
     }
-    /// The exit was delivered (the read succeeded): clear the poison.
+    /// The exit was delivered (RETURNED to the caller, past every fallible step): clear
+    /// the poison. Round-12: called ONLY at `run_until`'s final hand-off, never mid-flight.
     pub(crate) fn delivered(&mut self) {
         self.armed = false;
     }
@@ -316,7 +331,7 @@ pub(crate) fn free_run_decision(work: u64, armed_at: u64) -> Option<u64> {
 ///
 /// **The pending reset is consumed (the counter zeroed and the flag disarmed) by an
 /// ACTUAL guest entry — a real `KVM_RUN` — and by nothing else.** No
-/// zero-step / `AlreadyAtDeadline` / `DeadlineInPast` / `restore` / any
+/// zero-step / `AtOrPastDeadline` / `restore` / any
 /// `Deadline`-without-entry path may consume or disarm it; it stays **pending** until
 /// a real entry occurs. The reason is the contamination above: if a no-entry path
 /// disarmed it, a coexisting VM running on the shared thread before this VM's *next*
@@ -649,9 +664,10 @@ mod tests {
         assert_eq!(free_run_decision(150, 100), Some(150), "past armed → stop");
     }
 
-    /// P1 round-8 — the complete `run_until` contract for ALL deadline-vs-current
-    /// cases: `>` drives the planner; `==` is already at the deadline (zero guest
-    /// steps); `<` is invalid (can't run backward — fail closed).
+    /// The complete `run_until` contract (round-8, REVISED round-12) for ALL
+    /// deadline-vs-current cases: `>` drives the planner; `<=` (at OR past the deadline)
+    /// fires the timer NOW with zero guest steps. An overdue (`<`) deadline is a legitimate
+    /// late timer — it fires immediately, it does NOT error.
     #[test]
     fn classify_run_until_covers_every_deadline_vs_current_case() {
         // deadline > current → drive the planner to exactly the deadline.
@@ -661,23 +677,23 @@ mod tests {
             RunUntilStart::Drive,
             "fresh VM, future deadline"
         );
-        // deadline == current → already there, zero guest steps.
+        // deadline == current → already there, zero guest steps (fire now).
         assert_eq!(
             classify_run_until(0, 0),
-            RunUntilStart::AlreadyAtDeadline,
+            RunUntilStart::AtOrPastDeadline,
             "fresh run_until(Vtime(0)): at the deadline, NO guest step"
         );
         assert_eq!(
             classify_run_until(100, 100),
-            RunUntilStart::AlreadyAtDeadline
+            RunUntilStart::AtOrPastDeadline
         );
-        // deadline < current → invalid (the timer deadline is always in the future).
+        // deadline < current → OVERDUE: fire the timer NOW (round-12 P1), never error.
         assert_eq!(
             classify_run_until(99, 100),
-            RunUntilStart::DeadlineInPast,
-            "a past deadline can't be run to — fail closed"
+            RunUntilStart::AtOrPastDeadline,
+            "an overdue deadline fires immediately — a late timer, not an error"
         );
-        assert_eq!(classify_run_until(0, 1), RunUntilStart::DeadlineInPast);
+        assert_eq!(classify_run_until(0, 1), RunUntilStart::AtOrPastDeadline);
     }
 
     /// P2 round-9: the exit poison fails closed for a decoded-but-undelivered guest exit
@@ -704,6 +720,37 @@ mod tests {
         assert!(
             p.is_poisoned(),
             "armed but not delivered (post-exit read failed) → fail closed on retry"
+        );
+    }
+
+    /// P2 round-12: the poison must survive EVERY fallible step between arming and the
+    /// exit being returned — the post-exit read, `drive_run_until`'s at/past-deadline
+    /// rejection, AND `run_until`'s cleanup. Any of those erroring out (no `delivered()`
+    /// reached) leaves it poisoned, so a retry fails closed. `delivered()` is called once,
+    /// only at the final hand-off.
+    #[test]
+    fn exit_poison_survives_until_the_final_delivery() {
+        let mut p = ExitPoison::default();
+        p.arm(); // take_guest_exit_stop: exit decoded
+        // Each of these models a fallible step on the way out that does NOT clear the
+        // poison (pmu_work, the drive rejection, step-cleanup, pmu-cleanup). The poison
+        // must remain armed across all of them, so an error at any one fails closed.
+        for step in [
+            "post-exit read",
+            "drive rejection",
+            "step cleanup",
+            "pmu cleanup",
+        ] {
+            assert!(
+                p.is_poisoned(),
+                "poison must persist through `{step}` (cleared only at the final return)"
+            );
+        }
+        // Only the final hand-off (run_until about to return Ok(exit)) clears it.
+        p.delivered();
+        assert!(
+            !p.is_poisoned(),
+            "delivered only at the final return → now clean for the next entry"
         );
     }
 

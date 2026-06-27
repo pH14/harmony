@@ -1160,3 +1160,35 @@ re-arms `B`'s baseline. Documented in `vmm-core`'s notes; test
   foreign VM retires ~100k branches on the same thread, then B1's first REAL entry lands
   `run_until(50_000)` at EXACTLY 50_000 (the still-pending reset excludes the foreign
   branches; with the round-10 bug it would fail closed as a past deadline).
+
+### PR #15 round-12 (cross-model): overdue deadlines fire immediately (P1) + keep exits poisoned until RETURNED (P2)
+
+- **P1 — an overdue `run_until` deadline FIRES, it does not abort.** My round-8 directive
+  was wrong: it made `deadline < current → Internal` error. But `preemption_deadline()`
+  derives the LAPIC one-shot's absolute deadline from `last_intercept_work` (the work at the
+  last V-time intercept), and the guest retires work since then, so the live PMU count can
+  already be PAST that deadline — a LEGITIMATE late/overdue timer (Postgres/Linux re-arm
+  LAPIC one-shots constantly). The error ABORTED the VM (it would have broken task 48,
+  Postgres). Fixed: `classify_run_until` now returns `Drive` for `deadline > current` and a
+  single `AtOrPastDeadline` for `deadline <= current` (merging round-8's `AlreadyAtDeadline`
+  `==` with the overdue `<`); `run_until`'s `AtOrPastDeadline` arm delivers an immediate
+  `Exit::Deadline { reached: current }` with ZERO guest steps — the same fire-now outcome as
+  the planner's `PlanOutcome::TargetInPast` for the in-flight skid case. It takes the
+  no-entry path (no `ensure_first_run`), so the first-entry reset stays pending (round-11
+  invariant). `on_deadline` already handles `reached > deadline` (it sets
+  `last_intercept_work = reached`, then the next step fires the timer when
+  `lapic_now_vns(reached) >= deadline_vns`). The run_until contract table is updated
+  (`deadline < current` is NOT invalid). Box test renamed
+  `run_until_past_deadline_fires_immediately` (overdue `run_until(5000)` after advancing to
+  10000 returns `Deadline { reached: 10000 }`, never errors).
+- **P2 — keep a decoded exit poisoned until it is RETURNED.** Round-9 cleared the
+  no-completion-exit poison (`delivered()`) as soon as the post-exit PMU read succeeded — but
+  fallible work still stands between there and the exit being handed to the caller
+  (`drive_run_until`'s at/past-deadline rejection, `run_until`'s single-step + PMU cleanup).
+  If any of those errored, `run_until` returned `Err` with KVM having consumed the exit and
+  `pending == None`, so a retry re-entered PAST an undelivered exit. Fixed: `take_guest_exit_stop`
+  no longer clears the poison; `run_until` clears it (`delivered()`) at the SINGLE point past
+  every fallible step — right before it returns the exit (a no-op for a `Deadline`, which
+  never armed it). Any error on the way out now stays fail-closed. Portable test
+  `exit_poison_survives_until_the_final_delivery` models the poison persisting through each
+  fallible step.

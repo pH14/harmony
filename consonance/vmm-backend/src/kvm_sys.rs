@@ -317,8 +317,8 @@ impl KvmBackend {
     /// INVARIANT (see [`FirstEntryReset`]): this is the SOLE consumer of the pending
     /// first-entry reset, and it MUST be called only immediately before an actual
     /// `KVM_RUN` — `run`'s `enter_guest` and `run_until`'s `Drive` branch. A no-entry
-    /// path (`AlreadyAtDeadline`/`DeadlineInPast`/`restore`) must NOT call it, or a
-    /// coexisting VM would contaminate this VM's baseline before its next real entry.
+    /// path (`AtOrPastDeadline`/`restore`) must NOT call it, or a coexisting VM would
+    /// contaminate this VM's baseline before its next real entry.
     /// Fail closed if a prior `run_until` decoded a guest exit whose post-exit PMU read
     /// failed (P2 round-9): that exit was consumed by KVM but never delivered, so
     /// re-entering would skip it. The poison latches until an exit is delivered cleanly.
@@ -467,11 +467,16 @@ impl KvmBackend {
         //    a retry hits the `PendingCompletion` guard.
         //  - P2 round-9: ALL exits (incl. no-completion — PIO OUT, MMIO write, HLT,
         //    shutdown, which leave `pending == None`) arm the exit poison, so a retry
-        //    fails closed there. `delivered()` clears it once the read succeeds.
+        //    fails closed there.
+        // P2 round-12: the poison stays armed THROUGH every fallible step that still stands
+        // between here and the exit being RETURNED — the `pmu_work()` below, but ALSO
+        // `drive_run_until`'s at/past-deadline rejection and `run_until`'s cleanup. It is
+        // cleared (`delivered()`) ONLY when `run_until` is about to hand the exit to the
+        // caller, so any error path in between stays fail-closed (a retry won't re-enter
+        // past a consumed-but-undelivered exit).
         self.pending = pending;
         self.exit_poison.arm();
         let work = self.pmu_work()?;
-        self.exit_poison.delivered();
         Ok(LiveStop::Guest { exit, work })
     }
 
@@ -1090,22 +1095,21 @@ impl Backend for KvmBackend {
                     };
                     drive_run_until(&planner, &mut cpu, deadline.0)
                 }
-                // deadline == current: already at the deadline → deliver it with ZERO
-                // guest steps toward it (never step a guest instruction past the
-                // deadline — round-8 P1). NO `KVM_RUN` happens, so the first-entry reset
-                // is left PENDING (invariant): a later real entry re-baselines, and a
-                // coexisting VM in between cannot contaminate this VM's counter. Any
-                // completion staged by the prior step stays in the run page and is
-                // committed by the NEXT entry's `KVM_RUN`.
-                RunUntilStart::AlreadyAtDeadline => Ok(Exit::Deadline {
+                // deadline <= current: at OR PAST the deadline → fire the timer NOW with
+                // ZERO guest steps (never step a guest instruction past the deadline —
+                // round-8 P1). The `<` (overdue) case is LEGITIMATE, not an error
+                // (round-12 P1): `preemption_deadline()` derives the absolute deadline
+                // from a stale `last_intercept_work`, so the live count can already be
+                // past it (Postgres/Linux re-arm LAPIC one-shots constantly) — an overdue
+                // timer fires immediately, the VM does NOT abort. Same fire-now outcome as
+                // the planner's `TargetInPast` for the in-flight skid case. NO `KVM_RUN`
+                // happens, so the first-entry reset stays PENDING (round-11 invariant): a
+                // later real entry re-baselines, so a coexisting VM in between cannot
+                // contaminate this VM's counter. Any completion staged by the prior step
+                // stays in the run page and is committed by the NEXT entry's `KVM_RUN`.
+                RunUntilStart::AtOrPastDeadline => Ok(Exit::Deadline {
                     reached: Vtime(start),
                 }),
-                // deadline < current: the LAPIC timer deadline is always in the future,
-                // so a past deadline is misuse — fail closed (cannot run backward).
-                RunUntilStart::DeadlineInPast => Err(BackendError::Internal(
-                    "run_until: deadline is in the past (< current work) — invalid; the LAPIC \
-                     timer deadline is always in the future",
-                )),
             }
         };
         // Cleanup MUST run and MUST succeed (P2): a failed single-step disarm leaves
@@ -1118,6 +1122,12 @@ impl Backend for KvmBackend {
         step_cleanup?;
         pmu_cleanup?;
         let exit = outcome?;
+        // P2 round-12: the exit is now genuinely DELIVERED to the caller (cleanup succeeded,
+        // `drive_run_until` did not reject it) — clear the exit poison here, the single
+        // point past every fallible step. If `take_guest_exit_stop` armed it for a decoded
+        // guest exit, this is where it is consumed; for a `Deadline` outcome (no guest exit
+        // decoded) the poison was never armed and this is a no-op.
+        self.exit_poison.delivered();
         // P1 round-4: a `Deadline` is ONLY ever the no-guest-exit land (the single-step
         // stopped AT the deadline branch), so it never carries a pending completion —
         // a real exit at/ past the deadline now fails closed in `drive_run_until`

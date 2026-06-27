@@ -352,7 +352,7 @@ fn run_until_at_current_deadline_takes_zero_steps() {
 }
 
 /// P1 round-11 — the first-entry-reset INVARIANT: a zero-step `run_until` (the
-/// `AlreadyAtDeadline` branch, no `KVM_RUN`) must NOT consume the pending first-entry
+/// `AtOrPastDeadline` branch, no `KVM_RUN`) must NOT consume the pending first-entry
 /// reset; it stays armed until a REAL entry. Otherwise a coexisting VM on the shared
 /// pinned thread between the zero-step and this VM's first real entry contaminates this
 /// VM's baseline (the same contamination `restore_re_arms_pmu_reset_excluding_foreign_branches`
@@ -361,7 +361,7 @@ fn run_until_at_current_deadline_takes_zero_steps() {
 #[test]
 #[ignore = "live KVM + perf; run on the box with --ignored"]
 fn zero_step_run_until_keeps_first_entry_reset_pending() {
-    // B1 fresh: a zero-step run_until(0) — AlreadyAtDeadline, no KVM_RUN. Per the
+    // B1 fresh: a zero-step run_until(0) — AtOrPastDeadline, no KVM_RUN. Per the
     // invariant this must leave the first-entry reset PENDING (not consume it).
     let (mut b1, _m1) = boot_with(SPIN_CODE);
     match b1.run_until(Vtime(0)).expect("b1 zero-step run_until(0)") {
@@ -401,21 +401,36 @@ fn zero_step_run_until_keeps_first_entry_reset_pending() {
     );
 }
 
-/// P1 round-8 — case `deadline < current`: a past deadline is invalid (the LAPIC timer
-/// deadline is always in the future; we cannot run backward) → fail closed, never an
-/// immediate/late deadline.
+/// P1 round-12 — case `deadline < current`: an OVERDUE timer. Round-8 wrongly failed this
+/// closed (aborting the VM); a past deadline is a legitimate LATE timer (the deadline,
+/// derived from a stale `last_intercept_work`, is already behind the live count — Postgres
+/// /Linux re-arm LAPIC one-shots constantly), so it must fire IMMEDIATELY: an
+/// `Exit::Deadline` delivered now, at the current count, NOT an error/abort.
 #[test]
 #[ignore = "live KVM + perf; run on the box with --ignored"]
-fn run_until_past_deadline_fails_closed() {
+fn run_until_past_deadline_fires_immediately() {
     let (mut b, _m) = boot_with(SPIN_CODE);
     match b.run_until(Vtime(10_000)).expect("advance to 10000") {
         Exit::Deadline { reached } => assert_eq!(reached.0, 10_000),
         other => panic!("expected Deadline at 10000, got {other:?}"),
     }
-    // The current work is now 10_000; a deadline of 5_000 is in the past.
-    match b.run_until(Vtime(5_000)) {
-        Err(e) => eprintln!("[p1-r8] run_until(past deadline) failed closed: {e:?}"),
-        Ok(exit) => panic!("a past deadline must fail closed, got {exit:?}"),
+    // The current work is now 10_000; a deadline of 5_000 is OVERDUE (in the past). It
+    // must fire the timer NOW — an immediate Exit::Deadline at the current count — never
+    // an error (which would abort a Postgres/Linux guest re-arming one-shots).
+    match b
+        .run_until(Vtime(5_000))
+        .expect("an overdue deadline must fire immediately, NOT error/abort")
+    {
+        Exit::Deadline { reached } => {
+            assert_eq!(
+                reached.0, 10_000,
+                "the overdue timer fires NOW at the current count (10000), not at the past \
+                 deadline (5000) — got {}",
+                reached.0
+            );
+            eprintln!("[p1-r12] overdue run_until(5000) fired immediately at 10000 (no abort)");
+        }
+        other => panic!("expected an immediate Deadline, got {other:?}"),
     }
 }
 
