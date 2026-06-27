@@ -175,6 +175,14 @@ environment` → 3 harnesses, 0 failures):
   violated). The overflow logic lives in the small `rekey_moment` helper so it is
   both Kani-provable and mutation-tested.
 
+`src/envcodec_proofs.rs` is added to `exclude_globs` in `.cargo/mutants.toml`
+(next to the existing `clock_proofs.rs` / `device_proofs.rs` entries). The
+`#[cfg(kani)]` harnesses are not compiled by the non-kani test suite cargo-mutants
+uses as its oracle, so every mutant in them is structurally unkillable ("missed");
+they are verified by the `kani` job instead. This is the one shared-config edit
+this task makes — it is the project's established per-crate mechanism for kani
+proof files, not a new convention.
+
 ## Task 45 — the host control plane (`HostFault` + `perturb` + `Moment` stamping)
 
 This is the **amendment** the top-of-spec note scopes: it widens the merged
