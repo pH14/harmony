@@ -2418,6 +2418,21 @@ semantics, pre-loads a stale vCPU, and proves the restore clears the cap-free su
 fresh-target restore, while the old `canonical_events` form **leaks** (verified to FAIL without the forced
 bits).
 
+**The same cap gating closes a save/restore-contract gap on the *save* side (`unrepresentable_state`, PR #12
+round 7).** Because `restore` cannot apply `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` without their caps
+(`KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD`, both off here), `save_vm_state` must **fail
+closed** if a snapshot carries `triple_fault_pending != 0` or `exception_has_payload != 0` — otherwise it
+would seal a blob the restore path rejects with `-EINVAL`. `unrepresentable_state` now rejects exactly those
+two fields (a **targeted** reject — task 41's blanket event-reject stays removed; every other in-flight
+field still snapshots). This keeps the codec **provably lossless-or-rejected** and `save`/`restore`
+symmetric. It never rejects a genuine captured point: a real `KVM_GET` on this backend reports neither (a
+triple fault is a `KVM_EXIT_SHUTDOWN`; with the payload cap off KVM folds the payload via the legacy path,
+so `has_payload = 0`) — it closes the contract for a synthetic / relayed / forward-compat record. Pinned by
+`unrepresentable_state_fails_closed_on_cap_gated_event_fields` (each field rejects, naming itself; every
+*restorable* in-flight class — injected interrupt/exception-with-error-code/NMI/shadow/SMM — is **not**
+rejected) and `save_vm_state_captures_in_flight_events_at_a_non_quiescent_point` (save rejects the two
+through the full `save_vm_state` path).
+
 **5. What gate 2 proves — and what it does *not* yet prove (the honest headline; PR #12 rounds 2–3).**
 The task-41 unlock is the **`kvm_vcpu_events` capture**: task 39 fail-closed-**rejected** every point whose
 `kvm_vcpu_events` carried in-flight state (its `has_inflight_injection` predicate); task 41 captures the
@@ -2486,12 +2501,12 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (242), `unison`/`det-corpus` determinism (92) all green; and
+should not." Verified on Mac: `vmm-core` (243), `unison`/`det-corpus` determinism (92) all green; and
 **on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**242** tests) / `deny`. **Miri**
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**243** tests) / `deny`. **Miri**
 validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
 predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** (`cargo mutants
 --no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout**.
@@ -2512,8 +2527,11 @@ Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
 `has_active_event_injection_flags_only_genuine_injections_not_residuals`,
 `canonical_events_collapses_residuals_and_reconstructs_flags`,
 **`events_for_restore_clears_stale_target_state_regardless_of_freshness`** — *the round-6 determinism-leak
-fix, §4: restore clears a non-fresh target's stale NMI/SMM/shadow/triple-fault; verified to FAIL without the
-forced validity bits*; `fill_vcpu_state_canonicalizes_the_typed_events_record`), `src/vmm.rs`
+fix, §4: restore clears a non-fresh target's stale NMI/SMM/shadow; verified to FAIL without the forced
+validity bits*; **`unrepresentable_state_fails_closed_on_cap_gated_event_fields`** — *the round-7 save/restore
+symmetry, §4: save fail-closes on `triple_fault_pending` / `exception_has_payload` (unrestorable — caps off)
+but not on any restorable in-flight class*; `fill_vcpu_state_canonicalizes_the_typed_events_record`),
+`src/vmm.rs`
 (`save_vm_state_captures_in_flight_events_at_a_non_quiescent_point`,
 `restore_canonicalizes_raw_events_from_an_external_blob` — **the round-3 restore/save symmetry, §4**;
 `snapshot_restore_re_derives_the_in_flight_lapic_irq`,
@@ -2636,6 +2654,6 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 > - **Hygiene ✓** — patched `kvm 1400832` loaded per run, reverted to stock `kvm 1396736` after each
 >   (verified via `lsmod`), `kvm_intel` users checked `== 0` before loading (task 38 idle).
 > - **Standard gates on the box ✓** — `clippy -D warnings` (the box-only test file included), `fmt`,
->   `nextest` (242 non-ignored), and **public-api** (`tests/public-api.txt` matches
+>   `nextest` (243 non-ignored), and **public-api** (`tests/public-api.txt` matches
 >   `cargo +nightly public-api` exactly — the three new lines `Vmm::has_active_event_injection`,
 >   `Vmm::has_inflight_event_injection`, `Vmm::has_pending_guest_interrupt`).

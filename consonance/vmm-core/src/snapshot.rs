@@ -676,12 +676,16 @@ pub(crate) fn events_for_restore(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vc
 /// - *Asserted zero here (not carried):* `sregs.flags`/`sregs.pdptrs` (PAE-only;
 ///   64-bit guest), `debugregs.flags` (KVM "currently always 0").
 ///
-/// **Events are no longer rejected.** Task 41 captures the *entire* `kvm_vcpu_events`
-/// (in-flight interrupt/exception injection, the `#PF`/`#DB` payload, SMM, triple-
-/// fault) in the device blob and re-establishes it on restore via `KVM_SET_VCPU_EVENTS`,
-/// so a **non-quiescent** point — an interrupt in flight — is now snapshottable rather
-/// than fail-closed-rejected. That is the whole point of this task; the only remaining
-/// fail-closed fields are the PAE-only `sregs.flags`/`pdptrs` and `debugregs.flags`,
+/// **Events are no longer rejected wholesale.** Task 41 captures the *entire* `kvm_vcpu_events`
+/// (in-flight interrupt/exception injection, SMM, etc.) in the device blob and re-establishes it
+/// on restore via `KVM_SET_VCPU_EVENTS`, so a **non-quiescent** point — an interrupt in flight —
+/// is now snapshottable rather than fail-closed-rejected. That is the whole point of this task.
+/// **Two cap-gated event fields are the exception** (PR #12 round 7): `triple_fault_pending` and
+/// `exception_has_payload` are rejected here, because their `KVM_SET_VCPU_EVENTS` validity bits
+/// need per-VM capabilities (`KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD`) this
+/// backend does not enable — so a captured value could not be restored. Rejecting at *save* keeps
+/// the codec **provably lossless-or-rejected** and save/restore symmetric (see below). The other
+/// remaining fail-closed fields are the PAE-only `sregs.flags`/`pdptrs` and `debugregs.flags`,
 /// all zero for the 64-bit / paging-off determinism guest at any V-time point.
 ///
 /// (Two further non-`VcpuState` gaps are handled at *restore*, not here: a non-empty
@@ -711,8 +715,33 @@ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'s
              not the flags field (KVM defines it as currently always 0)",
         );
     }
-    // The full `kvm_vcpu_events` record IS captured now (device blob, task 41), so no
-    // event field is unrepresentable — an in-flight injection round-trips.
+    // The full `kvm_vcpu_events` record IS captured now (device blob, task 41), so an in-flight
+    // injection round-trips — with **two cap-gated exceptions**. KVM rejects the
+    // `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` bits on `KVM_SET_VCPU_EVENTS` with `-EINVAL` unless
+    // the per-VM capability is enabled (even with a zero payload). This backend enables neither
+    // `KVM_CAP_X86_TRIPLE_FAULT_EVENT` nor `KVM_CAP_EXCEPTION_PAYLOAD` (only
+    // `DETERMINISTIC_INTERCEPTS` + `USER_SPACE_MSR`), and vmm-core cannot query per-cap state
+    // through the `Backend` trait — so a captured triple-fault / payload-bearing exception could
+    // **not** be restored (`events_for_restore` would set the bit → restore `-EINVAL`). Fail
+    // closed at *save* rather than seal a snapshot restore cannot apply — save/restore symmetry
+    // (PR #12 round 7). A real `KVM_GET` on this backend never reports either (a triple fault is a
+    // `KVM_EXIT_SHUTDOWN`, and with the payload cap off KVM folds the payload via the legacy
+    // path, leaving `has_payload = 0`), so this never rejects a genuine captured point — it closes
+    // the contract for a synthetic / relayed / forward-compat record.
+    if vcpu.events.triple_fault_pending != 0 {
+        return Some(
+            "kvm_vcpu_events.triple_fault_pending is set, but KVM_CAP_X86_TRIPLE_FAULT_EVENT is not \
+             enabled on this backend — KVM_SET_VCPU_EVENTS would reject the restore (-EINVAL); fail \
+             closed rather than seal an unrestorable snapshot",
+        );
+    }
+    if vcpu.events.exception_has_payload != 0 {
+        return Some(
+            "kvm_vcpu_events.exception_has_payload is set, but KVM_CAP_EXCEPTION_PAYLOAD is not \
+             enabled on this backend — KVM_SET_VCPU_EVENTS would reject the restore (-EINVAL); fail \
+             closed rather than seal an unrestorable snapshot",
+        );
+    }
     None
 }
 
@@ -1856,6 +1885,75 @@ mod tests {
             kvm_set(&stale, &setv_active).nmi_pending,
             1,
             "an active NMI-pending is applied on restore (not zeroed)"
+        );
+    }
+
+    #[test]
+    fn unrepresentable_state_fails_closed_on_cap_gated_event_fields() {
+        // PR #12 round 7 — save/restore symmetry. `triple_fault_pending` and
+        // `exception_has_payload` are the two `kvm_vcpu_events` fields whose
+        // `KVM_SET_VCPU_EVENTS` validity bit needs a per-VM capability this backend does not
+        // enable, so a captured value could NOT be restored (restore would be `-EINVAL`). Save
+        // must fail closed on them — but NOT over-reject any restorable in-flight state.
+        let representable = |events: vmm_backend::VcpuEvents| vmm_backend::VcpuState {
+            events,
+            ..Default::default()
+        };
+        // A quiescent point, and every restorable in-flight class, are representable (None).
+        assert!(
+            unrepresentable_state(&representable(vmm_backend::VcpuEvents::default())).is_none()
+        );
+        for ok in [
+            vmm_backend::VcpuEvents {
+                interrupt_injected: 1,
+                interrupt_nr: 0x34,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 13,
+                exception_has_error_code: 1,
+                exception_error_code: 0x18,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                nmi_injected: 1,
+                nmi_pending: 1,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                interrupt_shadow: 1,
+                ..Default::default()
+            },
+            vmm_backend::VcpuEvents {
+                smi_smm: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                unrepresentable_state(&representable(ok)).is_none(),
+                "a restorable in-flight field must NOT be rejected: {ok:?}"
+            );
+        }
+        // The two cap-gated fields fail closed, each naming the offending field.
+        let tf = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
+            triple_fault_pending: 1,
+            ..Default::default()
+        }))
+        .expect("triple_fault_pending must fail closed at save");
+        assert!(
+            tf.contains("triple_fault_pending"),
+            "reject reason names the field: {tf}"
+        );
+        let pl = unrepresentable_state(&representable(vmm_backend::VcpuEvents {
+            exception_has_payload: 1,
+            exception_payload: 0xCAFE,
+            ..Default::default()
+        }))
+        .expect("exception_has_payload must fail closed at save");
+        assert!(
+            pl.contains("exception_has_payload"),
+            "reject reason names the field: {pl}"
         );
     }
 

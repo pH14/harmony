@@ -4897,18 +4897,42 @@ mod tests {
             vmm_backend::VcpuEvents {
                 exception_injected: 1,
                 exception_nr: 14,
-                exception_has_payload: 1,
-                exception_payload: 0xCAFE,
+                exception_has_error_code: 1,
+                exception_error_code: 0xCAFE,
                 ..Default::default()
             },
-            "exception_payload",
+            "exception_error_code",
         );
-        in_flight(
+        // Two cap-gated event fields are fail-closed-REJECTED at save (PR #12 round 7): their
+        // `KVM_SET_VCPU_EVENTS` validity bits need `KVM_CAP_X86_TRIPLE_FAULT_EVENT` /
+        // `KVM_CAP_EXCEPTION_PAYLOAD`, which this backend does not enable — a captured value
+        // could not be restored, so save fails closed rather than seal an unrestorable snapshot.
+        let rejects = |events: vmm_backend::VcpuEvents, needle: &str| {
+            let mut st = nonzero_state();
+            st.events = events;
+            let v = full_vmm(st, vec![], 0, 1);
+            match v.save_vm_state() {
+                Err(VmmError::ContractViolation(msg)) => assert!(
+                    msg.contains(needle),
+                    "reject reason should name {needle:?}, got: {msg}"
+                ),
+                other => panic!("a cap-gated event field must fail closed at save, got {other:?}"),
+            }
+        };
+        rejects(
             vmm_backend::VcpuEvents {
                 triple_fault_pending: 1,
                 ..Default::default()
             },
             "triple_fault_pending",
+        );
+        rejects(
+            vmm_backend::VcpuEvents {
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+            "exception_has_payload",
         );
         // A clean quiescent point still snapshots (no regression), and the validity-mask
         // `flags` is carried like any other field now.
