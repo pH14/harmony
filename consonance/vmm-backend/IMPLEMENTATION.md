@@ -667,3 +667,43 @@ is the runc/containerd/Postgres userspace bring-up + an O1/O2 deterministic-twic
 harness over its serial (UUIDs/timestamps) + `state_hash`, not the preemption
 mechanism. No new determinism mechanism is required; if the Go runtime surfaces a
 blocker *beyond* preemption, that is the next task's frontier to document.
+
+### PR #15 cross-model round-1 fixes (codex/GPT-5.5) + re-validation (2026-06-27)
+
+Three real determinism/robustness bugs found by the cross-model pass, all fixed with
+coverage:
+
+- **P1(a) — post-deadline guest exit treated as early.** A genuine IO/MMIO/HLT exit
+  arriving after the overflow had already reached the deadline (SIGIO not yet
+  delivered) was returned as a *short* guest exit, so the timer was serviced after an
+  instruction that ran past its V-time instant. Fix: `run_armed`/`single_step_once`
+  read the PMU work **at** the exit and carry it up (`LiveStop::Guest{exit, work}`);
+  the portable `drive_run_until` compares it to the deadline — `work < deadline` is a
+  true early exit, `work == deadline` is `Deadline` (timer instant reached; pending
+  cleared), `work > deadline` is a loud determinism error (exact instant missed).
+  Coverage: portable `guest_exit_at_or_past_deadline_is_not_treated_as_early` (all
+  three cases) — the decision lives in the testable layer, not the box-only adapter.
+- **P1(b) — PMU desync after restore.** Restore reset the counter immediately but left
+  `first_run_done = true`, so a coexisting VM on the same pinned thread between restore
+  and the restored VM's next entry contaminated `run_until`'s counter. Fix: re-arm
+  `first_run_done = false` on restore (mirrors `Vmm::restore_vm_state`) so the reset
+  fires at the next entry, excluding foreign branches. Coverage: box test
+  `restore_re_arms_pmu_reset_excluding_foreign_branches` (run B1, save, restore, run a
+  DIFFERENT VM, then B1.run_until lands at exactly its own count).
+- **P2 — silent run_until cleanup failures.** A failed single-step disarm / PMU disarm
+  returned the exit as success while the vCPU stayed single-stepping / overflow-armed.
+  Fix: `pmu_disarm` is now fallible; `run_until` attempts both cleanups then propagates
+  the first failure (fail closed). Structural fix (error propagation); no feasible
+  deterministic fault-injection test for the box-only ioctl failure.
+
+**Round-2 box re-validation** (the box was concurrently running task 41's PR #12 gate,
+which owned the loaded **patched** KVM; I ran on **core 2** against that module
+**without** loading/unloading it, and did **not** revert — task 41 owns it and reverts
+when done). All gates re-pass with the fixes:
+- Gate 1 + P1(b) (stock-compatible suite, 5/5): exact landing, deterministic, monotone,
+  guest-exit-short, and the foreign-branch-contamination test.
+- Gate 2 (patched): `state_hash 34cc29eb…61c5 == ` (identical to round-1 — fixes are
+  behavior-preserving on the normal path), deterministic-twice.
+- Gate 4 (patched): P6 2/2; Linux Phase C deterministic-twice `4f926e01…c6aa == `.
+- Off-box: vmm-backend 16/16, vmm-core 227/227, Miri `run_until` 7/7 (incl. P1(a)),
+  cross-clippy/fmt/deny clean.
