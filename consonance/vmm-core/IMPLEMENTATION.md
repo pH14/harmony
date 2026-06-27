@@ -2747,3 +2747,23 @@ small post-restore deadline would read a stale `B` → immediate/late deadlines.
 armed), directing the caller to a full `Backend::restore` (`restore_snapshot` /
 `restore_vm_state`). The V-time-only path remains valid for non-LAPIC contexts (the
 branching/exploration paths without a timer). Test: `restore_vtime_refused_with_a_lapic_timer_armed`.
+
+## Task 47 — round-9: V-time-only restore re-aligns the backend run_until baseline (P1)
+
+Round-8 *rejected* `restore_vtime` only while a LAPIC timer was currently armed. But a
+deterministic LAPIC-wired VM can V-time-restore BEFORE arming its timer; the backend's
+separate `run_until` PMU baseline would stay stale, and a LATER timer-arm + `run_until`
+would preempt against it → past/immediate deadlines. `restore_vtime` now calls the new
+`Backend::rearm_vtime_baseline()` **unconditionally** (after resetting its own work clock),
+so the next entry re-baselines the backend counter regardless of when the timer is armed
+(the round-8 guard is removed). Test: `restore_vtime_realigns_the_backend_run_until_baseline`.
+
+Gate-2's seed leg (`live_preemption.rs`) was vacuous (it only asserted seed B reaches
+PASS). The fix asserts BOTH halves of what the seed controls — and box-validation caught
+an initial wrong assumption: (1) seed B's `state_hash` **DIFFERS** from seed A's, because
+the seed keys the seeded-entropy stream that is part of the hashed state (so the seed
+genuinely matters even though `irq-landing` consumes no RNG); (2) seed B's **serial is
+IDENTICAL** to seed A's, because `irq-landing` is O3:pure — its preemption instants and
+observable control flow are timer/branch-driven, independent of the RNG seed. Together
+this proves the seed matters AND the preemption path does not leak seed-dependence —
+neither of which the PASS-only check verified.

@@ -14,8 +14,10 @@
 //! VMM injects it at a boundary — and a non-exiting spin reaches none, so **without
 //! preemption the FAILSAFE trips** (`payload::fail` → `DebugExit { code: 1 }`); with
 //! `run_until` the timer lands mid-spin and all eight deadlines report → a clean
-//! `DebugExit { code: 0 }`. That clean PASS, **bit-identical across two seeds**, is
-//! the proof that busy-waiting guest code is now deterministically tolerable.
+//! `DebugExit { code: 0 }`. That clean PASS, **bit-identical on a re-run at the same
+//! seed** (and with a seed-independent control flow — same serial across seeds, while
+//! the seeded-entropy state keys the hash), is the proof that busy-waiting guest code
+//! is now deterministically tolerable.
 //!
 //! Needs the **LOADED patched KVM** (preemption is gated on `deterministic_tsc`),
 //! `perf_event`, the `det-cfl-v1` host, and the built payload. Run on the box,
@@ -149,17 +151,40 @@ fn busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice() {
         hex32(&hash_a2)
     );
 
-    // --- A different seed also completes cleanly (the timer-landing control flow is
-    // seed-independent; the RNG seed only perturbs RDRAND/RDSEED output, which this
-    // payload does not consume). ---
-    let (hash_b, _serial_b, reason_b) = run_irq_landing(SEED_B);
+    // --- Real seed-sensitivity (P2 round-9): the OLD leg only asserted seed B reaches
+    // PASS — vacuous (it would pass even if seed B were byte-identical to seed A). Assert
+    // BOTH halves of what the seed actually controls:
+    //  (1) `state_hash` DIFFERS — the seed keys the VM's seeded-entropy stream, which is
+    //      part of the hashed state, so a different seed yields a genuinely different VM
+    //      state. (The payload consumes NO RNG, but the entropy state is still seeded.)
+    //  (2) `serial` is IDENTICAL — `irq-landing` is O3:**pure**: its preemption instants
+    //      and observable output are TIMER/branch-driven, independent of the RNG seed.
+    // Together this proves the seed genuinely matters (state differs) AND the preemption
+    // control flow does NOT leak seed-dependence (serial identical) — neither of which
+    // the old PASS-only assertion checked. ---
+    let (hash_b, serial_b, reason_b) = run_irq_landing(SEED_B);
     assert_eq!(
         reason_b,
         TerminalReason::DebugExit { code: 0 },
-        "irq-landing must also PASS at a different seed (preemption is seed-driven but always lands)"
+        "irq-landing must also reach a CLEAN PASS at a different seed"
+    );
+    assert_ne!(
+        hash_b,
+        hash_a1,
+        "seed-sensitivity: a different seed must produce a DIFFERENT state_hash (the seeded \
+         entropy stream is part of the state) — identical hashes would mean the seed is \
+         ignored. seed A = {}, seed B = {}",
+        hex32(&hash_a1),
+        hex32(&hash_b)
+    );
+    assert_eq!(
+        serial_b, serial_a1,
+        "purity: the pure payload's serial / preemption control flow must be IDENTICAL across \
+         seeds (the deadline landings do not depend on the RNG seed)"
     );
     eprintln!(
-        "[gate2] seed B {SEED_B:#018x}: PASS, state_hash = {}",
+        "[gate2] seed B {SEED_B:#018x}: PASS, state_hash = {} != seed A (seed keys the state); \
+         serial == seed A (pure control flow)",
         hex32(&hash_b)
     );
 }

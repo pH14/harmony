@@ -44,8 +44,8 @@ use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::MemRegions;
 use crate::run_until::{
-    FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until, drive_run_until,
-    free_run_decision,
+    ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
+    drive_run_until, free_run_decision,
 };
 use crate::state::VcpuState;
 use crate::types::{Gpa, Vtime};
@@ -147,6 +147,13 @@ pub struct KvmBackend {
     /// [`FirstEntryReset`]; this field is just its state. (Touches only the unhashed
     /// PMU counter — the `run()` path's observable state stays byte-identical.)
     reset_arm: FirstEntryReset,
+    /// Fail-closed poison for a guest exit decoded during `run_until` (consumed by KVM,
+    /// guest-visible) whose post-exit PMU read then failed (P2 round-9). Armed before the
+    /// read, cleared on success; if it stays armed, the next `run`/`run_until` fails
+    /// closed so a no-completion exit (PIO OUT / MMIO write / HLT / shutdown) the VMM
+    /// never observed is not silently skipped. State only; the discipline is in the
+    /// portable, tested [`ExitPoison`].
+    exit_poison: ExitPoison,
 }
 
 impl KvmBackend {
@@ -223,6 +230,7 @@ impl KvmBackend {
             pmu: PmuBranchCounter::open().ok(),
             single_step_armed: false,
             reset_arm: FirstEntryReset::new(),
+            exit_poison: ExitPoison::default(),
         })
     }
 
@@ -305,6 +313,19 @@ impl KvmBackend {
     /// V-time `PerfWorkCounter` does the same via `start_run`). No-op if perf is
     /// unavailable; touches only the unhashed PMU counter, so `run()`'s observable
     /// state stays byte-identical.
+    /// Fail closed if a prior `run_until` decoded a guest exit whose post-exit PMU read
+    /// failed (P2 round-9): that exit was consumed by KVM but never delivered, so
+    /// re-entering would skip it. The poison latches until an exit is delivered cleanly.
+    fn check_not_poisoned(&self) -> Result<()> {
+        if self.exit_poison.is_poisoned() {
+            return Err(BackendError::Internal(
+                "backend poisoned: a prior guest exit was decoded but its PMU read failed — its \
+                 state is unreliable and re-entering would skip a consumed exit (fail closed)",
+            ));
+        }
+        Ok(())
+    }
+
     fn ensure_first_run(&mut self) -> Result<()> {
         // `take_reset()` always runs (and disarms); the reset only fires when armed
         // AND a counter exists. (No-op when perf is unavailable.)
@@ -433,14 +454,18 @@ impl KvmBackend {
         let (exit, pending) = decode_exit(self.run_page())?.ok_or(BackendError::Internal(
             "run_until: control exit misclassified as guest",
         ))?;
-        // P2(a) round-5: record the pending-completion BEFORE the fallible `pmu_work()`
-        // read. A read-style exit (IN/RDMSR/…) left the KVM run page holding an
-        // uncompleted exit; if the PMU read then fails and we returned the error WITHOUT
-        // recording it, a retry would pass the `PendingCompletion` guard and re-enter
-        // with STALE completion data (not fail-closed). Storing it first leaves the
-        // backend fail-closed on a PMU-read failure (the retry hits `PendingCompletion`).
+        // Record state BEFORE the fallible `pmu_work()` so a PMU-read failure leaves the
+        // backend FAIL-CLOSED — the exit was already consumed by KVM (guest-visible), and
+        // a retry must not re-enter past it. Two mechanisms, both armed first:
+        //  - P2(a) round-5: a read-style exit (IN/RDMSR/…) sets the pending completion, so
+        //    a retry hits the `PendingCompletion` guard.
+        //  - P2 round-9: ALL exits (incl. no-completion — PIO OUT, MMIO write, HLT,
+        //    shutdown, which leave `pending == None`) arm the exit poison, so a retry
+        //    fails closed there. `delivered()` clears it once the read succeeds.
         self.pending = pending;
+        self.exit_poison.arm();
         let work = self.pmu_work()?;
+        self.exit_poison.delivered();
         Ok(LiveStop::Guest { exit, work })
     }
 
@@ -1004,6 +1029,7 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        self.check_not_poisoned()?;
         self.ensure_first_run()?;
         self.enter_guest()
     }
@@ -1021,6 +1047,7 @@ impl Backend for KvmBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
+        self.check_not_poisoned()?;
         // First-entry baseline reset (always, before reading `start`).
         self.ensure_first_run()?;
         // Read the current work first (the planner's only `work()` call) and prove
@@ -1218,6 +1245,15 @@ impl Backend for KvmBackend {
         // pinned by [`FirstEntryReset`]'s portable stateful property test.
         self.reset_arm.rearm();
         Ok(())
+    }
+
+    fn rearm_vtime_baseline(&mut self) {
+        // P1 round-9: re-arm the first-entry PMU reset (same mechanism as `restore`'s
+        // P1(b) re-arm) so the NEXT entry re-baselines the shared run_until counter `B`.
+        // vmm-core's V-time-only restore calls this after resetting its own work clock to
+        // a new zero point, so a later timer-arm + `run_until` compares the fresh deadline
+        // against a re-baselined `B`, not a stale one.
+        self.reset_arm.rearm();
     }
 
     fn exit_counts(&self) -> ExitCounts {

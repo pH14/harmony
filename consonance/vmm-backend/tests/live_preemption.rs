@@ -223,6 +223,38 @@ fn guest_exit_before_deadline_returns_that_exit() {
 
 #[test]
 #[ignore = "live KVM + perf; run on the box with --ignored"]
+fn rearm_vtime_baseline_re_zeroes_the_run_until_counter() {
+    // P1 round-9: vmm-core's V-time-only restore resets its own work clock AND calls
+    // `Backend::rearm_vtime_baseline()`; the NEXT `run_until` must then re-baseline the
+    // run_until PMU counter `B`, so a fresh (small) deadline lands EXACTLY — not against
+    // a stale `B`. (The full "V-time restore → arm timer → run_until lands exactly" chain
+    // is: restore_vtime calls this — portable-tested in vmm-core — and this re-zeroes B.)
+    let (mut b, _m) = boot_with(SPIN_CODE);
+    match b.run_until(Vtime(30_000)).expect("advance B to 30000") {
+        Exit::Deadline { reached } => assert_eq!(reached.0, 30_000),
+        other => panic!("expected Deadline at 30000, got {other:?}"),
+    }
+    // V-time-only restore re-arms the backend baseline (B re-zeroes at the next entry).
+    b.rearm_vtime_baseline();
+    // A fresh small deadline now lands at EXACTLY 5_000 (B re-baselined to 0). WITHOUT
+    // the re-arm, B would still read ~30_000 and `run_until(5_000)` would fail closed
+    // (deadline < current — round-8) instead of preempting at 5_000.
+    match b
+        .run_until(Vtime(5_000))
+        .expect("run_until after rearm lands exactly")
+    {
+        Exit::Deadline { reached } => assert_eq!(
+            reached.0, 5_000,
+            "after rearm_vtime_baseline a fresh deadline lands EXACTLY (B re-baselined) — got {}",
+            reached.0
+        ),
+        other => panic!("expected Deadline at 5000, got {other:?}"),
+    }
+    eprintln!("[p1-r9] rearm_vtime_baseline re-zeroed B; fresh run_until(5000) landed exactly");
+}
+
+#[test]
+#[ignore = "live KVM + perf; run on the box with --ignored"]
 fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
     // P1(b): after a restore, the backend PMU counter's reset must fire at the NEXT
     // entry (not at restore time), so a coexisting VM running on the same pinned

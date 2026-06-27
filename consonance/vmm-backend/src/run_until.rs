@@ -253,6 +253,36 @@ pub(crate) fn classify_run_until(deadline: u64, current: u64) -> RunUntilStart {
     }
 }
 
+/// Fail-closed poison for a guest exit that was **decoded** (consumed by KVM — the
+/// instruction retired, the exit is guest-visible) but **not yet delivered** to the VMM
+/// (P2 round-9, generalizing the round-5 read-style fix to no-completion exits). The box
+/// backend `arm`s it BEFORE the fallible post-exit PMU read and marks it `delivered` on
+/// success; if that read fails, it stays armed, so the next entry `is_poisoned()` and
+/// fails closed — a retry never re-enters PAST a consumed exit the VMM never observed
+/// (e.g. a PIO `OUT`/MMIO-write whose device side effect was never dispatched, a
+/// `HLT`/shutdown never reported). Read-style exits ALSO set a pending completion (the
+/// `PendingCompletion` guard), but a no-completion exit has no pending — this poison is
+/// its fail-closed. Factored here so the state machine is covered + mutation-tested.
+#[derive(Default)]
+pub(crate) struct ExitPoison {
+    armed: bool,
+}
+impl ExitPoison {
+    /// Record an exit as in-flight, BEFORE the fallible post-exit work read.
+    pub(crate) fn arm(&mut self) {
+        self.armed = true;
+    }
+    /// The exit was delivered (the read succeeded): clear the poison.
+    pub(crate) fn delivered(&mut self) {
+        self.armed = false;
+    }
+    /// Whether an exit is armed-but-not-delivered (its read failed) → the next entry
+    /// must fail closed (never skip the consumed exit).
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.armed
+    }
+}
+
 /// The free-run phase's decision after **any non-guest-exit** `KVM_RUN` stop — a
 /// signal kick (EINTR / `KVM_EXIT_INTR`) **or** an `KVM_EXIT_IRQ_WINDOW_OPEN`
 /// control exit: has the overflow reached the armed count?
@@ -624,6 +654,33 @@ mod tests {
             "a past deadline can't be run to — fail closed"
         );
         assert_eq!(classify_run_until(0, 1), RunUntilStart::DeadlineInPast);
+    }
+
+    /// P2 round-9: the exit poison fails closed for a decoded-but-undelivered guest exit
+    /// (the box arms it before the fallible post-exit read; a failed read leaves it
+    /// armed) and clears once an exit is delivered (the read succeeded).
+    #[test]
+    fn exit_poison_fails_closed_until_an_exit_is_delivered() {
+        let mut p = ExitPoison::default();
+        assert!(!p.is_poisoned(), "fresh: not poisoned");
+        // A delivered exit (post-exit read succeeded): arm, then delivered → clean.
+        p.arm();
+        assert!(
+            p.is_poisoned(),
+            "armed: exit decoded, post-exit read still pending"
+        );
+        p.delivered();
+        assert!(
+            !p.is_poisoned(),
+            "delivered: read succeeded → poison cleared"
+        );
+        // A FAILED read: armed, NO delivered → stays poisoned (the next entry fails closed
+        // so a no-completion exit the VMM never observed is not skipped).
+        p.arm();
+        assert!(
+            p.is_poisoned(),
+            "armed but not delivered (post-exit read failed) → fail closed on retry"
+        );
     }
 
     fn planner() -> InjectionPlanner {

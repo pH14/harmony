@@ -1079,3 +1079,30 @@ current` fail-closed, but with a confusing message. `restore_vtime` now fails cl
 caller to a full `Backend::restore` (`restore_snapshot` / `restore_vm_state`), which
 re-arms `B`'s baseline. Documented in `vmm-core`'s notes; test
 `restore_vtime_refused_with_a_lapic_timer_armed`.
+
+### PR #15 round-9 (cross-model): realign B on V-time-only restore (P1) + poison no-completion exits (P2) + a real seed assertion (P2)
+
+- **P1 — `rearm_vtime_baseline()` on the `Backend` trait.** Round-8 only *rejected*
+  `restore_vtime` while a LAPIC timer was CURRENTLY armed, but a deterministic LAPIC-wired
+  VM can V-time-restore BEFORE arming the timer: the backend's separate `run_until` PMU
+  counter (`B`) stays stale, and a LATER timer-arm preempts against it. The preferred fix
+  (cleaner than blanket-rejecting): a new `Backend::rearm_vtime_baseline()` that re-arms
+  the first-entry PMU reset (same mechanism as a full `restore`'s P1(b) re-arm), so the
+  NEXT entry re-baselines `B`. `KvmBackend` re-arms `reset_arm`; `PatchedKvmBackend`
+  forwards (it IS the preemption path); `MockBackend` records the call; `Box<B>` forwards.
+  vmm-core's `restore_vtime` calls it **unconditionally** after resetting its own work
+  clock (round-8's guard removed). Tests: box
+  `rearm_vtime_baseline_re_zeroes_the_run_until_counter` (advance B → rearm →
+  `run_until(small)` lands exactly, not against a stale B) + portable
+  `restore_vtime_realigns_the_backend_run_until_baseline` (the mock records the call even
+  with NO timer armed — the deferred-arm case).
+- **P2 — poison no-completion exits on a PMU-read failure.** Round-5 stored `self.pending`
+  before the fallible `pmu_work()` so a read-style exit fails closed on a PMU-read
+  failure; but a NO-completion exit (PIO OUT, MMIO write, HLT, shutdown) leaves
+  `pending == None`, so a retry would re-enter and SKIP a consumed (guest-visible) exit
+  the VMM never observed. `take_guest_exit_stop` now ALSO arms a portable [`ExitPoison`]
+  before `pmu_work()` (cleared on success); `run`/`run_until` `check_not_poisoned()` first
+  → a retry fails closed instead of skipping. Test: portable
+  `exit_poison_fails_closed_until_an_exit_is_delivered` (the state machine: arm without
+  `delivered` → poisoned). The live PMU-read fault is review-verified (fault injection,
+  as in round-5), with the state machine portably tested.

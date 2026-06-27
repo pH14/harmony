@@ -136,6 +136,7 @@ pub fn vmm_backend::KvmBackend::complete_read(&mut self, u64) -> vmm_backend::Re
 pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -157,6 +158,7 @@ pub fn vmm_backend::MockBackend::is_configured(&self) -> bool
 pub fn vmm_backend::MockBackend::new() -> Self
 pub fn vmm_backend::MockBackend::pending_irq(&self) -> core::option::Option<u8>
 pub fn vmm_backend::MockBackend::push_exit(&mut self, vmm_backend::Exit) -> &mut Self
+pub fn vmm_backend::MockBackend::rearm_baseline_calls(&self) -> u32
 pub fn vmm_backend::MockBackend::regions(&self) -> &[(vmm_backend::Gpa, usize)]
 pub fn vmm_backend::MockBackend::set_defer_accept(&mut self, bool) -> &mut Self
 pub fn vmm_backend::MockBackend::set_state(&mut self, vmm_backend::VcpuState) -> &mut Self
@@ -174,6 +176,7 @@ pub fn vmm_backend::MockBackend::complete_read(&mut self, u64) -> vmm_backend::R
 pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -205,6 +208,7 @@ pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_back
 pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -308,6 +312,7 @@ pub fn vmm_backend::Backend::complete_read(&mut self, u64) -> vmm_backend::Resul
 pub fn vmm_backend::Backend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::Backend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::Backend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::Backend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::Backend::reset_exit_counts(&mut self)
 pub fn vmm_backend::Backend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::Backend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -327,6 +332,7 @@ pub fn vmm_backend::KvmBackend::complete_read(&mut self, u64) -> vmm_backend::Re
 pub fn vmm_backend::KvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::KvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::KvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::KvmBackend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::KvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::KvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::KvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -346,6 +352,7 @@ pub fn vmm_backend::MockBackend::complete_read(&mut self, u64) -> vmm_backend::R
 pub fn vmm_backend::MockBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::MockBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::MockBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::MockBackend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::MockBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::MockBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::MockBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -365,6 +372,7 @@ pub fn vmm_backend::PatchedKvmBackend::complete_read(&mut self, u64) -> vmm_back
 pub fn vmm_backend::PatchedKvmBackend::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn vmm_backend::PatchedKvmBackend::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn vmm_backend::PatchedKvmBackend::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn vmm_backend::PatchedKvmBackend::rearm_vtime_baseline(&mut self)
 pub fn vmm_backend::PatchedKvmBackend::reset_exit_counts(&mut self)
 pub fn vmm_backend::PatchedKvmBackend::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn vmm_backend::PatchedKvmBackend::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
@@ -384,6 +392,7 @@ pub fn alloc::boxed::Box<B>::complete_read(&mut self, u64) -> vmm_backend::Resul
 pub fn alloc::boxed::Box<B>::exit_counts(&self) -> vmm_backend::ExitCounts
 pub fn alloc::boxed::Box<B>::inject(&mut self, vmm_backend::Event) -> vmm_backend::Result<()>
 pub unsafe fn alloc::boxed::Box<B>::map_memory(&mut self, vmm_backend::Gpa, &mut [u8]) -> vmm_backend::Result<()>
+pub fn alloc::boxed::Box<B>::rearm_vtime_baseline(&mut self)
 pub fn alloc::boxed::Box<B>::reset_exit_counts(&mut self)
 pub fn alloc::boxed::Box<B>::restore(&mut self, &vmm_backend::VcpuState) -> vmm_backend::Result<()>
 pub fn alloc::boxed::Box<B>::run(&mut self) -> vmm_backend::Result<vmm_backend::Exit>
