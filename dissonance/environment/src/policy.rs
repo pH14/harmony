@@ -9,10 +9,22 @@ use crate::codec::{self, Reader};
 use crate::error::EnvError;
 use crate::prng::Prng;
 
-/// Container magic, `"FPL1"` read little-endian.
+/// Container magic, `"FPL1"` read little-endian. Kept across the version bump
+/// below — it is a container marker, not a version; the `VERSION` field gates the
+/// vocabulary (exactly as [`EnvSpec`](crate::EnvSpec) keeps its `DEV2` magic while
+/// `BLOB_VERSION` moved 2 → 3).
 const MAGIC: u32 = u32::from_le_bytes(*b"FPL1");
-/// The policy format version this build writes and decodes.
-const VERSION: u16 = 1;
+/// The policy format version this build writes and decodes. Bumped to `2` by
+/// task 50: a policy's `eligible` faults are encoded with the [`Fault`](crate::Fault)
+/// byte tags, and the network tags were reshaped (per-frame → per-flow)
+/// incompatibly. A task-45 `v1` blob stays byte-aligned under the new tags — e.g. a
+/// payload-free old `NetDup` (tag 3) would silently decode as the new `NetReset`
+/// (tag 3) — so [`from_bytes`](FaultPolicy::from_bytes) must reject `v1` with
+/// [`EnvError::BadVersion`] rather than reinterpret it. This is the symmetric
+/// codec to [`EnvSpec::BLOB_VERSION`](crate::EnvSpec::BLOB_VERSION): both the
+/// reproducer blob and the standalone policy blob fail loudly on a stale net
+/// vocabulary.
+const VERSION: u16 = 2;
 
 /// One fault class's policy: fault with probability `num/den` (a fixed-point
 /// Bernoulli draw), and when it faults, pick uniformly from `eligible`. The
@@ -55,7 +67,7 @@ impl ClassPolicy {
 
 /// Per-class fault eligibility and probability, sampled by
 /// [`SeededEnv`](crate::SeededEnv). Only the three fault classes
-/// ([`NetSend`](DecisionClass::NetSend) / [`BlockIo`](DecisionClass::BlockIo) /
+/// ([`NetFlow`](DecisionClass::NetFlow) / [`BlockIo`](DecisionClass::BlockIo) /
 /// [`Process`](DecisionClass::Process)) carry a policy; the supply classes never
 /// fault. The whole policy is part of a reproducer artifact (carried by every
 /// [`EnvSpec`](crate::EnvSpec) variant), because a seed alone cannot reproduce a
@@ -144,7 +156,7 @@ impl FaultPolicy {
         if v != VERSION {
             return Err(EnvError::BadVersion(v));
         }
-        let net = read_class(&mut r, DecisionClass::NetSend)?;
+        let net = read_class(&mut r, DecisionClass::NetFlow)?;
         let block = read_class(&mut r, DecisionClass::BlockIo)?;
         let process = read_class(&mut r, DecisionClass::Process)?;
         if !r.at_end() {
@@ -162,7 +174,7 @@ impl FaultPolicy {
     /// [`Answer::Nominal`] without drawing.
     pub(crate) fn sample(&self, class: DecisionClass, rng: &mut Prng) -> Answer {
         match class {
-            DecisionClass::NetSend => self.net.sample(rng),
+            DecisionClass::NetFlow => self.net.sample(rng),
             DecisionClass::BlockIo => self.block.sample(rng),
             DecisionClass::Process => self.process.sample(rng),
             _ => Answer::Nominal,
@@ -175,7 +187,7 @@ impl FaultPolicy {
         match class {
             DecisionClass::BlockIo => &mut self.block,
             DecisionClass::Process => &mut self.process,
-            // NetSend (and, unreachably, supply classes) land here.
+            // NetFlow (and, unreachably, supply classes) land here.
             _ => &mut self.net,
         }
     }

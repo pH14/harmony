@@ -63,7 +63,6 @@ jobs:
         run: |
           cargo deny --manifest-path guest/payloads/Cargo.toml check --config deny.toml licenses
           cargo deny --manifest-path dissonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
-          cargo deny --manifest-path dissonance/pv-net/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
 
@@ -197,5 +196,5 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p pv-net -p environment -p control-proto -p explorer \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer \
             --test public_api -- --ignored --nocapture

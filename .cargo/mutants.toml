@@ -121,18 +121,9 @@ exclude_re = [
     #     completion→PendingCompletion, map_memory→Err, run/run_until/save/counts
     #     →observable return). Scoped to backend.rs's blanket impl.
     "consonance/vmm-backend/src/backend\\.rs.*inject",
-    # (h) `pv_net::Switch::route_one`'s `if held_before > 0` → `>= 0` (task 35):
-    #     provably equivalent. `held_before = self.held.get(&link).map_or(0,
-    #     Vec::len)`, the codec rejects empty held buffers (`nframes >= 1`) and
-    #     every internal path prunes them, so `held_before == 0` holds *iff* the
-    #     link has no held buffer. At that boundary the extra `>=` iteration is a
-    #     no-op: either `get_mut(&link)` is `None`, or — when the current send is a
-    #     `Reorder` that just pushed — `buf.drain(0..0)` removes nothing and the
-    #     non-empty buffer is kept (no schedule, no seq advance). No reachable state
-    #     distinguishes the two, so it has no test tell (it is the lone survivor of
-    #     line 201; the `>`→`==`/`<` siblings ARE killed by `tests/golden.rs`'s
-    #     reorder-release tests). See dissonance/pv-net/IMPLEMENTATION.md.
-    "dissonance/pv-net/src/switch\\.rs.*replace > with >= in Switch::route_one",
+    # (h) [retired] `pv_net::Switch::route_one` skip — `dissonance/pv-net` was
+    #     removed by task 50 (the net-fault boundary), so its mutant no longer
+    #     exists and needs no skip entry.
     # (i) `telemetry::RunningServer::shutdown -> ()` (task 29): provably equivalent.
     #     `shutdown(mut self)` takes the server *by value*; its only act is
     #     `self.stop()`, and when `self` is dropped at the end of the function

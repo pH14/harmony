@@ -46,8 +46,13 @@ pub enum DecisionClass {
     Payload = 2,
     /// A schedulable yield point between in-guest nodes.
     Scheduler = 3,
-    /// A frame handed to the pv-net switch.
-    NetSend = 4,
+    /// A network **flow** the guest utility asks the host about — once per
+    /// flow/connection, not per frame. The host *decides* a flow policy
+    /// ([`Fault::NetLatency`]/[`NetLoss`](Fault::NetLoss)/[`NetThrottle`](Fault::NetThrottle)/[`NetReset`](Fault::NetReset)
+    /// or [`Answer::Nominal`]); the guest *enforces* it on the intra-guest CNI.
+    /// Discriminant **4** is preserved across the task-50 rename from `NetSend`
+    /// (per-frame) so `control-proto`'s `StopMask` bit is unchanged.
+    NetFlow = 4,
     /// A block read/write/flush.
     BlockIo = 5,
     /// A node lifecycle point (pause/kill/restart).
@@ -62,7 +67,7 @@ impl DecisionClass {
         matches!(self, Self::Entropy | Self::Payload | Self::Scheduler)
     }
 
-    /// Whether this is a fault class ([`NetSend`](Self::NetSend),
+    /// Whether this is a fault class ([`NetFlow`](Self::NetFlow),
     /// [`BlockIo`](Self::BlockIo), [`Process`](Self::Process)): the service
     /// proceeds nominally or is perturbed, and the class never supplies.
     pub fn is_fault(self) -> bool {
@@ -80,7 +85,7 @@ impl DecisionClass {
             1 => Some(Self::Entropy),
             2 => Some(Self::Payload),
             3 => Some(Self::Scheduler),
-            4 => Some(Self::NetSend),
+            4 => Some(Self::NetFlow),
             5 => Some(Self::BlockIo),
             6 => Some(Self::Process),
             _ => None,
@@ -102,15 +107,21 @@ pub enum BlockOp {
     Flush = 2,
 }
 
-/// The parameters of a [`Fault::NetCorrupt`]: flip one byte. The `offset` is
-/// reduced modulo the frame length by the pv-net service before the XOR, so a
-/// recorded or mutated out-of-range `offset` is deterministic and never panics.
+/// What surfaced a [`DecisionPoint::NetFlow`] — the `event` a guest utility
+/// reports when it asks the host about a flow. The utility asks **once per
+/// flow/connection** (not per frame), so today the only event is the flow
+/// [`Open`](Self::Open).
+///
+/// `#[repr(u16)]` and deliberately **extensible**: a later layer may add events
+/// (e.g. a flow close or a half-open transition) without moving
+/// [`Open`](Self::Open)'s discriminant. It is part of the *live* decision a
+/// service reads, never of a serialized blob (the same as [`BlockOp`]), so it
+/// needs no wire codec.
+#[repr(u16)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct CorruptSpec {
-    /// Byte index to flip (taken modulo the frame length by the service).
-    pub offset: u32,
-    /// Value XORed into that byte.
-    pub xor: u8,
+pub enum FlowEvent {
+    /// The utility first saw this flow and is asking the host for its policy.
+    Open = 0,
 }
 
 /// A concrete decision the platform must answer, carrying its class plus the
@@ -135,16 +146,22 @@ pub enum DecisionPoint {
         /// Count of runnable nodes.
         ready: u32,
     },
-    /// A frame handed to the switch from `src` to `dst` on connection `conn`.
-    NetSend {
+    /// A network **flow** from `src` to `dst` on connection `conn`, surfaced by
+    /// the guest utility on `event` — **once per flow**, not per frame. The host
+    /// answers a flow-level policy ([`Answer::Nominal`] or a net
+    /// [`Answer::Fault`]) the guest then enforces on the intra-guest CNI. This is
+    /// the `net_decide` request shape (task 50); the response is an [`Answer`]
+    /// for the [`NetFlow`](DecisionClass::NetFlow) class, carried by the existing
+    /// [`Answer::encode`]/[`decode`](Answer::decode) — no new codec.
+    NetFlow {
         /// Source node.
         src: NodeId,
         /// Destination node.
         dst: NodeId,
         /// Connection identity (for fault targeting).
         conn: ConnId,
-        /// Whole-frame length in bytes.
-        len: u32,
+        /// What surfaced this flow decision (today, always [`FlowEvent::Open`]).
+        event: FlowEvent,
     },
     /// A block I/O of `op` at `lba` for `len` bytes.
     BlockIo {
@@ -169,7 +186,7 @@ impl DecisionPoint {
             Self::Entropy { .. } => DecisionClass::Entropy,
             Self::Payload { .. } => DecisionClass::Payload,
             Self::Scheduler { .. } => DecisionClass::Scheduler,
-            Self::NetSend { .. } => DecisionClass::NetSend,
+            Self::NetFlow { .. } => DecisionClass::NetFlow,
             Self::BlockIo { .. } => DecisionClass::BlockIo,
             Self::Process { .. } => DecisionClass::Process,
         }
@@ -186,7 +203,7 @@ impl DecisionPoint {
     ///   only a [`Answer::Supply`] of the exact requested length — for
     ///   [`Scheduler`](Self::Scheduler), exactly 4 bytes decoding to a selection
     ///   `< ready`.
-    /// - Fault classes ([`NetSend`](Self::NetSend)/[`BlockIo`](Self::BlockIo)/[`Process`](Self::Process)):
+    /// - Fault classes ([`NetFlow`](Self::NetFlow)/[`BlockIo`](Self::BlockIo)/[`Process`](Self::Process)):
     ///   [`Answer::Nominal`], or a [`Answer::Fault`] of the same class within
     ///   bounds (a [`Fault::BlockTorn`] no longer than the request).
     ///
@@ -199,11 +216,11 @@ impl DecisionPoint {
                 v.len() == 4 && u32::from_le_bytes([v[0], v[1], v[2], v[3]]) < *ready
             }
             (
-                Self::NetSend { .. } | Self::BlockIo { .. } | Self::Process { .. },
+                Self::NetFlow { .. } | Self::BlockIo { .. } | Self::Process { .. },
                 Answer::Nominal,
             ) => true,
             (
-                Self::NetSend { .. } | Self::BlockIo { .. } | Self::Process { .. },
+                Self::NetFlow { .. } | Self::BlockIo { .. } | Self::Process { .. },
                 Answer::Fault(f),
             ) => f.class() == self.class() && self.fault_bounds_ok(f),
             // Every remaining pairing is a class mismatch (a supply class with a
@@ -214,8 +231,9 @@ impl DecisionPoint {
 
     /// Whether a same-class fault's parameters fit this point's bounds. Only
     /// [`Fault::BlockTorn`] has a point-relative bound (`n ≤ len`); every other
-    /// fault's parameters are bound-free (delays are any V-time, a corrupt offset
-    /// is reduced modulo the frame length by the service).
+    /// fault's parameters are bound-free (delays are any V-time; the flow-level
+    /// net policies carry no point-relative bound — a [`NetFlow`](Self::NetFlow)
+    /// has no frame length to bound against).
     fn fault_bounds_ok(&self, fault: &Fault) -> bool {
         match (self, fault) {
             (Self::BlockIo { len, .. }, Fault::BlockTorn(n)) => *n as u64 <= *len as u64,
@@ -229,23 +247,53 @@ impl DecisionPoint {
 /// branch-count units. The byte form (see [`Answer::encode`]) uses stable
 /// discriminants that a recorded [`EnvSpec`](crate::EnvSpec) replay depends on.
 ///
+/// **Network faults are per-flow policies (task 50).** The host *decides* a
+/// flow-level policy ([`NetLatency`](Self::NetLatency) / [`NetLoss`](Self::NetLoss)
+/// / [`NetThrottle`](Self::NetThrottle) / [`NetReset`](Self::NetReset)), recorded
+/// into the [`Moment`](crate::Moment)-keyed reproducer; the guest *enforces* it on
+/// the intra-guest CNI with Linux's own mechanisms (netem / tbf / a reset),
+/// taking every input from a determinized source (delays in guest V-time, losses
+/// from a seeded PRNG). The host is in the **control** path, never the **data**
+/// path. The retired per-*frame* faults (`NetDrop`/`NetDelay`/`NetReorder`/
+/// `NetDup`/`NetCorrupt`, with `CorruptSpec`) needed a host-side switch on the
+/// frame stream, which task 50 removed with `dissonance/pv-net`.
+///
+/// **Per-message faults moved up, not away.** Reordering, duplicating, or
+/// corrupting a *specific* message needs message boundaries the network layer
+/// cannot see; together with L2 byte-corruption they belong to the **SDK / L7
+/// tier** (a later task), not this flow-level catalog. They are deferred, not
+/// dropped.
+///
 /// There is deliberately no `Partition` variant: a network partition is not a
-/// per-frame fault but a standing, correlated topology policy (a link and a
-/// V-time window where *all* frames drop together), carried as a
-/// [`StandingFault`](crate::StandingFault) and applied imperatively by the
-/// frontier. A one-frame "partition" would just be [`Fault::NetDrop`].
+/// per-flow fault but a standing, correlated topology policy (a link and a V-time
+/// window where *all* traffic drops together), carried as a
+/// [`StandingFault`](crate::StandingFault) and enforced guest-side by the utility
+/// (e.g. an nftables rule for the window). A single-flow "partition" would just be
+/// [`Fault::NetLoss`] at `1/1` (full drop) or [`Fault::NetReset`].
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Fault {
-    /// Drop this frame (no delivery).
-    NetDrop,
-    /// Delay delivery by the given V-time.
-    NetDelay(VTime),
-    /// Hold this frame and deliver it after the next frame on its link.
-    NetReorder,
-    /// Deliver this frame twice.
-    NetDup,
-    /// Deliver this frame with one byte flipped.
-    NetCorrupt(CorruptSpec),
+    /// Add `d` of guest-time delay to the flow (Linux `netem`); `d` is in
+    /// [`VTime`] units so the delay is measured in determinized guest time.
+    NetLatency(VTime),
+    /// Drop a `num/den` fraction of the flow's packets, sampled from a seeded
+    /// PRNG (never a host RNG). `1/1` is a full drop; `den` is the denominator of
+    /// the fraction and the seeded enforcer treats `den == 0` as a deterministic
+    /// no-op (deliver), so an out-of-range parameter never divides by zero —
+    /// exactly as the retired per-frame `NetCorrupt` reduced its offset modulo the
+    /// length at enforcement.
+    NetLoss {
+        /// Numerator of the drop fraction.
+        num: u16,
+        /// Denominator of the drop fraction (`den == 0` ⇒ no-op at enforcement).
+        den: u16,
+    },
+    /// Cap the flow's bandwidth to `bps` (Linux `tbf`).
+    NetThrottle {
+        /// Bandwidth cap (`bps`); the guest enforcer maps it to a `tbf` rate.
+        bps: u32,
+    },
+    /// Refuse / reset the connection (a `RST`).
+    NetReset,
     /// Fail a block I/O with `EIO`.
     BlockEio,
     /// Complete a block I/O after the given V-time latency.
@@ -267,11 +315,10 @@ impl Fault {
     /// [`DecisionClass`]).
     pub fn class(&self) -> DecisionClass {
         match self {
-            Self::NetDrop
-            | Self::NetDelay(_)
-            | Self::NetReorder
-            | Self::NetDup
-            | Self::NetCorrupt(_) => DecisionClass::NetSend,
+            Self::NetLatency(_)
+            | Self::NetLoss { .. }
+            | Self::NetThrottle { .. }
+            | Self::NetReset => DecisionClass::NetFlow,
             Self::BlockEio | Self::BlockLatency(_) | Self::BlockTorn(_) | Self::BlockNospc => {
                 DecisionClass::BlockIo
             }
@@ -291,7 +338,7 @@ impl Fault {
 ///   a non-fault answer is [`Supply`](Answer::Supply) — the entropy/payload
 ///   bytes, or for `Scheduler` the chosen runnable index as a little-endian
 ///   `u32`. These classes never [`Fault`](Answer::Fault).
-/// - **Fault classes** ([`NetSend`](DecisionClass::NetSend) /
+/// - **Fault classes** ([`NetFlow`](DecisionClass::NetFlow) /
 ///   [`BlockIo`](DecisionClass::BlockIo) / [`Process`](DecisionClass::Process)):
 ///   the service proceeds ([`Nominal`](Answer::Nominal)) or is perturbed
 ///   ([`Fault`](Answer::Fault)). These classes never [`Supply`](Answer::Supply).

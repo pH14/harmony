@@ -129,12 +129,12 @@ fn seeded_and_seeded_recorded_baseline_agree() {
     let mut policy = FaultPolicy::none();
     policy
         .set_class(
-            environment::DecisionClass::NetSend,
+            environment::DecisionClass::NetFlow,
             1,
             2,
             &[
-                environment::Fault::NetDrop,
-                environment::Fault::NetDelay(VTime(7)),
+                environment::Fault::NetReset,
+                environment::Fault::NetLatency(VTime(7)),
             ],
         )
         .unwrap();
@@ -143,11 +143,11 @@ fn seeded_and_seeded_recorded_baseline_agree() {
         P::Entropy { bytes: 8 },
         P::Payload { bytes: 5 },
         P::Scheduler { ready: 4 },
-        P::NetSend {
+        P::NetFlow {
             src: NodeId(0),
             dst: NodeId(1),
             conn: environment::ConnId(9),
-            len: 64,
+            event: environment::FlowEvent::Open,
         },
         P::Process { node: NodeId(2) },
     ];

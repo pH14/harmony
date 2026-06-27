@@ -192,12 +192,12 @@ fn scheduler_in_range_index_is_admissible() {
 
 #[test]
 fn wrong_class_fault_is_ignored() {
-    // A BlockEio fault on a NetSend point → wrong class → ignored.
-    let net = P::NetSend {
+    // A BlockEio fault on a NetFlow point → wrong class → ignored.
+    let net = P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
         conn: ConnId(3),
-        len: 100,
+        event: environment::FlowEvent::Open,
     };
     let (got, base) = first(&net, 7, FaultPolicy::none(), Answer::Fault(Fault::BlockEio));
     assert_eq!(got, base);
@@ -205,11 +205,11 @@ fn wrong_class_fault_is_ignored() {
 
 #[test]
 fn supply_on_fault_class_is_ignored() {
-    let net = P::NetSend {
+    let net = P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
         conn: ConnId(3),
-        len: 100,
+        event: environment::FlowEvent::Open,
     };
     let (got, base) = first(
         &net,
@@ -222,15 +222,15 @@ fn supply_on_fault_class_is_ignored() {
 
 #[test]
 fn same_class_fault_is_admissible() {
-    let net = P::NetSend {
+    let net = P::NetFlow {
         src: NodeId(0),
         dst: NodeId(1),
         conn: ConnId(3),
-        len: 100,
+        event: environment::FlowEvent::Open,
     };
-    let drop = Answer::Fault(Fault::NetDrop);
-    let (got, _base) = first(&net, 7, FaultPolicy::none(), drop.clone());
-    assert_eq!(got, drop);
+    let reset = Answer::Fault(Fault::NetReset);
+    let (got, _base) = first(&net, 7, FaultPolicy::none(), reset.clone());
+    assert_eq!(got, reset);
 }
 
 #[test]

@@ -6,17 +6,134 @@ one `Moment`-keyed reproducer — the heart of dissonance's fault model
 no host entropy, no sibling-crate dependencies. Builds and passes every gate on
 macOS and Linux. No `unsafe`, so no Miri obligation.
 
-> **Task 46 (latest) is a docs-only clarifying pass** — see "Task 46" at the end;
-> it reconciles the crate's framing with the host/guest split and changes **no**
-> public API. The substantive amendment is **task 45** (read that section next) —
-> the naming decision, the `Moment` re-keying, and the breaking public-API change
-> to the merged reproducer.
+> **Task 50 (latest) reshapes the network class** — see "Task 50: the net-fault
+> boundary" immediately below. A **breaking public-API change**: the per-frame
+> `NetSend` decision and its per-frame faults become a per-flow `NetFlow` decision
+> with flow-level policies; the sibling crate `dissonance/pv-net` is **retired**.
+> The host *decides* a flow policy; the guest *enforces* it in-guest.
+>
+> **Task 46 is a docs-only clarifying pass** — see "Task 46" at the end; it
+> reconciles the crate's framing with the host/guest split and changes **no**
+> public API. The earlier substantive amendment is **task 45** — the naming
+> decision, the `Moment` re-keying, and the breaking public-API change to the
+> merged reproducer.
+
+## Task 50: the net-fault boundary (host decides, guest enforces)
+
+`docs/DISSONANCE.md` used to route inter-node traffic **out of the guest** through
+a `net_tx` hypercall to a host L2 switch (`pv-net`) that saw every frame and
+*performed* network faults on a V-time delivery schedule. That was the one place
+the two-plane model had the hypervisor *perform* a fault instead of *decide* one,
+and the sole reason the awkward "Plane ≠ enforcement locus" rule existed. Two facts
+made it wrong: (1) the shipped topology (tasks 38/48/49) runs the "nodes" as
+containers/pods in **one** guest, so their traffic transits the **intra-guest CNI**
+and never reaches the host — there is no host-side frame stream to switch; and
+(2) intra-guest networking is *already* deterministic, because consonance
+determinizes the only two things that could make it vary (the clock = V-time, and
+entropy = the seeded CRNG). So the host neither needs to see the traffic nor to
+enforce determinism on it.
+
+**The fix:** networking becomes a per-**flow** guest-plane decision, exactly like
+block I/O and entropy. A guest utility asks the host *"what should I do with this
+flow?"* (`net_decide`); the host **answers** a flow-level policy (recorded into the
+`Moment`-keyed `Environment` so it replays); the guest **enforces** the answer on
+the intra-guest CNI with Linux's own mechanisms. This folds networking back into
+the `decide(point) -> Answer` seam and **dissolves the "Plane ≠ enforcement locus"
+exception** — every guest-plane fault is now host-decided and guest-enforced.
+
+### Catalog before → after
+
+| | Before (task 24, per-frame) | After (task 50, per-flow) |
+|---|---|---|
+| Class | `DecisionClass::NetSend = 4` | `DecisionClass::NetFlow = 4` (**discriminant 4 preserved**) |
+| Point | `NetSend { src, dst, conn, len: u32 }` | `NetFlow { src, dst, conn, event: FlowEvent }` |
+| Event | — | `FlowEvent { Open }` — `#[repr(u16)]`, extensible; fires once per flow |
+| Faults | `NetDrop`, `NetDelay(VTime)`, `NetReorder`, `NetDup`, `NetCorrupt(CorruptSpec)` | `NetLatency(VTime)`, `NetLoss { num, den }`, `NetThrottle { bps }`, `NetReset` |
+| Removed | — | `CorruptSpec` (was only `NetCorrupt`'s payload) |
+
+`Fault` byte tags — **fresh, non-overlapping (the round-2 root-cause fix).** The
+four flow policies take **fresh tags `12..=15`** (`NetLatency`=12, `NetLoss`=13,
+`NetThrottle`=14, `NetReset`=15); the retired per-frame net tags `0..=4`
+(`NetDrop`/`NetDelay`/`NetReorder`/`NetDup`/`NetCorrupt`) are left **undefined**.
+This is what closes the silent-reinterpretation hazard at the *root* rather than
+per-decode-path: because no new variant reuses an old tag, a stale byte carrying an
+old net tag hard-fails in `read_fault` (→ `Malformed`) on **every** decode path at
+once — `Answer::decode`, `FaultPolicy::from_bytes`, `Action::decode`/`EnvSpec::decode`,
+and the control-proto `Run { resolve }` path (which funnels through `Answer::decode`).
+The block/process tags `5..=11` are **unchanged** (their vocabulary did not change),
+so a recorded block/process fault keeps its exact bytes. `StandingFault` is
+structurally unchanged — a partition/throttle is still a correlated, V-time-windowed
+link policy in `EnvSpec::Recorded.standing`, but it is now **enforced guest-side**
+(e.g. an nftables rule) rather than consulted by a host switch.
+
+### The `net_decide` request/response shape (contract only)
+
+Pinned here; the hypercall-service wiring and the guest utility are the next task
+(out of scope). **Request** (guest → host): a `NetFlow { src, dst, conn, event }`
+decision point. **Response** (host → guest): an `Answer` for the `NetFlow` class —
+`Nominal` or `Fault(Net*)` — carried by the **existing** `Answer::encode`/`decode`
+(the same opaque-bytes path `control-proto`'s `Answer(Vec<u8>)` already carries).
+**No new codec.** **Frequency:** one decision per flow/connection (+ standing link
+policies consulted locally by the utility), **not per frame** — the load-bearing
+difference from `pv-net` (the host is in the control path, never the data path).
+
+### The enforcement-determinism discipline (the new load-bearing contract)
+
+Because the enforcer runs *in* the guest, it inherits the substrate's determinism
+**iff** it takes every input from a determinized source: delays measured in **guest
+V-time**, random drops/loss from a **seeded** PRNG (seeded from the decision) or the
+entropy hypercall — never a host wall-clock or unseeded host RNG. It *cannot* reach
+a non-determinized source (consonance denies them), but the contract is stated so
+the future utility is held to it. The crate enforces the data side of this: a
+`NetLatency` delay is a `VTime`; `NetLoss` is an integer `num/den` (no float); the
+sampling PRNG is the seeded xorshift64\* fault stream. Empirical proof the premise
+holds: task 49 runs a full k8s network stack intra-guest, deterministic-twice.
+
+### Incompatibility handling — non-overlapping tags first, version bumps as defense
+
+The reshape is byte-incompatible with the task-45 net vocabulary. It is handled at
+two levels, in order of importance:
+
+1. **Non-overlapping fault tags (the root-cause fix).** The new net faults use
+   fresh tags `12..=15`; the old net tags `0..=4` are undefined (see the tag table
+   above). A stale old-net byte therefore rejects with `Malformed` on **every**
+   decode path automatically — there is no decode path to forget to version-gate.
+   This is the round-2 review outcome: version-gating each path individually
+   (`EnvSpec`, then `FaultPolicy`, then `Answer::decode`/`Run::resolve`…) was
+   whack-a-mole; disjoint tags close them all at the `read_fault` chokepoint.
+   Tests in `tests/net_flow.rs` exercise the un-gated paths specifically
+   (`Answer::decode`, `Action::decode`, and a *current-version* `FaultPolicy`
+   net-eligible list, so the *tag* check — not a version gate — is what rejects).
+
+2. **Version bumps (defense in depth + a clean rejection message).**
+   `CATALOG_VERSION` 2 → **3**; `EnvSpec::BLOB_VERSION` 2 → **3**; the standalone
+   `FaultPolicy` format version 1 → **2**. A whole stale blob rejects loudly with
+   `BadVersion` at its container boundary (a clearer signal than a mid-stream
+   `Malformed`), and the version gate also covers the block/process sub-vocabulary
+   (whose tags did *not* change, so the tag check alone would accept them). The
+   `DEV2`/`FPL1` container magics are kept (the layouts are unchanged).
+
+`control-proto`'s `class_bit::NET_SEND = 4` const is **not** renamed: the
+discriminant (and thus the `StopMask` bit) is preserved, so the wire is unaffected
+— only its doc comment was corrected.
+
+### Gates added for task 50
+
+`tests/net_flow.rs`: the discriminant pin (`NetFlow as u16 == 4`) + a `StopMask`
+round-trip (arming the network class selects it and nothing else); per-variant
+golden wire bytes for the flow policies; a property test that a `NetFlow` decision
+sequence replays bit-identically and the reshaped catalog round-trips through
+`EnvSpec::encode`/`decode` (≥256 cases); the stale-`v2`-blob rejection; and
+`retired_net_tags_reject_on_every_ungated_decode_path` (the root-cause guarantee).
+`tests/policy.rs` adds `from_bytes_rejects_stale_v1_net_policy`. The golden answer
+sequence (`tests/golden.rs`) and `tests/public-api.txt` were regenerated for the
+reshape.
 
 ## What was built
 
 The public types as the spec's Public API lists them: the catalog
 (`DecisionClass`, `DecisionPoint`+`class`/`admits`, `Answer`+`encode`/`decode`,
-`Fault`, `CorruptSpec`, `BlockOp`, `Outcome`); the **host plane**
+`Fault`, `FlowEvent`, `BlockOp`, `Outcome`); the **host plane**
 (`HostFault`+`encode`/`decode`, `Action`, `Ratio`, `BitMask`, `Moment`); the seam
 (`Environment::decide`); the newtypes (`NodeId`, `ConnId`, `VTime`); the constants
 (`CATALOG_VERSION`, `MAX_SUPPLY_LEN`); `FaultPolicy`
@@ -95,8 +212,9 @@ The frozen public surface is in `tests/public-api.txt`.
   (the base answers), never clamped, exactly as the spec dictates. By contrast a
   policy-sampled fault is emitted verbatim — `SeededEnv` may emit
   `BlockTorn(n > len)` for a particular point, and the **block service** clamps
-  it, the same division of labor as pv-net clamping a corrupt offset modulo the
-  frame length. The admissibility check is the single `DecisionPoint::admits`,
+  it — the same division of labor as the guest network enforcer making an
+  out-of-range flow parameter deterministic (e.g. `NetLoss { den: 0 }` is a
+  no-op/deliver). The admissibility check is the single `DecisionPoint::admits`,
   cross-checked in tests against an independent restatement of the rule.
 
 - **Strict, total codecs.** `Answer`/`FaultPolicy`/`EnvSpec` decode is strict and
@@ -126,7 +244,8 @@ The frozen public surface is in `tests/public-api.txt`.
   answers; a clamp would silently fabricate an answer the recorder never emitted.
 
 - **Storing `StandingFault`s inside `RecordedEnv`.** Rejected: standing faults
-  are applied imperatively by the frontier (e.g. pv-net `set_partition`), never
+  are applied imperatively by the frontier — the guest utility enforces a standing
+  partition on the intra-guest CNI for the window (e.g. an nftables rule) — never
   through `decide`. They live in the `EnvSpec` (public fields), so the frontier
   reads them off the spec before/around `materialize`; threading them through the
   decide-backing would imply `decide` enforces them, which it must not.
@@ -134,14 +253,16 @@ The frozen public surface is in `tests/public-api.txt`.
 ## Known limitations / integrator notes
 
 - **`StandingFault::target` is opaque here.** This crate only carries and
-  canonically orders it; the owning service interprets it (e.g. pv-net decodes a
-  `(NodeId, NodeId)` link). Branch/replay re-applies each entry via the service's
-  standing-fault API; arming one out-of-band would escape replay.
+  canonically orders it; the owning service interprets it (e.g. the guest network
+  utility decodes a `(NodeId, NodeId)` link into an nftables rule). Branch/replay
+  re-applies each entry via the service's standing-fault API; arming one
+  out-of-band would escape replay.
 
 - **`SeededEnv` emits policy faults verbatim.** Per-point clamping of a fault
   parameter (notably `BlockTorn(n)` vs the I/O length) is the consuming service's
-  job, mirroring pv-net. `RecordedEnv` overrides *are* bounds-checked because they
-  are untrusted reproducer bytes that must reproduce one recorded answer exactly.
+  job — the block service for `BlockTorn`, the guest network utility for a flow
+  policy. `RecordedEnv` overrides *are* bounds-checked because they are untrusted
+  reproducer bytes that must reproduce one recorded answer exactly.
 
 - **Reactive backing is out of scope (frontier, vmm-core).** `Outcome::NeedsHost`
   exists so the seam is stable, but both backings here are pure and always return

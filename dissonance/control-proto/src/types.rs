@@ -65,7 +65,11 @@ pub mod class_bit {
     pub const PAYLOAD: u16 = 2;
     /// `DecisionClass::Scheduler` — a schedulable yield point.
     pub const SCHEDULER: u16 = 3;
-    /// `DecisionClass::NetSend` — a frame handed to the pv-net switch.
+    /// `DecisionClass::NetFlow` — a per-flow network decision (the host decides a
+    /// flow policy the guest enforces in-guest; task 50 reshaped this from the
+    /// per-frame `NetSend` and retired `pv-net`). The `NET_SEND` const name is
+    /// retained for wire stability — the discriminant `4` (and thus the `StopMask`
+    /// bit) is unchanged.
     pub const NET_SEND: u16 = 4;
     /// `DecisionClass::BlockIo` — a block read/write/flush.
     pub const BLOCK_IO: u16 = 5;

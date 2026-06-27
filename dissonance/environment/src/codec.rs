@@ -9,7 +9,7 @@
 //! [`EnvError::Malformed`] / [`EnvError::BadVersion`], never a panic or an
 //! out-of-bounds read (conventions rule 4).
 
-use crate::catalog::{Answer, CorruptSpec, Fault};
+use crate::catalog::{Answer, Fault};
 use crate::error::EnvError;
 use crate::host::{Action, BitMask, HostFault, Ratio};
 use crate::{MAX_SUPPLY_LEN, VTime};
@@ -31,11 +31,19 @@ const HF_CORRUPT_MEMORY: u8 = 2;
 const HF_INJECT_INTERRUPT: u8 = 3;
 
 // Fault tags — stable discriminants; a recorded EnvSpec replay depends on them.
-const F_NET_DROP: u8 = 0;
-const F_NET_DELAY: u8 = 1;
-const F_NET_REORDER: u8 = 2;
-const F_NET_DUP: u8 = 3;
-const F_NET_CORRUPT: u8 = 4;
+//
+// **Task 50 root-cause fix: the reshaped network faults use FRESH tags.** The
+// retired per-frame net vocabulary used tags 0..=4 (`NetDrop`/`NetDelay`/
+// `NetReorder`/`NetDup`/`NetCorrupt`); those tags are now **undefined**, so any
+// stale byte carrying one hard-fails in `read_fault` (→ `EnvError::Malformed`) on
+// *every* decode path at once — `Answer::decode`, `FaultPolicy::from_bytes`,
+// `Action::decode`/`EnvSpec::decode`, and the control-proto `Run{resolve}` path
+// that funnels through `Answer::decode`. No per-path version guard is needed (the
+// `BLOB_VERSION`/policy-version bumps stay as defense-in-depth + a clean rejection
+// message). Reusing a low tag — old `NetDup` (3, payload-free) ≡ a new payload-free
+// variant — would otherwise let a stale byte *silently reinterpret*, which is the
+// hazard this avoids. The block/process tags 5..=11 are unchanged from task 24
+// (their vocabulary did not change); the new per-flow net tags take 12..=15.
 const F_BLOCK_EIO: u8 = 5;
 const F_BLOCK_LATENCY: u8 = 6;
 const F_BLOCK_TORN: u8 = 7;
@@ -43,6 +51,12 @@ const F_BLOCK_NOSPC: u8 = 8;
 const F_PROC_PAUSE: u8 = 9;
 const F_PROC_KILL: u8 = 10;
 const F_PROC_RESTART: u8 = 11;
+// Per-flow network policies (task 50): fresh tags 12..=15, disjoint from the
+// retired per-frame net tags 0..=4 (now undefined) so a stale net byte rejects.
+const F_NET_LATENCY: u8 = 12;
+const F_NET_LOSS: u8 = 13;
+const F_NET_THROTTLE: u8 = 14;
+const F_NET_RESET: u8 = 15;
 
 /// Append a `u16` little-endian.
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
@@ -74,18 +88,20 @@ pub(crate) fn put_bytes(w: &mut Vec<u8>, b: &[u8]) {
 /// Serialize one [`Fault`].
 pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
     match f {
-        Fault::NetDrop => w.push(F_NET_DROP),
-        Fault::NetDelay(VTime(d)) => {
-            w.push(F_NET_DELAY);
+        Fault::NetLatency(VTime(d)) => {
+            w.push(F_NET_LATENCY);
             put_u64(w, *d);
         }
-        Fault::NetReorder => w.push(F_NET_REORDER),
-        Fault::NetDup => w.push(F_NET_DUP),
-        Fault::NetCorrupt(CorruptSpec { offset, xor }) => {
-            w.push(F_NET_CORRUPT);
-            put_u32(w, *offset);
-            w.push(*xor);
+        Fault::NetLoss { num, den } => {
+            w.push(F_NET_LOSS);
+            put_u16(w, *num);
+            put_u16(w, *den);
         }
+        Fault::NetThrottle { bps } => {
+            w.push(F_NET_THROTTLE);
+            put_u32(w, *bps);
+        }
+        Fault::NetReset => w.push(F_NET_RESET),
         Fault::BlockEio => w.push(F_BLOCK_EIO),
         Fault::BlockLatency(VTime(d)) => {
             w.push(F_BLOCK_LATENCY);
@@ -108,14 +124,13 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
 /// Deserialize one [`Fault`].
 pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
     let f = match r.u8()? {
-        F_NET_DROP => Fault::NetDrop,
-        F_NET_DELAY => Fault::NetDelay(VTime(r.u64()?)),
-        F_NET_REORDER => Fault::NetReorder,
-        F_NET_DUP => Fault::NetDup,
-        F_NET_CORRUPT => Fault::NetCorrupt(CorruptSpec {
-            offset: r.u32()?,
-            xor: r.u8()?,
-        }),
+        F_NET_LATENCY => Fault::NetLatency(VTime(r.u64()?)),
+        F_NET_LOSS => Fault::NetLoss {
+            num: r.u16()?,
+            den: r.u16()?,
+        },
+        F_NET_THROTTLE => Fault::NetThrottle { bps: r.u32()? },
+        F_NET_RESET => Fault::NetReset,
         F_BLOCK_EIO => Fault::BlockEio,
         F_BLOCK_LATENCY => Fault::BlockLatency(VTime(r.u64()?)),
         F_BLOCK_TORN => Fault::BlockTorn(r.u32()?),

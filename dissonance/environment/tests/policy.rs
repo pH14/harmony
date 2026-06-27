@@ -34,19 +34,27 @@ fn equal_policies_built_differently_encode_identically() {
     // in different orders → identical bytes (the eligible list is canonicalized).
     let mut a = FaultPolicy::none();
     a.set_class(
-        DecisionClass::NetSend,
+        DecisionClass::NetFlow,
         1,
         4,
-        &[Fault::NetDup, Fault::NetDrop, Fault::NetDelay(VTime(5))],
+        &[
+            Fault::NetReset,
+            Fault::NetLatency(VTime(5)),
+            Fault::NetThrottle { bps: 1000 },
+        ],
     )
     .unwrap();
 
     let mut b = FaultPolicy::none();
     b.set_class(
-        DecisionClass::NetSend,
+        DecisionClass::NetFlow,
         1,
         4,
-        &[Fault::NetDelay(VTime(5)), Fault::NetDrop, Fault::NetDup],
+        &[
+            Fault::NetThrottle { bps: 1000 },
+            Fault::NetLatency(VTime(5)),
+            Fault::NetReset,
+        ],
     )
     .unwrap();
 
@@ -81,12 +89,12 @@ fn set_class_rejects_misuse() {
     );
     // Zero denominator.
     assert_eq!(
-        p.set_class(DecisionClass::NetSend, 1, 0, &[]),
+        p.set_class(DecisionClass::NetFlow, 1, 0, &[]),
         Err(EnvError::Malformed)
     );
     // Foreign-class fault in a class's eligible set.
     assert_eq!(
-        p.set_class(DecisionClass::NetSend, 1, 2, &[Fault::BlockEio]),
+        p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::BlockEio]),
         Err(EnvError::Malformed)
     );
 }
@@ -100,6 +108,36 @@ fn from_bytes_rejects_off_version() {
         Err(EnvError::BadVersion(_)) => {}
         other => panic!("expected BadVersion, got {other:?}"),
     }
+}
+
+#[test]
+fn from_bytes_rejects_stale_v1_net_policy() {
+    // Task 50: the network `Fault` byte tags were reshaped (per-frame → per-flow),
+    // so a task-45 `v1` policy blob must reject rather than silently reinterpret an
+    // old net fault under the new tag vocabulary — the symmetric codec to the
+    // EnvSpec BLOB_VERSION gate. The hazard is concrete for the reused payload-free
+    // tag 3: old `NetDup` (tag 3) and new `NetReset` (tag 3) are byte-identical, so
+    // a stale blob would stay byte-aligned and decode to the wrong fault.
+    //
+    // Build a current (v2) policy whose eligible set uses tag 3 (`NetReset`), then
+    // rewrite the version field down to 1 — exactly the bytes an old recorder emitted
+    // for a `NetDup`-eligible net policy.
+    let mut p = FaultPolicy::none();
+    p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
+        .unwrap();
+    let mut bytes = p.to_bytes();
+    // Layout: magic:u32 (0..4) then version:u16 (4..6). The current version is 2.
+    assert_eq!(
+        bytes[4..6],
+        2u16.to_le_bytes(),
+        "current policy is version 2"
+    );
+    bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(
+        FaultPolicy::from_bytes(&bytes),
+        Err(EnvError::BadVersion(1)),
+        "a v1 net policy must reject, never reinterpret an old net tag"
+    );
 }
 
 #[test]
@@ -120,10 +158,10 @@ fn from_bytes_rejects_bad_magic_and_trailing_bytes() {
 
 #[test]
 fn from_bytes_rejects_zero_denominator() {
-    // Encode a policy with den=2, then zero the NetSend denominator in place.
+    // Encode a policy with den=2, then zero the NetFlow denominator in place.
     // Layout after magic(4)+version(2): net{ num:u32, den:u32, count:u32, ... }.
     let mut p = FaultPolicy::none();
-    p.set_class(DecisionClass::NetSend, 1, 2, &[Fault::NetDrop])
+    p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
         .unwrap();
     let mut bytes = p.to_bytes();
     // num at offset 6..10, den at 10..14.

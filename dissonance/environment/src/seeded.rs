@@ -44,8 +44,8 @@ impl SeededEnv {
                 Answer::Supply(self.supply_bytes(*bytes))
             }
             DecisionPoint::Scheduler { ready } => Answer::Supply(self.scheduler_pick(*ready)),
-            DecisionPoint::NetSend { .. } => {
-                self.policy.sample(DecisionClass::NetSend, &mut self.fault)
+            DecisionPoint::NetFlow { .. } => {
+                self.policy.sample(DecisionClass::NetFlow, &mut self.fault)
             }
             DecisionPoint::BlockIo { .. } => {
                 self.policy.sample(DecisionClass::BlockIo, &mut self.fault)
