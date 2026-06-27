@@ -58,7 +58,6 @@ pub fn environment::DecisionPoint::class(&self) -> environment::DecisionClass
 pub enum environment::EnvError
 pub environment::EnvError::BadVersion(u16)
 pub environment::EnvError::Malformed
-pub environment::EnvError::Overflow
 pub environment::EnvError::UnsupportedComposition
 pub enum environment::EnvSpec
 pub environment::EnvSpec::Recorded

@@ -102,59 +102,60 @@ impl EnvCodec {
         }
     }
 
-    /// **Compose** two environments on the single [`Moment`] axis. `compose`
-    /// supports exactly the case it can represent **faithfully**: an
-    /// *override-only* `tail` with the **same seed and policy** as `base`. For
-    /// that case it keeps `base`'s genesis prefix `[0, at)` and splices `tail` in
-    /// at `at`, re-keying every `tail` override's `Moment` by `+ at`. Because
-    /// `Moment` is one axis for *both* planes, this re-keying is plain integer
-    /// arithmetic; the result is genesis-complete and collision-free (`base`
-    /// contributes only `m < at`, `tail` only `m + at ≥ at`) and carries `base`'s
-    /// seed and policy (which equal `tail`'s).
+    /// **Compose** a `base` prefix with a `tail` continuation on the single
+    /// [`Moment`] axis. `compose` returns `Ok` **only for compositions it can
+    /// prove bit-identical** and otherwise **fails closed**
+    /// ([`EnvError::UnsupportedComposition`]) rather than emit a wrong reproducer.
     ///
-    /// It **fails closed** ([`EnvError::UnsupportedComposition`]) for the cases the
-    /// current model cannot represent, rather than emit a wrong reproducer:
+    /// The one provable case is the **genesis splice** `at == 0` of an
+    /// *override-only* `tail` with the **same seed and policy** as `base`: the
+    /// `[0, 0)` prefix is empty, so the result is just the `tail`'s overrides at
+    /// their own `Moment`s under the shared seed/policy — a genesis-complete
+    /// reproducer that replays bit-identically to the `tail`.
     ///
-    /// - **Either input carries a [`StandingFault`].** A standing fault's window
-    ///   is in [`VTime`] (retired *branches*), a different clock than the `Moment`
-    ///   splice offset `at` (retired *instructions*); statically shifting a V-time
-    ///   window by a `Moment` is wrong, and doing it correctly needs a
-    ///   `Moment → VTime` mapping that is a runtime property of the specific
-    ///   execution, which `compose` does not have.
+    /// Everything else is rejected, because the current single-`EnvSpec` model
+    /// cannot represent it:
+    ///
+    /// - **A non-genesis splice (`at != 0`).** The composed reproducer has one
+    ///   seeded backing, so replaying its `[0, at)` prefix advances the shared
+    ///   PRNG before the tail starts — but a branch-local `tail` materializes its
+    ///   seeded streams *fresh* (from word 0). Any unoverridden (seed-serviced)
+    ///   decision in `[0, at)` therefore desyncs every later seed-serviced answer:
+    ///   not bit-identical. Capturing the PRNG **state** at the splice is the
+    ///   task-93 model; `compose` cannot, and cannot statically know whether the
+    ///   prefix draws the seed, so it rejects every `at != 0`.
+    /// - **Either input carries a [`StandingFault`].** Its window is in [`VTime`]
+    ///   (retired *branches*), a different clock than the `Moment` splice offset;
+    ///   re-keying it correctly needs a runtime `Moment → VTime` map `compose`
+    ///   lacks.
     /// - **`tail`'s seed or policy differs from `base`'s.** A single `EnvSpec`
-    ///   carries one seed and one policy, so it structurally cannot represent a
-    ///   piecewise `base`-seed-then-`tail`-seed stream; using `base`'s seed for the
-    ///   fallback is only correct when the seeds (and policies) match.
+    ///   carries one seed/policy, so it cannot hold a piecewise
+    ///   `base`-then-`tail` stream.
     ///
-    /// Both are the under-designed parts of the compose model deferred to **task
-    /// 93** (the `EnvCodec::compose` vs genesis-only revisit). Overflow of a
-    /// supported re-keying (`m + at` past [`u64::MAX`]) is [`EnvError::Overflow`].
+    /// All three are the under-designed parts of the compose model deferred to
+    /// **task 93** (the `EnvCodec::compose` vs genesis-only revisit). Until then
+    /// the integrator should branch from a genesis-complete env rather than
+    /// compose across a non-genesis snapshot.
     pub fn compose(base: &EnvSpec, tail: &EnvSpec, at: Moment) -> Result<EnvSpec, EnvError> {
-        // Fail closed on the cases compose cannot faithfully represent (task 93).
+        // Fail closed on every case compose cannot prove bit-identical (task 93).
         if !standing_of(base).is_empty() || !standing_of(tail).is_empty() {
             return Err(EnvError::UnsupportedComposition);
         }
         if tail.seed() != base.seed() || tail.policy() != base.policy() {
             return Err(EnvError::UnsupportedComposition);
         }
-
-        // Supported case: override-only, same seed/policy. Re-key on the one
-        // Moment axis — base keeps its prefix [0, at), tail shifts into [at, ∞).
-        let mut overrides: BTreeMap<Moment, Action> = base
-            .overrides()
-            .iter()
-            .filter(|(m, _)| **m < at)
-            .map(|(m, a)| (*m, a.clone()))
-            .collect();
-        for (m, a) in tail.overrides() {
-            let key = rekey_moment(*m, at)?;
-            overrides.insert(key, a.clone());
+        // A non-genesis splice can desync the tail's fresh seed stream (see above).
+        if at != 0 {
+            return Err(EnvError::UnsupportedComposition);
         }
 
+        // at == 0: the [0, 0) base prefix is empty, so the result is the tail's
+        // overrides at their own Moments under the shared seed/policy — provably
+        // bit-identical to the tail (no prefix to advance the seed stream).
         Ok(EnvSpec::Recorded {
             seed: base.seed(),
             policy: base.policy().clone(),
-            overrides,
+            overrides: tail.overrides().clone(),
             standing: Vec::new(),
         })
     }
@@ -168,19 +169,11 @@ fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
     }
 }
 
-/// Re-key a tail `Moment` onto the composed genesis timeline by `+ at`, rejecting
-/// overflow with [`EnvError::Overflow`] rather than wrapping (a wrap would
-/// collapse two distinct overrides onto one key, breaking collision-free replay).
-/// Factored out so the Kani harnesses can prove it injective and overflow-safe.
-fn rekey_moment(m: Moment, at: Moment) -> Result<Moment, EnvError> {
-    m.checked_add(at).ok_or(EnvError::Overflow)
-}
-
-/// Kani proof harnesses for the bounded integer invariants `compose` relies on
-/// (`Ratio` no-divide-by-zero, `rekey_moment` injectivity + overflow-safety).
-/// `#[cfg(kani)]` + a separate file so they are verified by the `kani` job, not
-/// compiled into the normal/test build or seen by the mutation oracle. A child of
-/// `envcodec`, so `use super::*` reaches the private `rekey_moment` and `Ratio`.
+/// Kani proof harnesses for the bounded integer invariant `compose` (and the host
+/// plane) rests on: `Ratio`'s no-divide-by-zero guard. `#[cfg(kani)]` + a separate
+/// file so it is verified by the `kani` job, not compiled into the normal/test
+/// build or seen by the mutation oracle. A child of `envcodec`, so `use super::*`
+/// reaches the imported `Ratio`.
 #[cfg(kani)]
 #[path = "envcodec_proofs.rs"]
 mod proofs;
@@ -363,41 +356,6 @@ mod tests {
         );
         assert!(!matches!(map.get(&got), Some(Action::Guest(_))));
         assert_ne!(got, Moment::default());
-    }
-
-    // ---- compose prefix filter (kills `<` -> `<=`) --------------------------
-
-    #[test]
-    fn compose_prefix_filter_is_strict_less_than() {
-        // A base override exactly AT the splice Moment is dropped (prefix is
-        // [0, at)), with NO tail entry there to mask it — so `<` vs `<=` is
-        // observable: `<=` would keep the at-keyed base entry.
-        let at: Moment = 50;
-        let base = EnvSpec::Recorded {
-            seed: 0,
-            policy: FaultPolicy::none(),
-            overrides: BTreeMap::from([
-                (at - 1, Action::Guest(Answer::Nominal)), // kept
-                (at, Action::Host(HostFault::InjectInterrupt { vector: 7 })), // dropped by `<`
-                (at + 1, Action::Guest(Answer::Nominal)), // dropped (> at)
-            ]),
-            standing: vec![],
-        };
-        // Empty tail ⇒ nothing is re-keyed to `at`, so the only entry that could
-        // appear at `at` is the (dropped) base one.
-        let tail = EnvSpec::Seeded {
-            seed: 0,
-            policy: FaultPolicy::none(),
-        };
-        let out = EnvCodec::compose(&base, &tail, at).unwrap();
-        let m = out.overrides();
-        assert!(m.contains_key(&(at - 1)), "prefix entry (< at) kept");
-        assert!(
-            !m.contains_key(&at),
-            "entry exactly at the splice is dropped by the strict `<` (a `<=` mutant keeps it)"
-        );
-        assert!(!m.contains_key(&(at + 1)));
-        assert_eq!(m.len(), 1, "only the single < at entry survives");
     }
 
     // ---- mutate arms (kills delete-arm-1 remove / delete-arm-2 move) --------
