@@ -343,6 +343,12 @@ pub struct VtimeSnapshot {
     pub entropy: Vec<u8>,
 }
 
+/// Upper bound on the diagnostic [`Vmm::preemption_landings`] trace, so a long-running
+/// guest that preempts constantly (task 48 Postgres) cannot grow it unbounded. The trace
+/// is observability only (not hashed); the task-47 gate payloads land far fewer than this
+/// (`irq-landing` 8, `irq-landing-rng` 4). Recording stops at the cap.
+const PREEMPTION_TRACE_CAP: usize = 4096;
+
 /// The deterministic VMM, generic over `B: Backend`. **No method here mentions a
 /// concrete backend.**
 pub struct Vmm<B: Backend> {
@@ -357,6 +363,16 @@ pub struct Vmm<B: Backend> {
     /// so a stock / M1/M2 run that never touches the port leaves it empty and its
     /// `state_hash` is byte-for-byte unchanged from before this channel existed.
     report_stream: Vec<u32>,
+    /// Diagnostic trace of the MEASURED preemption landings: the retired-branch work
+    /// (`Exit::Deadline { reached }`) at which `run_until` actually delivered each LAPIC
+    /// timer — the value the backend/VMM measured, NOT the ICR the guest programmed.
+    /// **Not** hashed (observability only, like [`Self::report_stream`]); the task-47
+    /// gate-2 seed-dependence assertion compares THIS (the actual landing work) across
+    /// seeds, since the guest's self-reported ICR differs by seed for any backend (the
+    /// RDRAND inputs differ) and so cannot prove seed-dependent *preemption*. Capped at
+    /// [`PREEMPTION_TRACE_CAP`] so a long-running guest (task 48 Postgres, which preempts
+    /// constantly) cannot grow it unbounded.
+    preemption_landings: Vec<u64>,
     terminal: Option<TerminalReason>,
     /// The vCPU state captured at terminal (so `state_blob` is consistent and the
     /// fallible `save` is resolved once, where errors can propagate from `run`).
@@ -444,6 +460,7 @@ impl<B: Backend> Vmm<B> {
             ram: guest_ram,
             uart: Uart8250::new(),
             report_stream: Vec::new(),
+            preemption_landings: Vec::new(),
             terminal: None,
             saved_state: None,
             vtime: None,
@@ -1218,11 +1235,17 @@ impl<B: Backend> Vmm<B> {
         // work-derived V-time. Gating on the real first entry (not the top of `run`)
         // keeps a `step()`-then-`run()` consumer correct. No-op for the portable
         // `ScriptedWork` and for a single VM (`exclude_host` ⇒ the counter is ~0).
-        if !self.first_entry_done {
-            if let Some(vt) = self.vtime.as_mut() {
-                vt.work.start_run()?;
-            }
-            self.first_entry_done = true;
+        // First-entry baseline: PREPARE the work counter before the entry (so it measures
+        // only this VM's execution), but CONSUME the gate (`first_entry_done = true`) only
+        // if the guest ACTUALLY ENTERS this call — set below, gated on `entered`. This is
+        // the vmm-core half of the round-13 zero-step invariant (mirroring the backend
+        // `reset_arm`, round-11): a no-entry zero-step `run_until` leaves the gate ARMED so
+        // the next REAL entry re-baselines, and a coexisting VM in between cannot
+        // contaminate this VM's counter. `start_run` itself is idempotent (re-zeroing a
+        // counter no guest advanced), so preparing it on a no-entry step is harmless.
+        let is_first_entry = !self.first_entry_done;
+        if is_first_entry && let Some(vt) = self.vtime.as_mut() {
+            vt.work.start_run()?;
         }
         // Desync the V-time exactness flag BEFORE entering the guest: a new exit may
         // retire branches since the last V-time intercept, and — crucially — if
@@ -1251,17 +1274,54 @@ impl<B: Backend> Vmm<B> {
         // that would otherwise spin forever is forced out (additive — see
         // `preemption_deadline`). Unwired paths (M1/M2/corpus: no LAPIC; stock KVM:
         // no deterministic counter) keep plain `run()`, byte-for-byte unchanged.
-        let exit = match self.preemption_deadline() {
-            Some(deadline) => self.backend.run_until(deadline)?,
+        // On the preemption path, capture the pre-call work so a `Deadline` can be told
+        // apart: the `Drive` path single-steps work strictly FORWARD (reached > before),
+        // while the no-entry overdue/at-deadline zero-step returns `reached == before` with
+        // NO `KVM_RUN` (round-12). `preemption_deadline()` is `Some` ⇒ V-time is wired.
+        let deadline = self.preemption_deadline();
+        let work_before = match deadline {
+            Some(_) => Some(
+                self.vtime
+                    .as_ref()
+                    .expect("preemption path implies V-time wired")
+                    .work
+                    .work()?,
+            ),
+            None => None,
+        };
+        let exit = match deadline {
+            Some(d) => self.backend.run_until(d)?,
             None => self.backend.run()?,
         };
-        self.rng_completion_staged = false;
-        // This `run` committed any completion staged by the prior step; the exit we
-        // are about to service stages a new one iff it is a read-style / MSR / CPUID /
-        // determinism exit (its `complete_*` below). Recorded so `restore_vm_state`
-        // can refuse to restore into a backend with a pending completion (which would
-        // commit the old exit's reg-write/RIP-advance on the next run).
-        self.completion_staged = exit_stages_completion(&exit);
+        // Did the guest ACTUALLY enter this call? (Round-13 zero-step invariant.) `run()`
+        // always enters; a `run_until` GUEST EXIT means the guest ran; a `run_until`
+        // `Deadline` entered iff work advanced past `work_before` — the no-entry zero-step
+        // returns `reached == work_before` with no `KVM_RUN`, while `Drive` lands strictly
+        // beyond it. (`B≡A`, so the backend's `reached` and vmm-core's `work_before` share
+        // an axis.)
+        let entered = match &exit {
+            Exit::Deadline { reached } => work_before.is_some_and(|wb| reached.0 > wb),
+            _ => true,
+        };
+        // INVARIANT (round-13): if NO guest entry occurred this call, do NOT touch ANY
+        // entry-side state — a real `KVM_RUN` is what commits a staged completion and
+        // consumes the first-entry baseline. So gate EVERY entry-side mutation on `entered`:
+        if entered {
+            // The entry consumed the first-entry baseline (counter prepared above).
+            self.first_entry_done = true;
+            // This `run` committed any completion staged by the prior step; the exit we are
+            // about to service stages a new one iff it is a read-style / MSR / CPUID /
+            // determinism exit (its `complete_*` below). Recorded so `restore_vm_state` can
+            // refuse to restore into a backend with a pending completion (which would commit
+            // the old exit's reg-write/RIP-advance on the next run).
+            self.rng_completion_staged = false;
+            self.completion_staged = exit_stages_completion(&exit);
+        }
+        // else: a no-entry zero-step `Deadline`. The prior step's staged completion is
+        // STILL pending (no `KVM_RUN` committed it) and commits on the next REAL entry, so
+        // `completion_staged` / `rng_completion_staged` must NOT drop (a snapshot here would
+        // otherwise be saved/restored across a live pending completion → corruption); and
+        // `first_entry_done` stays armed. Nothing entry-side changes.
         // Complete delivery of any vector the backend just **accepted** (issued
         // KVM_INTERRUPT for) — *after* the entry, *before* dispatching the exit, so a
         // guest APIC read / EOI in this exit (and any snapshot) sees a LAPIC vector
@@ -1581,6 +1641,16 @@ impl<B: Backend> Vmm<B> {
         &self.report_stream
     }
 
+    /// The MEASURED preemption landings: the retired-branch work at which `run_until`
+    /// delivered each LAPIC timer (`Exit::Deadline { reached }`), in order. This is the
+    /// VMM/backend's measurement — distinct from the ICR the guest programmed — and is
+    /// what proves seed-DEPENDENT preemption (the landing work differs across seeds for a
+    /// seed-consuming guest, but is identical for a pure one). Empty when no preemption
+    /// occurred; capped at [`PREEMPTION_TRACE_CAP`]. Not hashed (observability only).
+    pub fn preemption_landings(&self) -> &[u64] {
+        &self.preemption_landings
+    }
+
     /// The serial (8250 THR) capture buffer so far, in order — the live console
     /// output. [`Vmm::run`] also returns it in [`RunResult::serial`] at terminal,
     /// but this lets a bounded step loop (e.g. the box Linux-boot gate) watch the
@@ -1796,6 +1866,11 @@ impl<B: Backend> Vmm<B> {
     /// deadline, fires the timer into the LAPIC IRR, and injects it at the first
     /// injectable entry. No completion (the backend left nothing pending).
     fn on_deadline(&mut self, reached: Vtime) -> Result<Step, VmmError> {
+        // Trace the MEASURED landing work (diagnostic, not hashed) for the seed-dependence
+        // gate — capped so a constantly-preempting guest can't grow it unbounded.
+        if self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
+            self.preemption_landings.push(reached.0);
+        }
         match self.vtime.as_mut() {
             Some(vt) => {
                 vt.last_intercept_work = reached.0;
@@ -4136,10 +4211,92 @@ mod tests {
         );
         // The anchor moved to the reached work (a non-zero V-time intercept), proving
         // `on_deadline` recorded the preemption point.
+        let reached = v.vtime.as_ref().unwrap().last_intercept_work;
         assert!(
-            v.vtime.as_ref().unwrap().last_intercept_work > 0,
+            reached > 0,
             "the preemption deadline advanced the last-intercept anchor"
         );
+        // `on_deadline` also recorded the MEASURED landing (the seed-dependence gate reads
+        // this): exactly one preemption, at the reached work.
+        assert_eq!(
+            v.preemption_landings(),
+            &[reached],
+            "on_deadline records each measured preemption landing"
+        );
+    }
+
+    /// P1 round-13 — the comprehensive zero-step invariant: a `run_until` that returns
+    /// `Exit::Deadline` WITHOUT entering the guest (the overdue/at-deadline path, no
+    /// `KVM_RUN`) must NOT clear any entry-side state. A staged completion is committed only
+    /// by a real entry, so a no-entry Deadline must leave `completion_staged` /
+    /// `rng_completion_staged` SET (else a snapshot here is taken/restored across a live
+    /// pending completion → corruption). Then a real entry commits it.
+    /// Drive a staged completion → a NO-ENTRY zero-step `Deadline` → a real entry, asserting
+    /// the staged-completion guards HOLD across the no-entry step and clear on the real
+    /// entry. `work_before_of(deadline_work)` chooses the live work at the no-entry step:
+    /// `|d| d + N` is OVERDUE (reached < work_before) and `|d| d` is AT-DEADLINE (reached ==
+    /// work_before) — both no-entry, and together they pin the `reached > work_before`
+    /// entry-test at both boundaries.
+    fn no_entry_deadline_holds_staged_guards(work_before_of: fn(u64) -> u64, label: &str) {
+        // SharedWork lets the test advance live work between steps, to drive a no-entry
+        // run_until while the intercept anchor stays BEHIND the deadline (so
+        // `service_pending_irqs`, which fires off the anchor, does NOT consume the timer).
+        let cell = std::rc::Rc::new(Cell::new(0u64));
+        let work = Box::new(SharedWork(cell.clone()));
+        let mut exits = arm_timer_exits(1000);
+        exits.push(Exit::Rdrand { width: 8 }); // stages a completion (RNG: both guards)
+        exits.push(Exit::Deadline { reached: Vtime(0) }); // mock rewrites reached := deadline
+        exits.push(Exit::Hlt); // a real entry that commits the staged completion
+        let mut v = lapic_vmm(configured_mock(exits), work);
+
+        for _ in 0..3 {
+            v.step().expect("arm the one-shot timer"); // live work 0; anchor 0
+        }
+        // The Rdrand is a REAL entry (work 0 < the future deadline): dispatching it stages
+        // an RNG completion. The intercept anchor is set to the live work (0).
+        v.step().expect("rdrand");
+        assert!(
+            v.completion_staged && v.rng_completion_staged,
+            "{label}: the RDRAND staged a (non-idempotent RNG) completion"
+        );
+        // Set LIVE work to the chosen boundary (the anchor stays 0), so the next `run_until`
+        // is at/past the deadline → the no-entry zero-step path.
+        let deadline_work = v.preemption_deadline().expect("timer armed").0;
+        assert!(
+            deadline_work > 0,
+            "{label}: deadline in the anchor's future"
+        );
+        cell.set(work_before_of(deadline_work));
+        // The scripted Deadline → `run_until` returns `Deadline { reached = deadline_work }`,
+        // and `reached <= work_before` ⇒ NO entry. The staged-completion guards MUST hold.
+        v.step().expect("no-entry deadline");
+        assert!(
+            v.completion_staged,
+            "{label}: a no-entry zero-step Deadline must NOT drop completion_staged (pending)"
+        );
+        assert!(
+            v.rng_completion_staged,
+            "{label}: a no-entry zero-step Deadline must NOT drop rng_completion_staged"
+        );
+        // A real entry (HLT) now commits the staged completion; the guards update.
+        assert!(matches!(
+            v.step().expect("real entry commits the staged completion"),
+            Step::Terminal(TerminalReason::Hlt)
+        ));
+        assert!(
+            !v.completion_staged && !v.rng_completion_staged,
+            "{label}: the real entry committed the staged completion → guards clear"
+        );
+    }
+
+    #[test]
+    fn no_entry_zero_step_deadline_keeps_entry_side_state() {
+        // Both no-entry boundaries must hold the guards: OVERDUE (reached < work_before) and
+        // AT-DEADLINE (reached == work_before). Testing both also pins the `reached >
+        // work_before` entry-test exactly (a `<`/`==`/`>=` slip would wrongly treat one
+        // boundary as an entry and drop the guards).
+        no_entry_deadline_holds_staged_guards(|d| d + 10_000, "overdue");
+        no_entry_deadline_holds_staged_guards(|d| d, "at-deadline");
     }
 
     #[test]

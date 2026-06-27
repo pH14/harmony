@@ -18,17 +18,19 @@
 //!    `run_until` the timer lands mid-spin and all eight deadlines report → a clean
 //!    `DebugExit { code: 0 }`. That clean PASS is **bit-identical on a re-run at the same
 //!    seed**; because its deadlines are fixed, its preemption is seed-INVARIANT — the eight
-//!    reported deadlines (the report stream = the preemption instants) are IDENTICAL across
-//!    seeds, while the seeded-entropy state keys the hash. That is the proof that
-//!    busy-waiting guest code is now deterministically tolerable.
+//!    VMM-MEASURED preemption landings are IDENTICAL across seeds, while the seeded-entropy
+//!    state keys the hash. That is the proof that busy-waiting guest code is now
+//!    deterministically tolerable.
 //!
 //!  - **`preemption_instant_is_a_pure_function_of_the_seed`** runs the seed-consuming
 //!    **`irq-landing-rng`**, whose deadlines are derived from seeded RDRAND draws, so the
 //!    preemption *instant* is a pure function of the RNG seed: bit-identical twice at one
-//!    seed, yet **seed-DEPENDENT** across seeds — the reported deadlines (the preemption
-//!    branch counts) genuinely DIFFER. This is the direction the pure payload cannot
-//!    exercise. Both gates assert on the **report stream** (the deadlines), not the
-//!    START/OK/PASS serial banner, which is seed-invariant for both payloads.
+//!    seed, yet **seed-DEPENDENT** across seeds — `run_until` preempts at DIFFERENT
+//!    MEASURED retired-branch counts. This is the direction the pure payload cannot
+//!    exercise. Both gates assert on the VMM-MEASURED **preemption landings**
+//!    (`vmm.preemption_landings()` — the work where `run_until` actually delivered each
+//!    timer), NOT the guest's self-reported ICR (which differs by seed for any backend,
+//!    since the RDRAND inputs differ) and NOT the seed-invariant START/OK/PASS banner.
 //!
 //! Needs the **LOADED patched KVM** (preemption is gated on `deterministic_tsc`),
 //! `perf_event`, the `det-cfl-v1` host, and the built payload. Run on the box,
@@ -101,15 +103,24 @@ fn run_irq_landing_rng(seed: u64) -> Run {
     run_payload("irq-landing-rng", seed)
 }
 
-/// What a gate run observes. `reports` is the ordered report stream — for these
-/// payloads the **armed LAPIC deadlines** (each `report(u64)` = a `[lo, hi]` dword
-/// pair; the deadlines are < 2³² so `hi == 0`). The deadline *is* the preemption
-/// instant (the IRQ lands ~`deadline` branches after arming), so `reports` is the
-/// directly-observable **preemption branch counts** — and it is NOT part of
-/// `state_hash` (the seeded-entropy state is), which is exactly why the seed legs
-/// assert on `reports`, not the entropy-laden hash.
+/// What a gate run observes.
+///
+/// `landings` is the VMM-MEASURED preemption work (`vmm.preemption_landings()`): the
+/// retired-branch count at which `run_until` actually delivered each LAPIC timer
+/// (`Exit::Deadline { reached }`). This is the **load-bearing** seed signal (P2 round-13):
+/// it is what the backend measured, NOT the ICR the guest programmed — a backend that
+/// ignored the deadline but still delivered IRQs would have seed-varying *reports* anyway
+/// (the RDRAND inputs differ), so only the measured LANDING work proves seed-dependent
+/// *preemption*.
+///
+/// `reports` is the guest's report stream — the ICR values the payload PROGRAMMED — kept
+/// for context only (the guest's self-report, not the measured preemption).
+///
+/// Neither is part of `state_hash` (the seeded-entropy state is), so the seed legs assert on
+/// `landings`, not the entropy-laden hash.
 struct Run {
     state_hash: [u8; 32],
+    landings: Vec<u64>,
     reports: Vec<u32>,
     serial: Vec<u8>,
     reason: TerminalReason,
@@ -145,6 +156,7 @@ fn run_payload(name: &str, seed: u64) -> Run {
         .unwrap_or_else(|e| panic!("{name} run to terminal: {e:?}"));
     Run {
         state_hash: vmm.state_hash(),
+        landings: vmm.preemption_landings().to_vec(),
         reports: vmm.report_stream().to_vec(),
         serial: r.serial,
         reason: r.reason,
@@ -170,30 +182,31 @@ fn busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice() {
          (\"lapic timer never fired\"): preemption did not deliver the timer. serial:\n{}",
         String::from_utf8_lossy(&a1.serial)
     );
-    // The report stream is the eight armed deadlines (each `report(u64)` is a [lo, hi]
-    // dword pair, hi == 0): the directly-observable preemption instants. Non-empty so the
-    // seed comparison below is not a vacuous empty-vs-empty.
+    // `landings` is the VMM-MEASURED preemption work (one `reached` per timer firing):
+    // the eight armed deadlines deliver eight preemptions. Non-empty so the seed
+    // comparison below is not a vacuous empty-vs-empty.
     assert_eq!(
-        a1.reports.len(),
-        16,
-        "irq-landing reports 8 deadlines as 16 dwords; got {:?}",
-        a1.reports
+        a1.landings.len(),
+        8,
+        "irq-landing's 8 armed timers must produce 8 MEASURED preemption landings; got {:?}",
+        a1.landings
     );
     eprintln!(
         "[gate2] seed A: irq-landing PASS — busy-spin preempted, all 8 timer deadlines landed.\n\
-         [gate2]   state_hash = {}\n[gate2]   reports = {:?}",
+         [gate2]   state_hash = {}\n[gate2]   landings (measured) = {:?}\n[gate2]   reports (programmed ICRs) = {:?}",
         hex32(&a1.state_hash),
+        a1.landings,
         a1.reports,
     );
 
-    // --- Deterministic twice: a second run at the SAME seed is bit-identical
-    // (reports + serial + state_hash). The preemption instant is a pure function of the
-    // seed, so the interleaving — and thus all observable state — repeats exactly. ---
+    // --- Deterministic twice: a second run at the SAME seed is bit-identical (landings +
+    // serial + state_hash). The preemption instant is a pure function of the seed, so the
+    // interleaving — and thus all observable state — repeats exactly. ---
     let a2 = run_irq_landing(SEED_A);
     assert_eq!(a2.reason, TerminalReason::DebugExit { code: 0 });
     assert_eq!(
-        a1.reports, a2.reports,
-        "deterministic-twice: same-seed preemption deadlines (reports) must be bit-identical"
+        a1.landings, a2.landings,
+        "deterministic-twice: same-seed MEASURED preemption landings must be bit-identical"
     );
     assert_eq!(
         a1.state_hash,
@@ -212,22 +225,18 @@ fn busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice() {
         hex32(&a2.state_hash)
     );
 
-    // --- Seed-PURITY of the preemption primitive (P2 round-10). `irq-landing` is
-    // O3:**pure** — it consumes NO RNG, and its deadlines are FIXED, so its preemption
-    // instants are seed-INVARIANT *by construction*. There is therefore no honest way to
-    // assert "preemption branch counts DIFFER across seeds" on THIS payload — they
-    // provably do not (that seed-DEPENDENT direction is the separate
-    // `preemption_instant_is_a_pure_function_of_the_seed` gate below, which uses the
-    // seed-consuming `irq-landing-rng`). What a different seed controls HERE splits into
-    // two honestly-labelled halves:
-    //  (1) `reports` are IDENTICAL — the actual preemption instants (the eight armed
-    //      deadlines) are seed-independent. This is the load-bearing check: it asserts on
-    //      the preemption branch counts THEMSELVES (not the START/OK/PASS serial banner),
-    //      and would FAIL if `run_until` leaked the seed into a deadline (e.g. one computed
-    //      off a seed-keyed clock) — pinning the primitive seed-pure for a pure guest.
-    //  (2) `state_hash` DIFFERS — the seed keys the VM's seeded-ENTROPY stream, which is
-    //      part of the hashed state (the report stream is NOT). This proves the seed plumbs
-    //      THROUGH to the VM; it is an ENTROPY signal, **not** a preemption one. ---
+    // --- Seed-PURITY of the preemption primitive. `irq-landing` is O3:**pure** — it
+    // consumes NO RNG, its deadlines are FIXED, so its preemption instants are
+    // seed-INVARIANT by construction (the seed-DEPENDENT direction is the separate
+    // `preemption_instant_is_a_pure_function_of_the_seed` gate, on `irq-landing-rng`). What
+    // a different seed controls HERE splits into two honestly-labelled halves:
+    //  (1) `landings` are IDENTICAL — the MEASURED preemption work (where `run_until`
+    //      actually delivered each timer) is seed-independent. This is the load-bearing
+    //      check: it would FAIL if `run_until` leaked the seed into a deadline, pinning the
+    //      primitive seed-pure for a pure guest.
+    //  (2) `state_hash` DIFFERS — the seed keys the VM's seeded-ENTROPY stream, part of the
+    //      hashed state (the landings are NOT). This proves the seed plumbs THROUGH to the
+    //      VM; it is an ENTROPY signal, **not** a preemption one. ---
     let b = run_irq_landing(SEED_B);
     assert_eq!(
         b.reason,
@@ -235,11 +244,11 @@ fn busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice() {
         "irq-landing must also reach a CLEAN PASS at a different seed"
     );
     assert_eq!(
-        b.reports, a1.reports,
-        "seed-purity of the preemption primitive: the pure payload's preemption deadlines \
-         (reports) must be IDENTICAL across seeds — a difference would mean `run_until` leaked \
-         the RNG seed into its preemption branch counts. seed A = {:?}, seed B = {:?}",
-        a1.reports, b.reports
+        b.landings, a1.landings,
+        "seed-purity of the preemption primitive: the pure payload's MEASURED preemption \
+         landings must be IDENTICAL across seeds — a difference would mean `run_until` leaked \
+         the RNG seed into its preemption work. seed A = {:?}, seed B = {:?}",
+        a1.landings, b.landings
     );
     assert_ne!(
         b.state_hash,
@@ -252,7 +261,7 @@ fn busy_spin_guest_is_preempted_and_timer_lands_deterministic_twice() {
         hex32(&b.state_hash)
     );
     eprintln!(
-        "[gate2] seed B {SEED_B:#018x}: PASS, reports == seed A (preemption deadlines are \
+        "[gate2] seed B {SEED_B:#018x}: PASS, landings == seed A (MEASURED preemption work is \
          seed-pure for a pure guest); state_hash = {} != seed A (seed keys the entropy state)",
         hex32(&b.state_hash)
     );
@@ -270,18 +279,18 @@ fn preemption_instant_is_a_pure_function_of_the_seed() {
     // contract: the primitive never leaks the seed on a pure guest, yet faithfully tracks
     // it when the guest's branch stream genuinely depends on it.
     //
-    // The report stream is the sequence of seed-derived deadlines — the directly-observable
-    // preemption branch counts (each `report(u64)` = a [lo, hi] dword pair; deadlines are
-    // < 2¹⁴+64 so every `hi == 0`). NOTE the serial banner (START/OK/PASS) is seed-INVARIANT
-    // for this payload too — the seed shows up ONLY in the reported deadlines — so the
-    // assertions are on `reports`, not `serial`. We assert:
-    //  (1) deterministic-twice — same seed ⇒ bit-identical reports AND state_hash (the
+    // The load-bearing signal is `landings` — the VMM-MEASURED preemption work (the
+    // retired-branch count at which `run_until` ACTUALLY delivered each timer), NOT the ICR
+    // the guest reported. P2 round-13: comparing the guest's reported ICRs would be
+    // vacuous — a backend that IGNORED the deadline but still delivered IRQs would have
+    // seed-varying reports anyway (the RDRAND inputs differ), so only the MEASURED landing
+    // work proves seed-dependent *preemption*. We assert:
+    //  (1) deterministic-twice — same seed ⇒ bit-identical landings AND state_hash (the
     //      seed-derived deadlines are a *pure function* of the seed, so they repeat); and
-    //  (2) seed-DEPENDENT preemption — a different seed ⇒ DIFFERENT reports, i.e. the
-    //      preemption branch counts (the deadlines, hence the IRQ-landing instants) DIFFER
-    //      across seeds. A `run_until` that ignored the seed for preemption would produce
-    //      identical reports here and FAIL this leg — the non-vacuous check the reviewer
-    //      asked for.
+    //  (2) seed-DEPENDENT preemption — a different seed ⇒ DIFFERENT measured landings, i.e.
+    //      `run_until` preempted at DIFFERENT retired-branch counts. A `run_until` that
+    //      ignored the seed for preemption would land at the SAME work here and FAIL this
+    //      leg — the non-vacuous check the reviewer asked for.
 
     // (1) deterministic-twice at seed A.
     let a1 = run_irq_landing_rng(SEED_A);
@@ -292,19 +301,21 @@ fn preemption_instant_is_a_pure_function_of_the_seed() {
          mid-spin via run_until preemption. serial:\n{}",
         String::from_utf8_lossy(&a1.serial)
     );
-    // ROUNDS = 4 deadlines → 8 dwords. Non-empty so the seed comparison is not vacuous.
+    // ROUNDS = 4 seed-derived timers → 4 MEASURED landings. Non-empty so the comparison is
+    // not vacuous.
     assert_eq!(
-        a1.reports.len(),
-        8,
-        "irq-landing-rng reports 4 seed-derived deadlines as 8 dwords; got {:?}",
-        a1.reports
+        a1.landings.len(),
+        4,
+        "irq-landing-rng's 4 seed-derived timers must produce 4 MEASURED preemption \
+         landings; got {:?}",
+        a1.landings
     );
     let a2 = run_irq_landing_rng(SEED_A);
     assert_eq!(a2.reason, TerminalReason::DebugExit { code: 0 });
     assert_eq!(
-        a1.reports, a2.reports,
-        "deterministic-twice: the seed-derived preemption deadlines (reports) must be \
-         bit-identical at a fixed seed — they are a pure function of the seed"
+        a1.landings, a2.landings,
+        "deterministic-twice: the MEASURED preemption landings must be bit-identical at a \
+         fixed seed — they are a pure function of the seed"
     );
     assert_eq!(
         a1.state_hash,
@@ -315,13 +326,13 @@ fn preemption_instant_is_a_pure_function_of_the_seed() {
     );
     eprintln!(
         "[gate2] irq-landing-rng deterministic-twice CONFIRMED at seed {SEED_A:#018x}: \
-         reports {:?} repeat, state_hash {} == {}",
-        a1.reports,
+         landings {:?} repeat, state_hash {} == {}",
+        a1.landings,
         hex32(&a1.state_hash),
         hex32(&a2.state_hash)
     );
 
-    // (2) seed-DEPENDENT preemption: a different seed ⇒ different deadlines (reports).
+    // (2) seed-DEPENDENT preemption: a different seed ⇒ DIFFERENT MEASURED landings.
     let b = run_irq_landing_rng(SEED_B);
     assert_eq!(
         b.reason,
@@ -331,12 +342,13 @@ fn preemption_instant_is_a_pure_function_of_the_seed() {
         String::from_utf8_lossy(&b.serial)
     );
     assert_ne!(
-        b.reports, a1.reports,
-        "seed-DEPENDENT preemption: a different seed must yield DIFFERENT seed-derived \
-         deadlines — i.e. DIFFERENT preemption branch counts / IRQ-landing instants. \
-         Identical reports would mean `run_until` ignores the seed for preemption.\n\
-         seed A deadlines (dwords): {:?}\nseed B deadlines (dwords): {:?}",
-        a1.reports, b.reports
+        b.landings, a1.landings,
+        "seed-DEPENDENT preemption: a different seed must make `run_until` preempt at \
+         DIFFERENT MEASURED retired-branch counts (the IRQ-landing work, from the VMM/backend \
+         — NOT the guest's self-reported ICR). Identical landings would mean `run_until` \
+         ignores the seed for preemption.\n\
+         seed A landings (measured): {:?}\nseed B landings (measured): {:?}",
+        a1.landings, b.landings
     );
     assert_ne!(
         b.state_hash,
@@ -346,11 +358,11 @@ fn preemption_instant_is_a_pure_function_of_the_seed() {
         hex32(&b.state_hash)
     );
     eprintln!(
-        "[gate2] irq-landing-rng seed B {SEED_B:#018x}: PASS, reports {:?} != seed A {:?} \
-         (preemption branch counts DIFFER across seeds — seed-dependent preemption); \
-         state_hash = {}",
-        b.reports,
-        a1.reports,
+        "[gate2] irq-landing-rng seed B {SEED_B:#018x}: PASS, MEASURED landings {:?} != seed A \
+         {:?} (run_until preempted at DIFFERENT retired-branch counts — seed-dependent \
+         preemption); state_hash = {}",
+        b.landings,
+        a1.landings,
         hex32(&b.state_hash)
     );
 }

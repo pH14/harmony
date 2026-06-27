@@ -2844,3 +2844,35 @@ re-arm, A's re-arm (`first_entry_done = false`), and the V-time commit are all-o
 either the round-trip succeeds and all commit, or it fails and nothing changes. New test
 `restore_vtime_failure_leaves_counter_a_not_rearmed` (a backend failure ⇒ `start_run` does
 NOT re-fire at the next entry — A is not re-armed, so neither A nor B is, on failure).
+
+## Task 47 — round-13: the comprehensive zero-step invariant (P1) + a measured seed gate (P2)
+
+- **P1 — NO GUEST ENTRY ⇒ NO ENTRY-SIDE STATE CHANGE (vmm-core side).** Round-12's overdue
+  /at-deadline `run_until` returns `Exit::Deadline` with NO `KVM_RUN`, but `step` still
+  cleared `rng_completion_staged` / `completion_staged` and set `first_entry_done` as though
+  an entry had occurred — so a staged completion + a zero-step deadline dropped the
+  snapshot/restore guards while the old completion was still pending (it commits on the next
+  REAL entry → restored-state corruption). The invariant (the vmm-core half of the
+  backend-side round-7/11 `reset_arm` rule, now stated globally): **if `run_until` did NOT
+  enter the guest, do NOT touch ANY entry-side state.** `step` now computes `entered`
+  (`run()` and a `run_until` guest exit always entered; a `run_until` `Deadline` entered iff
+  `reached > work_before`, the work read just before the call — the no-entry zero-step returns
+  `reached == work_before` with no `KVM_RUN`) and gates EVERY entry-side mutation on it:
+  `first_entry_done`, `rng_completion_staged`, `completion_staged`. The first-entry counter
+  PREP (`start_run`) still runs before the entry (idempotent), but the GATE is consumed only
+  on a real entry. Test `no_entry_zero_step_deadline_keeps_entry_side_state` (both no-entry
+  boundaries — overdue and at-deadline — hold the guards across the zero-step, and a real
+  entry then commits the completion).
+- **P2 — the seed gate measures LANDED work, not programmed deadlines.** Gate-2 compared the
+  guest's reported ICRs (what the payload PROGRAMMED) — vacuous, since a backend that
+  ignored the deadline but still delivered IRQs would have seed-varying reports anyway (the
+  RDRAND inputs differ). New `Vmm::preemption_landings()` records the VMM/backend-MEASURED
+  landing work — the `reached` retired-branch count at which `run_until` actually delivered
+  each timer (`on_deadline`), capped at `PREEMPTION_TRACE_CAP` (diagnostic, not hashed, like
+  the report stream). Both gate-2 legs now assert on the measured landings: `irq-landing`
+  (pure) ⇒ landings IDENTICAL across seeds (seed-pure preemption work); `irq-landing-rng` ⇒
+  landings DIFFER across seeds (`run_until` preempted at different retired-branch counts —
+  seed-dependent preemption). The cap's `<`→`<=` off-by-one is a provably-equivalent
+  untestable mutant (excluded in `.cargo/mutants.toml`, entry (j)); the `<`→`==`/`>` siblings
+  are killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
+  `preemption_landings() == &[reached]` assertion.
