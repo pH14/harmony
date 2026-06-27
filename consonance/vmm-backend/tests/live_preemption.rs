@@ -223,34 +223,38 @@ fn guest_exit_before_deadline_returns_that_exit() {
 
 #[test]
 #[ignore = "live KVM + perf; run on the box with --ignored"]
-fn rearm_vtime_baseline_re_zeroes_the_run_until_counter() {
-    // P1 round-9: vmm-core's V-time-only restore resets its own work clock AND calls
-    // `Backend::rearm_vtime_baseline()`; the NEXT `run_until` must then re-baseline the
-    // run_until PMU counter `B`, so a fresh (small) deadline lands EXACTLY — not against
-    // a stale `B`. (The full "V-time restore → arm timer → run_until lands exactly" chain
-    // is: restore_vtime calls this — portable-tested in vmm-core — and this re-zeroes B.)
+fn save_restore_roundtrip_re_zeroes_the_run_until_counter() {
+    // P1 round-10: vmm-core's V-time-only restore re-arms the backend's run_until PMU
+    // baseline (B) by round-tripping the vCPU through `save()` + `restore()` (the FROZEN
+    // trait — no new method): `restore` re-arms the first-entry reset as a side effect,
+    // leaving the vCPU byte-identical. The NEXT `run_until` then re-baselines B, so a
+    // fresh small deadline lands EXACTLY, not against a stale B. (This is the backend-side
+    // mechanism `restore_vtime` uses for B; the counter-A re-arm is portable-tested in
+    // vmm-core's `restore_vtime_rearms_counter_a_first_entry_baseline`.)
     let (mut b, _m) = boot_with(SPIN_CODE);
     match b.run_until(Vtime(30_000)).expect("advance B to 30000") {
         Exit::Deadline { reached } => assert_eq!(reached.0, 30_000),
         other => panic!("expected Deadline at 30000, got {other:?}"),
     }
-    // V-time-only restore re-arms the backend baseline (B re-zeroes at the next entry).
-    b.rearm_vtime_baseline();
-    // A fresh small deadline now lands at EXACTLY 5_000 (B re-baselined to 0). WITHOUT
-    // the re-arm, B would still read ~30_000 and `run_until(5_000)` would fail closed
+    // The save+restore round-trip restore_vtime performs (re-arms B; vCPU unchanged).
+    let snap = b.save().expect("save");
+    b.restore(&snap)
+        .expect("restore re-arms the run_until baseline");
+    // A fresh small deadline now lands at EXACTLY 5_000 (B re-baselined). WITHOUT the
+    // re-arm, B would still read ~30_000 and `run_until(5_000)` would fail closed
     // (deadline < current — round-8) instead of preempting at 5_000.
     match b
         .run_until(Vtime(5_000))
-        .expect("run_until after rearm lands exactly")
+        .expect("run_until after the save+restore re-arm lands exactly")
     {
         Exit::Deadline { reached } => assert_eq!(
             reached.0, 5_000,
-            "after rearm_vtime_baseline a fresh deadline lands EXACTLY (B re-baselined) — got {}",
+            "after the save+restore re-arm a fresh deadline lands EXACTLY (B re-baselined) — got {}",
             reached.0
         ),
         other => panic!("expected Deadline at 5000, got {other:?}"),
     }
-    eprintln!("[p1-r9] rearm_vtime_baseline re-zeroed B; fresh run_until(5000) landed exactly");
+    eprintln!("[p1-r10] save+restore re-armed B; fresh run_until(5000) landed exactly");
 }
 
 #[test]

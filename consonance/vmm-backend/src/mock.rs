@@ -128,9 +128,6 @@ pub struct MockBackend {
     /// before acceptance.
     defer_accept: bool,
     completions: Vec<Completion>,
-    /// Count of [`Backend::rearm_vtime_baseline`] calls — lets a test assert that
-    /// `Vmm::restore_vtime` re-arms the backend's run_until baseline (task 47 P1 r9).
-    rearm_baseline_calls: u32,
 }
 
 impl Default for MockBackend {
@@ -157,7 +154,6 @@ impl MockBackend {
             accepted_irq: VecDeque::new(),
             defer_accept: false,
             completions: Vec::new(),
-            rearm_baseline_calls: 0,
         }
     }
 
@@ -224,12 +220,6 @@ impl MockBackend {
     /// The completions applied so far, in order.
     pub fn completions(&self) -> &[Completion] {
         &self.completions
-    }
-
-    /// How many times [`Backend::rearm_vtime_baseline`] has been called — lets a test
-    /// assert `Vmm::restore_vtime` re-arms the backend's run_until baseline (task 47 P1 r9).
-    pub fn rearm_baseline_calls(&self) -> u32 {
-        self.rearm_baseline_calls
     }
 
     /// The `(gpa, len)` regions recorded by `map_memory`, in order.
@@ -436,12 +426,6 @@ impl Backend for MockBackend {
         // construction.
         self.state = state.clone();
         Ok(())
-    }
-
-    fn rearm_vtime_baseline(&mut self) {
-        // The mock has no PMU counter; just record the call so a test can assert that
-        // `Vmm::restore_vtime` re-arms the backend baseline (task 47 P1 r9).
-        self.rearm_baseline_calls += 1;
     }
 
     fn exit_counts(&self) -> ExitCounts {

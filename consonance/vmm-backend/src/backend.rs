@@ -168,17 +168,6 @@ pub trait Backend {
     /// malformed/incompatible blob (never a panic).
     fn restore(&mut self, state: &VcpuState) -> Result<()>;
 
-    /// Re-arm the [`run_until`](Self::run_until) work-counter baseline so the NEXT
-    /// guest entry re-zeroes it (task 47, P1 round-9). A full [`restore`](Self::restore)
-    /// already does this; this is the seam for vmm-core's **V-time-only restore**
-    /// (`Vmm::restore_vtime`), which resets the VMM's own work clock to a new zero point
-    /// but otherwise leaves the backend untouched. Without this, a later
-    /// [`run_until`](Self::run_until) would compare a fresh (small) deadline against a
-    /// STALE PMU counter → past/immediate deadlines. Idempotent and harmless for
-    /// backends with no preemption counter (the `mock`, a stock backend with no
-    /// `deterministic_tsc`): the next entry simply re-baselines a counter nothing reads.
-    fn rearm_vtime_baseline(&mut self);
-
     // --- observability (R-Backend normative) ----------------------------------
 
     /// Per-exit-reason trap counts since the last reset. **Recorded every run**
@@ -261,10 +250,6 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
         (**self).restore(state)
-    }
-
-    fn rearm_vtime_baseline(&mut self) {
-        (**self).rearm_vtime_baseline()
     }
 
     fn exit_counts(&self) -> ExitCounts {

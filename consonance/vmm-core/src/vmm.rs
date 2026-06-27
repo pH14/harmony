@@ -754,13 +754,22 @@ impl<B: Backend> Vmm<B> {
         // synchronized point — an immediate `save_vtime` is exact. (`vt`'s borrow of
         // `self.vtime` has ended by this disjoint-field write.)
         self.vtime_synchronized = true;
-        // P1 round-9: we reset vmm-core's work clock (the V-time counter `A`) above; the
-        // backend keeps a SEPARATE `run_until` PMU counter (`B`), re-armed only by a full
-        // `Backend::restore`. Re-align `B` too — UNCONDITIONALLY, so that even if the
-        // guest arms its LAPIC timer LATER, the subsequent `run_until` compares the fresh
-        // (small) deadline against a re-baselined `B`, not a stale one (→ past/immediate
-        // deadlines). No-op for backends with no preemption counter.
-        self.backend.rearm_vtime_baseline();
+        // P1 round-10: a V-time restore zeroes vmm-core's work clock (counter `A`) above,
+        // so BOTH counters must re-baseline at the next entry, else a coexisting VM on the
+        // shared pinned thread contaminates one but not the other (B≡A breaks → V-time vs
+        // preemption deadlines drift). There is no third counter, so re-arming both closes
+        // it:
+        //  - Counter A (vmm-core `WorkSource`): re-arm the first-entry gate so the next
+        //    `step` calls `WorkSource::start_run` (exactly like a full `restore_vm_state`).
+        self.first_entry_done = false;
+        //  - Counter B (the backend's separate `run_until` PMU): re-armed only by a full
+        //    `Backend::restore`. The backend is type-erased (`Box<dyn Backend>`), so we
+        //    cannot reach a concrete re-arm method — and the FROZEN `Backend` trait must
+        //    not grow one. Re-use the existing trait: round-trip the vCPU through
+        //    `save`+`restore`, whose `restore` re-arms the PMU baseline as a side effect
+        //    while leaving the vCPU state byte-identical (so the hash is unchanged).
+        let vcpu = self.backend.save()?;
+        self.backend.restore(&vcpu)?;
         Ok(())
     }
 
@@ -4077,31 +4086,43 @@ mod tests {
     }
 
     #[test]
-    fn restore_vtime_realigns_the_backend_run_until_baseline() {
-        // P1 round-9: `restore_vtime` resets vmm-core's WorkSource (the V-time counter A)
-        // to a new zero point, but the backend keeps a SEPARATE run_until PMU baseline
-        // (B), re-armed only by a full `Backend::restore`. So `restore_vtime` must ALSO
-        // re-align B (unconditionally) — otherwise a guest that arms its LAPIC timer
-        // LATER would have `run_until` compare a fresh (small) deadline against a stale B
-        // → past/immediate deadlines. Assert the backend's baseline is re-armed even
-        // though NO timer is armed at restore time (the deferred-arm case).
-        let mut v = lapic_vmm(
-            configured_mock(arm_timer_exits(1000)),
-            Box::new(ScriptedWork::at(0)),
+    fn restore_vtime_rearms_counter_a_first_entry_baseline() {
+        // P1 round-10: `restore_vtime` must re-arm BOTH counter baselines so a coexisting
+        // VM on the shared pinned thread can't contaminate one but not the other (B≡A).
+        // Portable proof of the counter-A re-arm: `start_run` fires AGAIN at the entry
+        // after `restore_vtime` (re-baselining vmm-core's WorkSource), exactly like a full
+        // restore. (The backend counter-B re-arm — a `save`+`restore` round-trip — is
+        // box-tested in `live_preemption.rs`, since the mock has no run_until PMU.)
+        let starts = std::rc::Rc::new(Cell::new(0u32));
+        let mut v = Vmm::new(
+            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt]),
+            GuestRam::new(0x1000).unwrap(),
         );
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(CountingStartWork {
+                    starts: starts.clone(),
+                }),
+                1,
+            )
+            .unwrap(),
+        );
+        v.step().expect("step 1"); // first guest entry → start_run #1 (A baselined)
+        assert_eq!(starts.get(), 1, "start_run fires at the first entry");
         let snap = v.save_vtime().expect("clean save").expect("V-time wired");
-        assert!(
-            v.preemption_deadline().is_none(),
-            "no timer armed yet — a deferred-arm VM, exactly the round-9 case"
-        );
-        let before = v.backend.rearm_baseline_calls();
-        v.restore_vtime(&snap)
-            .expect("V-time-only restore succeeds and re-aligns the backend baseline");
+        v.restore_vtime(&snap).expect("V-time-only restore");
         assert_eq!(
-            v.backend.rearm_baseline_calls(),
-            before + 1,
-            "restore_vtime must re-arm the backend's run_until baseline so a LATER timer-arm \
-             preempts against a fresh counter, not a stale one"
+            starts.get(),
+            1,
+            "restore_vtime itself does not run the guest, so start_run has not re-fired yet"
+        );
+        v.step().expect("step 2"); // first entry AFTER restore → start_run #2 (A re-baselined)
+        assert_eq!(
+            starts.get(),
+            2,
+            "restore_vtime re-armed counter A: the next entry re-baselines the WorkSource \
+             (excluding any coexisting VM's branches), keeping B≡A"
         );
     }
 
@@ -4807,9 +4828,6 @@ mod tests {
         }
         fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
             self.0.restore(s)
-        }
-        fn rearm_vtime_baseline(&mut self) {
-            self.0.rearm_vtime_baseline()
         }
         fn exit_counts(&self) -> vmm_backend::ExitCounts {
             self.0.exit_counts()

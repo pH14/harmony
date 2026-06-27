@@ -1106,3 +1106,26 @@ re-arms `B`'s baseline. Documented in `vmm-core`'s notes; test
   `exit_poison_fails_closed_until_an_exit_is_delivered` (the state machine: arm without
   `delivered` → poisoned). The live PMU-read fault is review-verified (fault injection,
   as in round-5), with the state machine portably tested.
+
+### PR #15 round-10 (cross-model): revert the round-9 `Backend` trait method — it was a FROZEN-API violation (P2, blocking)
+
+- **The round-9 `Backend::rearm_vtime_baseline()` was a regression my own fix introduced.**
+  Task 47's Public API section freezes the `Backend` trait: implement the existing
+  `run_until`/`inject`/`save`/`restore` surface, do **not** add trait methods. Round-9 grew
+  the trait by a method — drift the public-api gate dutifully recorded (9 new entries). That
+  is reverted here: the trait method, its `KvmBackend`/`PatchedKvmBackend`/`MockBackend`
+  impls, the `Box<B>` blanket forward, the `MockBackend::rearm_baseline_calls` accessor, and
+  the round-9 `dyn_backend` + box tests are all removed; `tests/public-api.txt` is
+  regenerated (the 9 entries gone, **no `Backend` trait drift**).
+- **B is re-armed through the FROZEN trait instead.** vmm-core's `restore_vtime` re-baselines
+  the backend's separate `run_until` PMU counter (`B`) by round-tripping the vCPU through the
+  existing `save()` + `restore()`: `restore` already re-arms the first-entry `reset_arm` as a
+  side effect (the P1(b) re-arm), and `save`→`restore` is an identity on vCPU state, so the
+  hash is unchanged. No new surface, same effect. The backend is type-erased behind
+  `Box<dyn Backend>` on the production boot path, so a concrete re-arm method would not even
+  be reachable from vmm-core's generic `restore_vtime` — the trait round-trip is the only
+  mechanism that works there. Box test renamed/repurposed:
+  `save_restore_roundtrip_re_zeroes_the_run_until_counter` (advance `B` → `save`+`restore` →
+  `run_until(small)` lands exactly, not against a stale `B`); the broader
+  `restore_re_arms_pmu_reset_excluding_foreign_branches` already pins the save+restore re-arm
+  against a coexisting VM's foreign branches.

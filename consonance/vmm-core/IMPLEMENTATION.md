@@ -2767,3 +2767,37 @@ IDENTICAL** to seed A's, because `irq-landing` is O3:pure — its preemption ins
 observable control flow are timer/branch-driven, independent of the RNG seed. Together
 this proves the seed matters AND the preemption path does not leak seed-dependence —
 neither of which the PASS-only check verified.
+
+## Task 47 — round-10: re-arm BOTH counters on V-time restore (P1); revert the frozen-API regression (P2); a seed-DEPENDENT preemption gate (P2)
+
+- **P1 — re-arm counter `A` too, not just `B`.** Round-9 re-baselined the backend's
+  `run_until` PMU (`B`) on `restore_vtime` but left vmm-core's own `WorkSource` (`A`) with
+  `first_entry_done == true`: a V-time restore zeroes `A`'s clock, but the first-entry gate
+  stayed latched, so a coexisting VM running on the shared pinned thread before this VM's
+  next entry would contaminate one counter but not the other (`B≡A` breaks → V-time and the
+  preemption deadlines drift apart). `restore_vtime` now sets `self.first_entry_done = false`
+  so the **next** `step` re-runs `WorkSource::start_run` — re-baselining `A` exactly as a full
+  `restore_vm_state` does. With `B` also re-armed (below), **both** counters reset at the next
+  entry, excluding any foreign branches in between. Portable test:
+  `restore_vtime_rearms_counter_a_first_entry_baseline` (`start_run` fires again at the entry
+  after `restore_vtime`); box test pins the `B` side.
+- **P2 (blocking) — revert the round-9 `Backend` trait method (frozen-API violation).** The
+  round-9 fix re-armed `B` via a NEW `Backend::rearm_vtime_baseline()` — a change to the
+  FROZEN `Backend` trait, which task 47 forbids. Reverted. `restore_vtime` now re-arms `B`
+  through the EXISTING trait: `let vcpu = self.backend.save()?; self.backend.restore(&vcpu)?;`
+  — `restore` re-arms the first-entry PMU reset as a side effect, and `save`→`restore` is an
+  identity on vCPU state, so the hash is unchanged. This is also the only mechanism that works
+  on the production path, where the backend is `Box<dyn Backend>` (type-erased) and a concrete
+  re-arm method is unreachable. `tests/public-api.txt` regenerated → no `Backend` trait drift.
+- **P2 — a genuinely seed-DEPENDENT preemption gate.** The round-9 seed leg used the pure
+  `irq-landing`, whose deadlines are fixed, so its preemption instants are seed-INVARIANT by
+  construction — asserting "preemption branch counts differ across seeds" on it is impossible.
+  The pure gate is kept but reframed as the **seed-purity** direction (serial identical across
+  seeds ⇒ `run_until` does not leak the seed into preemption; state_hash differs ⇒ the seed
+  plumbs through to entropy, explicitly labelled NOT a preemption signal). A new seed-consuming
+  payload, **`irq-landing-rng`**, derives each armed deadline from a seeded RDRAND draw, so the
+  preemption instant is a pure function of the seed; the new gate
+  `preemption_instant_is_a_pure_function_of_the_seed` asserts deterministic-twice at one seed
+  AND **DIFFERENT** serial (= different preemption branch counts) across seeds — the
+  non-vacuous seed-DEPENDENT direction. The two gates together pin both directions of the
+  contract.

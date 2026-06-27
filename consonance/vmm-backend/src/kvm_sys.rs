@@ -1247,15 +1247,6 @@ impl Backend for KvmBackend {
         Ok(())
     }
 
-    fn rearm_vtime_baseline(&mut self) {
-        // P1 round-9: re-arm the first-entry PMU reset (same mechanism as `restore`'s
-        // P1(b) re-arm) so the NEXT entry re-baselines the shared run_until counter `B`.
-        // vmm-core's V-time-only restore calls this after resetting its own work clock to
-        // a new zero point, so a later timer-arm + `run_until` compares the fresh deadline
-        // against a re-baselined `B`, not a stale one.
-        self.reset_arm.rearm();
-    }
-
     fn exit_counts(&self) -> ExitCounts {
         self.counts
     }

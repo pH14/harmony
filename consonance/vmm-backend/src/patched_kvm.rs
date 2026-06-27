@@ -134,12 +134,6 @@ impl Backend for PatchedKvmBackend {
         self.inner.restore(state)
     }
 
-    fn rearm_vtime_baseline(&mut self) {
-        // Forward to the inner `KvmBackend` — the patched backend IS the determinism
-        // (preemption) path, so this MUST re-arm its run_until PMU baseline (P1 round-9).
-        self.inner.rearm_vtime_baseline()
-    }
-
     fn exit_counts(&self) -> ExitCounts {
         self.inner.exit_counts()
     }

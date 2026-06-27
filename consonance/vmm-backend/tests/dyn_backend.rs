@@ -154,21 +154,3 @@ fn injection_forwards_through_box() {
     assert_eq!(backend.take_accepted_interrupt(), Some(0x40));
     assert_eq!(backend.take_accepted_interrupt(), None);
 }
-
-#[test]
-fn rearm_vtime_baseline_forwards_through_box() {
-    // `rearm_vtime_baseline` (task 47 P1 r9) has no trait-observable RETURN — but
-    // `MockBackend` records the call, and via `Box<MockBackend>` (the SAME `Box<B>`
-    // blanket impl that wraps `Box<dyn Backend>`) we observe the forward reached the
-    // inner backend, so the box forward is killable. The UFCS call pins Self =
-    // `Box<MockBackend>`, exercising the blanket forward (not MockBackend's via deref).
-    let mut backend: Box<MockBackend> = Box::new(MockBackend::new());
-    assert_eq!(backend.rearm_baseline_calls(), 0);
-    <Box<MockBackend> as Backend>::rearm_vtime_baseline(&mut backend);
-    assert_eq!(
-        backend.rearm_baseline_calls(),
-        1,
-        "the Box<B> rearm_vtime_baseline forward must reach the inner backend (a dropped \
-         forward leaves the count at 0)"
-    );
-}
