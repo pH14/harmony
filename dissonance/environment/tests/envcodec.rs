@@ -378,3 +378,14 @@ fn materialized_recorded_default_moment_is_zero() {
     assert_eq!(env.moment(), 0);
     assert_eq!(env.decide(&p), Outcome::Resolved(Answer::Nominal));
 }
+
+#[test]
+fn set_moment_is_reflected_by_moment_accessor() {
+    // `moment()` returns the exact value last set — not `Moment::default()`. A
+    // non-zero value distinguishes the real getter from a `-> Default` mutant.
+    let mut env = recorded(BTreeMap::new()).materialize();
+    env.set_moment(0xDEAD_BEEF_0000_1234);
+    assert_eq!(env.moment(), 0xDEAD_BEEF_0000_1234);
+    env.set_moment(7);
+    assert_eq!(env.moment(), 7, "tracks the most recent set_moment");
+}
