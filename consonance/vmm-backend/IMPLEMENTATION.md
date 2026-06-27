@@ -598,3 +598,72 @@ VMM wiring — which gates 1 and the wiring tests already exercise portably.)
   already mirrors vmm-core's reset so the baselines stay aligned.
 - `error.rs`'s `Unsupported` doc still lists `run_until`/`inject` as Phase-2 examples;
   both are now implemented on `KvmBackend`. The variant remains in the closed error set.
+
+### BOX VALIDATION RESULTS (run on `ssh hetzner`, 2026-06-27)
+
+Self-validated on the determinism box (`6.12.90+deb13.1-amd64`, Intel CFL i9-9900K,
+`perf_event_paranoid=-1`), CPU-pinned **core 2** (PR #12 owns core 4), each patched
+run wrapped in a revert trap that restores stock KVM. **All patched runs reverted to
+stock `1396736` + verified.** Gates 1, 2, and 4 PASS on hardware; gate 3 is the
+documented frontier.
+
+**Gate 1 — contract (live `CpuBackend`), stock KVM** — `vmm-backend --test live_preemption`, 4/4:
+```
+[gate1] busy-spin: armed at 10000−128, single-stepped to exact, landed at 10000 (== deadline 10000)
+[gate1] busy-spin: armed at 50000−128, single-stepped to exact, landed at 50000 (== deadline 50000)
+[gate1] busy-spin: armed at 250000−128, single-stepped to exact, landed at 250000 (== deadline 250000)
+[gate1] deterministic-twice: both runs landed at 100000 branches
+[gate1] monotone: 20k → 60k → 130k all landed exactly
+[gate1] guest exit (OUT 0x42) returned short of the 1e6 deadline ✓
+```
+The live PMU overflow → `SIGIO`→`EINTR` kick + `KVM_GUESTDBG_SINGLESTEP`-to-exact +
+count-neutrality all work: `run_until` lands at **exactly** the armed deadline on a
+real busy-spinning guest (infinite conditional-branch loop, zero natural exits), and
+a genuine guest exit before the deadline is returned short of it. Needs only stock
+KVM (the PMU + single-step are stock features).
+
+**Gate 2 — busy-spin preemption, deterministic-twice (THE headline), patched KVM** —
+`vmm-core --test live_preemption` (the deferred `irq-landing` payload), PASS:
+```
+[gate2] seed A: irq-landing PASS — busy-spin preempted, all 8 timer deadlines landed.
+[gate2]   state_hash = 34cc29ebc7fafc670fca54d99f8afcecc7a8ee36f58c59655c0544fcfa6b61c5
+[gate2]   serial = "PAYLOAD irq-landing START\nOK irq-landing\nPAYLOAD irq-landing PASS\n"
+[gate2] deterministic-twice CONFIRMED at seed 0x5eedd31e2026:
+        state_hash 34cc29eb…61c5 == 34cc29eb…61c5
+[gate2] seed B 0x0badc0de1234: PASS, state_hash = edfa035192ca…fde58c
+```
+A guest that takes **no** natural VM-exit (the `pause`-spin waiting on a one-shot
+LAPIC timer) is preempted at the V-time deadline, the timer vector is injected, the
+ISR runs, and all eight deadlines (bracketing `skid_margin=128`) land → a clean
+`DebugExit{0}`, **bit-identical state_hash + serial across two same-seed runs**. This
+is the exact payload `box_corpus` *deferred* as "needs LAPIC-timer interrupt
+injection … a later vmm-core phase" — now unblocked. **Busy-waiting guest code is
+deterministically tolerable.**
+
+**Gate 4 — no regression, patched KVM:**
+- `vmm-core --test live_determinism` (P6) 2/2: RDTSC/RDTSCP V-time `[0,2,4,6]`, seeded
+  RNG, snapshot/restore — deterministic-twice, unchanged by the additive `run_until`.
+- `vmm-core --test live_linux_boot` Phase A (stock): real Linux 6.18 → `Run /init` +
+  `GUEST_READY`, `reached_userspace=true`, clean terminal, `exit_counts.deadline=0`
+  (stock path takes no preemption — additivity confirmed: the boot's `run()` path is
+  byte-for-byte the prior behavior).
+- Phase C (patched, deterministic-twice): both boots reach `GUEST_READY`, identical
+  serial (6528 B) + `state_hash 4f926e01…c6aa` — a real Linux boot is bit-identical
+  twice with preemption wired in.
+- Off-box (macOS): vmm-backend 34/34, vmm-core 227/227, det-corpus+unison 92/92,
+  cross-clippy/fmt/deny clean, Miri `run_until` 6/6.
+
+**Gate 3 — runc + Postgres OCI, deterministic-twice: the documented frontier.** This
+needs the **real** runc/Go-runtime path (no `unshare`/`chroot`/`setpriv` workaround —
+task 38 used that workaround *because preemption did not exist*) booting the task-42
+Postgres workload to `GUEST_READY` + clean shutdown, deterministic-twice. It is the
+full Linux-userspace + container-runtime integration the spec frames as "a later
+milestone" that "rides this primitive." The primitive it was blocked on is now proven
+(gates 1–2) and integrates with a real Linux boot (gate-4 Phase C). The **precise next
+blocker / frontier**: stand up the real-runc Postgres guest image (task 38/42 lineage,
+minus the workaround) and boot it via `boot_linux_selected(Patched)` — the Go
+runtime's `procyield`/`osyield` busy-spins are now preemptible, so the remaining work
+is the runc/containerd/Postgres userspace bring-up + an O1/O2 deterministic-twice
+harness over its serial (UUIDs/timestamps) + `state_hash`, not the preemption
+mechanism. No new determinism mechanism is required; if the Go runtime surfaces a
+blocker *beyond* preemption, that is the next task's frontier to document.
