@@ -5,11 +5,21 @@ edition.workspace = true
 license.workspace = true
 description = "The decide seam, fault catalog, SeededEnv, and recorded-replay format (dissonance task 24)"
 
-[lints]
-workspace = true
-
 [dependencies]
 thiserror = "2"
 
 [dev-dependencies]
 proptest = "1"
+
+# Register the `kani` cfg (set by `cargo kani`) so the normal build's
+# `unexpected_cfgs` lint does not flag the `#[cfg(kani)]` proof harnesses in
+# `src/envcodec.rs`. Affects no compiled code or public API.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# Not `workspace = true`: Cargo cannot combine workspace lints with the
+# crate-local `[lints.rust]` above, so the workspace `clippy.all = deny` is
+# mirrored explicitly here (the determinism lints in `clippy.toml` apply
+# regardless of this table).
+[lints.clippy]
+all = { level = "deny", priority = -1 }

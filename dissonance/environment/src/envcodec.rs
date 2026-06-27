@@ -147,7 +147,7 @@ impl EnvCodec {
             .map(|(m, a)| (*m, a.clone()))
             .collect();
         for (m, a) in tail.overrides() {
-            let key = m.checked_add(at).ok_or(EnvError::Overflow)?;
+            let key = rekey_moment(*m, at)?;
             overrides.insert(key, a.clone());
         }
 
@@ -167,6 +167,23 @@ fn standing_of(spec: &EnvSpec) -> &[StandingFault] {
         EnvSpec::Seeded { .. } => &[],
     }
 }
+
+/// Re-key a tail `Moment` onto the composed genesis timeline by `+ at`, rejecting
+/// overflow with [`EnvError::Overflow`] rather than wrapping (a wrap would
+/// collapse two distinct overrides onto one key, breaking collision-free replay).
+/// Factored out so the Kani harnesses can prove it injective and overflow-safe.
+fn rekey_moment(m: Moment, at: Moment) -> Result<Moment, EnvError> {
+    m.checked_add(at).ok_or(EnvError::Overflow)
+}
+
+/// Kani proof harnesses for the bounded integer invariants `compose` relies on
+/// (`Ratio` no-divide-by-zero, `rekey_moment` injectivity + overflow-safety).
+/// `#[cfg(kani)]` + a separate file so they are verified by the `kani` job, not
+/// compiled into the normal/test build or seen by the mutation oracle. A child of
+/// `envcodec`, so `use super::*` reaches the private `rekey_moment` and `Ratio`.
+#[cfg(kani)]
+#[path = "envcodec_proofs.rs"]
+mod proofs;
 
 /// A deterministic [`Moment`] slot that does **not** hold a guest action — used
 /// by `mutate` to place a host action without ever clobbering a guest override.
