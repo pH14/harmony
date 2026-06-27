@@ -29,14 +29,23 @@ use crate::exit::Exit;
 use crate::types::Vtime;
 use vtime::{CpuBackend, InjectionPlanner, PlanOutcome, VtimeError};
 
-/// The arm-early margin (work units), in branches, consumed from task 07's
-/// **measured** PMU skid (`docs/ROADMAP.md`: `skid_margin=128`, PR #20). The
-/// overflow is armed at `deadline − SKID_MARGIN`, so that `armed_at + worst-case
-/// skid` (the PMI/signal-delivery latency, all counted as skid) still lands at or
-/// before the deadline; the remaining branches are covered by exact single-stepping.
-/// It MUST exceed the box's worst-case skid or [`drive_run_until`] surfaces a loud
-/// determinism error rather than silently injecting late.
-pub(crate) const SKID_MARGIN: u64 = 128;
+/// The arm-early margin (work units, in retired conditional branches). The overflow
+/// is armed at `deadline − SKID_MARGIN` so that `armed_at + skid` (the PMI/signal-
+/// delivery latency, all counted as skid) lands **STRICTLY BEFORE** the deadline,
+/// leaving the remaining branches to exact single-stepping — the precision invariant
+/// (P1 round-6): every `Exit::Deadline` is positioned by the precise single-step, and
+/// an overflow that stops at/past the deadline is a loud `SkidExceeded`, never injected
+/// raw (the overflow/SIGIO is not instruction-precise at the boundary).
+///
+/// It MUST be **strictly greater** than the box's worst-case skid. Task 07
+/// (`docs/ROADMAP.md`, PR #20) recommended `skid_margin = 128` (measured max × a safety
+/// factor; the acceptance bound is `skid ≤ 128`). We arm at **256** — double that bound
+/// — so even a skid at the full task-07 bound (128) leaves ≥ 128 branches of headroom
+/// for the single-step (`stopped ≤ deadline − 128 < deadline`); the result is
+/// unchanged (the single-step always lands at exactly the deadline), only the arm point
+/// moves earlier. A skid that still reaches the deadline exceeds 2× the measured
+/// margin → a genuine determinism violation, surfaced loudly.
+pub(crate) const SKID_MARGIN: u64 = 256;
 
 /// A [`vtime::CpuBackend`] that can also surface a **genuine guest exit** taken
 /// before the deadline (and recover the typed backend error the opaque
@@ -94,6 +103,18 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// operation; they are the loud backstop if that invariant is ever violated. (A
 /// snapshot taken at a returned `Deadline` is therefore exact: nothing ran past the
 /// branch, no pending completion is held.)
+///
+/// **The precision invariant (P1 round-6).** EVERY returned `Exit::Deadline` is
+/// positioned by the precise single-step, NEVER by the instruction-imprecise overflow.
+/// The planner enforces it: an overflow that stops at `stopped >= target` consumed the
+/// whole margin → `SkidExceeded` (a loud error here), so a Phase-1 (overflow) landing
+/// always finishes with ≥ 1 single-step to the exact boundary. Audit of the three
+/// `Deadline`-producing paths: (1) overflow + single-step (precise by the invariant);
+/// (2) `target == now` / `0 < target − now ≤ margin` — no overflow, the guest is at a
+/// clean exit boundary or is single-stepped the whole way (precise); (3) `TargetInPast`
+/// — the deadline was already past at entry, so `reached = now` is the clean entry
+/// boundary, not an overflow stop (precise). None returns `Deadline` from a raw
+/// overflow stop.
 ///
 /// Also: `TargetInPast` (deadline already past on entry) → an overdue `Deadline` at
 /// `now`; a backend syscall failure → its typed [`BackendError`];
@@ -320,15 +341,23 @@ mod tests {
             self.fail = true;
             self
         }
-        /// Stash a guest exit **with its real work count** + return the deadline
-        /// sentinel iff work crossed the threshold; else return the real work count.
-        fn maybe_exit(&mut self, work: u64) -> u64 {
+        /// Stash a guest exit (with its real work count) iff work crossed the
+        /// threshold, and return the planner sentinel: in the FREE-RUN phase, STRICTLY
+        /// below the deadline (round-6: an overflow stop `>= target` is `SkidExceeded`,
+        /// so the free-run never reports the deadline directly — the single-step phase
+        /// then reaches it); in the SINGLE-STEP phase, AT the deadline (to end the
+        /// planner's step loop at ReadyToInject). Else the real work count.
+        fn maybe_exit(&mut self, work: u64, free_run: bool) -> u64 {
             if let Some(at) = self.guest_exit_at
                 && work >= at
                 && self.pending_exit.is_none()
             {
                 self.pending_exit = Some((GUEST_EXIT, work));
-                return self.deadline;
+                return if free_run {
+                    self.deadline.saturating_sub(1)
+                } else {
+                    self.deadline
+                };
             }
             work
         }
@@ -346,7 +375,7 @@ mod tests {
                 return Err(vtime::BackendError::new("scripted failure"));
             }
             let stopped = self.inner.run_until_overflow(armed_at)?;
-            Ok(self.maybe_exit(stopped))
+            Ok(self.maybe_exit(stopped, true))
         }
         fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
             if self.fail {
@@ -359,7 +388,7 @@ mod tests {
                 return Ok(self.deadline);
             }
             let w = self.inner.single_step()?;
-            Ok(self.maybe_exit(w))
+            Ok(self.maybe_exit(w, false))
         }
     }
 
@@ -391,13 +420,12 @@ mod tests {
                 stashed: None,
             }
         }
-        /// Stash the guest exit (once) at its real work; return the deadline sentinel
-        /// the live `LiveCpu` adapter returns on a guest exit — EXACTLY the deadline,
-        /// so the planner always reaches ReadyToInject (never its own SkidExceeded)
-        /// and `drive_run_until` makes the real early/at/past decision from the work.
-        fn sentinel(&mut self) -> u64 {
+        /// Stash the guest exit (once) at its real work count. Mirrors the live
+        /// `LiveCpu` adapter, which stashes the genuine exit and drives the planner to
+        /// ReadyToInject via the sentinel returns below; `drive_run_until` then makes
+        /// the real early/at/past decision from the stashed WORK.
+        fn stash(&mut self) {
             self.stashed.get_or_insert((GUEST_EXIT, self.work_at_exit));
-            self.deadline
         }
     }
     impl CpuBackend for ExitAtCpu {
@@ -408,10 +436,17 @@ mod tests {
             &mut self,
             _armed_at: u64,
         ) -> std::result::Result<u64, vtime::BackendError> {
-            Ok(self.sentinel())
+            // Free-run sentinel: report STRICTLY BELOW the deadline (round-6: an
+            // overflow stop `>= target` is SkidExceeded). The single-step phase then
+            // reaches the deadline so the planner stops at ReadyToInject.
+            self.stash();
+            Ok(self.deadline.saturating_sub(1))
         }
         fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
-            Ok(self.sentinel())
+            // Single-step sentinel: reach the deadline so the planner's step loop ends
+            // at ReadyToInject (== target, never > target).
+            self.stash();
+            Ok(self.deadline)
         }
     }
     impl PreemptCpu for ExitAtCpu {
@@ -421,6 +456,77 @@ mod tests {
         fn take_error(&mut self) -> Option<BackendError> {
             None
         }
+    }
+
+    /// A [`PreemptCpu`] whose overflow phase stops at a FIXED absolute work count
+    /// (a deterministic skid), and single-steps by 1 — to test the round-6 precision
+    /// invariant directly: an overflow landing exactly ON the deadline must be a loud
+    /// `SkidExceeded`, never a raw `Deadline`; one strictly before is single-stepped
+    /// to the exact boundary.
+    struct OverflowStopAtCpu {
+        work: u64,
+        overflow_stop: u64,
+    }
+    impl CpuBackend for OverflowStopAtCpu {
+        fn work(&self) -> u64 {
+            self.work
+        }
+        fn run_until_overflow(
+            &mut self,
+            _armed_at: u64,
+        ) -> std::result::Result<u64, vtime::BackendError> {
+            // The PMU never fires early: stop no earlier than the current work.
+            self.work = self.overflow_stop.max(self.work);
+            Ok(self.work)
+        }
+        fn single_step(&mut self) -> std::result::Result<u64, vtime::BackendError> {
+            self.work += 1;
+            Ok(self.work)
+        }
+    }
+    impl PreemptCpu for OverflowStopAtCpu {
+        fn take_guest_exit(&mut self) -> Option<(Exit, u64)> {
+            None
+        }
+        fn take_error(&mut self) -> Option<BackendError> {
+            None
+        }
+    }
+
+    /// P1 round-6 precision invariant: an overflow that lands EXACTLY on the deadline
+    /// (skid == margin) must NOT yield a raw `Exit::Deadline` — the overflow is
+    /// instruction-imprecise at the boundary, so it is a loud `SkidExceeded`; an
+    /// overflow strictly before is single-stepped to the exact deadline.
+    #[test]
+    fn overflow_landing_exactly_on_deadline_is_skid_exceeded_not_raw_deadline() {
+        let deadline = 10_000; // > SKID_MARGIN, so the planner arms the overflow
+        // Overflow stops EXACTLY on the deadline → SkidExceeded (never raw Deadline).
+        let mut at_target = OverflowStopAtCpu {
+            work: 0,
+            overflow_stop: deadline,
+        };
+        match drive_run_until(&planner(), &mut at_target, deadline) {
+            Err(BackendError::Internal(msg)) => assert!(
+                msg.contains("skid"),
+                "an overflow landing exactly on the deadline is a skid violation: {msg}"
+            ),
+            other => panic!(
+                "an overflow landing exactly on the deadline must be SkidExceeded, never a raw \
+                 Deadline; got {other:?}"
+            ),
+        }
+        // Overflow strictly before → single-stepped to the exact boundary → Deadline.
+        let mut before = OverflowStopAtCpu {
+            work: 0,
+            overflow_stop: deadline - 1,
+        };
+        assert_eq!(
+            drive_run_until(&planner(), &mut before, deadline).unwrap(),
+            Exit::Deadline {
+                reached: Vtime(deadline)
+            },
+            "an overflow strictly before the deadline is single-stepped to the exact boundary"
+        );
     }
 
     /// P1 round-4 — the complete 3-case rule for a *reported guest exit*: `work <
@@ -493,12 +599,15 @@ mod tests {
 
     #[test]
     fn lands_exactly_at_deadline_with_no_guest_exit() {
-        // A representative spread of densities + skids (skid ≤ margin).
+        // A representative spread of densities + skids (skid < margin = 256), incl.
+        // values near the margin — all must land at EXACTLY the deadline (the overflow
+        // stops strictly before, the single-step finishes precisely).
         for &(seed, num, den, skid) in &[
             (1u64, 1u64, 1u64, 0u64),
             (2, 1, 3, 7),
             (3, 1, 1000, 64),
-            (4, 1, 10, 127),
+            (4, 1, 10, 200),
+            (5, 1, 5, 255),
         ] {
             let mut cpu = SimPreempt::new(
                 SimCpuConfig {
@@ -614,8 +723,9 @@ mod tests {
 
     #[test]
     fn skid_past_margin_is_a_loud_determinism_error() {
-        // max_skid (200) deliberately exceeds SKID_MARGIN (128): the overflow can
-        // overshoot the target, which MUST surface loudly, not be tolerated.
+        // max_skid (400) deliberately exceeds SKID_MARGIN (256): the overflow can stop
+        // at or past the target, which MUST surface loudly (SkidExceeded), never be
+        // tolerated as a raw landing — the round-6 precision invariant.
         let mut saw_skid_error = false;
         for seed in 0..64u64 {
             let mut cpu = SimPreempt::new(
@@ -623,7 +733,7 @@ mod tests {
                     seed,
                     density_num: 1,
                     density_den: 1,
-                    max_skid: 200,
+                    max_skid: 400,
                     initial_work: 0,
                 },
                 10_000,
@@ -665,14 +775,16 @@ mod tests {
         #![proptest_config(cases(256))]
 
         /// THE count-neutrality + exactness property (gate 1): for any seed, event
-        /// density, and skid within the margin, the arm-overflow-then-single-step
-        /// `run_until` lands at **exactly** the deadline. Because `SimCpu` retires
+        /// density, and skid STRICTLY within the margin, the arm-overflow-then-single-
+        /// step `run_until` lands at **exactly** the deadline. Because `SimCpu` retires
         /// the same instruction stream whether free-running (`run_until_overflow`)
         /// or single-stepping, landing at the exact target — regardless of where
         /// the (adversarially-drawn) skid fell — *is* the count-neutrality proof:
         /// the preemption instant is a pure function of the seed, not of the skid.
-        /// Deadlines/densities are bounded so the suite stays well under the ~3-min
-        /// budget (the live PMU's count-neutrality is the box gate). Both the
+        /// `max_skid < SKID_MARGIN` (the round-6 invariant: the overflow must stop
+        /// STRICTLY before the deadline so the single-step finishes; skid == margin is
+        /// the loud `SkidExceeded` case, covered separately). Deadlines/densities are
+        /// bounded so the suite stays well under the ~3-min budget. Both the
         /// long-distance (overflow + step) and short-distance (step-only) regimes
         /// are covered since `deadline` straddles `SKID_MARGIN`.
         #[test]
@@ -680,7 +792,7 @@ mod tests {
             seed in 1u64..=u64::MAX,
             density_num in 1u64..=8,
             extra_den in 0u64..=24,
-            max_skid in 0u64..=SKID_MARGIN,
+            max_skid in 0u64..SKID_MARGIN,
             deadline in 1u64..=4_000,
         ) {
             let density_den = density_num + extra_den; // ensures num <= den

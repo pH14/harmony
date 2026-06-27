@@ -865,12 +865,16 @@ impl CpuBackend for LiveCpu<'_> {
                 self.work_cache = work;
                 Ok(work)
             }
-            // A guest exit: report the deadline so the planner stops cleanly; the real
-            // exit + its work are recovered via `take_guest_exit` (P1(a) decides
-            // early/at/past from the work).
+            // A guest exit during the FREE-RUN: report a count STRICTLY BELOW the
+            // deadline so the planner does NOT mistake this sentinel for an overflow
+            // skid (round-6: an overflow stop `>= target` is `SkidExceeded`). The
+            // single-step phase then short-circuits to the deadline (below), stopping
+            // the planner at ReadyToInject; the real exit + its work are recovered via
+            // `take_guest_exit` (P1 classifies early/at/past from the WORK, not this
+            // sentinel — so an at/past-deadline exit still fails closed there).
             Ok(LiveStop::Guest { exit, work }) => {
                 self.pending_exit = Some((exit, work));
-                Ok(self.deadline)
+                Ok(self.deadline.saturating_sub(1))
             }
             Err(e) => {
                 self.err = Some(e);

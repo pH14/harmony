@@ -961,3 +961,49 @@ keeps only the box-only `mmap` and passes the real control-page base.
   zero/real-step) + the box `zero_step_run_until_keeps_first_entry_reset_armed_excluding_foreign_branches`
   (zero-step → a foreign VM runs ~100k branches on the same thread → the real first
   entry lands at exactly 50 000, no contamination).
+
+### PR #15 round-6 (cross-model): the complete precision invariant — Deadline only via single-step (1 P1)
+
+Rounds 1/3/4 fixed the *exit-handling* boundary cases; this is the **overflow phase**
+case they didn't cover. When the PMU overflow skids EXACTLY to the deadline
+(`stopped_at == deadline`, e.g. skid == margin), the planner's old `stopped > target`
+check accepted it and the no-exit path returned `Exit::Deadline` with **zero
+single-steps**. But a perf overflow/SIGIO is not instruction-precise at the boundary —
+non-counted guest instructions after the deadline branch may already have retired while
+the counter still reads `== deadline` — so that injection point depends on host skid: a
+determinism leak in the core feature.
+
+**The complete precision invariant: every `Exit::Deadline` is positioned by the precise
+single-step, never by a raw overflow stop.** Enforced in two places:
+
+1. **The planner (`vtime::stop_at`) now requires the overflow to stop STRICTLY before
+   the target.** Phase 1's check is `stopped >= target → SkidExceeded` (was `> target`).
+   So a Phase-1 (overflow) landing always finishes with ≥ 1 exact single-step to the
+   boundary; an overflow that consumes the whole margin is a loud violation, never a raw
+   landing. Tests: `overflow_exactly_on_target_is_skid_exceeded`,
+   `overflow_one_before_target_single_steps_to_exact`.
+2. **`SKID_MARGIN` bumped 128 → 256** (strictly above task-07's measured bound of 128,
+   whose acceptance allows `skid ≤ 128`). Arming at `deadline − 256` means even a skid at
+   the full task-07 bound leaves ≥ 128 branches for the single-step
+   (`stopped ≤ deadline − 128 < deadline`). The result is unchanged (the single-step
+   still lands at exactly the deadline — gate-2/4 digests are identical); only the arm
+   point moves earlier.
+
+**Audit — every `Exit::Deadline`-producing path goes through precise positioning** (none
+from a raw overflow stop): (1) overflow + single-step — precise by the invariant above;
+(2) `target == now` / `0 < target − now ≤ margin` — no overflow, the guest is at a clean
+exit boundary or single-stepped the whole way; (3) `TargetInPast` — `reached = now` is
+the clean entry boundary, not an overflow stop.
+
+Sentinel consequence: a consumer signalling a **non-skid** early stop from
+`run_until_overflow` (a genuine guest exit during the free-run) must report a count
+`< deadline`, never the deadline itself — otherwise the planner would mistake the
+sentinel for an overflow skid and raise `SkidExceeded`. `LiveCpu` (and the `SimPreempt`/
+`ExitAtCpu` test mocks) now return `deadline − 1` from the free-run guest-exit path; the
+single-step phase short-circuits to the deadline, stopping the planner at ReadyToInject,
+and `drive_run_until` recovers the real exit + work via `take_guest_exit` (P1 round-4
+still classifies early/at/past from the WORK). Test:
+`overflow_landing_exactly_on_deadline_is_skid_exceeded_not_raw_deadline` (an overflow on
+the deadline → loud error; one strictly before → single-stepped to the exact boundary),
+and `lands_exactly_at_deadline_with_no_guest_exit` exercises skids up to 255 (< 256) →
+all land at exactly the deadline, bit-identical across the skid (signal-timing) range.
