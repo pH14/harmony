@@ -767,3 +767,26 @@ Two red CI gates after round-2, both CI-hygiene / coverage (not determinism bugs
 
 Process: the slow gates (`cargo mutants --in-diff`, `cargo kani`) are now run locally
 before push, not just nextest/clippy/fmt.
+
+### PR #15 round-4: coverage gate (already fixed by the round-3 split; verified) (2026-06-27)
+
+The coverage red was the same root cause as the mutants red, one step earlier in time:
+before the round-3 split, the single cfg(linux) `pmu.rs` (~500 lines of uncoverable
+`perf_event_open`/`mmap`/`ioctl` syscall code) was NOT in the coverage
+`--ignore-filename-regex`, so the Linux coverage job counted it and it dragged the
+region floor below 93%. The round-3 split already fixed this: the syscall orchestration
+moved to `pmu_sys.rs` (added to the ignore regex), and the pure `pmu.rs` builder is
+100% region-covered by its exact-value tests.
+
+Diagnosed by running the gate locally (not assuming): `cargo llvm-cov` on macOS showed
+the workspace total at **95.0%** with pmu.rs 100% and run_until.rs 93.5% — i.e. no
+box-only code was leaking in. The only two *testable prod* regions still uncovered in
+the new code were covered rather than excluded (per the floor-is-not-a-bar posture):
+`drive_run_until`'s unreachable `Err(_)` catch-all (merged into the reachable Backend
+arm) and `FirstEntryReset::default()` (asserted in its unit test). The remaining
+uncovered run_until.rs lines are `#[cfg(test)]` helper code.
+
+Confirmed GREEN on the box (Linux — the exact CI invocation): `cargo llvm-cov nextest
+--all-features … --fail-under-regions 93` → exit 0, 813 tests passed, lcov.info
+generated. (Process: the slow gates — `cargo mutants --in-diff`, `cargo kani`, `cargo
+llvm-cov` — are now all run locally before push.)
