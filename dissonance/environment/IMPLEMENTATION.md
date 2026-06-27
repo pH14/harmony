@@ -240,6 +240,21 @@ guest answer could be relocated out of the `DecisionPoint` context the codec
 lacks. Guest-plane mutation stays the explorer's job (it has the live decision
 context). `seeded` is the pure DST constructor.
 
+These three fixes added private logic (the per-arm `host_fault_from`, the
+guest-skipping `free_non_guest_slot`, the per-op `mutate` branches, the strict
+`compose` prefix filter, the `checked_add` overflow path). A `#[cfg(test)] mod
+tests` *inside* `envcodec.rs` pins each with an **exact-value** assertion — the
+PR #16 round-2 `cargo mutants` survivors. These need the private `Prng` /
+`MUTATE_DOMAIN` / helpers that `tests/` cannot reach: each `host_fault_from` arm
+maps a controlled PRNG stream to its exact `HostFault` (low byte chosen ≠ 0x00/
+0xFF so `& 0xFF` is distinguishable from `|`/`^`); `free_non_guest_slot` returns
+the drawn word (never `Default`) and skips a guest-occupied slot by exactly one;
+the strict `compose` `<` is pinned with a base override exactly *at* the splice
+`Moment` and an empty tail (a `<=` mutant would keep it); and each `mutate` op is
+selected by a computed salt and asserted to its distinct effect (remove → len 0,
+move → len 1 with the action preserved, insert → len 2). `cargo mutants --file
+envcodec.rs` reports **0 missed** (25 caught, 5 unviable).
+
 ### The D4 invariant (no Theme/explorer change to consume `HostFault`)
 
 Verified by inspection (the explorer/Theme, task 12, is not in this worktree).
@@ -306,7 +321,7 @@ contract not at all — the invariant holds.
 ## Gates
 
 `cargo build/nextest/clippy(-D warnings)/fmt -p environment --all-features` and
-`cargo deny check` all pass: 67 tests, including the task-45 acceptance properties
+`cargo deny check` all pass: 77 tests, including the task-45 acceptance properties
 — `mixed_host_guest_replays_bit_identically` (256-case record→replay round-trip
 with host overrides present) and `compose_rekeys_moments_and_carries_standing`
 (256-case one-axis re-keying that now also asserts tail standing faults survive

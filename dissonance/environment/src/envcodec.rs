@@ -198,3 +198,239 @@ fn host_fault_from(rng: &mut Prng) -> HostFault {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Exact-value unit tests that pin the private helpers and per-branch effects
+    //! against mutation (the PR #16 round-2 `cargo mutants` survivors). They reach
+    //! the private `host_fault_from` / `free_non_guest_slot` and the private
+    //! `Prng` / `MUTATE_DOMAIN`, which integration tests in `tests/` cannot, so
+    //! each mutant has a test that fails with an *exact* value, not a property it
+    //! could slip past.
+
+    use std::collections::BTreeMap;
+
+    use super::{EnvCodec, MUTATE_DOMAIN, free_non_guest_slot, host_fault_from};
+    use crate::VTime;
+    use crate::catalog::Answer;
+    use crate::host::{Action, BitMask, HostFault, Moment, Ratio};
+    use crate::policy::FaultPolicy;
+    use crate::prng::Prng;
+    use crate::recorded::EnvSpec;
+
+    /// First seed whose initial PRNG word selects `host_fault_from` arm `arm`
+    /// (`word % 4 == arm`). Computed from the bare `Prng`, independent of any
+    /// mutant in `host_fault_from` itself.
+    fn seed_for_arm(arm: u64) -> u64 {
+        (0u64..10_000)
+            .find(|&s| Prng::new(s).next_u64() % 4 == arm)
+            .expect("an arm-selecting seed exists in range")
+    }
+
+    /// First salt whose `mutate` op selector (`(salt ^ MUTATE_DOMAIN) word % 3`)
+    /// equals `op`. Independent of any mutant in `mutate`'s arms.
+    fn salt_for_op(op: u64) -> u64 {
+        (0u64..10_000)
+            .find(|&s| Prng::new(s ^ MUTATE_DOMAIN).next_u64() % 3 == op)
+            .expect("an op-selecting salt exists in range")
+    }
+
+    // ---- host_fault_from arms (kills delete-arm-0 / delete-arm-1) -----------
+
+    #[test]
+    fn host_fault_from_arm0_is_exact_skewtime() {
+        let seed = seed_for_arm(0);
+        let got = host_fault_from(&mut Prng::new(seed));
+        // Independent restatement: word0 selects the arm, word1 is the VTime.
+        let mut e = Prng::new(seed);
+        let _arm = e.next_u64();
+        let expected = HostFault::SkewTime(VTime(e.next_u64()));
+        assert_eq!(
+            got, expected,
+            "arm 0 must map to exactly SkewTime(word1) (deleting it yields InjectInterrupt)"
+        );
+    }
+
+    #[test]
+    fn host_fault_from_arm1_is_exact_setclockrate() {
+        let seed = seed_for_arm(1);
+        let got = host_fault_from(&mut Prng::new(seed));
+        let mut e = Prng::new(seed);
+        let _arm = e.next_u64();
+        let num = e.next_u64();
+        let den = (e.next_u64() % (1u64 << 32)) + 1;
+        let expected = HostFault::SetClockRate(Ratio::new(num, den).unwrap());
+        assert_eq!(
+            got, expected,
+            "arm 1 must map to exactly SetClockRate(num/den) (deleting it yields InjectInterrupt)"
+        );
+    }
+
+    #[test]
+    fn host_fault_from_arm2_is_exact_corruptmemory() {
+        let seed = seed_for_arm(2);
+        let got = host_fault_from(&mut Prng::new(seed));
+        let mut e = Prng::new(seed);
+        let _arm = e.next_u64();
+        let gpa = e.next_u64();
+        let mask = BitMask(e.next_u64());
+        assert_eq!(
+            got,
+            HostFault::CorruptMemory { gpa, mask },
+            "arm 2 must map to exactly CorruptMemory{{gpa, mask}} (deleting it yields InjectInterrupt)"
+        );
+    }
+
+    #[test]
+    fn host_fault_from_arm3_is_exact_inject_interrupt() {
+        // Pick an arm-3 seed whose vector byte is neither 0xFF nor 0x00, so the
+        // exact assertion distinguishes `& 0xFF` from both `| 0xFF` (→ always
+        // 0xFF) and `^ 0xFF` (→ byte ^ 0xFF).
+        let seed = (0u64..10_000)
+            .find(|&s| {
+                let mut p = Prng::new(s);
+                if p.next_u64() % 4 != 3 {
+                    return false;
+                }
+                let v = (p.next_u64() & 0xFF) as u8;
+                v != 0xFF && v != 0x00
+            })
+            .expect("a non-trivial arm-3 seed exists in range");
+        let got = host_fault_from(&mut Prng::new(seed));
+        let mut e = Prng::new(seed);
+        let _arm = e.next_u64();
+        let vector = (e.next_u64() & 0xFF) as u8;
+        assert!(
+            vector != 0xFF && vector != 0x00,
+            "chosen seed has a discriminating vector byte"
+        );
+        assert_eq!(
+            got,
+            HostFault::InjectInterrupt { vector },
+            "arm 3 must map to InjectInterrupt with the exact low byte (kills & -> |/^ on 0xFF)"
+        );
+    }
+
+    // ---- free_non_guest_slot (kills body -> Default::default()) -------------
+
+    #[test]
+    fn free_non_guest_slot_returns_the_drawn_word_not_default() {
+        let map: BTreeMap<Moment, Action> = BTreeMap::new();
+        let seed = 0xABCD_1234_5678_9AB1;
+        let got = free_non_guest_slot(&map, &mut Prng::new(seed));
+        let expected = Prng::new(seed).next_u64();
+        assert_eq!(got, expected, "returns the drawn PRNG word");
+        assert_ne!(
+            got,
+            Moment::default(),
+            "must not be Moment::default() (0) — the mutant's return"
+        );
+    }
+
+    #[test]
+    fn free_non_guest_slot_skips_a_guest_occupied_slot_exactly() {
+        let seed = 0x55u64;
+        let first = Prng::new(seed).next_u64();
+        // Park a guest action exactly where the first draw lands.
+        let map = BTreeMap::from([(first, Action::Guest(Answer::Nominal))]);
+        let got = free_non_guest_slot(&map, &mut Prng::new(seed));
+        assert_eq!(
+            got,
+            first.wrapping_add(1),
+            "skips the guest-occupied slot to the next Moment"
+        );
+        assert!(!matches!(map.get(&got), Some(Action::Guest(_))));
+        assert_ne!(got, Moment::default());
+    }
+
+    // ---- compose prefix filter (kills `<` -> `<=`) --------------------------
+
+    #[test]
+    fn compose_prefix_filter_is_strict_less_than() {
+        // A base override exactly AT the splice Moment is dropped (prefix is
+        // [0, at)), with NO tail entry there to mask it — so `<` vs `<=` is
+        // observable: `<=` would keep the at-keyed base entry.
+        let at: Moment = 50;
+        let base = EnvSpec::Recorded {
+            seed: 0,
+            policy: FaultPolicy::none(),
+            overrides: BTreeMap::from([
+                (at - 1, Action::Guest(Answer::Nominal)), // kept
+                (at, Action::Host(HostFault::InjectInterrupt { vector: 7 })), // dropped by `<`
+                (at + 1, Action::Guest(Answer::Nominal)), // dropped (> at)
+            ]),
+            standing: vec![],
+        };
+        // Empty tail ⇒ nothing is re-keyed to `at`, so the only entry that could
+        // appear at `at` is the (dropped) base one.
+        let tail = EnvSpec::Seeded {
+            seed: 0,
+            policy: FaultPolicy::none(),
+        };
+        let out = EnvCodec::compose(&base, &tail, at).unwrap();
+        let m = out.overrides();
+        assert!(m.contains_key(&(at - 1)), "prefix entry (< at) kept");
+        assert!(
+            !m.contains_key(&at),
+            "entry exactly at the splice is dropped by the strict `<` (a `<=` mutant keeps it)"
+        );
+        assert!(!m.contains_key(&(at + 1)));
+        assert_eq!(m.len(), 1, "only the single < at entry survives");
+    }
+
+    // ---- mutate arms (kills delete-arm-1 remove / delete-arm-2 move) --------
+
+    fn one_host_spec(k: Moment, action: Action) -> EnvSpec {
+        EnvSpec::Recorded {
+            seed: 0,
+            policy: FaultPolicy::none(),
+            overrides: BTreeMap::from([(k, action)]),
+            standing: vec![],
+        }
+    }
+
+    #[test]
+    fn mutate_remove_branch_deletes_the_sole_host_override() {
+        let k = 100u64;
+        let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
+        let spec = one_host_spec(k, action);
+        let out = EnvCodec::mutate(&spec, salt_for_op(1));
+        assert!(
+            out.overrides().is_empty(),
+            "the remove branch empties the map (len 0); deleting it falls to insert (len >= 1)"
+        );
+    }
+
+    #[test]
+    fn mutate_move_branch_relocates_preserving_count_and_action() {
+        let k = 100u64;
+        let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
+        let spec = one_host_spec(k, action.clone());
+        let out = EnvCodec::mutate(&spec, salt_for_op(2));
+        assert_eq!(
+            out.overrides().len(),
+            1,
+            "the move branch keeps exactly one override; deleting it falls to insert (len 2)"
+        );
+        let (_m, a) = out.overrides().iter().next().unwrap();
+        assert_eq!(
+            a, &action,
+            "the move branch preserves the exact host action; insert would fabricate a fresh one"
+        );
+    }
+
+    #[test]
+    fn mutate_insert_branch_adds_a_second_host_override() {
+        // The default arm (op 0): a fresh host action is added, count grows by one.
+        let k = 100u64;
+        let action = Action::Host(HostFault::InjectInterrupt { vector: 42 });
+        let spec = one_host_spec(k, action.clone());
+        let out = EnvCodec::mutate(&spec, salt_for_op(0));
+        assert_eq!(out.overrides().len(), 2, "insert adds a second override");
+        assert_eq!(
+            out.overrides().get(&k),
+            Some(&action),
+            "the original survives"
+        );
+    }
+}
