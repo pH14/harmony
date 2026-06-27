@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 3 — golden answers. A hand-frozen `Answer` sequence for one seed under a
-//! known `FaultPolicy`, spanning every `DecisionClass`, pins the PRNG and the
-//! sampling against silent drift. The expected column is the `Answer::encode`
-//! hex of each decision; regenerate (and review) with `GOLDEN_CAPTURE=1`.
+//! Gate 3 — golden answers and host-plane wire format. A hand-frozen `Answer`
+//! sequence for one seed under a known `FaultPolicy`, spanning every
+//! `DecisionClass`, pins the PRNG and the sampling against silent drift; a
+//! frozen `HostFault`/`Action`/`EnvSpec` byte layout pins the host-plane wire
+//! format. Regenerate (and review) with `GOLDEN_CAPTURE=1`.
+
+use std::collections::BTreeMap;
 
 use environment::{
-    Answer, BlockOp, ConnId, DecisionClass, DecisionPoint as P, Environment, Fault, FaultPolicy,
-    NodeId, Outcome, SeededEnv, VTime,
+    Action, Answer, BitMask, BlockOp, ConnId, DecisionClass, DecisionPoint as P, EnvSpec,
+    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, Ratio, SeededEnv, VTime,
 };
 
 const SEED: u64 = 0x0123_4567_89AB_CDEF;
@@ -175,4 +178,104 @@ fn golden_covers_every_class_with_faults() {
         saw_supply && saw_fault,
         "golden exercises supplies and faults"
     );
+}
+
+// ---- host-plane wire format -----------------------------------------------
+
+/// One host fault of every variant, with their frozen `HostFault::encode` hex.
+/// These tag/field layouts are a stable contract a recorded reproducer's replay
+/// (and the `perturb` transport) depends on. Regenerate with `GOLDEN_CAPTURE=1`.
+fn host_faults() -> Vec<(HostFault, &'static str)> {
+    vec![
+        // tag 00 + VTime u64 (0x0102030405060708, little-endian).
+        (
+            HostFault::SkewTime(VTime(0x0102_0304_0506_0708)),
+            "000807060504030201",
+        ),
+        // tag 01 + num u64 (3) + den u64 (2).
+        (
+            HostFault::SetClockRate(Ratio::new(3, 2).unwrap()),
+            "0103000000000000000200000000000000",
+        ),
+        // tag 02 + gpa u64 (0x4000) + mask u64 (0b1000 = 8).
+        (
+            HostFault::CorruptMemory {
+                gpa: 0x4000,
+                mask: BitMask(0b1000),
+            },
+            "0200400000000000000800000000000000",
+        ),
+        // tag 03 + vector u8 (0x80).
+        (HostFault::InjectInterrupt { vector: 0x80 }, "0380"),
+    ]
+}
+
+#[test]
+fn golden_host_fault_wire_format() {
+    let capture = std::env::var_os("GOLDEN_CAPTURE").is_some();
+    for (f, expected) in host_faults() {
+        let got = to_hex(&f.encode());
+        if capture {
+            eprintln!("{f:?} => {got}");
+            continue;
+        }
+        assert_eq!(
+            got, expected,
+            "HostFault wire format drifted for {f:?}. If intentional and reviewed, \
+             regenerate with GOLDEN_CAPTURE=1."
+        );
+        // Round-trips.
+        assert_eq!(HostFault::decode(&f.encode()).unwrap(), f);
+    }
+}
+
+#[test]
+fn golden_action_wire_format() {
+    // Action = one plane-tag byte (00 host / 01 guest) then the plane's encoding.
+    let host = Action::Host(HostFault::InjectInterrupt { vector: 0x80 });
+    assert_eq!(
+        to_hex(&host.encode()),
+        "000380",
+        "host plane tag 00 + payload"
+    );
+
+    let guest = Action::Guest(Answer::Fault(Fault::NetDrop));
+    // 01 (guest) + 02 (Answer::Fault) + 00 (Fault::NetDrop).
+    assert_eq!(
+        to_hex(&guest.encode()),
+        "010200",
+        "guest plane tag 01 + payload"
+    );
+}
+
+#[test]
+fn golden_recorded_blob_with_host_overrides() {
+    // A small mixed reproducer, frozen, so the whole `EnvSpec` layout (magic +
+    // version + Moment-keyed Action map) is pinned against silent drift.
+    let spec = EnvSpec::Recorded {
+        seed: 0,
+        policy: FaultPolicy::none(),
+        overrides: BTreeMap::from([
+            (1, Action::Host(HostFault::InjectInterrupt { vector: 0x80 })),
+            (2, Action::Guest(Answer::Nominal)),
+        ]),
+        standing: vec![],
+    };
+    let hex = to_hex(&spec.encode());
+    if std::env::var_os("GOLDEN_CAPTURE").is_some() {
+        eprintln!("recorded blob => {hex}");
+    } else {
+        assert_eq!(
+            hex,
+            // "DEV2"(44455632) + version(0200) + variant(01) + seed(00×8) +
+            // length-prefixed policy(FPL1 baseline, len 0x2a=42) +
+            // overrides count(02000000) +
+            //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80) = [00 03 80] +
+            //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
+            // standing count(00000000).
+            "4445563202000100000000000000002a00000046504c31010000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000",
+            "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
+        );
+        assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);
+    }
 }

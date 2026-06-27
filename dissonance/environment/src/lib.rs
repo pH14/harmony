@@ -1,54 +1,72 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # environment — the `decide` seam, the fault catalog, and the seeded backings
+//! # environment — the two control planes, the catalog, and the reproducer
 //!
-//! `environment` is the heart of **dissonance**: it owns the one seam where a
-//! guest meets everything it cannot answer for itself — entropy, scheduling,
-//! fuzz payload, and **faults** — and it owns the deterministic backings that
-//! answer that seam. A fault is not a separate subsystem here: it is simply the
-//! environment answering a service *non-nominally* ("EIO" instead of "ok",
-//! "dropped" instead of "delivered"). This crate provides three things: the
-//! versioned **catalog** of decision classes and fault kinds ([`DecisionClass`],
-//! [`DecisionPoint`], [`Answer`], [`Fault`]) that every service and the explorer
-//! share; the **seam** itself ([`Environment::decide`] returning an [`Outcome`]);
-//! and the **seeded backings** — [`SeededEnv`] (a pure PRNG answers every
-//! decision, no host round-trip) and [`RecordedEnv`] (a seed plus sparse,
-//! admissibility-guarded explorer overrides) materialized from the serialized
-//! [`EnvSpec`] reproducer. Determinism is the entire point: the same backing
-//! over the same [`DecisionPoint`] sequence yields the same [`Answer`] sequence,
-//! bit for bit, so every bug dissonance finds replays exactly. Nothing here
-//! observes wall-clock time, host entropy, `HashMap`/`HashSet` iteration order,
-//! or floating point.
+//! `environment` is the heart of **dissonance**: it models the whole
+//! permutation surface as two **control planes** feeding one [`Moment`]-keyed
+//! reproducer.
+//!
+//! - The **guest control plane** is the seam where a guest meets everything it
+//!   cannot answer for itself — entropy, scheduling, fuzz payload, and *faults*.
+//!   A guest fault is simply the environment answering a service *non-nominally*
+//!   ("EIO" instead of "ok", "dropped" instead of "delivered"): an [`Answer`] at
+//!   a [`DecisionPoint`], resolved at [`Environment::decide`].
+//! - The **host control plane** ([`HostFault`]) is the workload-agnostic,
+//!   guest-oblivious surface — memory corruption, clock skew, CPU modulation,
+//!   interrupt timing — dissonance imposes on the machine from outside. It has
+//!   no service point, so the frontier applies it imperatively at a [`Moment`].
+//!
+//! Both planes record into one artifact. [`Action`] is the merged vocabulary
+//! ([`Host`](Action::Host) ∪ [`Guest`](Action::Guest)); the reproducer
+//! [`EnvSpec`] keys its overrides by [`Moment`] (a retired-instruction count),
+//! so host and guest overrides share one ordered timeline and the Theme
+//! manipulates them uniformly — `(Moment, opaque Action)` — without ever
+//! learning an override's plane. This crate provides the versioned **catalog**
+//! ([`DecisionClass`], [`DecisionPoint`], [`Answer`], [`Fault`], [`HostFault`]),
+//! the **seam** ([`Environment::decide`] → [`Outcome`]), the **seeded backings**
+//! ([`SeededEnv`] and [`RecordedEnv`] materialized from [`EnvSpec`]), and the
+//! vocabulary-aware [`EnvCodec`] (`seeded`/`mutate`/`compose`) the Theme calls to
+//! propose environments. Determinism is the entire point: the same backing over
+//! the same inputs yields the same answers, bit for bit, so every bug replays
+//! exactly. Nothing here observes wall-clock time, host entropy,
+//! `HashMap`/`HashSet` iteration order, or floating point.
 //!
 //! ## Module layout
 //!
-//! [`mod@catalog`] (the shared vocabulary: classes, points, answers, faults) ·
-//! `prng` (the local xorshift64\* generator) · `policy` ([`FaultPolicy`], the
-//! per-class fault eligibility and probability sampled by [`SeededEnv`]) ·
-//! `seeded` ([`SeededEnv`], the pure DST backing) · `recorded` ([`EnvSpec`],
-//! [`RecordedEnv`], [`StandingFault`], the reproducer) · `codec` (byte-exact,
+//! [`mod@catalog`] (the guest vocabulary: classes, points, answers, faults) ·
+//! [`mod@host`] (the host plane: [`HostFault`], [`Action`], [`Moment`],
+//! [`Ratio`], [`BitMask`]) · `prng` (the local xorshift64\* generator) ·
+//! `policy` ([`FaultPolicy`], the per-class fault eligibility and probability
+//! sampled by [`SeededEnv`]) · `seeded` ([`SeededEnv`], the pure DST backing) ·
+//! `recorded` ([`EnvSpec`], [`RecordedEnv`], [`StandingFault`], the reproducer) ·
+//! `envcodec` ([`EnvCodec`], the proposal seam) · `codec` (byte-exact,
 //! panic-free serialization shared by the public `encode`/`decode` methods) ·
 //! [`mod@error`] (the single [`EnvError`] enum).
 
 mod catalog;
 mod codec;
+mod envcodec;
 mod error;
+mod host;
 mod policy;
 mod prng;
 mod recorded;
 mod seeded;
 
 pub use catalog::{Answer, BlockOp, CorruptSpec, DecisionClass, DecisionPoint, Fault};
+pub use envcodec::EnvCodec;
 pub use error::EnvError;
+pub use host::{Action, BitMask, HostFault, Moment, Ratio};
 pub use policy::FaultPolicy;
 pub use recorded::{EnvSpec, RecordedEnv, StandingFault};
 pub use seeded::SeededEnv;
 
-/// The catalog version. Bumps whenever a [`DecisionClass`] or [`Fault`] is added;
-/// it pins the shared vocabulary that the control plane (which names classes in
-/// its `StopMask`) and every service agree on. Stable [`DecisionClass`] /
-/// [`Fault`] discriminants mean a recorded [`EnvSpec`] keeps replaying across a
-/// version bump.
-pub const CATALOG_VERSION: u16 = 1;
+/// The catalog version. Bumps whenever a [`DecisionClass`], [`Fault`], or
+/// [`HostFault`] is added; it pins the shared vocabulary that the control plane
+/// (which names classes in its `StopMask`) and every service agree on. Stable
+/// [`DecisionClass`] / [`Fault`] / [`HostFault`] discriminants mean a recorded
+/// [`EnvSpec`] keeps replaying across a version bump. Bumped to `2` by task 45,
+/// which added the host control plane ([`HostFault`], [`Action`]).
+pub const CATALOG_VERSION: u16 = 2;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service
@@ -91,15 +109,10 @@ pub struct NodeId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct ConnId(pub u64);
 
-/// V-time: a count of retired conditional branches — the project's only
-/// deterministic clock. Mirrors the integration type. Fault delays
-/// ([`Fault::NetDelay`], [`Fault::BlockLatency`], [`Fault::ProcPause`]) are in
-/// these branch-count units.
+/// V-time: a count of retired conditional branches — a *derived view* of the
+/// [`Moment`] axis, used for fault delays and windows. Mirrors the integration
+/// type. Fault delays ([`Fault::NetDelay`], [`Fault::BlockLatency`],
+/// [`Fault::ProcPause`]) and [`HostFault::SkewTime`] are in these branch-count
+/// units.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct VTime(pub u64);
-
-/// The index of a decision since the last branch (monotonic, zero-based). A
-/// [`RecordedEnv`] override is keyed by this, so a `Branch`/`Replay` re-applies
-/// the right fault at the right decision.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct DecisionId(pub u64);
