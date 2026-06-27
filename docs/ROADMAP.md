@@ -39,10 +39,13 @@ Naming them here so the dependency is explicit:
   `restore`); faults split into a **host control plane** (machine-level) and layerable **guest
   control planes**. The two loops are the **Variation** (one run) and the **Theme** (search across
   runs). **Network
-  locus = host-side `pv-net`** (no in-guest `tc`): a host L2 switch with V-time-scheduled
-  delivery, every fault an op on that schedule. Spins out the four `dissonance/*` crates
-  (24/25/26/12; task 24 absorbs the old "fault scheduler" row 11). **Open:** "real TCP replays
-  under V-time" is gated on a guest OS — `pv-net` is gate-tested with synthetic frames until then.
+  is a guest-plane decision, enforced in-guest** (task 50): the host *decides* a per-flow policy at
+  the `NetFlow` seam (in `dissonance/environment`); the guest *enforces* it on the intra-guest CNI
+  with Linux's own mechanisms (netem/tbf/nftables). The host is in the *control* path (one decision
+  per flow, recorded), never the *data* path. Spins out the `dissonance/*` crates (24/25/12; task 24
+  absorbs the old "fault scheduler" row 11). **Retired:** the host-side L2 switch `pv-net` (task 26)
+  — tasks 38/48/49 run "nodes" as containers/pods whose traffic stays on the intra-guest CNI and is
+  already deterministic, so there is no host-routed frame stream to switch.
 
 ## Sequenced backlog
 
@@ -58,7 +61,8 @@ Naming them here so the dependency is explicit:
 | 13 | `lapic` crate (userspace xAPIC + V-time timer) | **merged (PR #38)** | R1 ruling, vtime | pure-logic xAPIC register state machine + timer |
 | 24 | `dissonance/environment` (decide seam + seeded faults) | **specced** (`tasks/24-environment.md`); delegable-now | dissonance design (`docs/DISSONANCE.md`) | `Environment`/`Answer`/catalog + `SeededEnv` + recorded-replay |
 | 25 | `dissonance/control-proto` (control-transport wire types + codec) | **specced** (`tasks/25-control-proto.md`); delegable-now | dissonance design | versioned length-delimited codec; Tier-1 fuzz target |
-| 26 | `dissonance/pv-net` (host L2 switch + V-time fault schedule) | **specced** (`tasks/26-pv-net.md`); delegable-now | dissonance design | pure-logic switch + delivery scheduler + fault→schedule |
+| 26 | `dissonance/pv-net` (host L2 switch + V-time fault schedule) | **retired by task 50** (the net-fault boundary) | — | superseded: networking is now a per-flow guest-plane decision (`NetFlow` in task 24), enforced in-guest; no host switch |
+| 50 | `dissonance/environment` net-fault boundary (host decides, guest enforces; retire `pv-net`) | **specced** (`tasks/50-net-fault-boundary.md`) | tasks 24/45/49; `dissonance/{environment,pv-net}` queue clear | per-flow `NetFlow` catalog reshape + `net_decide` shape; `pv-net` removed |
 | 29 | Telemetry console (out-of-band observation tap + std-only web viewer) | **specced** (`tasks/29-telemetry-console.md`); delegable-now | none — observation-only; `Observer` tap + `Event` schema defined locally | leaf `consonance/telemetry` crate + `console` SSE bin; vmm-core `step()` `emit` seam is frontier (INTEGRATION.md §8) |
 | — | vmm-core skeleton (Phase 0) | frontier | box | boots a payload, serial console |
 | — | Real perf_event backend (`CpuBackend`) | frontier | 07's numbers | consumes `skid_margin` |
@@ -134,9 +138,10 @@ Deferred, captured so they aren't re-derived (none on the Wave-3 critical path):
   (tear / reorder / drop un-synced writes per seed) inject at the host's block view. The only way to hunt
   **durability/crash-consistency** bugs; until it exists, task 40 hunts the **concurrency/scheduling** bug
   class only.
-- **D2 — distributed / multi-node + live `pv-net`** (the 3-node-Raft money-shot). **D3 — modeled
-  block-level faults** (rides D1). **D4 — boot/exec performance** (`run_until`-precise stepping; 14 s/boot
-  is bounded and fine until exploration scales).
+- **D2 — distributed / multi-node faults** (the 3-node-Raft money-shot): the per-flow `NetFlow` policies
+  + standing partitions (task 50), enforced in-guest on the cluster CNI (tasks 38/48/49 already run the
+  "nodes" as pods in one guest). **D3 — modeled block-level faults** (rides D1). **D4 — boot/exec
+  performance** (`run_until`-precise stepping; 14 s/boot is bounded and fine until exploration scales).
 
 CPU characterization (an AMD-SVM and/or ARM branch-count **feasibility spike**, task-92 registry) is a
 "maybe" the user flagged — held off the critical path because it needs different silicon, not because it

@@ -112,10 +112,13 @@ later; nothing depends on naming it yet.)*
   agnostic-by-interface"), so it enriches the vocabulary without growing the search policy. SDK
   surfaces **stack per layer** along with the catalog.
 
-**Plane ≠ enforcement locus.** A guest-plane fault is often *enforced* host-side for determinism —
-a dropped packet or a partition is applied on the host `pv-net` switch (below) even though it is a
-*guest*-plane (network) fault. The plane is defined by *what it targets / who needs it*, not by
-which side runs the enforcing code.
+**Plane = decision *and* enforcement locus.** Every guest-plane fault is **decided by the host**
+(the hypervisor answers a service the guest asked about, recorded by `Moment`) and **enforced by the
+guest** (it acts on the answer — on the intra-guest CNI, the block layer, a process). The hypervisor
+is never on the data path; it never *performs* a fault. *(An earlier model carried a
+"Plane ≠ enforcement locus" exception — a guest-plane network fault enforced host-side on the
+`pv-net` switch — but it existed **only** to justify `pv-net`, which task 50 retired; networking is
+now a per-flow guest-plane decision enforced in-guest. See "Networking" below.)*
 
 **Transport:** guest planes are surfaced **in-band** — the guest hits a service (a hypercall, or an
 SDK call via `hypercall-proto`), parks, and dissonance answers nominally or not.
@@ -227,51 +230,65 @@ the seed answers locally.
 ## The guest fault model
 
 A guest control plane's catalog is a small, versioned, **namespaced** enumeration of **decision
-classes** (network-send, block-io, entropy, scheduler, payload, process) and the **faults** eligible
+classes** (network-flow, block-io, entropy, scheduler, payload, process) and the **faults** eligible
 per class; layers add classes (D7). The vocabulary is convergent across the field (FoundationDB,
-Antithesis); the only hard problem was *locus* — where a fault is physically applied.
+Antithesis). The one hard problem was *locus* — where a fault is physically applied — and the rule
+that resolves it is uniform: the **host decides, the guest enforces** (task 50). No guest-plane fault
+is performed by the hypervisor.
 
 `scheduler` is the telling boundary case the two-plane split resolves: black-box scheduling
 perturbation is a **host**-plane interrupt-timing fault (`InjectInterrupt @ moment`); an
 SDK-cooperative "which runnable thread next?" is a **guest**-plane decision. Same concept, placed by
 cooperation level.
 
-> **⚠ Superseded by `tasks/50-net-fault-boundary.md` — the host *decides*, the guest *enforces*.**
-> Routing every frame through a `net_tx` hypercall to a host switch puts the hypervisor in the packet
-> data path and is the one place this model has the host *perform* a fault instead of *decide* one.
-> Tasks 38/49 ship "nodes" as containers/pods whose traffic stays on the **intra-guest CNI** (it never
-> reaches the host) and is **already deterministic** — so the switch sees nothing to switch and
-> determinizes nothing the substrate doesn't already. Task 50 reshapes networking into a per-flow
-> `net_decide` guest-plane decision enforced in-guest, retires `pv-net`, and dissolves the
-> "Plane ≠ enforcement locus" rule below. The text in this subsection is retained until task 50 lands.
+**Networking: a per-flow guest-plane decision, host-decided and guest-enforced (task 50).** Because
+single-vCPU determinism rules out one-VM-per-node, the "nodes" of a distributed system are
+containers/pods in **one** guest, and inter-node traffic transits the **intra-guest CNI** (bridge +
+veth + netns) — it never leaves the guest (tasks 38/48/49). That traffic is *already deterministic*:
+consonance determinizes the only two things that could make a guest network vary — the clock (guest
+TSC/LAPIC = V-time) and entropy (`/dev/urandom` fed by the entropy hypercall). So the host neither
+needs to *see* the traffic (it is intra-guest) nor to *enforce* determinism on it (the substrate
+already does).
 
-**Network locus: host-side `pv-net`.** Because single-vCPU determinism rules out one-VM-per-node,
-the "nodes" of a distributed system are containers in one guest, and inter-node traffic is
-guest-internal. We route it through a `net_tx` hypercall to a **host L2 switch**, so the host sees
-every frame and applies faults host-side. The switch schedules delivery in **V-time**, and **every
-network fault is an operation on that schedule** (this is a guest-plane fault with host-side
-enforcement — see "Plane ≠ enforcement locus"):
+A network fault is therefore a **per-flow** decision, exactly like block I/O and entropy: a
+harmony-linux guest utility asks the hypervisor *"what should I do with this flow?"* (`net_decide` —
+a `NetFlow { src, dst, conn, event }` decision point), the hypervisor **answers** a flow-level policy
+(recorded into the `Moment`-keyed `Environment` so it replays), and the utility **enforces** the
+answer on the intra-guest CNI using Linux's own mechanisms. **One decision per flow/connection, not
+per frame** — the host is in the *control* path (low-frequency, recorded), never the *data* path.
 
-| Fault | Effect on the delivery schedule |
+| Answer | Flow-level policy the guest enforces |
 |---|---|
-| deliver (nominal) | one RX event at `T + L₀` |
-| drop | no event |
-| delay(d) | one event at `T + L₀ + d` |
-| reorder / duplicate / corrupt | reassigned / doubled / byte-flipped events |
-| partition(a↔b, window) | standing policy: drop on that link in the window |
+| `Nominal` | deliver normally |
+| `NetLatency(d)` | add `d` of guest-time (V-time) delay — `netem` |
+| `NetLoss { num, den }` | drop a `num/den` fraction, sampled from a seeded PRNG (`1/1` = full drop) |
+| `NetThrottle { bps }` | cap bandwidth at `bps` — `tbf` |
+| `NetReset` | refuse / reset the connection (a `RST`) |
+| partition(a↔b, window) | **standing** link policy (drop all on the link in the V-time window), carried in `EnvSpec::Recorded.standing` and enforced guest-side (e.g. an nftables rule) |
 
-This is determinism-clean because decide, enforce, and schedule are all host-side in V-time, and the
-guest's own TCP timers ride the existing V-time-backed time surface — the contract's deterministic
-TSC / LAPIC-timer / PIT / CMOS — **not** a PV clock, whose leaves/MSRs the CPU/MSR contract denies to
-close host-time leakage. The block and process faults are likewise host-natural (block I/O is already
-a host-serviced hypercall; crash/restart is snapshot/branch at a `Moment`).
+Per-**message** faults (reorder / duplicate / corrupt a *specific* message) need message boundaries
+the network layer cannot see; together with L2 byte-corruption they move to the **SDK / L7 tier** (a
+later task) — deferred, not dropped.
+
+This is determinism-clean by the **enforcement-determinism discipline**: because the enforcer runs
+*in* the guest, it inherits the substrate's determinism **iff** it takes every input from a
+determinized source — delays measured in **guest V-time**, random drops/loss from a **seeded** PRNG
+(or the entropy hypercall), never a host wall-clock or unseeded host RNG. It *cannot* reach a
+non-determinized source: consonance denies them (the CPU/MSR contract gives a deterministic
+TSC/LAPIC/PIT/CMOS surface and no PV clock). Task 49 is the empirical proof: a full k8s network stack
+runs intra-guest, deterministic-twice. The block and process faults follow the same host-decides /
+guest-enforces shape (block I/O is a host-answered hypercall the guest acts on; crash/restart is
+snapshot/branch at a `Moment`).
 
 ## What is still open
 
-- **"Real TCP replays under V-time"** is the load-bearing assumption behind `pv-net`. It needs a
-  guest OS whose timers ride the V-time-backed TSC/LAPIC/PIT/CMOS surface (the contract denies a PV
-  clock) to validate (same frames at same V-times → identical schedule → identical guest state).
-  Until then `pv-net` is gate-tested with synthetic frames.
+- **"Real TCP replays under V-time"** — now **validated end-to-end in the guest** (no host schedule
+  to compose). Tasks 38/48/49 run real Linux TCP stacks (Postgres; a k3s cluster, pod-to-pod over the
+  CNI) intra-guest and replay **deterministic-twice**, because the guest's timers ride the
+  V-time-backed TSC/LAPIC/PIT/CMOS surface (the contract denies a PV clock) and entropy is seeded. The
+  open frontier is now the **guest flow utility** itself (task 50 non-goal): *what* enforces a
+  `NetFlow` policy on the CNI (tc-netem / nftables / a userspace L4 proxy) and the `net_decide`
+  hypercall-service wiring.
 - **The decision-class taxonomy** is the one contract shared between the control transport (which
   names classes in `StopMask`) and the guest fault catalog (which defines them). Keep them in sync.
 - **Layer-conflict semantics** (D7): the exact rules for how a higher `harmony-<env>` layer adds vs.
@@ -284,13 +301,16 @@ a host-serviced hypercall; crash/restart is snapshot/branch at a `Moment`).
 
 | Crate | Builds | Task |
 |---|---|---|
-| `dissonance/environment` | the **guest control-plane** `decide` seam, the catalog, `SeededEnv`, the recorded-replay format | `tasks/24-environment.md` |
+| `dissonance/environment` | the **guest control-plane** `decide` seam, the catalog (incl. the per-flow `NetFlow` network seam), `SeededEnv`, the recorded-replay format | `tasks/24-environment.md`, `tasks/50-net-fault-boundary.md` |
 | `dissonance/control-proto` | the control-transport wire types + versioned codec | `tasks/25-control-proto.md` |
-| `dissonance/pv-net` | the host L2 switch + V-time delivery scheduler + fault→schedule | `tasks/26-pv-net.md` |
 | `dissonance/explorer` | the Variation/Theme engine, corpus, scoring, strategy | `tasks/12-explorer.md` |
 | *(host plane)* | `HostFault` + `perturb` + uniform `Moment` stamping in consonance | `tasks/45-host-control-plane.md` |
 
-`environment`, `control-proto`, `pv-net`, `explorer` are pure-logic and laptop-gate-testable. The
-frontier glue — the socket server, the reactive-suspension run loop, the `net_tx`/RX-IRQ wiring, and
-the host-plane `perturb` enforcement — lives in `consonance/vmm-core` and is built against these
-crates.
+> The host-side L2 switch crate `dissonance/pv-net` (task 26) was **retired** by task 50: it modeled a
+> host-routed multi-VM topology the project does not use. Networking is now a per-flow guest-plane
+> decision (`NetFlow`, owned by `environment`), enforced in-guest.
+
+`environment`, `control-proto`, `explorer` are pure-logic and laptop-gate-testable. The
+frontier glue — the socket server, the reactive-suspension run loop, the `net_decide`
+hypercall-service + the guest flow utility that enforces a `NetFlow` answer on the CNI, and the
+host-plane `perturb` enforcement — lives in `consonance/vmm-core` and is built against these crates.
