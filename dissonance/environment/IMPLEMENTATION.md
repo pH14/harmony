@@ -334,7 +334,7 @@ contract not at all — the invariant holds.
 ## Gates
 
 `cargo build/nextest/clippy(-D warnings)/fmt -p environment --all-features` and
-`cargo deny check` all pass: 80 tests, including the task-45 acceptance properties
+`cargo deny check` all pass: 81 tests, including the task-45 acceptance properties
 — `mixed_host_guest_replays_bit_identically` (256-case record→replay round-trip
 with host overrides present) and `compose_rekeys_moments_and_carries_standing`
 (256-case one-axis re-keying that now also asserts tail standing faults survive

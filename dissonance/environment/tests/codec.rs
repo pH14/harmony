@@ -140,6 +140,16 @@ fn trailing_bytes_are_rejected() {
 }
 
 #[test]
+fn action_from_plane_conversions() {
+    // The `From` convenience conversions wrap each plane into the merged `Action`.
+    let hf = HostFault::InjectInterrupt { vector: 3 };
+    assert_eq!(Action::from(hf), Action::Host(hf));
+
+    let ans = Answer::Supply(vec![1, 2, 3, 4]);
+    assert_eq!(Action::from(ans.clone()), Action::Guest(ans));
+}
+
+#[test]
 fn perturb_and_record_stamp_one_action_per_moment() {
     // `record`/`perturb` stamp both planes on one Moment axis; a second stamp at
     // the same Moment overwrites (last write wins), so the map stays canonical
