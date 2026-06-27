@@ -555,15 +555,27 @@ pub(crate) fn canonical_events(e: &vmm_backend::VcpuEvents) -> vmm_backend::Vcpu
         c.interrupt_nr = e.interrupt_nr;
         c.interrupt_soft = e.interrupt_soft;
     }
-    // Exception: keep vector/error-code/payload only while one is injected or pending.
+    // Exception: keep the sub-record only while one is injected or pending; and within it,
+    // gate each VALUE field on its own validity bit (mirror the SIPI gating) so a stale
+    // `error_code` / `payload` whose `has_*` bit is clear never reaches the canonical blob or
+    // the `state_hash` — KVM would not apply it, and replaying untrusted residual bytes would
+    // diverge a save → restore → save (PR #12 round 8 audit).
     if e.exception_injected != 0 || e.exception_pending != 0 {
         c.exception_injected = e.exception_injected;
         c.exception_pending = e.exception_pending;
         c.exception_nr = e.exception_nr;
         c.exception_has_error_code = e.exception_has_error_code;
-        c.exception_error_code = e.exception_error_code;
+        c.exception_error_code = if e.exception_has_error_code != 0 {
+            e.exception_error_code
+        } else {
+            0
+        };
         c.exception_has_payload = e.exception_has_payload;
-        c.exception_payload = e.exception_payload;
+        c.exception_payload = if e.exception_has_payload != 0 {
+            e.exception_payload
+        } else {
+            0
+        };
     }
     // NMI / interrupt-shadow / SMM / SIPI / triple-fault are genuine state, carried
     // verbatim (each defaults to 0 at a quiescent point). `nmi_masked` rides the NMI
@@ -716,30 +728,47 @@ pub(crate) fn unrepresentable_state(vcpu: &vmm_backend::VcpuState) -> Option<&'s
         );
     }
     // The full `kvm_vcpu_events` record IS captured now (device blob, task 41), so an in-flight
-    // injection round-trips — with **two cap-gated exceptions**. KVM rejects the
-    // `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` bits on `KVM_SET_VCPU_EVENTS` with `-EINVAL` unless
-    // the per-VM capability is enabled (even with a zero payload). This backend enables neither
-    // `KVM_CAP_X86_TRIPLE_FAULT_EVENT` nor `KVM_CAP_EXCEPTION_PAYLOAD` (only
-    // `DETERMINISTIC_INTERCEPTS` + `USER_SPACE_MSR`), and vmm-core cannot query per-cap state
-    // through the `Backend` trait — so a captured triple-fault / payload-bearing exception could
-    // **not** be restored (`events_for_restore` would set the bit → restore `-EINVAL`). Fail
-    // closed at *save* rather than seal a snapshot restore cannot apply — save/restore symmetry
-    // (PR #12 round 7). A real `KVM_GET` on this backend never reports either (a triple fault is a
-    // `KVM_EXIT_SHUTDOWN`, and with the payload cap off KVM folds the payload via the legacy
-    // path, leaving `has_payload = 0`), so this never rejects a genuine captured point — it closes
-    // the contract for a synthetic / relayed / forward-compat record.
-    if vcpu.events.triple_fault_pending != 0 {
+    // injection round-trips — except the two cap-gated fields KVM cannot restore here; see
+    // [`cap_unrestorable_events`] (applied symmetrically at save and at restore-before-mutation).
+    if let Some(reason) = cap_unrestorable_events(&vcpu.events) {
+        return Some(reason);
+    }
+    None
+}
+
+/// Reason a `kvm_vcpu_events` record **cannot be restored on this backend** — it would set a
+/// `KVM_SET_VCPU_EVENTS` validity bit gated behind a per-VM capability this backend does not
+/// enable, so the SET ioctl returns `-EINVAL`. `None` if every set bit is restorable.
+///
+/// KVM rejects `VALID_TRIPLE_FAULT` / `VALID_PAYLOAD` on SET unless
+/// `KVM_CAP_X86_TRIPLE_FAULT_EVENT` / `KVM_CAP_EXCEPTION_PAYLOAD` is enabled — **even with a
+/// zero payload**. This backend enables neither (only `DETERMINISTIC_INTERCEPTS` +
+/// `USER_SPACE_MSR`), and vmm-core cannot query per-cap state through the `Backend` trait, so
+/// these fields are unrestorable. The check is on the **fields** that drive the rebuilt mask
+/// (`triple_fault_pending → VALID_TRIPLE_FAULT`, `exception_has_payload → VALID_PAYLOAD`), so it
+/// catches exactly the records whose [`events_for_restore`] would carry a cap-disabled bit.
+///
+/// Applied **symmetrically**: [`unrepresentable_state`] uses it so `save_vm_state` never seals an
+/// unrestorable snapshot (save/restore symmetry, PR #12 round 7), and
+/// [`crate::vmm::Vmm::restore_vm_state`] uses it to reject an untrusted/foreign `dev.events` blob
+/// **before** any `Backend::restore` ioctl mutates the target vCPU — preserving restore's
+/// reject-before-mutation (atomic) contract (PR #12 round 8). A real `KVM_GET` on this backend
+/// never reports either field (a triple fault is a `KVM_EXIT_SHUTDOWN`; with the payload cap off
+/// KVM folds the payload via the legacy path, leaving `has_payload = 0`), so this never rejects a
+/// genuine captured point — it closes the contract for a synthetic / relayed / forward-compat blob.
+pub(crate) fn cap_unrestorable_events(e: &vmm_backend::VcpuEvents) -> Option<&'static str> {
+    if e.triple_fault_pending != 0 {
         return Some(
             "kvm_vcpu_events.triple_fault_pending is set, but KVM_CAP_X86_TRIPLE_FAULT_EVENT is not \
-             enabled on this backend — KVM_SET_VCPU_EVENTS would reject the restore (-EINVAL); fail \
-             closed rather than seal an unrestorable snapshot",
+             enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
+             rather than seal/restore an unrestorable snapshot",
         );
     }
-    if vcpu.events.exception_has_payload != 0 {
+    if e.exception_has_payload != 0 {
         return Some(
             "kvm_vcpu_events.exception_has_payload is set, but KVM_CAP_EXCEPTION_PAYLOAD is not \
-             enabled on this backend — KVM_SET_VCPU_EVENTS would reject the restore (-EINVAL); fail \
-             closed rather than seal an unrestorable snapshot",
+             enabled on this backend — KVM_SET_VCPU_EVENTS would reject it (-EINVAL); fail closed \
+             rather than seal/restore an unrestorable snapshot",
         );
     }
     None
@@ -1311,10 +1340,16 @@ mod tests {
                 dr7: 0x400,
                 flags: 0,
             },
+            // A CANONICAL, typed-representable events record: the reduced `vm_state::VcpuEvents`
+            // carries `{exception_pending, exception_vector, exception_error_code, nmi_pending,
+            // smi_pending, interrupt_shadow}` only — it does NOT carry `exception_has_error_code`,
+            // and `canonical_events` zeroes a value field whose validity bit is clear (round-8
+            // audit). So a faithful round-trip uses `has_error_code = 0` ⇒ `error_code = 0`. (The
+            // device blob — not this reduced record — carries a genuine error-coded exception on
+            // restore; see `from_vm_events`.)
             events: vmm_backend::VcpuEvents {
                 exception_pending: 1,
                 exception_nr: 14,
-                exception_error_code: 0x2,
                 nmi_pending: 1,
                 smi_pending: 1,
                 interrupt_shadow: 1,
@@ -1954,6 +1989,83 @@ mod tests {
         assert!(
             pl.contains("exception_has_payload"),
             "reject reason names the field: {pl}"
+        );
+    }
+
+    #[test]
+    fn canonical_events_zeroes_value_fields_when_their_validity_bit_is_clear() {
+        // PR #12 round 8 — the class-closing audit. A VALUE field whose own validity bit is clear
+        // is architecturally don't-care; it must be **zeroed** in the canonical form (mirror the
+        // SIPI-vector gating), so a stale `error_code` / `payload` never reaches the canonical
+        // blob or the `state_hash` (KVM would not apply it; replaying untrusted residual bytes
+        // would diverge a save → restore → save). Exact-value, per the audit table in
+        // IMPLEMENTATION.md.
+
+        // exception_error_code is gated on exception_has_error_code:
+        let stale_ec = canonical_events(&vmm_backend::VcpuEvents {
+            exception_injected: 1,
+            exception_nr: 13,
+            exception_has_error_code: 0, // clear → error_code is don't-care
+            exception_error_code: 0xDEAD_BEEF, // stale residual
+            ..Default::default()
+        });
+        assert_eq!(
+            stale_ec.exception_error_code, 0,
+            "a stale error_code (has_error_code=0) is zeroed in the canonical form"
+        );
+        let valid_ec = canonical_events(&vmm_backend::VcpuEvents {
+            exception_injected: 1,
+            exception_nr: 13,
+            exception_has_error_code: 1,
+            exception_error_code: 0x18,
+            ..Default::default()
+        });
+        assert_eq!(
+            valid_ec.exception_error_code, 0x18,
+            "a VALID error_code (has_error_code=1) is preserved"
+        );
+
+        // exception_payload is gated on exception_has_payload (a payload-bearing exception is
+        // ALSO fail-closed-rejected at save/restore — this gates the canonical form / hash):
+        let stale_pl = canonical_events(&vmm_backend::VcpuEvents {
+            exception_injected: 1,
+            exception_nr: 14,
+            exception_has_payload: 0,       // clear → payload is don't-care
+            exception_payload: 0xCAFE_F00D, // stale residual
+            ..Default::default()
+        });
+        assert_eq!(
+            stale_pl.exception_payload, 0,
+            "a stale payload (has_payload=0) is zeroed in the canonical form"
+        );
+        let valid_pl = canonical_events(&vmm_backend::VcpuEvents {
+            exception_injected: 1,
+            exception_nr: 14,
+            exception_has_payload: 1,
+            exception_payload: 0xCAFE_F00D,
+            ..Default::default()
+        });
+        assert_eq!(
+            valid_pl.exception_payload, 0xCAFE_F00D,
+            "a VALID payload (has_payload=1) is preserved in the canonical form"
+        );
+
+        // And both value fields are zero when no exception is injected/pending at all (the outer
+        // gate), regardless of stale bytes.
+        let no_exc = canonical_events(&vmm_backend::VcpuEvents {
+            exception_error_code: 0xFF,
+            exception_payload: 0xFF,
+            exception_has_error_code: 1,
+            exception_has_payload: 1,
+            ..Default::default() // exception_injected = pending = 0
+        });
+        assert_eq!(
+            no_exc.exception_error_code, 0,
+            "no injected/pending exception → error_code 0"
+        );
+        assert_eq!(
+            no_exc.exception_payload, 0,
+            "no injected/pending exception → payload 0"
         );
     }
 

@@ -959,6 +959,17 @@ impl<B: Backend> Vmm<B> {
         }
         // 1b. Decode the vmm-core device blob (total, never panics).
         let dev = snapshot::decode_device_blob(&s.devices.0)?;
+        // 1b. Reject an UNRESTORABLE `kvm_vcpu_events` blob up front — a foreign / malformed
+        //     v3 blob that sets a cap-disabled validity bit (`VALID_TRIPLE_FAULT`/`VALID_PAYLOAD`)
+        //     would make `KVM_SET_VCPU_EVENTS` return `-EINVAL` only AFTER earlier `KVM_SET_*`
+        //     ioctls inside `Backend::restore` already mutated the target vCPU. Validate here,
+        //     while committing nothing, to preserve restore's reject-before-mutation (atomic)
+        //     contract — symmetric with the `save_vm_state` guard (PR #12 round 8).
+        if let Some(reason) = snapshot::cap_unrestorable_events(&dev.events) {
+            return Err(VmmError::ContractViolation(format!(
+                "restore_vm_state: {reason}"
+            )));
+        }
         // 1c. The blob's LAPIC must be coherent AND match this VM's wiring.
         let new_lapic = match (&dev.lapic, self.lapic.is_some()) {
             (Some(ls), true) => Some(
@@ -1040,10 +1051,11 @@ impl<B: Backend> Vmm<B> {
         // different/buggy encoder) may carry RAW residuals; forwarding them verbatim to
         // `KVM_SET_VCPU_EVENTS` would reintroduce the exact corruption canonicalization exists
         // to prevent. Use `events_for_restore` (not `canonical_events`): it additionally forces
-        // the NMI_PENDING/SHADOW/SMM/TRIPLE_FAULT validity bits ON, so KVM **clears** any stale
-        // NMI-pending / interrupt-shadow / SMM / triple-fault left on a NON-fresh target vCPU
-        // (a clear bit means "leave unchanged" to `KVM_SET_VCPU_EVENTS`) — restore is then
-        // independent of the prior occupant (the branch / restore-in-place case; PR #12 round 6).
+        // the cap-free NMI_PENDING/SHADOW/SMM validity bits ON, so KVM **clears** any stale
+        // NMI-pending / interrupt-shadow / SMM left on a NON-fresh target vCPU (a clear bit means
+        // "leave unchanged" to `KVM_SET_VCPU_EVENTS`) — restore is then independent of the prior
+        // occupant (the branch / restore-in-place case; PR #12 round 6). The cap-gated
+        // TRIPLE_FAULT/PAYLOAD were already rejected up front (step 1b).
         // Idempotent for a self-produced blob; the `state_hash` still uses `canonical_events`.
         vcpu.events = snapshot::events_for_restore(&dev.events);
         // 3. Commit the fallible backend restore first — a failure here leaves the
@@ -4988,6 +5000,61 @@ mod tests {
         assert_ne!(
             restored, raw,
             "the raw residuals were NOT forwarded verbatim"
+        );
+    }
+
+    #[test]
+    fn restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation() {
+        // PR #12 round 8 — restore's reject-before-mutation (atomic) contract. A foreign /
+        // malformed v3 blob whose `kvm_vcpu_events` would set a cap-disabled validity bit
+        // (`VALID_TRIPLE_FAULT` / `VALID_PAYLOAD`) makes `KVM_SET_VCPU_EVENTS` return `-EINVAL`
+        // only AFTER earlier `KVM_SET_*` ioctls inside `Backend::restore` already mutated the
+        // target vCPU. `restore_vm_state` must reject the blob up front (mirroring the
+        // `save_vm_state` guard) so it never half-mutates the target.
+        let reject = |bad: vmm_backend::VcpuEvents, needle: &str| {
+            // A target vCPU with a recognizable state, to prove it is NOT mutated on reject.
+            let mut marked = nonzero_state();
+            marked.events.interrupt_injected = 1;
+            marked.events.interrupt_nr = 0x99;
+            let mut b = full_vmm(marked, vec![], 0, 1);
+            let before = b.backend.save().unwrap();
+            // Forge an external blob (valid except for the cap-gated event field).
+            let a = full_vmm(nonzero_state(), vec![], 0, 1);
+            let mut s = a.save_vm_state().unwrap();
+            let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
+            dev.events = bad;
+            s.devices = snapshot::encode_device_blob(&dev);
+            // Restore must reject, naming the offending field...
+            match b.restore_vm_state(&s) {
+                Err(VmmError::ContractViolation(msg)) => assert!(
+                    msg.contains(needle),
+                    "reject reason should name {needle:?}, got: {msg}"
+                ),
+                other => panic!("restore must reject a cap-gated event blob, got {other:?}"),
+            }
+            // ...and must NOT have mutated the target vCPU (reject before mutation).
+            assert_eq!(
+                b.backend.save().unwrap(),
+                before,
+                "restore must not mutate the target vCPU when it rejects the blob"
+            );
+        };
+        reject(
+            vmm_backend::VcpuEvents {
+                triple_fault_pending: 1,
+                ..Default::default()
+            },
+            "triple_fault_pending",
+        );
+        reject(
+            vmm_backend::VcpuEvents {
+                exception_injected: 1,
+                exception_nr: 14,
+                exception_has_payload: 1,
+                exception_payload: 0xCAFE,
+                ..Default::default()
+            },
+            "exception_has_payload",
         );
     }
 

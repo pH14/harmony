@@ -2427,11 +2427,52 @@ two fields (a **targeted** reject — task 41's blanket event-reject stays remov
 field still snapshots). This keeps the codec **provably lossless-or-rejected** and `save`/`restore`
 symmetric. It never rejects a genuine captured point: a real `KVM_GET` on this backend reports neither (a
 triple fault is a `KVM_EXIT_SHUTDOWN`; with the payload cap off KVM folds the payload via the legacy path,
-so `has_payload = 0`) — it closes the contract for a synthetic / relayed / forward-compat record. Pinned by
-`unrepresentable_state_fails_closed_on_cap_gated_event_fields` (each field rejects, naming itself; every
-*restorable* in-flight class — injected interrupt/exception-with-error-code/NMI/shadow/SMM — is **not**
-rejected) and `save_vm_state_captures_in_flight_events_at_a_non_quiescent_point` (save rejects the two
-through the full `save_vm_state` path).
+so `has_payload = 0`) — it closes the contract for a synthetic / relayed / forward-compat record.
+
+**Round 8 makes the reject symmetric on the *restore* side too (`restore_vm_state`, before mutation).** The
+same check (`cap_unrestorable_events`, now shared by save and restore) is applied to the **untrusted**
+`dev.events` blob **up front** — a foreign / malformed v3 blob that set a cap-disabled validity bit would
+otherwise reach `KVM_SET_VCPU_EVENTS` and `-EINVAL` *after* earlier `KVM_SET_*` ioctls inside
+`Backend::restore` had already mutated the target vCPU, breaking restore's **reject-before-mutation
+(atomic)** contract. Pinned by `restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation` (a forged
+blob is rejected **and the target vCPU is unmutated**), `unrepresentable_state_fails_closed_on_cap_gated_event_fields`
+(each field rejects, naming itself; every *restorable* in-flight class is **not** rejected), and
+`save_vm_state_captures_in_flight_events_at_a_non_quiescent_point` (save rejects the two through the full path).
+
+**The class-closing `kvm_vcpu_events` audit (PR #12 round 8).** Rounds 4/6/7/8 each surfaced one more event
+sub-field; this is the *exhaustive* pass so the class is **closed, not sampled**. Every modeled
+`kvm_vcpu_events` sub-field, its canonicalization rule (zeroed when its validity bit is clear, so it never
+perturbs `canonical_events` / `state_hash`), and its cap-gating (rejected before mutation on **both** save
+and restore when it needs a KVM cap this backend lacks):
+
+| sub-field | canonicalization rule (in `canonical_events`) | cap-gated reject |
+|---|---|---|
+| `exception_injected` | active bit — kept (drives the exception sub-record) | — |
+| `exception_pending` | active bit — kept | — |
+| `exception_nr` | gated on `injected ‖ pending` | — |
+| `exception_has_error_code` | gated on `injected ‖ pending` | — |
+| `exception_error_code` | **gated on `has_error_code`** (round 8) | — |
+| `exception_has_payload` | gated on `injected ‖ pending` | **reject** — `KVM_CAP_EXCEPTION_PAYLOAD` off |
+| `exception_payload` | **gated on `has_payload`** (round 8) | (moot — `has_payload` rejected) |
+| `interrupt_injected` | active bit — kept | — |
+| `interrupt_nr` | gated on `interrupt_injected` | — |
+| `interrupt_soft` | gated on `interrupt_injected` | — |
+| `interrupt_shadow` | active state — kept (drives `VALID_SHADOW`) | — |
+| `nmi_injected` | active state — kept | — |
+| `nmi_pending` | active state — kept (drives `VALID_NMI_PENDING`) | — |
+| `nmi_masked` | active state — kept (rides the NMI validity bit) | — |
+| `sipi_vector` | gated on the **original** `VALID_SIPI_VECTOR` bit (round 2) | — |
+| `flags` | **rebuilt** from the surviving fields (active-only for the hash; restore forces the cap-free `NMI_PENDING ‖ SHADOW ‖ SMM`) | — |
+| `smi_smm` / `smi_pending` / `smi_inside_nmi` / `smi_latched_init` | active state — kept (any drives `VALID_SMM`) | — |
+| `triple_fault_pending` | active state — kept (drives `VALID_TRIPLE_FAULT`) | **reject** — `KVM_CAP_X86_TRIPLE_FAULT_EVENT` off |
+
+Every value field is now either an **active bit** (carried verbatim, and *it* drives its own validity bit,
+so there is no stale-residual class), a **modifier gated on its parent's active/validity bit** (so a stale
+value with the bit clear is zeroed), or a **cap-gated field rejected on both save and restore**. The
+don't-care-when-invalid canonicalizations are pinned by exact-value tests
+(`canonical_events_zeroes_value_fields_when_their_validity_bit_is_clear` for `error_code`/`payload`,
+`canonical_events_collapses_residuals_and_reconstructs_flags` for the modifiers + the rebuilt mask, the SIPI
+cases for `sipi_vector`).
 
 **5. What gate 2 proves — and what it does *not* yet prove (the honest headline; PR #12 rounds 2–3).**
 The task-41 unlock is the **`kvm_vcpu_events` capture**: task 39 fail-closed-**rejected** every point whose
@@ -2501,12 +2542,12 @@ distinguishing (`a != b` for a changed input). Canonicalizing a *deterministic* 
 leaves every same-seed pair equal and every distinguishing pair (which uses active fields) unequal, so
 **no pinned value moves**; the non-Linux M1/M2/corpus paths are byte-identical (all-zero events). The
 change therefore satisfies the spec's "re-bless goldens only if a non-Linux path's hash changes — it
-should not." Verified on Mac: `vmm-core` (243), `unison`/`det-corpus` determinism (92) all green; and
+should not." Verified on Mac: `vmm-core` (245), `unison`/`det-corpus` determinism (92) all green; and
 **on the box** the full-hash gate 2 (below) now passes with `live == restored` bit-for-bit.
 
 ## Gates
 
-**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**243** tests) / `deny`. **Miri**
+**Mac (all green):** `build` / `clippy -D warnings` / `fmt` / `nextest` (**245** tests) / `deny`. **Miri**
 validates the new `put_events`/`Reader::events`/`canonical_events`/`has_inflight_injection` byte-parsing +
 predicates (pure, no new `unsafe` — the granted mmap unsafe is unchanged). **mutants** (`cargo mutants
 --no-shuffle --in-diff origin/main...HEAD`, CI's exact invocation) — **0 missed / 0 timeout**.
@@ -2530,10 +2571,13 @@ Portable coverage of the mechanism (Mac + Linux): `src/snapshot.rs`
 fix, §4: restore clears a non-fresh target's stale NMI/SMM/shadow; verified to FAIL without the forced
 validity bits*; **`unrepresentable_state_fails_closed_on_cap_gated_event_fields`** — *the round-7 save/restore
 symmetry, §4: save fail-closes on `triple_fault_pending` / `exception_has_payload` (unrestorable — caps off)
-but not on any restorable in-flight class*; `fill_vcpu_state_canonicalizes_the_typed_events_record`),
+but not on any restorable in-flight class*; **`canonical_events_zeroes_value_fields_when_their_validity_bit_is_clear`**
+— *the round-8 audit, §4: a stale `error_code`/`payload` whose validity bit is clear is zeroed; verified to
+FAIL without the gate*; `fill_vcpu_state_canonicalizes_the_typed_events_record`),
 `src/vmm.rs`
 (`save_vm_state_captures_in_flight_events_at_a_non_quiescent_point`,
-`restore_canonicalizes_raw_events_from_an_external_blob` — **the round-3 restore/save symmetry, §4**;
+`restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation` — **the round-8 restore-side reject (atomic
+contract), §4**; `restore_canonicalizes_raw_events_from_an_external_blob` — **the round-3 restore/save symmetry, §4**;
 `snapshot_restore_re_derives_the_in_flight_lapic_irq`,
 `has_inflight_event_injection_reflects_the_live_vcpu`,
 `has_active_event_injection_reflects_the_live_vcpu`,
@@ -2655,6 +2699,6 @@ taskset -c 4 timeout 3600 cargo test -p vmm-core --test live_nonquiescent_snapsh
 > - **Hygiene ✓** — patched `kvm 1400832` loaded per run, reverted to stock `kvm 1396736` after each
 >   (verified via `lsmod`), `kvm_intel` users checked `== 0` before loading (task 38 idle).
 > - **Standard gates on the box ✓** — `clippy -D warnings` (the box-only test file included), `fmt`,
->   `nextest` (243 non-ignored), and **public-api** (`tests/public-api.txt` matches
+>   `nextest` (245 non-ignored), and **public-api** (`tests/public-api.txt` matches
 >   `cargo +nightly public-api` exactly — the three new lines `Vmm::has_active_event_injection`,
 >   `Vmm::has_inflight_event_injection`, `Vmm::has_pending_guest_interrupt`).
