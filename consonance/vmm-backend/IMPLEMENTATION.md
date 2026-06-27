@@ -738,3 +738,32 @@ Linux Phase C `4f926e01…c6aa ==` (patched, then reverted to stock `1396736`). 
 vmm-backend 19/19 (incl. the new property + stateful tests), vmm-core 265/265, Miri
 `run_until` (the stateful test is `#[cfg(not(miri))]` — pure arithmetic, no `unsafe`),
 cross-clippy/fmt/deny clean.
+
+### PR #15 round-3: CI-gate fixes (kani lock + pmu mutation coverage) (2026-06-27)
+
+Two red CI gates after round-2, both CI-hygiene / coverage (not determinism bugs):
+
+- **kani (red):** root cause was a `Cargo.lock` inconsistency — the round-2 commit's
+  `git add -A consonance/vmm-backend` excluded the root `Cargo.lock`, so the pushed
+  HEAD listed the new `proptest-state-machine` dev-dep in `Cargo.toml` but not the
+  lock. The kani job builds `--locked` → `cannot update the lock file`. Fix: commit
+  the correct `Cargo.lock` (reproduced + verified with `cargo metadata --locked`;
+  `cargo kani -p vtime`/`-p lapic` pass locally, both VERIFICATION SUCCESSFUL — the
+  proofs were never touched). Also removed an accidentally-committed
+  `proptest-regressions/` seed + added a crate `.gitignore`.
+
+- **mutants (red):** survivors were all in `pmu.rs`'s `PerfEventAttr` builder — good
+  that it was no longer box-excluded, but it needed pinning. Mirrored the
+  `kvm.rs`/`kvm_sys.rs` split: **`pmu.rs`** is now the pure, portable config
+  (struct + bit constants + `branch_counter_attr()` + exact-value tests), IN the
+  coverage + mutation gates; **`pmu_sys.rs`** (new) is the box-only `PmuBranchCounter`
+  syscall orchestration, excluded like `kvm_sys`/`work_perf`. The reported survivors
+  are killed by exact-value tests, and the *equivalent* mutants are eliminated rather
+  than excluded (dropped the redundant `sample_type: 0`; composed the flag words with
+  `+` over disjoint bits so the oracle's operator swaps are all caught/unviable, vs
+  the un-killable `|`→`^`). Verified locally: `cargo mutants -f pmu.rs` 18/15 caught/3
+  unviable/**0 missed**, and the full `cargo mutants --in-diff` over the whole PR
+  (pmu.rs + run_until.rs + vmm.rs) = 45 mutants, 26 caught, 19 unviable, **0 missed**.
+
+Process: the slow gates (`cargo mutants --in-diff`, `cargo kani`) are now run locally
+before push, not just nextest/clippy/fmt.
