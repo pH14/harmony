@@ -707,3 +707,34 @@ when done). All gates re-pass with the fixes:
 - Gate 4 (patched): P6 2/2; Linux Phase C deterministic-twice `4f926e01…c6aa == `.
 - Off-box: vmm-backend 16/16, vmm-core 227/227, Miri `run_until` 7/7 (incl. P1(a)),
   cross-clippy/fmt/deny clean.
+
+### PR #15 round-2: pin the P1 invariants in portable, gate-covered tests (2026-06-27)
+
+The P1 fixes touched `kvm_sys.rs`, which is **excluded** from the coverage + mutation
+gates (box-only FFI). Cross-model review asked that the *determinism decisions* be
+factored into the covered + mutation- + property-tested portable layer so a future
+regression is caught on CI, not only on the box:
+
+- **P1(a):** the early/at/past-deadline decision is now a pure
+  `classify_guest_exit(work, deadline)` in `run_until.rs` (covered + mutation-tested);
+  `kvm_sys` is thin FFI that only *reports* the PMU read (`LiveStop::Guest{exit,
+  work}`). Property test `drive_run_until_classifies_any_guest_exit` checks the
+  classifier + the `Exit`/`Err` mapping for all `(work, deadline)`.
+- **P1(b):** the first-entry PMU-reset discipline is extracted into a portable
+  `FirstEntryReset` (`new`/`take_reset`/`rearm`); `KvmBackend` holds one instead of
+  the `first_run_done` bool. A **`proptest-state-machine` stateful test**
+  (`reset_discipline_stateful`) drives random run/restore sequences over N VMs sharing
+  one thread and asserts the backend counter **B** equals an *independent* reference
+  for vmm-core's V-time counter **A** (a second shared counter with the correct
+  discipline) — pinning "B's reset points track A's" across the interleaving the
+  contamination bug needs. Verified the stateful test (and the `first_entry_reset`
+  unit test) **fail** if `rearm` is broken to a no-op, i.e. they are genuine guards.
+  The box test `restore_re_arms_pmu_reset_excluding_foreign_branches` still proves the
+  FFI wiring end-to-end.
+
+Behavior-preserving refactor — box gates re-pass **byte-identically**: gate 1 + the
+P1(b) box test 5/5 (stock); gate 2 `state_hash 34cc29eb…61c5 ==`; gate 4 P6 2/2 +
+Linux Phase C `4f926e01…c6aa ==` (patched, then reverted to stock `1396736`). Off-box:
+vmm-backend 19/19 (incl. the new property + stateful tests), vmm-core 265/265, Miri
+`run_until` (the stateful test is `#[cfg(not(miri))]` — pure arithmetic, no `unsafe`),
+cross-clippy/fmt/deny clean.
