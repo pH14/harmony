@@ -142,3 +142,15 @@ full-tree 372 s.
 `seal`/`BuilderCore` mutants, incl. line 521) → **5 caught, 0 missed, 1 timeout**;
 the timeout is exactly `+=`→`*=`. Library and public API unchanged
 (`public-api.txt` still passes); `Cargo.lock` left untracked, matching `main`.
+
+### Task 35 re-hardening — re-verified on the post-task-50 tree
+
+Task 50 (the net-fault boundary, which retired `dissonance/pv-net`) touched only
+`dissonance/`; `consonance/snapshot-store` is byte-identical, so `lib.rs:521`'s
+`self.store.next_id += 1` and the `seal_assigns_a_fresh_id_each_time` test are
+unchanged. Re-verified on the current tree across the **whole** file:
+`cargo mutants -p snapshot-store --file lib.rs` → **51 caught, 0 missed, 1 timeout,
+11 unviable** (63 mutants). The single non-caught is exactly `lib.rs:521`'s
+`+=`→`*=` — the inherent self-parented-layer infinite loop, bounded to
+cargo-mutants' ≈20 s scoped minimum (never the full-tree 372 s), as documented
+above. No production logic changed.
