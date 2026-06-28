@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
+use pit::{PIT_PORT_COMMAND, PIT_PORT_COUNTER0, Pit, PitConfig};
+
 use crate::contract::{self, MsrDisposition};
 use crate::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
 use crate::snapshot::{self, DeviceState, LegacyState, SnapshotError, UartState};
@@ -41,6 +43,17 @@ const COM1_IRQ: u8 = 4;
 /// the userspace TX and EOIs the 8259. (Verified against the boot log: the guest
 /// uses the 8259 in virtual-wire mode, no IO-APIC — see IMPLEMENTATION.md.)
 const COM1_IRQ_VECTOR: u8 = 0x34;
+
+/// Legacy ISA IRQ line for the i8254 PIT counter 0 — the **system timer** (task 53).
+/// In virtual-wire mode the PIT's terminal count drives IRQ0 through the 8259, the
+/// guest's natural clock-event tick (Deterland arXiv:1504.07070 §4.1.2).
+const TIMER_IRQ: u8 = 0;
+/// The interrupt **vector** the guest delivers the PIT's IRQ0 on. Same static ISA-IRQ
+/// window as COM1: `ISA_IRQ_VECTOR(0) = 0x30` (the master 8259's ICW2 offset). The VMM
+/// injects it (the `KVM_INTERRUPT` ExtINT seam, as a PIC `INTR` would) when counter 0
+/// raises IRQ0 and the 8259 has not masked the line; the guest's IRQ-0 handler runs the
+/// tick and EOIs the 8259. Distinct from [`COM1_IRQ_VECTOR`] (`0x34`).
+const TIMER_IRQ_VECTOR: u8 = 0x30;
 
 /// `IA32_TSC` — the architectural time-stamp-counter MSR. The contract marks it
 /// `emulate-vtime`; a guest `RDMSR(0x10)` reads the same V-time TSC the RDTSC
@@ -466,11 +479,20 @@ pub struct Vmm<B: Backend> {
     /// driven off V-time). The register state is folded into the hash so two
     /// same-seed Linux runs that leave the APIC in different state diverge.
     lapic: Option<lapic::Lapic>,
-    /// Minimal legacy PC platform I/O (PCI/PIC/PIT/CMOS/POST/extra-COM = "no
-    /// device"), wired with the xAPIC on the Linux boot path; `None` for
-    /// M1/M2/corpus (which never touch these ports), so their port-I/O default-deny
-    /// and `state_hash` are unchanged.
+    /// Minimal legacy PC platform I/O (PCI/PIC/CMOS/POST/extra-COM = "no device"),
+    /// wired with the xAPIC on the Linux boot path; `None` for M1/M2/corpus (which
+    /// never touch these ports), so their port-I/O default-deny and `state_hash` are
+    /// unchanged. (The 8254 PIT ports `0x40`–`0x43` are now serviced by [`Self::pit`],
+    /// not the legacy stub — see [`Vmm::dispatch_out`].)
     legacy: Option<LegacyPlatform>,
+    /// The deterministic i8254 vPIT (task 53), wired with the xAPIC on the Linux boot
+    /// path; `None` for M1/M2/corpus. Counter 0's terminal count drives **IRQ0** — the
+    /// guest's clock-event tick in virtual-wire mode (Deterland §4.1.2). When wired, a
+    /// guest port access in `0x40`–`0x43` is serviced from it, its IRQ0 deadline is the
+    /// discrete-event clock's next-event source ([`Self::armed_timer_deadline_vns`]),
+    /// and IRQ0 is injected through the 8259 ExtINT path. Its state is folded into the
+    /// hash so two same-seed Linux runs whose PIT differs diverge.
+    pit: Option<Pit>,
     /// When set ([`Vmm::wire_snapshot_hashing`]), [`Vmm::state_blob`] folds the
     /// **canonical `vm_state` encoding** into the hash as a `VMST` chunk — the
     /// snapshot/branch path's "the canonical `vm_state` blob drives `state_hash`"
@@ -503,6 +525,7 @@ impl<B: Backend> Vmm<B> {
             first_entry_done: false,
             lapic: None,
             legacy: None,
+            pit: None,
             snapshot_hashing: false,
         }
     }
@@ -515,6 +538,11 @@ impl<B: Backend> Vmm<B> {
     pub fn wire_lapic(&mut self, lapic: lapic::Lapic) -> &mut Self {
         self.lapic = Some(lapic);
         self.legacy = Some(LegacyPlatform::new());
+        // The vPIT is the guest's clock-event in virtual-wire mode (task 53). Wired
+        // together with the xAPIC + legacy platform — they are the Linux-path device
+        // set; M1/M2/corpus wire none. `PitConfig::default()` is the contract's
+        // 1.193182 MHz, which is non-zero, so `Pit::new` is statically infallible.
+        self.pit = Some(Pit::new(PitConfig::default()).expect("default PIT frequency is non-zero"));
         self
     }
 
@@ -614,13 +642,20 @@ impl<B: Backend> Vmm<B> {
             return Ok(self.pending_serial_vector().is_some());
         }
         let now = self.lapic_now_vns()?;
-        // Scope the `&mut lapic` borrow so it ends before `self.pending_serial_vector()`.
+        // Advance the vPIT too: a due counter-0 terminal count raises an IRQ0 edge the
+        // 8259 will forward, a pending guest interrupt just like a LAPIC IRR vector.
+        if let Some(pit) = self.pit.as_mut() {
+            pit.advance_to(now);
+        }
+        // Scope the `&mut lapic` borrow so it ends before the ExtINT-vector queries.
         let lapic_pending = {
             let lapic = self.lapic.as_mut().expect("is_some checked above");
             lapic.advance_to(now);
             lapic.peek_interrupt().is_some()
         };
-        Ok(lapic_pending || self.pending_serial_vector().is_some())
+        Ok(lapic_pending
+            || self.pending_timer_vector().is_some()
+            || self.pending_serial_vector().is_some())
     }
 
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
@@ -904,6 +939,9 @@ impl<B: Backend> Vmm<B> {
                     slave_imr: imr[1],
                 }
             }),
+            // The vPIT counter/mode/arm state + pending IRQ0 (task 53) — Linux path
+            // only; `None` for M1/M2/corpus, so their blob carries a single 0 byte.
+            pit: self.pit.as_ref().map(|p| p.snapshot()),
             // The full `kvm_vcpu_events` (task 41), **canonicalized** so an in-flight
             // interrupt/exception injection round-trips while KVM's inert modifier
             // residuals (a stale `interrupt.nr`/`exception.nr`, the GET-only validity
@@ -1082,6 +1120,24 @@ impl<B: Backend> Vmm<B> {
                     .to_string(),
             ));
         }
+        // 1c-ter. The vPIT must match this VM's wiring too (wired together with the
+        // xAPIC by `wire_lapic`) AND its snapshot must be coherent. Pre-built here
+        // (fallible) so a malformed blob fails BEFORE any `Backend::restore` mutates
+        // the vCPU — restore stays reject-before-mutation (atomic), like `new_lapic`.
+        let new_pit = match (&dev.pit, self.pit.is_some()) {
+            (Some(ps), true) => Some(
+                Pit::restore(ps)
+                    .map_err(|_| SnapshotError::DeviceBlob("incoherent PitState in device blob"))?,
+            ),
+            (Some(_), false) | (None, true) => {
+                return Err(VmmError::ContractViolation(
+                    "restore_vm_state: snapshot/VM vPIT wiring mismatch (one has the i8254 PIT, the \
+                     other does not) — restore into a VM composed like the snapshot source."
+                        .to_string(),
+                ));
+            }
+            (None, false) => None,
+        };
         // 1d. V-time: validate the rate matches and pre-build the clock + entropy.
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
@@ -1167,6 +1223,9 @@ impl<B: Backend> Vmm<B> {
         }
         if let Some(l) = new_lapic {
             self.lapic = Some(l);
+        }
+        if let Some(p) = new_pit {
+            self.pit = Some(p);
         }
         if let (Some(legacy), Some(ls)) = (self.legacy.as_mut(), dev.legacy) {
             legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);
@@ -1451,6 +1510,14 @@ impl<B: Backend> Vmm<B> {
             let mut legy = legacy.config_address().to_le_bytes().to_vec();
             legy.extend_from_slice(&legacy.pic_imr());
             put_chunk(&mut out, b"LEGY", &legy);
+        }
+        // The vPIT chunk (counter/mode/arm bookkeeping + the pending IRQ0 edge) —
+        // Linux path only, like `LAPC`/`LEGY`; M1/M2/corpus emit none, so their hash
+        // is byte-for-byte unchanged. The PIT is the clock-event, so two same-seed
+        // runs whose PIT differs (a different programmed period, a different phase, or
+        // a pending tick) hash differently.
+        if let Some(pit) = &self.pit {
+            put_chunk(&mut out, b"PIT\0", &encode_pit_state(&pit.snapshot()));
         }
         // The canonical `vm_state` blob, folded into the hash **only** when the
         // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps
@@ -1763,6 +1830,23 @@ impl<B: Backend> Vmm<B> {
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
+        // Linux path: the i8254 vPIT owns 0x40-0x43 (counter 0 -> IRQ0 system tick,
+        // task 53). Serviced BEFORE the legacy stub, which no longer claims these
+        // ports. A count load anchors at the current V-time (the skid-free
+        // `lapic_now_vns`, exactly as a LAPIC-timer arm does). The named `pit_owns`
+        // bool (mirroring `dispatch_mmio`'s `in_apic_page`) keeps the borrow order:
+        // `lapic_now_vns` reads `&self` before the `&mut pit` borrow.
+        let pit_owns = self.pit.is_some() && (PIT_PORT_COUNTER0..=PIT_PORT_COMMAND).contains(&port);
+        if pit_owns {
+            require_byte_io("OUT", port, size)?;
+            let now = self.lapic_now_vns()?;
+            self.pit
+                .as_mut()
+                .expect("pit_owns implies wired")
+                .port_write(port, value as u8, now)
+                .map_err(|e| VmmError::ContractViolation(format!("PIT write {port:#06x}: {e}")))?;
+            return Ok(Step::Continued);
+        }
         // Linux path: the curated legacy ISA/PCI ports accept-and-drop.
         if let Some(legacy) = self.legacy.as_mut()
             && LegacyPlatform::owns(port)
@@ -1782,6 +1866,23 @@ impl<B: Backend> Vmm<B> {
                 self.backend.complete_read(u64::from(byte))?;
                 return Ok(Step::Continued);
             }
+        }
+        // Linux path: the i8254 vPIT owns 0x40-0x43 (task 53), serviced before the
+        // legacy stub. A counter read returns the next latched/live count byte (or a
+        // read-back status byte); the command port `0x43` reads 0 (write-only). The
+        // named `pit_owns` bool keeps the `&self` → `&mut pit` borrow order (as above).
+        let pit_owns = self.pit.is_some() && (PIT_PORT_COUNTER0..=PIT_PORT_COMMAND).contains(&port);
+        if pit_owns {
+            require_byte_io("IN", port, size)?;
+            let now = self.lapic_now_vns()?;
+            let byte = self
+                .pit
+                .as_mut()
+                .expect("pit_owns implies wired")
+                .port_read(port, now)
+                .map_err(|e| VmmError::ContractViolation(format!("PIT read {port:#06x}: {e}")))?;
+            self.backend.complete_read(u64::from(byte))?;
+            return Ok(Step::Continued);
         }
         // Linux path: the curated legacy ISA/PCI ports read back "no device".
         if let Some(legacy) = self.legacy.as_ref()
@@ -1915,7 +2016,20 @@ impl<B: Backend> Vmm<B> {
         if self.vtime.is_none() || !self.backend.capabilities().deterministic_tsc {
             return None;
         }
-        self.lapic.as_ref()?.next_timer_deadline()
+        // The discrete-event clock's next event is the **earliest** armed clock-event
+        // deadline (task 53 generalizes task 52's single-source "next event"). Real
+        // Linux in virtual-wire mode adopts the **vPIT** (counter 0 -> IRQ0) as its
+        // tick and leaves the LAPIC timer dormant — so the vPIT is the source that
+        // actually drives preemption / idle-resume. The LAPIC timer stays a present-
+        // but-unused fallback (Deterland §4.1.2 disables it), still honored here so a
+        // guest that *did* arm it is not starved. Whichever is armed (or both, min)
+        // gives the deadline.
+        let pit = self.pit.as_ref().and_then(Pit::next_irq0_deadline);
+        let lapic = self
+            .lapic
+            .as_ref()
+            .and_then(lapic::Lapic::next_timer_deadline);
+        min_opt(pit, lapic)
     }
 
     /// Handle [`Exit::Deadline`]: the guest was preempted at exactly `reached`
@@ -2010,20 +2124,54 @@ impl<B: Backend> Vmm<B> {
         if self.backend.save()?.regs.rflags & RFLAGS_IF == 0 {
             return Ok(IdleAction::Terminal);
         }
-        // (a) A deliverable interrupt already pending in the IRR → re-enter, no clock
-        //     change (peek_interrupt already does the vector-validity + TPR/PPR
-        //     arbitration). Takes precedence over a future deadline.
-        if lapic.peek_interrupt().is_some() {
+        // (a) A deliverable interrupt already pending now → re-enter, no clock change.
+        //     Either the LAPIC IRR (peek_interrupt does the vector-validity + TPR/PPR
+        //     arbitration), or a pending **PIT IRQ0** edge the 8259 will forward
+        //     (counter 0 fired while `IF == 0`, then `sti; hlt`). Takes precedence over
+        //     a future deadline.
+        if lapic.peek_interrupt().is_some() || self.pending_timer_vector().is_some() {
             return Ok(IdleAction::DeliverPending);
         }
-        // (b) No pending wake, but a future deliverable armed timer → jump to it.
-        if let Some(deadline_vns) = lapic.next_timer_deadline()
-            && lapic.armed_timer_deliverable()
-        {
+        // (b) No pending wake, but a future **deliverable** clock-event is armed → jump
+        //     to it: the vPIT's IRQ0 (the real Linux tick) or the dormant LAPIC timer,
+        //     whichever fires first among the deliverable ones.
+        if let Some(deadline_vns) = self.deliverable_wake_deadline_vns() {
             return Ok(IdleAction::JumpToDeadline(deadline_vns));
         }
         // Neither a pending nor a future deliverable wake → terminal.
         Ok(IdleAction::Terminal)
+    }
+
+    /// The earliest **deliverable** armed clock-event deadline — the idle-resume jump
+    /// target. The vPIT's IRQ0 deadline when counter 0 is armed and the 8259 has not
+    /// masked IRQ 0, and/or the LAPIC timer's deadline when it is armed with a vector
+    /// outranking PPR; the minimum of the two. `None` when no armed timer would
+    /// actually wake the guest, in which case an idle `HLT` is **terminal** (a wait
+    /// nothing will satisfy). This deliverability gate is what keeps a masked /
+    /// undeliverable timer from warping V-time forever (task 52's review P2, now
+    /// covering both clock-event sources).
+    fn deliverable_wake_deadline_vns(&self) -> Option<u64> {
+        let pit = self
+            .pit
+            .as_ref()
+            .filter(|_| self.timer_irq0_deliverable())
+            .and_then(Pit::next_irq0_deadline);
+        let lapic = self
+            .lapic
+            .as_ref()
+            .filter(|l| l.armed_timer_deliverable())
+            .and_then(lapic::Lapic::next_timer_deadline);
+        min_opt(pit, lapic)
+    }
+
+    /// Whether the 8259 would forward the PIT's IRQ0 (IRQ 0 unmasked in the master
+    /// IMR). The PIT IRQ0 vector (`0x30`) is always a valid (`>= 16`) ExtINT vector, so
+    /// the only delivery gate is the PIC mask — unlike the LAPIC timer's TPR/PPR/vector
+    /// arbitration ([`lapic::Lapic::armed_timer_deliverable`]).
+    fn timer_irq0_deliverable(&self) -> bool {
+        self.legacy
+            .as_ref()
+            .is_some_and(|l| !l.irq_masked(TIMER_IRQ))
     }
 
     /// Resume a *resumable idle* `HLT` by **jumping** V-time to the armed timer's
@@ -2122,16 +2270,37 @@ impl<B: Backend> Vmm<B> {
             return Ok(());
         }
         let now_vns = self.lapic_now_vns()?;
+        // Advance the vPIT (the clock-event): a due counter-0 terminal count raises
+        // IRQ0 into a pending edge ([`Pit::irq0_pending`]). Idempotent, like the LAPIC
+        // timer advance below.
+        if let Some(pit) = self.pit.as_mut() {
+            pit.advance_to(now_vns);
+        }
         // Scope the `&mut lapic` borrow so it ends before `self.backend`.
         let lapic_vector = {
             let lapic = self.lapic.as_mut().expect("is_some checked above");
             lapic.advance_to(now_vns);
             lapic.peek_interrupt() // re-arbitrate; do NOT move IRR→ISR
         };
-        // Local-APIC interrupts outrank the legacy ExtINT serial line.
-        let vector = lapic_vector.or_else(|| self.pending_serial_vector());
+        // Arbitration (one backend slot, re-arbitrated every entry): a deliverable
+        // Local-APIC vector outranks the legacy ExtINT lines; among the ExtINT lines
+        // the 8259 prioritizes by IRQ number, so the PIT's IRQ0 outranks COM1's IRQ4.
+        let vector = lapic_vector
+            .or_else(|| self.pending_timer_vector())
+            .or_else(|| self.pending_serial_vector());
         self.backend.set_pending_irq(vector)?;
         Ok(())
+    }
+
+    /// The PIT timer-interrupt vector ([`TIMER_IRQ_VECTOR`]) if counter 0 has raised
+    /// an unacknowledged IRQ0 edge ([`Pit::irq0_pending`]) **and** the 8259 has not
+    /// masked IRQ 0 — else `None`. The legacy ExtINT timer line, gated on the PIC mask
+    /// exactly like [`Self::pending_serial_vector`]. Gated on the vPIT + legacy
+    /// platform being wired (the Linux path), so M1/M2/corpus never see a timer vector.
+    fn pending_timer_vector(&self) -> Option<u8> {
+        let pit = self.pit.as_ref()?;
+        let legacy = self.legacy.as_ref()?;
+        (pit.irq0_pending() && !legacy.irq_masked(TIMER_IRQ)).then_some(TIMER_IRQ_VECTOR)
     }
 
     /// The COM1 serial interrupt vector ([`COM1_IRQ_VECTOR`]) if the 8250 is
@@ -2161,9 +2330,28 @@ impl<B: Backend> Vmm<B> {
     /// accepted. No-op overall when the xAPIC is unwired (the backend never accepts a
     /// maskable IRQ there).
     fn complete_irq_delivery(&mut self) {
-        while self.backend.take_accepted_interrupt().is_some() {
-            if let Some(lapic) = self.lapic.as_mut() {
-                lapic.take_interrupt();
+        while let Some(vector) = self.backend.take_accepted_interrupt() {
+            // A LAPIC vector moves IRR→ISR; a legacy ExtINT (PIT IRQ0 / COM1 IRQ4)
+            // touches no LAPIC register. Disambiguate by whether the LAPIC actually
+            // holds this vector deliverable: if so it is the LAPIC's (take it); else if
+            // it is the PIT's IRQ0 edge (vector 0x30), acknowledge it ([`Pit::ack_irq0`])
+            // so the next terminal count raises a fresh edge; COM1's IRQ4 is level-driven
+            // by the 8250 and needs no per-accept state. (This also resolves the rare
+            // collision of a LAPIC LVT-timer vector that equals 0x30: the LAPIC wins, and
+            // the PIT edge stays pending for the next entry.)
+            let from_lapic = self
+                .lapic
+                .as_ref()
+                .is_some_and(|l| l.peek_interrupt() == Some(vector));
+            if from_lapic {
+                self.lapic
+                    .as_mut()
+                    .expect("is_some checked above")
+                    .take_interrupt();
+            } else if vector == TIMER_IRQ_VECTOR
+                && let Some(pit) = self.pit.as_mut()
+            {
+                pit.ack_irq0();
             }
         }
     }
@@ -2637,6 +2825,47 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     }
     v.extend_from_slice(&vt.clock.snapshot_vns(vt.last_intercept_work).to_le_bytes());
     v.extend_from_slice(&vt.entropy.save_state());
+    v
+}
+
+/// The minimum of two optional deadlines: the earlier when both are armed, the armed
+/// one when only one is, `None` when neither — the discrete-event clock's "earliest
+/// next event over the active clock-event sources" (task 53: vPIT + dormant LAPIC).
+fn min_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) => x,
+        (None, y) => y,
+    }
+}
+
+/// Deterministic, fixed-layout encoding of the vPIT [`pit::PitState`] for the `PIT\0`
+/// hash chunk: the device header (version/freq/pending-IRQ0) then each counter's
+/// fields little-endian in declaration order (all plain `u8`/`u16`/`u64`/`bool` POD —
+/// no map iteration, no float). A change in any counter's mode/access/reload/arm, the
+/// latch/flip-flop bookkeeping, or the pending IRQ0 edge changes the hash.
+fn encode_pit_state(s: &pit::PitState) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.extend_from_slice(&s.version.to_le_bytes());
+    v.extend_from_slice(&s.freq_hz.to_le_bytes());
+    v.push(u8::from(s.irq0_pending));
+    for c in &s.counters {
+        v.push(c.mode);
+        v.push(u8::from(c.bcd));
+        v.push(c.access);
+        v.extend_from_slice(&c.reload.to_le_bytes());
+        v.extend_from_slice(&c.arm_vns.to_le_bytes());
+        v.push(u8::from(c.loaded));
+        v.push(u8::from(c.oneshot_fired));
+        v.push(u8::from(c.null_count));
+        v.push(u8::from(c.write_phase));
+        v.push(c.write_lo);
+        v.push(u8::from(c.read_phase));
+        v.push(u8::from(c.count_latched));
+        v.extend_from_slice(&c.latch_val.to_le_bytes());
+        v.push(u8::from(c.status_latched));
+        v.push(c.status_val);
+    }
     v
 }
 

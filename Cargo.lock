@@ -875,6 +875,7 @@ dependencies = [
  "lapic",
  "libc",
  "memmap2",
+ "pit",
  "proptest",
  "sha2",
  "snapshot-store",

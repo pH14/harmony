@@ -57,6 +57,14 @@ unison = { path = "../unison", version = "0.1.0" }
 # Pure-logic, no_std, no features. Pinned `version` alongside `path` for
 # `cargo deny`'s wildcard ban (as for the other siblings).
 lapic = { path = "../lapic", version = "0.1.0" }
+# Rule-2 sibling exception (task 53, deterministic i8254 vPIT): the userspace PIT
+# (counter 0 -> IRQ0 system tick) lives above the `Backend` trait — vmm-core routes
+# the guest's 0x40-0x43 port I/O into it, sources `preemption_deadline()` / the
+# idle-resume target from its IRQ0 deadline (the active clock-event, re-keyed off the
+# now-dormant LAPIC timer), and injects IRQ0 through the 8259 ExtINT path. Pure-logic,
+# no_std, no features. Pinned `version` alongside `path` for `cargo deny`'s wildcard
+# ban (as for the other siblings). Cites Deterland (arXiv:1504.07070 §4.1.2).
+pit = { path = "../pit", version = "0.1.0" }
 # bzImage / boot_params parsing for the Linux loader (task 30, rule-5 whitelist).
 # `derive` for the `#[repr(C)]` boot-protocol structs; reads of the untrusted
 # image go through zerocopy's bounds-checked `read_from_prefix` (no panic, no

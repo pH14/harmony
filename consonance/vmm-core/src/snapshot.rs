@@ -30,6 +30,7 @@
 //! Mac/Miri-testable against plain memory, exactly as `snapshot-store` is.
 
 use lapic::LapicState;
+use pit::{PitCounterState, PitState};
 use snapshot_store::{Mapping, PAGE_SIZE, SnapStats, SnapshotId, Store, StoreConfig, StoreStats};
 use vm_state::{
     DebugRegs, DeviceBlob, MpState, MsrBlock, Segment, TimerQueueState, VcpuEvents, VcpuRegs,
@@ -852,8 +853,9 @@ const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 /// `VM_STATE_VERSION`, since this lives inside the opaque device section).
 /// v2 added the ordered conformance `report_stream`; v3 added the **full
 /// `kvm_vcpu_events`** record (task 41 — non-quiescent capture, so an in-flight
-/// interrupt/exception injection round-trips instead of being fail-closed-rejected).
-const DEVICE_BLOB_VERSION: u16 = 3;
+/// interrupt/exception injection round-trips instead of being fail-closed-rejected);
+/// v4 added the **vPIT** subrecord (task 53 — the i8254 clock-event state).
+const DEVICE_BLOB_VERSION: u16 = 4;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
@@ -890,6 +892,9 @@ pub(crate) struct DeviceState {
     pub lapic: Option<LapicState>,
     /// The legacy PC platform latches (Linux path only).
     pub legacy: Option<LegacyState>,
+    /// The vPIT counter/mode/arm state + pending IRQ0 edge (task 53, Linux path only).
+    /// `None` at a quiescent point on M1/M2/corpus (a single 0 byte in the blob).
+    pub pit: Option<PitState>,
     /// The **full** `kvm_vcpu_events` (`KVM_GET_VCPU_EVENTS`) — every in-flight
     /// injection / interrupt-shadow / NMI / SMI / triple-fault field, not the reduced
     /// `vm_state::VcpuEvents` subset (task 41). This is what makes a **non-quiescent**
@@ -944,6 +949,31 @@ fn put_events(out: &mut Vec<u8>, e: &vmm_backend::VcpuEvents) {
         e.smi_latched_init,
         e.triple_fault_pending,
     ]);
+}
+
+/// Append a [`PitState`] in fixed declaration order (all POD; reversed by
+/// [`Reader::pit`]).
+fn put_pit(out: &mut Vec<u8>, s: &PitState) {
+    put_u32(out, s.version);
+    put_u64(out, s.freq_hz);
+    out.push(u8::from(s.irq0_pending));
+    for c in &s.counters {
+        out.push(c.mode);
+        out.push(u8::from(c.bcd));
+        out.push(c.access);
+        put_u16(out, c.reload);
+        put_u64(out, c.arm_vns);
+        out.push(u8::from(c.loaded));
+        out.push(u8::from(c.oneshot_fired));
+        out.push(u8::from(c.null_count));
+        out.push(u8::from(c.write_phase));
+        out.push(c.write_lo);
+        out.push(u8::from(c.read_phase));
+        out.push(u8::from(c.count_latched));
+        put_u16(out, c.latch_val);
+        out.push(u8::from(c.status_latched));
+        out.push(c.status_val);
+    }
 }
 
 /// Append a [`LapicState`] in fixed declaration order (all POD; reversed by
@@ -1005,8 +1035,15 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
         }
         None => out.push(0),
     }
-    // The full kvm_vcpu_events (task 41) — last, a fixed-width trailing record so the
-    // earlier field offsets are unchanged from v2.
+    // The vPIT subrecord (task 53, v4): a presence flag then the device state.
+    match &d.pit {
+        Some(p) => {
+            out.push(1);
+            put_pit(&mut out, p);
+        }
+        None => out.push(0),
+    }
+    // The full kvm_vcpu_events (task 41) — last, a fixed-width trailing record.
     put_events(&mut out, &d.events);
     DeviceBlob(out)
 }
@@ -1092,6 +1129,38 @@ impl<'a> Reader<'a> {
             triple_fault_pending: self.u8()?,
         })
     }
+    /// Reverse of [`put_pit`]: the vPIT device state then its three counters.
+    fn pit(&mut self) -> Option<PitState> {
+        let version = self.u32()?;
+        let freq_hz = self.u64()?;
+        let irq0_pending = self.bool()?;
+        let mut counters = [PitCounterState::default(); 3];
+        for c in &mut counters {
+            *c = PitCounterState {
+                mode: self.u8()?,
+                bcd: self.bool()?,
+                access: self.u8()?,
+                reload: self.u16()?,
+                arm_vns: self.u64()?,
+                loaded: self.bool()?,
+                oneshot_fired: self.bool()?,
+                null_count: self.bool()?,
+                write_phase: self.bool()?,
+                write_lo: self.u8()?,
+                read_phase: self.bool()?,
+                count_latched: self.bool()?,
+                latch_val: self.u16()?,
+                status_latched: self.bool()?,
+                status_val: self.u8()?,
+            };
+        }
+        Some(PitState {
+            version,
+            freq_hz,
+            irq0_pending,
+            counters,
+        })
+    }
     fn lapic(&mut self) -> Option<LapicState> {
         Some(LapicState {
             version: self.u32()?,
@@ -1158,6 +1227,11 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         }),
         _ => return Err(bad("bad legacy flag")),
     };
+    let pit = match r.u8().ok_or(bad("truncated pit flag"))? {
+        0 => None,
+        1 => Some(r.pit().ok_or(bad("truncated pit"))?),
+        _ => return Err(bad("bad pit flag")),
+    };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
     if r.pos != blob.len() {
         return Err(bad("trailing bytes"));
@@ -1173,6 +1247,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         },
         lapic,
         legacy,
+        pit,
         events,
     })
 }
@@ -1180,6 +1255,53 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pit_state() -> PitState {
+        PitState {
+            version: pit::PIT_STATE_VERSION,
+            freq_hz: pit::PIT_FREQ_HZ,
+            irq0_pending: true,
+            counters: [
+                // A live periodic counter 0 mid-readback (count latched, hi-byte next).
+                PitCounterState {
+                    mode: 2,
+                    bcd: false,
+                    access: 3,
+                    reload: 0x2E9C,
+                    arm_vns: 12_345,
+                    loaded: true,
+                    oneshot_fired: false,
+                    null_count: false,
+                    write_phase: false,
+                    write_lo: 0x9C,
+                    read_phase: true,
+                    count_latched: true,
+                    latch_val: 0x1234,
+                    status_latched: false,
+                    status_val: 0,
+                },
+                PitCounterState::default(),
+                // A fired one-shot in BCD with a latched status byte pending.
+                PitCounterState {
+                    mode: 0,
+                    bcd: true,
+                    access: 1,
+                    reload: 0x0100,
+                    arm_vns: 999,
+                    loaded: true,
+                    oneshot_fired: true,
+                    null_count: false,
+                    write_phase: false,
+                    write_lo: 0,
+                    read_phase: false,
+                    count_latched: false,
+                    latch_val: 0,
+                    status_latched: true,
+                    status_val: 0x84,
+                },
+            ],
+        }
+    }
 
     fn lapic_state(tpr: u32) -> LapicState {
         LapicState {
@@ -1464,6 +1586,7 @@ mod tests {
                 master_imr: 0xEF,
                 slave_imr: 0xFF,
             }),
+            pit: Some(pit_state()),
             events: full_events(),
         };
         let blob = encode_device_blob(&d);
@@ -2083,6 +2206,7 @@ mod tests {
             },
             lapic: None,
             legacy: None,
+            pit: None,
             events: vmm_backend::VcpuEvents::default(),
         };
         let blob = encode_device_blob(&d);
