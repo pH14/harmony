@@ -48,6 +48,11 @@ fn plan_matches_saturating_spec() {
 fn advance_lands_clock_at_deadline_or_clamps() {
     let vns_base: u64 = kani::any();
     let deadline: u64 = kani::any();
+    // `VClock::new` rejects a 1:1 config with `vns_base == u64::MAX`
+    // (`ImmediateSaturation`: `vns(1)` would exceed `u64::MAX`), so exclude that
+    // single value — the saturation/no-wrap behavior of the *planner* itself is
+    // already proven over all of `u64` by `plan_matches_saturating_spec`.
+    kani::assume(vns_base < u64::MAX);
     // The pre-jump effective V-time at work 0 is exactly `vns_base` (1:1 clock).
     let now = vns_base;
 
