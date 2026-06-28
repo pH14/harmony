@@ -5029,6 +5029,32 @@ mod tests {
     }
 
     #[test]
+    fn preemption_deadline_is_none_off_the_determinism_path() {
+        // `preemption_deadline` / `armed_timer_deadline_vns` gate run_until on the
+        // determinism path: V-time wired AND a deterministic counter. A stock backend (no
+        // `deterministic_tsc`) with a LAPIC timer ARMED must still return None — run_until
+        // is determinism-only — so the gate is `vtime.is_none() || !deterministic_tsc`, not
+        // `&&` (which would wrongly run_until on stock).
+        let mut v = lapic_vmm(
+            configured_stock_mock(arm_timer_exits(1000)),
+            Box::new(ScriptedWork::at(0)),
+        );
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // arm the timer
+        }
+        // The timer IS armed (a LAPIC query, backend-independent)...
+        assert!(
+            v.lapic.as_ref().unwrap().next_timer_deadline().is_some(),
+            "the LAPIC timer is armed",
+        );
+        // ...yet preemption_deadline is None on the non-deterministic backend.
+        assert!(
+            v.preemption_deadline().is_none(),
+            "a non-deterministic backend never uses run_until (preemption_deadline is None)"
+        );
+    }
+
+    #[test]
     fn idle_hlt_with_undeliverable_timer_is_terminal() {
         // Robustness (review P2): an ARMED but UNDELIVERABLE timer at a HLT(IF==1) must be
         // TERMINAL, not a resumable idle. Jumping would fire the timer into the IRR but
