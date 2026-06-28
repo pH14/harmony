@@ -5612,6 +5612,232 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // The vPIT re-keyed clock-event path (task 53): the i8254 counter 0 → IRQ0
+    // drives preemption_deadline / idle-resume, delivered via the 8259 ExtINT
+    // (vector 0x30), with the LAPIC timer left dormant. Driven by the portable
+    // MockBackend + ScriptedWork (SimCpu), like the task-47/52 timer tests. The
+    // 1:1 V-clock (`contract_vclock_config`) makes `vns(work) == work`, so a PIT
+    // deadline in V-time ns equals its `work_for_vns` work count.
+    // -----------------------------------------------------------------------
+
+    /// Program the vPIT counter 0 in `mode` (lobyte/hibyte, binary) with reload `n`
+    /// via three port OUTs: the control word (`0x43`) then the low and high count
+    /// bytes (`0x40`).
+    fn arm_pit_exits(mode: u8, n: u16) -> Vec<Exit> {
+        let out = |port: u16, val: u8| Exit::Io {
+            port,
+            size: 1,
+            write: Some(u32::from(val)),
+        };
+        let cw = (3u8 << 4) | (mode << 1); // counter 0, lobyte/hibyte, mode, binary
+        vec![
+            out(PIT_PORT_COMMAND, cw),
+            out(PIT_PORT_COUNTER0, (n & 0xFF) as u8),
+            out(PIT_PORT_COUNTER0, (n >> 8) as u8),
+        ]
+    }
+
+    /// Unmask IRQ 0 at the 8259 master PIC (clear bit 0 of the IMR at port `0x21`),
+    /// so the PIT's IRQ0 is forwarded — the 8259 mask gates ExtINT delivery.
+    fn unmask_irq0_out() -> Exit {
+        Exit::Io {
+            port: 0x0021,
+            size: 1,
+            write: Some(0xFE),
+        }
+    }
+
+    #[test]
+    fn vpit_irq0_deadline_drives_preemption_not_the_dormant_lapic() {
+        let mut exits = arm_pit_exits(2, 10); // counter 0, mode 2, N = 10
+        exits.push(Exit::Hlt);
+        let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(0)));
+        // Nothing armed before programming (the LAPIC timer is dormant too).
+        assert_eq!(
+            v.preemption_deadline(),
+            None,
+            "no clock-event armed before the guest programs the vPIT"
+        );
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // program counter 0
+        }
+        // The LAPIC timer stays dormant (virtual-wire mode) — the deadline is the vPIT's.
+        assert_eq!(
+            v.lapic.as_ref().unwrap().next_timer_deadline(),
+            None,
+            "the LAPIC timer is never armed — the vPIT is the clock-event"
+        );
+        let pit_vns = v
+            .pit
+            .as_ref()
+            .unwrap()
+            .next_irq0_deadline()
+            .expect("vPIT armed");
+        // 1:1 clock ⇒ work_for_vns is the identity ⇒ preemption_deadline == the PIT deadline.
+        assert_eq!(
+            v.preemption_deadline(),
+            Some(Vtime(pit_vns)),
+            "preemption_deadline is sourced from the vPIT IRQ0 deadline"
+        );
+    }
+
+    #[test]
+    fn vpit_irq0_injected_via_extint_when_due_and_unmasked() {
+        const W: u64 = 100_000_000; // 1:1 ratio → vns 1e8, far past the N=10 period
+        let mut exits = vec![unmask_irq0_out()];
+        exits.extend(arm_pit_exits(2, 10));
+        exits.push(Exit::Rdtsc); // V-time intercept → anchor = W
+        exits.push(Exit::Hlt); // at its top, service fires IRQ0 + injects 0x30
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        mock.set_defer_accept(true); // hold the injected vector pending (observable)
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
+
+        // unmask(1) + program(3) + rdtsc(1): the anchor advances to W, but each
+        // service so far ran at anchor 0 (< the period) so IRQ0 has not fired yet.
+        for _ in 0..5 {
+            assert!(matches!(v.step().unwrap(), Step::Continued));
+        }
+        assert_eq!(
+            v.backend.pending_irq(),
+            None,
+            "not injected before the anchor advances"
+        );
+
+        // The HLT step's service runs at now = snapshot_vns(W) ≥ the period → counter 0
+        // fires IRQ0, and (unmasked) it is injected as vector 0x30 via the ExtINT path.
+        v.step().unwrap();
+        assert_eq!(
+            v.backend.pending_irq(),
+            Some(TIMER_IRQ_VECTOR),
+            "the vPIT IRQ0 is injected as vector 0x30 through the 8259 ExtINT path"
+        );
+        assert!(
+            v.pit.as_ref().unwrap().irq0_pending(),
+            "the IRQ0 edge is held until the controller accepts it (defer_accept)"
+        );
+    }
+
+    #[test]
+    fn vpit_irq0_acknowledged_on_acceptance() {
+        const W: u64 = 100_000_000;
+        let mut exits = vec![unmask_irq0_out()];
+        exits.extend(arm_pit_exits(2, 10));
+        exits.push(Exit::Rdtsc); // anchor → W
+        exits.push(Exit::Rdtsc); // service fires + injects 0x30; the entry ACCEPTS it
+        exits.push(Exit::Hlt);
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
+        // unmask + program(3) + rdtsc + rdtsc: the second rdtsc's entry accepts 0x30,
+        // and complete_irq_delivery acknowledges the edge.
+        for _ in 0..6 {
+            assert!(matches!(v.step().unwrap(), Step::Continued));
+        }
+        assert!(
+            !v.pit.as_ref().unwrap().irq0_pending(),
+            "the IRQ0 edge is acknowledged once the controller accepts vector 0x30"
+        );
+    }
+
+    #[test]
+    fn vpit_idle_resume_jumps_to_irq0_deadline() {
+        let mut exits = vec![unmask_irq0_out()];
+        exits.extend(arm_pit_exits(2, 10)); // periodic, future IRQ0 deadline
+        exits.push(Exit::Hlt); // idle: no pending wake, a future deliverable tick → jump
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
+        for _ in 0..4 {
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // unmask + program
+        }
+        let deadline = v.preemption_deadline().expect("armed").0; // == PIT deadline vns (1:1)
+
+        // The idle HLT jumps V-time to the vPIT IRQ0 deadline with no guest execution.
+        assert!(matches!(v.step().unwrap(), Step::Continued));
+        assert_eq!(
+            v.idle_landings(),
+            &[deadline],
+            "the idle resume warped to the vPIT IRQ0 deadline (re-keyed from the LAPIC timer)"
+        );
+        assert_eq!(
+            v.vtime.as_ref().unwrap().clock.snapshot_vns(0),
+            deadline,
+            "V-time landed exactly at the deadline (work epoch rebased to 0)"
+        );
+    }
+
+    #[test]
+    fn vpit_idle_terminal_when_irq0_masked() {
+        // Armed counter 0 but IRQ0 left MASKED (the reset IMR is all-ones): a masked
+        // tick would never wake the guest, so an idle HLT is terminal — the
+        // deliverability gate (task 52 P2), generalized to the vPIT.
+        let mut exits = arm_pit_exits(2, 10);
+        exits.push(Exit::Hlt);
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued));
+        }
+        assert!(
+            matches!(v.step().unwrap(), Step::Terminal(TerminalReason::Hlt)),
+            "an undeliverable (masked) vPIT tick can never wake the guest → terminal"
+        );
+        assert!(
+            v.idle_landings().is_empty(),
+            "no idle jump for an undeliverable tick"
+        );
+    }
+
+    #[test]
+    fn vpit_idle_resume_is_immune_to_hlt_work_skid() {
+        // The task-52 skid-modeling test, re-keyed to the vPIT: the live work counter
+        // read AT a HLT is skid-tainted (task-27 box O1), so the idle resume must derive
+        // the landing from the skid-free last-intercept anchor + the deterministic IRQ0
+        // deadline — NEVER the live HLT read. Two same-seed runs differing ONLY in the
+        // HLT work read must be deterministic-twice (bit-identical state_hash), measured
+        // at the next skid-free intercept (W_next) where a folded skid would surface.
+        fn run_with_hlt_skid(hlt_skid: u64) -> [u8; 32] {
+            let cell = std::rc::Rc::new(Cell::new(0u64));
+            let work = Box::new(SharedWork(cell.clone()));
+            let mut exits = vec![unmask_irq0_out()];
+            exits.extend(arm_pit_exits(0, 1000)); // one-shot, a future IRQ0 deadline
+            exits.push(Exit::Rdtsc); // skid-free anchor (identical both runs)
+            exits.push(Exit::Hlt); // idle: the live work read here is skid-tainted
+            exits.push(Exit::Rdtsc); // W_next intercept — where a folded skid would surface
+            exits.push(Exit::Hlt); // terminal (the one-shot already fired)
+            let mut mock = configured_mock(exits);
+            mock.set_state(if_set_state());
+            let mut v = lapic_vmm(mock, work);
+
+            for _ in 0..4 {
+                assert!(matches!(v.step().unwrap(), Step::Continued)); // unmask + program
+            }
+            cell.set(1000); // RDTSC anchor read — skid-free, identical both runs
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // RDTSC → anchor 1000
+            cell.set(1000 + hlt_skid); // the HLT live read — skid-perturbed per run
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // idle resume (jump to deadline)
+            cell.set(2000); // W_next anchor read — skid-free, identical both runs
+            let reason = loop {
+                if let Step::Terminal(r) = v.step().unwrap() {
+                    break r;
+                }
+            };
+            assert_eq!(reason, TerminalReason::Hlt);
+            v.state_hash()
+        }
+
+        assert_eq!(
+            run_with_hlt_skid(0),
+            run_with_hlt_skid(5),
+            "the HLT live work read is skid-tainted; the vPIT idle path must derive the \
+             landing from the skid-free anchor + the deterministic IRQ0 deadline \
+             (deterministic-twice across HLT skid)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Full vm_state snapshot / restore / branch (task 39). Mock-driven; the
     // live box gate is tests/live_snapshot_branch.rs.
     // -----------------------------------------------------------------------
