@@ -274,14 +274,84 @@ fn passthrough_is_nominal_and_never_decides() {
     );
 }
 
-/// Passthrough is stateless about opens: a chunk with no preceding Open is still
-/// delivered verbatim (it has no per-flow gate to make an event "stray").
+fn pt_open() -> FlowEvent {
+    FlowEvent::Open {
+        conn: C,
+        src: NodeId(0),
+        dst: NodeId(1),
+    }
+}
+
+/// Gate-2 stray-ignore, passthrough: a `Chunk` for a never-opened flow schedules
+/// nothing (and never consults the decider).
 #[test]
-fn passthrough_delivers_without_open() {
+fn passthrough_ignores_chunk_for_unknown_conn() {
     let mut e = PassthroughEngine::new();
     let mut d = RecordingDecider::all_nominal();
     let got = run_all(&mut e, &mut d, vec![chunk(5, C2S, &[7])]);
-    assert_eq!(got, vec![deliver(5, C2S, &[7])]);
+    assert!(got.is_empty(), "a chunk for an unopened flow is a stray");
+    assert!(d.calls.is_empty());
+}
+
+/// Gate-2 stray-ignore, passthrough: a `Chunk` arriving after the flow's `Close`
+/// is dropped — never delivered past teardown.
+#[test]
+fn passthrough_ignores_chunk_after_close() {
+    let mut e = PassthroughEngine::new();
+    let mut d = RecordingDecider::all_nominal();
+    let events = vec![
+        pt_open(),
+        FlowEvent::Close {
+            conn: C,
+            at: VTime(3),
+        },
+        chunk(4, C2S, &[9]), // after close -> dropped
+    ];
+    let got = run_all(&mut e, &mut d, events);
+    assert_eq!(
+        got,
+        vec![reset(3)],
+        "only the teardown survives; no late data"
+    );
+    assert!(d.calls.is_empty());
+}
+
+/// Gate-2 stray-ignore, passthrough: a `Close` for a never-opened flow produces
+/// no (spurious) reset.
+#[test]
+fn passthrough_ignores_close_for_unknown_conn() {
+    let mut e = PassthroughEngine::new();
+    let mut d = RecordingDecider::all_nominal();
+    let got = run_all(
+        &mut e,
+        &mut d,
+        vec![FlowEvent::Close {
+            conn: C,
+            at: VTime(9),
+        }],
+    );
+    assert!(got.is_empty(), "a close for an unopened flow is a stray");
+    assert!(d.calls.is_empty());
+}
+
+/// A duplicate `Close` on an already-closed flow schedules no second reset.
+#[test]
+fn passthrough_ignores_duplicate_close() {
+    let mut e = PassthroughEngine::new();
+    let mut d = RecordingDecider::all_nominal();
+    let events = vec![
+        pt_open(),
+        FlowEvent::Close {
+            conn: C,
+            at: VTime(3),
+        },
+        FlowEvent::Close {
+            conn: C,
+            at: VTime(5),
+        },
+    ];
+    let got = run_all(&mut e, &mut d, events);
+    assert_eq!(got, vec![reset(3)], "exactly one teardown");
     assert!(d.calls.is_empty());
 }
 

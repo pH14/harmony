@@ -53,22 +53,28 @@ baseline + the proof the trait abstracts over more than one mechanism).
 - **Saturating V-time everywhere.** `at + d` and the throttle cursor use
   `saturating_add`; a hostile `Latency(u64::MAX)` or an `at` near `u64::MAX` clamps
   to `u64::MAX`, never wraps into the past (gate 2).
-- **Stray events are ignored, never panics.** A `Chunk`/`Close` for an unknown or
-  already-torn-down flow schedules nothing. Guest-controlled `Chunk.bytes` are
-  arbitrary and never inspected for control flow.
+- **Stray events are ignored, never panics — in *both* engines.** The `FlowEngine`
+  trait contract (spec §85–86, §92–93) makes totality on guest input a requirement
+  of *every* impl, not just toxiproxy. A `Chunk`/`Close` for an unknown or
+  already-torn-down flow schedules nothing. So `PassthroughEngine` also tracks flow
+  lifecycle (registered on `Open`, torn on `Close`) and delivers verbatim only for a
+  *live* flow — it just does so **without consulting the decider** (gate 4). A chunk
+  for an unopened flow, a chunk after `Close`, and a close for an unknown flow are
+  all ignored. Guest-controlled `Chunk.bytes` are arbitrary and never inspected for
+  control flow.
 
 ## Deviations considered and made
 
-- **`PassthroughEngine` carries a private `Scheduler` field** instead of being the
-  literal unit struct (`pub struct PassthroughEngine;`) the spec sketches. A
-  buffering `FlowEngine` is inherently stateful — `on_event` records actions and a
-  *later* `due(now)` drains them — so a unit struct cannot implement the trait
-  correctly; the events have to live somewhere between the two calls. Adding a
-  private field is the "add private items" rule 3 explicitly allows; the struct's
-  name, visibility, meaning, and `FlowEngine` impl are unchanged. Because the spec
-  gave it no constructor, both `PassthroughEngine::new()` and a derived `Default`
-  are provided so construction stays a one-liner. (`ToxiproxyEngine` matched its
-  spec'd `pub fn new()` shape directly.)
+- **`PassthroughEngine` carries private fields** (`conns` + `Scheduler`) instead of
+  being the literal unit struct (`pub struct PassthroughEngine;`) the spec sketches.
+  Two reasons. (1) A buffering `FlowEngine` is inherently stateful — `on_event`
+  records actions and a *later* `due(now)` drains them — so the events have to live
+  somewhere between the two calls. (2) The trait contract requires stray-ignore
+  (above), which needs a per-flow lifecycle map. Adding private fields is the "add
+  private items" rule 3 explicitly allows; the struct's name, visibility, meaning,
+  and `FlowEngine` impl are unchanged. Because the spec gave it no constructor, both
+  `PassthroughEngine::new()` and a derived `Default` are provided so construction
+  stays a one-liner. (`ToxiproxyEngine` matched its spec'd `pub fn new()` directly.)
 - **Added `pub fn FlowAction::at(&self) -> VTime`** (an *addition*, conventions
   rule 3 — nothing specified was removed/renamed). It is the action's due time —
   the key `due` drains on — and the frontier needs it to enact actions; the gate
@@ -84,10 +90,22 @@ baseline + the proof the trait abstracts over more than one mechanism).
   *below* the nominal `bps` (each pays a whole V-time unit minimum). This is
   deterministic and adequate for a fault model; an exact fractional-remainder pacer
   was rejected as unnecessary complexity for a pure-logic fault injector.
-- **`PassthroughEngine` is stateless about opens**: it delivers a `Chunk` even
-  with no preceding `Open` (it has no per-flow gate, so nothing is "stray" for it).
-  This is exactly the spec's "Deliver verbatim at `at`; Reset on Close" — the
-  stray-ignore discipline is a `ToxiproxyEngine` property.
+- **Closed flows are retained, not evicted (`ToxiproxyEngine` *and*
+  `PassthroughEngine`).** A closed flow stays in `conns` (left `torn: true`), so a
+  later `Open` reusing the same `ConnId` is skipped and the map grows with the number
+  of distinct flows in a run. This is **spec-conformant**: `ConnId` is an opaque
+  `u64`, the contract is "exactly once per flow", and a closed conn is still *known*
+  (so a late chunk on it is correctly ignored rather than treated as a fresh flow).
+  It rests on a **frontier invariant**: the `net_decide`/proxy shell must hand out a
+  *fresh* `ConnId` per flow (e.g. a monotonic accept counter), **not** a raw,
+  reusable 5-tuple hash. If the frontier ever needs 5-tuple reuse, the clean fix is
+  to **evict on `Close`** (remove the entry) — which keeps memory bounded *and* still
+  satisfies stray-ignore (an evicted conn is "unknown", so a late chunk/duplicate
+  close is ignored) while letting a reused `ConnId` re-decide as a new flow. Not done
+  now (no consumer; would re-shape the gate-5 "distinct opens" semantics); flagged so
+  the choice is deliberate. Per-run flow counts are bounded, and consonance snapshots
+  the whole map for free, so unbounded-in-principle growth is bounded-per-run in
+  practice. See the PR reply for the full reasoning.
 - **Per-message / L7 faults** (reorder/dup/corrupt a *specific* message) are out of
   scope here (the SDK/L7 tier, a later task) — they need message boundaries the L4
   flow layer cannot see.
@@ -106,7 +124,10 @@ baseline + the proof the trait abstracts over more than one mechanism).
   xorshift64\* stream.
 - **Gate 4 (`PassthroughEngine` nominal):** `tests/golden.rs`
   `passthrough_is_nominal_and_never_decides` (asserts the recording decider is
-  never consulted).
+  never consulted), plus the passthrough stray-ignore exact-behavior tests
+  (`passthrough_ignores_chunk_for_unknown_conn`, `…_chunk_after_close`,
+  `…_close_for_unknown_conn`, `…_duplicate_close`) — each also asserts the decider
+  is never consulted.
 - **Gate 5 (decider-driven):** `tests/decider.rs` — once-per-flow, in `Open` order,
   plus a property tying the consult count to the number of distinct opens.
 - **Gate 6 (no order leakage):** `tests/determinism.rs`
