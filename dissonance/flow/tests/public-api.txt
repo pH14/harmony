@@ -1,0 +1,66 @@
+pub mod flow
+pub enum flow::Dir
+pub flow::Dir::ClientToServer
+pub flow::Dir::ServerToClient
+pub enum flow::FlowAction
+pub flow::FlowAction::Deliver
+pub flow::FlowAction::Deliver::at: flow::VTime
+pub flow::FlowAction::Deliver::bytes: alloc::vec::Vec<u8>
+pub flow::FlowAction::Deliver::conn: flow::ConnId
+pub flow::FlowAction::Deliver::dir: flow::Dir
+pub flow::FlowAction::Reset
+pub flow::FlowAction::Reset::at: flow::VTime
+pub flow::FlowAction::Reset::conn: flow::ConnId
+impl flow::FlowAction
+pub fn flow::FlowAction::at(&self) -> flow::VTime
+pub enum flow::FlowEvent
+pub flow::FlowEvent::Chunk
+pub flow::FlowEvent::Chunk::at: flow::VTime
+pub flow::FlowEvent::Chunk::bytes: alloc::vec::Vec<u8>
+pub flow::FlowEvent::Chunk::conn: flow::ConnId
+pub flow::FlowEvent::Chunk::dir: flow::Dir
+pub flow::FlowEvent::Close
+pub flow::FlowEvent::Close::at: flow::VTime
+pub flow::FlowEvent::Close::conn: flow::ConnId
+pub flow::FlowEvent::Open
+pub flow::FlowEvent::Open::conn: flow::ConnId
+pub flow::FlowEvent::Open::dst: flow::NodeId
+pub flow::FlowEvent::Open::src: flow::NodeId
+pub enum flow::FlowPolicy
+pub flow::FlowPolicy::Latency(flow::VTime)
+pub flow::FlowPolicy::Loss
+pub flow::FlowPolicy::Loss::den: u16
+pub flow::FlowPolicy::Loss::num: u16
+pub flow::FlowPolicy::Loss::seed: u64
+pub flow::FlowPolicy::Nominal
+pub flow::FlowPolicy::Reset
+pub flow::FlowPolicy::Throttle
+pub flow::FlowPolicy::Throttle::bps: u32
+pub struct flow::ConnId(pub u64)
+pub struct flow::NodeId(pub u32)
+pub struct flow::PassthroughEngine
+impl flow::PassthroughEngine
+pub fn flow::PassthroughEngine::new() -> Self
+impl flow::FlowEngine for flow::PassthroughEngine
+pub fn flow::PassthroughEngine::due(&mut self, flow::VTime) -> alloc::vec::Vec<flow::FlowAction>
+pub fn flow::PassthroughEngine::on_event(&mut self, flow::FlowEvent, &mut dyn flow::FlowDecider)
+pub struct flow::ToxiproxyEngine
+impl flow::ToxiproxyEngine
+pub fn flow::ToxiproxyEngine::new() -> Self
+impl core::default::Default for flow::ToxiproxyEngine
+pub fn flow::ToxiproxyEngine::default() -> Self
+impl flow::FlowEngine for flow::ToxiproxyEngine
+pub fn flow::ToxiproxyEngine::due(&mut self, flow::VTime) -> alloc::vec::Vec<flow::FlowAction>
+pub fn flow::ToxiproxyEngine::on_event(&mut self, flow::FlowEvent, &mut dyn flow::FlowDecider)
+pub struct flow::VTime(pub u64)
+pub trait flow::FlowDecider
+pub fn flow::FlowDecider::decide_flow(&mut self, flow::ConnId, flow::NodeId, flow::NodeId) -> flow::FlowPolicy
+pub trait flow::FlowEngine
+pub fn flow::FlowEngine::due(&mut self, flow::VTime) -> alloc::vec::Vec<flow::FlowAction>
+pub fn flow::FlowEngine::on_event(&mut self, flow::FlowEvent, &mut dyn flow::FlowDecider)
+impl flow::FlowEngine for flow::PassthroughEngine
+pub fn flow::PassthroughEngine::due(&mut self, flow::VTime) -> alloc::vec::Vec<flow::FlowAction>
+pub fn flow::PassthroughEngine::on_event(&mut self, flow::FlowEvent, &mut dyn flow::FlowDecider)
+impl flow::FlowEngine for flow::ToxiproxyEngine
+pub fn flow::ToxiproxyEngine::due(&mut self, flow::VTime) -> alloc::vec::Vec<flow::FlowAction>
+pub fn flow::ToxiproxyEngine::on_event(&mut self, flow::FlowEvent, &mut dyn flow::FlowDecider)

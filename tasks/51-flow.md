@@ -107,8 +107,9 @@ impl FlowEngine for ToxiproxyEngine { /* … */ }
 /// The trivial reference engine: every flow `Nominal`, every chunk delivered verbatim, decider never
 /// consulted. It is the **faults-off baseline** (the recovery / `finally_` case) **and** the proof
 /// that `FlowEngine` abstracts over more than toxiproxy (the pluggability the design requires).
-pub struct PassthroughEngine;
-impl FlowEngine for PassthroughEngine { /* Deliver verbatim at `at`; Reset on Close */ }
+pub struct PassthroughEngine { /* per-conn open/closed lifecycle so strays are ignored — no policy, no PRNG */ }
+impl PassthroughEngine { pub fn new() -> Self; }   // + `Default`
+impl FlowEngine for PassthroughEngine { /* live flow: deliver verbatim at `at`, Reset on Close; an unknown/closed conn is a stray and is ignored, per "Total on guest input" */ }
 ```
 
 Provide a documented seeded PRNG (reuse the `hypercall-proto` xorshift64\* algorithm, defined locally

@@ -1,0 +1,37 @@
+# cargo-fuzz harness for flow (task 51, acceptance gate 2 — `on_event` is a
+# Tier-1 fuzz target: it must never panic on arbitrary/truncated/mutated events,
+# and stray events must be deterministically ignored). Kept inside the crate
+# directory (conventions rule 1 — touch only `dissonance/flow/`) rather than the
+# repo-root `fuzz/` that task 19 owns. The empty `[workspace]` table makes this
+# its own workspace root, so the parent workspace's `dissonance/*` glob never
+# pulls it in and the standard `-p flow` gates ignore it.
+#
+# Dependency note (ask-by-comment, per conventions rule 5): `libfuzzer-sys` is the
+# standard cargo-fuzz harness crate and `arbitrary` is the conventions-approved
+# fuzz/dev dependency; both are used only by this fuzz-only, nightly-only build,
+# never by the library.
+[package]
+name = "flow-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.flow]
+path = ".."
+
+[[bin]]
+name = "on_event"
+path = "fuzz_targets/on_event.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
