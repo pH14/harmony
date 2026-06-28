@@ -5,6 +5,163 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 52 — deterministic HLT-resume (the event-driven V-time clock, completed)
+
+Before this task the run loop could advance V-time **only by executing**, so a guest that
+went idle (`HLT`) froze, and the VMM treated the first `HLT` as terminal
+(`Exit::Hlt => terminate`). That was a design deviation papered over because every prior
+workload was hand-shaped to never idle (task-48 cooperative postgres, finding #3). Real `runc`
+is the first workload that genuinely idles mid-operation (its create→exec handshake blocks the
+parent in `waitpid` and the Go init on a futex/exec-fifo at the same instant → kernel idle task
+→ `HLT`), so the VM died before the container came up. Task 52 restores the intended model: the
+run loop is a **discrete-event clock** — always advance V-time to the next scheduled event,
+reaching it **by executing** when there is runnable work (task 47's `run_until`) and **by
+jumping** when the guest is idle (this task).
+
+### What landed (all in `consonance/vmm-core/src/vmm.rs` + `consonance/vtime/`)
+
+- **Discriminate idle-`HLT` from terminal-`HLT`** (`on_hlt` → `idle_resume_target`). The signal
+  is the one a real CPU uses: the guest's interrupt-enable flag `RFLAGS.IF` **plus** whether a
+  LAPIC timer is armed on the determinism path. `IF == 1` **and** an armed timer ⇒ **resumable
+  idle**; `IF == 0`, or no timer armed ⇒ **terminal** (the kernel's final `cli; hlt`, or a wait
+  nothing will satisfy). The armed-timer check (`armed_timer_deadline_vns`, factored out of
+  `preemption_deadline` so both halves share one gate) is cheap and comes **first**, so the
+  common terminal paths never even read `RFLAGS` — see *No regression* below.
+- **Advance V-time to the next event by jumping** (`resume_idle`). On a resumable idle, warp the
+  guest-visible clock to the armed deadline `D`, mark the timer deliverable, and resume `step()`
+  — executing nothing. The next `service_pending_irqs` fires the timer into the LAPIC IRR and
+  injects it (the existing task-47 machinery, reused verbatim). The decision (how far to advance)
+  is the portable `vtime::IdlePlanner` (SimCpu-/proptest-/Kani-tested); `vmm-core` only applies
+  it. The KVM FFI stays thin (it just enters/exits) — the accounting is above the trait.
+
+### The clock/counter model — the load-bearing invariant
+
+The guest clock is
+
+```
+guest_vtime  =  execution_vtime(real_retired_branches)  +  accumulated_idle_vtime
+```
+
+which is exactly `VClock`: `vns(work) = vns_base + work·ratio`, with `work·ratio` the execution
+component and `vns_base` the idle accumulator. An idle jump adds `D − guest_vtime` to the **idle
+accumulator only** (`VClock::advance_idle`) — it **never touches the retired-branch count**. A
+jump executes no instructions, so it must fabricate **zero** retired branches; task 47's
+`run_until` PMU target and the **B ≡ A** invariant (backend PMU counter ≡ vmm-core `WorkSource`)
+stay intact over the *execution* component. `resume_idle` reads the work at the `HLT` to compute
+`guest_vtime`, anchors `last_intercept_work` to that **exact** value, and bumps `vns_base` — the
+work counter itself is only *read*, never advanced.
+
+**Why the `HLT` work read is exact (no skid).** Unlike the `run_until` PMU-overflow path (async
+interrupt, late-and-unpredictable skid → needs single-step correction), a `HLT` is a
+**synchronous** VM exit: the guest stopped *itself* exactly at the `HLT` instruction. The
+guest-only, count-neutral `BR_INST_RETIRED.CONDITIONAL` counter (`work_perf.rs`, `exclude_host=1`)
+therefore reads the exact, seed-deterministic branch count there. So the `HLT` is a synchronized
+V-time intercept, and `resume_idle` marks it `vtime_synchronized` (a snapshot taken right at the
+idle-resume boundary is exact). Two same-seed runs idle at the identical branch count and jump the
+identical amount — the idle period is a deterministic constant, never a nondeterminism source.
+
+### Design hook — the planner seam (mechanism vs policy)
+
+Per the integrator directive, the idle advance is a **planner seam**, not a hardcoded jump.
+`IdlePlanner::plan(now, D)` is the single decision point; the deterministic base always lands
+**exactly at `D`** (the *mechanism*). *Where* to land is the *policy* — a future dissonance
+fault-overlay (Antithesis-style mechanism/policy split) can prescribe a deviation (land at
+`D + δ`) as a deterministic timing fault **without** perturbing this descriptive base clock. The
+seam is left clean and documented; the fault layer is **not** built here. (Details in
+`consonance/vtime/IMPLEMENTATION.md` → *Task 52*.)
+
+### Gate-4 corollary — timer-driven waits now make progress on their own
+
+Confirmed (mechanism + a focused unit test, `periodic_timer_idle_loop_advances_vtime_each_tick`):
+a guest that stays idle while a **periodic** LAPIC timer ticks now advances V-time on its own —
+each idle resume warps to the next period and re-arms, with **no guest execution** between ticks.
+This is exactly the capability the task-37/38 cooperative-poll workarounds existed to dodge:
+`sleep`/`nanosleep`/futex-timeout waits (which froze before — task-48 finding #2, "`sleep 1`
+never returns") now wake up, because the LAPIC tick the kernel programs for the timeout fires
+through the idle-resume loop. **Capability unlocked.** As the spec directs, existing guest
+scripts are **not** refactored in this task — this only records that the dodge is no longer
+required.
+
+### No regression — why the change is byte-identical on every existing path
+
+The change is strictly **additive on the idle-`HLT` path**:
+
+- **M1/M2/P6/corpus/multiboot** never wire the LAPIC ⇒ `armed_timer_deadline_vns` is `None` ⇒
+  terminal `HLT` exactly as before; the `RFLAGS` read is short-circuited, so no new `save()`.
+- **Stock KVM** has no deterministic counter ⇒ `armed_timer_deadline_vns` `None` ⇒ terminal.
+- **Patched-KVM Linux boot:** every run that *previously completed* did so **without** hitting a
+  resumable-idle `HLT` — if it had, the old code would have terminated there and the run would
+  never have reached `GUEST_READY`. So those runs take the idle path **zero** times and are
+  unchanged. The minimal-boot poweroff and every existing terminal are `IF == 0`/no-timer and
+  stay terminal. The only runs whose behavior changes are the ones that previously **died** at an
+  idle-`HLT` (real `runc`) — the whole point.
+
+Verified on the Mac-testable goldens: det-corpus O2/O3 conformance + `unison` state-hash tests
+are unchanged; the 250 pre-existing `vmm-core` tests pass untouched. The box goldens
+(M1/M2/P6, minimal-boot, bare/OCI Postgres `state_hash`) are byte-identical by the argument above
+and are confirmed by the foreman box run (below).
+
+### Deviations considered and rejected
+
+- **Anchor the jump to the stale last-intercept work instead of reading the `HLT` work.** Avoids
+  one counter read, but double-counts the branches retired between the last intercept and the
+  `HLT` as *post-deadline* time, shifting the post-resume clock forward by that execution. The
+  spec's model (`elapsed = execution(real_branches) + idle`) requires the **real** `HLT` work;
+  the `HLT` read is exact (synchronous exit), so this is both correct and deterministic. Rejected.
+- **Discriminate on `mp_state`/`KVM_MP_STATE_HALTED` or the kernel idle-task PC instead of
+  `RFLAGS.IF`.** `IF` is the architectural, guest-authored signal the task names and the one a
+  real CPU uses; it needs no guest-layout knowledge and no new backend surface. Rejected the
+  alternatives.
+- **Put the advance accounting in the `patched_kvm`/`kvm_sys` FFI.** That layer is
+  coverage/mutation-excluded (box-only) and would make the core invariant untestable on the Mac.
+  The accounting lives in the portable `vtime::IdlePlanner` + `vmm-core` loop; the FFI stays a
+  thin enter/exit. (Per the spec and `docs/CODE-QUALITY.md`.)
+- **Hardcode "jump to `D`" inline.** Would foreclose the dissonance timing-fault overlay; instead
+  the decision is the `IdlePlanner` seam (above).
+
+### Known limitations
+
+- **Single-vCPU, LAPIC-timer-only** (per the non-goals): "next event" is the armed LAPIC timer
+  deadline. Generalizing to other interrupt sources / multi-vCPU is deferred — the discriminator
+  and the planner are structured so "next event" can widen later.
+- **`MWAIT`** is not modeled (out of scope); only `HLT` idle is resumed.
+- **The end-to-end `runc` proof is box-only** (patched KVM + perf + the built Docker image); it
+  is delegated to the foreman (below). The Mac deliverable is the full portable path + the SimCpu/
+  proptest/Kani/Miri gates, which exercise every line of the decision logic.
+
+### Box gate — foreman handoff (the end-to-end proof; box-only, `ssh <det-box>`)
+
+`ssh hetzner` is classifier-blocked in the delegated worker session, so the box gate is handed to
+the foreman with verbatim instructions (the task-52 spec's *Box-run* section). It re-runs the
+**task-48 `live_runc_postgres`** gate, which depends on task 48's runc-init + Docker image (the
+task/48 branch — **not** on this branch's base, so it must be merged/checked out alongside this).
+
+Setup (`/root/ht42` checked out `task/hlt-resume` **plus** task 48's runc image bits):
+
+```sh
+make -C guest fetch && make -C guest/linux docker-image
+```
+
+Run r2 (deterministic-twice — the money-shot), then r1 (runs+streams) and r3 (seed-sensitivity),
+each via the pinning/revert wrapper (`run-patched-ht42.sh`, which loads patched
+`kvm.ko`/`kvm-intel.ko`, pins to a free core per `docs/BOX-PINNING.md` — **core 4 is free, task 41
+was struck** — and **always reverts KVM to stock `1396736` + verifies** via the EXIT trap):
+
+```sh
+/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_runc_postgres -- \
+  --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
+# then r1_runc_postgres_runs_and_streams_patched, r3_runc_postgres_seed_sensitivity_patched
+```
+
+**Expected (the unlock):** real `runc` runs the Postgres OCI container (no task-38 `unshare`
+shim), `GUEST_READY`, clean terminal — where before task 52 it died `runc_launched=true,
+runc_rc=None, terminal=Hlt`. Deterministic-twice: **bit-identical serial + `state_hash`**, and
+seed-sensitive (UUIDs/timestamps differ across seeds). `Vmm::idle_landings()` is non-empty
+(the runc handshake genuinely idled) and identical across the two same-seed runs. Capture the
+equal digests + a sample UUID/timestamp into `guest/linux/IMPLEMENTATION.md` (task-52 evidence),
+and confirm the stock-`1396736` revert. **No-regression box re-run:** M1/M2/P6 + det-corpus +
+minimal-boot + bare/OCI Postgres `state_hash` byte-unchanged (additive, per the argument above).
+
 ## Task 40 — single-node branching demo (the multiverse from one snapshot)
 
 Task 40 is the dissonance **join point**: where the live snapshot/branch substrate

@@ -153,4 +153,15 @@ exclude_re = [
     #     (which would empty the trace) ARE killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
     #     `preemption_landings() == &[reached]` assertion. Scoped to vmm.rs's on_deadline.
     "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*on_deadline",
+    # (k) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
+    #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical
+    #     rationale. The two differ ONLY at `len == PREEMPTION_TRACE_CAP` (4096), where `<=`
+    #     records ONE extra idle landing before stopping — a harmless off-by-one on the
+    #     OBSERVABILITY-ONLY `idle_landings` trace (not hashed, not determinism-affecting).
+    #     Killing it needs a 4097-idle-resume unit test (impractical); behavior is identical
+    #     for every realistic run. The `<`→`==`/`>` siblings (which would empty/short the
+    #     trace) ARE killed by `idle_hlt_with_if_and_armed_timer_jumps_to_deadline_and_fires`
+    #     / `periodic_timer_idle_loop_advances_vtime_each_tick`'s `idle_landings() == &[..]`
+    #     assertions. Scoped to vmm.rs's resume_idle.
+    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*resume_idle",
 ]
