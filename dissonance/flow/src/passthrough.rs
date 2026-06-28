@@ -78,9 +78,10 @@ impl FlowEngine for PassthroughEngine {
                     // Data after teardown: drop it, never deliver past a close.
                     return;
                 }
-                if at > state.last_deliver {
-                    state.last_deliver = at;
-                }
+                // Unconditional max (not `if at > … { … }`): the watermark is the
+                // latest delivery time seen; a comparison only invites an
+                // equivalent `>`→`>=` mutant. The close-ordering golden pins this.
+                state.last_deliver = VTime(state.last_deliver.0.max(at.0));
                 self.sched.schedule(FlowAction::Deliver {
                     conn,
                     dir,

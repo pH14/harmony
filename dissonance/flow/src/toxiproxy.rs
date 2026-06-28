@@ -186,9 +186,12 @@ impl ToxiproxyEngine {
         bytes: Vec<u8>,
         at: VTime,
     ) {
-        if at > *last_deliver {
-            *last_deliver = at;
-        }
+        // Unconditional max (not `if at > *last_deliver { … }`): the watermark is
+        // the latest delivery time seen, and writing a no-op-equal value is
+        // harmless — phrasing it as a comparison only invites an equivalent
+        // `>`→`>=` mutant. `golden_*_close_reset_orders_after_late_delivery` pins
+        // the ordering this protects.
+        *last_deliver = VTime(last_deliver.0.max(at.0));
         sched.schedule(FlowAction::Deliver {
             conn,
             dir,

@@ -106,6 +106,20 @@ baseline + the proof the trait abstracts over more than one mechanism).
   the choice is deliberate. Per-run flow counts are bounded, and consonance snapshots
   the whole map for free, so unbounded-in-principle growth is bounded-per-run in
   practice. See the PR reply for the full reasoning.
+- **A policy only acts on the first *timed* event.** `FlowEvent::Open` carries no
+  V-time (a flow's identity precedes its first byte), so every scheduled action is
+  anchored to a `Chunk`/`Close`'s `at`. Consequence: a **purely idle `Reset` flow**
+  — one that opens but never sends a chunk and never closes — produces **no**
+  `FlowAction` at all (the teardown has no V-time to fire at). Same for `Latency`
+  etc.: with no chunk there is nothing to delay. This is correct under the spec as
+  written (`Open { conn, src, dst }` has no `at`, and the decider is still consulted
+  exactly once on `Open` per gate 5 — only the *enactment* waits for a timed event).
+  It is a deliberate limitation, **not** a bug, so `FlowEvent::Open` is left
+  untouched (adding an `at` to `Open` is a spec change). **Frontier consideration:**
+  if a future shell wants *reset-at-accept* (tear a refused connection down the
+  instant it is accepted, before any data), `FlowEvent::Open` would need to carry a
+  V-time so the engine could schedule the teardown at accept time — a spec-level
+  decision for whoever builds the proxy shell.
 - **Per-message / L7 faults** (reorder/dup/corrupt a *specific* message) are out of
   scope here (the SDK/L7 tier, a later task) — they need message boundaries the L4
   flow layer cannot see.

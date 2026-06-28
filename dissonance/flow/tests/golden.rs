@@ -238,6 +238,51 @@ fn golden_reset_close_only() {
     assert_eq!(got, vec![reset(3)]);
 }
 
+// ---- Close-reset ordering: the teardown never precedes delivered data ----
+// A Chunk delivered at V-time 5 followed by a Close at V-time 3 must schedule the
+// teardown Reset at `max(3, 5) = 5`, NOT at 3 — otherwise the reset would drain
+// before the data it follows. These pin the unconditional `max` in both engines'
+// `last_deliver` watermark (and the `max` in the close handler), killing the
+// `max`→`min` mutant on each.
+
+/// `ToxiproxyEngine`: out-of-order close still tears down after the late delivery.
+#[test]
+fn golden_toxiproxy_close_reset_orders_after_late_delivery() {
+    let (mut e, mut d, mut ev) = open(FlowPolicy::Nominal);
+    ev.push(chunk(5, C2S, &[1])); // delivered at 5 -> last_deliver = 5
+    ev.push(FlowEvent::Close {
+        conn: C,
+        at: VTime(3), // earlier than the delivery
+    });
+    let got = run_all(&mut e, &mut d, ev);
+    assert_eq!(
+        got,
+        vec![deliver(5, C2S, &[1]), reset(5)], // reset at max(3,5)=5, after the data
+    );
+}
+
+/// `PassthroughEngine`: same ordering guarantee.
+#[test]
+fn golden_passthrough_close_reset_orders_after_late_delivery() {
+    let mut e = PassthroughEngine::new();
+    let mut d = RecordingDecider::all_nominal();
+    let events = vec![
+        FlowEvent::Open {
+            conn: C,
+            src: NodeId(0),
+            dst: NodeId(1),
+        },
+        chunk(5, C2S, &[1]), // delivered at 5 -> last_deliver = 5
+        FlowEvent::Close {
+            conn: C,
+            at: VTime(3), // earlier than the delivery
+        },
+    ];
+    let got = run_all(&mut e, &mut d, events);
+    assert_eq!(got, vec![deliver(5, C2S, &[1]), reset(5)]);
+    assert!(d.calls.is_empty());
+}
+
 // ---- Gate 4 — PassthroughEngine is nominal, decider never consulted ----
 
 /// Passthrough delivers every chunk verbatim at its arrival V-time, resets on
