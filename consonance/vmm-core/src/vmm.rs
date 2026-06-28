@@ -380,14 +380,16 @@ pub struct Vmm<B: Backend> {
     /// [`PREEMPTION_TRACE_CAP`] so a long-running guest (task 48 Postgres, which preempts
     /// constantly) cannot grow it unbounded.
     preemption_landings: Vec<u64>,
-    /// Diagnostic trace of the idle-resume landings (task 52): the retired-branch work at
-    /// which the guest went idle (`Exit::Hlt` with `RFLAGS.IF == 1` and an armed timer)
-    /// and the clock was warped to the timer deadline by [`Self::resume_idle`]. The dual
-    /// of [`Self::preemption_landings`] — *jumped to* the next event instead of *executed
-    /// to* it. **Not** hashed (observability only); deterministic across same-seed runs
-    /// (the idle work is a synchronous-exit branch count, exact) and seed-dependent for a
-    /// seed-consuming guest, so it witnesses the idle path engaged. Capped at
-    /// [`PREEMPTION_TRACE_CAP`].
+    /// Diagnostic trace of the idle-resume landings (task 52): the **V-time** (ns) the
+    /// clock was warped to when the guest went idle (`Exit::Hlt` with `RFLAGS.IF == 1`
+    /// and an armed timer) and [`Self::resume_idle`] jumped to the timer deadline. The
+    /// dual of [`Self::preemption_landings`] — *jumped to* the next event instead of
+    /// *executed to* it. It records the **landed V-time** (the deadline), **not** a work
+    /// count: a `HLT` live work read is skid-tainted (task-27 O1), so the idle path never
+    /// reads it; the landing is derived skid-free from the last-intercept anchor + the
+    /// timer deadline. **Not** hashed (observability only); deterministic across same-seed
+    /// runs and seed-dependent for a seed-consuming guest, so it witnesses the idle path
+    /// engaged. Capped at [`PREEMPTION_TRACE_CAP`].
     idle_landings: Vec<u64>,
     terminal: Option<TerminalReason>,
     /// The vCPU state captured at terminal (so `state_blob` is consistent and the
@@ -1668,13 +1670,15 @@ impl<B: Backend> Vmm<B> {
         &self.preemption_landings
     }
 
-    /// The idle-resume landings (task 52): the retired-branch work at which the guest
-    /// went idle (`HLT` with `RFLAGS.IF == 1` and an armed timer) and [`Self::resume_idle`]
-    /// warped V-time to the timer deadline. The dual of [`Self::preemption_landings`]
-    /// (jumped-to vs executed-to the next event); empty when the run never idled. A box
-    /// gate reads it to confirm the idle path engaged (e.g. real `runc` genuinely idles
-    /// mid-handshake) and that the landings are seed-deterministic. Not hashed
-    /// (observability only); capped at [`PREEMPTION_TRACE_CAP`].
+    /// The idle-resume landings (task 52): the **V-time** (ns) the clock was warped to
+    /// each time the guest went idle (`HLT` with `RFLAGS.IF == 1` and an armed timer) and
+    /// [`Self::resume_idle`] jumped to the timer deadline. The dual of
+    /// [`Self::preemption_landings`] (jumped-to vs executed-to the next event); empty when
+    /// the run never idled. Skid-free (derived from the last-intercept anchor + the timer
+    /// deadline, never a live `HLT` work read). A box gate reads it to confirm the idle
+    /// path engaged (e.g. real `runc` genuinely idles mid-handshake) and that the landings
+    /// are seed-deterministic. Not hashed (observability only); capped at
+    /// [`PREEMPTION_TRACE_CAP`].
     pub fn idle_landings(&self) -> &[u64] {
         &self.idle_landings
     }
@@ -1946,7 +1950,7 @@ impl<B: Backend> Vmm<B> {
     /// the strictly-additive change of task 52.
     fn on_hlt(&mut self) -> Result<Step, VmmError> {
         match self.idle_resume_target()? {
-            Some(deadline_vns) => self.resume_idle(deadline_vns),
+            Some(deadline_vns) => Ok(self.resume_idle(deadline_vns)),
             None => Ok(self.terminate(TerminalReason::Hlt)),
         }
     }
@@ -1975,41 +1979,49 @@ impl<B: Backend> Vmm<B> {
     /// deadline `deadline_vns` — reaching the next scheduled event without executing a
     /// single instruction (the idle dual of the `run_until` execution path).
     ///
-    /// The guest clock is `guest_vtime = execution_vtime(real_branches) +
-    /// accumulated_idle`. The `HLT` is a **synchronous** VM exit, so the guest-only
-    /// retired-branch counter reads the **exact, seed-deterministic** work at the halt
-    /// (no async-overflow skid — unlike the `run_until` PMU path, the guest stopped
-    /// *itself* exactly at the `HLT`). That makes the halt a synchronized V-time
-    /// intercept. This adds `deadline − guest_vtime` to the idle accumulator
-    /// ([`vtime::IdlePlanner`] decides the amount; [`VClock::advance_idle`] applies it)
-    /// so the guest-perceived clock reads the deadline — **without touching the
-    /// retired-branch count** (a jump fabricates zero branches; `B ≡ A` holds over the
-    /// execution component). Mirroring [`Self::on_deadline`], it sets the skid-free
-    /// anchor to the exact halt work and marks the point synchronized, so the next
-    /// [`Self::service_pending_irqs`] fires the timer into the LAPIC IRR and injects it,
-    /// and `step` re-enters. An overdue deadline plans a zero jump and fires immediately
-    /// (the HLT analogue of the planner's `TargetInPast`).
-    fn resume_idle(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
+    /// **Intercept-aligned, skid-free (task-52 review fix).** A live `work()` read at a
+    /// `HLT` is **skid-tainted** — the box O1 evidence (task-27, see [`Vmm::save_vtime`]
+    /// / [`encode_vtime`]) shows a non-V-time-intercept live read **diverges** across
+    /// same-seed runs (post-last-intercept exit-path skid). Folding such a read into
+    /// `vns_base` would leave a skid term that does **not** cancel at the next
+    /// (skid-free) intercept, so `vns_base`/TSC/`state_hash` would diverge once the
+    /// guest idles before a state-affecting read — defeating deterministic-twice. So
+    /// this **never reads the live counter at the `HLT`**: it anchors the idle advance
+    /// on the existing skid-free [`last_intercept_work`](VtimeWiring::last_intercept_work)
+    /// (the last V-time intercept's deterministic work), adds
+    /// `deadline − vns(last_intercept_work)` to the idle accumulator
+    /// ([`vtime::IdlePlanner`] decides the amount; [`VClock::advance_idle`] applies it),
+    /// and leaves the anchor **unmoved** and the point **un-synchronized**. The guest
+    /// retires **zero** branches during the halt, so the execution span
+    /// `last_intercept_work → W_next` is skid-free at **both** ends: the exact V-time
+    /// anchor is re-established only at the next real intercept `W_next` (`complete_tsc`
+    /// etc.), where `vns(W_next) = vns_base + W_next·ratio` carries no skid term. The
+    /// jump never touches the retired-branch count (zero fabricated branches; `B ≡ A`
+    /// holds over execution); after it `vns(last_intercept_work) == deadline`, so the
+    /// next [`Self::service_pending_irqs`] fires the timer into the LAPIC IRR and injects
+    /// it, and `step` re-enters. An overdue deadline plans a zero jump and fires
+    /// immediately (the HLT analogue of the planner's `TargetInPast`).
+    fn resume_idle(&mut self, deadline_vns: u64) -> Step {
         let vt = self
             .vtime
             .as_mut()
             .expect("idle_resume_target returning Some implies V-time wired");
-        // Exact at a synchronous HLT (count-neutral, guest-only counter): the real
-        // retired-branch count where the guest idled.
-        let work_at_hlt = vt.work.work()?;
-        let now_vns = vt.clock.snapshot_vns(work_at_hlt);
+        // Anchor on the SKID-FREE last intercept, NOT a live HLT read (which is
+        // skid-tainted on-box). `lapic_now_vns` reads this same anchor, so this is the
+        // clock's current effective V-time.
+        let now_vns = vt.clock.snapshot_vns(vt.last_intercept_work);
         let advance = IdlePlanner::new().plan(now_vns, deadline_vns);
-        // Move ONLY the idle accumulator (vns_base); the work counter is untouched.
+        // Move ONLY the idle accumulator (vns_base). Crucially: do NOT move
+        // `last_intercept_work` and do NOT set `vtime_synchronized` — the `HLT` is not a
+        // skid-free point, so the exact anchor stays at the last real intercept and is
+        // re-established only at the next one (no skid term ever enters `vns_base`).
         vt.clock.advance_idle(advance.advance_vns);
-        // Anchor to the exact halt work so `lapic_now_vns` reads the landed (deadline)
-        // V-time; the halt is now a synchronized intercept (work exact + idle folded in).
-        vt.last_intercept_work = work_at_hlt;
-        self.vtime_synchronized = true;
-        // Trace the deterministic idle landing (observability, not hashed), capped.
+        // Trace the idle V-time landing (the deadline reached; skid-free, derived from
+        // the anchor + planner — never a live work read). Observability, not hashed; capped.
         if self.idle_landings.len() < PREEMPTION_TRACE_CAP {
-            self.idle_landings.push(work_at_hlt);
+            self.idle_landings.push(advance.landed_vns);
         }
-        Ok(Step::Continued)
+        Step::Continued
     }
 
     /// Arbitrate and hand the backend the one IRQ vector to inject at the next safe
@@ -4845,18 +4857,19 @@ mod tests {
     fn idle_hlt_with_if_and_armed_timer_jumps_to_deadline_and_fires() {
         // The headline path: a guest that idles (HLT) with IF==1 while a one-shot
         // LAPIC timer is armed is NOT terminal — V-time jumps to the timer
-        // deadline, the timer fires + is delivered, and the run continues. The
-        // jump fabricates ZERO retired branches (the anchor stays the real HLT
-        // work; the advance lands entirely in the clock's idle accumulator).
-        let cell = std::rc::Rc::new(Cell::new(0u64));
-        let work = Box::new(SharedWork(cell.clone()));
+        // deadline, the timer fires + is delivered, and the run continues. The jump
+        // moves ONLY the idle accumulator (vns_base); it fabricates ZERO retired
+        // branches AND — the task-52 review fix — does NOT read the live (skid-tainted)
+        // HLT work counter, so the skid-free anchor (last_intercept_work) is unmoved
+        // and the point is left un-synchronized.
         let mut exits = arm_timer_exits(1000);
         exits.push(Exit::Hlt); // the guest idles, waiting for the timer
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
         exits.push(Exit::Hlt); // one-shot fired → no timer armed → terminal
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
-        let mut v = lapic_vmm(mock, work);
+        // No intercept before the HLT, so the skid-free anchor is the initial 0.
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
 
         // Arm the timer (3 MMIO writes); the anchor stays 0, no timer fires yet.
         for _ in 0..3 {
@@ -4864,33 +4877,34 @@ mod tests {
         }
         let deadline = v.preemption_deadline().expect("timer armed").0;
         assert!(deadline > 0, "a future timer deadline");
-        // The guest idles strictly BEFORE the deadline (a real future jump).
-        let idle_work = deadline / 2;
-        cell.set(idle_work);
 
         // The idle HLT resumes instead of terminating.
         assert!(
             matches!(v.step().unwrap(), Step::Continued),
             "idle HLT resumes"
         );
+        // The trace records the landed V-time (the deadline), skid-free.
         assert_eq!(
             v.idle_landings(),
-            &[idle_work],
-            "the idle resume is recorded at the exact (real) HLT work"
+            &[deadline],
+            "the idle resume records the landed V-time (the deadline)"
         );
-        // Load-bearing invariant: the jump moved only the idle accumulator. The
-        // anchor is the real HLT work (unchanged), yet the clock now reads D.
-        assert_eq!(
-            cell.get(),
-            idle_work,
-            "the jump did not advance the work counter (no fabricated branches)"
-        );
+        // Skid-free invariant: the anchor is UNMOVED (still the last real intercept, 0)
+        // and the point is NOT marked synchronized — no live HLT read entered V-time.
         let vt = v.vtime.as_ref().unwrap();
-        assert_eq!(vt.last_intercept_work, idle_work, "anchor = real HLT work");
         assert_eq!(
-            vt.clock.snapshot_vns(idle_work),
+            vt.last_intercept_work, 0,
+            "the anchor stays at the last skid-free intercept (not a HLT read)"
+        );
+        assert!(
+            !v.vtime_synchronized,
+            "the HLT is not a skid-free intercept, so it is NOT marked synchronized"
+        );
+        // The jump landed the clock at D via the idle accumulator alone.
+        assert_eq!(
+            v.vtime.as_ref().unwrap().clock.snapshot_vns(0),
             deadline,
-            "V-time jumped to D via the idle accumulator, not by executing to D"
+            "V-time jumped to D via the idle accumulator (vns_base), not by executing"
         );
 
         // Next step: the timer fires off the warped anchor and is delivered.
@@ -4954,45 +4968,38 @@ mod tests {
     }
 
     #[test]
-    fn overdue_idle_hlt_is_a_zero_jump_that_fires_immediately() {
-        // The deadline already passed at the HLT (the guest idled past it): a zero
-        // jump (clock unchanged), and the timer fires immediately — the HLT
-        // analogue of the planner's `TargetInPast`.
-        let cell = std::rc::Rc::new(Cell::new(0u64));
-        let work = Box::new(SharedWork(cell.clone()));
-        let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Hlt);
-        exits.push(read_mmio(isr_gpa(0x40)));
-        exits.push(Exit::Hlt);
-        let mut mock = configured_mock(exits);
-        mock.set_state(if_set_state());
-        let mut v = lapic_vmm(mock, work);
+    fn overdue_idle_resume_is_a_zero_jump() {
+        // The overdue branch of `resume_idle`: when the (skid-free) anchor's V-time is
+        // already at/after the deadline, the planner returns a zero jump — the clock
+        // does not move (never backward) and the landing records the current V-time.
+        // Unit-tested directly: in the full loop an anchor past D would already have
+        // fired the timer (so the timer disarms before a HLT), making this the
+        // planner's robustness edge rather than a naturally-reached state.
+        let mut v = vtime_vmm(vec![Exit::Hlt], Box::new(ScriptedWork::at(0)), 1);
+        // Establish a skid-free anchor at work 5000 (vns 5000 at ratio 1:1).
+        v.vtime.as_mut().unwrap().last_intercept_work = 5000;
+        // Mimic the step() top, which clears the synchronized flag before the entry.
+        v.vtime_synchronized = false;
 
-        for _ in 0..3 {
-            assert!(matches!(v.step().unwrap(), Step::Continued));
-        }
-        let deadline = v.preemption_deadline().expect("timer armed").0;
-        let idle_work = deadline + 1; // strictly past the deadline
-        cell.set(idle_work);
+        // Deadline already in the past relative to the anchor.
+        assert!(matches!(v.resume_idle(4000), Step::Continued));
 
-        assert!(
-            matches!(v.step().unwrap(), Step::Continued),
-            "overdue idle resumes"
-        );
-        assert_eq!(v.idle_landings(), &[idle_work]);
         let vt = v.vtime.as_ref().unwrap();
         assert_eq!(
-            vt.clock.snapshot_vns(idle_work),
-            idle_work,
-            "zero jump: the clock is unchanged (deadline already due)"
+            vt.clock.snapshot_vns(5000),
+            5000,
+            "zero jump: an overdue deadline does not move the clock (no backward motion)"
         );
-        // The timer still fires (the warped — here unchanged — anchor is past D).
-        assert!(matches!(v.step().unwrap(), Step::Continued));
-        assert_eq!(*read_completions(&v).last().expect("ISR read") & 1, 1);
-        assert!(matches!(
-            v.step().unwrap(),
-            Step::Terminal(TerminalReason::Hlt)
-        ));
+        assert_eq!(vt.last_intercept_work, 5000, "anchor unmoved");
+        assert_eq!(
+            v.idle_landings(),
+            &[5000],
+            "the landing records the current (unchanged) V-time"
+        );
+        assert!(
+            !v.vtime_synchronized,
+            "resume_idle never marks the HLT synchronized"
+        );
     }
 
     #[test]
@@ -5038,10 +5045,8 @@ mod tests {
         // timer ticks makes V-time progress on its own — each idle resume warps
         // to the next period and re-arms, WITHOUT executing. This is what lets
         // timer-driven waits (nanosleep/futex-timeout) wake up (they froze before
-        // task 52). The guest never runs (work is pinned), so both idle landings
-        // are at the same work, yet V-time advances by a period between them.
-        let cell = std::rc::Rc::new(Cell::new(0u64));
-        let work = Box::new(SharedWork(cell.clone()));
+        // task 52). The guest never executes between ticks, yet V-time advances by a
+        // period between the two idle resumes — pure event-driven clock progress.
         // Periodic one-shot→periodic: LVT vector 0x40 with mode bit 17 set.
         let w = |off: u64, val: u64| Exit::Mmio {
             gpa: Gpa(APIC_MMIO_BASE + off),
@@ -5058,23 +5063,24 @@ mod tests {
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
-        let mut v = lapic_vmm(mock, work);
+        // No intercept ever fires here, so the skid-free anchor stays at the initial 0;
+        // the work source is never consulted by the idle path (skid-free by construction).
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
 
         for _ in 0..3 {
             assert!(matches!(v.step().unwrap(), Step::Continued));
         }
         let period = v.preemption_deadline().expect("armed").0;
-        cell.set(7); // the guest idles at a small fixed work and never advances
 
-        // Idle #1 → jump to one period.
+        // Idle #1 → jump to one period (V-time at the unchanged anchor 0 reads `period`).
         assert!(matches!(v.step().unwrap(), Step::Continued));
-        let after_1 = v.vtime.as_ref().unwrap().clock.snapshot_vns(7);
+        let after_1 = v.vtime.as_ref().unwrap().clock.snapshot_vns(0);
         assert_eq!(after_1, period, "idle #1 warped to the first period");
         // Fire + re-arm (the periodic reload).
         assert!(matches!(v.step().unwrap(), Step::Continued));
         // Idle #2 → jump to the next period, still without the guest executing.
         assert!(matches!(v.step().unwrap(), Step::Continued));
-        let after_2 = v.vtime.as_ref().unwrap().clock.snapshot_vns(7);
+        let after_2 = v.vtime.as_ref().unwrap().clock.snapshot_vns(0);
         assert_eq!(
             after_2,
             period.saturating_mul(2),
@@ -5083,8 +5089,57 @@ mod tests {
         );
         assert_eq!(
             v.idle_landings(),
-            &[7, 7],
-            "two idle resumes, both at the same (pinned) work — pure V-time progress"
+            &[period, period.saturating_mul(2)],
+            "two idle resumes record the successive V-time landings (one tick apart)"
+        );
+    }
+
+    #[test]
+    fn idle_resume_is_immune_to_hlt_work_skid() {
+        // Closes the portable/SimCpu blind spot (task-52 review): the live work counter
+        // is SKID-TAINTED at a HLT (task-27 box O1 — a non-V-time-intercept live read
+        // diverges across same-seed runs), so the idle path must NEVER fold it into
+        // V-time. Model that skid directly — two same-seed runs identical EXCEPT the work
+        // read AT THE HLT differs — and assert deterministic-twice (bit-identical
+        // state_hash), measured after the NEXT skid-free intercept (W_next), which is
+        // exactly where a folded skid term would surface (it does not cancel against the
+        // skid-free W_next). With the pre-fix code that read work() at the HLT, the two
+        // runs diverge here; with the intercept-aligned fix they are identical.
+        fn run_with_hlt_skid(hlt_skid: u64) -> [u8; 32] {
+            let cell = std::rc::Rc::new(Cell::new(0u64));
+            let work = Box::new(SharedWork(cell.clone()));
+            let mut exits = arm_timer_exits(1000);
+            exits.push(Exit::Rdtsc); // intercept → skid-free anchor (identical both runs)
+            exits.push(Exit::Hlt); // idle: the live work read here is skid-tainted
+            exits.push(Exit::Rdtsc); // W_next intercept — where a folded skid would surface
+            exits.push(Exit::Hlt); // terminal (one-shot already fired)
+            let mut mock = configured_mock(exits);
+            mock.set_state(if_set_state());
+            let mut v = lapic_vmm(mock, work);
+
+            for _ in 0..3 {
+                assert!(matches!(v.step().unwrap(), Step::Continued)); // arm
+            }
+            cell.set(1000); // RDTSC anchor read — skid-free, identical both runs
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // RDTSC → anchor 1000
+            cell.set(1000 + hlt_skid); // the HLT live read — skid-perturbed per run
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // idle resume
+            cell.set(2000); // W_next anchor read — skid-free, identical both runs
+            // Drive to terminal (timer fires, the W_next RDTSC lands, terminal HLT).
+            let reason = loop {
+                if let Step::Terminal(r) = v.step().unwrap() {
+                    break r;
+                }
+            };
+            assert_eq!(reason, TerminalReason::Hlt);
+            v.state_hash()
+        }
+
+        assert_eq!(
+            run_with_hlt_skid(0),
+            run_with_hlt_skid(5),
+            "the HLT live work read is skid-tainted; folding it would diverge state_hash \
+             at W_next — the idle path must ignore it (deterministic-twice across HLT skid)"
         );
     }
 

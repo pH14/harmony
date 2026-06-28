@@ -43,22 +43,50 @@ guest_vtime  =  execution_vtime(real_retired_branches)  +  accumulated_idle_vtim
 ```
 
 which is exactly `VClock`: `vns(work) = vns_base + work·ratio`, with `work·ratio` the execution
-component and `vns_base` the idle accumulator. An idle jump adds `D − guest_vtime` to the **idle
+component and `vns_base` the idle accumulator. An idle jump adds its advance to the **idle
 accumulator only** (`VClock::advance_idle`) — it **never touches the retired-branch count**. A
 jump executes no instructions, so it must fabricate **zero** retired branches; task 47's
 `run_until` PMU target and the **B ≡ A** invariant (backend PMU counter ≡ vmm-core `WorkSource`)
-stay intact over the *execution* component. `resume_idle` reads the work at the `HLT` to compute
-`guest_vtime`, anchors `last_intercept_work` to that **exact** value, and bumps `vns_base` — the
-work counter itself is only *read*, never advanced.
+stay intact over the *execution* component.
 
-**Why the `HLT` work read is exact (no skid).** Unlike the `run_until` PMU-overflow path (async
-interrupt, late-and-unpredictable skid → needs single-step correction), a `HLT` is a
-**synchronous** VM exit: the guest stopped *itself* exactly at the `HLT` instruction. The
-guest-only, count-neutral `BR_INST_RETIRED.CONDITIONAL` counter (`work_perf.rs`, `exclude_host=1`)
-therefore reads the exact, seed-deterministic branch count there. So the `HLT` is a synchronized
-V-time intercept, and `resume_idle` marks it `vtime_synchronized` (a snapshot taken right at the
-idle-resume boundary is exact). Two same-seed runs idle at the identical branch count and jump the
-identical amount — the idle period is a deterministic constant, never a nondeterminism source.
+**Intercept-aligned, skid-free (the task-52 review-blocking fix).** The first cut read the live
+work counter *at the `HLT`* and anchored on it — **wrong**. A live `work()` read at a `HLT` (or any
+non-V-time-intercept: PIO/CPUID) is **skid-tainted**: the codebase's own task-27 box O1 evidence
+(`vmm.rs` `save_vtime` / `encode_vtime`) shows such a read **diverges** across same-seed runs
+(post-last-intercept exit-path skid). Folding it into `vns_base` leaves a skid term that does **not**
+cancel at the next (skid-free) intercept `W_next`, so `vns_base`/TSC/`state_hash` diverge once the
+guest idles before a state-affecting read — defeating deterministic-twice. (The portable SimCpu/
+proptest gate was blind to this because `SimCpu` models no skid; the fix adds a portable test that
+does — below.)
+
+The fix is **intercept-aligned**: `resume_idle` **never reads the live counter at the `HLT`**. It
+anchors the advance on the existing **skid-free** `last_intercept_work` (the last real V-time
+intercept's deterministic work) — `now_vns = vns(last_intercept_work)`, the same value
+`lapic_now_vns` already uses — adds `D − now_vns` to `vns_base`, and leaves `last_intercept_work`
+**unmoved** and the point **un-synchronized**. The guest retires **zero** branches during the halt,
+so the execution span `last_intercept_work → W_next` is skid-free at **both** ends; the exact anchor
+is re-established only at the next real intercept `W_next` (`complete_tsc` etc.), where
+`vns(W_next) = vns_base + W_next·ratio` carries no skid term. Only RDTSC/MSR-intercept work counts
+(skid-free) ever enter `vns_base` — never the `HLT` read — so two same-seed runs that idle produce
+bit-identical `vns_base`/TSC/`state_hash`. Leaving the `HLT` un-synchronized is also *more* correct
+than the first cut: `save_vtime` now fails closed at the idle-resume boundary (a `HLT` is genuinely
+not a V-time-intercept), matching the task-27 model.
+
+A consequence worth stating: because the clock is frozen at the anchor between intercepts, the
+pre-idle execution span `last_intercept_work → (HLT)` is accounted at `W_next` like any other
+inter-intercept execution — V-time stays monotone and deterministic, just not "continuous-model"
+exact at the sub-intercept granularity (which the deterministic-anchor clock never was). No escalation
+to a new backend skid-free-quiescent-read capability (task-27 option (a)) is needed — option (b),
+the intercept-aligned formulation, is sufficient and is what shipped.
+
+### Closing the SimCpu blind spot
+
+The portable test `idle_resume_is_immune_to_hlt_work_skid` models the skid directly: two same-seed
+runs identical **except the work read at the `HLT`** (the work source returns a skid-perturbed value
+there), with the determinism measured at the next skid-free intercept `W_next`. It asserts
+bit-identical `state_hash` — which holds with the fix and **fails** with the first-cut code (verified
+by reintroducing the bug: `state_hash` diverges at `W_next`). So this determinism class is now caught
+in the fast Mac gate, not only on-box.
 
 ### Design hook — the planner seam (mechanism vs policy)
 
