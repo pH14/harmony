@@ -1,5 +1,130 @@
 # guest/linux — implementation notes
 
+## Task 48 — `runc` *actually* runs the Postgres OCI container (no `unshare` shim)
+
+### What landed (the money-shot, and the overturn of task 38's load-bearing finding)
+
+Task 38's headline result was a **deadlock finding**: under the single-vCPU /
+V-time VMM, `runc`'s Go container-init never completes the create→exec handshake
+(the container reaches `"created"` but never execs its command), so task 38 fell
+back to building the container with `unshare`/`chroot`/`setpriv` — plain syscalls,
+no Go init. Task 38's own "Deviations" closed with: *"a future VMM with a
+forced-preemption/exit mechanism could revisit runc."* **Task 47 (PR #15) is that
+mechanism** — `run_until` (PMU-overflow + single-step preemption at the V-time LAPIC
+deadline) preempts a busy-spinning Go runtime at a seed-deterministic instant — and
+**task 48 revisits runc with it**: the **actual `runc` binary** (`runc run`) now
+launches the official `postgres:17` OCI container, the task-42
+`gen_random_uuid()`/`clock_timestamp()` workload runs against it, and (the gate) it
+comes out **bit-identical across two same-seed runs**.
+
+New/changed files, all additive over task 38:
+
+- **`runc-init.sh`** (new) — a second guest `/init`, baked as `/runc-init` and
+  selected by the kernel `rdinit=/runc-init` cmdline param. It brings up the kernel
+  filesystems + cgroup-v2 (identical to `docker-init.sh`) and then runs
+  `runc run --bundle /oci pg-container` — the **real `runc`**, on the **same `/oci`
+  bundle + `config.json`** task 38's `build-docker-image.sh` already generated (it was
+  always runc-ready: `runc spec` template + allow-all devices + `terminal=false` +
+  `process.args = /run-workload.sh`). The task-38 `unshare` `/init` (`docker-init.sh`)
+  stays the default, so its gate is unchanged and the two paths are directly
+  comparable.
+- **`build-docker-image.sh`** — one added line: `install … runc-init.sh
+  "$DKROOT/runc-init"`. No change to the OCI bundle, the workload, the pre-baked
+  PGDATA, or the task-38 path.
+- **`consonance/vmm-core/tests/live_runc_postgres.rs`** (new) — the three box gates
+  (`r1`/`r2`/`r3`), `#[cfg(target_os = "linux")]` + `#[ignore]`, modeled on
+  `live_postgres_docker.rs` but with `rdinit=/runc-init` and runc-path proof markers.
+
+**No `src/` change.** The preemption path task 47 added is wired and *auto-fires* on
+the patched Linux boot: `Vmm::step` calls `preemption_deadline()`
+(`vmm-core/src/vmm.rs`), which returns `Some` whenever the backend has a deterministic
+retired-branch counter (patched KVM) **and** the LAPIC timer is armed (the Linux boot
+path, set up in `bringup.rs`); on `Some` it drives `Backend::run_until(deadline)`
+instead of bare `run()`, so a busy-spinning runc/Go thread is preempted at the V-time
+deadline. Task 48 only *exercises* this on the real container-runtime stack — it is a
+guest-image + gate-test task.
+
+### Why `runc` now makes progress (the determinism is preemption-driven)
+
+`runc`/its container-init busy-spin (`procyield`/`osyield`) with no natural VM-exit.
+Task 38 froze there because V-time only advanced at RDTSC-bearing exits, so the LAPIC
+tick never fired and the Go scheduler never ran. Now `run_until` arms the PMU to
+overflow at the timer's V-time deadline (expressed in **retired branches** = a pure
+function of the seed) and single-steps the skid to land at *exactly* that count, then
+the VMM injects the LAPIC timer vector. The Go runtime is preempted on time, its
+scheduler runs, the create→exec/exec-fifo handshake completes, and `runc run` execs
+the container's `/run-workload.sh`. Because the preemption instant is seed-deterministic
+(not wall-clock), the whole interleaving — including the Go runtime's now-genuinely-running
+goroutine schedule — is a pure function of the seed. That is the delta over task 38:
+task 38 *bypassed* the Go runtime; task 48 *runs* it, deterministically.
+
+The entropy/clock determinism is unchanged from task 37/38: `gen_random_uuid()` →
+`pg_strong_random` → the seeded CRNG (RDRAND/RDSEED trap to the seeded stream),
+`clock_timestamp()` → V-time. `runc`/Go reading `AT_RANDOM`/`getrandom` at startup
+rides the same seeded CRNG (task 38 verified this via `boot_id`; `runc-init.sh` keeps
+the `boot_id` witness).
+
+### The gates (`live_runc_postgres.rs`) — what each proves
+
+- **r1 — real `runc` runs Postgres + streams.** One patched boot must launch the
+  container **through the real `runc` binary** — asserted by the `RUNC48: … via REAL
+  runc: runc run` banner **present** AND the task-38 `DK38:`/`unshare(…)` shim markers
+  **absent** (proof `rdinit=/runc-init` selected the runc path, not the shim) AND
+  `runc run` **exiting 0** — then postgres ready, the workload's `row|20|20|210|<uuid>|<t>`
+  reaching `ttyS0` with all 20 UUIDs valid + distinct, `GUEST_READY`, clean terminal.
+- **r2 — deterministic-twice (the milestone).** Two same-seed patched boots through
+  real `runc` → **bit-identical** serial (incl. the UUIDs/timestamps) **and**
+  `state_hash`. Each run is independently re-asserted to have gone through real runc
+  and reached `GUEST_READY`, so two identical-but-stranded boots can't pass vacuously.
+- **r3 — seed-sensitivity.** A different seed ⇒ different UUIDs through the container
+  (the seeded CRNG), both quoted.
+
+### Box-run instructions (FOR THE FOREMAN — these gates are box-only; not yet box-verified)
+
+These gates need the patched KVM + Intel PMU (the `run_until` preemption path uses
+`perf_event` overflow + `KVM_SET_GUEST_DEBUG` single-step) and the built Docker image —
+none available on the dev Mac, and `ssh hetzner` is denied in this worker's session, so
+**the live path is delivered + fully Mac-verified but the box gates are handed to the
+foreman to run verbatim** (per the box-only-gate convention). On `ssh hetzner`, pin per
+`docs/BOX-PINNING.md`, **always revert KVM to stock `1396736` + verify**:
+
+```sh
+# 1. build the image (needs network for the pinned postgres image + docker bundle)
+make -C guest fetch && make -C guest/linux docker-image     # -> guest/build/initramfs-docker.cpio.gz
+# 2. load the patched kvm.ko/kvm-intel.ko (vermagic must match `uname -r`), then, CPU-pinned:
+taskset -c 4 timeout 4200 cargo test -p vmm-core --test live_runc_postgres -- \
+    --ignored --nocapture --test-threads=1 r1_runc_postgres_runs_and_streams_patched
+taskset -c 4 timeout 5400 cargo test -p vmm-core --test live_runc_postgres -- \
+    --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
+taskset -c 4 timeout 5400 cargo test -p vmm-core --test live_runc_postgres -- \
+    --ignored --nocapture --test-threads=1 r3_runc_postgres_seed_sensitivity_patched
+# 3. ALWAYS revert + verify:  rmmod kvm_intel kvm; modprobe kvm kvm_intel; lsmod | grep '^kvm '  # 1396736
+```
+
+Wall budgets are generous (real `runc`/Go + the preemption single-stepping is heavier
+than task 38's `unshare` shim and than a fresh boot); `WALL_BUDGET_SECS` overrides the
+in-test watchdog if a run needs longer. Capture the `r2` equal digests + a sample
+UUID/timestamp and the `r3` two UUIDs into this file's "Acceptance-gate evidence" once
+run. **Note:** re-shipping the worktree with `rm -rf` wipes the built guest payloads —
+rebuild the image before any gate-2 run.
+
+### If a genuinely NEW blocker surfaces (honest frontier, per the task spec)
+
+Preemption removes the *one* blocker task 38 documented (runc-init never execs). The
+kernel capabilities real `runc` additionally needs are all present in the task-36 Kata
+base (verified by reading the config): `CONFIG_SECCOMP_FILTER` (runc applies the
+`runc spec` default seccomp profile), `CONFIG_POSIX_MQUEUE` (the `/dev/mqueue` mount),
+full cgroup-v2 with all controllers + `CONFIG_CGROUP_BPF`, and the namespace set; the
+device-cgroup eBPF default-deny that would kill PID 1 is avoided by the bundle's
+allow-all `linux.resources.devices` (already in task 38's `config.json`), and the
+ramdisk-rootfs `pivot_root` EINVAL by the baked `--no-pivot` runc wrapper. So no further
+blocker is *anticipated*. **If one does surface on the box** (a Go path preemption alone
+doesn't determinize → `r2` serials differ same-seed, or runc failing on a kernel/config
+gap → `r1` `runc run` rc≠0), it is a **real finding**: report it with the precise
+failure (the `RUNC48: runc run exited rc=…` line + the divergent bytes), implement as far
+as the primitive carries, and document it as the next frontier — do **not** relax a gate
+or fall back to `unshare` (that is task 38, kept available for comparison, not this gate).
+
 ## Task 42 — Postgres workload v2: `gen_random_uuid()` + time, still deterministic-twice
 
 ### What landed
