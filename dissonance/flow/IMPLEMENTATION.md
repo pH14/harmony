@@ -146,12 +146,23 @@ running it needs `cargo-fuzz`, which is a box/CI-nightly tool, not installed on 
 Mac. `cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check licenses`
 passes locally.
 
-**Integrator follow-ups (not done here — conventions rule 1 forbids editing root /
-CI files):** `quality.yml`'s per-manifest `cargo deny … licenses` step currently
-lists only `control-proto`'s fuzz manifest; add `dissonance/flow/fuzz/Cargo.toml`
-if you want this crate's fuzz deps license-gated in CI. No `public-api.txt` snapshot
-is committed (the spec doesn't freeze this surface); add one + a line in the
-`public-api` job if you decide to freeze it.
+## Public-API snapshot
+
+The frozen public surface is committed at `tests/public-api.txt` and guarded by
+`tests/public_api.rs` (mirrors `dissonance/control-proto` exactly: same
+`-sss --all-features` invocation, same pinned nightly `nightly-2026-06-16`, same
+skip-loudly-when-tooling-absent behavior, so a stable-only box stays green). The
+gate is `#[ignore]`d in the normal suite and runs via
+`cargo test -p flow --test public_api -- --ignored` in the CI `public-api` job.
+Refresh after an intentional, reviewed API change with
+`UPDATE_PUBLIC_API=1 cargo test -p flow --test public_api -- --ignored`.
+
+**CI wiring owned by the integrator (conventions rule 1 — this branch does not
+touch root / CI files):** add `-p flow` to the `public-api` job's crate list in
+`.github/workflows/quality.yml`, and add a
+`cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses`
+line to the out-of-workspace deny step (mirroring the existing `control-proto`
+fuzz line). Both pass locally.
 
 ## What the frontier binds against this crate
 
