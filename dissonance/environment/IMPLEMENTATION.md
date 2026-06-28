@@ -566,11 +566,13 @@ code it targeted, so this pass re-verifies it on the current tree (no production
 logic changed; the diff is one new test + this note):
 
 - **`dissonance/pv-net` was retired by task 50** (the net-fault boundary moved to
-  *host decides / guest enforces*). **13** of the original 22 `MISSED` mutants lived
-  in that crate (`codec.rs`/`parse.rs`/`switch.rs`/`lib.rs`); they no longer exist,
-  so they are moot rather than killed. `.cargo/mutants.toml`'s comment (h) already
-  records the retirement (its old `Switch::route_one` skip is gone). The four
-  `MISSED` mutants in **this** crate are unaffected and stay killed.
+  *host decides / guest enforces*). The pv-net section of the original survivor list
+  — **13 source lines** across `codec.rs`/`parse.rs`/`switch.rs`/`lib.rs`, the bulk
+  of the 22 `MISSED` total — no longer exists, so those mutants are moot rather than
+  killed. `.cargo/mutants.toml`'s comment (h) already records the retirement (its old
+  `Switch::route_one` skip is gone). The **4** `MISSED` mutants in **this** crate
+  (`admits` `<`, `read_answer` `>`×2, `supply_bytes` `-`) are unaffected and stay
+  killed.
 - **Task 50 reshaped the fault catalog and codec** (per-flow `NetFlow`, new
   `read_fault`/`fault_bounds_ok`, `BLOB_VERSION` 2→3). The line numbers above
   shifted (`admits` now `catalog.rs:216`, `read_answer` now `codec.rs:168`,
