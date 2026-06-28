@@ -38,14 +38,17 @@ jumping** when the guest is idle (this task).
     (so `runc`/Postgres are unaffected); this hardens the keystone against adversarial
     (dissonance-fuzzed) guests. Tested by `idle_hlt_with_undeliverable_timer_is_terminal`
     (reserved-vector and TPR-masked variants; verified non-vacuous).
-- **Advance V-time to the next event by jumping** (`resume_idle`). On a resumable idle, warp the
-  guest-visible clock to the armed deadline `D`, mark the timer deliverable, and resume `step()`
-  — executing nothing. The next `service_pending_irqs` fires the timer into the LAPIC IRR and
-  injects it (the existing task-47 machinery, reused verbatim). The decision (how far to advance)
-  is the portable `vtime::IdlePlanner` (SimCpu-/proptest-/Kani-tested); `vmm-core` only applies
-  it. The KVM FFI stays thin (it just enters/exits) — the accounting is above the trait.
+- **Resume to the next event** (`resume_idle` / `on_hlt`). Two resumable cases:
+  - *Pending now* — a deliverable interrupt is already in the LAPIC IRR (`peek_interrupt` is
+    `Some`): re-enter with **zero** V-time change; the next `service_pending_irqs` delivers it.
+  - *Future timer* — no pending interrupt, but a deliverable timer is armed for a future deadline
+    `D`: jump V-time to `D` and re-enter. The next `service_pending_irqs` fires the timer into the
+    IRR and injects it (the existing task-47 machinery, reused verbatim).
 
-### The clock/counter model — the load-bearing invariant
+  The landing decision is the portable `vtime::IdlePlanner` (SimCpu-/proptest-/Kani-tested); the
+  KVM FFI stays thin — the accounting is above the trait.
+
+### The clock/counter model — the load-bearing invariants
 
 The guest clock is
 
@@ -54,50 +57,53 @@ guest_vtime  =  execution_vtime(real_retired_branches)  +  accumulated_idle_vtim
 ```
 
 which is exactly `VClock`: `vns(work) = vns_base + work·ratio`, with `work·ratio` the execution
-component and `vns_base` the idle accumulator. An idle jump adds its advance to the **idle
-accumulator only** (`VClock::advance_idle`) — it **never touches the retired-branch count**. A
-jump executes no instructions, so it must fabricate **zero** retired branches; task 47's
-`run_until` PMU target and the **B ≡ A** invariant (backend PMU counter ≡ vmm-core `WorkSource`)
-stay intact over the *execution* component.
+component and `vns_base` the idle accumulator. A jump executes no instructions, so it must
+fabricate **zero** retired branches; task 47's `run_until` PMU target and the **B ≡ A** invariant
+(backend PMU counter ≡ vmm-core `WorkSource`) stay intact over the *execution* component.
 
-**Intercept-aligned, skid-free (the task-52 review-blocking fix).** The first cut read the live
-work counter *at the `HLT`* and anchored on it — **wrong**. A live `work()` read at a `HLT` (or any
+Two review-blocking subtleties (both now provably handled) shape the implementation:
+
+**(1) Skid — never read the live counter at the `HLT`.** A live `work()` read at a `HLT` (or any
 non-V-time-intercept: PIO/CPUID) is **skid-tainted**: the codebase's own task-27 box O1 evidence
 (`vmm.rs` `save_vtime` / `encode_vtime`) shows such a read **diverges** across same-seed runs
-(post-last-intercept exit-path skid). Folding it into `vns_base` leaves a skid term that does **not**
-cancel at the next (skid-free) intercept `W_next`, so `vns_base`/TSC/`state_hash` diverge once the
-guest idles before a state-affecting read — defeating deterministic-twice. (The portable SimCpu/
-proptest gate was blind to this because `SimCpu` models no skid; the fix adds a portable test that
-does — below.)
+(post-last-intercept exit-path skid). The first cut folded that read into `vns_base`, leaving a
+skid term that doesn't cancel at the next skid-free intercept → `state_hash` diverges once the
+guest idles. The landing V-time is instead derived from the **skid-free** anchor
+`last_intercept_work` plus the seed-deterministic timer deadline — never the live `HLT` counter.
 
-The fix is **intercept-aligned**: `resume_idle` **never reads the live counter at the `HLT`**. It
-anchors the advance on the existing **skid-free** `last_intercept_work` (the last real V-time
-intercept's deterministic work) — `now_vns = vns(last_intercept_work)`, the same value
-`lapic_now_vns` already uses — adds `D − now_vns` to `vns_base`, and leaves `last_intercept_work`
-**unmoved** and the point **un-synchronized**. The guest retires **zero** branches during the halt,
-so the execution span `last_intercept_work → W_next` is skid-free at **both** ends; the exact anchor
-is re-established only at the next real intercept `W_next` (`complete_tsc` etc.), where
-`vns(W_next) = vns_base + W_next·ratio` carries no skid term. Only RDTSC/MSR-intercept work counts
-(skid-free) ever enter `vns_base` — never the `HLT` read — so two same-seed runs that idle produce
-bit-identical `vns_base`/TSC/`state_hash`. Leaving the `HLT` un-synchronized is also *more* correct
-than the first cut: `save_vtime` now fails closed at the idle-resume boundary (a `HLT` is genuinely
-not a V-time-intercept), matching the task-27 model.
+**(2) Work-axis epoch — rebase the counter on a jump.** The clock spans the *cumulative* work
+counter. Simply bumping `vns_base` (against the stale anchor) while the counter keeps counting
+leaves the two axes inconsistent: the pre-idle branches (last intercept → halt) would be counted a
+*second* time at the next intercept, and `preemption_deadline` (via `work_for_vns`) would convert
+the next deadline to a work count *behind* the live counter → the periodic tick fires immediately
+(overdue), breaking cadence (the codex P2 case: period 1000, halt at work 900, +200 handler → the
+next tick converts to work 1000 while the counter is at 1100). So the future-timer jump **rebases
+the work epoch**: it resets the retired-branch counter to 0 (both counter A *and* the backend's
+counter B) and folds the landing V-time entirely into `vns_base`, anchored at 0 — exactly a
+snapshot-style restore to effective V-time `landing` with entropy/`tsc_adjust` unchanged. It
+therefore **reuses the proven `restore_vtime` machinery** (the same epoch-rebase the snapshot path
+uses, with its all-or-nothing atomicity over the save/restore round-trip that re-arms counter B).
+The pre-idle branches are absorbed into the jump (zero branches retired during the halt, so none is
+lost or fabricated); post-idle work counts from 0, so the next tick lands a full period in the
+**future**, never overdue. `now_vns` for the planner still comes from the skid-free anchor, so (1)
+holds. (No escalation to a new backend skid-free-quiescent-read capability — task-27 option (a) —
+is needed; the intercept-aligned epoch-rebase (option (b)) suffices and is what shipped.)
 
-A consequence worth stating: because the clock is frozen at the anchor between intercepts, the
-pre-idle execution span `last_intercept_work → (HLT)` is accounted at `W_next` like any other
-inter-intercept execution — V-time stays monotone and deterministic, just not "continuous-model"
-exact at the sub-intercept granularity (which the deterministic-anchor clock never was). No escalation
-to a new backend skid-free-quiescent-read capability (task-27 option (a)) is needed — option (b),
-the intercept-aligned formulation, is sufficient and is what shipped.
+The *pending-now* case needs **no** rebase: it advances V-time by zero (just re-enters), so the
+work axis is untouched.
 
-### Closing the SimCpu blind spot
+### Closing the SimCpu blind spot (and the cadence/pending tests)
 
-The portable test `idle_resume_is_immune_to_hlt_work_skid` models the skid directly: two same-seed
-runs identical **except the work read at the `HLT`** (the work source returns a skid-perturbed value
-there), with the determinism measured at the next skid-free intercept `W_next`. It asserts
-bit-identical `state_hash` — which holds with the fix and **fails** with the first-cut code (verified
-by reintroducing the bug: `state_hash` diverges at `W_next`). So this determinism class is now caught
-in the fast Mac gate, not only on-box.
+Three portable tests close the gaps the mock's skid-free, single-shot model was blind to — each
+**verified non-vacuous** (it fails when the corresponding fix is reverted):
+- `idle_resume_is_immune_to_hlt_work_skid` — models skid at the `HLT` (the work source returns a
+  perturbed value there) and asserts bit-identical `state_hash` at the next intercept `W_next`. (1)
+- `idle_jump_rebases_work_epoch_so_next_tick_is_future` — a stale anchor + a high cumulative
+  counter at the idle; asserts the jump **resets** the work counter and the next periodic deadline
+  converts to a **future** work count (cadence preserved). (2)
+- `pending_irr_then_sti_hlt_resumes_and_delivers_not_terminal` — a one-shot fired into the IRR then
+  `sti; hlt` with no future deadline; asserts it **resumes (zero advance) and delivers**, not
+  terminates. (the pending-now precedence)
 
 ### Design hook — the planner seam (mechanism vs policy)
 
@@ -125,9 +131,10 @@ required.
 
 The change is strictly **additive on the idle-`HLT` path**:
 
-- **M1/M2/P6/corpus/multiboot** never wire the LAPIC ⇒ `armed_timer_deadline_vns` is `None` ⇒
-  terminal `HLT` exactly as before; the `RFLAGS` read is short-circuited, so no new `save()`.
-- **Stock KVM** has no deterministic counter ⇒ `armed_timer_deadline_vns` `None` ⇒ terminal.
+- **M1/M2/P6/corpus/multiboot** have no V-time / never wire the LAPIC ⇒ `idle_action` returns
+  `Terminal` at the first (no-vtime / no-lapic) gate, before the `RFLAGS` read ⇒ no new `save()`.
+- **Stock KVM** has no deterministic counter ⇒ `idle_action` returns `Terminal` at the
+  `!deterministic_tsc` gate ⇒ terminal `HLT` exactly as before.
 - **Patched-KVM Linux boot:** every run that *previously completed* did so **without** hitting a
   resumable-idle `HLT` — if it had, the old code would have terminated there and the run would
   never have reached `GUEST_READY`. So those runs take the idle path **zero** times and are
@@ -142,20 +149,28 @@ and are confirmed by the foreman box run (below).
 
 ### Deviations considered and rejected
 
-- **Read the live work counter at the `HLT` and anchor on it (the first cut — REJECTED, it was
-  a determinism bug).** Tempting because it seems to give the "exact" idle point, but a live
-  `work()` read at a `HLT` (any non-V-time-intercept) is **skid-tainted**: the task-27 box O1
-  evidence shows such a read **diverges** across same-seed runs. Folding it into `vns_base` leaves
-  a skid term that does **not** cancel at the next skid-free intercept, so `state_hash` diverges
-  once the guest idles before a state read — defeating deterministic-twice. The shipped design
-  instead anchors the advance on the existing **skid-free** `last_intercept_work` and never reads
-  the live counter at the `HLT` (the intercept-aligned formulation above). This is the correct
-  design — do **not** reintroduce a live `HLT` work read. (The guest retires zero branches during
-  the halt, so the pre-idle execution is simply accounted at the next intercept as normal
-  inter-intercept execution — monotone and deterministic, never double-counted.)
+- **Read the live work counter at the `HLT` and anchor on it (the first cut — REJECTED, a
+  determinism bug).** A live `work()` read at a `HLT` (any non-V-time-intercept) is
+  **skid-tainted**: the task-27 box O1 evidence shows such a read **diverges** across same-seed
+  runs. Folding it into `vns_base` leaves a skid term that does **not** cancel at the next
+  skid-free intercept, so `state_hash` diverges once the guest idles before a state read. The
+  shipped design derives the landing from the **skid-free** anchor + the deterministic deadline,
+  never the live `HLT` counter — do **not** reintroduce a live `HLT` work read.
+- **Bump `vns_base` without rebasing the work counter (the second cut — REJECTED, broke cadence).**
+  Even reading no live counter, simply adding `D − vns(anchor)` to `vns_base` and leaving the
+  cumulative counter running double-counts the pre-idle branches at the next intercept and makes
+  the next deadline→work conversion land *behind* the live counter → the periodic tick fires
+  immediately (overdue). The shipped design **rebases the work epoch** on the jump (reset both
+  counters, fold the landing into `vns_base` at anchor 0), so post-idle work counts from 0 and the
+  next tick is a full period in the future. (codex review P2.)
 - **Escalate to a new backend skid-free quiescent-read capability (task-27 option (a)).** Not
-  needed: the intercept-aligned formulation (option (b)) is sufficient and stays in the portable
-  layer. Avoided the scope growth.
+  needed: the intercept-aligned epoch-rebase (option (b)) is sufficient and stays in the portable
+  layer (reusing `restore_vtime`). Avoided the scope growth.
+- **Require a *future* armed deadline for a resumable idle (REJECTED — missed pending-now).** A
+  one-shot timer can fire into the IRR (deadline hit while `IF == 0`) then the guest `sti; hlt`
+  with no future deadline; keying on a future deadline would wrongly terminate it. The
+  discriminator keys on a *deliverable interrupt existing* — pending-now (zero-advance) takes
+  precedence over a future deadline. (codex review P1.)
 - **Discriminate on `mp_state`/`KVM_MP_STATE_HALTED` or the kernel idle-task PC instead of
   `RFLAGS.IF`.** `IF` is the architectural, guest-authored signal the task names and the one a
   real CPU uses; it needs no guest-layout knowledge and no new backend surface. Rejected the

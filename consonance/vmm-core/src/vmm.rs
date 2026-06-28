@@ -356,6 +356,18 @@ const PREEMPTION_TRACE_CAP: usize = 4096;
 /// nothing will satisfy).
 const RFLAGS_IF: u64 = 1 << 9;
 
+/// What an `Exit::Hlt` should do, decided by [`Vmm::idle_action`] (task 52).
+enum IdleAction {
+    /// Terminal halt — `IF == 0`, off the determinism path, or no deliverable wake.
+    Terminal,
+    /// A deliverable interrupt is already pending in the LAPIC IRR: re-enter with **no**
+    /// V-time change; the next service delivers it.
+    DeliverPending,
+    /// No interrupt pending now, but a deliverable timer is armed for this future V-time
+    /// deadline (ns): jump the clock to it and re-enter.
+    JumpToDeadline(u64),
+}
+
 /// The deterministic VMM, generic over `B: Backend`. **No method here mentions a
 /// concrete backend.**
 pub struct Vmm<B: Backend> {
@@ -1941,107 +1953,139 @@ impl<B: Backend> Vmm<B> {
     }
 
     /// Handle [`Exit::Hlt`]: discriminate a **resumable idle** halt from a **terminal**
-    /// one and act. The guest is either *waiting for an interrupt that will come* or
-    /// *dead* — the same signal a real CPU uses tells them apart: the interrupt-enable
-    /// flag (`RFLAGS.IF`) plus whether a timer is armed
-    /// ([`Self::idle_resume_target`]). A resumable idle warps V-time to the deadline and
-    /// resumes ([`Self::resume_idle`]); everything else (the kernel's final `cli; hlt`
-    /// after poweroff, or any wait nothing will satisfy) terminates exactly as before —
-    /// the strictly-additive change of task 52.
+    /// one and act ([`Self::idle_action`]). The guest is either *waiting for an interrupt
+    /// that will come* or *dead*. A resumable idle either delivers an already-pending
+    /// interrupt (zero V-time advance) or jumps V-time to a future deliverable timer
+    /// ([`Self::resume_idle`]); everything else (the kernel's final `cli; hlt` after
+    /// poweroff, or any wait nothing will satisfy) terminates exactly as before — the
+    /// strictly-additive change of task 52.
     fn on_hlt(&mut self) -> Result<Step, VmmError> {
-        match self.idle_resume_target()? {
-            Some(deadline_vns) => Ok(self.resume_idle(deadline_vns)),
-            None => Ok(self.terminate(TerminalReason::Hlt)),
+        match self.idle_action()? {
+            // A deliverable interrupt is already pending in the IRR (e.g. a one-shot
+            // timer that fired while `IF == 0`, then `sti; hlt`): re-enter with **no**
+            // clock change — the next `service_pending_irqs` delivers it.
+            IdleAction::DeliverPending => Ok(Step::Continued),
+            // No interrupt pending now, but a deliverable timer is armed for the future:
+            // jump V-time to it and re-enter.
+            IdleAction::JumpToDeadline(deadline_vns) => self.resume_idle(deadline_vns),
+            IdleAction::Terminal => Ok(self.terminate(TerminalReason::Hlt)),
         }
     }
 
-    /// The armed timer's V-time deadline (ns) **iff** this `HLT` is a *resumable idle* —
-    /// the guest can take an interrupt (`RFLAGS.IF == 1`) **and** a LAPIC timer is armed
-    /// on the determinism path ([`Self::armed_timer_deadline_vns`]) **and** that timer
-    /// would actually be **delivered** when it fires ([`lapic::Lapic::armed_timer_deliverable`]);
-    /// otherwise `None` (terminal halt).
+    /// Decide what an `Exit::Hlt` should do. **Resumable iff** the guest can take an
+    /// interrupt (`RFLAGS.IF == 1`) on the determinism path **and** a *deliverable* wake
+    /// event exists — either one already pending in the IRR now
+    /// ([`IdleAction::DeliverPending`], zero-advance) **or** a future deliverable armed
+    /// timer ([`IdleAction::JumpToDeadline`]). Otherwise [`IdleAction::Terminal`].
     ///
-    /// **Deliverability, not just armed (robustness).** A timer can be *armed* yet
-    /// *undeliverable* — a reserved vector (`< 16`), or masked by TPR/PPR. Jumping for
-    /// such a timer would fire it into the LAPIC IRR but never inject it
-    /// ([`peek_interrupt`](lapic::Lapic::peek_interrupt) returns `None`), so a one-shot
-    /// leaves **no future wake** and the vCPU would be stuck (warping V-time forever) or
-    /// prematurely terminated. So an undeliverable armed timer is treated as **terminal**
-    /// (exactly like `IF == 0` — a wait nothing will satisfy), never a resumable idle.
-    /// Real Linux programs a deliverable timer vector, so `runc`/Postgres are unaffected;
-    /// this only hardens the keystone against adversarial (dissonance-fuzzed) guests.
+    /// **Pending-now takes precedence over a future deadline.** A one-shot timer may have
+    /// already fired into the IRR (its deadline hit while `IF == 0`), then the guest does
+    /// `sti; hlt` — now [`next_timer_deadline`](lapic::Lapic::next_timer_deadline) is
+    /// `None` but [`peek_interrupt`](lapic::Lapic::peek_interrupt) holds a deliverable
+    /// vector that must wake the halt immediately (a normal Linux pattern: a timer fires
+    /// in a critical section, then the CPU idles). So the discriminator keys on a
+    /// *deliverable interrupt existing*, not merely on a future armed deadline.
     ///
-    /// The no-timer and deliverability checks come **first** and are cheap (no vCPU read):
-    /// the common terminal paths — minimal-boot poweroff and every existing terminal, all
-    /// `IF == 0`/no-timer — never reach the `RFLAGS` read, so their behavior and
-    /// `state_hash` are byte-for-byte unchanged (the no-regression gate). The `RFLAGS`
-    /// read is a [`Backend::save`] (a pure vCPU-state read that runs no guest code, so
-    /// the work counter is untouched) and **fails closed** ([`VmmError::Backend`]) on a
-    /// save error rather than guessing the halt's disposition.
-    fn idle_resume_target(&self) -> Result<Option<u64>, VmmError> {
-        let Some(deadline_vns) = self.armed_timer_deadline_vns() else {
-            return Ok(None);
-        };
-        // Armed is not enough — the timer must be DELIVERABLE (would wake the guest).
-        // `armed_timer_deadline_vns` returning `Some` implies the LAPIC is wired.
-        if !self
-            .lapic
-            .as_ref()
-            .is_some_and(lapic::Lapic::armed_timer_deliverable)
-        {
-            return Ok(None);
+    /// **Deliverability, not just armed.** A timer can be *armed* yet *undeliverable* — a
+    /// reserved vector (`< 16`), or masked by TPR/PPR — in which case it fires into the
+    /// IRR but never injects, so a one-shot leaves no future wake. Such a timer is
+    /// **terminal** (like `IF == 0`), never a resumable idle ([`armed_timer_deliverable`]).
+    ///
+    /// The determinism-path and `IF` gates come **first**: the common terminal paths
+    /// (minimal-boot poweroff, M1/M2/corpus, stock KVM, all `IF == 0`/no-timer) take the
+    /// early `Terminal`, so their behavior and `state_hash` are byte-for-byte unchanged
+    /// (the no-regression gate). The `RFLAGS` read is a [`Backend::save`] (a pure vCPU
+    /// read running no guest code) and **fails closed** ([`VmmError::Backend`]) on error.
+    ///
+    /// [`armed_timer_deliverable`]: lapic::Lapic::armed_timer_deliverable
+    fn idle_action(&self) -> Result<IdleAction, VmmError> {
+        // Determinism path only (stock / M1/M2 keep `HLT` terminal, byte-identical).
+        if self.vtime.is_none() || !self.backend.capabilities().deterministic_tsc {
+            return Ok(IdleAction::Terminal);
         }
-        let rflags = self.backend.save()?.regs.rflags;
-        Ok((rflags & RFLAGS_IF != 0).then_some(deadline_vns))
+        let Some(lapic) = self.lapic.as_ref() else {
+            return Ok(IdleAction::Terminal);
+        };
+        // The guest must be able to take an interrupt.
+        if self.backend.save()?.regs.rflags & RFLAGS_IF == 0 {
+            return Ok(IdleAction::Terminal);
+        }
+        // (a) A deliverable interrupt already pending in the IRR → re-enter, no clock
+        //     change (peek_interrupt already does the vector-validity + TPR/PPR
+        //     arbitration). Takes precedence over a future deadline.
+        if lapic.peek_interrupt().is_some() {
+            return Ok(IdleAction::DeliverPending);
+        }
+        // (b) No pending wake, but a future deliverable armed timer → jump to it.
+        if let Some(deadline_vns) = lapic.next_timer_deadline()
+            && lapic.armed_timer_deliverable()
+        {
+            return Ok(IdleAction::JumpToDeadline(deadline_vns));
+        }
+        // Neither a pending nor a future deliverable wake → terminal.
+        Ok(IdleAction::Terminal)
     }
 
     /// Resume a *resumable idle* `HLT` by **jumping** V-time to the armed timer's
     /// deadline `deadline_vns` — reaching the next scheduled event without executing a
     /// single instruction (the idle dual of the `run_until` execution path).
     ///
-    /// **Intercept-aligned, skid-free (task-52 review fix).** A live `work()` read at a
-    /// `HLT` is **skid-tainted** — the box O1 evidence (task-27, see [`Vmm::save_vtime`]
-    /// / [`encode_vtime`]) shows a non-V-time-intercept live read **diverges** across
-    /// same-seed runs (post-last-intercept exit-path skid). Folding such a read into
-    /// `vns_base` would leave a skid term that does **not** cancel at the next
-    /// (skid-free) intercept, so `vns_base`/TSC/`state_hash` would diverge once the
-    /// guest idles before a state-affecting read — defeating deterministic-twice. So
-    /// this **never reads the live counter at the `HLT`**: it anchors the idle advance
-    /// on the existing skid-free [`last_intercept_work`](VtimeWiring::last_intercept_work)
-    /// (the last V-time intercept's deterministic work), adds
-    /// `deadline − vns(last_intercept_work)` to the idle accumulator
-    /// ([`vtime::IdlePlanner`] decides the amount; [`VClock::advance_idle`] applies it),
-    /// and leaves the anchor **unmoved** and the point **un-synchronized**. The guest
-    /// retires **zero** branches during the halt, so the execution span
-    /// `last_intercept_work → W_next` is skid-free at **both** ends: the exact V-time
-    /// anchor is re-established only at the next real intercept `W_next` (`complete_tsc`
-    /// etc.), where `vns(W_next) = vns_base + W_next·ratio` carries no skid term. The
-    /// jump never touches the retired-branch count (zero fabricated branches; `B ≡ A`
-    /// holds over execution); after it `vns(last_intercept_work) == deadline`, so the
-    /// next [`Self::service_pending_irqs`] fires the timer into the LAPIC IRR and injects
-    /// it, and `step` re-enters. An overdue deadline plans a zero jump and fires
-    /// immediately (the HLT analogue of the planner's `TargetInPast`).
-    fn resume_idle(&mut self, deadline_vns: u64) -> Step {
-        let vt = self
-            .vtime
-            .as_mut()
-            .expect("idle_resume_target returning Some implies V-time wired");
-        // Anchor on the SKID-FREE last intercept, NOT a live HLT read (which is
-        // skid-tainted on-box). `lapic_now_vns` reads this same anchor, so this is the
-        // clock's current effective V-time.
-        let now_vns = vt.clock.snapshot_vns(vt.last_intercept_work);
-        let advance = IdlePlanner::new().plan(now_vns, deadline_vns);
-        // Move ONLY the idle accumulator (vns_base). Crucially: do NOT move
-        // `last_intercept_work` and do NOT set `vtime_synchronized` — the `HLT` is not a
-        // skid-free point, so the exact anchor stays at the last real intercept and is
-        // re-established only at the next one (no skid term ever enters `vns_base`).
-        vt.clock.advance_idle(advance.advance_vns);
-        // Trace the idle V-time landing (the deadline reached; skid-free, derived from
-        // the anchor + planner — never a live work read). Observability, not hashed; capped.
+    /// **Skid-free + work-axis epoch rebase (task-52 review fixes).** Two intertwined
+    /// determinism requirements drive this:
+    ///
+    /// 1. *No skid-tainted read.* A live `work()` read at a `HLT` is skid-tainted (the
+    ///    task-27 box O1 evidence shows a non-V-time-intercept live read **diverges**
+    ///    across same-seed runs). So the landing V-time is derived from the **skid-free**
+    ///    anchor [`last_intercept_work`](VtimeWiring) + the (seed-deterministic) timer
+    ///    deadline — never the live counter at the halt.
+    /// 2. *Work-axis epoch consistency.* The clock is `vns(work) = vns_base + work·ratio`
+    ///    over the **cumulative** counter. Simply bumping `vns_base` (against the stale
+    ///    anchor) while the counter keeps counting leaves the two axes inconsistent: the
+    ///    pre-idle branches (between the last intercept and the halt) would be counted a
+    ///    second time at the next intercept, and the next deadline→work conversion
+    ///    ([`Self::preemption_deadline`] via [`VClock::work_for_vns`]) would land *behind*
+    ///    the live counter → the periodic tick fires immediately (overdue), breaking
+    ///    cadence. So the jump **rebases the work epoch**: it resets the retired-branch
+    ///    counter to 0 (both counter A and the backend's counter B) and folds the landing
+    ///    V-time entirely into `vns_base`, anchored at 0 — exactly a snapshot-style
+    ///    restore to effective V-time `landing` with entropy/`tsc_adjust` unchanged. This
+    ///    is the **same proven machinery as [`Self::restore_vtime`]**, so it reuses it.
+    ///    The pre-idle branches are absorbed into the jump (the guest retires **zero**
+    ///    branches during the halt, so no executed branch is lost or fabricated); post-idle
+    ///    work counts from 0, so the next tick lands a full period in the **future**.
+    ///
+    /// After the rebase `vns(0) == landing`, so the next [`Self::service_pending_irqs`]
+    /// fires the timer into the LAPIC IRR and injects it, and `step` re-enters. The
+    /// landing is the [`vtime::IdlePlanner`] seam (deterministic base: land exactly at the
+    /// deadline; a future fault-overlay could prescribe `deadline + δ`).
+    fn resume_idle(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
+        // The landing V-time, decided by the planner from the SKID-FREE anchor clock
+        // (never a live HLT read). For a future deadline (guaranteed by `idle_action`'s
+        // "not already fired" gate) this is exactly `deadline_vns`.
+        let (landing, snap) = {
+            let vt = self
+                .vtime
+                .as_ref()
+                .expect("JumpToDeadline implies V-time wired");
+            let now_vns = vt.clock.snapshot_vns(vt.last_intercept_work);
+            let landing = IdlePlanner::new().plan(now_vns, deadline_vns).landed_vns;
+            // The idle jump IS a restore to effective V-time `landing` with the current
+            // entropy stream and `tsc_adjust` (unchanged — the guest drew nothing while
+            // idle). Reuse the proven `restore_vtime` epoch-rebase (resets both work
+            // counters, folds `landing` into `vns_base`, anchors at 0).
+            let snap = VtimeSnapshot {
+                vns: landing,
+                tsc_adjust: vt.tsc_adjust,
+                entropy: vt.entropy.save_state(),
+            };
+            (landing, snap)
+        };
+        self.restore_vtime(&snap)?;
+        // Trace the idle V-time landing (skid-free; observability only, not hashed; capped).
         if self.idle_landings.len() < PREEMPTION_TRACE_CAP {
-            self.idle_landings.push(advance.landed_vns);
+            self.idle_landings.push(landing);
         }
-        Step::Continued
+        Ok(Step::Continued)
     }
 
     /// Arbitrate and hand the backend the one IRQ vector to inject at the next safe
@@ -4878,17 +4922,15 @@ mod tests {
         // The headline path: a guest that idles (HLT) with IF==1 while a one-shot
         // LAPIC timer is armed is NOT terminal — V-time jumps to the timer
         // deadline, the timer fires + is delivered, and the run continues. The jump
-        // moves ONLY the idle accumulator (vns_base); it fabricates ZERO retired
-        // branches AND — the task-52 review fix — does NOT read the live (skid-tainted)
-        // HLT work counter, so the skid-free anchor (last_intercept_work) is unmoved
-        // and the point is left un-synchronized.
+        // rebases the work epoch (resets the counter, folds the landing into vns_base
+        // at anchor 0) and fabricates ZERO retired branches AND does NOT read the live
+        // (skid-tainted) HLT work counter.
         let mut exits = arm_timer_exits(1000);
         exits.push(Exit::Hlt); // the guest idles, waiting for the timer
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
         exits.push(Exit::Hlt); // one-shot fired → no timer armed → terminal
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
-        // No intercept before the HLT, so the skid-free anchor is the initial 0.
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
 
         // Arm the timer (3 MMIO writes); the anchor stays 0, no timer fires yet.
@@ -4909,22 +4951,21 @@ mod tests {
             &[deadline],
             "the idle resume records the landed V-time (the deadline)"
         );
-        // Skid-free invariant: the anchor is UNMOVED (still the last real intercept, 0)
-        // and the point is NOT marked synchronized — no live HLT read entered V-time.
+        // Epoch rebase: the anchor resets to 0, the effective V-time is exactly the
+        // deadline, and the point is a clean synchronized boundary (no skid read).
         let vt = v.vtime.as_ref().unwrap();
         assert_eq!(
             vt.last_intercept_work, 0,
-            "the anchor stays at the last skid-free intercept (not a HLT read)"
+            "the work epoch is rebased (anchor 0)"
         );
         assert!(
-            !v.vtime_synchronized,
-            "the HLT is not a skid-free intercept, so it is NOT marked synchronized"
+            v.vtime_synchronized,
+            "post-rebase the effective V-time is exactly the deadline (synchronized)"
         );
-        // The jump landed the clock at D via the idle accumulator alone.
         assert_eq!(
             v.vtime.as_ref().unwrap().clock.snapshot_vns(0),
             deadline,
-            "V-time jumped to D via the idle accumulator (vns_base), not by executing"
+            "V-time jumped to D (folded into vns_base at the rebased anchor 0)"
         );
 
         // Next step: the timer fires off the warped anchor and is delivered.
@@ -5037,41 +5078,6 @@ mod tests {
     }
 
     #[test]
-    fn overdue_idle_resume_is_a_zero_jump() {
-        // The overdue branch of `resume_idle`: when the (skid-free) anchor's V-time is
-        // already at/after the deadline, the planner returns a zero jump — the clock
-        // does not move (never backward) and the landing records the current V-time.
-        // Unit-tested directly: in the full loop an anchor past D would already have
-        // fired the timer (so the timer disarms before a HLT), making this the
-        // planner's robustness edge rather than a naturally-reached state.
-        let mut v = vtime_vmm(vec![Exit::Hlt], Box::new(ScriptedWork::at(0)), 1);
-        // Establish a skid-free anchor at work 5000 (vns 5000 at ratio 1:1).
-        v.vtime.as_mut().unwrap().last_intercept_work = 5000;
-        // Mimic the step() top, which clears the synchronized flag before the entry.
-        v.vtime_synchronized = false;
-
-        // Deadline already in the past relative to the anchor.
-        assert!(matches!(v.resume_idle(4000), Step::Continued));
-
-        let vt = v.vtime.as_ref().unwrap();
-        assert_eq!(
-            vt.clock.snapshot_vns(5000),
-            5000,
-            "zero jump: an overdue deadline does not move the clock (no backward motion)"
-        );
-        assert_eq!(vt.last_intercept_work, 5000, "anchor unmoved");
-        assert_eq!(
-            v.idle_landings(),
-            &[5000],
-            "the landing records the current (unchanged) V-time"
-        );
-        assert!(
-            !v.vtime_synchronized,
-            "resume_idle never marks the HLT synchronized"
-        );
-    }
-
-    #[test]
     fn idle_discriminator_save_error_fails_closed() {
         // The RFLAGS read for the idle/terminal discriminator is a backend save;
         // a save error must fail closed (VmmError::Backend), never guess the
@@ -5132,8 +5138,8 @@ mod tests {
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
-        // No intercept ever fires here, so the skid-free anchor stays at the initial 0;
-        // the work source is never consulted by the idle path (skid-free by construction).
+        // Each idle resume rebases the work epoch (anchor→0), so the clock at work 0 reads
+        // the landed V-time. The work source is never consulted by the idle path.
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
 
         for _ in 0..3 {
@@ -5141,7 +5147,7 @@ mod tests {
         }
         let period = v.preemption_deadline().expect("armed").0;
 
-        // Idle #1 → jump to one period (V-time at the unchanged anchor 0 reads `period`).
+        // Idle #1 → jump to one period (V-time at the rebased anchor 0 reads `period`).
         assert!(matches!(v.step().unwrap(), Step::Continued));
         let after_1 = v.vtime.as_ref().unwrap().clock.snapshot_vns(0);
         assert_eq!(after_1, period, "idle #1 warped to the first period");
@@ -5160,6 +5166,144 @@ mod tests {
             v.idle_landings(),
             &[period, period.saturating_mul(2)],
             "two idle resumes record the successive V-time landings (one tick apart)"
+        );
+    }
+
+    #[test]
+    fn pending_irr_then_sti_hlt_resumes_and_delivers_not_terminal() {
+        // Review P1: a one-shot timer that ALREADY fired into the IRR (its deadline hit
+        // while IF==0), then `sti; hlt` — `next_timer_deadline()` is None but a deliverable
+        // vector is pending in the IRR. The discriminator must RESUME (zero V-time advance)
+        // and deliver it, NOT terminate (a normal Linux pattern: timer fires in a critical
+        // section, then idle). With defer_accept the fired vector is held in the IRR
+        // (un-accepted) across the HLT, modelling the IF==0 window.
+        const W: u64 = 100_000_000; // past the timer deadline → the timer fires into IRR
+        let mut exits = arm_timer_exits(1000); // one-shot, vector 0x40
+        exits.push(Exit::Rdtsc); // advance the anchor past the deadline → timer fires into IRR
+        exits.push(Exit::Hlt); // sti; hlt with the fired vector still pending, no future timer
+        exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
+        exits.push(Exit::Hlt); // terminal (vector delivered, no timer armed)
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        mock.set_defer_accept(true); // hold the fired vector in the IRR across the HLT
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
+
+        // Arm (3) + RDTSC (advances the anchor past the deadline). The one-shot fires into
+        // the IRR at the NEXT service — i.e. at the top of the HLT step below.
+        for _ in 0..4 {
+            assert!(matches!(v.step().unwrap(), Step::Continued));
+        }
+        let vns_before = v.vtime.as_ref().unwrap().clock.snapshot_vns(W);
+
+        // The HLT step: its service fires the one-shot into the IRR (anchor past the
+        // deadline → disarmed), then on_hlt sees a pending deliverable vector with NO
+        // future deadline → DeliverPending. It must RESUME (not terminate).
+        assert!(
+            matches!(v.step().unwrap(), Step::Continued),
+            "a pending deliverable IRR vector wakes the HLT (not terminal)"
+        );
+        // The one-shot has fired and disarmed — there is no future deadline; the resume
+        // was driven purely by the pending IRR vector.
+        assert!(
+            v.preemption_deadline().is_none(),
+            "the one-shot fired/disarmed: the wake came from the pending IRR, not a deadline"
+        );
+        // Zero V-time advance: pending-now delivery does NOT jump the clock or record a
+        // landing (the clock is unchanged; no idle warp).
+        assert!(
+            v.idle_landings().is_empty(),
+            "pending-now delivery is a zero-advance resume (no idle landing recorded)"
+        );
+        assert_eq!(
+            v.vtime.as_ref().unwrap().clock.snapshot_vns(W),
+            vns_before,
+            "the clock is unchanged by a pending-now resume"
+        );
+
+        // Allow acceptance; the next service injects the pending vector → in service.
+        v.backend.set_defer_accept(false);
+        assert!(matches!(v.step().unwrap(), Step::Continued)); // ISR read
+        assert_eq!(
+            *read_completions(&v).last().expect("ISR read") & 1,
+            1,
+            "the pending vector is delivered after the resume"
+        );
+        assert!(matches!(
+            v.step().unwrap(),
+            Step::Terminal(TerminalReason::Hlt)
+        ));
+    }
+
+    #[test]
+    fn idle_jump_rebases_work_epoch_so_next_tick_is_future() {
+        // Review P2 (work-axis epoch): after an idle jump the work counter must be REBASED
+        // (reset), so post-idle deadline→work conversions count from the new epoch and the
+        // next tick lands a FULL period in the future — not overdue. Reproduce the
+        // stale-anchor scenario (a low anchor, then the guest retires many branches before
+        // idling) and assert (1) the jump resets the work counter and (2) the next periodic
+        // deadline converts to a future work count.
+        let cell = std::rc::Rc::new(Cell::new(0u64));
+        let work = Box::new(SharedWork(cell.clone()));
+        let w = |off: u64, val: u64| Exit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + off),
+            size: 4,
+            write: Some(val),
+        };
+        let exits = vec![
+            w(u64::from(lapic::APIC_SVR), 0x1FF),
+            w(u64::from(lapic::APIC_LVT_TIMER), 0x40 | (1 << 17)), // periodic
+            w(u64::from(lapic::APIC_TMICT), 1000),
+            Exit::Hlt, // idle #1 (with a STALE anchor + high live work)
+            w(u64::from(lapic::APIC_EOI), 0), // timer ISR EOIs
+            Exit::Hlt, // idle #2 (full period later)
+        ];
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        let mut v = lapic_vmm(mock, work);
+
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // arm; anchor 0
+        }
+        let period = v.preemption_deadline().expect("armed").0;
+        // The guest retires MANY branches before idling: the cumulative counter is well
+        // past the (stale) anchor AND past the deadline's work — the pre-fix over-count.
+        cell.set(period + 12_345);
+
+        // Idle #1.
+        assert!(matches!(v.step().unwrap(), Step::Continued));
+        // (1) The epoch is REBASED — the work counter resets to 0 (the pre-idle branches
+        //     are absorbed into the jump). The pre-fix code (no rebase) left it unchanged.
+        assert_eq!(
+            cell.get(),
+            0,
+            "the idle jump rebases the work epoch (counter reset to 0)"
+        );
+        assert_eq!(v.idle_landings(), &[period]);
+
+        // Simulate a few handler branches in the new epoch, then fire + re-arm the tick.
+        cell.set(50);
+        assert!(matches!(v.step().unwrap(), Step::Continued)); // fires periodic, re-arms to 2·period
+        // (2) The next deadline converts to a FUTURE work count (a full period ahead),
+        //     NOT overdue — the cadence is preserved across the idle.
+        let next = v.preemption_deadline().expect("re-armed").0;
+        assert!(
+            next > cell.get(),
+            "post-idle deadline→work is in the future ({next}), not overdue vs live work {}",
+            cell.get()
+        );
+        assert_eq!(
+            next.saturating_sub(0),
+            period,
+            "the next tick is exactly one period ahead in the rebased epoch"
+        );
+
+        // Idle #2 lands a full period after idle #1 (cadence preserved).
+        cell.set(60);
+        assert!(matches!(v.step().unwrap(), Step::Continued));
+        assert_eq!(
+            v.idle_landings(),
+            &[period, period.saturating_mul(2)],
+            "tick cadence preserved across the idle (a full period per tick)"
         );
     }
 
