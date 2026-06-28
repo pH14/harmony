@@ -404,6 +404,26 @@ impl Lapic {
         Some(v)
     }
 
+    /// Would the LVT-timer interrupt actually be **delivered** (injected), not
+    /// merely fire into the IRR, if it expired now? `true` iff the timer is active
+    /// (armed, APIC-enabled, unmasked, supported mode — the same gate as
+    /// [`Lapic::next_timer_deadline`]), its vector is a **valid** interrupt vector
+    /// (`>= 16` — a reserved vector `< 16` never delivers, SDM §11.5.3), **and**
+    /// that vector's priority class outranks the current PPR (so
+    /// [`Lapic::peek_interrupt`] would return it once it is in the IRR).
+    ///
+    /// An armed-but-**undeliverable** timer (reserved vector, or masked by
+    /// TPR/PPR) fires into the IRR but is never injected, so it is **not** a real
+    /// wake event. `vmm-core`'s idle-`HLT` discriminator uses this — *deliverable*,
+    /// not merely *armed* — to avoid treating such a timer as a resumable idle
+    /// (which would otherwise warp V-time forever with no wake). It is a pure,
+    /// non-mutating predicate (does not fire the timer or touch the IRR).
+    pub fn armed_timer_deliverable(&self) -> bool {
+        self.timer_active()
+            && self.timer_vector() >= 16
+            && priority_class(self.timer_vector()) > (self.ppr() >> 4)
+    }
+
     /// Deliver the highest-priority pending vector to the guest: move it
     /// IRR→ISR, (implicitly) raise PPR, and return the vector for
     /// `KVM_INTERRUPT`. `None` if nothing is deliverable above PPR or the APIC
@@ -882,6 +902,62 @@ mod tests {
     fn version_register_is_fixed() {
         let l = enabled(25_000_000);
         assert_eq!(l.mmio_read(APIC_VERSION, 0), Ok(APIC_VERSION_VALUE));
+    }
+
+    #[test]
+    fn armed_timer_deliverable_gates_on_active_vector_and_priority() {
+        // The idle-HLT discriminator (vmm-core task 52) relies on this: a timer is a real
+        // wake event only if it is active, has a valid vector (>= 16), and outranks PPR.
+        let mut l = enabled(24_000_000);
+        // Unarmed → not deliverable.
+        assert!(!l.armed_timer_deliverable(), "no timer armed");
+
+        // Armed one-shot, vector 0x40 (class 4), TPR 0 → deliverable.
+        l.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap();
+        l.mmio_write(APIC_TMICT, 1000, 0).unwrap();
+        assert!(l.armed_timer_deliverable(), "armed, valid vector, low TPR");
+
+        // Vector exactly 16 — the lowest deliverable vector (boundary of `>= 16`).
+        l.mmio_write(APIC_LVT_TIMER, 16, 0).unwrap();
+        l.mmio_write(APIC_TMICT, 1000, 0).unwrap();
+        assert!(
+            l.armed_timer_deliverable(),
+            "vector 16 is deliverable (>= 16)"
+        );
+
+        // Vector 15 — reserved (< 16): never deliverable however high its arming.
+        l.mmio_write(APIC_LVT_TIMER, 15, 0).unwrap();
+        l.mmio_write(APIC_TMICT, 1000, 0).unwrap();
+        assert!(
+            !l.armed_timer_deliverable(),
+            "reserved vector < 16 never delivers"
+        );
+
+        // Vector 0x40 (class 4) with TPR class == 4 → masked (the comparison is strict `>`).
+        l.mmio_write(APIC_LVT_TIMER, 0x40, 0).unwrap();
+        l.mmio_write(APIC_TMICT, 1000, 0).unwrap();
+        l.mmio_write(APIC_TPR, 0x40, 0).unwrap();
+        assert!(
+            !l.armed_timer_deliverable(),
+            "equal priority class is not deliverable"
+        );
+        // TPR class 3 < vector class 4 → deliverable again.
+        l.mmio_write(APIC_TPR, 0x30, 0).unwrap();
+        assert!(
+            l.armed_timer_deliverable(),
+            "vector class outranks TPR class"
+        );
+
+        // A masked timer (valid vector, low TPR) is inactive → not deliverable. Isolates
+        // the `timer_active()` term (vector/priority would otherwise pass).
+        l.mmio_write(APIC_TPR, 0, 0).unwrap();
+        l.mmio_write(APIC_LVT_TIMER, 0x40 | LVT_MASK_BIT, 0)
+            .unwrap();
+        l.mmio_write(APIC_TMICT, 1000, 0).unwrap();
+        assert!(
+            !l.armed_timer_deliverable(),
+            "a masked (inactive) timer is never deliverable"
+        );
     }
 
     #[test]
