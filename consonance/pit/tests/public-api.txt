@@ -1,0 +1,47 @@
+pub mod pit
+pub enum pit::PitError
+pub pit::PitError::BadPort(u16)
+pub pit::PitError::InvalidState
+pub pit::PitError::ZeroFrequency
+pub struct pit::Pit
+impl pit::Pit
+pub fn pit::Pit::ack_irq0(&mut self)
+pub fn pit::Pit::advance_to(&mut self, u64) -> bool
+pub fn pit::Pit::irq0_pending(&self) -> bool
+pub fn pit::Pit::new(pit::PitConfig) -> core::result::Result<pit::Pit, pit::PitError>
+pub fn pit::Pit::next_irq0_deadline(&self) -> core::option::Option<u64>
+pub fn pit::Pit::port_read(&mut self, u16, u64) -> core::result::Result<u8, pit::PitError>
+pub fn pit::Pit::port_write(&mut self, u16, u8, u64) -> core::result::Result<(), pit::PitError>
+pub fn pit::Pit::restore(&pit::PitState) -> core::result::Result<pit::Pit, pit::PitError>
+pub fn pit::Pit::snapshot(&self) -> pit::PitState
+pub struct pit::PitConfig
+pub pit::PitConfig::freq_hz: u64
+impl core::default::Default for pit::PitConfig
+pub fn pit::PitConfig::default() -> Self
+pub struct pit::PitCounterState
+pub pit::PitCounterState::access: u8
+pub pit::PitCounterState::arm_vns: u64
+pub pit::PitCounterState::bcd: bool
+pub pit::PitCounterState::count_latched: bool
+pub pit::PitCounterState::latch_val: u16
+pub pit::PitCounterState::loaded: bool
+pub pit::PitCounterState::mode: u8
+pub pit::PitCounterState::null_count: bool
+pub pit::PitCounterState::oneshot_fired: bool
+pub pit::PitCounterState::read_phase: bool
+pub pit::PitCounterState::reload: u16
+pub pit::PitCounterState::status_latched: bool
+pub pit::PitCounterState::status_val: u8
+pub pit::PitCounterState::write_lo: u8
+pub pit::PitCounterState::write_phase: bool
+pub struct pit::PitState
+pub pit::PitState::counters: [pit::PitCounterState; 3]
+pub pit::PitState::freq_hz: u64
+pub pit::PitState::irq0_pending: bool
+pub pit::PitState::version: u32
+pub const pit::PIT_FREQ_HZ: u64
+pub const pit::PIT_PORT_COMMAND: u16
+pub const pit::PIT_PORT_COUNTER0: u16
+pub const pit::PIT_PORT_COUNTER1: u16
+pub const pit::PIT_PORT_COUNTER2: u16
+pub const pit::PIT_STATE_VERSION: u32
