@@ -592,6 +592,17 @@ catalog.rs --file codec.rs --file seeded.rs` → **97 caught, 0 missed, 2 timeou
 bounded (≈20 s scoped) per the precedent above. The named comparison/constant
 mutants (`admits` `<`, `read_answer` `>`×2, `supply_bytes` `-`) are all `caught`.
 
+*Considered and rejected (gate-2 letter).* A workspace `.config/nextest.toml`
+`slow-timeout = { period, terminate-after }` would let **nextest** kill the hung
+test and report it as a *failure*, which cargo-mutants then classifies as `caught`
+rather than `timeout`. It is not added: (1) it is a **root-level** file that changes
+every crate's CI test run (conventions: touch only your directory), (2) to flip a
+*scoped* re-run it must terminate below cargo-mutants' ≈20 s minimum, a per-test cap
+tight enough to risk killing a legitimately slow proptest workspace-wide, and
+(3) it would not help the per-PR `mutants` gate, which is `--in-diff` and never
+mutates this already-shipped source. Bounded-timeout is the deterministic,
+in-directory outcome; this matches the merged task-35 precedent.
+
 ## Task 46 — clarify the *guest* control-plane framing (docs only)
 
 A behavior-neutral clarifying pass: make the crate's docs read as the **guest**
