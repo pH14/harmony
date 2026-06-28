@@ -50,6 +50,7 @@ timeout_multiplier = 3.0
 exclude_globs = [
     "**/main.rs",
     "**/clock_proofs.rs",
+    "**/idle_proofs.rs",
     "**/device_proofs.rs",
     "**/envcodec_proofs.rs",
     "**/kvm.rs",
