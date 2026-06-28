@@ -6,6 +6,7 @@ pub lapic::LapicError::ReservedVector(u8)
 pub struct lapic::Lapic
 impl lapic::Lapic
 pub fn lapic::Lapic::advance_to(&mut self, u64) -> bool
+pub fn lapic::Lapic::armed_timer_deliverable(&self) -> bool
 pub fn lapic::Lapic::eoi(&mut self)
 pub fn lapic::Lapic::has_deliverable(&self) -> bool
 pub fn lapic::Lapic::mmio_read(&self, u32, u64) -> core::result::Result<u32, lapic::LapicError>

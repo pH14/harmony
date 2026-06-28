@@ -1957,11 +1957,22 @@ impl<B: Backend> Vmm<B> {
 
     /// The armed timer's V-time deadline (ns) **iff** this `HLT` is a *resumable idle* —
     /// the guest can take an interrupt (`RFLAGS.IF == 1`) **and** a LAPIC timer is armed
-    /// on the determinism path ([`Self::armed_timer_deadline_vns`]); otherwise `None`
-    /// (terminal halt).
+    /// on the determinism path ([`Self::armed_timer_deadline_vns`]) **and** that timer
+    /// would actually be **delivered** when it fires ([`lapic::Lapic::armed_timer_deliverable`]);
+    /// otherwise `None` (terminal halt).
     ///
-    /// The no-timer check comes **first** and is cheap (no vCPU read): the common
-    /// terminal paths — minimal-boot poweroff and every existing terminal, all
+    /// **Deliverability, not just armed (robustness).** A timer can be *armed* yet
+    /// *undeliverable* — a reserved vector (`< 16`), or masked by TPR/PPR. Jumping for
+    /// such a timer would fire it into the LAPIC IRR but never inject it
+    /// ([`peek_interrupt`](lapic::Lapic::peek_interrupt) returns `None`), so a one-shot
+    /// leaves **no future wake** and the vCPU would be stuck (warping V-time forever) or
+    /// prematurely terminated. So an undeliverable armed timer is treated as **terminal**
+    /// (exactly like `IF == 0` — a wait nothing will satisfy), never a resumable idle.
+    /// Real Linux programs a deliverable timer vector, so `runc`/Postgres are unaffected;
+    /// this only hardens the keystone against adversarial (dissonance-fuzzed) guests.
+    ///
+    /// The no-timer and deliverability checks come **first** and are cheap (no vCPU read):
+    /// the common terminal paths — minimal-boot poweroff and every existing terminal, all
     /// `IF == 0`/no-timer — never reach the `RFLAGS` read, so their behavior and
     /// `state_hash` are byte-for-byte unchanged (the no-regression gate). The `RFLAGS`
     /// read is a [`Backend::save`] (a pure vCPU-state read that runs no guest code, so
@@ -1971,6 +1982,15 @@ impl<B: Backend> Vmm<B> {
         let Some(deadline_vns) = self.armed_timer_deadline_vns() else {
             return Ok(None);
         };
+        // Armed is not enough — the timer must be DELIVERABLE (would wake the guest).
+        // `armed_timer_deadline_vns` returning `Some` implies the LAPIC is wired.
+        if !self
+            .lapic
+            .as_ref()
+            .is_some_and(lapic::Lapic::armed_timer_deliverable)
+        {
+            return Ok(None);
+        }
         let rflags = self.backend.save()?.regs.rflags;
         Ok((rflags & RFLAGS_IF != 0).then_some(deadline_vns))
     }
@@ -4968,6 +4988,55 @@ mod tests {
     }
 
     #[test]
+    fn idle_hlt_with_undeliverable_timer_is_terminal() {
+        // Robustness (review P2): an ARMED but UNDELIVERABLE timer at a HLT(IF==1) must be
+        // TERMINAL, not a resumable idle. Jumping would fire the timer into the IRR but
+        // peek_interrupt returns None (no deliverable vector), so nothing injects and a
+        // one-shot leaves no future wake — the vCPU would be stuck warping V-time. Treat
+        // it like IF==0: terminate, do NOT advance V-time or re-enter. (Deterministic, not
+        // a determinism bug; Linux's timer is deliverable so runc/Postgres are unaffected
+        // — this hardens the keystone against adversarial guests.)
+        let w = |off: u64, val: u64| Exit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + off),
+            size: 4,
+            write: Some(val),
+        };
+        let undeliverable_timer_hlt_terminates = |setup: Vec<Exit>| {
+            let mut exits = setup;
+            exits.push(Exit::Hlt);
+            let mut mock = configured_mock(exits);
+            mock.set_state(if_set_state());
+            let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
+            let r = v.run().expect("run");
+            assert_eq!(
+                r.reason,
+                TerminalReason::Hlt,
+                "an armed-but-undeliverable timer HLT is terminal"
+            );
+            assert!(
+                v.idle_landings().is_empty(),
+                "no idle resume / no V-time advance for an undeliverable timer"
+            );
+        };
+
+        // (a) Reserved vector (< 16): armed (next_timer_deadline is Some) but the vector
+        //     can never be delivered (SDM §11.5.3).
+        undeliverable_timer_hlt_terminates(vec![
+            w(u64::from(lapic::APIC_SVR), 0x1FF),
+            w(u64::from(lapic::APIC_LVT_TIMER), 0x05), // one-shot, unmasked, RESERVED vec 5
+            w(u64::from(lapic::APIC_TMICT), 1000),
+        ]);
+        // (b) Valid vector but masked by a raised TPR (class 0xF outranks the timer's
+        //     class 4): armed and would fire into the IRR, but peek_interrupt returns None.
+        undeliverable_timer_hlt_terminates(vec![
+            w(u64::from(lapic::APIC_SVR), 0x1FF),
+            w(u64::from(lapic::APIC_LVT_TIMER), 0x40), // one-shot, unmasked, vec 0x40 (class 4)
+            w(u64::from(lapic::APIC_TMICT), 1000),
+            w(u64::from(lapic::APIC_TPR), 0xF0), // TPR class 15 masks the timer vector
+        ]);
+    }
+
+    #[test]
     fn overdue_idle_resume_is_a_zero_jump() {
         // The overdue branch of `resume_idle`: when the (skid-free) anchor's V-time is
         // already at/after the deadline, the planner returns a zero jump — the clock
@@ -5057,9 +5126,9 @@ mod tests {
             w(u64::from(lapic::APIC_SVR), 0x1FF),
             w(u64::from(lapic::APIC_LVT_TIMER), 0x40 | (1 << 17)), // periodic
             w(u64::from(lapic::APIC_TMICT), 1000),
-            Exit::Hlt,                // idle #1
-            read_mmio(isr_gpa(0x40)), // EOI-less peek (still in service)
-            Exit::Hlt,                // idle #2 (re-armed period)
+            Exit::Hlt,                        // idle #1
+            w(u64::from(lapic::APIC_EOI), 0), // the timer ISR EOIs (retires 0x40 from ISR)
+            Exit::Hlt,                        // idle #2 (re-armed period; deliverable again)
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());

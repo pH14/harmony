@@ -22,11 +22,22 @@ jumping** when the guest is idle (this task).
 
 - **Discriminate idle-`HLT` from terminal-`HLT`** (`on_hlt` → `idle_resume_target`). The signal
   is the one a real CPU uses: the guest's interrupt-enable flag `RFLAGS.IF` **plus** whether a
-  LAPIC timer is armed on the determinism path. `IF == 1` **and** an armed timer ⇒ **resumable
-  idle**; `IF == 0`, or no timer armed ⇒ **terminal** (the kernel's final `cli; hlt`, or a wait
-  nothing will satisfy). The armed-timer check (`armed_timer_deadline_vns`, factored out of
-  `preemption_deadline` so both halves share one gate) is cheap and comes **first**, so the
-  common terminal paths never even read `RFLAGS` — see *No regression* below.
+  LAPIC timer would actually **wake** the guest. `IF == 1` **and** a *deliverable* armed timer ⇒
+  **resumable idle**; `IF == 0`, no timer armed, or an *undeliverable* timer ⇒ **terminal** (the
+  kernel's final `cli; hlt`, or a wait nothing will satisfy). The armed-timer check
+  (`armed_timer_deadline_vns`, factored out of `preemption_deadline` so both halves share one
+  gate) and the deliverability check are cheap and come **first**, so the common terminal paths
+  never even read `RFLAGS` — see *No regression* below.
+  - **Deliverable, not just armed (review P2 — robustness).** A timer can be *armed* yet
+    *undeliverable* — a reserved vector (`< 16`), or masked by TPR/PPR. Jumping for such a timer
+    fires it into the LAPIC IRR but never injects it (`peek_interrupt` returns `None`), so a
+    one-shot leaves **no future wake** and the vCPU would warp V-time forever / terminate
+    prematurely. So the discriminator requires `lapic::Lapic::armed_timer_deliverable` (the
+    timer's vector is valid **and** outranks the current PPR), treating an undeliverable timer as
+    terminal — like `IF == 0`. Deterministic, and real Linux always programs a deliverable timer
+    (so `runc`/Postgres are unaffected); this hardens the keystone against adversarial
+    (dissonance-fuzzed) guests. Tested by `idle_hlt_with_undeliverable_timer_is_terminal`
+    (reserved-vector and TPR-masked variants; verified non-vacuous).
 - **Advance V-time to the next event by jumping** (`resume_idle`). On a resumable idle, warp the
   guest-visible clock to the armed deadline `D`, mark the timer deliverable, and resume `step()`
   — executing nothing. The next `service_pending_irqs` fires the timer into the LAPIC IRR and
@@ -131,11 +142,20 @@ and are confirmed by the foreman box run (below).
 
 ### Deviations considered and rejected
 
-- **Anchor the jump to the stale last-intercept work instead of reading the `HLT` work.** Avoids
-  one counter read, but double-counts the branches retired between the last intercept and the
-  `HLT` as *post-deadline* time, shifting the post-resume clock forward by that execution. The
-  spec's model (`elapsed = execution(real_branches) + idle`) requires the **real** `HLT` work;
-  the `HLT` read is exact (synchronous exit), so this is both correct and deterministic. Rejected.
+- **Read the live work counter at the `HLT` and anchor on it (the first cut — REJECTED, it was
+  a determinism bug).** Tempting because it seems to give the "exact" idle point, but a live
+  `work()` read at a `HLT` (any non-V-time-intercept) is **skid-tainted**: the task-27 box O1
+  evidence shows such a read **diverges** across same-seed runs. Folding it into `vns_base` leaves
+  a skid term that does **not** cancel at the next skid-free intercept, so `state_hash` diverges
+  once the guest idles before a state read — defeating deterministic-twice. The shipped design
+  instead anchors the advance on the existing **skid-free** `last_intercept_work` and never reads
+  the live counter at the `HLT` (the intercept-aligned formulation above). This is the correct
+  design — do **not** reintroduce a live `HLT` work read. (The guest retires zero branches during
+  the halt, so the pre-idle execution is simply accounted at the next intercept as normal
+  inter-intercept execution — monotone and deterministic, never double-counted.)
+- **Escalate to a new backend skid-free quiescent-read capability (task-27 option (a)).** Not
+  needed: the intercept-aligned formulation (option (b)) is sufficient and stays in the portable
+  layer. Avoided the scope growth.
 - **Discriminate on `mp_state`/`KVM_MP_STATE_HALTED` or the kernel idle-task PC instead of
   `RFLAGS.IF`.** `IF` is the architectural, guest-authored signal the task names and the one a
   real CPU uses; it needs no guest-layout knowledge and no new backend surface. Rejected the
