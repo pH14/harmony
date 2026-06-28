@@ -559,6 +559,39 @@ CPU-bound infinite loop in the parallel proptest binary.)
 → **90 caught, 0 missed, 2 timeouts, 8 unviable** (from the original task-35 run).
 The 2 timeouts are exactly the `supply_bytes` loop-bound mutants above.
 
+### Task 35 re-hardening — re-verified on the post-task-50 tree
+
+Task 35 first ran against the *initial-release* tree. Two later changes churned the
+code it targeted, so this pass re-verifies it on the current tree (no production
+logic changed; the diff is one new test + this note):
+
+- **`dissonance/pv-net` was retired by task 50** (the net-fault boundary moved to
+  *host decides / guest enforces*). **13** of the original 22 `MISSED` mutants lived
+  in that crate (`codec.rs`/`parse.rs`/`switch.rs`/`lib.rs`); they no longer exist,
+  so they are moot rather than killed. `.cargo/mutants.toml`'s comment (h) already
+  records the retirement (its old `Switch::route_one` skip is gone). The four
+  `MISSED` mutants in **this** crate are unaffected and stay killed.
+- **Task 50 reshaped the fault catalog and codec** (per-flow `NetFlow`, new
+  `read_fault`/`fault_bounds_ok`, `BLOB_VERSION` 2→3). The line numbers above
+  shifted (`admits` now `catalog.rs:216`, `read_answer` now `codec.rs:168`,
+  `supply_bytes` loop bound now `seeded.rs:65`), but the function names and the
+  pinned boundaries are identical, and the reshape introduced **no new survivors**.
+
+**New test.** `block_torn_bound_is_inclusive_at_len` pins the one point-relative
+fault bound task 50 added — `admits → fault_bounds_ok`'s `BlockTorn(n)` admissible
+on `BlockIo { len }` **iff `n <= len`**. It asserts `n ∈ {0, len-1, len}` admissible
+and `n = len+1` inadmissible, killing `<=`→`<` / `==` / `>`. (The reshaped suite's
+`net_flow`/`determinism` tests already kill these incidentally — `0 missed` below
+holds with or without it — so this is an explicit, self-documenting pin alongside
+the scheduler `<` bound, not a gap closure.)
+
+**Re-verification (current tree).** `cargo mutants -p environment --file
+catalog.rs --file codec.rs --file seeded.rs` → **97 caught, 0 missed, 2 timeouts,
+10 unviable** (109 mutants, 16 min). The only two non-caught are exactly the `seeded.rs:65`
+`<`→`<=` and `<`→`==` loop-bound mutants — the inherent infinite-loop pair,
+bounded (≈20 s scoped) per the precedent above. The named comparison/constant
+mutants (`admits` `<`, `read_answer` `>`×2, `supply_bytes` `-`) are all `caught`.
+
 ## Task 46 — clarify the *guest* control-plane framing (docs only)
 
 A behavior-neutral clarifying pass: make the crate's docs read as the **guest**
