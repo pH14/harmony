@@ -425,3 +425,52 @@ fn ack_without_pending_is_noop() {
     p.ack_irq0();
     assert!(!p.irq0_pending());
 }
+
+#[test]
+fn bcd_all_four_digits_roundtrip() {
+    let mut p = pit(KHZ);
+    // BCD reload 0x4321 = 4321 decimal — exercises all four BCD digit positions.
+    p.port_write(PIT_PORT_COMMAND, ctrl(0, 3, 2, true), 0).unwrap();
+    p.port_write(PIT_PORT_COUNTER0, 0x21, 0).unwrap();
+    p.port_write(PIT_PORT_COUNTER0, 0x43, 0).unwrap();
+    assert_eq!(p.next_irq0_deadline(), Some(4321 * TICK_NS), "decoded 4321 ticks");
+    // After 321 ticks, count = 4000 decimal = 0x4000 BCD (each digit re-encoded).
+    p.port_write(PIT_PORT_COMMAND, ctrl(0, 0, 0, true), 321 * TICK_NS)
+        .unwrap();
+    let lo = p.port_read(PIT_PORT_COUNTER0, 321 * TICK_NS).unwrap();
+    let hi = p.port_read(PIT_PORT_COUNTER0, 321 * TICK_NS).unwrap();
+    assert_eq!(u16::from(lo) | (u16::from(hi) << 8), 0x4000);
+}
+
+#[test]
+fn status_output_bit_reflects_waveform_phase() {
+    // Read the status byte (bit 7 = OUTPUT pin) via a read-back status-latch command
+    // (bits 7,6 = readback; bit 5 set = no count latch; bit 4 clear = latch status;
+    // bit 1 = select counter 0): value 0b1110_0010.
+    fn output(p: &mut Pit, now: u64) -> u8 {
+        p.port_write(PIT_PORT_COMMAND, 0b1110_0010, now).unwrap();
+        p.port_read(PIT_PORT_COUNTER0, now).unwrap() & 0x80
+    }
+
+    // Mode 0 (one-shot): OUT low until terminal count, then high.
+    let mut p = pit(KHZ);
+    p.port_write(PIT_PORT_COMMAND, ctrl(0, 3, 0, false), 0).unwrap();
+    p.port_write(PIT_PORT_COUNTER0, 10, 0).unwrap();
+    p.port_write(PIT_PORT_COUNTER0, 0, 0).unwrap();
+    assert_eq!(output(&mut p, 5 * TICK_NS), 0, "mode 0 OUT low before terminal");
+    assert_eq!(output(&mut p, 10 * TICK_NS), 0x80, "mode 0 OUT high at terminal");
+
+    // Mode 2 (rate generator): OUT high except the single clock at count 1.
+    let mut p = pit(KHZ);
+    arm_counter0_mode2(&mut p, 10, 0);
+    assert_eq!(output(&mut p, 0), 0x80, "mode 2 OUT high at full count");
+    assert_eq!(output(&mut p, 9 * TICK_NS), 0, "mode 2 OUT low at count 1");
+
+    // Mode 3 (square wave): OUT high the first half of the period, low the second.
+    let mut p = pit(KHZ);
+    p.port_write(PIT_PORT_COMMAND, ctrl(0, 3, 3, false), 0).unwrap();
+    p.port_write(PIT_PORT_COUNTER0, 10, 0).unwrap();
+    p.port_write(PIT_PORT_COUNTER0, 0, 0).unwrap();
+    assert_eq!(output(&mut p, 2 * TICK_NS), 0x80, "mode 3 OUT high first half");
+    assert_eq!(output(&mut p, 7 * TICK_NS), 0, "mode 3 OUT low second half");
+}
