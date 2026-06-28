@@ -5,6 +5,155 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 53 — deterministic i8254 vPIT: give real Linux a tick (Deterland-style)
+
+The missing primitive under the whole frontier. The box proved (three ways: a live
+`idle_action` trace, task 37's notes, and Linux's boot log) that real Linux here boots in
+**virtual-wire APIC mode** (`APIC: ... Switch to virtual wire mode`) and therefore
+registers **no clock-event/tick device** — only the TSC *clocksource*. With no tick, timer
+interrupts never fire, `sleep`/`nanosleep`/futex-timeouts never wake, runc's Go runtime
+deadlocks, and tasks 47 (preempt-at-timer) / 52 (HLT-resume-at-timer) had **no armed timer
+to act on** — their machinery was built but never exercised on real Linux. The fix is the
+published, proven approach: model a deterministic **i8254 PIT** as the guest's clock-event.
+In virtual-wire mode Linux's natural tick source is the legacy PIT (I/O ports `0x40`–`0x43`,
+no ACPI/MADT), so a vPIT makes Linux register a real periodic tick with no firmware tables.
+
+This is exactly **Deterland**'s design (Wu & Ford, *Deterministically Deterring Timing
+Attacks in Deterland*, arXiv:1504.07070): **§4.1.2** models a vPIT (+vRTC) as "the only
+fine-grained notion of time observable to guest VMs" and **disables the LAPIC timer**;
+**§5.1** delivers timer interrupts via performance-counter overflow + single-step-to-exact
+(the skid solution — exactly what task 47's `run_until` does: arm early, single-step to the
+target); **§5.3** gates injection on the guest's interrupt-enable flag. Deterland ran real
+unmodified Ubuntu this way; we productionize the same class of design to run real Docker.
+
+### What landed
+
+- **The vPIT model** is the new `consonance/pit` crate (pure-logic, `no_std`, mirroring
+  `lapic`): three i8254 counters, counter 0 → IRQ0, modes 0/2/3/4 (6/7 alias 2/3),
+  counter-latch + read-back, lobyte/hibyte access, BCD/binary, countdown at **1.193182 MHz
+  of V-time** (the `docs/CPU-MSR-CONTRACT.md` value — no contract change). Its state is a
+  pure function of V-time + the guest's port writes. Unit + property (vs an independent
+  tick-stepping reference) + Kani gates live there; see `consonance/pit/IMPLEMENTATION.md`.
+- **Wiring** (this crate, `src/vmm.rs` + `src/snapshot.rs`): `wire_lapic` now also wires the
+  vPIT alongside the xAPIC + legacy platform (the Linux-path device set). `dispatch_out` /
+  `dispatch_in` route ports `0x40`–`0x43` into the vPIT (before the legacy stub, which no
+  longer claims them); a count load anchors at the skid-free `lapic_now_vns`, exactly as a
+  LAPIC-timer arm does.
+- **Re-keyed clock-event source.** `armed_timer_deadline_vns` (behind both
+  `preemption_deadline` — the execution path — and the idle-resume target) now returns the
+  **minimum** of the vPIT's IRQ0 deadline and the (dormant) LAPIC timer's deadline. This
+  generalizes task 52's single-source "next event" to the two clock-event sources the spec
+  anticipated. Real Linux adopts the **vPIT** (the LAPIC timer is never armed in virtual-wire
+  mode — Deterland §4.1.2 disables it), so the vPIT is the source that actually drives
+  preemption / idle-resume; the LAPIC timer stays a present-but-unused fallback so a guest
+  that *did* arm it is not starved.
+- **IRQ0 delivery via the 8259 ExtINT path** (task 47's PMU-overflow + single-step, reused
+  verbatim): on `Exit::Deadline`/at the timer service, counter 0's terminal count raises an
+  IRQ0 **edge** (`Pit::irq0_pending`); `service_pending_irqs` injects vector **`0x30`**
+  (`ISA_IRQ_VECTOR(0)`, the master 8259's ICW2 offset) through `set_pending_irq` when the
+  8259 has not masked IRQ 0, arbitrated **below** a deliverable LAPIC vector and **above**
+  COM1's IRQ4 (the 8259 prioritizes by IRQ number). The backend accepts it when
+  `RFLAGS.IF == 1` (the interrupt-window handshake, Deterland §5.3), and
+  `complete_irq_delivery` acknowledges the edge (`Pit::ack_irq0`) so the next terminal count
+  raises a fresh one. The LAPIC-timer model stays present but dormant.
+- **Re-keyed task 52 HLT-resume.** `idle_action` / `resume_idle` now wake on the vPIT too:
+  a pending IRQ0 edge (counter 0 fired while `IF == 0`, then `sti; hlt`) → `DeliverPending`
+  (zero advance); a future *deliverable* IRQ0 deadline → `JumpToDeadline` (jump V-time to it
+  and re-enter). The deliverability gate (`deliverable_wake_deadline_vns`) treats a
+  PIT tick whose IRQ0 is **masked at the 8259** as terminal — task 52's review-P2 robustness,
+  generalized to the vPIT. Crucially, the landing is still derived from the **skid-free**
+  `last_intercept_work` anchor + the deterministic IRQ0 deadline (the work-epoch rebase via
+  `restore_vtime`); **no raw `work()` read at the HLT** was reintroduced — that P1 was the
+  central Deterland hazard, and the re-keyed skid-modeling test
+  (`vpit_idle_resume_is_immune_to_hlt_work_skid`) guards it.
+- **Hashing + snapshot.** The vPIT state is folded into the Linux-path `state_hash` (a `PIT\0`
+  chunk, like `LAPC`/`LEGY`) and the snapshot device blob (bumped to **v4**, restored with a
+  wiring-match + coherence check like the LAPIC).
+
+### Determinism (the whole point)
+
+Every input is seed-derived: the vPIT countdown (V-time + guest port writes), the IRQ0
+deadline, and the PMU-overflow + single-step delivery are all deterministic; no wall clock
+enters. Two same-seed runs tick at identical V-times and deliver IRQ0 at identical
+retired-branch counts (Deterland §5.1's skid handling — arm early, single-step to exact — is
+what makes it precise despite PMU skid).
+
+### No regression — why M1/M2/corpus stay byte-identical, and the Linux goldens re-base
+
+The vPIT is wired **only** by `wire_lapic` (the Linux path). M1/M2/corpus/multiboot never
+wire the LAPIC, so they wire no vPIT → no `PIT\0` chunk, no `0x40`–`0x43` routing change,
+and an all-zero `pit: None` in the device blob → their `state_hash` and snapshot blobs are
+**byte-for-byte unchanged** (verified on the Mac: the full 230-test `vmm-core` lib suite +
+det-corpus + M1/M2 mock gates pass untouched). The **Linux goldens deliberately re-base**:
+any tick changes the boot, so `live_linux_boot`/`live_postgres`/`live_postgres_docker`/
+`live_branching_demo` get new `state_hash`/serial goldens (the foreman box re-run below).
+
+### Box gate — foreman handoff (the empirical proof; box-only, `ssh hetzner`)
+
+`ssh hetzner` is classifier-blocked in the delegated worker session, so the box gates are
+handed to the foreman. The Mac deliverable is the **full portable path** + the SimCpu /
+proptest / Kani gates that exercise every line of the decision logic. Run on a **52+53+48**
+tree (this branch is `task/hlt-resume`-based and supersedes PR #27; merge `task/runc-postgres`
+for the runc-init + Docker image), reusing the task-48 box setup (`/root/ht42`):
+
+```sh
+make -C guest fetch && make -C guest/linux docker-image
+# 1. RUN FIRST — the empirical unlock: real runc reaches GUEST_READY + det-twice + seed-sensitive
+/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_runc_postgres -- \
+  --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
+# then r1_runc_postgres_runs_and_streams_patched, r3_runc_postgres_seed_sensitivity_patched
+# 2. Deliberate Linux-golden re-baseline (each deterministic-twice; record the new digests):
+/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_linux_boot -- --ignored --nocapture --test-threads=1
+/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_postgres -- --ignored --nocapture --test-threads=1
+/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_postgres_docker -- --ignored --nocapture --test-threads=1
+```
+
+The `run-patched-ht42.sh` wrapper pins to a free core (`docs/BOX-PINNING.md` — core 4 is
+free) and **always reverts KVM to stock `1396736` + verifies** via the EXIT trap. **Expected
+evidence to capture** into `guest/linux/IMPLEMENTATION.md`:
+- runc reaches **GUEST_READY** and runs the Postgres OCI container **deterministic-twice**
+  (bit-identical serial + `state_hash`) + seed-sensitive (UUIDs/timestamps differ) — the
+  thing that has been blocked all along; quote the equal digests + a sample UUID/timestamp.
+- the **boot log** now shows the clock-event registering + ticks firing (a "Local APIC/PIT
+  timer" clockevent line absent before), and `idle_landings()` / `preemption_landings()` are
+  **non-zero** on real Linux (47/52 finally exercised).
+- the **`sleep`/`nanosleep` corollary** (task 37: "`sleep 1` never returned") now returns.
+- the **re-baselined** `live_linux_boot`/`live_postgres`/`live_postgres_docker` goldens
+  (quote the equal det-twice digests). **M1/M2/P6 + the det-corpus goldens MUST stay
+  byte-identical** (additive, per the no-regression argument above).
+
+### Deviations considered and rejected
+
+- **Source the deadline ONLY from the vPIT (drop the LAPIC timer as a source).** The spec
+  says "not the unused LAPIC timer", but making the LAPIC timer a still-functional fallback
+  (the `min` of both) is strictly more general, keeps the LAPIC genuinely *dormant but not
+  removed* (the spec's "leave the LAPIC-timer model present"), and avoids rewriting the large
+  task-47/52 LAPIC-timer test suite (which exercises the *mechanism*, now sourced from
+  whichever timer is armed). Real Linux never arms the LAPIC timer, so the vPIT is the de
+  facto source — the requirement is met in practice while the code is more robust.
+- **Deliver IRQ0 through the LAPIC IRR (like the LVT timer).** Wrong for virtual-wire mode:
+  IRQ0 is a legacy **ExtINT** the 8259 forwards, not a LAPIC-local interrupt. It is delivered
+  exactly like the COM1 serial line (vector from the 8259, gated on the master IMR, no
+  IRR/ISR transition), which is why `complete_irq_delivery` disambiguates by whether the
+  LAPIC actually holds the accepted vector before acking the PIT.
+- **Reintroduce a live `work()` read at the HLT to anchor the idle landing.** Rejected — that
+  is task 52's central P1 / Deterland's documented skid hazard (a non-V-time-intercept live
+  read diverges across same-seed runs). The landing stays derived from the skid-free anchor;
+  `vpit_idle_resume_is_immune_to_hlt_work_skid` guards against the reversal.
+- **Model counter 2's GATE (port `0x61`) / the PC speaker / mode-3 by-2 read-back.** Not
+  needed: counter 2 is not an IRQ source, the contract calibrates the TSC from CPUID 0x15 (so
+  the counter-2 PIT calibration loop is skipped), and nothing reads counter 0 back mid-period
+  in mode 3. Documented in `consonance/pit/IMPLEMENTATION.md`; the IRQ *rate* (what Linux
+  uses) is exact for every modelled mode.
+
+### Known limitations
+
+- **Single clock-event delivery is ExtINT-only here** (IRQ0 + COM1 IRQ4 via the 8259);
+  generalizing "next event" further (vRTC, an IOAPIC) is deferred — the discriminator and
+  `min_opt` source-combination are structured so more sources widen cleanly.
+- **The end-to-end runc proof is box-only** (patched KVM + perf + the built Docker image),
+  delegated to the foreman (above). The Mac deliverable is the full portable path + gates.
+
 ## Task 52 — deterministic HLT-resume (the event-driven V-time clock, completed)
 
 Before this task the run loop could advance V-time **only by executing**, so a guest that

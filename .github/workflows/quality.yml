@@ -169,10 +169,11 @@ jobs:
         run: |
           cargo install --locked kani-verifier
           cargo kani setup
-      - name: cargo kani (vtime + lapic + environment)
+      - name: cargo kani (vtime + lapic + pit + environment)
         run: |
           cargo kani -p vtime
           cargo kani -p lapic
+          cargo kani -p pit
           cargo kani -p environment
 
   # Gating: frozen public-API snapshots (quality-d). The per-crate
@@ -199,5 +200,5 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p flow \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p pit -p environment -p control-proto -p explorer -p flow \
             --test public_api -- --ignored --nocapture
