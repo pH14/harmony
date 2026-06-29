@@ -23,6 +23,225 @@ The full narrative, the image plumbing (`runc-init.sh`, `rdinit=/runc-init`), an
 foreman box-run instructions live in **`guest/linux/IMPLEMENTATION.md`**. `devices.rs`,
 the CPU/MSR contract, and the `state_hash` schema are untouched, so M1/M2/P6 + the
 det-corpus goldens are byte-unchanged.
+## Task 52 — deterministic HLT-resume (the event-driven V-time clock, completed)
+
+Before this task the run loop could advance V-time **only by executing**, so a guest that
+went idle (`HLT`) froze, and the VMM treated the first `HLT` as terminal
+(`Exit::Hlt => terminate`). That was a design deviation papered over because every prior
+workload was hand-shaped to never idle (task-48 cooperative postgres, finding #3). Real `runc`
+is the first workload that genuinely idles mid-operation (its create→exec handshake blocks the
+parent in `waitpid` and the Go init on a futex/exec-fifo at the same instant → kernel idle task
+→ `HLT`), so the VM died before the container came up. Task 52 restores the intended model: the
+run loop is a **discrete-event clock** — always advance V-time to the next scheduled event,
+reaching it **by executing** when there is runnable work (task 47's `run_until`) and **by
+jumping** when the guest is idle (this task).
+
+### What landed (all in `consonance/vmm-core/src/vmm.rs` + `consonance/vtime/`)
+
+- **Discriminate idle-`HLT` from terminal-`HLT`** (`on_hlt` → `idle_resume_target`). The signal
+  is the one a real CPU uses: the guest's interrupt-enable flag `RFLAGS.IF` **plus** whether a
+  LAPIC timer would actually **wake** the guest. `IF == 1` **and** a *deliverable* armed timer ⇒
+  **resumable idle**; `IF == 0`, no timer armed, or an *undeliverable* timer ⇒ **terminal** (the
+  kernel's final `cli; hlt`, or a wait nothing will satisfy). The armed-timer check
+  (`armed_timer_deadline_vns`, factored out of `preemption_deadline` so both halves share one
+  gate) and the deliverability check are cheap and come **first**, so the common terminal paths
+  never even read `RFLAGS` — see *No regression* below.
+  - **Deliverable, not just armed (review P2 — robustness).** A timer can be *armed* yet
+    *undeliverable* — a reserved vector (`< 16`), or masked by TPR/PPR. Jumping for such a timer
+    fires it into the LAPIC IRR but never injects it (`peek_interrupt` returns `None`), so a
+    one-shot leaves **no future wake** and the vCPU would warp V-time forever / terminate
+    prematurely. So the discriminator requires `lapic::Lapic::armed_timer_deliverable` (the
+    timer's vector is valid **and** outranks the current PPR), treating an undeliverable timer as
+    terminal — like `IF == 0`. Deterministic, and real Linux always programs a deliverable timer
+    (so `runc`/Postgres are unaffected); this hardens the keystone against adversarial
+    (dissonance-fuzzed) guests. Tested by `idle_hlt_with_undeliverable_timer_is_terminal`
+    (reserved-vector and TPR-masked variants; verified non-vacuous).
+- **Resume to the next event** (`resume_idle` / `on_hlt`). Two resumable cases:
+  - *Pending now* — a deliverable interrupt is already in the LAPIC IRR (`peek_interrupt` is
+    `Some`): re-enter with **zero** V-time change; the next `service_pending_irqs` delivers it.
+  - *Future timer* — no pending interrupt, but a deliverable timer is armed for a future deadline
+    `D`: jump V-time to `D` and re-enter. The next `service_pending_irqs` fires the timer into the
+    IRR and injects it (the existing task-47 machinery, reused verbatim).
+
+  The landing decision is the portable `vtime::IdlePlanner` (SimCpu-/proptest-/Kani-tested); the
+  KVM FFI stays thin — the accounting is above the trait.
+
+### The clock/counter model — the load-bearing invariants
+
+The guest clock is
+
+```
+guest_vtime  =  execution_vtime(real_retired_branches)  +  accumulated_idle_vtime
+```
+
+which is exactly `VClock`: `vns(work) = vns_base + work·ratio`, with `work·ratio` the execution
+component and `vns_base` the idle accumulator. A jump executes no instructions, so it must
+fabricate **zero** retired branches; task 47's `run_until` PMU target and the **B ≡ A** invariant
+(backend PMU counter ≡ vmm-core `WorkSource`) stay intact over the *execution* component.
+
+Two review-blocking subtleties (both now provably handled) shape the implementation:
+
+**(1) Skid — never read the live counter at the `HLT`.** A live `work()` read at a `HLT` (or any
+non-V-time-intercept: PIO/CPUID) is **skid-tainted**: the codebase's own task-27 box O1 evidence
+(`vmm.rs` `save_vtime` / `encode_vtime`) shows such a read **diverges** across same-seed runs
+(post-last-intercept exit-path skid). The first cut folded that read into `vns_base`, leaving a
+skid term that doesn't cancel at the next skid-free intercept → `state_hash` diverges once the
+guest idles. The landing V-time is instead derived from the **skid-free** anchor
+`last_intercept_work` plus the seed-deterministic timer deadline — never the live `HLT` counter.
+
+**(2) Work-axis epoch — rebase the counter on a jump.** The clock spans the *cumulative* work
+counter. Simply bumping `vns_base` (against the stale anchor) while the counter keeps counting
+leaves the two axes inconsistent: the pre-idle branches (last intercept → halt) would be counted a
+*second* time at the next intercept, and `preemption_deadline` (via `work_for_vns`) would convert
+the next deadline to a work count *behind* the live counter → the periodic tick fires immediately
+(overdue), breaking cadence (the codex P2 case: period 1000, halt at work 900, +200 handler → the
+next tick converts to work 1000 while the counter is at 1100). So the future-timer jump **rebases
+the work epoch**: it resets the retired-branch counter to 0 (both counter A *and* the backend's
+counter B) and folds the landing V-time entirely into `vns_base`, anchored at 0 — exactly a
+snapshot-style restore to effective V-time `landing` with entropy/`tsc_adjust` unchanged. It
+therefore **reuses the proven `restore_vtime` machinery** (the same epoch-rebase the snapshot path
+uses, with its all-or-nothing atomicity over the save/restore round-trip that re-arms counter B).
+The pre-idle branches are absorbed into the jump (zero branches retired during the halt, so none is
+lost or fabricated); post-idle work counts from 0, so the next tick lands a full period in the
+**future**, never overdue. `now_vns` for the planner still comes from the skid-free anchor, so (1)
+holds. (No escalation to a new backend skid-free-quiescent-read capability — task-27 option (a) —
+is needed; the intercept-aligned epoch-rebase (option (b)) suffices and is what shipped.)
+
+The *pending-now* case needs **no** rebase: it advances V-time by zero (just re-enters), so the
+work axis is untouched.
+
+### Closing the SimCpu blind spot (and the cadence/pending tests)
+
+Three portable tests close the gaps the mock's skid-free, single-shot model was blind to — each
+**verified non-vacuous** (it fails when the corresponding fix is reverted):
+- `idle_resume_is_immune_to_hlt_work_skid` — models skid at the `HLT` (the work source returns a
+  perturbed value there) and asserts bit-identical `state_hash` at the next intercept `W_next`. (1)
+- `idle_jump_rebases_work_epoch_so_next_tick_is_future` — a stale anchor + a high cumulative
+  counter at the idle; asserts the jump **resets** the work counter and the next periodic deadline
+  converts to a **future** work count (cadence preserved). (2)
+- `pending_irr_then_sti_hlt_resumes_and_delivers_not_terminal` — a one-shot fired into the IRR then
+  `sti; hlt` with no future deadline; asserts it **resumes (zero advance) and delivers**, not
+  terminates. (the pending-now precedence)
+
+### Design hook — the planner seam (mechanism vs policy)
+
+Per the integrator directive, the idle advance is a **planner seam**, not a hardcoded jump.
+`IdlePlanner::plan(now, D)` is the single decision point; the deterministic base always lands
+**exactly at `D`** (the *mechanism*). *Where* to land is the *policy* — a future dissonance
+fault-overlay (Antithesis-style mechanism/policy split) can prescribe a deviation (land at
+`D + δ`) as a deterministic timing fault **without** perturbing this descriptive base clock. The
+seam is left clean and documented; the fault layer is **not** built here. (Details in
+`consonance/vtime/IMPLEMENTATION.md` → *Task 52*.)
+
+### Gate-4 corollary — timer-driven waits now make progress on their own
+
+Confirmed (mechanism + a focused unit test, `periodic_timer_idle_loop_advances_vtime_each_tick`):
+a guest that stays idle while a **periodic** LAPIC timer ticks now advances V-time on its own —
+each idle resume warps to the next period and re-arms, with **no guest execution** between ticks.
+This is exactly the capability the task-37/38 cooperative-poll workarounds existed to dodge:
+`sleep`/`nanosleep`/futex-timeout waits (which froze before — task-48 finding #2, "`sleep 1`
+never returns") now wake up, because the LAPIC tick the kernel programs for the timeout fires
+through the idle-resume loop. **Capability unlocked.** As the spec directs, existing guest
+scripts are **not** refactored in this task — this only records that the dodge is no longer
+required.
+
+### No regression — why the change is byte-identical on every existing path
+
+The change is strictly **additive on the idle-`HLT` path**:
+
+- **M1/M2/P6/corpus/multiboot** have no V-time / never wire the LAPIC ⇒ `idle_action` returns
+  `Terminal` at the first (no-vtime / no-lapic) gate, before the `RFLAGS` read ⇒ no new `save()`.
+- **Stock KVM** has no deterministic counter ⇒ `idle_action` returns `Terminal` at the
+  `!deterministic_tsc` gate ⇒ terminal `HLT` exactly as before.
+- **Patched-KVM Linux boot:** every run that *previously completed* did so **without** hitting a
+  resumable-idle `HLT` — if it had, the old code would have terminated there and the run would
+  never have reached `GUEST_READY`. So those runs take the idle path **zero** times and are
+  unchanged. The minimal-boot poweroff and every existing terminal are `IF == 0`/no-timer and
+  stay terminal. The only runs whose behavior changes are the ones that previously **died** at an
+  idle-`HLT` (real `runc`) — the whole point.
+
+Verified on the Mac-testable goldens: det-corpus O2/O3 conformance + `unison` state-hash tests
+are unchanged; the 250 pre-existing `vmm-core` tests pass untouched. The box goldens
+(M1/M2/P6, minimal-boot, bare/OCI Postgres `state_hash`) are byte-identical by the argument above
+and are confirmed by the foreman box run (below).
+
+### Deviations considered and rejected
+
+- **Read the live work counter at the `HLT` and anchor on it (the first cut — REJECTED, a
+  determinism bug).** A live `work()` read at a `HLT` (any non-V-time-intercept) is
+  **skid-tainted**: the task-27 box O1 evidence shows such a read **diverges** across same-seed
+  runs. Folding it into `vns_base` leaves a skid term that does **not** cancel at the next
+  skid-free intercept, so `state_hash` diverges once the guest idles before a state read. The
+  shipped design derives the landing from the **skid-free** anchor + the deterministic deadline,
+  never the live `HLT` counter — do **not** reintroduce a live `HLT` work read.
+- **Bump `vns_base` without rebasing the work counter (the second cut — REJECTED, broke cadence).**
+  Even reading no live counter, simply adding `D − vns(anchor)` to `vns_base` and leaving the
+  cumulative counter running double-counts the pre-idle branches at the next intercept and makes
+  the next deadline→work conversion land *behind* the live counter → the periodic tick fires
+  immediately (overdue). The shipped design **rebases the work epoch** on the jump (reset both
+  counters, fold the landing into `vns_base` at anchor 0), so post-idle work counts from 0 and the
+  next tick is a full period in the future. (codex review P2.)
+- **Escalate to a new backend skid-free quiescent-read capability (task-27 option (a)).** Not
+  needed: the intercept-aligned epoch-rebase (option (b)) is sufficient and stays in the portable
+  layer (reusing `restore_vtime`). Avoided the scope growth.
+- **Require a *future* armed deadline for a resumable idle (REJECTED — missed pending-now).** A
+  one-shot timer can fire into the IRR (deadline hit while `IF == 0`) then the guest `sti; hlt`
+  with no future deadline; keying on a future deadline would wrongly terminate it. The
+  discriminator keys on a *deliverable interrupt existing* — pending-now (zero-advance) takes
+  precedence over a future deadline. (codex review P1.)
+- **Discriminate on `mp_state`/`KVM_MP_STATE_HALTED` or the kernel idle-task PC instead of
+  `RFLAGS.IF`.** `IF` is the architectural, guest-authored signal the task names and the one a
+  real CPU uses; it needs no guest-layout knowledge and no new backend surface. Rejected the
+  alternatives.
+- **Put the advance accounting in the `patched_kvm`/`kvm_sys` FFI.** That layer is
+  coverage/mutation-excluded (box-only) and would make the core invariant untestable on the Mac.
+  The accounting lives in the portable `vtime::IdlePlanner` + `vmm-core` loop; the FFI stays a
+  thin enter/exit. (Per the spec and `docs/CODE-QUALITY.md`.)
+- **Hardcode "jump to `D`" inline.** Would foreclose the dissonance timing-fault overlay; instead
+  the decision is the `IdlePlanner` seam (above).
+
+### Known limitations
+
+- **Single-vCPU, LAPIC-timer-only** (per the non-goals): "next event" is the armed LAPIC timer
+  deadline. Generalizing to other interrupt sources / multi-vCPU is deferred — the discriminator
+  and the planner are structured so "next event" can widen later.
+- **`MWAIT`** is not modeled (out of scope); only `HLT` idle is resumed.
+- **The end-to-end `runc` proof is box-only** (patched KVM + perf + the built Docker image); it
+  is delegated to the foreman (below). The Mac deliverable is the full portable path + the SimCpu/
+  proptest/Kani/Miri gates, which exercise every line of the decision logic.
+
+### Box gate — foreman handoff (the end-to-end proof; box-only, `ssh <det-box>`)
+
+`ssh hetzner` is classifier-blocked in the delegated worker session, so the box gate is handed to
+the foreman with verbatim instructions (the task-52 spec's *Box-run* section). It re-runs the
+**task-48 `live_runc_postgres`** gate, which depends on task 48's runc-init + Docker image (the
+task/48 branch — **not** on this branch's base, so it must be merged/checked out alongside this).
+
+Setup (`/root/ht42` checked out `task/hlt-resume` **plus** task 48's runc image bits):
+
+```sh
+make -C guest fetch && make -C guest/linux docker-image
+```
+
+Run r2 (deterministic-twice — the money-shot), then r1 (runs+streams) and r3 (seed-sensitivity),
+each via the pinning/revert wrapper (`run-patched-ht42.sh`, which loads patched
+`kvm.ko`/`kvm-intel.ko`, pins to a free core per `docs/BOX-PINNING.md` — **core 4 is free, task 41
+was struck** — and **always reverts KVM to stock `1396736` + verifies** via the EXIT trap):
+
+```sh
+/root/run-patched-ht42.sh 5400 cargo test -p vmm-core --test live_runc_postgres -- \
+  --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
+# then r1_runc_postgres_runs_and_streams_patched, r3_runc_postgres_seed_sensitivity_patched
+```
+
+**Expected (the unlock):** real `runc` runs the Postgres OCI container (no task-38 `unshare`
+shim), `GUEST_READY`, clean terminal — where before task 52 it died `runc_launched=true,
+runc_rc=None, terminal=Hlt`. Deterministic-twice: **bit-identical serial + `state_hash`**, and
+seed-sensitive (UUIDs/timestamps differ across seeds). `Vmm::idle_landings()` is non-empty
+(the runc handshake genuinely idled) and identical across the two same-seed runs. Capture the
+equal digests + a sample UUID/timestamp into `guest/linux/IMPLEMENTATION.md` (task-52 evidence),
+and confirm the stock-`1396736` revert. **No-regression box re-run:** M1/M2/P6 + det-corpus +
+minimal-boot + bare/OCI Postgres `state_hash` byte-unchanged (additive, per the argument above).
 
 ## Task 40 — single-node branching demo (the multiverse from one snapshot)
 
@@ -232,8 +451,9 @@ process inside `consonance`.
   integrator ruling 2026-06-25 — **no** real-mode setup-code emulation). `load()`
   parses the bzImage `setup_header` (`boot_flag`/`HdrS`/`version ≥ 0x020c`/
   `XLF_KERNEL_64`), loads the protected-mode kernel at `pref_address`, the initramfs
-  high (page-aligned, < 4 GiB), and builds: `boot_params` (a one-page zero page with a
-  two-entry E820 map, the command line, the `ramdisk_*` fields, and the copied/patched
+  high (page-aligned, < 4 GiB), and builds: `boot_params` (a one-page zero page with an
+  E820 map — low RAM + high RAM with the xAPIC page reserved, see "Task 54" — the command
+  line, the `ramdisk_*` fields, and the copied/patched
   `setup_header`), an identity page table (2 MiB pages over the first 1 GiB), and a flat
   64-bit GDT (`__BOOT_CS=0x10`/`__BOOT_DS=0x18`). The `#[repr(C)]`
   `SetupHeader`/`BootParams`/`BootE820Entry` structs are pinned by a layout test
@@ -2895,3 +3115,68 @@ NOT re-fire at the next entry — A is not re-armed, so neither A nor B is, on f
   untestable mutant (excluded in `.cargo/mutants.toml`, entry (j)); the `<`→`==`/`>` siblings
   are killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
   `preemption_landings() == &[reached]` assertion.
+
+## Task 54 — reserve the xAPIC MMIO page in the E820 map
+
+Part of the box-proven V-time-tick fix (the other two changes are in `vmm-backend`: the
+memslot-split seam + the `run_until` natural-exit fallback). `build_boot_params` now marks the
+4 KiB LAPIC MMIO page (`LAPIC_MMIO_PAGE = 0xFEE00000`) **`E820_RESERVED`** instead of usable RAM.
+
+**Why.** The userspace deterministic xAPIC `Lapic` lives at `0xFEE00000`. If that page is usable
+RAM the kernel zeroes it on init, and (paired with `vmm-backend`'s memslot hole that routes the
+page to `KVM_EXIT_MMIO` → the model) there would be no RAM behind it. Reserving it keeps Linux off
+the page as memory; the contract's CPUID 0x15 already presets `lapic_timer_period`, so Linux drives
+the LAPIC timer (not the PIT) and every APIC access goes to the single trapped MMIO path. The
+IOAPIC page (`0xFEC00000`) is **not** reserved — Linux is in virtual-wire mode (no MADT) and never
+touches it.
+
+**The split (high RAM `[1 MiB, ram)` minus the page).** Three shapes by how far RAM reaches:
+
+- `ram ≤ page` → one high-RAM entry `[1 MiB, ram)` (2 entries total; page never RAM).
+- `page < ram ≤ page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED` (3 entries; empty
+  tail dropped).
+- `ram > page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED` + `[page+0x1000, ram) RAM`
+  (the 4-entry shape, the 8 GiB Postgres guest).
+
+**Deviation from the reference (considered + chosen).** The proven diff used a 2-or-4-entry split
+keyed on `ram > page + 0x1000`. That leaves the LAPIC page typed **RAM** at the single page-aligned
+boundary `ram == page + 0x1000` (the high-RAM entry `[1 MiB, page+0x1000)` covers it), which breaks
+gate 1's property "the reserved page is never typed RAM for **any** ram". The 3-shape split above is
+**bit-identical to the reference for the 8 GiB guest** (and for any guest whose RAM does not end in
+that 4 KiB window — i.e. every realistic page-multiple size except exactly `page+0x1000`), so the
+box gates see the same E820, but the never-typed-RAM invariant now holds for all `ram`.
+
+**Tests (gate 1).** Direct unit tests on the private `build_boot_params` (8 GiB → exactly the 4
+entries with the page `E820_RESERVED`, asserting every `addr`/`size`/`type_` + `e820_entries`;
+2 GiB sub-page → the single high-RAM entry; the page-aligned boundaries) **plus** the property
+`reserved_page_is_never_typed_ram` (≥512 cases, miri-bounded with failure-persistence disabled):
+for any `ram` no `E820_RAM` entry intersects the page, and it is reserved exactly when RAM reaches
+it. The existing `load_pins_every_computed_value` (8 MiB guest) still asserts `e820_entries == 2`
+unchanged.
+
+No public API change (`build_boot_params` and the new `E820_RESERVED` / `LAPIC_MMIO_PAGE` consts are
+private). The foreman should update `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state
+the xAPIC page is reserved + MMIO-routed (outside this worktree's directory scope).
+
+### Review round 1 — image placement must not land in the reserved hole (codex finding 1, BLOCKING)
+
+Reserving the page in E820 + holing it in the backend makes `[0xFEE00000, 0xFEE01000)` **unmapped**
+in the guest. `place_initramfs` placed the ramdisk "as high as possible" below `initrd_addr_max`
+(up to 4 GiB) with no guard, so a large-enough initramfs on a multi-GiB guest would straddle the
+hole → its bytes written to host backing the guest cannot read back. (This guest's ramdisk happens
+to miss it — box passed — but it was luck, not invariant.) The kernel image has the same exposure
+via a hostile/oversized `pref_address`/`init_size`. Fixes:
+
+- **Shared predicate** `overlaps_lapic_mmio_page(start, end)` — pure, unit-tested (covers the kernel
+  guard's decision without a multi-GiB `load`).
+- **Kernel** — `load` rejects a load region that would straddle the page (`KernelDoesNotFit`); the
+  kernel loads at `pref_address` and cannot be relocated.
+- **Initramfs** — `place_initramfs` keeps the high placement (the region *above* the page,
+  `[page+0x1000, ceiling)`, is valid RAM, so a ramdisk that fits there is left there) but
+  **relocates entirely below the page** if the high placement would straddle it; if it then does not
+  fit above `kernel_end`, `InitramfsDoesNotFit`. **Bit-identical for the box's 8 GiB guest** (its
+  placement did not overlap, so it is unchanged — no `state_hash` change).
+- **Tests** (`lapic_hole_placement`, Miri-friendly — the straddle is reproduced with a tiny ramdisk
+  by capping `initrd_addr_max` inside the page): the predicate's edges; a straddling ramdisk is
+  relocated below; a ramdisk that fits above the hole is kept high; one that cannot fit below is
+  rejected.

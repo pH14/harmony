@@ -50,6 +50,14 @@ pub vtime::VtimeError::ZeroRatioNum
 pub struct vtime::BackendError(_)
 impl vtime::BackendError
 pub fn vtime::BackendError::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct vtime::IdleAdvance
+pub vtime::IdleAdvance::advance_vns: u64
+pub vtime::IdleAdvance::already_due: bool
+pub vtime::IdleAdvance::landed_vns: u64
+pub struct vtime::IdlePlanner
+impl vtime::IdlePlanner
+pub fn vtime::IdlePlanner::new() -> Self
+pub fn vtime::IdlePlanner::plan(&self, u64, u64) -> vtime::IdleAdvance
 pub struct vtime::InjectionPlanner
 impl vtime::InjectionPlanner
 pub fn vtime::InjectionPlanner::new(vtime::PlannerConfig) -> Self

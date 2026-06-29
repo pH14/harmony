@@ -559,6 +559,52 @@ CPU-bound infinite loop in the parallel proptest binary.)
 → **90 caught, 0 missed, 2 timeouts, 8 unviable** (from the original task-35 run).
 The 2 timeouts are exactly the `supply_bytes` loop-bound mutants above.
 
+### Task 35 re-hardening — re-verified on the post-task-50 tree
+
+Task 35 first ran against the *initial-release* tree. Two later changes churned the
+code it targeted, so this pass re-verifies it on the current tree (no production
+logic changed; the diff is one new test + this note):
+
+- **`dissonance/pv-net` was retired by task 50** (the net-fault boundary moved to
+  *host decides / guest enforces*). The pv-net section of the original survivor list
+  — **13 source lines** across `codec.rs`/`parse.rs`/`switch.rs`/`lib.rs`, the bulk
+  of the 22 `MISSED` total — no longer exists, so those mutants are moot rather than
+  killed. `.cargo/mutants.toml`'s comment (h) already records the retirement (its old
+  `Switch::route_one` skip is gone). The **4** `MISSED` mutants in **this** crate
+  (`admits` `<`, `read_answer` `>`×2, `supply_bytes` `-`) are unaffected and stay
+  killed.
+- **Task 50 reshaped the fault catalog and codec** (per-flow `NetFlow`, new
+  `read_fault`/`fault_bounds_ok`, `BLOB_VERSION` 2→3). The line numbers above
+  shifted (`admits` now `catalog.rs:216`, `read_answer` now `codec.rs:168`,
+  `supply_bytes` loop bound now `seeded.rs:65`), but the function names and the
+  pinned boundaries are identical, and the reshape introduced **no new survivors**.
+
+**New test.** `block_torn_bound_is_inclusive_at_len` pins the one point-relative
+fault bound task 50 added — `admits → fault_bounds_ok`'s `BlockTorn(n)` admissible
+on `BlockIo { len }` **iff `n <= len`**. It asserts `n ∈ {0, len-1, len}` admissible
+and `n = len+1` inadmissible, killing `<=`→`<` / `==` / `>`. (The reshaped suite's
+`net_flow`/`determinism` tests already kill these incidentally — `0 missed` below
+holds with or without it — so this is an explicit, self-documenting pin alongside
+the scheduler `<` bound, not a gap closure.)
+
+**Re-verification (current tree).** `cargo mutants -p environment --file
+catalog.rs --file codec.rs --file seeded.rs` → **97 caught, 0 missed, 2 timeouts,
+10 unviable** (109 mutants, 16 min). The only two non-caught are exactly the `seeded.rs:65`
+`<`→`<=` and `<`→`==` loop-bound mutants — the inherent infinite-loop pair,
+bounded (≈20 s scoped) per the precedent above. The named comparison/constant
+mutants (`admits` `<`, `read_answer` `>`×2, `supply_bytes` `-`) are all `caught`.
+
+*Considered and rejected (gate-2 letter).* A workspace `.config/nextest.toml`
+`slow-timeout = { period, terminate-after }` would let **nextest** kill the hung
+test and report it as a *failure*, which cargo-mutants then classifies as `caught`
+rather than `timeout`. It is not added: (1) it is a **root-level** file that changes
+every crate's CI test run (conventions: touch only your directory), (2) to flip a
+*scoped* re-run it must terminate below cargo-mutants' ≈20 s minimum, a per-test cap
+tight enough to risk killing a legitimately slow proptest workspace-wide, and
+(3) it would not help the per-PR `mutants` gate, which is `--in-diff` and never
+mutates this already-shipped source. Bounded-timeout is the deterministic,
+in-directory outcome; this matches the merged task-35 precedent.
+
 ## Task 46 — clarify the *guest* control-plane framing (docs only)
 
 A behavior-neutral clarifying pass: make the crate's docs read as the **guest**

@@ -285,6 +285,7 @@ pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::has_active_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_inflight_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_pending_guest_interrupt(&mut self) -> core::result::Result<bool, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::idle_landings(&self) -> &[u64]
 pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::new(B, vmm_core::vmm::GuestRam) -> Self
 pub fn vmm_core::vmm::Vmm<B>::observable_digest(&self) -> [u8; 32]

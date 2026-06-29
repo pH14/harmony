@@ -19,6 +19,39 @@ independent one (derived from the same seed) for skid draws in `0..=max_skid`, a
 every planner-visible interaction (`Armed`/`Stopped`/`Stepped`) for the "assert *how* it
 was driven" tests.
 
+## Task 52 — idle-resume planner (`IdlePlanner`, the idle-jump dual)
+
+`IdlePlanner` is the discrete-event clock's other half. `InjectionPlanner` reaches the
+next scheduled event **by executing** (single-step the retired-branch counter to an exact
+work count); `IdlePlanner` reaches it **by jumping** when the guest is idle (`HLT`) — warp
+the virtual clock straight to the armed timer deadline `D`, executing nothing. `plan(now_vns,
+deadline_vns)` is a pure, saturating decision: `advance = D.saturating_sub(now)` and the clock
+lands at `max(now, D)` — exactly `D` for a future deadline, a **zero jump** (fire immediately)
+when `D` is already due (the HLT analogue of `PlanOutcome::TargetInPast`). The caller applies
+the advance with `VClock::advance_idle`, which moves the **idle accumulator** (`vns_base`) and
+**nothing else** — so a jump fabricates **zero** retired branches; the execution-derived clock
+(and `vmm-core`'s `B ≡ A` counter equality) stays true over the execution component. That is
+the load-bearing invariant, and it is why the decision lives here in the portable, SimCpu-/
+proptest-tested crate rather than the box-only KVM FFI.
+
+**Mechanism vs policy (the fault seam).** "Land exactly at `D`" is the *mechanism* — the
+deterministic, descriptive base clock (`D` and `now` are pure seed functions, so two same-seed
+runs jump identically; the idle period is a deterministic constant). *Where* to land is the
+*policy*, and `IdlePlanner::plan` is its single, overridable home. A future dissonance
+fault-overlay (Antithesis-style mechanism/policy split) can prescribe a deviation — land at
+`D + δ` as a deterministic timing fault — by supplying a different decision **without**
+perturbing this base. No such policy is built here; the seam is left clean and `IdlePlanner`
+is the zero-sized type that holds it (a future policy is a private, non-breaking field add,
+mirroring `InjectionPlanner`'s `PlannerConfig`).
+
+**Tested against an independent model.** `tests/idle_resume.rs` drives a `VClock` + `IdlePlanner`
+and an independent `ExecPlusIdle` reference (which computes `elapsed = work·ratio + idle` from
+scratch, with no `vns_base` accounting) through random execute/idle op sequences (proptest 512):
+the impl must match the model after every op, an idle jump must land exactly at `D` and leave the
+work count untouched, V-time is monotone, and the same op sequence is deterministic twice. The
+two Kani harnesses (`idle_proofs.rs`) prove `plan` matches the saturating spec for **all** `u64`
+inputs (no wrap; a far-future `D` clamps) and that applying the advance lands the 1:1 clock at `D`.
+
 ## Decisions the integrator should know
 
 - **`VClock::new` rejection rules** ("rejects den == 0 etc."): `ratio_den == 0`,
@@ -187,6 +220,8 @@ The fixed proof ratio is `7/3` (a genuine improper fraction exercising both
 | `tsc_no_saturation` | `tsc` exactly equals `tsc_base + ⌊vns(work)·2e9/1e9⌋` when that fits `u64` | ratio 7/3, `tsc_hz`=2 GHz, all operands `∈ [0,2¹²)` (exact-eq) | 15 s |
 | `tsc_saturates` | `tsc` clamps to `u64::MAX` whenever the unsaturated sum overflows | ratio 7/3, `tsc_hz`=2 GHz, `tsc_base ∈ {MAX, MAX−1, MAX−2²⁴}` (concrete), `vns_base`,`work ∈ [0,2²⁴)`; `kani::cover!` confirms the saturating regime is reached (non-vacuous) | 1.7 s |
 | `round_trip_reaches_target` | round-trip law `vns(work_for_vns(t)) ≥ t` for all bounded targets; non-saturation of `work_for_vns` is **proven** (asserted), not assumed | ratio 7/3, `vns_base`,`t ∈ [0,2²⁴)` | 7.2 s |
+| `plan_matches_saturating_spec` (task 52) | `IdlePlanner::plan` equals the saturating spec — `advance = D⊖now`, `landed = max(now,D) = now+advance` (no wrap; far-future `D` clamps), `already_due ⇔ advance==0 ⇔ D≤now`, `landed ≥ now` | **fully symbolic** `now,D ∈ u64` (pure `u64` arithmetic — no `u128` divide, so no bound needed) | < 1 s |
+| `advance_lands_clock_at_deadline_or_clamps` (task 52) | applying `plan`'s advance to a 1:1 `VClock` lands it at `max(now,D)` (exactly `D` for a future deadline), never below `now` | 1:1 clock, `vns_base < u64::MAX` (excludes the `ImmediateSaturation` reject), `D ∈ u64` | < 1 s |
 
 ### Honest coverage notes
 

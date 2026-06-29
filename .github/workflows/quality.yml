@@ -63,6 +63,7 @@ jobs:
         run: |
           cargo deny --manifest-path guest/payloads/Cargo.toml check --config deny.toml licenses
           cargo deny --manifest-path dissonance/control-proto/fuzz/Cargo.toml check --config deny.toml licenses
+          cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
 
@@ -147,7 +148,8 @@ jobs:
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in
-  # `consonance/vtime/src/clock.rs`, `consonance/lapic/src/device.rs`, and
+  # `consonance/vtime/src/clock.rs`, `consonance/lapic/src/device.rs`,
+  # `consonance/vmm-backend/src/region_proofs.rs`, and
   # `dissonance/environment/src/envcodec.rs` prove "never panics / law holds for
   # ALL inputs" — strictly stronger than the proptest sampling. Kani is
   # Linux-only, so this job runs on the Linux box. The proof files are
@@ -168,10 +170,11 @@ jobs:
         run: |
           cargo install --locked kani-verifier
           cargo kani setup
-      - name: cargo kani (vtime + lapic + environment)
+      - name: cargo kani (vtime + lapic + vmm-backend + environment)
         run: |
           cargo kani -p vtime
           cargo kani -p lapic
+          cargo kani -p vmm-backend
           cargo kani -p environment
 
   # Gating: frozen public-API snapshots (quality-d). The per-crate
@@ -198,5 +201,5 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p flow \
             --test public_api -- --ignored --nocapture

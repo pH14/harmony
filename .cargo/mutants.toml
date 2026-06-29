@@ -27,6 +27,7 @@ timeout_multiplier = 3.0
 # mutation. Exclude the binary so mutation effort concentrates on library logic.
 # The Kani proof harnesses (quality-f) live in their own `#[cfg(kani)]` files
 # (`consonance/vtime/src/clock_proofs.rs`, `consonance/lapic/src/device_proofs.rs`,
+# `consonance/vmm-backend/src/region_proofs.rs` (task 54, the memslot splitter),
 # `dissonance/environment/src/envcodec_proofs.rs` — each a `#[path]` child module of
 # its parent). They are not compiled by the normal
 # (non-kani) test suite cargo-mutants uses as its oracle, so every mutant in them
@@ -50,7 +51,9 @@ timeout_multiplier = 3.0
 exclude_globs = [
     "**/main.rs",
     "**/clock_proofs.rs",
+    "**/idle_proofs.rs",
     "**/device_proofs.rs",
+    "**/region_proofs.rs",
     "**/envcodec_proofs.rs",
     "**/kvm.rs",
     "**/kvm/**",
@@ -152,4 +155,15 @@ exclude_re = [
     #     (which would empty the trace) ARE killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
     #     `preemption_landings() == &[reached]` assertion. Scoped to vmm.rs's on_deadline.
     "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*on_deadline",
+    # (k) `Vmm::resume_idle`'s diagnostic-trace cap `self.idle_landings.len() <
+    #     PREEMPTION_TRACE_CAP` → `<=` (task 52): the idle-resume dual of (j), identical
+    #     rationale. The two differ ONLY at `len == PREEMPTION_TRACE_CAP` (4096), where `<=`
+    #     records ONE extra idle landing before stopping — a harmless off-by-one on the
+    #     OBSERVABILITY-ONLY `idle_landings` trace (not hashed, not determinism-affecting).
+    #     Killing it needs a 4097-idle-resume unit test (impractical); behavior is identical
+    #     for every realistic run. The `<`→`==`/`>` siblings (which would empty/short the
+    #     trace) ARE killed by `idle_hlt_with_if_and_armed_timer_jumps_to_deadline_and_fires`
+    #     / `periodic_timer_idle_loop_advances_vtime_each_tick`'s `idle_landings() == &[..]`
+    #     assertions. Scoped to vmm.rs's resume_idle.
+    "consonance/vmm-core/src/vmm\\.rs.*replace < with <= in .*resume_idle",
 ]

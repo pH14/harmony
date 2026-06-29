@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use environment::{
-    Action, Answer, DecisionPoint as P, EnvError, Environment, FaultPolicy, MAX_SUPPLY_LEN, Moment,
-    Outcome, SeededEnv,
+    Action, Answer, BlockOp, DecisionPoint as P, EnvError, Environment, Fault, FaultPolicy,
+    MAX_SUPPLY_LEN, Moment, Outcome, SeededEnv,
 };
 
 /// Pull the `Supply` bytes a `SeededEnv` gives for an `Entropy { bytes: n }`
@@ -62,6 +62,44 @@ fn scheduler_selection_bound_is_strict() {
         Outcome::Resolved(in_range),
         "an in-range override (4 < 5) wins"
     );
+}
+
+/// `catalog.rs` `DecisionPoint::admits` → `fault_bounds_ok` — the *only*
+/// point-relative fault bound. A `BlockTorn(n)` torn-write fault is admissible on
+/// a `BlockIo { len }` point **iff `n <= len`** (you cannot tear off more than the
+/// request asked for). Task 50 reshaped the fault catalog and added this arm, so
+/// it is *newer* than the original task-35 run; pin the `<=` boundary exactly.
+/// This kills all three bound mutants: `<=`→`<` (would reject `n == len`),
+/// `<=`→`==` (would reject `n < len`), and `<=`→`>` (would admit `n > len`).
+#[test]
+fn block_torn_bound_is_inclusive_at_len() {
+    let len = 8u32;
+    let io = P::BlockIo {
+        op: BlockOp::Write,
+        lba: 0,
+        len,
+    };
+    let torn = |n: u32| Answer::Fault(Fault::BlockTorn(n));
+
+    assert!(
+        io.admits(&torn(0)),
+        "tearing off 0 bytes (< len) is admissible"
+    );
+    assert!(io.admits(&torn(len - 1)), "n = len-1 (< len) is admissible");
+    assert!(
+        io.admits(&torn(len)),
+        "n = len (the inclusive bound) is admissible — a full-length tear"
+    );
+    assert!(
+        !io.admits(&torn(len + 1)),
+        "n = len+1 (> len) tears off more than the request: inadmissible"
+    );
+
+    // The bound is BlockTorn-specific: a same-class fault with no point-relative
+    // bound is admitted regardless of `len`, so the `<=` check is not a blanket
+    // length gate (guards the `fault_bounds_ok` match arm, not just its operator).
+    assert!(io.admits(&Answer::Fault(Fault::BlockEio)));
+    assert!(io.admits(&Answer::Fault(Fault::BlockNospc)));
 }
 
 /// A `RecordedEnv` whose only override is the guest `ans` at `Moment` `at`.
