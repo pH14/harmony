@@ -48,3 +48,25 @@ DOCKER_TGZ_SHA256=4d2f6782406b56eb43a519ad5078a6a79abe4d663328acb69136aceff5e052
 POSTGRES_IMAGE_NAME=postgres:17
 POSTGRES_IMAGE_INDEX_DIGEST=sha256:5f050f770b427fbd477edee6c3968a72e5c6be97e050a7e368b2b74a9494a285
 POSTGRES_IMAGE_AMD64_DIGEST=sha256:9c1534cbf839ec70409508a874f4c02bf4739de2f32f77efe080eef1cfd34bf4
+
+# --- task 49: Postgres on lightweight Kubernetes (k3s), client pod -> server pod ---
+# k3s is the lightweight single-binary distro the task recommends: ONE statically
+# linked Go binary that bundles containerd + runc + the CNI plugins (flannel,
+# bridge, host-local, loopback, portmap) + kube-proxy + kubectl + crictl + ctr,
+# with a **sqlite** datastore (kine) instead of etcd. It self-extracts its bundled
+# data dir on first run, so the guest rootfs needs only the one binary + the
+# pre-imported container images. Pinned by URL+sha256 (the release's own
+# sha256sum-amd64.txt) like the kernel/busybox/docker bundle; pinned 2026-06-29
+# (k3s "latest" stable release, tracking Kubernetes v1.36). The `+k3s1` build-
+# metadata in the tag is literal in the GitHub release path (curl handles it).
+K3S_VERSION=v1.36.2+k3s1
+K3S_BIN_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s
+K3S_BIN_SHA256=65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
+# The k3s **air-gap images** tarball: the OCI images k3s would otherwise pull at
+# runtime (pause/sandbox, coredns, traefik, metrics-server, local-path, klipper).
+# We import ONLY the pause/sandbox image from it (every pod needs the sandbox
+# container; we --disable the rest), extracted in fetch.sh on the box with `ctr`
+# into guest/dl/k3s-pause-image.tar — keeping the guest light (boot V-time is the
+# bottleneck). Integrity is the digest-pinned tarball below.
+K3S_AIRGAP_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s-airgap-images-amd64.tar
+K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2cb6
