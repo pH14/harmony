@@ -1356,3 +1356,69 @@ kvm_intel; lsmod | grep '^kvm '`). Then:
   vmm-core 258) green; **Kani 4/4** (119 checks incl. the new `debug_assert`, 0 failed); Linux
   cross-check (`--target x86_64-unknown-linux-gnu`) clean; the new kvm_sys `unsafe` is box-only (not
   Mac-Miri-reachable), so vmm-backend Miri is unaffected.
+
+## Task 55 — deterministic in-kernel force-exit preemption (patch 0004)
+
+Replaces task 54's racy `O_ASYNC`/`SIGIO` overflow-kick (whose userspace-delivery latency a
+CPU-bound, exit-free guest region can outrun — a real `runc`+Postgres boot hit a 28207-branch
+`PastDeadline`) with a **bounded-skid in-kernel VM-exit**, so the V-time LAPIC-timer deadline is
+hit deterministically for **every** workload, not just those whose deadlines land in
+deterministically-deep exit-free regions. This crate's half is the userspace re-integration; the
+kernel half is patch 0004 (`kvm-patches/`, box-validated — see `kvm-patches/RESULTS.md`).
+
+### What landed (userspace)
+
+- **`kvm.rs`:** `KVM_EXIT_PREEMPT` (reason `42`) + `StepStop::Preempt`; `classify_step_exit`
+  maps it. Pure, covered by `kvm/tests.rs::classify_in_kernel_force_exit_is_preempt`.
+- **`kvm_sys.rs`:** a `preempt_exit_capable` flag (`= deterministic_intercepts`), the one-shot
+  `KVM_ARM_PREEMPT_EXIT` ioctl (`_IO(KVMIO, 0xE4)`) + its `raw_arm_preempt_exit` seam, and
+  `arm_preempt_exit()` issued **before every free-run `KVM_RUN`** in `run_armed` (one-shot, so
+  re-armed each entry; no-op on stock KVM). `StepStop::Preempt` is handled exactly like the
+  signal kick (read the PMU; stop iff `work ≥ armed_at`, then single-step to the exact deadline).
+- **`run_until.rs`:** **reverted task 54's natural-exit fallback to fail-closed.** A guest exit at
+  `work >= deadline` (`GuestExitDisposition::{AtDeadline,PastDeadline}`) is now a loud
+  `BackendError::Internal`, never delivered — with the bounded force-exit the free-run always
+  stops strictly before the deadline, so an at/past-deadline exit means the skid blew
+  `SKID_MARGIN` (a genuine determinism violation). Only a genuinely-early (`work < deadline`)
+  exit is delivered. Docs + unit/property tests rewritten to assert the fail-closed disposition;
+  the exit-free-region property now asserts the overshoot fails closed *identically regardless of
+  skid* (the task-54 boundary race is gone).
+
+### Design decisions (deviations considered)
+
+- **Gate the arm on the EXISTING `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`, no separate
+  `KVM_CAP_X86_DETERMINISTIC_PREEMPT`.** The task title floated a new cap; the pinned design
+  (decision log 2026-06-29) folds the force-exit into the one per-VM determinism opt-in — simpler,
+  one ratification surface, and the box runs the patched backend exclusively. Stock `KvmBackend`
+  has `preempt_exit_capable = false`, so it never issues the ioctl (it would `EINVAL`).
+- **A vcpu ioctl (`KVM_ARM_PREEMPT_EXIT`), not a `kvm_run` input flag.** No ABI-offset churn in
+  the shared `kvm_run` page; explicit one-shot; mirrors the small `KVM_NMI`-style vcpu ioctls.
+- **Kept `pmu_sys.rs`'s `perf_event` (incl. the `O_ASYNC`/`SIGIO` wiring) unchanged.** The perf
+  event is still the PMI source (it generates the overflow NMI patch 0004 catches) and the V-time
+  branch-counter read. The SIGIO is retained as a harmless backup / stock-KVM kick — the
+  determinism-critical preemption no longer **depends** on it (the in-kernel exit fires first,
+  bounded). Box evidence: across 36 preemptions the in-kernel `KVM_EXIT_PREEMPT` fired 36/36; the
+  SIGIO never raced it. Removing the SIGIO would break stock `KvmBackend::run_until` for no
+  determinism gain, so it stays.
+
+### Box validation (foreman-verifiable; see `kvm-patches/RESULTS.md`)
+
+`live_preemption` (busy-spin guest preempted at V-time LAPIC deadlines) with the patched-0004
+module: **deterministic-twice** (bit-identical `state_hash`), seed-dependent across seeds, and
+**max skid = 1 retired branch ≪ SKID_MARGIN = 256** across 36 preemptions (vs. task 54's
+unbounded 28207). The in-kernel force-exit fired on every preemption (36/36) and **zero
+`PastDeadline`** occurred (the fail-closed `run_until` never tripped). Always reverted to stock
+(`lsmod kvm == 1396736`).
+
+### Known limitations / foreman follow-up
+
+- **The heavy `live_runc_postgres` r1/r2/r3 headline was not run here** — it needs the ~160 MiB
+  runc + Postgres OCI payload (not in this branch's `guest/payloads`). It exercises the **same**
+  `run_until` → force-exit path proven above. Foreman: build the runc/Postgres image, load the
+  0004 module + task-54 routing, run the trio deterministic-twice, and confirm **zero
+  `PastDeadline`** in the logs (contrast: task 54 showed exactly one 28207-branch overshoot).
+- **6.12 box-proxy build gotcha (cost me a debug cycle; documented in `kvm-patches/BUILD.md` +
+  `RESULTS.md`):** `make -C $B M=arch/x86/kvm` compiles `.c` from the **objtree `$B`** (VPATH
+  objtree-first), not the `$CM` srctree BUILD.md Part 2 step 3 copies into. The 0004 `.c` edits
+  (x86.c, vmx.c) must be copied into `$B/arch/x86/kvm/`; the headers resolve from `$CM`. Symptom
+  if missed: `KVM_ARM_PREEMPT_EXIT` returns `EINVAL` (the arm case isn't in the loaded module).

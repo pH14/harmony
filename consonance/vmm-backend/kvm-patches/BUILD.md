@@ -118,10 +118,16 @@ python3 /path/to/consonance/vmm-backend/kvm-patches/scripts/apply_patch_612.py
 sed -i 's/EXPORT_SYMBOL_FOR_KVM_INTERNAL/EXPORT_SYMBOL_GPL/g' arch/x86/kvm/x86.c
 cd ..
 
-# 3. Overlay patched sources + headers into the (srctree) build tree. KVM also
-#    pulls in virt/kvm, and the headers package ships only headers, so the .c
-#    files and the two patched headers must be copied in.
+# 3. Overlay patched sources + headers into the build tree. KVM also pulls in
+#    virt/kvm, and the headers package ships only headers, so the .c files and the
+#    two patched headers must be copied in.
+#    IMPORTANT (task 55): `make -C $B M=arch/x86/kvm` compiles .c via VPATH with the
+#    OBJTREE ($B) taking precedence, and $B already ships its own arch/x86/kvm/*.c.
+#    So the patched .c MUST land in $B/arch/x86/kvm (NOT only $CM, which is right for
+#    the headers — $B has none). If the .c go only to $CM, the build silently uses
+#    $B's stock copies and the patch is absent (e.g. KVM_ARM_PREEMPT_EXIT -> EINVAL).
 cp -r linux-6.12.90/arch/x86/kvm "$CM/arch/x86/"
+cp -r linux-6.12.90/arch/x86/kvm "$B/arch/x86/"   # objtree copy — the one actually compiled
 cp -r linux-6.12.90/virt "$CM/"
 cp linux-6.12.90/include/uapi/linux/kvm.h          "$CM/include/uapi/linux/kvm.h"
 cp linux-6.12.90/arch/x86/include/asm/kvm_host.h   "$CM/arch/x86/include/asm/kvm_host.h"
