@@ -155,6 +155,29 @@ gracefully — same honest absence as the task-36 audit.)
   two stranded boots can't pass vacuously.
 - **`k3` — seed-sensitivity.** A different seed ⇒ different UUIDs through the cluster.
 
+### Watching the run — the telemetry console recording (out-of-band, viewer-only)
+
+Each box boot writes a `telemetry::NdjsonRecorder` recording to
+`<$K3S_NDJSON|k3s-run>.<tag>.ndjson` (e.g. `k3s-run.k1.ndjson`,
+`k3s-run.k2_run_a`/`k2_run_b`, `k3s-run.k3_seed_a`/`k3_seed_b` — relative to the run's
+CWD, `/root/ht49` under the box wrapper). It carries the console serial as `Console`
+events + a per-`COUNTS_EVERY`-steps exit-count snapshot (`Counts`, drives the console's
+trap-rate graph) + a final `Terminal` event. Replay it to **watch k3s boot**:
+
+```sh
+cargo run -p telemetry --bin console -- --source file:k3s-run.k1.ndjson
+```
+
+It is wired **test-side only** and is strictly **out-of-band / read-only**: the recorder
+is fed from `vmm.serial()` (already streamed) and the read-only `vmm.exit_counts()`
+accessor and writes its own file — it never reads or feeds `state_hash`/
+`observable_digest`, so attaching it cannot perturb the deterministic run (the
+`telemetry::Observer` read-only contract; the default is `NullObserver`). A viewer
+artifact only — a failure to open/write the recording is a warning, never a gate
+failure. (vmm-core has no in-core `Observer` hook wired into `Vmm::step`, so the
+recording is produced from the test's run loop rather than swapped into a core seam; a
+real in-core tap would be a determinism-core change, deliberately avoided here.)
+
 ### The honest frontier risk — preemption density (#34) + wall time
 
 Per the integrator/foreman directive, the genuinely hard part is whether the shipped

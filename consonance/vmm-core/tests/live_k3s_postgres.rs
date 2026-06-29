@@ -62,14 +62,39 @@
 //!     -- --ignored --nocapture --test-threads=1 k2_k3s_postgres_deterministic_twice_patched
 //! # always revert to stock KVM afterwards and verify `lsmod | grep '^kvm '` == 1396736.
 //! ```
+//!
+//! **Watch the run (telemetry recording).** Each boot writes an out-of-band
+//! [`telemetry::NdjsonRecorder`] recording to `<$K3S_NDJSON|k3s-run>.<tag>.ndjson`
+//! (e.g. `k3s-run.k1.ndjson`, `k3s-run.k2_run_a.ndjson`) — the console serial as
+//! `Console` events + periodic exit-count snapshots + a final `Terminal` event.
+//! Replay it in the web console to watch k3s boot:
+//! `cargo run -p telemetry --bin console -- --source file:k3s-run.k1.ndjson`. The
+//! recorder is **read-only / out-of-band**: it is fed only from `serial()` /
+//! `exit_counts()` and writes its own file, never touching
+//! `state_hash`/`observable_digest`, so it cannot perturb the deterministic run (the
+//! `Observer` contract). A viewer artifact only — a failure to open/write it is a
+//! warning, never a gate failure.
 #![cfg(target_os = "linux")]
 
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use telemetry::{Event, EventKind, NdjsonRecorder, Observer};
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
+
+/// The telemetry recording sink for a single boot: a lossless [`NdjsonRecorder`]
+/// over a buffered file the `console` bin replays. Out-of-band + read-only: it is
+/// fed only from `serial()` / `exit_counts()` and writes a file, so it CANNOT
+/// perturb determinism (`state_hash`/`observable_digest` never see it) — a viewer
+/// artifact, exactly the `NullObserver`-default Observer contract.
+type Recorder = NdjsonRecorder<BufWriter<File>>;
+
+/// How often (in VMM steps) to snapshot the per-reason exit tally into the
+/// recording — drives the console's exit-rate counters/graph as k3s boots.
+const COUNTS_EVERY: u64 = 8192;
 
 /// 16 GiB of guest RAM: k3s (containerd + the control plane + the agent) plus the
 /// pre-imported images, the self-extracted k3s data dir, the two pod rootfs layers
@@ -327,7 +352,17 @@ impl BootOutcome {
 
 /// Drive `vmm` to a terminal state (or the step / wall-clock budget), streaming the
 /// serial console to stderr live so a hang shows the last line reached.
-fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
+///
+/// `rec` is the **out-of-band, read-only** telemetry recording (an
+/// [`NdjsonRecorder`] over a file; [`None`] if it could not be opened). It is fed
+/// ONLY from `vmm.serial()` (already read for the live stream) and
+/// `vmm.exit_counts()` (a read-only accessor) and writes its own file — it never
+/// reads or feeds `state_hash`/`observable_digest`, so attaching it CANNOT perturb
+/// the deterministic run (the `Observer` read-only contract). A viewer artifact.
+fn run_bounded<B: vmm_backend::Backend>(
+    vmm: &mut Vmm<B>,
+    rec: &mut Option<Recorder>,
+) -> BootOutcome {
     // not order-observable: a test-only wall-clock watchdog (belt-and-braces with
     // the external `timeout`) — it bounds how long this `#[ignore]`d box gate runs
     // and never reaches guest state, the serial capture, or any hash.
@@ -336,6 +371,7 @@ fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
     let budget = wall_budget();
     let mut printed = 0usize;
     let mut steps = 0u64;
+    let mut ev_seq = 0u64; // per-run monotonic telemetry event counter
     let mut reason = None;
     let mut step_error = None;
     let stderr = std::io::stderr();
@@ -361,15 +397,58 @@ fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
         steps += 1;
         let serial = vmm.serial();
         if serial.len() > printed {
+            let new = &serial[printed..];
             let mut h = stderr.lock();
-            let _ = h.write_all(&serial[printed..]);
+            let _ = h.write_all(new);
             let _ = h.flush();
+            // Record the new console bytes as a Console event (display fidelity
+            // only; the byte-exact capture is `vmm.serial()`, hashed elsewhere).
+            if let Some(r) = rec.as_mut() {
+                r.emit(&Event::new(
+                    ev_seq,
+                    steps,
+                    steps,
+                    EventKind::Console {
+                        text: String::from_utf8_lossy(new).into_owned(),
+                    },
+                ));
+                ev_seq += 1;
+            }
             printed = serial.len();
         }
-        if steps.is_multiple_of(8192) && start.elapsed() > budget {
-            eprintln!("\n[k3s] wall-clock budget exceeded after {steps} steps");
-            break;
+        if steps.is_multiple_of(COUNTS_EVERY) {
+            // Snapshot the per-reason exit tally into the recording (read-only
+            // accessor) — drives the console's exit-rate counters/graph.
+            if let Some(r) = rec.as_mut() {
+                r.emit(&Event::new(
+                    ev_seq,
+                    steps,
+                    steps,
+                    EventKind::Counts(map_counts(&vmm.exit_counts())),
+                ));
+                ev_seq += 1;
+            }
+            if start.elapsed() > budget {
+                eprintln!("\n[k3s] wall-clock budget exceeded after {steps} steps");
+                break;
+            }
         }
+    }
+    // A Terminal event closes the recording with the human-readable outcome.
+    if let Some(r) = rec.as_mut() {
+        let reason_str = if let Some(e) = &step_error {
+            format!("step error after {steps} steps: {e}")
+        } else if let Some(t) = &reason {
+            format!("terminal: {t:?} after {steps} steps")
+        } else {
+            format!("budget/step-cap reached after {steps} steps")
+        };
+        r.emit(&Event::new(
+            ev_seq,
+            steps,
+            steps,
+            EventKind::Terminal { reason: reason_str },
+        ));
     }
     let serial = vmm.serial();
     BootOutcome {
@@ -389,12 +468,57 @@ fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
     }
 }
 
+/// Map `vmm-backend`'s per-reason exit tally into the telemetry crate's mirror
+/// (defined separately there, a leaf crate — conventions rule 2). Field-for-field.
+fn map_counts(c: &vmm_backend::ExitCounts) -> telemetry::ExitCounts {
+    telemetry::ExitCounts {
+        io: c.io,
+        mmio: c.mmio,
+        rdmsr: c.rdmsr,
+        wrmsr: c.wrmsr,
+        hypercall: c.hypercall,
+        cpuid: c.cpuid,
+        rdtsc: c.rdtsc,
+        rdtscp: c.rdtscp,
+        rdrand: c.rdrand,
+        rdseed: c.rdseed,
+        hlt: c.hlt,
+        shutdown: c.shutdown,
+        deadline: c.deadline,
+    }
+}
+
+/// Open the out-of-band telemetry recording for a boot tagged `tag`. The file is
+/// `<base>.<tag>.ndjson`, where `<base>` is `$K3S_NDJSON` (default `k3s-run`, i.e.
+/// relative to the run's CWD — `/root/ht49` under the box wrapper). Always-on for
+/// this `#[ignore]`d box gate; a viewer artifact only, so a failure to open it is a
+/// warning, never a test failure. Prints the `console` replay command.
+fn open_recorder(tag: &str) -> Option<Recorder> {
+    let base = std::env::var("K3S_NDJSON").unwrap_or_else(|_| "k3s-run".to_string());
+    let path = format!("{base}.{tag}.ndjson");
+    match File::create(&path) {
+        Ok(f) => {
+            eprintln!(
+                "[telemetry] recording this run to {path}\n[telemetry]   watch it: \
+                 cargo run -p telemetry --bin console -- --source file:{path}"
+            );
+            Some(NdjsonRecorder::new(BufWriter::new(f)))
+        }
+        Err(e) => {
+            eprintln!("[telemetry] could not open recording {path}: {e} (continuing without)");
+            None
+        }
+    }
+}
+
 /// Boot the k3s image on the patched backend at `seed`, run it to a terminal, and
-/// return (serial capture, `state_hash`, outcome). As in `live_runc_postgres.rs` the
-/// [`Vmm`] — and its `perf_event` work counter — is **dropped before returning**, so
-/// two same-seed runs in one process don't keep two pinned PMU counters open at once
-/// (which would multiplex and perturb the branch count). One counter at a time is exact.
-fn boot_k3s(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
+/// return (serial capture, `state_hash`, outcome). `tag` names the per-boot
+/// telemetry recording (a viewer artifact; see [`open_recorder`]). As in
+/// `live_runc_postgres.rs` the [`Vmm`] — and its `perf_event` work counter — is
+/// **dropped before returning**, so two same-seed runs in one process don't keep two
+/// pinned PMU counters open at once (which would multiplex and perturb the branch
+/// count). One counter at a time is exact.
+fn boot_k3s(seed: u64, tag: &str) -> (Vec<u8>, [u8; 32], BootOutcome) {
     let kernel = require_artifact("bzImage");
     let initramfs = require_artifact("initramfs-k3s.cpio.gz");
     let cmdline = cmdline();
@@ -407,7 +531,16 @@ fn boot_k3s(seed: u64) -> (Vec<u8>, [u8; 32], BootOutcome) {
         seed,
     )
     .expect("boot_linux_selected (patched) — needs the LOADED patched KVM modules");
-    let out = run_bounded(&mut vmm);
+    let mut rec = open_recorder(tag);
+    let out = run_bounded(&mut vmm, &mut rec);
+    if let Some(r) = rec.as_mut() {
+        let _ = r.flush();
+        if let Some(e) = r.error() {
+            eprintln!(
+                "[telemetry] recording `{tag}` had a write error (viewer artifact only): {e}"
+            );
+        }
+    }
     (vmm.serial().to_vec(), vmm.state_hash(), out)
 }
 
@@ -509,7 +642,7 @@ fn k1_k3s_cluster_postgres_client_streams_patched() {
     require_kvm();
     require_host_baseline();
     eprintln!("[k3s] cmdline: {}", cmdline());
-    let (_serial, _hash, out) = boot_k3s(SEED);
+    let (_serial, _hash, out) = boot_k3s(SEED, "k1");
     report("k1", &out);
     assert!(
         out.step_error.is_none(),
@@ -559,9 +692,9 @@ fn k2_k3s_postgres_deterministic_twice_patched() {
     require_host_baseline();
 
     // boot_k3s drops run A's Vmm (and its PMU counter) before we boot run B.
-    let (serial_a, hash_a, out_a) = boot_k3s(SEED);
+    let (serial_a, hash_a, out_a) = boot_k3s(SEED, "k2_run_a");
     report("k2 run A", &out_a);
-    let (serial_b, hash_b, out_b) = boot_k3s(SEED);
+    let (serial_b, hash_b, out_b) = boot_k3s(SEED, "k2_run_b");
     report("k2 run B", &out_b);
 
     let hex = |h: &[u8; 32]| h.iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -627,9 +760,9 @@ fn k3_k3s_postgres_seed_sensitivity_patched() {
     require_kvm();
     require_host_baseline();
 
-    let (_serial_a, _hash_a, out_a) = boot_k3s(SEED);
+    let (_serial_a, _hash_a, out_a) = boot_k3s(SEED, "k3_seed_a");
     report("k3 seed A", &out_a);
-    let (_serial_b, _hash_b, out_b) = boot_k3s(SEED_B);
+    let (_serial_b, _hash_b, out_b) = boot_k3s(SEED_B, "k3_seed_b");
     report("k3 seed B", &out_b);
 
     // Each run must genuinely have gone through the intra-guest cluster path (else

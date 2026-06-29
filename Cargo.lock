@@ -869,6 +869,7 @@ dependencies = [
  "proptest",
  "sha2",
  "snapshot-store",
+ "telemetry",
  "thiserror",
  "unison",
  "vm-state",
