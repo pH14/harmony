@@ -37,14 +37,26 @@ floor `KvmBackend` can't meet, which `PatchedKvmBackend`/`DirectVmxBackend` rais
 
 ## Implementation: the patch, and the one deferred optimization
 
-The patch is out-of-tree against the pinned KVM version, and small — ~low-hundreds of lines in
-`arch/x86/kvm/vmx/vmx.c`, `arch/x86/kvm/x86.c`, `include/uapi/linux/kvm.h`, doing three
-mechanical things: (1) enable the `RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED`-exiting VMX controls KVM
-leaves off; (2) add `KVM_EXIT_*` reasons for them; (3) plumb the exits to userspace — exactly
-the shape of the existing `KVM_X86_SET_MSR_FILTER` (`KVM_EXIT_X86_RDMSR/WRMSR`) feature. The
-ongoing cost is the rebase treadmill (re-apply per kernel version, in the hot exit path), not
-the patch size. RDRAND/RDSEED are infrequent → the simple userspace round-trip is fine. `0x6e0`
-needs no patch (the contract hides it).
+The patch is out-of-tree against the pinned KVM version, and small — a **four-patch series**
+(`consonance/vmm-backend/kvm-patches/`, `git am`-clean on `linux-6.18.35`) in
+`arch/x86/kvm/vmx/vmx.c`, `arch/x86/kvm/x86.c`, `arch/x86/include/asm/kvm_host.h`,
+`include/uapi/linux/kvm.h`. Patches **0001–0003** do three mechanical things: (1) enable the
+`RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED`-exiting VMX controls KVM leaves off; (2) add the
+`KVM_EXIT_DETERMINISM` reason + `kvm_run.determinism` payload for them; (3) plumb the exits to
+userspace — exactly the shape of the existing `KVM_X86_SET_MSR_FILTER`
+(`KVM_EXIT_X86_RDMSR/WRMSR`) feature. Patch **0004** (task 55) adds **deterministic in-kernel
+force-exit preemption**: a per-vCPU one-shot arm (`KVM_ARM_PREEMPT_EXIT` vcpu ioctl →
+`vcpu->arch.preempt_armed`) that makes the V-time retired-branch `perf_event` overflow's PMI —
+an NMI that already VM-exits with `PIN_BASED_NMI_EXITING` and is serviced in
+`vmx_vcpu_enter_exit()` — return to userspace from `handle_exception_nmi` with the new
+`KVM_EXIT_PREEMPT` reason (42) instead of re-entering, so the LAPIC-timer deadline is hit with
+only the bounded hardware-PMI skid (~128 retired branches, well inside the `SKID_MARGIN = 256`
+arm-early window) rather than the unbounded `SIGIO`-delivery latency a CPU-bound guest can
+outrun. All four are gated on the **same** opt-in cap `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`
+(no separate cap — the pinned design folds the force-exit into the existing per-VM determinism
+opt-in; default-off → stock behavior). The ongoing cost is the rebase treadmill (re-apply per
+kernel version, in the hot exit path), not the patch size. RDRAND/RDSEED are infrequent → the
+simple userspace round-trip is fine. `0x6e0` needs no patch (the contract hides it).
 
 **The one known perf risk — RDTSC — is deferred and data-gated (decision, this ruling).** RDTSC
 is hot (timekeeping; the guest-userspace vDSO clock path if enabled), so a userspace exit per
