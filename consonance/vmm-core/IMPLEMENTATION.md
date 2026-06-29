@@ -5,6 +5,39 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 49 — Postgres on k3s, client pod → server pod, intra-guest (box gates only here)
+
+Task 49 runs Postgres on a single-node **k3s** cluster inside the deterministic guest,
+with a **client pod calling the postgres server pod over the in-guest CNI**,
+deterministic-twice. **No `src/` change** — it rides the merged V-time stack (task 47
+`run_until` preemption, task 52 HLT-resume, task 54 xAPIC routing + natural-exit
+fallback). The only change in this crate is a new box-only test,
+`tests/live_k3s_postgres.rs` (`#[cfg(target_os = "linux")]` + `#[ignore]`, modeled on
+`live_runc_postgres.rs`): gates `k1` (cluster up + both pods + intra-guest
+client→server + streams), `k2` (deterministic-twice), `k3` (seed-sensitivity). The
+image plumbing (`build-k3s-image.sh`, `k3s-init.sh`, the manifests) and the full
+narrative live in **`guest/linux/IMPLEMENTATION.md`**. `devices.rs`, the CPU/MSR
+contract, and the `state_hash` schema are untouched, and the bzImage is the unchanged
+task-36 kernel, so M1/M2/P6 + the det-corpus + the task-37/38/48 Postgres goldens are
+byte-unchanged.
+
+**Box outcome — the frontier (the integrator's predicted blocker, confirmed).** A
+patched boot carries real Linux + the **real k3s binary** all the way to
+`starting k3s server (v1.36.2+k3s1)`, then `run_until` **fail-closes** as the Go control
+plane spins up: planner Phase-1 `SkidExceeded` (`run_until: PMU skid exceeded the
+configured margin`) at V-time work `1012893688` / VMM step 155932. A throwaway box
+diagnostic measured the skid **bit-identically across two same-seed boots**: the overflow
+PMI/SIGIO ran **2220 retired branches** past the armed point (**8.7× `SKID_MARGIN` =
+256**; overshoot 1964 past the deadline), in a k8s Go-runtime busy-spin region with **no**
+natural guest exit to anchor task-54's fallback. This is the **unbounded-SIGIO-skid** root
+cause (the parked task-55 / patch-0004 in-kernel force-exit target) surfacing at k8s
+density — the *over-margin* manifestation of harmony#34, **deterministic** (so the
+substrate is sound; only the async-preemption mechanism's skid is the gap). Gates
+`k1`/`k2`/`k3` require `CLUSTER_UP`, far past this fail point, so none is reachable on the
+original stable patched module; they stand ready to run unchanged once the in-kernel
+force-exit bounds the skid. Full evidence + the recommended unblock are in
+`guest/linux/IMPLEMENTATION.md` → *Task 49 → Acceptance-gate evidence*.
+
 ## Task 48 — `runc` actually runs the Postgres OCI container (box gates only here)
 
 Task 48 replaces task 38's `unshare`/`chroot` workaround with the **real `runc`

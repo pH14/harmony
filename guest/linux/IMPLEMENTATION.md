@@ -1,5 +1,292 @@
 # guest/linux — implementation notes
 
+## Task 49 — Postgres on lightweight Kubernetes (k3s), client pod → server pod, intra-guest CNI
+
+### What landed (the determinism stress test at full stack height)
+
+A single guest VM (single-vCPU) boots a **single-node k3s cluster**, a `postgres`
+Pod serves the task-42 workload, and a separate `client` Pod connects to it **over
+the in-guest CNI** (pod → ClusterIP → kube-proxy DNAT → the server pod, all
+intra-guest — **no** host networking, pv-net unused), runs the
+`gen_random_uuid()`/`clock_timestamp()` workload, and streams `row|i|count|sum|
+uuid|t` to `ttyS0`. The headline gate is **deterministic-twice** (bit-identical
+serial + `state_hash` across two same-seed boots) + seed-sensitive.
+
+New/changed files, all additive over task 48:
+
+- **`build-k3s-image.sh`** (new) — assembles `initramfs-k3s.cpio.gz`: static busybox
+  + the single `k3s` binary + the two pre-imported container images (the
+  pause/sandbox + the official `postgres:17`) + a **pre-baked PGDATA hostPath**
+  (build-time `initdb`, uid 999, TCP-listen + trust) + `workload.sql` + the client
+  wrapper + the k3s config + the Kubernetes manifests (postgres Pod/Service + client
+  Pod).
+- **`k3s-init.sh`** (new) — the guest `/init`, selected by `rdinit=/k3s-init`. Brings
+  up cgroup-v2 + the net/resource prerequisites, starts `k3s server`, waits for the
+  node Ready, the postgres pod Ready, applies the client pod, and streams the
+  client's workload output (+ the intra-guest CNI witnesses) to `ttyS0`.
+- **`versions.lock`** / **`fetch.sh`** — pin + fetch the k3s binary + the air-gap
+  images tarball, and extract the pause/sandbox image (the only air-gap image we run)
+  into a clean single-image tar via `ctr` (box-only, like the postgres-image fetch).
+- **`consonance/vmm-core/tests/live_k3s_postgres.rs`** (new) — the three box gates
+  (`k1`/`k2`/`k3`), `#[cfg(target_os = "linux")]` + `#[ignore]`, modeled on
+  `live_runc_postgres.rs`.
+
+**No `src/` change, and no kernel change** — see *No kernel change* below; the
+companion bzImage is the *unchanged* task-36 container-class kernel, so M1/M2/P6 +
+the det-corpus goldens + the task-37/38/48 Postgres `state_hash`es are byte-unchanged.
+
+### Distribution choice — k3s (justification, per the spec)
+
+**k3s** is the spec's recommended default and the right one: ONE statically linked Go
+binary that bundles **containerd + runc + the CNI plugins (flannel, bridge,
+host-local, loopback, portmap) + kube-proxy + kubectl + crictl + ctr**, with a
+**sqlite** datastore (via kine) instead of etcd. That single-binary, self-extracting
+shape is exactly what an air-gapped, RAM-backed deterministic guest wants: the rootfs
+needs only the one binary + the pre-imported images; the sqlite datastore lives on the
+RAM-backed initramfs (deterministic VM-memory writes, no `O_DIRECT`/real-device fsync
+escape). k0s/microk8s are heavier (microk8s is snap/systemd-centric; k0s is also a
+single binary but tracks etcd/kine similarly with a larger default footprint) and buy
+nothing here. We trim hard (below) so only the load-bearing components run.
+
+**Trimming** (k3s config `etc/rancher/k3s/config.yaml`): `--disable
+traefik,servicelb,metrics-server,local-storage,coredns`,
+`--disable-network-policy`, `--disable-helm-controller`. CoreDNS is **off**: the client
+targets the postgres **Service ClusterIP directly** (`10.43.0.100`, pinned in the
+Service spec), so no in-cluster DNS is needed — fewer moving parts, one less timer-/
+watch-driven component, per the spec's "may target the ClusterIP/pod IP directly to
+minimize moving parts." **flannel backend = `host-gw`**: single-node means all pod
+traffic is same-subnet on the `cni0` bridge, so host-gw (plain routing, no vxlan
+device/UDP-encap) is the minimal correct backend. kube-proxy stays (the ClusterIP
+DNAT) and flannel stays (pod IPAM + the bridge CNI) — the load-bearing networking.
+
+### Why k3s makes progress (the determinism is preemption-driven — tasks 47/52/54)
+
+kubelet + containerd + apiserver + scheduler + controller-manager + kube-proxy +
+flannel are all Go/multi-goroutine services that busy-spin and depend on preemption —
+**far** more than bare runc. The V-time stack this branch inherits makes them run
+deterministically:
+
+- **task 47 `run_until`** — the V-time LAPIC timer *preempts* a busy-spinning thread
+  at the seed-deterministic V-time deadline (PMU-overflow + single-step to the exact
+  retired-branch count), so the Go schedulers run.
+- **task 52 HLT-resume** — when everything idles (HLT), the run loop warps V-time to
+  the next armed timer deadline and re-enters, so `sleep`/`nanosleep`/futex-timeout
+  waits (which froze pre-52) now wake. This is what lets `k3s-init.sh` use **normal
+  blocking `kubectl wait`/`sleep`-paced readiness polls** for *sequencing* — the
+  cluster services run for real, driven by preemption; the init is not a
+  cooperative-poll *shim* dodging the Go-runtime challenge (that is banned).
+- **task 54 xAPIC routing + natural-exit fallback** — real Linux's LAPIC MMIO is
+  routed to the deterministic model (the `0xFEE00000` page is E820-reserved + held out
+  of the memslot), and a deadline that lands in an exit-free region is delivered at the
+  next natural exit deterministically.
+
+Because every preemption instant is a pure function of the seed, the whole k8s
+interleaving is too.
+
+### Determinism closure (each item traces to the seed / V-time)
+
+- **UIDs / tokens / keys → the seeded CRNG.** k3s mints its cluster CA, the
+  service-account signing key, node/serving TLS certs, bootstrap + SA tokens, and
+  every object UID from `getrandom` → the kernel CRNG; under the patched backend
+  RDRAND/RDSEED trap to the **seeded stream** and credit the CRNG deterministically
+  (task 37's root). The Postgres `gen_random_uuid()` rides the same path
+  (`pg_strong_random`). So all of it is identical across two same-seed boots and
+  **different across seeds** (gate `k3`). A fixed k3s `token` removes one input (it
+  would be CRNG-deterministic anyway); a fixed `node-name` keeps the Node object
+  reproducible.
+- **Timestamps / leases / events → V-time.** Resource `creationTimestamp`s, the
+  controller/scheduler **leader-election leases** (`renewTime`), Event times, backoff
+  timers, the readiness-probe schedule, and `clock_timestamp()` all read the wall /
+  monotonic clock, which is V-time-driven. Deterministic.
+- **sqlite datastore → RAM-ext4.** kine's sqlite DB lives on the initramfs tmpfs
+  (RAM); `fsync` is instant + deterministic, no `O_DIRECT`/real-device escape.
+- **Pre-baked PGDATA + direct `postgres`** (not the image entrypoint): the entrypoint
+  would `initdb` at pod start (slow under single-stepping) and re-exec through `gosu`
+  (Go, busy-spins) — so we `initdb` once at build time into a hostPath the server pod
+  mounts and run the `postgres` binary directly (task 37/38's proven pattern). UNLIKE
+  task 38 (unix-socket-only) the server **listens on TCP `*`** and pg_hba trusts the
+  cluster CIDRs, because the client pod connects across the CNI.
+
+### Intra-guest networking — and how the gate proves it stayed intra-guest
+
+Pod-to-pod traffic transits the guest kernel's CNI only: the `client` pod's TCP
+connection to the Service ClusterIP `10.43.0.100` is DNAT'd by kube-proxy to the
+`postgres` pod IP and routed over the `cni0` bridge / veth pair — **all inside the one
+VM**, never through the hypervisor host. pv-net (the multi-VM-across-host L2 switch) is
+**not** built or used. The gate witnesses this two ways, both deterministic:
+
+1. **Both pod IPs are in the pod CIDR `10.42.0.0/16`** (`k3s-init.sh` streams
+   `K8S49: CNI pod IPs: postgres=10.42.x.x client=10.42.x.x`; the gate asserts both
+   start `10.42.`). host-local IPAM assigns them sequentially → identical across two
+   same-seed boots.
+2. **The postgres pod logs the client's source IP** — `log_line_prefix='[pg %p %h]'` +
+   `log_connections=on` makes it log `connection received: host=10.42.x.x`, i.e. the
+   connection's source is a **pod IP**, the witness that the path is pod-to-pod over the
+   CNI (no host networking).
+
+### No kernel change (the capability audit — bzImage is the unchanged task-36 kernel)
+
+The task-36 **Kata container-host** kernel already builds in the entire k8s surface, so
+the bzImage (and every task-37/38/48 golden) is **untouched**. Verified by reading the
+vendored Kata fragments (`guest/linux/kata/`):
+
+| Need (k3s / k8s) | Symbols (all `=y`) |
+|---|---|
+| Pod networking | `BRIDGE`, `BRIDGE_NETFILTER`, `VETH`, `VXLAN`, `VLAN_8021Q`, `LLC`, `STP` |
+| kube-proxy / flannel iptables | `IP_NF_IPTABLES`(+`_LEGACY`), `IP_NF_NAT`, `IP_NF_TARGET_MASQUERADE`/`REDIRECT`, `NETFILTER_XT_MATCH_*` (addrtype/conntrack/comment/multiport/statistic/recent), `NF_NAT`, `NF_CONNTRACK`, `NF_TABLES`, `IP_SET`, `IP_VS*` |
+| Container storage / cgroups / ns | `OVERLAY_FS`, cgroup-v2 (all controllers), the full namespace set, `SECCOMP_FILTER`, `POSIX_MQUEUE` (all confirmed in the task-36 audit) |
+
+The determinism overlay (`config-fragment`) disables **none** of these — it only turns
+off SMP/dynticks/KASLR/cpufreq/HW-RNG/PM-timer/THP/KSM/suspend/modules, none of which
+the k8s net/container surface needs. (The one absent must-have remains `CPUSETS`, which
+`depends on SMP`; single-vCPU has no affinity to partition, and kubelet degrades
+gracefully — same honest absence as the task-36 audit.)
+
+### The gates (`live_k3s_postgres.rs`) — what each proves
+
+- **`k1` — cluster up + both pods + intra-guest client→server + streams.** One patched
+  boot reaches a Ready single-node cluster, both pods run, the client connects to the
+  postgres pod over the CNI (both pod IPs in `10.42.0.0/16` + a postgres connection
+  log), runs the workload (the `row|…` lines, each a valid UUID + timestamp, all 20
+  distinct), `GUEST_READY`, clean terminal.
+- **`k2` — deterministic-twice (the milestone).** Two same-seed patched boots →
+  bit-identical serial (incl. the UUIDs/timestamps) **and** `state_hash`. Each run is
+  independently re-asserted to have run the whole intra-guest path to `GUEST_READY`, so
+  two stranded boots can't pass vacuously.
+- **`k3` — seed-sensitivity.** A different seed ⇒ different UUIDs through the cluster.
+
+### The honest frontier risk — preemption density (#34) + wall time
+
+Per the integrator/foreman directive, the genuinely hard part is whether the shipped
+preemption fallback holds at **k8s density**. Two specific risks, to be resolved on the
+box (and reported with data, **not** worked around — no `unshare`/cooperative-poll
+shims):
+
+1. **The task-54 residual boundary race (pH14 / harmony#34).** Task 54's natural-exit
+   fallback delivered Postgres' *one* preemption-outrun region deterministically, but
+   cross-model review proved a residual race: a deadline whose next guest exit sits a
+   knife-edge distance past it can resolve as single-step-to-`Exit::Deadline` **or**
+   outrun-to-natural-exit depending on the nondeterministic SIGIO latency → same-seed
+   divergence. k3s hits **many** more, denser preemption regions, raising the odds of
+   landing on that knife edge. If gate `k2` diverges same-seed, or a run trips
+   `run_until` `PastDeadline`/"a guest exit landed AT or PAST the deadline", that is #34
+   surfacing under load — captured + reported as the frontier (the in-kernel force-exit,
+   task 55 / patch 0004, is the universal fix; it is parked because it fail-closes on
+   the Postgres region).
+2. **Wall time.** k3s boot-to-Ready is ~10× bare runc's work; under the single-stepping
+   VMM (up to ~28k single-steps per tick in exit-free regions) it may not reach Ready in
+   feasible wall time. If so, the V-time/step progress reached is documented as the
+   (performance) frontier — distinct from a determinism failure.
+
+In all cases the deliverable is the **complete live path** (image + manifests + gate
+test), fully Mac-verified, plus the box findings — never a faked or relaxed gate.
+
+### Box-run instructions (FOR THE FOREMAN — box-only; the ORIGINAL stable patched module)
+
+These gates need the patched KVM + Intel PMU + the built k3s image; pin per
+`docs/BOX-PINNING.md`, use the **original stable** patched module (the
+`run-patched-ht42.sh` pattern — **not** the parked task-55/patch-0004 force-exit
+module), and **always revert KVM to stock `1396736` + verify**. BOX-SAFETY: to stop a
+run, `pkill` the live test binary FIRST (frees `/dev/kvm`), THEN `rmmod` — killing the
+script alone leaves `kvm_intel` in use and the revert hangs.
+
+```sh
+# 1. build the image (reuse the cached dl/ + the unchanged task-36 bzImage):
+make -C guest fetch && make -C guest/linux k3s-image    # -> guest/build/initramfs-k3s.cpio.gz
+# 2. load the ORIGINAL patched kvm.ko/kvm-intel.ko, then, CPU-pinned (core 2), large timeout:
+taskset -c 2 timeout 14400 cargo test -p vmm-core --test live_k3s_postgres -- \
+    --ignored --nocapture --test-threads=1 k1_k3s_cluster_postgres_client_streams_patched
+taskset -c 2 timeout 14400 cargo test -p vmm-core --test live_k3s_postgres -- \
+    --ignored --nocapture --test-threads=1 k2_k3s_postgres_deterministic_twice_patched
+taskset -c 2 timeout 14400 cargo test -p vmm-core --test live_k3s_postgres -- \
+    --ignored --nocapture --test-threads=1 k3_k3s_postgres_seed_sensitivity_patched
+# 3. ALWAYS revert + verify:  rmmod kvm_intel kvm; modprobe kvm kvm_intel; lsmod | grep '^kvm '  # 1396736
+```
+
+`WALL_BUDGET_SECS` overrides the in-test watchdog; `GUEST_RAM_GIB` (default 16) the
+guest RAM. Capture the `k2` equal digests + a sample UUID/timestamp, the `k1`
+boot→Ready step count + the pod IPs, and the `k3` two UUIDs into *Acceptance-gate
+evidence* below once run.
+
+### Acceptance-gate evidence (box) — the frontier surfaced (k3s outruns the preemption skid)
+
+Box: `ssh hetzner`, det-cfl-v1 (i9-9900K), the **original stable** patched module
+(`/root/kvm-spike/.../kvm{,-intel}.ko`, vermagic 6.12.90), CPU-pinned `taskset -c 2`,
+**reverted to stock `1396736` + verified after every run** (`REVERT OK`). The image
+built clean on the box (`make -C guest fetch && make -C guest/linux k3s-image` →
+`initramfs-k3s.cpio.gz`, 229 MB; pause = `docker.io/rancher/mirrored-pause:3.6`).
+
+**What the primitive carries (confirmed on the box).** A patched boot runs cleanly
+through the entire kernel boot, `Run /k3s-init as init process`, the cgroup-v2 / net
+prereqs, **and launches the real k3s binary** —
+`K8S49: starting k3s server (k3s version v1.36.2+k3s1)` reaches `ttyS0`. So the V-time
+stack (xAPIC routing, HLT-resume, `run_until` preemption) carries real Linux + the k3s
+Go binary up to the moment its control plane starts spinning.
+
+**The frontier — `run_until` fail-closes as the Go control plane spins up.** At V-time
+work `target = 1012893688` (VMM step **155932**, immediately after the k3s-server
+banner) the run loop trips:
+
+```
+[k3s] step error after 155932 steps: backend error
+      | debug=Backend(Internal("run_until: PMU skid exceeded the configured margin (determinism hazard)"))
+```
+
+This is the planner's **Phase-1 `SkidExceeded`** (`vtime/src/planner.rs:149`, via
+`kvm_sys.rs::LiveCpu::run_until_overflow`): the overflow **PMI/SIGIO itself** kicked
+`KVM_RUN` out at `work ≥ target` with **no genuine guest exit** (`LiveStop::Count`, not
+`LiveStop::Guest`). A throwaway box-only diagnostic capturing the `SkidExceeded` fields
+(reverted after) measured it, **bit-identically across two same-seed boots**:
+
+```
+boot A: armed_at=1012893432 target=1012893688 stopped_at=1012895652 overshoot=1964 skid_from_armed=2220  @ step 155932
+boot B: armed_at=1012893432 target=1012893688 stopped_at=1012895652 overshoot=1964 skid_from_armed=2220  @ step 155932
+```
+
+Reading: the overflow was armed at `target − 256` (= `SKID_MARGIN`); the SIGIO did not
+break `KVM_RUN` until **2220 retired branches** later — **8.7× the `SKID_MARGIN` of
+256** — landing `overshoot = 1964` branches **past** the deadline, so the planner has no
+room to single-step to the exact target and fails closed. k3s' first heavy Go busy-spin
+(`procyield`/`osyield`, no VM-exit for thousands of branches) is a **2220-branch
+exit-free region**, far longer than the runc/Postgres workload ever produced.
+
+**Why this is the documented frontier (not a flake, and not worked-aroundable here).**
+
+- **It is the unbounded-SIGIO-skid root cause, surfacing at k8s density** — exactly the
+  defect `tasks/55-deterministic-force-exit-preemption.md` (patch 0004, the parked
+  in-kernel force-exit) was written to eliminate: *"The SIGIO delivery latency
+  (kernel irq_work/fasync) is unbounded in a CPU-bound, exit-free guest region."* Task 54
+  proved Postgres' **one** outrun region was deliverable because it ended in a natural
+  guest exit (RDTSC) → the `PastDeadline` natural-exit fallback. k3s' region ends in **no**
+  guest exit (a pure overflow-stop), so the fallback cannot anchor it → the **harder**
+  `SkidExceeded` fail-close. This is the genuine test the integrator/foreman set: the
+  shipped async-SIGIO fallback does **not** hold at k8s density.
+- **It is deterministic, which localizes the gap precisely.** Both same-seed boots fail at
+  the **identical** work count / overshoot / step. So the determinism *substrate* is sound
+  (work counts are a pure function of the seed); the sole gap is the preemption
+  *mechanism*'s async-SIGIO skid (here deterministically 2220 ≫ 256). Note this is the
+  **over-margin** manifestation of harmony#34, not the nondeterministic knife-edge
+  boundary-race variant — cleaner, and a direct argument for the bounded in-kernel skid.
+- **The fix is task-55/patch-0004, which is box/foreman-owned and was kept out of scope.**
+  Patch 0004 makes the overflow PMI cause an in-kernel VM-exit, bounding the skid to the
+  hardware PMI latency (~128 branches, *well inside* the 256 margin) → the free-run always
+  stops strictly before the deadline → single-step → `Exit::Deadline`. With a measured
+  skid of 2220 here, 0004's ~128-branch bound resolves it. Widening `SKID_MARGIN` is a
+  determinization-mechanism change (a task non-goal) and performance-prohibitive, and per
+  the directive the fail-close must be **reported, not papered over** (no `unshare` /
+  cooperative-poll shim — the k8s services must run for real on the real primitive).
+
+**Gate status.** `k1`/`k2`/`k3` require `CLUSTER_UP` (node Ready), which is **far past**
+this fail point — so none is reachable on the current (original stable) patched module;
+the gates are written + Mac-verified and stand ready to run **unchanged** once the
+preemption skid is bounded. The deliverable is the **complete, Mac-verified live path**
+(image + manifests + init + gate test) plus this precisely-characterized frontier.
+
+**Recommended unblock (for the foreman):** land `tasks/55` patch 0004 (in-kernel
+force-exit; PR #33's machinery, currently parked) — k3s is a concrete, deterministic
+witness that the async-SIGIO fallback is insufficient and the bounded in-kernel skid is
+needed. Then re-run `live_k3s_postgres` `k1`/`k2`/`k3` verbatim (box-run block above).
+
 ## Task 48 — `runc` *actually* runs the Postgres OCI container (no `unshare` shim)
 
 ### What landed (the money-shot, and the overturn of task 38's load-bearing finding)
