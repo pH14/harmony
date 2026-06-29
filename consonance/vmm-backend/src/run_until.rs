@@ -116,6 +116,19 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// across such a region is determinism-safe but performance-prohibitive — the box
 /// observed a 28207-branch exit-free region, i.e. ~28k single-steps per tick.
 ///
+/// **Residual boundary race (cross-model review; tracked in pH14/harmony#34).** The
+/// "deterministic function of the instruction stream" claim above holds for a *deep*
+/// exit-free region (the observed 28207-branch case: the `SIGIO` cannot possibly take
+/// effect before the next exit, so every same-seed run is outrun identically). It does
+/// NOT hold at the *boundary*: for a deadline whose next exit sits a knife-edge distance
+/// past it (comparable to the `SIGIO`-latency variance), whether the `SIGIO` fires within
+/// margin (→ single-step `Exit::Deadline`) or is outrun (→ this natural-exit fallback)
+/// can flip run-to-run → same-seed divergence. So this is a *workload-dependent*
+/// guarantee: solid for Postgres (r1/r2/r3 bit-identical across all its deadlines), but a
+/// knife-edge deadline in another workload could make its determinism gate flaky — caught
+/// loudly by the gate, never silent. The universal-soundness fix (an in-kernel force-exit
+/// with bounded skid) is tracked in #34; this fallback is the shipped interim.
+///
 /// PRIMARY structural guarantee: with `skid_margin > max_skid` the free-run stops
 /// STRICTLY before the deadline branch and the single-step lands exactly ON it
 /// (stopping before the next instruction). So in the common case no non-counted
