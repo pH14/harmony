@@ -1329,6 +1329,30 @@ kvm_intel; lsmod | grep '^kvm '`). Then:
   `--in-diff` mutants gate does not try to mutate the `cfg(kani)` proof harnesses (structurally
   unkillable — verified by the kani job instead).
 - Finding 1 (the `place_initramfs` / kernel hole guard) is in `vmm-core` — see its IMPLEMENTATION.md.
-- Re-ran portable gates after: build / clippy(`-D warnings`) / fmt / nextest (vmm-backend 55,
-  vmm-core 258) green; Kani 4/4 unchanged (region splitter untouched); the new kvm_sys `unsafe` is
-  box-only (not Mac-Miri-reachable), so vmm-backend Miri is unaffected.
+
+### Review round 1 — full union (codex + pi); additional findings
+
+- **Finding 4 (determinism lints), `Cargo.toml`.** The reviewer flagged that swapping `[lints]
+  workspace = true` for `[lints.clippy] all = deny` might DROP the determinism lints
+  (`disallowed_types`/`disallowed_methods`, which forbid `HashMap`/`SystemTime::now`/`thread_rng`).
+  **Verified it does not:** `clippy::all = deny` reports them as "implied by `-D clippy::all`" — a
+  `HashMap` added to this crate fails the gate. The literal "restore `workspace = true`" is
+  **infeasible** here: cargo REJECTS `[lints] workspace = true` together with the crate-local
+  `[lints.rust]` this crate needs to register `cfg(kani)` ("cannot override `workspace.lints` in
+  `lints`") — the same constraint `vtime`/`lapic` hit. Resolution: keep the workspace-equivalent
+  `all = deny` AND list `disallowed_types`/`disallowed_methods` **explicitly** on top, so the
+  determinism discipline is self-evident and robust to any future regrouping of `clippy::all`. (The
+  disallowed *lists* live in `clippy.toml`, unchanged.)
+- **Finding 7 (splitter overflow precondition), `region.rs`.** `split_parts` is reached only after
+  `MemRegions::insert` has rejected a wrapping region (`gpa + len` overflow → "region wraps the
+  address space"), so its inputs never wrap — documented as a precondition, asserted with a
+  `debug_assert!`, and pinned by the new `insert_rejects_a_wrapping_region` test. The arithmetic is
+  saturating regardless, so even a violated precondition yields CLAMPED (never wrapping) parts and no
+  panic — not UB. `region_proofs` assumes the same no-wrap (so the `debug_assert` is proven to hold
+  under the Kani harnesses).
+- Findings 2/3/5/6 were already addressed in commit `2dcc672` (above / in `vmm-core`). Finding 1
+  (run_until natural-exit fallback) is **held** pending the user decision — untouched.
+- Re-ran portable gates after: build / clippy(`-D warnings`) / fmt / nextest (vmm-backend 56,
+  vmm-core 258) green; **Kani 4/4** (119 checks incl. the new `debug_assert`, 0 failed); Linux
+  cross-check (`--target x86_64-unknown-linux-gnu`) clean; the new kvm_sys `unsafe` is box-only (not
+  Mac-Miri-reachable), so vmm-backend Miri is unaffected.

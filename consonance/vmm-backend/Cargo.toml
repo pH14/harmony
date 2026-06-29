@@ -45,14 +45,22 @@ proptest = "1"
 # state-machine`, already used by snapshot-store / hypercall-proto).
 proptest-state-machine = "0.3"
 
-# Not `[lints] workspace = true`: this crate registers the `kani` cfg (so the
+# NOT `[lints] workspace = true`: this crate must register the `kani` cfg (so the
 # standard build's `unexpected_cfgs` lint does not flag the `#[cfg(kani)]` memslot-
 # splitter proof harnesses in `src/region.rs` / `src/region_proofs.rs`, task 54), and
-# Cargo cannot combine `[lints] workspace = true` with a crate-local `[lints.rust]`
-# table. The `[lints.clippy]` table below mirrors the workspace `all = deny`
-# (`Cargo.toml` `[workspace.lints.clippy]`). Mirrors `vtime`/`lapic`'s Cargo.toml.
+# Cargo REJECTS combining `[lints] workspace = true` with a crate-local `[lints.rust]`
+# table ("cannot override `workspace.lints` in `lints`"). So, like `vtime`/`lapic`, we
+# spell the lints explicitly. `clippy::all = deny` is a faithful mirror of
+# `[workspace.lints.clippy]` and ALREADY enforces the determinism lints — clippy
+# reports `disallowed_types`/`disallowed_methods` as "implied by `-D clippy::all`"
+# (verified: a `HashMap` in this crate fails the gate). They are ALSO listed
+# explicitly below so the determinism discipline (rule #4: no `HashMap`/`SystemTime::
+# now`/`thread_rng` on a determinism path; the lists live in `clippy.toml`) is
+# self-evident and robust to any future regrouping of `clippy::all`.
 [lints.clippy]
 all = { level = "deny", priority = -1 }
+disallowed_types = "deny"
+disallowed_methods = "deny"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

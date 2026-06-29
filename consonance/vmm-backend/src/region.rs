@@ -167,12 +167,20 @@ pub(crate) struct MemSlotPart {
 /// cover exactly the bytes of the region that are not in the hole (the pointwise
 /// coverage property `region_proofs` verifies for all inputs).
 ///
-/// Saturating arithmetic keeps it panic-free for any input (conventions rule #4);
-/// for the real, non-overflowing inputs — guest-RAM `base`/`len` and the
-/// page-aligned LAPIC hole `[0xFEE00000, +0x1000)` — it is exact. The function is
-/// independent of [`PAGE`]: it is pure interval arithmetic, so its proofs hold at
-/// any granularity.
+/// **Precondition (caller-guaranteed):** `base + len` and `hole_base + hole_len` do
+/// not wrap `u64`. `map_memory` upholds it — [`MemRegions::insert`] rejects a region
+/// whose `gpa + len` wraps ("region wraps the address space") **before** this is
+/// reached (pinned by `insert_rejects_a_wrapping_region`), and the LAPIC hole is a
+/// fixed `[0xFEE00000, +0x1000)`. `region_proofs` assumes the same to prove exactness.
+/// Saturating arithmetic is the defensive backstop: a violated precondition yields
+/// CLAMPED (never wrapping) parts and no panic (conventions rule #4), not UB. For the
+/// real, non-overflowing inputs it is exact. The function is independent of [`PAGE`]:
+/// it is pure interval arithmetic, so its proofs hold at any granularity.
 fn split_parts(base: u64, len: u64, hole_base: u64, hole_len: u64) -> [Option<MemSlotPart>; 2] {
+    debug_assert!(
+        base.checked_add(len).is_some() && hole_base.checked_add(hole_len).is_some(),
+        "split_parts: caller must pass non-wrapping intervals (MemRegions::insert enforces base+len)"
+    );
     let end = base.saturating_add(len); // region [base, end)
     let hole_end = hole_base.saturating_add(hole_len); // hole [hole_base, hole_end)
     // Intersection of the hole with the region: [ov_lo, ov_hi).
@@ -282,6 +290,21 @@ mod tests {
         assert!(regions.insert(0x8000, b.ptr, 0x801).is_err());
         // overlap with slot 0 ([0, 0x2000)) rejects.
         assert!(regions.insert(0x1000, b.ptr, PAGE).is_err());
+    }
+
+    /// Pins `split_parts`' caller-guaranteed precondition: a region whose `gpa + len`
+    /// wraps the address space is rejected at `insert`, so the splitter (which assumes
+    /// non-wrapping intervals for its exact-coverage proofs) is never reached with an
+    /// overflowing interval. `gpa`/`len` are page-aligned so ONLY the wrap check fires.
+    #[test]
+    fn insert_rejects_a_wrapping_region() {
+        let a = Backing::new(PAGE as usize);
+        let mut regions = MemRegions::new();
+        let gpa = u64::MAX - PAGE + 1; // 0xFFFF_FFFF_FFFF_F000, page-aligned
+        assert!(
+            regions.insert(gpa, a.ptr, 2 * PAGE).is_err(),
+            "gpa + len wrapping u64 must be rejected before any split"
+        );
     }
 
     #[test]
