@@ -533,6 +533,20 @@ pub fn load(
             ram,
         });
     }
+    // The reserved xAPIC MMIO page (`build_boot_params` marks it `E820_RESERVED`;
+    // the backend leaves a matching memslot hole) is UNMAPPED in the guest. The
+    // kernel image must not land in it — those bytes would be written to host
+    // backing the guest cannot read back (the page faults to the userspace LAPIC).
+    // The kernel loads at the header's `pref_address` and cannot be relocated, so a
+    // load region that would straddle the page is rejected. (Real kernels load near
+    // 1 MiB, far below the ~4 GiB page; this guards a hostile/oversized header.)
+    if overlaps_lapic_mmio_page(load_addr, kernel_end) {
+        return Err(LinuxLoadError::KernelDoesNotFit {
+            load: load_addr,
+            end: kernel_end,
+            ram,
+        });
+    }
     write_at(
         mem,
         load_addr,
@@ -613,6 +627,16 @@ pub fn load(
 /// `initrd_addr_max` (`0` = unset ⇒ no extra cap). The end `start + len` must not
 /// exceed that ceiling. Returns the range (`start` may equal `kernel_end` for a
 /// tight fit); an empty initramfs gets length 0.
+/// Whether `[start, end)` overlaps the reserved xAPIC MMIO page
+/// `[LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE + 0x1000)` — an UNMAPPED hole in the guest's
+/// address space (`build_boot_params` marks it `E820_RESERVED`; the backend leaves a
+/// matching memslot hole). A guest-visible image (kernel or initramfs) placed here
+/// would be written to host backing the guest cannot read back. Pure; `end` is
+/// exclusive.
+fn overlaps_lapic_mmio_page(start: u64, end: u64) -> bool {
+    start < LAPIC_MMIO_PAGE + 0x1000 && LAPIC_MMIO_PAGE < end
+}
+
 fn place_initramfs(
     initramfs: &[u8],
     ram: u64,
@@ -628,11 +652,20 @@ fn place_initramfs(
     if initrd_addr_max != 0 {
         ceiling = ceiling.min(initrd_addr_max.saturating_add(1));
     }
-    let top = ceiling.checked_sub(len).ok_or(too_big)?;
-    // Page-align the start downward.
-    let start = top & !0xFFF;
-    if start < kernel_end {
-        return Err(too_big);
+    // The highest page-aligned `start` so `[start, start+len)` fits below `cap` and
+    // above `kernel_end`; `None` if it does not fit.
+    let place = |cap: u64| -> Option<u64> {
+        let start = cap.checked_sub(len)? & !0xFFF;
+        (start >= kernel_end).then_some(start)
+    };
+    let mut start = place(ceiling).ok_or(too_big)?;
+    // Keep the initramfs out of the reserved xAPIC MMIO hole. The highest placement
+    // is preferred (and the region just ABOVE the page — `[page+0x1000, ceiling)` —
+    // is valid RAM, so a ramdisk that fits there is left there); only one that would
+    // straddle the page is relocated to sit ENTIRELY BELOW it (cap the ceiling at the
+    // page). If it then does not fit above `kernel_end`, it does not fit at all.
+    if overlaps_lapic_mmio_page(start, start.saturating_add(len)) {
+        start = place(LAPIC_MMIO_PAGE).ok_or(too_big)?;
     }
     Ok(GpaRange { start, len })
 }
@@ -1414,6 +1447,87 @@ mod tests {
                     prop_assert_eq!(bp.e820_entries, 2);
                 }
             }
+        }
+    }
+
+    /// Kernel + initramfs placement must avoid the reserved xAPIC MMIO hole (task 54
+    /// review): a guest-visible image placed in the unmapped page would be written to
+    /// host backing the guest cannot read back.
+    mod lapic_hole_placement {
+        use super::super::*; // crate items, incl. private place_initramfs / the guard
+
+        /// The overlap predicate the kernel guard and the initramfs relocation share
+        /// (testing it covers the kernel-guard decision without a multi-GiB `load`).
+        #[test]
+        fn overlaps_lapic_mmio_page_detects_straddle() {
+            let p = LAPIC_MMIO_PAGE;
+            // Disjoint (touching the exclusive edges) → no overlap.
+            assert!(!overlaps_lapic_mmio_page(0x10_0000, p));
+            assert!(!overlaps_lapic_mmio_page(p + 0x1000, p + 0x2000));
+            assert!(!overlaps_lapic_mmio_page(0, 0x1000));
+            // Overlapping the page in every way → overlap.
+            assert!(overlaps_lapic_mmio_page(p, p + 0x1000)); // exactly the page
+            assert!(overlaps_lapic_mmio_page(p - 0x1000, p + 1)); // straddles low edge
+            assert!(overlaps_lapic_mmio_page(p + 0xFFF, p + 0x2000)); // last byte of page
+            assert!(overlaps_lapic_mmio_page(0, u64::MAX)); // contains it
+        }
+
+        /// An initramfs whose highest placement would land in the hole is relocated to
+        /// sit ENTIRELY BELOW the page (the ceiling is pushed inside the page via
+        /// `initrd_addr_max`, so a tiny ramdisk reproduces the straddle without a
+        /// multi-GiB allocation).
+        #[test]
+        fn initramfs_straddling_the_hole_is_relocated_below() {
+            let ram = 8u64 << 30;
+            let initramfs = vec![0u8; 0x500];
+            // ceiling = initrd_addr_max + 1 = 0xFEE00800 — INSIDE the page, so the
+            // high placement (start 0xFEE00000) overlaps the hole.
+            let r = place_initramfs(&initramfs, ram, 0x20_0000, LAPIC_MMIO_PAGE + 0x7FF)
+                .expect("relocates below the hole");
+            assert!(
+                !overlaps_lapic_mmio_page(r.start, r.start + r.len),
+                "relocated out of the hole: [{:#x}, +{:#x})",
+                r.start,
+                r.len
+            );
+            assert!(
+                r.start + r.len <= LAPIC_MMIO_PAGE,
+                "sits entirely below the page"
+            );
+            assert_eq!(r.start % 0x1000, 0, "page-aligned");
+        }
+
+        /// A ramdisk that fits ABOVE the page (between `page+0x1000` and the ceiling)
+        /// is left at its high placement — the hole is only avoided, not a hard cap.
+        #[test]
+        fn initramfs_above_the_hole_is_kept_high() {
+            let ram = 8u64 << 30; // ceiling clamps to 4 GiB, well above the page
+            let initramfs = vec![0u8; 0x1000];
+            let r = place_initramfs(&initramfs, ram, 0x20_0000, 0).expect("fits high");
+            assert!(
+                r.start >= LAPIC_MMIO_PAGE + 0x1000,
+                "kept above the hole: {:#x}",
+                r.start
+            );
+        }
+
+        /// If the ramdisk cannot fit below the hole either (kernel pushed up against
+        /// the relocation target), it is rejected — mirroring the existing
+        /// does-not-fit error.
+        #[test]
+        fn initramfs_that_cannot_fit_below_the_hole_is_rejected() {
+            let ram = 8u64 << 30;
+            let initramfs = vec![0u8; 0x500];
+            // Same straddling ceiling, but kernel_end sits just above where the
+            // below-the-hole placement (0xFEDFF000) would start → no room.
+            let err = place_initramfs(
+                &initramfs,
+                ram,
+                LAPIC_MMIO_PAGE - 0x800,
+                LAPIC_MMIO_PAGE + 0x7FF,
+            )
+            .expect_err("must not fit");
+            assert!(matches!(err, LinuxLoadError::InitramfsDoesNotFit { .. }));
         }
     }
 }

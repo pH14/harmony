@@ -2919,3 +2919,26 @@ unchanged.
 No public API change (`build_boot_params` and the new `E820_RESERVED` / `LAPIC_MMIO_PAGE` consts are
 private). The foreman should update `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state
 the xAPIC page is reserved + MMIO-routed (outside this worktree's directory scope).
+
+### Review round 1 — image placement must not land in the reserved hole (codex finding 1, BLOCKING)
+
+Reserving the page in E820 + holing it in the backend makes `[0xFEE00000, 0xFEE01000)` **unmapped**
+in the guest. `place_initramfs` placed the ramdisk "as high as possible" below `initrd_addr_max`
+(up to 4 GiB) with no guard, so a large-enough initramfs on a multi-GiB guest would straddle the
+hole → its bytes written to host backing the guest cannot read back. (This guest's ramdisk happens
+to miss it — box passed — but it was luck, not invariant.) The kernel image has the same exposure
+via a hostile/oversized `pref_address`/`init_size`. Fixes:
+
+- **Shared predicate** `overlaps_lapic_mmio_page(start, end)` — pure, unit-tested (covers the kernel
+  guard's decision without a multi-GiB `load`).
+- **Kernel** — `load` rejects a load region that would straddle the page (`KernelDoesNotFit`); the
+  kernel loads at `pref_address` and cannot be relocated.
+- **Initramfs** — `place_initramfs` keeps the high placement (the region *above* the page,
+  `[page+0x1000, ceiling)`, is valid RAM, so a ramdisk that fits there is left there) but
+  **relocates entirely below the page** if the high placement would straddle it; if it then does not
+  fit above `kernel_end`, `InitramfsDoesNotFit`. **Bit-identical for the box's 8 GiB guest** (its
+  placement did not overlap, so it is unchanged — no `state_hash` change).
+- **Tests** (`lapic_hole_placement`, Miri-friendly — the straddle is reproduced with a tiny ramdisk
+  by capping `initrd_addr_max` inside the page): the predicate's edges; a straddling ramdisk is
+  relocated below; a ramdisk that fits above the hole is kept high; one that cannot fit below is
+  rejected.

@@ -1310,3 +1310,25 @@ kvm_intel; lsmod | grep '^kvm '`). Then:
   workspace lints with a crate-local `[lints.rust]` table (mirrors `vtime`/`lapic`).
 - **For the foreman:** `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs should be updated to
   state the xAPIC page is reserved + MMIO-routed (out of this worktree's directory scope).
+
+### Review round 1 fixes (box r1/r2/r3 PASSED — state_hash `3035e5c5…` bit-identical to the proven impl)
+
+- **Finding 3 (KVM slot ids), kvm_sys.rs.** The split previously derived KVM slot ids as `slot + i`
+  from the logical-region count returned by `MemRegions::insert`. Correct for the single bring-up
+  map, but a SECOND `map_memory` after a hole-split would reuse the first split's high slot
+  (`insert` records 1 logical region while 2 KVM slots were used) → clobber. Fixed: a backend
+  `mem_slot_count` field tracks the next free KVM slot id independent of the logical-region count;
+  a map consumes a contiguous block `[base_slot, base_slot+parts)` and advances the counter **only
+  on full success**. On a partial-split failure it rolls back the logical record AND deregisters
+  (`memory_size = 0`) every part already mapped in that call, so no stale KVM mapping is left and a
+  retry reuses the same ids cleanly. (Bring-up still maps one region; this just removes the silent
+  multi-map hazard.) The added cleanup `unsafe` is Linux/box-only (coverage-excluded); cross-checked
+  with `clippy --target x86_64-unknown-linux-gnu`.
+- **Finding 2 (mutation gate), `.cargo/mutants.toml`.** Added `**/region_proofs.rs` to
+  `exclude_globs` (it was missing, though quality.yml's comment claimed it excluded) so the
+  `--in-diff` mutants gate does not try to mutate the `cfg(kani)` proof harnesses (structurally
+  unkillable — verified by the kani job instead).
+- Finding 1 (the `place_initramfs` / kernel hole guard) is in `vmm-core` — see its IMPLEMENTATION.md.
+- Re-ran portable gates after: build / clippy(`-D warnings`) / fmt / nextest (vmm-backend 55,
+  vmm-core 258) green; Kani 4/4 unchanged (region splitter untouched); the new kvm_sys `unsafe` is
+  box-only (not Mac-Miri-reachable), so vmm-backend Miri is unaffected.
