@@ -42,7 +42,7 @@ use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Event, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
-use crate::region::MemRegions;
+use crate::region::{MemRegions, split_around_hole};
 use crate::run_until::{
     ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
     drive_run_until, free_run_decision,
@@ -104,6 +104,15 @@ pub struct KvmBackend {
     /// truncate guest xstate.
     xsave2_size: Option<usize>,
     regions: MemRegions,
+    /// The number of KVM memslots registered so far — i.e. the next free `slot`
+    /// index. Tracked **separately** from `regions` (which records one LOGICAL
+    /// region per `map_memory` for GPA→host translation) because a single
+    /// `map_memory` may register MORE than one KVM memslot when it splits the
+    /// backing around the LAPIC MMIO hole. Deriving the slot id from the logical
+    /// region count would make a second `map_memory` reuse the first split's high
+    /// slot and clobber it; this counter advances by the number of parts, only on a
+    /// fully-successful map.
+    mem_slot_count: u32,
     msr_filter: Option<MsrFilter>,
     cpuid_installed: bool,
     msr_filter_installed: bool,
@@ -216,6 +225,7 @@ impl KvmBackend {
             mmap_size,
             xsave2_size,
             regions: MemRegions::new(),
+            mem_slot_count: 0,
             msr_filter: None,
             cpuid_installed: false,
             msr_filter_installed: false,
@@ -1008,28 +1018,70 @@ impl Backend for KvmBackend {
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
-        // Validate + record via the portable seam (alignment / overlap / size).
-        // The slot index is the table's next index; we register with KVM next and
-        // roll the record back if that fails, so a failed map never leaves a stale
-        // host pointer for `read_guest`/`write_guest` to dereference.
-        let slot = self
-            .regions
+        // Validate + record the FULL region via the portable seam (alignment /
+        // overlap / size). `read_guest`/`write_guest` translate through this record,
+        // so it spans the whole contiguous host backing — including the 4 KiB LAPIC
+        // MMIO page, which stays real host memory (only its KVM *mapping* is omitted
+        // below). The slot index is the table's next index; a failed registration
+        // rolls the record back, so a failed map never leaves a stale host pointer
+        // for a later translate to dereference.
+        self.regions
             .insert(gpa.0, host.as_mut_ptr(), host.len() as u64)?;
-        let region = kvm_userspace_memory_region {
-            slot,
-            flags: 0,
-            guest_phys_addr: gpa.0,
-            memory_size: host.len() as u64,
-            userspace_addr: host.as_ptr() as u64,
-        };
-        // SAFETY (granted purpose 1): register the host backing with KVM. The
-        // caller's `map_memory` contract guarantees `host` stays live, pinned,
-        // page-aligned, and unaliased for the backend's lifetime — KVM retains
-        // this userspace address and the guest writes through it on every run.
-        if let Err(e) = unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err) {
-            self.regions.rollback_last();
-            return Err(e);
+        // Register the backing as KVM memslots that leave the LAPIC MMIO page
+        // (`0xFEE00000`, 4 KiB) UNMAPPED, so the guest's xAPIC accesses fault to
+        // `KVM_EXIT_MMIO` → `dispatch_mmio` → the userspace deterministic `Lapic`
+        // rather than being serviced from RAM by a covering memslot. (A RAM-backed
+        // LAPIC page was the root cause of the runc/Postgres deadlock: the model
+        // stayed at reset and its V-time timer never fired.) The region-splitting
+        // LOGIC is the pure, covered + Kani-verified `split_around_hole`; here we
+        // only iterate it and issue one ioctl per part. The KVM slot ids come from
+        // the backend's `mem_slot_count` (NOT the logical-region count), so a split
+        // map consumes a contiguous block and a later map cannot collide with this
+        // split's high half. For RAM below the page there is one part, nothing holed.
+        const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
+        let host_base = host.as_ptr() as u64;
+        let base_slot = self.mem_slot_count;
+        let mut registered = 0u32;
+        for (i, part) in
+            split_around_hole(gpa.0, host.len() as u64, LAPIC_MMIO_PAGE, 0x1000).enumerate()
+        {
+            let region = kvm_userspace_memory_region {
+                slot: base_slot + i as u32,
+                flags: 0,
+                guest_phys_addr: part.gpa,
+                memory_size: part.size,
+                userspace_addr: host_base + part.host_off,
+            };
+            // SAFETY (granted purpose 1): register a sub-range of the host backing
+            // with KVM. The caller's `map_memory` contract guarantees `host` stays
+            // live, pinned, page-aligned, and unaliased for the backend's lifetime;
+            // `split_around_hole` keeps every part within `[host_base, host_base +
+            // host.len())` and page-aligned (proven), so `userspace_addr` /
+            // `memory_size` address only that backing. KVM retains the address and
+            // the guest writes through it on every run.
+            if let Err(e) = unsafe { self.vm.set_user_memory_region(region) }.map_err(kvm_err) {
+                // Roll back the logical-region record AND every part already mapped
+                // in THIS call (a partial split leaves no stale KVM mapping). The
+                // counter is not advanced, so a retry reuses these slot ids cleanly.
+                self.regions.rollback_last();
+                for j in 0..registered {
+                    let undo = kvm_userspace_memory_region {
+                        slot: base_slot + j,
+                        flags: 0,
+                        guest_phys_addr: 0,
+                        memory_size: 0, // a 0-size region deletes the slot
+                        userspace_addr: 0,
+                    };
+                    // SAFETY (granted purpose 1): `memory_size == 0` deletes a slot
+                    // we just registered; it references no host memory. Best-effort
+                    // cleanup on the error path.
+                    let _ = unsafe { self.vm.set_user_memory_region(undo) };
+                }
+                return Err(e);
+            }
+            registered += 1;
         }
+        self.mem_slot_count += registered;
         Ok(())
     }
 

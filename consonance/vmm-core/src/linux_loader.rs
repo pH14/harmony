@@ -114,6 +114,17 @@ const LOW_RAM_TOP: u64 = 0x000A_0000;
 const HIGH_RAM_START: u64 = 0x0010_0000;
 /// E820 entry type: usable RAM.
 const E820_RAM: u32 = 1;
+/// E820 entry type: reserved (not usable RAM). Used to mark the xAPIC MMIO page so
+/// the kernel does not treat it as RAM (which would zero the page on init).
+const E820_RESERVED: u32 = 2;
+/// The xAPIC (LAPIC) MMIO page: 4 KiB at `0xFEE00000`. Reserved in the E820 map and
+/// left as a memslot hole by the backend, so the guest's LAPIC accesses fault to the
+/// userspace deterministic xAPIC model (`KVM_EXIT_MMIO`) instead of being serviced
+/// from RAM — the seam that lets the V-time LAPIC timer actually tick (see
+/// `docs/CPU-MSR-CONTRACT.md` §6 / the LAPIC-timer rows). The IOAPIC page
+/// (`0xFEC00000`) is deliberately NOT reserved: Linux runs in virtual-wire mode (no
+/// MADT) and never uses it.
+const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
 /// `boot_params.e820_table` capacity (`E820_MAX_ENTRIES_ZEROPAGE`).
 const E820_MAX_ENTRIES: usize = 128;
 
@@ -522,6 +533,20 @@ pub fn load(
             ram,
         });
     }
+    // The reserved xAPIC MMIO page (`build_boot_params` marks it `E820_RESERVED`;
+    // the backend leaves a matching memslot hole) is UNMAPPED in the guest. The
+    // kernel image must not land in it — those bytes would be written to host
+    // backing the guest cannot read back (the page faults to the userspace LAPIC).
+    // The kernel loads at the header's `pref_address` and cannot be relocated, so a
+    // load region that would straddle the page is rejected. (Real kernels load near
+    // 1 MiB, far below the ~4 GiB page; this guards a hostile/oversized header.)
+    if overlaps_lapic_mmio_page(load_addr, kernel_end) {
+        return Err(LinuxLoadError::KernelDoesNotFit {
+            load: load_addr,
+            end: kernel_end,
+            ram,
+        });
+    }
     write_at(
         mem,
         load_addr,
@@ -602,6 +627,16 @@ pub fn load(
 /// `initrd_addr_max` (`0` = unset ⇒ no extra cap). The end `start + len` must not
 /// exceed that ceiling. Returns the range (`start` may equal `kernel_end` for a
 /// tight fit); an empty initramfs gets length 0.
+/// Whether `[start, end)` overlaps the reserved xAPIC MMIO page
+/// `[LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE + 0x1000)` — an UNMAPPED hole in the guest's
+/// address space (`build_boot_params` marks it `E820_RESERVED`; the backend leaves a
+/// matching memslot hole). A guest-visible image (kernel or initramfs) placed here
+/// would be written to host backing the guest cannot read back. Pure; `end` is
+/// exclusive.
+fn overlaps_lapic_mmio_page(start: u64, end: u64) -> bool {
+    start < LAPIC_MMIO_PAGE + 0x1000 && LAPIC_MMIO_PAGE < end
+}
+
 fn place_initramfs(
     initramfs: &[u8],
     ram: u64,
@@ -617,11 +652,20 @@ fn place_initramfs(
     if initrd_addr_max != 0 {
         ceiling = ceiling.min(initrd_addr_max.saturating_add(1));
     }
-    let top = ceiling.checked_sub(len).ok_or(too_big)?;
-    // Page-align the start downward.
-    let start = top & !0xFFF;
-    if start < kernel_end {
-        return Err(too_big);
+    // The highest page-aligned `start` so `[start, start+len)` fits below `cap` and
+    // above `kernel_end`; `None` if it does not fit.
+    let place = |cap: u64| -> Option<u64> {
+        let start = cap.checked_sub(len)? & !0xFFF;
+        (start >= kernel_end).then_some(start)
+    };
+    let mut start = place(ceiling).ok_or(too_big)?;
+    // Keep the initramfs out of the reserved xAPIC MMIO hole. The highest placement
+    // is preferred (and the region just ABOVE the page — `[page+0x1000, ceiling)` —
+    // is valid RAM, so a ramdisk that fits there is left there); only one that would
+    // straddle the page is relocated to sit ENTIRELY BELOW it (cap the ceiling at the
+    // page). If it then does not fit above `kernel_end`, it does not fit at all.
+    if overlaps_lapic_mmio_page(start, start.saturating_add(len)) {
+        start = place(LAPIC_MMIO_PAGE).ok_or(too_big)?;
     }
     Ok(GpaRange { start, len })
 }
@@ -655,22 +699,58 @@ fn build_boot_params(
     bp.hdr.ramdisk_image = initramfs.start as u32;
     bp.hdr.ramdisk_size = initramfs.len as u32;
 
-    // E820: exactly two usable regions — low RAM `[0, 640 KiB)` then high RAM
-    // `[1 MiB, ram)`. The `0xA0000..0x100000` legacy hole is deliberately omitted
-    // (left unmapped). Both are non-empty: `LOW_RAM_TOP > 0`, and `load` guarantees
-    // `ram > HIGH_RAM_START` before reaching here, so `ram - HIGH_RAM_START > 0` does
-    // not underflow.
+    // E820 low RAM: `[0, 640 KiB)`. The `0xA0000..0x100000` legacy hole is
+    // deliberately omitted (left unmapped). Non-empty (`LOW_RAM_TOP > 0`).
     bp.e820_table[0] = BootE820Entry {
         addr: 0,
         size: LOW_RAM_TOP,
         type_: E820_RAM,
     };
-    bp.e820_table[1] = BootE820Entry {
-        addr: HIGH_RAM_START,
-        size: ram - HIGH_RAM_START,
-        type_: E820_RAM,
-    };
-    bp.e820_entries = 2;
+    // High RAM `[1 MiB, ram)` with the 4 KiB xAPIC MMIO page (`LAPIC_MMIO_PAGE`)
+    // carved out as **reserved**: that page must NOT be usable RAM, or the kernel
+    // zeroes it on init (its content is then dead RAM and the backend's matching
+    // memslot hole — which routes LAPIC accesses to the userspace xAPIC model — would
+    // have nothing behind it). `load` guarantees `ram > HIGH_RAM_START`, so the first
+    // high-RAM chunk is non-empty. Three shapes, by how far RAM reaches:
+    //
+    //   * `ram <= page`        → one high-RAM entry `[1 MiB, ram)` (page never RAM).
+    //   * `page < ram <= page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED`
+    //     (3 entries; the tail past the page is empty, so it is omitted).
+    //   * `ram > page+0x1000`  → the full 4-entry split with a `[page+0x1000, ram) RAM`
+    //     tail (the 8 GiB Postgres-guest shape).
+    //
+    // For any page-aligned `ram` only the first and last shapes occur (no page
+    // multiple lies strictly inside the page); the middle shape keeps the
+    // never-typed-RAM invariant exact for the pathological boundary too.
+    if ram > LAPIC_MMIO_PAGE {
+        bp.e820_table[1] = BootE820Entry {
+            addr: HIGH_RAM_START,
+            size: LAPIC_MMIO_PAGE - HIGH_RAM_START,
+            type_: E820_RAM,
+        };
+        bp.e820_table[2] = BootE820Entry {
+            addr: LAPIC_MMIO_PAGE,
+            size: 0x1000,
+            type_: E820_RESERVED,
+        };
+        if ram > LAPIC_MMIO_PAGE + 0x1000 {
+            bp.e820_table[3] = BootE820Entry {
+                addr: LAPIC_MMIO_PAGE + 0x1000,
+                size: ram - (LAPIC_MMIO_PAGE + 0x1000),
+                type_: E820_RAM,
+            };
+            bp.e820_entries = 4;
+        } else {
+            bp.e820_entries = 3;
+        }
+    } else {
+        bp.e820_table[1] = BootE820Entry {
+            addr: HIGH_RAM_START,
+            size: ram - HIGH_RAM_START,
+            type_: E820_RAM,
+        };
+        bp.e820_entries = 2;
+    }
     bp
 }
 
@@ -1235,5 +1315,219 @@ mod tests {
             load(&img, &[], ram - 0x1000, "x", &mut tight),
             Err(LinuxLoadError::KernelDoesNotFit { .. })
         ));
+    }
+
+    /// E820 xAPIC-reservation split (task 54, gate 1): `build_boot_params` carves the
+    /// 4 KiB LAPIC MMIO page out of usable RAM and marks it `E820_RESERVED`, so the
+    /// kernel never zeroes it and the backend's memslot hole routes LAPIC accesses to
+    /// the userspace xAPIC model.
+    mod e820_lapic_reservation {
+        use super::super::*; // crate items, incl. the private `build_boot_params`
+        use proptest::prelude::*;
+
+        /// E820 table for a guest of `ram` bytes. Only `ram` drives the map, so a
+        /// zeroed header + empty ramdisk suffice.
+        fn table_for(ram: u64) -> BootParams {
+            build_boot_params(
+                &SetupHeader::new_zeroed(),
+                &GpaRange { start: 0, len: 0 },
+                0,
+                ram,
+            )
+        }
+
+        /// `(addr, size, type_)` of entry `i`, copied out by value (the entries are
+        /// `#[repr(packed)]`, so taking a field reference would be unaligned).
+        fn entry(bp: &BootParams, i: usize) -> (u64, u64, u32) {
+            let e = &bp.e820_table[i];
+            (e.addr, e.size, e.type_)
+        }
+
+        /// Far fewer cases under Miri (10–100× slower interpreted), and no failure
+        /// persistence there (its regression-file path uses `getcwd`, which Miri's
+        /// fs isolation rejects) — mirrors the loader's other proptest helpers.
+        fn cases(native: u32) -> ProptestConfig {
+            let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
+            if cfg!(miri) {
+                cfg.failure_persistence = None;
+            }
+            cfg
+        }
+
+        /// 8 GiB guest: EXACTLY the four entries, the LAPIC page `E820_RESERVED`.
+        #[test]
+        fn eight_gib_guest_reserves_the_lapic_page() {
+            let ram = 8u64 << 30;
+            let bp = table_for(ram);
+            assert_eq!(bp.e820_entries, 4);
+            assert_eq!(entry(&bp, 0), (0, LOW_RAM_TOP, E820_RAM));
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+            assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(
+                entry(&bp, 3),
+                (
+                    LAPIC_MMIO_PAGE + 0x1000,
+                    ram - (LAPIC_MMIO_PAGE + 0x1000),
+                    E820_RAM
+                )
+            );
+            // The 5th slot is untouched (exactly four entries written).
+            assert_eq!(entry(&bp, 4), (0, 0, 0));
+        }
+
+        /// Sub-`0xFEE01000` guest (2 GiB): the single high-RAM entry, no reserved page.
+        #[test]
+        fn sub_page_guest_is_two_entries() {
+            let ram = 2u64 << 30;
+            let bp = table_for(ram);
+            assert_eq!(bp.e820_entries, 2);
+            assert_eq!(entry(&bp, 0), (0, LOW_RAM_TOP, E820_RAM));
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, ram - HIGH_RAM_START, E820_RAM)
+            );
+            // No third entry written.
+            assert_eq!(entry(&bp, 2), (0, 0, 0));
+        }
+
+        /// Page-aligned boundaries: RAM ending exactly at the page start stays a
+        /// single high-RAM entry (the page is excluded); ending one page past it
+        /// reserves the page with the empty tail dropped (3 entries).
+        #[test]
+        fn page_aligned_boundaries() {
+            let bp = table_for(LAPIC_MMIO_PAGE);
+            assert_eq!(bp.e820_entries, 2);
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+
+            let bp = table_for(LAPIC_MMIO_PAGE + 0x1000);
+            assert_eq!(bp.e820_entries, 3);
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+            assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(entry(&bp, 3), (0, 0, 0));
+        }
+
+        proptest! {
+            #![proptest_config(cases(512))]
+
+            /// THE gate-1 property: for ANY guest RAM size the LAPIC MMIO page is NEVER
+            /// inside a usable-RAM E820 entry — it is reserved (RAM reaches it) or
+            /// unmapped (RAM stops short). Also pins the per-case shape.
+            #[test]
+            fn reserved_page_is_never_typed_ram(ram in prop_oneof![
+                (HIGH_RAM_START + 1)..=LAPIC_MMIO_PAGE,             // 2-entry
+                (LAPIC_MMIO_PAGE + 1)..=(LAPIC_MMIO_PAGE + 0x1000), // 3-entry band
+                (LAPIC_MMIO_PAGE + 0x1001)..=(64u64 << 30),        // 4-entry
+            ]) {
+                let bp = table_for(ram);
+                let n = bp.e820_entries as usize;
+                for i in 0..n {
+                    let (addr, size, type_) = entry(&bp, i);
+                    if type_ == E820_RAM {
+                        let overlaps =
+                            addr < LAPIC_MMIO_PAGE + 0x1000 && LAPIC_MMIO_PAGE < addr + size;
+                        prop_assert!(
+                            !overlaps,
+                            "RAM entry {i} [{addr:#x}, +{size:#x}) covers the LAPIC page"
+                        );
+                    }
+                }
+                // The page is reserved exactly when RAM reaches it.
+                if ram > LAPIC_MMIO_PAGE {
+                    prop_assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+                } else {
+                    prop_assert_eq!(bp.e820_entries, 2);
+                }
+            }
+        }
+    }
+
+    /// Kernel + initramfs placement must avoid the reserved xAPIC MMIO hole (task 54
+    /// review): a guest-visible image placed in the unmapped page would be written to
+    /// host backing the guest cannot read back.
+    mod lapic_hole_placement {
+        use super::super::*; // crate items, incl. private place_initramfs / the guard
+
+        /// The overlap predicate the kernel guard and the initramfs relocation share
+        /// (testing it covers the kernel-guard decision without a multi-GiB `load`).
+        #[test]
+        fn overlaps_lapic_mmio_page_detects_straddle() {
+            let p = LAPIC_MMIO_PAGE;
+            // Disjoint (touching the exclusive edges) → no overlap.
+            assert!(!overlaps_lapic_mmio_page(0x10_0000, p));
+            assert!(!overlaps_lapic_mmio_page(p + 0x1000, p + 0x2000));
+            assert!(!overlaps_lapic_mmio_page(0, 0x1000));
+            // Overlapping the page in every way → overlap.
+            assert!(overlaps_lapic_mmio_page(p, p + 0x1000)); // exactly the page
+            assert!(overlaps_lapic_mmio_page(p - 0x1000, p + 1)); // straddles low edge
+            assert!(overlaps_lapic_mmio_page(p + 0xFFF, p + 0x2000)); // last byte of page
+            assert!(overlaps_lapic_mmio_page(0, u64::MAX)); // contains it
+        }
+
+        /// An initramfs whose highest placement would land in the hole is relocated to
+        /// sit ENTIRELY BELOW the page (the ceiling is pushed inside the page via
+        /// `initrd_addr_max`, so a tiny ramdisk reproduces the straddle without a
+        /// multi-GiB allocation).
+        #[test]
+        fn initramfs_straddling_the_hole_is_relocated_below() {
+            let ram = 8u64 << 30;
+            let initramfs = vec![0u8; 0x500];
+            // ceiling = initrd_addr_max + 1 = 0xFEE00800 — INSIDE the page, so the
+            // high placement (start 0xFEE00000) overlaps the hole.
+            let r = place_initramfs(&initramfs, ram, 0x20_0000, LAPIC_MMIO_PAGE + 0x7FF)
+                .expect("relocates below the hole");
+            assert!(
+                !overlaps_lapic_mmio_page(r.start, r.start + r.len),
+                "relocated out of the hole: [{:#x}, +{:#x})",
+                r.start,
+                r.len
+            );
+            assert!(
+                r.start + r.len <= LAPIC_MMIO_PAGE,
+                "sits entirely below the page"
+            );
+            assert_eq!(r.start % 0x1000, 0, "page-aligned");
+        }
+
+        /// A ramdisk that fits ABOVE the page (between `page+0x1000` and the ceiling)
+        /// is left at its high placement — the hole is only avoided, not a hard cap.
+        #[test]
+        fn initramfs_above_the_hole_is_kept_high() {
+            let ram = 8u64 << 30; // ceiling clamps to 4 GiB, well above the page
+            let initramfs = vec![0u8; 0x1000];
+            let r = place_initramfs(&initramfs, ram, 0x20_0000, 0).expect("fits high");
+            assert!(
+                r.start >= LAPIC_MMIO_PAGE + 0x1000,
+                "kept above the hole: {:#x}",
+                r.start
+            );
+        }
+
+        /// If the ramdisk cannot fit below the hole either (kernel pushed up against
+        /// the relocation target), it is rejected — mirroring the existing
+        /// does-not-fit error.
+        #[test]
+        fn initramfs_that_cannot_fit_below_the_hole_is_rejected() {
+            let ram = 8u64 << 30;
+            let initramfs = vec![0u8; 0x500];
+            // Same straddling ceiling, but kernel_end sits just above where the
+            // below-the-hole placement (0xFEDFF000) would start → no room.
+            let err = place_initramfs(
+                &initramfs,
+                ram,
+                LAPIC_MMIO_PAGE - 0x800,
+                LAPIC_MMIO_PAGE + 0x7FF,
+            )
+            .expect_err("must not fit");
+            assert!(matches!(err, LinuxLoadError::InitramfsDoesNotFit { .. }));
+        }
     }
 }

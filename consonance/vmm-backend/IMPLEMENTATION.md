@@ -1192,3 +1192,167 @@ re-arms `B`'s baseline. Documented in `vmm-core`'s notes; test
   never armed it). Any error on the way out now stays fail-closed. Portable test
   `exit_poison_survives_until_the_final_delivery` models the poison persisting through each
   fallible step.
+
+## Task 54 — route real Linux's xAPIC MMIO to the model + the natural-exit fallback
+
+Productionizes the box-proven V-time-tick fix (foreman's `harmony-proven-vtime-fix.diff`,
+2026-06-29): real unmodified Linux → real `runc` 1.3.6 → the real Postgres OCI container,
+running deterministic-twice. Two of the three coordinated changes land in this crate (the third,
+the E820 reservation, is in `vmm-core`); the diagnostic `eprintln!`s from the reference diff are
+**not** carried over.
+
+### 1. Memslot-split seam — `region::split_around_hole` (portable, Kani-verified)
+
+**Root cause it fixes.** For the 8 GiB Postgres guest, `map_memory` registered all guest RAM as a
+single memslot that *covers* the `0xFEE00000` LAPIC page, so the guest's xAPIC accesses were
+serviced from RAM and never faulted to `KVM_EXIT_MMIO` → the userspace deterministic `Lapic`. The
+model stayed at reset, its V-time timer never fired, and runc's Go runtime deadlocked on an idle
+HLT. (The synthetic task-47/52 gates use < 4 GiB RAM, where the APIC page is naturally unmapped, so
+they never drove the real LAPIC.)
+
+**The fix + where the logic lives.** `map_memory` now registers the backing as memslots that leave
+the 4 KiB LAPIC page **unmapped** (a hole), so a guest access faults to the model. Per
+`box-only-layer-coverage-blind`, the region-splitting *computation* lives in the portable, pure
+`region::split_around_hole(base, len, hole_base, hole_len) -> impl Iterator<Item = MemSlotPart>`
+(over the `split_parts -> [Option<MemSlotPart>; 2]` core); the box-only `kvm_sys::map_memory` FFI
+does nothing but iterate it and issue one `KVM_SET_USER_MEMORY_REGION` per part. So the determinism-
+irrelevant-but-safety-relevant geometry is covered + property- + **Kani**-tested on macOS even
+though the FFI is coverage/mutation-excluded.
+
+- **The table still records the FULL region** (`regions.insert(base, host, total)`), so
+  `read_guest`/`write_guest` translate across the whole contiguous host backing (the hole page is
+  real host memory; only its KVM *mapping* is omitted) — `save`/`restore` and boot-info writes are
+  unaffected. Bring-up maps a single region (`Gpa(0)`, all RAM), so the KVM slots `slot + i` are
+  unique + contiguous; for RAM below the page there is one part and nothing is holed.
+- **`unsafe` / Miri.** The `set_user_memory_region` FFI keeps its `// SAFETY:` (each part stays
+  within the page-aligned backing — proven by the splitter — so `userspace_addr`/`memory_size`
+  address only that backing). The splitter is pure → fully Miri-exercised via `region`'s tests.
+
+**Tests (gate 2).** Unit (exact 8 GiB two-slot split, sub-page single region, edge holes,
+degenerate empties) + property (`split_around_hole_holds_its_contract`: non-empty, page-aligned,
+in-region, ordered, non-overlapping, hole-free, `host_off == gpa − base`, sizes sum to
+`len − hole`) + **Kani** (`region_proofs.rs`, 4 harnesses over full symbolic `u64`: structural
+invariants, pointwise coverage `covered ⇔ ¬in-hole`, page-alignment preservation, disjoint-hole →
+single region). Local Kani: `4 successfully verified harnesses, 0 failures` in ~1.8 s.
+
+### 2. Natural-exit fallback in `drive_run_until` (determinism-core)
+
+`drive_run_until` used to **fail closed loudly** when a genuine guest exit was reported at
+`work == deadline` (`AtDeadline`) or `work > deadline` (`PastDeadline`). Both now **deliver the
+exit** (`Ok(exit)`); only the no-guest-exit case still returns `Exit::Deadline`, and `Early`
+(`work < deadline`) is unchanged. `classify_guest_exit` keeps the 3-variant disposition (still
+called by `drive_run_until`) — it now only *names* the case for the determinism argument.
+
+**The determinism argument (the crux — written out in the `drive_run_until` doc comment).** The
+preemption mechanism arms a `perf_event` branch-counter overflow → `O_ASYNC` `SIGIO` → `EINTR`s
+`KVM_RUN` near `deadline − SKID_MARGIN`, then single-steps to the exact deadline. A guest exit at
+`work ≥ deadline` happens **iff `[deadline − SKID_MARGIN, next-natural-exit]` is exit-free with the
+next exit at/past the deadline** — because inside an exit-free region there is **no VM exit for the
+queued SIGIO to take effect at**, so the guest always runs to the same next natural exit, a fixed
+instruction in the deterministic stream whose retired-branch count is identical across same-seed
+runs. So whether a deadline is single-step-reachable or must be delivered at the next natural exit
+is a **deterministic function of the instruction stream**, not of the nondeterministic SIGIO
+latency. Delivering the guest exit drops nothing: the exit is returned now, and the missed timer
+**self-heals** on the next `run_until` (`now > deadline` → `TargetInPast` fires `Deadline` at the
+next exit boundary). `SKID_MARGIN` is unchanged (256): this is **not** a margin change — widening it
+to single-step across such a region is determinism-safe but performance-prohibitive (the box saw a
+28207-branch exit-free region ending in an RDTSC, ~28k single-steps/tick). The precision invariant
+still holds for the no-exit `Deadline` (always positioned by the precise single-step).
+
+**Box evidence** (foreman reproduces): over the full runc+Postgres boot there is **exactly one**
+such overshoot, reproducing bit-identically in both r2 boots (same `deadline`, `overshoot`, exit).
+
+**Tests (gate 3).** `reported_guest_exit_is_always_delivered` (all three dispositions deliver);
+`drive_run_until_classifies_any_guest_exit` (property: classifier matches the comparison AND every
+disposition delivers); `exit_free_region_delivers_at_the_same_natural_exit_regardless_of_skid` (the
+determinism property — a deadline in a scripted exit-free region delivers at the SAME next natural
+exit across two runs differing only in skid, checked against an INDEPENDENT reference, not the other
+run). The no-exit timer-wins `Deadline` and the SkidExceeded precision invariant are unchanged and
+still covered.
+
+### Deviations considered
+
+- **Faithful 2-or-4-entry E820 vs. the property "page never typed RAM for any ram".** The reference
+  splits the E820 high-RAM region with `ram > page + 0x1000`. That leaves the LAPIC page typed RAM
+  at the one page-aligned boundary `ram == page + 0x1000`, breaking gate 1's property. `vmm-core`
+  uses a 3-shape split (see its IMPLEMENTATION.md) that is **bit-identical for the 8 GiB guest** and
+  for any realistic guest, but correct at the boundary too. (Detail lives in `vmm-core`.)
+- **`split_around_hole` records per-part regions vs. the full region.** Rejected recording each part
+  as its own `MemRegions` entry: it would make the hole page untranslatable and could break a bulk
+  `read_guest` spanning it (e.g. a snapshot). Recording the full region preserves the proven
+  translate behavior; only the KVM *mapping* is holed.
+- **Gating the Linux syscall modules under `not(kani)`.** Rejected as unnecessary churn: `dead_code`
+  is only a `warn` (no `[workspace.lints.rust]`), the kani build prunes the unreachable FFI from
+  CBMC, and on macOS the Linux modules are already `cfg`-excluded so the local Kani run exercises
+  exactly the pure surface CI verifies.
+
+### Box gates (foreman runs; cannot run on the Mac — patched KVM + the built Postgres image)
+
+Per `box-access` / `harmony-box-only-gates`, pin to core 4 (`taskset -c 4`), use an on-box
+`timeout`, and **always revert KVM to stock 1396736** afterward (`rmmod kvm_intel kvm; modprobe
+kvm_intel; lsmod | grep '^kvm '`). Then:
+
+- `r1_runc_postgres_runs_and_streams_patched` reaches GUEST_READY with **ZERO contract violations**
+  (no `BadOffset` — proving the E820 reservation stops the page-zeroing and the xAPIC contract
+  holds);
+- `r2_runc_postgres_deterministic_twice_patched` PASSES (bit-identical serial + `state_hash`);
+- `r3_runc_postgres_seed_sensitivity_patched` PASSES.
+
+### Files touched outside this crate (task-sanctioned)
+
+- `consonance/vmm-core/src/linux_loader.rs` — the E820 xAPIC reservation (the task names all three
+  files; spans two crates). See `vmm-core/IMPLEMENTATION.md`.
+- `.github/workflows/quality.yml` — added `cargo kani -p vmm-backend` to the `kani` job (the job doc
+  requires every crate with proofs to be listed; mirrors the sanctioned Miri-registration pattern,
+  and `vmm-backend` is already in the Miri `-p` list).
+- `Cargo.toml` (this crate) — replaced `[lints] workspace = true` with explicit `[lints.clippy] all
+  = deny` + `[lints.rust] unexpected_cfgs = check-cfg('cfg(kani)')`, because Cargo cannot combine
+  workspace lints with a crate-local `[lints.rust]` table (mirrors `vtime`/`lapic`).
+- **For the foreman:** `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs should be updated to
+  state the xAPIC page is reserved + MMIO-routed (out of this worktree's directory scope).
+
+### Review round 1 fixes (box r1/r2/r3 PASSED — state_hash `3035e5c5…` bit-identical to the proven impl)
+
+- **Finding 3 (KVM slot ids), kvm_sys.rs.** The split previously derived KVM slot ids as `slot + i`
+  from the logical-region count returned by `MemRegions::insert`. Correct for the single bring-up
+  map, but a SECOND `map_memory` after a hole-split would reuse the first split's high slot
+  (`insert` records 1 logical region while 2 KVM slots were used) → clobber. Fixed: a backend
+  `mem_slot_count` field tracks the next free KVM slot id independent of the logical-region count;
+  a map consumes a contiguous block `[base_slot, base_slot+parts)` and advances the counter **only
+  on full success**. On a partial-split failure it rolls back the logical record AND deregisters
+  (`memory_size = 0`) every part already mapped in that call, so no stale KVM mapping is left and a
+  retry reuses the same ids cleanly. (Bring-up still maps one region; this just removes the silent
+  multi-map hazard.) The added cleanup `unsafe` is Linux/box-only (coverage-excluded); cross-checked
+  with `clippy --target x86_64-unknown-linux-gnu`.
+- **Finding 2 (mutation gate), `.cargo/mutants.toml`.** Added `**/region_proofs.rs` to
+  `exclude_globs` (it was missing, though quality.yml's comment claimed it excluded) so the
+  `--in-diff` mutants gate does not try to mutate the `cfg(kani)` proof harnesses (structurally
+  unkillable — verified by the kani job instead).
+- Finding 1 (the `place_initramfs` / kernel hole guard) is in `vmm-core` — see its IMPLEMENTATION.md.
+
+### Review round 1 — full union (codex + pi); additional findings
+
+- **Finding 4 (determinism lints), `Cargo.toml`.** The reviewer flagged that swapping `[lints]
+  workspace = true` for `[lints.clippy] all = deny` might DROP the determinism lints
+  (`disallowed_types`/`disallowed_methods`, which forbid `HashMap`/`SystemTime::now`/`thread_rng`).
+  **Verified it does not:** `clippy::all = deny` reports them as "implied by `-D clippy::all`" — a
+  `HashMap` added to this crate fails the gate. The literal "restore `workspace = true`" is
+  **infeasible** here: cargo REJECTS `[lints] workspace = true` together with the crate-local
+  `[lints.rust]` this crate needs to register `cfg(kani)` ("cannot override `workspace.lints` in
+  `lints`") — the same constraint `vtime`/`lapic` hit. Resolution: keep the workspace-equivalent
+  `all = deny` AND list `disallowed_types`/`disallowed_methods` **explicitly** on top, so the
+  determinism discipline is self-evident and robust to any future regrouping of `clippy::all`. (The
+  disallowed *lists* live in `clippy.toml`, unchanged.)
+- **Finding 7 (splitter overflow precondition), `region.rs`.** `split_parts` is reached only after
+  `MemRegions::insert` has rejected a wrapping region (`gpa + len` overflow → "region wraps the
+  address space"), so its inputs never wrap — documented as a precondition, asserted with a
+  `debug_assert!`, and pinned by the new `insert_rejects_a_wrapping_region` test. The arithmetic is
+  saturating regardless, so even a violated precondition yields CLAMPED (never wrapping) parts and no
+  panic — not UB. `region_proofs` assumes the same no-wrap (so the `debug_assert` is proven to hold
+  under the Kani harnesses).
+- Findings 2/3/5/6 were already addressed in commit `2dcc672` (above / in `vmm-core`). Finding 1
+  (run_until natural-exit fallback) is **held** pending the user decision — untouched.
+- Re-ran portable gates after: build / clippy(`-D warnings`) / fmt / nextest (vmm-backend 56,
+  vmm-core 258) green; **Kani 4/4** (119 checks incl. the new `debug_assert`, 0 failed); Linux
+  cross-check (`--target x86_64-unknown-linux-gnu`) clean; the new kvm_sys `unsafe` is box-only (not
+  Mac-Miri-reachable), so vmm-backend Miri is unaffected.
