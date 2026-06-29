@@ -894,6 +894,18 @@ fn classify_overflow_signal() {
 }
 
 #[test]
+fn classify_in_kernel_force_exit_is_preempt() {
+    // KVM_EXIT_PREEMPT (patch 0004) — the in-kernel bounded-skid force-exit kick
+    // (task 55). Classified as its own `Preempt` stop, handled like the signal kick:
+    // read the PMU, stop iff the overflow crossed the armed point.
+    let s = SynRun::new();
+    set_reason(&s, KVM_EXIT_PREEMPT);
+    assert_eq!(classify_step_exit(s.page()), StepStop::Preempt);
+    // And it is NOT a guest exit (decode_exit must never be asked to map it).
+    assert_ne!(classify_step_exit(s.page()), StepStop::GuestExit);
+}
+
+#[test]
 fn classify_irq_window_is_reenter() {
     let s = SynRun::new();
     set_reason(&s, KVM_EXIT_IRQ_WINDOW_OPEN);
