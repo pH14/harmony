@@ -7,9 +7,11 @@
 //! retired conditional branches, read at every VM exit. Same seed ⇒ same
 //! instruction stream ⇒ same work counts ⇒ same observed clocks, bit for
 //! bit. This crate is the pure-logic half of that mechanism: the work↔time
-//! arithmetic ([`VClock`]), the timer deadline queue ([`TimerQueue`]), and
-//! the injection-planner state machine ([`InjectionPlanner`]) driven through
-//! a backend trait ([`CpuBackend`]). It has no OS dependencies; the real
+//! arithmetic ([`VClock`]), the timer deadline queue ([`TimerQueue`]), the
+//! injection-planner state machine ([`InjectionPlanner`]) driven through a
+//! backend trait ([`CpuBackend`]) — which reaches the next scheduled event *by
+//! executing* — and its idle-jump dual ([`IdlePlanner`]), which reaches it *by
+//! jumping* when the guest is idle (`HLT`). It has no OS dependencies; the real
 //! perf_event/KVM backend is a separate component, and tests here run
 //! against [`sim::SimCpu`], a simulator that models PMU skid adversarially.
 //!
@@ -104,11 +106,13 @@
 
 mod clock;
 mod error;
+mod idle;
 mod planner;
 mod queue;
 pub mod sim;
 
 pub use clock::{VClock, VClockConfig};
 pub use error::{BackendError, VtimeError};
+pub use idle::{IdleAdvance, IdlePlanner};
 pub use planner::{CpuBackend, InjectionPlanner, PlanOutcome, PlannerConfig};
 pub use queue::{TimerQueue, TimerToken};
