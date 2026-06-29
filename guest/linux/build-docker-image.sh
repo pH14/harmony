@@ -302,6 +302,14 @@ echo "   container runs /run-workload.sh as uid 999 on pre-baked PGDATA; rootfs=
 # as the unshared container PID 1, before chroot; see docker-init.sh).
 install -m 0755 "$LINUX_DIR/docker-init.sh" "$DKROOT/init"
 install -m 0755 "$LINUX_DIR/container-setup.sh" "$DKROOT/container-setup.sh"
+# Task 48: the REAL-runc /init, baked alongside as /runc-init and selected via the
+# kernel `rdinit=/runc-init` cmdline param (the task-38 unshare path above stays the
+# default /init for comparison). It `runc run`s the SAME /oci bundle generated above
+# — the config.json `runc spec` already wrote is runc-ready (allow-all devices,
+# terminal=false, runs /run-workload.sh). The unlock vs task 38: the Go runtime is
+# now preempted at the V-time LAPIC deadline (task 47 run_until), so runc's
+# container-init no longer deadlocks. See runc-init.sh + tasks/48-runc-postgres.md.
+install -m 0755 "$LINUX_DIR/runc-init.sh" "$DKROOT/runc-init"
 
 # --- 5. pack the initramfs (sorted, fixed mtime, gzip -n) ---------------------
 # DEVTMPFS_MOUNT gives the guest /dev (incl. /dev/console) before init runs.

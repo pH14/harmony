@@ -5,6 +5,24 @@ Multiboot loader, the 32-bit-PM entry state, the CPUID/MSR-filter policy, the
 bring-up device shims, and the event loop. Compiles against the trait alone; the
 one place a concrete backend is named is the box-only M1/M2 integration test.
 
+## Task 48 — `runc` actually runs the Postgres OCI container (box gates only here)
+
+Task 48 replaces task 38's `unshare`/`chroot` workaround with the **real `runc`
+binary** running the official postgres OCI container, deterministically — the unlock
+being task 47's `run_until` preemption primitive, which preempts the busy-spinning Go
+runtime at the seed-deterministic V-time LAPIC deadline so runc's container-init no
+longer deadlocks. **No `src/` change**: the preemption path is already wired and
+auto-fires on the patched Linux boot (`Vmm::step` → `preemption_deadline()` returns
+`Some` for a deterministic-counter backend + an armed LAPIC timer → `Backend::run_until`).
+The only change in this crate is a new box-only test,
+`tests/live_runc_postgres.rs` (`#[cfg(target_os = "linux")]` + `#[ignore]`, like
+`live_postgres_docker.rs`): gate r1 (real runc runs Postgres + streams, asserted via the
+`runc run` banner present + the task-38 `unshare` markers absent + `runc run` rc 0), gate
+r2 (deterministic-twice: bit-identical serial + `state_hash`), gate r3 (seed-sensitivity).
+The full narrative, the image plumbing (`runc-init.sh`, `rdinit=/runc-init`), and the
+foreman box-run instructions live in **`guest/linux/IMPLEMENTATION.md`**. `devices.rs`,
+the CPU/MSR contract, and the `state_hash` schema are untouched, so M1/M2/P6 + the
+det-corpus goldens are byte-unchanged.
 ## Task 52 — deterministic HLT-resume (the event-driven V-time clock, completed)
 
 Before this task the run loop could advance V-time **only by executing**, so a guest that
