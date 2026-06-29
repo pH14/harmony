@@ -114,6 +114,17 @@ const LOW_RAM_TOP: u64 = 0x000A_0000;
 const HIGH_RAM_START: u64 = 0x0010_0000;
 /// E820 entry type: usable RAM.
 const E820_RAM: u32 = 1;
+/// E820 entry type: reserved (not usable RAM). Used to mark the xAPIC MMIO page so
+/// the kernel does not treat it as RAM (which would zero the page on init).
+const E820_RESERVED: u32 = 2;
+/// The xAPIC (LAPIC) MMIO page: 4 KiB at `0xFEE00000`. Reserved in the E820 map and
+/// left as a memslot hole by the backend, so the guest's LAPIC accesses fault to the
+/// userspace deterministic xAPIC model (`KVM_EXIT_MMIO`) instead of being serviced
+/// from RAM — the seam that lets the V-time LAPIC timer actually tick (see
+/// `docs/CPU-MSR-CONTRACT.md` §6 / the LAPIC-timer rows). The IOAPIC page
+/// (`0xFEC00000`) is deliberately NOT reserved: Linux runs in virtual-wire mode (no
+/// MADT) and never uses it.
+const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
 /// `boot_params.e820_table` capacity (`E820_MAX_ENTRIES_ZEROPAGE`).
 const E820_MAX_ENTRIES: usize = 128;
 
@@ -655,22 +666,58 @@ fn build_boot_params(
     bp.hdr.ramdisk_image = initramfs.start as u32;
     bp.hdr.ramdisk_size = initramfs.len as u32;
 
-    // E820: exactly two usable regions — low RAM `[0, 640 KiB)` then high RAM
-    // `[1 MiB, ram)`. The `0xA0000..0x100000` legacy hole is deliberately omitted
-    // (left unmapped). Both are non-empty: `LOW_RAM_TOP > 0`, and `load` guarantees
-    // `ram > HIGH_RAM_START` before reaching here, so `ram - HIGH_RAM_START > 0` does
-    // not underflow.
+    // E820 low RAM: `[0, 640 KiB)`. The `0xA0000..0x100000` legacy hole is
+    // deliberately omitted (left unmapped). Non-empty (`LOW_RAM_TOP > 0`).
     bp.e820_table[0] = BootE820Entry {
         addr: 0,
         size: LOW_RAM_TOP,
         type_: E820_RAM,
     };
-    bp.e820_table[1] = BootE820Entry {
-        addr: HIGH_RAM_START,
-        size: ram - HIGH_RAM_START,
-        type_: E820_RAM,
-    };
-    bp.e820_entries = 2;
+    // High RAM `[1 MiB, ram)` with the 4 KiB xAPIC MMIO page (`LAPIC_MMIO_PAGE`)
+    // carved out as **reserved**: that page must NOT be usable RAM, or the kernel
+    // zeroes it on init (its content is then dead RAM and the backend's matching
+    // memslot hole — which routes LAPIC accesses to the userspace xAPIC model — would
+    // have nothing behind it). `load` guarantees `ram > HIGH_RAM_START`, so the first
+    // high-RAM chunk is non-empty. Three shapes, by how far RAM reaches:
+    //
+    //   * `ram <= page`        → one high-RAM entry `[1 MiB, ram)` (page never RAM).
+    //   * `page < ram <= page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED`
+    //     (3 entries; the tail past the page is empty, so it is omitted).
+    //   * `ram > page+0x1000`  → the full 4-entry split with a `[page+0x1000, ram) RAM`
+    //     tail (the 8 GiB Postgres-guest shape).
+    //
+    // For any page-aligned `ram` only the first and last shapes occur (no page
+    // multiple lies strictly inside the page); the middle shape keeps the
+    // never-typed-RAM invariant exact for the pathological boundary too.
+    if ram > LAPIC_MMIO_PAGE {
+        bp.e820_table[1] = BootE820Entry {
+            addr: HIGH_RAM_START,
+            size: LAPIC_MMIO_PAGE - HIGH_RAM_START,
+            type_: E820_RAM,
+        };
+        bp.e820_table[2] = BootE820Entry {
+            addr: LAPIC_MMIO_PAGE,
+            size: 0x1000,
+            type_: E820_RESERVED,
+        };
+        if ram > LAPIC_MMIO_PAGE + 0x1000 {
+            bp.e820_table[3] = BootE820Entry {
+                addr: LAPIC_MMIO_PAGE + 0x1000,
+                size: ram - (LAPIC_MMIO_PAGE + 0x1000),
+                type_: E820_RAM,
+            };
+            bp.e820_entries = 4;
+        } else {
+            bp.e820_entries = 3;
+        }
+    } else {
+        bp.e820_table[1] = BootE820Entry {
+            addr: HIGH_RAM_START,
+            size: ram - HIGH_RAM_START,
+            type_: E820_RAM,
+        };
+        bp.e820_entries = 2;
+    }
     bp
 }
 
@@ -1235,5 +1282,138 @@ mod tests {
             load(&img, &[], ram - 0x1000, "x", &mut tight),
             Err(LinuxLoadError::KernelDoesNotFit { .. })
         ));
+    }
+
+    /// E820 xAPIC-reservation split (task 54, gate 1): `build_boot_params` carves the
+    /// 4 KiB LAPIC MMIO page out of usable RAM and marks it `E820_RESERVED`, so the
+    /// kernel never zeroes it and the backend's memslot hole routes LAPIC accesses to
+    /// the userspace xAPIC model.
+    mod e820_lapic_reservation {
+        use super::super::*; // crate items, incl. the private `build_boot_params`
+        use proptest::prelude::*;
+
+        /// E820 table for a guest of `ram` bytes. Only `ram` drives the map, so a
+        /// zeroed header + empty ramdisk suffice.
+        fn table_for(ram: u64) -> BootParams {
+            build_boot_params(
+                &SetupHeader::new_zeroed(),
+                &GpaRange { start: 0, len: 0 },
+                0,
+                ram,
+            )
+        }
+
+        /// `(addr, size, type_)` of entry `i`, copied out by value (the entries are
+        /// `#[repr(packed)]`, so taking a field reference would be unaligned).
+        fn entry(bp: &BootParams, i: usize) -> (u64, u64, u32) {
+            let e = &bp.e820_table[i];
+            (e.addr, e.size, e.type_)
+        }
+
+        /// Far fewer cases under Miri (10–100× slower interpreted), and no failure
+        /// persistence there (its regression-file path uses `getcwd`, which Miri's
+        /// fs isolation rejects) — mirrors the loader's other proptest helpers.
+        fn cases(native: u32) -> ProptestConfig {
+            let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
+            if cfg!(miri) {
+                cfg.failure_persistence = None;
+            }
+            cfg
+        }
+
+        /// 8 GiB guest: EXACTLY the four entries, the LAPIC page `E820_RESERVED`.
+        #[test]
+        fn eight_gib_guest_reserves_the_lapic_page() {
+            let ram = 8u64 << 30;
+            let bp = table_for(ram);
+            assert_eq!(bp.e820_entries, 4);
+            assert_eq!(entry(&bp, 0), (0, LOW_RAM_TOP, E820_RAM));
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+            assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(
+                entry(&bp, 3),
+                (
+                    LAPIC_MMIO_PAGE + 0x1000,
+                    ram - (LAPIC_MMIO_PAGE + 0x1000),
+                    E820_RAM
+                )
+            );
+            // The 5th slot is untouched (exactly four entries written).
+            assert_eq!(entry(&bp, 4), (0, 0, 0));
+        }
+
+        /// Sub-`0xFEE01000` guest (2 GiB): the single high-RAM entry, no reserved page.
+        #[test]
+        fn sub_page_guest_is_two_entries() {
+            let ram = 2u64 << 30;
+            let bp = table_for(ram);
+            assert_eq!(bp.e820_entries, 2);
+            assert_eq!(entry(&bp, 0), (0, LOW_RAM_TOP, E820_RAM));
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, ram - HIGH_RAM_START, E820_RAM)
+            );
+            // No third entry written.
+            assert_eq!(entry(&bp, 2), (0, 0, 0));
+        }
+
+        /// Page-aligned boundaries: RAM ending exactly at the page start stays a
+        /// single high-RAM entry (the page is excluded); ending one page past it
+        /// reserves the page with the empty tail dropped (3 entries).
+        #[test]
+        fn page_aligned_boundaries() {
+            let bp = table_for(LAPIC_MMIO_PAGE);
+            assert_eq!(bp.e820_entries, 2);
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+
+            let bp = table_for(LAPIC_MMIO_PAGE + 0x1000);
+            assert_eq!(bp.e820_entries, 3);
+            assert_eq!(
+                entry(&bp, 1),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+            assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(entry(&bp, 3), (0, 0, 0));
+        }
+
+        proptest! {
+            #![proptest_config(cases(512))]
+
+            /// THE gate-1 property: for ANY guest RAM size the LAPIC MMIO page is NEVER
+            /// inside a usable-RAM E820 entry — it is reserved (RAM reaches it) or
+            /// unmapped (RAM stops short). Also pins the per-case shape.
+            #[test]
+            fn reserved_page_is_never_typed_ram(ram in prop_oneof![
+                (HIGH_RAM_START + 1)..=LAPIC_MMIO_PAGE,             // 2-entry
+                (LAPIC_MMIO_PAGE + 1)..=(LAPIC_MMIO_PAGE + 0x1000), // 3-entry band
+                (LAPIC_MMIO_PAGE + 0x1001)..=(64u64 << 30),        // 4-entry
+            ]) {
+                let bp = table_for(ram);
+                let n = bp.e820_entries as usize;
+                for i in 0..n {
+                    let (addr, size, type_) = entry(&bp, i);
+                    if type_ == E820_RAM {
+                        let overlaps =
+                            addr < LAPIC_MMIO_PAGE + 0x1000 && LAPIC_MMIO_PAGE < addr + size;
+                        prop_assert!(
+                            !overlaps,
+                            "RAM entry {i} [{addr:#x}, +{size:#x}) covers the LAPIC page"
+                        );
+                    }
+                }
+                // The page is reserved exactly when RAM reaches it.
+                if ram > LAPIC_MMIO_PAGE {
+                    prop_assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+                } else {
+                    prop_assert_eq!(bp.e820_entries, 2);
+                }
+            }
+        }
     }
 }

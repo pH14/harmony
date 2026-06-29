@@ -213,8 +213,9 @@ process inside `consonance`.
   integrator ruling 2026-06-25 — **no** real-mode setup-code emulation). `load()`
   parses the bzImage `setup_header` (`boot_flag`/`HdrS`/`version ≥ 0x020c`/
   `XLF_KERNEL_64`), loads the protected-mode kernel at `pref_address`, the initramfs
-  high (page-aligned, < 4 GiB), and builds: `boot_params` (a one-page zero page with a
-  two-entry E820 map, the command line, the `ramdisk_*` fields, and the copied/patched
+  high (page-aligned, < 4 GiB), and builds: `boot_params` (a one-page zero page with an
+  E820 map — low RAM + high RAM with the xAPIC page reserved, see "Task 54" — the command
+  line, the `ramdisk_*` fields, and the copied/patched
   `setup_header`), an identity page table (2 MiB pages over the first 1 GiB), and a flat
   64-bit GDT (`__BOOT_CS=0x10`/`__BOOT_DS=0x18`). The `#[repr(C)]`
   `SetupHeader`/`BootParams`/`BootE820Entry` structs are pinned by a layout test
@@ -2876,3 +2877,45 @@ NOT re-fire at the next entry — A is not re-armed, so neither A nor B is, on f
   untestable mutant (excluded in `.cargo/mutants.toml`, entry (j)); the `<`→`==`/`>` siblings
   are killed by `run_until_deadline_advances_anchor_and_fires_the_timer`'s
   `preemption_landings() == &[reached]` assertion.
+
+## Task 54 — reserve the xAPIC MMIO page in the E820 map
+
+Part of the box-proven V-time-tick fix (the other two changes are in `vmm-backend`: the
+memslot-split seam + the `run_until` natural-exit fallback). `build_boot_params` now marks the
+4 KiB LAPIC MMIO page (`LAPIC_MMIO_PAGE = 0xFEE00000`) **`E820_RESERVED`** instead of usable RAM.
+
+**Why.** The userspace deterministic xAPIC `Lapic` lives at `0xFEE00000`. If that page is usable
+RAM the kernel zeroes it on init, and (paired with `vmm-backend`'s memslot hole that routes the
+page to `KVM_EXIT_MMIO` → the model) there would be no RAM behind it. Reserving it keeps Linux off
+the page as memory; the contract's CPUID 0x15 already presets `lapic_timer_period`, so Linux drives
+the LAPIC timer (not the PIT) and every APIC access goes to the single trapped MMIO path. The
+IOAPIC page (`0xFEC00000`) is **not** reserved — Linux is in virtual-wire mode (no MADT) and never
+touches it.
+
+**The split (high RAM `[1 MiB, ram)` minus the page).** Three shapes by how far RAM reaches:
+
+- `ram ≤ page` → one high-RAM entry `[1 MiB, ram)` (2 entries total; page never RAM).
+- `page < ram ≤ page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED` (3 entries; empty
+  tail dropped).
+- `ram > page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED` + `[page+0x1000, ram) RAM`
+  (the 4-entry shape, the 8 GiB Postgres guest).
+
+**Deviation from the reference (considered + chosen).** The proven diff used a 2-or-4-entry split
+keyed on `ram > page + 0x1000`. That leaves the LAPIC page typed **RAM** at the single page-aligned
+boundary `ram == page + 0x1000` (the high-RAM entry `[1 MiB, page+0x1000)` covers it), which breaks
+gate 1's property "the reserved page is never typed RAM for **any** ram". The 3-shape split above is
+**bit-identical to the reference for the 8 GiB guest** (and for any guest whose RAM does not end in
+that 4 KiB window — i.e. every realistic page-multiple size except exactly `page+0x1000`), so the
+box gates see the same E820, but the never-typed-RAM invariant now holds for all `ram`.
+
+**Tests (gate 1).** Direct unit tests on the private `build_boot_params` (8 GiB → exactly the 4
+entries with the page `E820_RESERVED`, asserting every `addr`/`size`/`type_` + `e820_entries`;
+2 GiB sub-page → the single high-RAM entry; the page-aligned boundaries) **plus** the property
+`reserved_page_is_never_typed_ram` (≥512 cases, miri-bounded with failure-persistence disabled):
+for any `ram` no `E820_RAM` entry intersects the page, and it is reserved exactly when RAM reaches
+it. The existing `load_pins_every_computed_value` (8 MiB guest) still asserts `e820_entries == 2`
+unchanged.
+
+No public API change (`build_boot_params` and the new `E820_RESERVED` / `LAPIC_MMIO_PAGE` consts are
+private). The foreman should update `guest/linux/IMPLEMENTATION.md` / the LAPIC-timer docs to state
+the xAPIC page is reserved + MMIO-routed (outside this worktree's directory scope).

@@ -141,6 +141,99 @@ impl MemRegions {
     }
 }
 
+/// One KVM memslot produced by [`split_around_hole`]: the guest-physical range
+/// `[gpa, gpa + size)` backed by the host bytes at byte offset `host_off` into the
+/// original backing slice — so the caller registers `userspace_addr = host_base +
+/// host_off`. `size` is non-zero; given page-aligned inputs every field is a
+/// multiple of [`PAGE`] (proven in `region_proofs`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MemSlotPart {
+    /// Guest-physical base of this sub-region.
+    pub(crate) gpa: u64,
+    /// Length in bytes (non-zero).
+    pub(crate) size: u64,
+    /// Byte offset from the original `base` — the offset into the host backing.
+    pub(crate) host_off: u64,
+}
+
+/// Core of [`split_around_hole`], returning a fixed `[Option; 2]` so it is trivial
+/// to unit-test, property-test, and **Kani**-verify (no allocation, no iterator
+/// state); [`split_around_hole`] is the thin `flatten`ing wrapper the FFI consumes.
+///
+/// Computes `[base, base + len)` **set-minus** `[hole_base, hole_base + hole_len)`:
+/// the (at most two) maximal sub-ranges of the region NOT inside the hole, left to
+/// right. Each emitted part is non-empty (`size > 0`), the parts are
+/// non-overlapping and ordered, and a part never intersects the hole; together they
+/// cover exactly the bytes of the region that are not in the hole (the pointwise
+/// coverage property `region_proofs` verifies for all inputs).
+///
+/// Saturating arithmetic keeps it panic-free for any input (conventions rule #4);
+/// for the real, non-overflowing inputs — guest-RAM `base`/`len` and the
+/// page-aligned LAPIC hole `[0xFEE00000, +0x1000)` — it is exact. The function is
+/// independent of [`PAGE`]: it is pure interval arithmetic, so its proofs hold at
+/// any granularity.
+fn split_parts(base: u64, len: u64, hole_base: u64, hole_len: u64) -> [Option<MemSlotPart>; 2] {
+    let end = base.saturating_add(len); // region [base, end)
+    let hole_end = hole_base.saturating_add(hole_len); // hole [hole_base, hole_end)
+    // Intersection of the hole with the region: [ov_lo, ov_hi).
+    let ov_lo = hole_base.max(base);
+    let ov_hi = hole_end.min(end);
+    if len == 0 || ov_lo >= ov_hi {
+        // The hole does not overlap the region: a single slot covering the whole
+        // region (none at all for an empty region — never registered by KVM).
+        return [
+            (len != 0).then_some(MemSlotPart {
+                gpa: base,
+                size: len,
+                host_off: 0,
+            }),
+            None,
+        ];
+    }
+    // The hole carves [ov_lo, ov_hi) out of the region; emit the non-empty
+    // remainders before ([base, ov_lo)) and after ([ov_hi, end)) it. At least one
+    // is non-empty whenever the hole does not cover the whole region (the bring-up
+    // case: a 4 KiB hole inside multi-GiB RAM). A hole ⊇ region yields no slot —
+    // arithmetically correct (the region is fully holed), never reached in practice.
+    let left = (ov_lo > base).then_some(MemSlotPart {
+        gpa: base,
+        size: ov_lo - base,
+        host_off: 0,
+    });
+    let right = (ov_hi < end).then_some(MemSlotPart {
+        gpa: ov_hi,
+        size: end - ov_hi,
+        host_off: ov_hi - base,
+    });
+    [left, right]
+}
+
+/// Split the guest-RAM region `[base, base + len)` into the KVM memslots that cover
+/// it **with the hole `[hole_base, hole_base + hole_len)` left unmapped**, so a
+/// guest access to the hole faults to `KVM_EXIT_MMIO` (serviced by the userspace
+/// xAPIC `Lapic`) instead of being answered from RAM. Yields the sub-regions left
+/// to right; their union is exactly `[base, base + len)` minus the (clamped) hole.
+///
+/// The splitting LOGIC lives here — pure, in the covered + property- + Kani-verified
+/// portable seam — precisely because the box-only `kvm_sys::map_memory` FFI that
+/// consumes it is coverage/mutation-excluded (`box-only-layer-coverage-blind`). That
+/// FFI does nothing but iterate this and issue one `KVM_SET_USER_MEMORY_REGION` per
+/// part. See [`split_parts`] for the case analysis and invariants.
+pub(crate) fn split_around_hole(
+    base: u64,
+    len: u64,
+    hole_base: u64,
+    hole_len: u64,
+) -> impl Iterator<Item = MemSlotPart> {
+    split_parts(base, len, hole_base, hole_len)
+        .into_iter()
+        .flatten()
+}
+
+#[cfg(kani)]
+#[path = "region_proofs.rs"]
+mod proofs;
+
 #[cfg(test)]
 mod tests {
     //! Drive the validation + the unsafe translation/copy logic with fake
@@ -264,5 +357,165 @@ mod tests {
 
         // Exact-fit at the upper boundary succeeds.
         assert!(regions.read(0x2FF8, &mut [0u8; 8]).is_ok());
+    }
+
+    // ---- the portable memslot splitter (gate 2) -------------------------------
+
+    use proptest::prelude::*;
+
+    /// The real LAPIC MMIO page hole: 4 KiB at `0xFEE00000`.
+    const LAPIC_PAGE: u64 = 0xFEE0_0000;
+
+    fn parts(base: u64, len: u64, hole: u64, hole_len: u64) -> Vec<MemSlotPart> {
+        split_around_hole(base, len, hole, hole_len).collect()
+    }
+
+    /// Far fewer cases under Miri (10–100× slower interpreted), and no failure
+    /// persistence there (its regression-file path resolution uses `getcwd`, which
+    /// Miri's fs isolation rejects) — mirrors `run_until`'s `cases` helper.
+    fn cases(native: u32) -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 16 } else { native });
+        if cfg!(miri) {
+            cfg.failure_persistence = None;
+        }
+        cfg
+    }
+
+    /// Exact-value: an 8 GiB guest mapped at GPA 0 is split into exactly two
+    /// memslots that leave the 4 KiB LAPIC page unmapped — `[0, 0xFEE00000)` and
+    /// `[0xFEE01000, 8 GiB)` — with host offsets that skip the hole. (Mutation-
+    /// killing: every field of both parts is asserted.)
+    #[test]
+    fn lapic_hole_splits_8gib_guest_into_two_slots() {
+        let ram = 8u64 << 30;
+        assert_eq!(
+            parts(0, ram, LAPIC_PAGE, 0x1000),
+            vec![
+                MemSlotPart {
+                    gpa: 0,
+                    size: LAPIC_PAGE,
+                    host_off: 0,
+                },
+                MemSlotPart {
+                    gpa: LAPIC_PAGE + 0x1000,
+                    size: ram - (LAPIC_PAGE + 0x1000),
+                    host_off: LAPIC_PAGE + 0x1000,
+                },
+            ],
+        );
+    }
+
+    /// Exact-value: a guest whose RAM never reaches the hole is a single slot
+    /// covering all of it (the no-overlap case the spec calls out).
+    #[test]
+    fn no_overlap_returns_the_single_full_region() {
+        let ram = 8u64 << 20; // 8 MiB, well below 0xFEE00000
+        assert_eq!(
+            parts(0, ram, LAPIC_PAGE, 0x1000),
+            vec![MemSlotPart {
+                gpa: 0,
+                size: ram,
+                host_off: 0,
+            }],
+        );
+        // A hole entirely above the region, and one entirely below it, both yield
+        // the single full region (exercising each side of the no-overlap test).
+        assert_eq!(parts(0x10_0000, 0x10_0000, 0x100_0000, 0x1000).len(), 1);
+        assert_eq!(parts(0x100_0000, 0x10_0000, 0, 0x1000).len(), 1);
+    }
+
+    /// Edge cases: a hole flush against the start or end of the region drops the
+    /// empty remainder and returns the single non-empty slot.
+    #[test]
+    fn hole_at_an_edge_drops_the_empty_remainder() {
+        // Hole at the very start → only the tail remains.
+        assert_eq!(
+            parts(0x1000, 0x4000, 0x1000, 0x1000),
+            vec![MemSlotPart {
+                gpa: 0x2000,
+                size: 0x3000,
+                host_off: 0x1000,
+            }],
+        );
+        // Hole at the very end → only the head remains.
+        assert_eq!(
+            parts(0x1000, 0x4000, 0x4000, 0x1000),
+            vec![MemSlotPart {
+                gpa: 0x1000,
+                size: 0x3000,
+                host_off: 0,
+            }],
+        );
+    }
+
+    /// Zero-length region → no slots; a hole that covers the whole region → no
+    /// slots (fully holed). Both are arithmetically valid degenerate cases.
+    #[test]
+    fn degenerate_regions_yield_no_slots() {
+        assert!(parts(0x1000, 0, LAPIC_PAGE, 0x1000).is_empty());
+        assert!(parts(0x1000, 0x1000, 0, 0x1_0000).is_empty());
+    }
+
+    proptest! {
+        #![proptest_config(cases(512))]
+
+        /// THE splitter contract (gate 2), over arbitrary page-aligned regions and
+        /// holes: emitted parts are non-empty, page-aligned, within the region,
+        /// pairwise non-overlapping and ordered, never intersect the hole, and have
+        /// `host_off == gpa - base`. With the hole *inside* the region their sizes
+        /// sum to `len - (hole ∩ region)` — i.e. the union is the region minus the
+        /// hole. (The pointwise coverage form is proven for all `u64` by Kani.)
+        #[test]
+        fn split_around_hole_holds_its_contract(
+            base_pages in 0u64..0x2000,
+            len_pages in 0u64..0x2000,
+            hole_pages in 0u64..0x2000,
+            hole_len_pages in 0u64..4u64,
+        ) {
+            let base = base_pages * PAGE;
+            let len = len_pages * PAGE;
+            let hole = hole_pages * PAGE;
+            let hole_len = hole_len_pages * PAGE;
+            let end = base + len;
+            let ps = parts(base, len, hole, hole_len);
+
+            let mut covered = 0u64;
+            let mut prev_end = base;
+            for p in &ps {
+                prop_assert!(p.size > 0, "non-empty");
+                prop_assert_eq!(p.gpa % PAGE, 0);
+                prop_assert_eq!(p.size % PAGE, 0);
+                prop_assert_eq!(p.host_off % PAGE, 0);
+                prop_assert_eq!(p.host_off, p.gpa - base, "host offset tracks the gpa");
+                prop_assert!(p.gpa >= base && p.gpa + p.size <= end, "within the region");
+                // ordered + non-overlapping with the previous part.
+                prop_assert!(p.gpa >= prev_end, "ordered, non-overlapping");
+                prev_end = p.gpa + p.size;
+                // never intersects the hole (an empty hole `hole_len == 0` carves
+                // nothing, so the single full region trivially does not "overlap" it).
+                prop_assert!(
+                    hole_len == 0 || p.gpa + p.size <= hole || p.gpa >= hole + hole_len,
+                    "a part never overlaps the hole"
+                );
+                covered += p.size;
+            }
+
+            // When the hole lies fully inside the region the union is exactly the
+            // region minus the hole.
+            if hole >= base && hole + hole_len <= end {
+                prop_assert_eq!(covered, len - hole_len);
+            }
+        }
+
+        /// A region that does not reach the hole is always returned whole, single.
+        #[test]
+        fn sub_hole_guest_is_one_region(len_pages in 1u64..0x4000) {
+            let len = len_pages * PAGE;
+            prop_assume!(len <= LAPIC_PAGE);
+            prop_assert_eq!(
+                parts(0, len, LAPIC_PAGE, 0x1000),
+                vec![MemSlotPart { gpa: 0, size: len, host_off: 0 }],
+            );
+        }
     }
 }
