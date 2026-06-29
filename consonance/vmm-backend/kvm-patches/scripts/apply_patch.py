@@ -322,4 +322,72 @@ exact(VMX,
     "\t/* RDTSC-exiting is architectural on all VMX CPUs; RNG gated at setup. */\n"
     "\tkvm_caps.has_deterministic_intercepts = true;\n")
 
+# ------------------------------------------ patch 4: in-kernel force-exit preemption (task 55)
+# uapi: new exit reason (after the 0001-added KVM_EXIT_DETERMINISM 41)
+exact(UAPI,
+    "#define KVM_EXIT_DETERMINISM      41\n",
+    "#define KVM_EXIT_DETERMINISM      41\n"
+    "#define KVM_EXIT_PREEMPT          42\n")
+
+# uapi: the one-shot arm ioctl (after the last vm-wide attr ioctl)
+exact(UAPI,
+    "#define KVM_HAS_DEVICE_ATTR\t  _IOW(KVMIO,  0xe3, struct kvm_device_attr)\n",
+    "#define KVM_HAS_DEVICE_ATTR\t  _IOW(KVMIO,  0xe3, struct kvm_device_attr)\n"
+    "/* Deterministic preemption (harmony task 55): arm the one-shot force-exit. */\n"
+    "#define KVM_ARM_PREEMPT_EXIT\t  _IO(KVMIO,   0xe4)\n")
+
+# kvm_host.h: per-vCPU one-shot flag
+exact(HOST,
+    "\tbool at_instruction_boundary;\n",
+    "\tbool at_instruction_boundary;\n"
+    "\t/* Deterministic preemption (harmony task 55): one-shot in-kernel force-exit. */\n"
+    "\tbool preempt_armed;\n")
+
+# x86.c: the arm ioctl, gated on the determinism opt-in (after KVM_NMI)
+exact(XC,
+    "\tcase KVM_NMI: {\n"
+    "\t\tr = kvm_vcpu_ioctl_nmi(vcpu);\n"
+    "\t\tbreak;\n"
+    "\t}\n",
+    "\tcase KVM_NMI: {\n"
+    "\t\tr = kvm_vcpu_ioctl_nmi(vcpu);\n"
+    "\t\tbreak;\n"
+    "\t}\n"
+    "\tcase KVM_ARM_PREEMPT_EXIT:\n"
+    "\t\t/*\n"
+    "\t\t * Deterministic preemption (harmony task 55): arm the one-shot\n"
+    "\t\t * in-kernel force-exit on the next perf-overflow NMI VM-exit.\n"
+    "\t\t * Gated on the determinism opt-in (default-off -> stock behavior).\n"
+    "\t\t */\n"
+    "\t\tr = -EINVAL;\n"
+    "\t\tif (vcpu->kvm->arch.deterministic_intercepts) {\n"
+    "\t\t\tvcpu->arch.preempt_armed = true;\n"
+    "\t\t\tr = 0;\n"
+    "\t\t}\n"
+    "\t\tbreak;\n")
+
+# vmx.c: return to userspace on the armed perf-overflow NMI VM-exit
+exact(VMX,
+    "\tif (is_machine_check(intr_info) || is_nmi(intr_info))\n"
+    "\t\treturn 1;\n",
+    "\tif (is_machine_check(intr_info))\n"
+    "\t\treturn 1;\n"
+    "\tif (is_nmi(intr_info)) {\n"
+    "\t\t/*\n"
+    "\t\t * Deterministic preemption (harmony task 55): the NMI was already\n"
+    "\t\t * serviced by vmx_vcpu_enter_exit() (the perf-counter overflow PMI\n"
+    "\t\t * that drives V-time preemption).  If userspace armed the one-shot\n"
+    "\t\t * force-exit, return to userspace with KVM_EXIT_PREEMPT instead of\n"
+    "\t\t * re-entering, so the V-time deadline is hit with only the bounded\n"
+    "\t\t * hardware-PMI skid.  Gated on the determinism opt-in.\n"
+    "\t\t */\n"
+    "\t\tif (vcpu->kvm->arch.deterministic_intercepts &&\n"
+    "\t\t    vcpu->arch.preempt_armed) {\n"
+    "\t\t\tvcpu->arch.preempt_armed = false;\n"
+    "\t\t\tkvm_run->exit_reason = KVM_EXIT_PREEMPT;\n"
+    "\t\t\treturn 0;\n"
+    "\t\t}\n"
+    "\t\treturn 1;\n"
+    "\t}\n")
+
 print("ALL EDITS APPLIED")
