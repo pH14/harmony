@@ -1,4 +1,72 @@
-# IMPLEMENTATION.md — patched-KVM RDTSC/RNG interception spike
+# IMPLEMENTATION.md — patched-KVM determinism series
+
+## Task 57 — productionize the determinism kernel: canonical 6.18.35 port of 0004 + 0005
+
+**What this task added.** The series grew from 3 patches (0001-0003, the value
+intercepts) to **5**: `0004` (in-kernel force-exit preemption →
+`KVM_EXIT_PREEMPT` 42 / `KVM_ARM_PREEMPT_EXIT` 0xe4) and `0005` (MTF deterministic
+single-step → `KVM_EXIT_DET_STEP` 43 / `KVM_ARM_MTF_STEP` 0xe5). 0004+0005 are the
+Phase-1 + Phase-2 timing control the Postgres-on-k3s frontier (tasks 49/56,
+`state_hash 226437a3…`, 0 skid) was proven on. They are now canonical patch files
+in `patches/`, `git am`-clean onto the pinned `linux-6.18.35` tag.
+
+**0005 was ported (not just copied) for 6.18.** The box-proven delta was authored
+against 6.12.90. On 6.18 the four touch points (`kvm_host.h` bool, `kvm.h`
+exit/ioctl numbers, the `x86.c` ioctl case, the `vmx.c` arm/exit) port one-to-one
+**except** the arm point: both kernels arm MTF in `vmx_vcpu_pre_run` on the path
+after the unhandleable-emulation guard, but 6.12 spells that guard
+`vmx_emulation_required_with_pending_exception` and 6.18 renamed it
+`vmx_unhandleable_emulation_required`. Same VM-entry hook, same mechanism. 0004
+was already ported in the canonical tree before this task; this task verified it
+and added its canonical patch file. No redesign (a non-goal).
+
+**Build (canonical, gate #2 — box `/root/kvm-spike/linux-6.18.35`, 2026-06-30).**
+The 5-patch series `git am`-applies clean onto pristine `v6.18.35` **and
+reproduces the built tree byte-for-byte** (`git diff` empty vs the build commit).
+Modules build with no warnings: vermagic `6.18.35-g83a4bb005323`, `kvm.ko`
+2471344 B, `kvm-intel.ko` 670816 B (+1296 B vs the 0001-0004 build = the MTF
+arm/exit path). Per-file patch sha256 pinned in `guest/linux/versions.lock`
+(`KVM_PATCH_000x_SHA256`). See `BUILD.md` Part 1.
+
+**Live determinism re-validation (6.12.90 proxy, the documented Part-2 path).**
+The canonical modules are build-verified but not loadable on the box (it runs
+stock 6.12.90; see the deviation below — booting 6.18.35 stays rejected). The live
+round-trip therefore ran on the 6.12.90 proxy carrying the **same** 0001-0005
+source change (`run-patched-ht49.sh`: hot-swap patched KVM → gate pinned `taskset
+-c 2` → revert to stock 1396736). Result, `cargo test -p vmm-core --test
+live_m1_m2 -- --ignored`:
+
+```
+host_assert_report          ... ok   (all §1.1 host-baseline asserts PASS)
+m1_hello_boots_and_prints   ... ok
+m2_hello_deterministic_twice    ... ok   (bit-identical twice)
+m2_compute_deterministic_twice  ... ok   (bit-identical twice)
+test result: ok. 4 passed; 0 failed; finished in 46.50s   — 0 skid
+```
+
+Box reverted to stock and **verified `kvm 1396736` on a fresh ssh**. NB the
+harness's own trap-revert can be cut short when the ssh session drops on `pkill`
+during teardown — always re-verify stock on a fresh connection and force-revert
+(`rmmod kvm_intel kvm; modprobe kvm kvm_intel`) if it shows the patched size
+(1400832). `guest/payloads` must be rebuilt (`cargo build --release`, target
+`x86_64-unknown-none`) after any box re-ship — a wiped payload fails the gate loudly.
+
+**On "validate on the canonical kernel, not just the box-proxy" (task §2).** This
+runs into the project's own reviewed decision (below, "Options considered" #2):
+booting this *shared, console-less* box into a self-built kernel was **rejected as
+disproportionately risky**, and the box has only ever run stock 6.12.90 (root on
+`/dev/md2` software-RAID, NIC `e1000e`, `kernel/panic=0` — no auto-reboot net; a
+failed boot is unrecoverable without Hetzner-Robot/console access the worker does
+not have). The faithful-but-rejected path is documented; flipping it is a foreman
+call with box-recovery readiness, not a worker default. Per `BUILD.md` line 44,
+"to erase the proxy later: re-build via Part 1 and re-run the box gates on a host
+whose running kernel **is** 6.18.35" — Part 1 then yields directly-loadable
+modules. Everything needed for that (the 5-patch canonical series, build recipe,
+verified modules) is delivered and ready.
+
+---
+
+# IMPLEMENTATION.md — patched-KVM RDTSC/RNG interception spike (tasks 16/55)
 
 Originated as a throwaway feasibility spike (`tasks/16-patched-kvm-rdtsc-spike.md`);
 the patch series it produced is the host-Linux KVM basis for the patched backend
