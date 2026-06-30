@@ -102,4 +102,13 @@ det-corpus = { path = "../det-corpus", version = "0.1.0", default-features = fal
 # (a separate crate) can name `lapic::{Lapic, LapicConfig}`. Pinned `version`
 # alongside `path` (cargo-deny wildcard ban).
 lapic = { path = "../lapic", version = "0.1.0" }
+# Task 49: the out-of-band, read-only telemetry tap — the box-only
+# `live_k3s_postgres` gate records its run (serial + exit-count snapshots) to an
+# NDJSON file the `console` bin replays, so an operator can WATCH a k3s boot. Used
+# test-side only (never wired into the determinism path: the recorder reads
+# `serial()`/`exit_counts()` and writes a file — it touches no `state_hash`/
+# `observable_digest`). `default-features = false` drops its `console`/`clap` CLI;
+# the test needs only the library (Event/EventKind/NdjsonRecorder/Observer).
+# Pinned `version` alongside `path` (cargo-deny wildcard ban, as for the siblings).
+telemetry = { path = "../telemetry", version = "0.1.0", default-features = false }
 proptest = "1"

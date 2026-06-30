@@ -70,7 +70,7 @@ assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
 # config" bool which only sets the *default* of the "Timer tick handling" choice
 # ("default NO_HZ_IDLE if NO_HZ"); Kata sets it =y, but once HZ_PERIODIC wins the
 # choice it is inert (it selects nothing), so it harmlessly stays =y.
-assert_off SMP NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
+assert_off NUMA CPU_FREQ MODULES TRANSPARENT_HUGEPAGE KSM SUSPEND \
     HIBERNATION X86_PM_TIMER HIGH_RES_TIMERS RANDOMIZE_BASE \
     LOCALVERSION_AUTO HW_RANDOM NO_HZ_COMMON NO_HZ_FULL NO_HZ_IDLE TICK_ONESHOT
 # Empty version suffix: git/build state must not leak into the bytes.

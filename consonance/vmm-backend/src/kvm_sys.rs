@@ -71,6 +71,8 @@ const KVM_RUN: u64 = ioc(0, 0xAE, 0x80, 0);
 /// VM-entry (the userspace-irqchip injection path; kvm-ioctls exposes no safe
 /// wrapper for it, unlike `KVM_NMI`, so it is a direct ioctl like the MSR filter).
 const KVM_INTERRUPT: u64 = ioc(1, 0xAE, 0x86, size_of::<kvm_interrupt>() as u64);
+/// `_IO(KVMIO, 0xe5)` — harmony 0005: arm a one-shot MTF single-step.
+const KVM_ARM_MTF_STEP: u64 = ioc(0, 0xAE, 0xe5, 0);
 /// `_IOW(KVMIO, 0xC6, struct kvm_msr_filter)` — install the MSR filter.
 const KVM_X86_SET_MSR_FILTER: u64 = ioc(1, 0xAE, 0xC6, size_of::<kvm_msr_filter>() as u64);
 /// `_IOR(KVMIO, 0xCC, struct kvm_sregs2)` — read sregs incl. PDPTRs/flags.
@@ -414,7 +416,9 @@ impl KvmBackend {
     fn run_armed(&mut self, armed_at: u64) -> Result<LiveStop> {
         self.pmu_arm(armed_at)?;
         let fd = self.vcpu.as_raw_fd();
+        let mut iters: u64 = 0;
         loop {
+            iters += 1;
             // Deliver any pending injectable vector (or arm the window). P2(a): the
             // same handshake the single-step phase uses, so a pending IRQ is never
             // delayed past the deadline.
@@ -426,6 +430,8 @@ impl KvmBackend {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     // A signal broke us out (the overflow kick, or a spurious one).
                     if let Some(stop) = self.free_run_stop(armed_at)? {
+                        let w = self.pmu_work().unwrap_or(0);
+                        if w.saturating_sub(armed_at) >= 256 { eprintln!("DIAG-STOP49 path=EINTR-SIGIO work={} armed_at={} over={} iters={} exit_reason={:#x}", w, armed_at, w.saturating_sub(armed_at), iters, self.run_page().exit_reason()); }
                         return Ok(stop);
                     }
                     continue;
@@ -440,6 +446,8 @@ impl KvmBackend {
                 // IRQ past the deadline).
                 StepStop::Interrupted | StepStop::Reenter => {
                     if let Some(stop) = self.free_run_stop(armed_at)? {
+                        let w = self.pmu_work().unwrap_or(0);
+                        if w.saturating_sub(armed_at) >= 256 { eprintln!("DIAG-STOP49 path=INTR-CLASSIFY work={} armed_at={} over={} iters={} exit_reason={:#x}", w, armed_at, w.saturating_sub(armed_at), iters, self.run_page().exit_reason()); }
                         return Ok(stop);
                     }
                     continue;
@@ -451,7 +459,11 @@ impl KvmBackend {
                         "run_until: unexpected single-step debug exit during free-run",
                     ));
                 }
-                StepStop::GuestExit => return self.take_guest_exit_stop(),
+                StepStop::GuestExit => {
+                    let w = self.pmu_work().unwrap_or(0);
+                    if w.saturating_sub(armed_at) >= 256 { eprintln!("DIAG-STOP49 path=GUEST-EXIT work={} armed_at={} over={} iters={} exit_reason={:#x}", w, armed_at, w.saturating_sub(armed_at), iters, self.run_page().exit_reason()); }
+                    return self.take_guest_exit_stop();
+                }
             }
         }
     }
@@ -498,11 +510,15 @@ impl KvmBackend {
     /// entry rather than delayed past the deadline + reordered.
     fn single_step_once(&mut self) -> Result<LiveStop> {
         self.enable_single_step()?;
+        let w_entry = self.pmu_work().unwrap_or(0);
         let fd = self.vcpu.as_raw_fd();
         loop {
             // Preserve + deliver any pending injectable IRQ (P2(a)); clears the window
             // when none is pending, so an IRQ-window exit cannot loop.
+            let pend_before = self.pending_irq;
             self.inject_pending(fd)?;
+            // 0005: arm one-shot MTF for the next instruction (exits KVM_EXIT_DET_STEP).
+            unsafe { raw_mtf_step(fd) }?;
             // SAFETY (raw ioctl seam): single-stepped `KVM_RUN` on the owned vCPU.
             let rc = unsafe { raw_kvm_run(fd) };
             if rc < 0 {
@@ -516,9 +532,17 @@ impl KvmBackend {
                 // The single-step trap is the stop signal (one instruction retired);
                 // the overflow is disarmed in this phase, so a signal/IRQ-window exit
                 // is just a re-entry (the planner bounds progress via the work count).
-                StepStop::SingleStepTrap => return Ok(LiveStop::Count(self.pmu_work()?)),
+                StepStop::SingleStepTrap => {
+                    let w = self.pmu_work()?;
+                    if w.saturating_sub(w_entry) > 1 { eprintln!("DIAG-STEP49 path=SINGLESTEP-TRAP delta={} w_entry={} w_exit={} exit_reason={:#x} injected={:?}", w.saturating_sub(w_entry), w_entry, w, self.run_page().exit_reason(), pend_before); }
+                    return Ok(LiveStop::Count(w));
+                }
                 StepStop::Interrupted | StepStop::Reenter => continue,
-                StepStop::GuestExit => return self.take_guest_exit_stop(),
+                StepStop::GuestExit => {
+                    let w = self.pmu_work().unwrap_or(0);
+                    if w.saturating_sub(w_entry) > 1 { eprintln!("DIAG-STEP49 path=GUEST-EXIT delta={} w_entry={} w_exit={} exit_reason={:#x} injected={:?}", w.saturating_sub(w_entry), w_entry, w, self.run_page().exit_reason(), pend_before); }
+                    return self.take_guest_exit_stop();
+                }
             }
         }
     }
@@ -533,11 +557,9 @@ impl KvmBackend {
             return Ok(());
         }
         self.pmu_disarm()?;
-        let dbg = kvm_guest_debug {
-            control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
-            ..Default::default()
-        };
-        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        // 0005 spike: MTF single-step (armed per-step via raw_mtf_step), NOT TF-based
+        // KVM_GUESTDBG_SINGLESTEP — TF cannot step through the guest's own syscall/
+        // exception (cleared on delivery / masked by FMASK). guest-debug left off.
         self.single_step_armed = true;
         Ok(())
     }
@@ -728,6 +750,27 @@ unsafe fn raw_set_msr_filter(_fd: std::os::fd::RawFd, _filter: &kvm_msr_filter) 
     Err(BackendError::Internal("ioctl unavailable under miri"))
 }
 
+/// harmony 0005: arm a one-shot MTF single-step. The next `KVM_RUN` exits with
+/// `KVM_EXIT_DET_STEP` after exactly one instruction — including THROUGH the guest's
+/// own syscall/exception (unlike TF single-step, cleared on event delivery / FMASK).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd.
+#[cfg(not(miri))]
+unsafe fn raw_mtf_step(fd: std::os::fd::RawFd) -> Result<()> {
+    // SAFETY: argument-less ioctl on the owned vCPU fd.
+    let rc = unsafe { libc::ioctl(fd, KVM_ARM_MTF_STEP as libc::c_ulong) };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(miri)]
+unsafe fn raw_mtf_step(_fd: std::os::fd::RawFd) -> Result<()> {
+    Ok(())
+}
+
 /// Issue the `KVM_INTERRUPT` ioctl, queueing maskable IRQ `vector` for the next
 /// VM-entry. The caller (`enter_guest`) only reaches this when
 /// `ready_for_interrupt_injection` is set (via [`plan_irq_entry`]), so KVM accepts
@@ -908,6 +951,7 @@ impl CpuBackend for LiveCpu<'_> {
     ) -> std::result::Result<u64, vtime::BackendError> {
         match self.backend.run_armed(armed_at) {
             Ok(LiveStop::Count(work)) => {
+                if work >= self.deadline { eprintln!("DIAG-SKID49 work={} armed_at={} deadline={} over={} skid_from_armed={}", work, armed_at, self.deadline, work.saturating_sub(self.deadline), work.saturating_sub(armed_at)); }
                 self.work_cache = work;
                 Ok(work)
             }

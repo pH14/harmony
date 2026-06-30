@@ -86,3 +86,47 @@ fetch_postgres_image() {
     echo "ok: $out ($(sha256_of "$out") — derived from the digest-pinned pull)"
 }
 fetch_postgres_image
+
+# --- task 49: k3s (lightweight Kubernetes) -----------------------------------
+# The k3s binary + the air-gap images tarball, both URL+sha256-pinned in
+# versions.lock (verified against the release's own sha256sum-amd64.txt).
+fetch_one "$K3S_BIN_URL" "$K3S_BIN_SHA256"
+fetch_one "$K3S_AIRGAP_URL" "$K3S_AIRGAP_SHA256"
+
+# Extract ONLY the pause/sandbox image from the air-gap tarball into a clean
+# single-image tar (guest/dl/k3s-pause-image.tar). Every pod needs the sandbox
+# container; we --disable coredns/traefik/servicelb/metrics/local-path, so pause
+# is the only air-gap image the guest actually runs. Importing just it (a few
+# hundred KB) instead of the whole multi-hundred-MB tarball keeps the guest light
+# — boot V-time under the single-stepping VMM is the bottleneck. Needs `ctr`
+# (containerd), so it is box/Linux-only, like fetch_postgres_image above;
+# build-k3s-image.sh fails loudly if the tar is missing.
+fetch_k3s_pause_image() {
+    out="dl/k3s-pause-image.tar"
+    air="dl/$(basename "$K3S_AIRGAP_URL")"
+    if [ -f "$out" ] && [ -s "$out" ]; then
+        echo "ok: $out (cached; extracted from the digest-pinned air-gap tarball)"
+        return
+    fi
+    if ! command -v ctr >/dev/null 2>&1; then
+        echo "skip: $out — needs 'ctr' (containerd). Run 'make -C guest fetch' on the" >&2
+        echo "      Linux box; the air-gap tarball is sha256-pinned so the pause image" >&2
+        echo "      is content-verified there." >&2
+        return
+    fi
+    ns="ht49-fetch"   # isolated containerd namespace; pruned after export
+    echo "importing $air via ctr to extract the pause image (-> $out)"
+    ctr -n "$ns" image import "$air" >/dev/null
+    # The pause/sandbox image is the only one we keep; find its ref by name (k3s
+    # ships it as docker.io/rancher/mirrored-pause:<tag>).
+    pause_ref=$(ctr -n "$ns" image ls -q | grep -E 'mirrored-pause|/pause:' | head -1)
+    [ -n "$pause_ref" ] || { echo "FAIL: no pause image in $air" >&2; exit 1; }
+    echo "   pause image: $pause_ref"
+    ctr -n "$ns" image export --platform linux/amd64 "$out.part" "$pause_ref"
+    mv "$out.part" "$out"
+    # Leave the isolated namespace clean (don't perturb the box's default ns).
+    for r in $(ctr -n "$ns" image ls -q); do ctr -n "$ns" image rm "$r" >/dev/null 2>&1 || true; done
+    ctr -n "$ns" content prune references >/dev/null 2>&1 || true
+    echo "ok: $out ($(sha256_of "$out") — pause image from the digest-pinned air-gap tarball)"
+}
+fetch_k3s_pause_image
