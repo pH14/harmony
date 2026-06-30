@@ -10,18 +10,42 @@ git am /path/to/consonance/vmm-backend/kvm-patches/patches/0001-*.patch ...
 ```
 
 See `../BUILD.md` for the full apply → build → load → revert recipe.
-The series is intentionally minimal (3 commits, +203/−2 lines): it enables the
-three VMX exiting controls (RDTSC/RDTSCP via PROCBASED bit 12; RDRAND via
-PROCBASED2 bit 11; RDSEED via PROCBASED2 bit 16) and routes each VM-exit to
-userspace as `KVM_EXIT_DETERMINISM`, with a completion path that writes the
-destination register(s) and advances RIP. Opt-in per VM via
-`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (default-off → stock behavior).
+
+The series is two layers, all opt-in per VM via
+`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (default-off → stock behavior):
+
+**Phase-0, the value intercepts (0001-0003).** Enable the three VMX exiting
+controls (RDTSC/RDTSCP via PROCBASED bit 12; RDRAND via PROCBASED2 bit 11; RDSEED
+via PROCBASED2 bit 16) and route each VM-exit to userspace as
+`KVM_EXIT_DETERMINISM` (41), with a completion path that writes the destination
+register(s) and advances RIP.
+
+**Phase-1 + Phase-2, deterministic preemption + single-step (0004-0005).** The
+full-determinism timing control that the Postgres-on-k3s frontier (tasks 49/56)
+was proven on:
+
+- `0004` — in-kernel force-exit preemption. A retired-branch perf overflow PMI
+  (NMI) VM-exits; if the one-shot `KVM_ARM_PREEMPT_EXIT` (`_IO(KVMIO, 0xe4)`) is
+  armed, `handle_exception_nmi()` returns to userspace with `KVM_EXIT_PREEMPT`
+  (42) instead of re-entering, so the V-time deadline is hit with only the
+  bounded hardware-PMI skid. Per-vCPU one-shot `vcpu->arch.preempt_armed`.
+- `0005` — MTF (Monitor-Trap-Flag) deterministic single-step. `KVM_ARM_MTF_STEP`
+  (`_IO(KVMIO, 0xe5)`) arms a one-shot MTF in `vmx_vcpu_pre_run`; the resulting
+  monitor-trap VM-exit returns `KVM_EXIT_DET_STEP` (43). Unlike a TF/IA32_FMASK
+  single-step it fires *through* guest syscall/exception/interrupt delivery (the
+  issue #34 Phase-2 overshoot root cause). Per-vCPU one-shot
+  `vcpu->arch.mtf_step_armed`.
 
 - `0001-KVM-x86-add-KVM_EXIT_DETERMINISM-userspace-exit-ABI.patch`
 - `0002-KVM-x86-emulate-intercepted-RDTSC-RDTSCP-RDRAND-RDSE.patch`
 - `0003-KVM-VMX-enable-RDTSC-RDRAND-RDSEED-exiting-for-the-d.patch`
+- `0004-KVM-x86-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-pr.patch`
+- `0005-KVM-VMX-MTF-based-deterministic-single-step.patch`
 
-Verified: `git am`-clean on a fresh `linux-6.18.35` checkout and the out-of-tree
-modules build cleanly. `scripts/apply_patch.py` reproduces the
-same edits by string anchor; `scripts/apply_patch_612.py` ports them to the
-Debian 6.12.90 source for the loadable proxy build (`../BUILD.md` Part 2).
+Verified: the five-patch series is `git am`-clean on a fresh `linux-6.18.35`
+checkout, reproduces the built tree byte-for-byte, and the out-of-tree modules
+build cleanly (vermagic `6.18.35-…`). Per-file sha256 are pinned in
+`guest/linux/versions.lock` (`KVM_PATCH_000x_SHA256`). `scripts/apply_patch.py`
+reproduces the 0001-0003 edits by string anchor; `scripts/apply_patch_612.py`
+ports them to the Debian 6.12.90 source for the loadable proxy build
+(`../BUILD.md` Part 2).

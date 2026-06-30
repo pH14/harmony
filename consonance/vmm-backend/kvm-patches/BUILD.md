@@ -1,6 +1,9 @@
-# BUILD.md — apply → build → load → revert for the deterministic-intercept patch
+# BUILD.md — apply → build → load → revert for the deterministic-KVM patch series
 
-Two builds are documented:
+The series is five patches (see `patches/README.md`): 0001-0003 (RDTSC/RDRAND/
+RDSEED exiting + emulation → `KVM_EXIT_DETERMINISM`), 0004 (in-kernel force-exit
+preemption → `KVM_EXIT_PREEMPT`), 0005 (MTF deterministic single-step →
+`KVM_EXIT_DET_STEP`). Two builds are documented:
 
 - **Part 1 — canonical, against the pinned `linux-6.18.35` tag.** This is the
   deliverable a reviewer re-applies and re-builds (acceptance gate #2). It
@@ -35,7 +38,9 @@ cd linux-6.18.35
 git init -q && git add -A && git commit -q -m 'v6.18.35 pristine'
 git am /path/to/consonance/vmm-backend/kvm-patches/patches/0001-*.patch \
        /path/to/consonance/vmm-backend/kvm-patches/patches/0002-*.patch \
-       /path/to/consonance/vmm-backend/kvm-patches/patches/0003-*.patch
+       /path/to/consonance/vmm-backend/kvm-patches/patches/0003-*.patch \
+       /path/to/consonance/vmm-backend/kvm-patches/patches/0004-*.patch \
+       /path/to/consonance/vmm-backend/kvm-patches/patches/0005-*.patch
 
 # 3. Configure: KVM + KVM_INTEL as modules; BTF/DEBUG_INFO off (no pahole needed),
 #    module signing off (we load unsigned).
@@ -53,18 +58,44 @@ A `make -j16` of `defconfig` takes a few minutes on the determinism box. The
 modules' `6.18.35-…` vermagic is **why they will not load into the running
 6.12.90 kernel** — use Part 2 for the live experiments.
 
+**Canonical build (task 57, recorded 2026-06-30, determinism box
+`/root/kvm-spike/linux-6.18.35`).** The full five-patch series `git am`-applies
+clean onto pristine `v6.18.35` and reproduces the built tree byte-for-byte. The
+modules build with no warnings:
+
+```
+vermagic: 6.18.35-g83a4bb005323 SMP preempt mod_unload
+arch/x86/kvm/kvm.ko        2471344 bytes
+arch/x86/kvm/kvm-intel.ko   670816 bytes   (+1296 B vs the 0001-0004 build: the
+                                            MTF arm/exit path in vmx_vcpu_pre_run
+                                            + handle_monitor_trap)
+```
+
+This is acceptance gate #2 (a reviewer re-applies + re-builds). The canonical
+modules are **verified by rebuild, not loaded** — loading them on the box would
+require booting the box's host kernel into 6.18.35 (it runs stock 6.12.90), so
+the live determinism round-trip uses the Part-2 6.12.90 proxy of the *same*
+source change. See `IMPLEMENTATION.md`.
+
 ---
 
 ## Part 2 — loadable build for the running 6.12.90 kernel (live experiments)
 
-The same three-hunk change is applied to the running kernel's KVM source and
-built against the distro's prepared header tree (so vermagic + the
-`CONFIG_MODVERSIONS` symbol CRCs match `uname -r` exactly).
+The same change is applied to the running kernel's KVM source and built against
+the distro's prepared header tree (so vermagic + the `CONFIG_MODVERSIONS` symbol
+CRCs match `uname -r` exactly).
 
 This is the exact procedure run for the live experiments (the same change ported
 to 6.12; the only code delta is `EXPORT_SYMBOL_FOR_KVM_INTERNAL` →
 `EXPORT_SYMBOL_GPL`, which is what `scripts/apply_patch_612.py` + the sed below
-handle).
+handle). `apply_patch_612.py` ports the 0001-0003 hunks; the 0004 + 0005 hunks
+(identical mechanism — `preempt_armed`/`KVM_EXIT_PREEMPT` and
+`mtf_step_armed`/`KVM_EXIT_DET_STEP`, the same context the canonical commits
+touch) are carried in the box's 6.12.90 proxy tree, which the Postgres-on-k3s
+frontier (task 56, `state_hash 226437a3…`, 0 skid) was validated on. The 6.12
+arm point for 0005 is `vmx_vcpu_pre_run` after the
+`vmx_emulation_required_with_pending_exception` guard (6.18 renamed it
+`vmx_unhandleable_emulation_required`); both are the same VM-entry hook.
 
 ```sh
 cd ~/kvm-spike/deb612

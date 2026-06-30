@@ -70,3 +70,17 @@ K3S_BIN_SHA256=65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de
 # bottleneck). Integrity is the digest-pinned tarball below.
 K3S_AIRGAP_URL=https://github.com/k3s-io/k3s/releases/download/v1.36.2+k3s1/k3s-airgap-images-amd64.tar
 K3S_AIRGAP_SHA256=6f8acd19735479234692f17b51889f60aa32059ce818f1fa5621a9b6511d2cb6
+
+# --- task 57: the deterministic-KVM patch series (sha256 of each patch file) ---
+# The five-patch series in consonance/vmm-backend/kvm-patches/patches/ git-am's
+# clean onto the pinned linux-6.18.35 tag (KERNEL_SHA256 above) and reproduces a
+# kvm.ko/kvm-intel.ko with vermagic 6.18.35-… — see that dir's BUILD.md. 0001-0003
+# are the RDTSC/RDRAND/RDSEED exiting+emulation ABI; 0004 is the in-kernel
+# force-exit preemption (KVM_EXIT_PREEMPT 42 / KVM_ARM_PREEMPT_EXIT 0xe4); 0005 is
+# the MTF deterministic single-step (KVM_EXIT_DET_STEP 43 / KVM_ARM_MTF_STEP 0xe5).
+# Pinned 2026-06-30. Verify with: shasum -a 256 <patch>.
+KVM_PATCH_0001_SHA256=3cd29fd0e54d46e943d8435125230cd38b32436263d498fa315dc0a7bf53f4ee
+KVM_PATCH_0002_SHA256=522d94b4fdf3e7736a7fb33cc075a53baf60a169b139b5ac3139853ca868aafa
+KVM_PATCH_0003_SHA256=72742b1f74b7dcc250f6cd2c1d44f27fa0413b393a8bdacd6277827a4b4124b3
+KVM_PATCH_0004_SHA256=6311848846a880d6f8deae8b89c493db1fd2dfcc97efce13bde5b585562d6d8b
+KVM_PATCH_0005_SHA256=2f25ddf5ee2b09530ecff07d32e6ab8f1fd04f93fcaa54e64401b8d6cd3e8e60

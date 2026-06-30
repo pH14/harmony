@@ -1,0 +1,102 @@
+From 83a4bb005323dad05c2f950cdb6f221cfa6e4fff Mon Sep 17 00:00:00 2001
+From: harmony <harmony@box>
+Date: Tue, 30 Jun 2026 22:27:30 +0200
+Subject: [PATCH] KVM: VMX: MTF-based deterministic single-step (patch 0005,
+ 6.18 port)
+
+KVM_ARM_MTF_STEP ioctl (_IO(KVMIO,0xe5)) arms a one-shot Monitor-Trap-Flag
+step that fires through guest syscall/exception/interrupt delivery, exiting
+with KVM_EXIT_DET_STEP (43). Ported from the box-proven deb612 6.12.90 delta;
+arm point is vmx_vcpu_pre_run (6.18 uses vmx_unhandleable_emulation_required).
+---
+ arch/x86/include/asm/kvm_host.h |  2 ++
+ arch/x86/kvm/vmx/vmx.c          | 11 +++++++++++
+ arch/x86/kvm/x86.c              |  8 ++++++++
+ include/uapi/linux/kvm.h        |  3 +++
+ 4 files changed, 24 insertions(+)
+
+diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h
+index d9eb87098..18b0a8074 100644
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -816,6 +816,8 @@ struct kvm_vcpu_arch {
+ 	bool at_instruction_boundary;
+ 	/* Deterministic preemption (harmony task 55): one-shot in-kernel force-exit. */
+ 	bool preempt_armed;
++	/* Deterministic single-step (harmony 0005): MTF one-shot step. */
++	bool mtf_step_armed;
+ 	bool tpr_access_reporting;
+ 	bool xfd_no_write_intercept;
+ 	u64 microcode_version;
+diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c
+index 01c2d6152..9f94a35e6 100644
+--- a/arch/x86/kvm/vmx/vmx.c
++++ b/arch/x86/kvm/vmx/vmx.c
+@@ -5930,6 +5930,10 @@ int vmx_vcpu_pre_run(struct kvm_vcpu *vcpu)
+ 		return 0;
+ 	}
+ 
++	/* Deterministic single-step (harmony 0005): arm MTF for one instruction. */
++	if (vcpu->kvm->arch.deterministic_intercepts && vcpu->arch.mtf_step_armed)
++		exec_controls_setbit(to_vmx(vcpu), CPU_BASED_MONITOR_TRAP_FLAG);
++
+ 	return 1;
+ }
+ 
+@@ -5954,6 +5958,13 @@ static int handle_pause(struct kvm_vcpu *vcpu)
+ 
+ static int handle_monitor_trap(struct kvm_vcpu *vcpu)
+ {
++	/* Deterministic single-step (harmony 0005): MTF one-shot step. */
++	if (vcpu->kvm->arch.deterministic_intercepts && vcpu->arch.mtf_step_armed) {
++		vcpu->arch.mtf_step_armed = false;
++		exec_controls_clearbit(to_vmx(vcpu), CPU_BASED_MONITOR_TRAP_FLAG);
++		vcpu->run->exit_reason = KVM_EXIT_DET_STEP;
++		return 0;
++	}
+ 	return 1;
+ }
+ 
+diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
+index acce9a5cc..f89036a0a 100644
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -6432,6 +6432,14 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 			r = 0;
+ 		}
+ 		break;
++	case KVM_ARM_MTF_STEP:
++		/* Deterministic single-step (harmony 0005): arm one-shot MTF step. */
++		r = -EINVAL;
++		if (vcpu->kvm->arch.deterministic_intercepts) {
++			vcpu->arch.mtf_step_armed = true;
++			r = 0;
++		}
++		break;
+ 	case KVM_SMI: {
+ 		r = kvm_inject_smi(vcpu);
+ 		break;
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index 98296c539..4e0fa4829 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -186,6 +186,7 @@ struct kvm_xen_exit {
+ #define KVM_EXIT_TDX              40
+ #define KVM_EXIT_DETERMINISM      41
+ #define KVM_EXIT_PREEMPT          42
++#define KVM_EXIT_DET_STEP         43
+ 
+ /* For KVM_EXIT_INTERNAL_ERROR */
+ /* Emulate instruction failed. */
+@@ -1325,6 +1326,8 @@ struct kvm_vfio_spapr_tce {
+ #define KVM_HAS_DEVICE_ATTR	  _IOW(KVMIO,  0xe3, struct kvm_device_attr)
+ /* Deterministic preemption (harmony task 55): arm the one-shot force-exit. */
+ #define KVM_ARM_PREEMPT_EXIT	  _IO(KVMIO,   0xe4)
++/* Deterministic single-step (harmony 0005): arm the one-shot MTF step. */
++#define KVM_ARM_MTF_STEP	  _IO(KVMIO,   0xe5)
+ 
+ /*
+  * ioctls for vcpu fds
+-- 
+2.47.3
+

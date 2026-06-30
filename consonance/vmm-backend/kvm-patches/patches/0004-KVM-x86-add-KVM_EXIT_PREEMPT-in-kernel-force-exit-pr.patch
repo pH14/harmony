@@ -1,0 +1,122 @@
+From 076f544453e268e65b96822427d411478610dfe3 Mon Sep 17 00:00:00 2001
+From: spike <s@s>
+Date: Mon, 29 Jun 2026 12:00:00 +0200
+Subject: [PATCH] KVM: x86: add KVM_EXIT_PREEMPT in-kernel force-exit
+ preemption
+
+Add the deterministic in-kernel force-exit that hits the V-time LAPIC-timer
+deadline with a bounded skid for every workload (harmony task 55).
+
+A retired-branch perf_event armed at deadline - SKID_MARGIN overflows and
+fires a host PMI (an NMI).  With PIN_BASED_NMI_EXITING the NMI VM-exits;
+vmx_vcpu_enter_exit() has already serviced the perf overflow by the time
+handle_exception_nmi() runs.  When a VM has opted into
+KVM_CAP_X86_DETERMINISTIC_INTERCEPTS and userspace has armed the one-shot
+KVM_ARM_PREEMPT_EXIT, return to userspace with the new KVM_EXIT_PREEMPT exit
+reason instead of re-entering, so the skid is only the bounded hardware-PMI
+latency (~128 retired branches) rather than the unbounded SIGIO-delivery
+latency a CPU-bound guest can outrun.
+
+The arm is a per-vCPU one-shot bool (vcpu->arch.preempt_armed), set by the
+KVM_ARM_PREEMPT_EXIT vcpu ioctl and cleared by the kernel when it fires.
+default-off -> stock behavior; modeled on the KVM_EXIT_DETERMINISM series.
+
+Co-developed-for: harmony force-exit preemption (tasks/55)
+---
+ arch/x86/include/asm/kvm_host.h |  2 ++
+ arch/x86/kvm/vmx/vmx.c          | 19 ++++++++++++++++++-
+ arch/x86/kvm/x86.c              | 12 ++++++++++++
+ include/uapi/linux/kvm.h        |  3 +++
+ 4 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h
+index d786e61da..d9eb87098 100644
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -814,6 +814,8 @@ struct kvm_vcpu_arch {
+ 	u64 smbase;
+ 	u64 smi_count;
+ 	bool at_instruction_boundary;
++	/* Deterministic preemption (harmony task 55): one-shot in-kernel force-exit. */
++	bool preempt_armed;
+ 	bool tpr_access_reporting;
+ 	bool xfd_no_write_intercept;
+ 	u64 microcode_version;
+diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c
+index 04b9b4f60..01c2d6152 100644
+--- a/arch/x86/kvm/vmx/vmx.c
++++ b/arch/x86/kvm/vmx/vmx.c
+@@ -5207,8 +5207,25 @@ static int handle_exception_nmi(struct kvm_vcpu *vcpu)
+ 	 * vmx_vcpu_run() if a #MC occurs on VM-Entry.  NMIs are handled by
+ 	 * vmx_vcpu_enter_exit().
+ 	 */
+-	if (is_machine_check(intr_info) || is_nmi(intr_info))
++	if (is_machine_check(intr_info))
+ 		return 1;
++	if (is_nmi(intr_info)) {
++		/*
++		 * Deterministic preemption (harmony task 55): the NMI was already
++		 * serviced by vmx_vcpu_enter_exit() (the perf-counter overflow PMI
++		 * that drives V-time preemption).  If userspace armed the one-shot
++		 * force-exit, return to userspace with KVM_EXIT_PREEMPT instead of
++		 * re-entering, so the V-time deadline is hit with only the bounded
++		 * hardware-PMI skid.  Gated on the determinism opt-in.
++		 */
++		if (vcpu->kvm->arch.deterministic_intercepts &&
++		    vcpu->arch.preempt_armed) {
++			vcpu->arch.preempt_armed = false;
++			kvm_run->exit_reason = KVM_EXIT_PREEMPT;
++			return 0;
++		}
++		return 1;
++	}
+ 
+ 	/*
+ 	 * Queue the exception here instead of in handle_nm_fault_irqoff().
+diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
+index 3d4ad0011..acce9a5cc 100644
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -6420,6 +6420,18 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
+ 		r = kvm_vcpu_ioctl_nmi(vcpu);
+ 		break;
+ 	}
++	case KVM_ARM_PREEMPT_EXIT:
++		/*
++		 * Deterministic preemption (harmony task 55): arm the one-shot
++		 * in-kernel force-exit on the next perf-overflow NMI VM-exit.
++		 * Gated on the determinism opt-in (default-off -> stock behavior).
++		 */
++		r = -EINVAL;
++		if (vcpu->kvm->arch.deterministic_intercepts) {
++			vcpu->arch.preempt_armed = true;
++			r = 0;
++		}
++		break;
+ 	case KVM_SMI: {
+ 		r = kvm_inject_smi(vcpu);
+ 		break;
+diff --git a/include/uapi/linux/kvm.h b/include/uapi/linux/kvm.h
+index 82c157244..98296c539 100644
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -185,6 +185,7 @@ struct kvm_xen_exit {
+ #define KVM_EXIT_MEMORY_FAULT     39
+ #define KVM_EXIT_TDX              40
+ #define KVM_EXIT_DETERMINISM      41
++#define KVM_EXIT_PREEMPT          42
+ 
+ /* For KVM_EXIT_INTERNAL_ERROR */
+ /* Emulate instruction failed. */
+@@ -1322,6 +1323,8 @@ struct kvm_vfio_spapr_tce {
+ #define KVM_SET_DEVICE_ATTR	  _IOW(KVMIO,  0xe1, struct kvm_device_attr)
+ #define KVM_GET_DEVICE_ATTR	  _IOW(KVMIO,  0xe2, struct kvm_device_attr)
+ #define KVM_HAS_DEVICE_ATTR	  _IOW(KVMIO,  0xe3, struct kvm_device_attr)
++/* Deterministic preemption (harmony task 55): arm the one-shot force-exit. */
++#define KVM_ARM_PREEMPT_EXIT	  _IO(KVMIO,   0xe4)
+ 
+ /*
+  * ioctls for vcpu fds
+-- 
+2.47.3
+
