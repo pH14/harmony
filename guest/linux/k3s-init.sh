@@ -72,6 +72,18 @@ $BB mount -t tmpfs tmpfs /tmp
 $BB chmod 1777 /tmp /dev/shm
 $BB chmod 0666 /dev/console
 
+# --- kubelet/containerd data dirs on tmpfs (cAdvisor cannot stat the ramfs root) ---
+# The guest root is an initramfs (ramfs, device "rootfs"), which cAdvisor (embedded
+# in kubelet) cannot get filesystem stats for -> "failed to get rootfs info" aborts
+# the kubelet ContainerManager (and the overlayfs imagefs stat fails the same way).
+# cAdvisor DOES recognize tmpfs (statfs), so put the kubelet root-dir and containerd's
+# overlayfs snapshotter dir on tmpfs BEFORE k3s starts (cAdvisor caches mounts at
+# kubelet start). The pre-staged airgap images (/var/lib/rancher/k3s/agent/images)
+# and server manifests (a sibling dir) stay on the root, intact.
+$BB mkdir -p /var/lib/kubelet /var/lib/rancher/k3s/agent/containerd
+$BB mount -t tmpfs tmpfs /var/lib/kubelet
+$BB mount -t tmpfs tmpfs /var/lib/rancher/k3s/agent/containerd
+
 # --- cgroup-v2 (unified) — kubelet/containerd manage their own subtrees -------
 # Mount the unified hierarchy, move init out of the root cgroup into a leaf (so
 # the root has no member procs and can delegate controllers), and enable the
