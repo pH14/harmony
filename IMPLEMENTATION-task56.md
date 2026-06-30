@@ -1,5 +1,40 @@
 # Task 56 — SMP-cpuset k3s bring-up: Postgres on k3s, deterministic-twice (frontier)
 
+## HANDOFF (foreman — next phase is yours)
+
+- **Validated state:** branch `task/smp-cpuset-k3s-bringup` on the box `/root/ht49`, tag
+  **`task56-k2-pass`** = commit **`7a5bbad`** (the deterministic-twice-validated source). On top:
+  `b62c8f3` (diagnostic cleanup, re-confirmed by k1) and `7fd8479` (this doc). **Not pushed.**
+- **Gates (box, patched KVM, reverted to stock 1396736 after each):**
+  - **k1** functional — `ok` (788s): k3s cluster Ready → postgres pod (10.42.0.2) + client pod
+    (10.42.0.3) over the intra-guest CNI → workload `row|20|20|210|…` → GUEST_READY.
+  - **k2** deterministic-twice — `ok` (1573s): `state_hash A==B==226437a3f789abce1487dd8e17fd017524fbc4618e08b1a07611e4ad3bfdf0b2`,
+    both runs `steps=1411233`, 20 UUIDs+timestamps bit-identical (seed `0x0028c0ffee5eedc0`).
+  - **k3** seed-sensitivity —  (1573s), both seeds GUEST_READY, the workload differs by seed (so it is
+    seed-driven, not constant): seed_a UUID `2a50ce18…` t `…35.746785` vs seed_b UUID `6ce4b1fc…`
+    t `…29.570056`. 0 skid.
+  - **0 skid / no `DIAG-SKID49`** on every run.
+- **Fix chain:** SMP idle-HLT keystone (ACPI **MADT** in `linux_loader.rs` + **ARAT** contract v4)
+  → kubelet rootfs (tmpfs data dirs) → flannel cni0 MTU (node IP on a **veth**) → runc
+  `pivot_root` (containerd **NoPivotRoot** drop-in) → **node-IP** off the pod CIDR (10.0.0.2).
+- **Files changed:** `consonance/vmm-core/src/linux_loader.rs`; `docs/cpu-msr-contract.toml` +
+  `consonance/vmm-core/src/contract/{mod.rs,testdata/canonical-v4.txt}` + `docs/CPU-MSR-CONTRACT.md`
+  (ARAT/v4); `guest/linux/k3s-init.sh`; `consonance/vmm-backend/src/kvm_sys.rs` +
+  `consonance/vmm-core/src/vmm.rs` (MTF/0005 wiring + cleanup); guest build inputs under
+  `guest/linux/`; `consonance/vmm-backend/kvm-patches/patches/0005-*`.
+- **0005 (MTF) kernel patch — exact locations on the box:**
+  - Repo (provenance): `consonance/vmm-backend/kvm-patches/patches/0005-KVM-VMX-MTF-deterministic-single-step.patch`
+    + `0005-NOTES.md`.
+  - Built/loaded module source:
+    `/root/kvm-spike/deb612/hdr/usr/src/linux-headers-6.12.90+deb13.1-amd64/arch/x86/kvm`
+    (built `kvm.ko`/`kvm-intel.ko`, loaded by `/root/run-patched-ht49.sh`); uapi/asm headers under
+    `…-common/`. The patch is the diff of that tree vs the in-place 0001-0004 stock tree
+    `/root/kvm-spike/deb612/linux-6.12.90`.
+- **DO NOT START productionization** (clean 0005 patch series / canonical linux-6.18 port / PRs) —
+  that is your next phase. SMP slowness (~1.7×/step) is noted, unaddressed (correctness first).
+
+---
+
 **Status: DONE.** Postgres-on-k3s runs on the SMP guest kernel and is **deterministic-twice**
 (bit-identical `state_hash`). This is the task-49 frontier goal, reached on the SMP kernel.
 
