@@ -1968,50 +1968,7 @@ impl<B: Backend> Vmm<B> {
             // No interrupt pending now, but a deliverable timer is armed for the future:
             // jump V-time to it and re-enter.
             IdleAction::JumpToDeadline(deadline_vns) => self.resume_idle(deadline_vns),
-            IdleAction::Terminal => {
-                self.diag_terminal_hlt();
-                Ok(self.terminate(TerminalReason::Hlt))
-            }
-        }
-    }
-
-    /// Task 56 diagnosis: log the guest state at a terminal idle `HLT` so we can
-    /// see WHICH gate of [`Self::idle_action`] fired (IF==0, no deliverable timer,
-    /// …). Determinism path only; pure vCPU reads; never mutates state or the hash.
-    fn diag_terminal_hlt(&self) {
-        if self.vtime.is_none() {
-            return;
-        }
-        let saved = self.backend.save().ok();
-        let rflags = saved.as_ref().map(|s| s.regs.rflags).unwrap_or(0);
-        let rip = saved.as_ref().map(|s| s.regs.rip).unwrap_or(0);
-        let if_set = rflags & RFLAGS_IF != 0;
-        let now_vns = self.lapic_now_vns().ok();
-        let landings = self.idle_landings.len();
-        match self.lapic.as_ref() {
-            Some(l) => {
-                let st = l.snapshot();
-                let lvt = st.lvt[0];
-                let mode = (lvt >> 17) & 0b11;
-                let masked = lvt & (1 << 16) != 0;
-                let vector = lvt & 0xFF;
-                let apic_en = st.svr & (1 << 8) != 0;
-                eprintln!(
-                    "DIAG-HLT56 terminal=Hlt IF={if_set} rip={rip:#x} now_vns={now_vns:?} prior_idle_resumes={landings} \
-                     | timer_running={} timer_pending={} mode={mode} masked={masked} vector={vector} \
-                     init_count={} count_at_arm={} arm_vns={} apic_enabled={apic_en} svr={:#x} \
-                     | next_deadline={:?} deliverable={} peek_irq={:?} has_deliverable={} work={:?}",
-                    st.timer_running, st.timer_pending, st.initial_count, st.count_at_arm,
-                    st.timer_arm_vns, st.svr, l.next_timer_deadline(), l.armed_timer_deliverable(),
-                    l.peek_interrupt(), l.has_deliverable(), self.current_work()
-                );
-            }
-            None => {
-                eprintln!(
-                    "DIAG-HLT56 terminal=Hlt IF={if_set} rip={rip:#x} now_vns={now_vns:?} prior_idle_resumes={landings} | no-lapic work={:?}",
-                    self.current_work()
-                );
-            }
+            IdleAction::Terminal => Ok(self.terminate(TerminalReason::Hlt)),
         }
     }
 

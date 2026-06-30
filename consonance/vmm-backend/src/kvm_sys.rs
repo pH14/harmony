@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+    CpuId, KVM_CAP_X86_USER_SPACE_MSR,
     KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL, KVM_MSR_EXIT_REASON_UNKNOWN,
     KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_guest_debug, kvm_interrupt, kvm_mp_state,
     kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
