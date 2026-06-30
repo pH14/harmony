@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| contract-version | 3 |
+| contract-version | 4 |
 | reference kernel | Linux **v6.18.35** — equals `guest/linux/versions.lock` `KERNEL_VERSION=6.18.35` (tarball sha256 `f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236`); all `arch/x86/kvm/x86.c` and `arch/x86/include/asm/msr-index.h` citations are to that tag |
 | baseline microarchitecture | **`det-cfl-v1`** — Coffee Lake-S client (Intel Core i9-9900K, `06_9e_0c`, microcode `0xf8`); the named baseline of the frozen CPUID model (§2). The host-specific values are derived from and cited to the box dump under `docs/fragments/cfl-baseline/` |
 | contract hash | `contract_hash` = SHA-256 of the canonical serialized form, computed per §6 from the assembled tables — never hand-written into this document |
@@ -430,7 +430,7 @@ gap. Every other cell resolves to a concrete constant.
 | 0x4 | 3 | ALL | EAX=const(0x00000163); EBX=const(0x03C0003F); ECX=const(0x00003FFF); EDX=const(0x00000000) | L3 unified: **16 MiB, 16-way**, 64-B line, 16384 sets — **derived from the box** (`cpuid-raw.txt` leaf 4 sub3 EBX=`0x03c0003f`/ECX=`0x00003fff`; Coffee Lake-S shared inclusive L3 = 16 MiB/16-way, vs Skylake-SP's 1.375 MiB/11-way per-core slice); EAX topology sharing fields (bits 31:14) cleared for the single-core synthetic model. EDX=0 keeps the SKX modeling decision (no inclusivity/complex-indexing claims — the box reports EDX=`0x6` for its 8-core shared L3, but complex cache indexing is meaningless for the single-core synthetic package, so it is not advertised) | SDM Vol.2 CPUID leaf 04H; `docs/fragments/cfl-baseline/cpuid-raw.txt` |
 | 0x4 | 4+ | ALL | const(0x00000000) ×4 | EAX[4:0]=0 terminates cache enumeration | SDM Vol.2 CPUID leaf 04H |
 | 0x5 | * | ALL | const(0x00000000) ×4 | MONITOR/MWAIT leaf zeroed: feature hidden (1.0:ECX[3]=0) — MWAIT C-state hints and MONITOR address-watch are real-time/power timing channels; instruction backstop = MWAIT/MONITOR-exiting → #UD | SDM Vol.2 MONITOR/MWAIT + CPUID leaf 05H; RESEARCH.md principle 5; PLAN.md trap table |
-| 0x6 | * | ALL | EAX=const(0x00000004); EBX=ECX=EDX=const(0x00000000) | **EAX[2] ARAT set** (Always-Running APIC Timer — honest: the deterministic userspace LAPIC timer ticks at a constant V-time rate, never gated by C/P-states; **without it Linux flags the LAPIC timer `CLOCK_EVT_FEAT_C3STOP` and, under `CONFIG_GENERIC_CLOCKEVENTS_BROADCAST` (pulled in by SMP), refuses to adopt it as the per-CPU tick device → falls back to the unmodeled PIT broadcast → the tree-RCU idle `HLT` never wakes — task 56**). All other thermal/power bits stay zeroed — closes §7 power/frequency: EAX[0] DTS, EAX[1] turbo, **EAX[7] HWP** (+all HWP sub-bits; IA32_HWP_* 0x770–0x777 deny-gp), **EAX[19] HFI / EAX[23] ITD** (IA32_HW_FEEDBACK_* publish real thermal/scheduling state), **ECX[0] MPERF/APERF** (effective-frequency ratio = elapsed-real-time oracle; IA32_MPERF/APERF deny-gp), ECX[3] energy-perf-bias — every bit gates an MSR surface that imports host real time, so the leaf is all-zero and the MSR fragments deny the lot | SDM Vol.3B ch.15 + §14.9; docs.kernel.org/arch/x86/intel-hfi; INTEGRATION.md §7 (power/frequency); guest config-fragment (CONFIG_CPU_FREQ off) |
+| 0x6 | * | ALL | EAX=const(0x00000004); EBX=ECX=EDX=const(0x00000000) | **EAX[2] ARAT set** (Always-Running APIC Timer — honest: the deterministic userspace LAPIC timer ticks at a constant V-time rate, never gated by C/P-states; **without it Linux flags the LAPIC timer `CLOCK_EVT_FEAT_C3STOP` and, under `CONFIG_GENERIC_CLOCKEVENTS_BROADCAST` (pulled in by SMP), refuses to adopt it as the per-CPU tick device → falls back to the unmodeled PIT broadcast → the tree-RCU idle `HLT` never wakes — task 56**). All other thermal/power bits stay zeroed — closes §7 power/frequency: EAX[0] DTS, EAX[1] turbo, **EAX[7] HWP** (+all HWP sub-bits; IA32_HWP_* 0x770–0x777 deny-gp), **EAX[19] HFI / EAX[23] ITD** (IA32_HW_FEEDBACK_* publish real thermal/scheduling state), **ECX[0] MPERF/APERF** (effective-frequency ratio = elapsed-real-time oracle; IA32_MPERF/APERF deny-gp), ECX[3] energy-perf-bias — every bit gates an MSR surface that imports host real time, so every one of those power/thermal bits stays zeroed (EAX[2] ARAT, above, is the sole set bit → EAX=0x4) and the MSR fragments deny the lot | SDM Vol.3B ch.15 + §14.9; docs.kernel.org/arch/x86/intel-hfi; INTEGRATION.md §7 (power/frequency); guest config-fragment (CONFIG_CPU_FREQ off) |
 | 0x7 | 0 | EAX | const(0x00000000) | Max leaf-7 subleaf = 0: subleaf 1+ (HRESET, AVX512-FP16, LAM, …) architecturally out of range — nothing half-exposed | SDM Vol.2 CPUID leaf 07H |
 | 0x7 | 0 | EBX | const(0x009C27AB) | **Re-derived from the box** (`cpuid-raw.txt` leaf 7.0 EBX=`0x029c67af`; the contract exposes the box's architectural bits and clears the deny-list). Set (=1): FSGSBASE, **TSC_ADJUST[1]** (IA32_TSC_ADJUST is emulate-vtime per msr-tsc fragment — exposed because the emulation is exact, and hiding it would make the guest's TSC-coherence logic diverge), BMI1, AVX2, SMEP, BMI2, ERMS, INVPCID, ZERO_FCS_FDS[13] (deprecated x87 CS/DS always read 0 — strictly more deterministic), **RDSEED[18]** = exposed-but-trapped via VMX RDSEED-exiting → seeded PRNG stream (same justification as RDRAND; rr must clear it, we trap it; note RDSEED *executes* even when its CPUID bit is masked, so the exiting control is the real enforcement either way), ADX, SMAP, CLFLUSHOPT. Clear (=0): **FDP_EXCPTN_ONLY[6]=0 and CLWB[24]=0 — both physically absent on Coffee Lake-S** (box EBX bits 6,24 clear; both were *set* on the Skylake-SP baseline — a CFL-client-vs-SKX-server ripple, CLWB being a server/Ice Lake+ feature), so the contract cannot expose them; SGX[2] (present on the box but hidden — leaf 0x12 zeroed), **HLE[4]/RTM[11]=0 — TSX physically absent on the box** (RTM/HLE not implemented; IA32_TSX_CTRL 0x122 #GPs; XBEGIN/&c #UD natively — §3.9 / §4 TSX rows), **RDT-M[12]/RDT-A[15]** (cache-occupancy/bandwidth counters = cross-VM uarch oracle; leaves 0xF/0x10 zeroed), MPX[14] (present on the box but hidden — msr-arch-stateful: BNDCFGS deny-gp), AVX512F[16]/DQ[17]/IFMA[21]/PF..VL[26-31]=0 (no AVX-512 on CFL client: keeps frozen XCR0 ≤ 0x7, the XSAVE image small and canonical), **Intel PT[25]=0** (present on the box but locked by msr-intel-pt: RTIT MSRs deny-gp, leaf 0x14 zeroed), SHA[29]=0 (physically absent on the box) | PLAN.md trap table; `docs/fragments/cfl-baseline/cpuid-raw.txt`; rr src/RecordSession.cc (CPUID_RDSEED_FLAG, CPUID_RTM_FLAG); fragments msr-tsc/msr-speculation/msr-intel-pt/msr-arch-stateful; SDM Vol.2 CPUID 07H |
 | 0x7 | 0 | ECX | const(0x00000000) | All clear, notably: **WAITPKG[5]=0** (locked by msr-timing-instr: UMWAIT/TPAUSE wait on real-TSC deadlines and leak timeout-vs-wake in CF; IA32_UMWAIT_CONTROL deny-gp), CET_SS[7]=0 (msr-arch-stateful), PKU[3]/OSPKE[4]=0 (keeps XCR0 menu at {x87,SSE,AVX}), UMIP[2]=0, **RDPID[22]=0** — user-mode read of IA32_TSC_AUX would expose a CPU/node id channel without CPUID; the bit is hidden, and because TSC_AUX is allow-stateful (vm_state-echoed, never the host's per-core value, per msr-tsc) even a guest that executes RDPID anyway reads only deterministic guest state (see [question] 4: RDPID cannot be made to #UD while RDTSCP is enabled), LA57[16]=0 (4-level paging only, matches 48 virtual bits in 0x80000008) | felixcloutier.com/x86/rdpid; fragments msr-timing-instr/msr-tsc/msr-arch-stateful; SDM Vol.2 CPUID 07H |
@@ -2046,7 +2046,7 @@ cannot change the hash, since they are excluded from serialization). There are n
 in-place value edits under an existing version, ever — a wrong value is fixed by a new
 version whose changelog says so.
 
-**Registry status (live as of v3).** The enforcement is now mechanical and committed: the §6
+**Registry status (live as of v4).** The enforcement is now mechanical and committed: the §6
 canonical serializer exists in vmm-core (`consonance/vmm-core/src/contract/{canonical,parse}.rs`),
 emits the byte string specified above from the parsed `cpu-msr-contract.toml`, and
 `contract_hash` = SHA-256 of those bytes. The hash of the **v4 (det-cfl-v1)** contract is
@@ -2055,7 +2055,7 @@ emits the byte string specified above from the parsed `cpu-msr-contract.toml`, a
 
 committed in `cpu-msr-contract.toml` `[contract] contract_hash` and pinned by the live gate
 `vmm_core::contract::tests::contract_hash_matches_committed_registry` (computed-from-parsed ==
-committed) plus the byte-exact golden `src/contract/testdata/canonical-v3.txt`. vmm-core startup
+committed) plus the byte-exact golden `src/contract/testdata/canonical-v4.txt`. vmm-core startup
 re-serializes, re-hashes, and refuses a mismatch. Off-contract MSR accesses observed at runtime
 (§1) feed back into the version rule: the triaged new row changes the body, so it arrives as a
 new version, and every run header names the version + hash it executed under. *(v1 and v2 were
@@ -2102,6 +2102,15 @@ contract whose body-hash is computed and committed.)*
   the single-thread topology, XCR0={x87,SSE,AVX} / leaf-0xD layout, the 2.0 GHz/25 MHz/100 MHz
   frequency scalars, MXCSR_MASK `0x0000ffff` (box-confirmed), `guest-ucode-rev`, the MSR
   partition (1043 indices), and the §1/§3/§5 dispositions.
+- **v4** (task 56) — **advertise ARAT** (CPUID.06H:EAX[2], Always-Running APIC Timer): leaf-6
+  EAX `0x00000000 → 0x00000004` (the sole body change → hash change). Honest: the deterministic
+  userspace LAPIC timer ticks at a constant V-time rate, never gated by C/P-states. Needed for the
+  `CONFIG_SMP=y` guest — without ARAT, Linux flags the LAPIC timer `CLOCK_EVT_FEAT_C3STOP` and
+  (under the broadcast machinery SMP pulls in) refuses to adopt it as the per-CPU tick device,
+  falling back to the unmodeled PIT broadcast so the tree-RCU idle `HLT` never wakes. Paired with
+  the minimal ACPI MADT written in `consonance/vmm-core/src/linux_loader.rs` (the MADT+ARAT
+  keystone). New `contract_hash` = `30839ae6…ddb67` (above); everything else carried over unchanged
+  from v3.
 
 ## 7. Citations
 
