@@ -103,7 +103,8 @@ $BB ip link set lo up 2>/dev/null || true
 # k3s requires a default route + a node IP; the deterministic guest has no host NIC.
 # Give lo a private global IP + a default route so k3s host-interface detection
 # (net.ChooseHostInterface reads /proc/net/route) succeeds. --node-ip pins the choice.
-NODE_IP=10.42.0.2
+NODE_IP=10.0.0.2  # OUT of the pod CIDR 10.42.0.0/16 (was 10.42.0.2, which
+# collided with the first pod IP -> kubelet probed the node, not the pod over cni0)
 # Put the node IP on a real veth (MTU 1500), NOT lo (MTU 65536). flannel derives
 # the VXLAN/bridge MTU from the node interface; lo's 65536 MTU makes flannel emit
 # an MTU the cni0 bridge create rejects (EINVAL "invalid argument"). A veth yields
@@ -131,6 +132,16 @@ log "starting k3s server ($(k3s --version 2>/dev/null | $BB head -1)) — log ->
 # Foreground sub-processes (containerd, kubelet goroutines, apiserver, scheduler,
 # controllers, kube-proxy, flannel) are now driven by V-time preemption. Its
 # verbose log stays in a file; only our deterministic markers reach ttyS0.
+# runc on the initramfs ramdisk: the default pivot_root EINVALs ("rootfs on a
+# ramdisk whose root mount has no parent" — task 48). Make containerd's runc-v2
+# shim pass --no-pivot (MS_MOVE+chroot) via a drop-in that the k3s-generated
+# config-v3.toml imports from config-v3.toml.d/ (merged into runc.options).
+$BB mkdir -p /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
+$BB cat > /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/10-nopivot.toml <<'CFG'
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+  NoPivotRoot = true
+  SystemdCgroup = false
+CFG
 k3s server --config /etc/rancher/k3s/config.yaml --node-ip="$NODE_IP" >"$K3SLOG" 2>&1 &
 K3SPID=$!
 
