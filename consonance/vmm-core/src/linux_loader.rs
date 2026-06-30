@@ -797,9 +797,7 @@ fn acpi_checksum(bytes: &[u8]) -> u8 {
 /// (no timestamps) => byte-identical every boot, so the tables are part of the
 /// deterministic guest input.
 fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
-    let oob = LinuxLoadError::RamTooSmall {
-        ram: ACPI_RSDP_GPA,
-    };
+    let oob = LinuxLoadError::RamTooSmall { ram: ACPI_RSDP_GPA };
     const OEMID: &[u8; 6] = b"HARMNY";
     const OEM_TABLE_ID: &[u8; 8] = b"HARMONYT";
     const CREATOR_ID: &[u8; 4] = b"HARM";
