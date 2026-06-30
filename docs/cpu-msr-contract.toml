@@ -17,13 +17,13 @@
 #   * insn mirrors markdown §4; timer/cmos/mmio mirror §5.
 
 [contract]
-version = 3
+version = 4
 kernel-tag = "v6.18.35"
 kernel-sha256 = "f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236"
 cpuid-baseline = "det-cfl-v1"
 # §6 anti-drift anchor: sha256 of the canonical serialized form (computed by
 # vmm-core's serializer, never hand-written). Re-derive on any body change + version bump.
-contract_hash = "e01f0835576444c269c6603fc4984d0b425785373f4c49613d75ce896565c832"
+contract_hash = "30839ae67142f265066be1051e93fcb4a1839c30bd3edd6d875ecdc1a37ddb67"
 # Frozen scalar constants hashed into the canonical form (§6 header records):
 tsc-hz = 2000000000
 crystal-hz = 25000000
@@ -120,7 +120,7 @@ edx = "0x00000000"
 [[cpuid.entry]]
 leaf = "0x00000006"
 subleaf = "*"
-eax = "0x00000000"
+eax = "0x00000004"
 ebx = "0x00000000"
 ecx = "0x00000000"
 edx = "0x00000000"
