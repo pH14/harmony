@@ -375,6 +375,7 @@ install -m 0755 "$LINUX_DIR/k3s-init.sh" "$K3SROOT/k3s-init"
 # pod's postgres (uid 999) needs. Ownership is a deterministic function of the
 # image + initdb, so the image stays reproducible.
 echo "== k3s image: packing initramfs"
+mkdir -p "$ART_DIR"   # the artifact dir (guest/build) may not exist on a fresh checkout
 find "$K3SROOT" -mindepth 1 -exec touch -hcd @0 {} +
 ( cd "$K3SROOT" && find . -mindepth 1 -print0 | LC_ALL=C sort -z \
     | cpio --null -o -H newc --quiet ) | gzip -n -9 >"$ART_DIR/initramfs-k3s.cpio.gz"
