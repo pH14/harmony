@@ -42,8 +42,9 @@ swallows any stray `KVM_EXIT_DET_STEP` as a transparent re-entry instead of
 aborting. The pi "reason-43 classifier missing" note was a verified false positive
 (`kvm.rs` already maps `KVM_EXIT_DET_STEP → StepStop::SingleStepTrap`).
 Re-validated on the box: `live_m1_m2` 4/4 deterministic-twice + k3s **k1** (below),
-0 skid, no stale DET_STEP. NB the userspace half of this fix + the DIAG/SPDX/ndjson
-cleanup land on the task-56 bundle branch (where those files live), not here.
+0 skid, no stale DET_STEP. The userspace half of this fix
+(`consonance/vmm-backend/src/{kvm.rs,kvm_sys.rs}`) + the DIAG/SPDX/ndjson cleanup
+ride on this same branch alongside the task-56 frontier they belong to.
 
 **Build (canonical, gate #2 — box `/root/kvm-spike/linux-6.18.35`, 2026-06-30).**
 The 5-patch series `git am`-applies clean onto pristine `v6.18.35` **and
