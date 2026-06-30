@@ -104,8 +104,15 @@ $BB ip link set lo up 2>/dev/null || true
 # Give lo a private global IP + a default route so k3s host-interface detection
 # (net.ChooseHostInterface reads /proc/net/route) succeeds. --node-ip pins the choice.
 NODE_IP=10.42.0.2
-$BB ip addr add "$NODE_IP"/24 dev lo 2>/dev/null || true
-$BB ip route add default dev lo 2>/dev/null || true
+# Put the node IP on a real veth (MTU 1500), NOT lo (MTU 65536). flannel derives
+# the VXLAN/bridge MTU from the node interface; lo's 65536 MTU makes flannel emit
+# an MTU the cni0 bridge create rejects (EINVAL "invalid argument"). A veth yields
+# FLANNEL_MTU=1450 -> cni0 MTU 1450 (valid). CONFIG_VETH=y in the SMP kernel.
+$BB ip link add nodenet0 type veth peer name nodenet1 2>/dev/null || true
+$BB ip link set nodenet1 mtu 1500 up 2>/dev/null || true
+$BB ip link set nodenet0 mtu 1500 up 2>/dev/null || true
+$BB ip addr add "$NODE_IP"/24 dev nodenet0 2>/dev/null || true
+$BB ip route add default dev nodenet0 2>/dev/null || true
 $BB echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 $BB echo 1 > /proc/sys/net/ipv4/conf/all/forwarding 2>/dev/null || true
 # Bridged pod traffic must traverse iptables for kube-proxy ClusterIP DNAT

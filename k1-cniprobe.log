@@ -1,0 +1,1347 @@
+=== pre-load lsmod ===
+kvm_intel             417792  0
+kvm                  1396736  1 kvm_intel
+kvm_intel users=0
+=== load patched modules ===
+loaded: 6.12.90+deb13.1-amd64 SMP preempt mod_unload modversions 
+kvm_intel             417792  0
+kvm                  1400832  1 kvm_intel
+=== run gate (timeout 900s, core 2) ===
+warning: unused imports: `KVM_GUESTDBG_ENABLE` and `KVM_GUESTDBG_SINGLESTEP`
+  --> consonance/vmm-backend/src/kvm_sys.rs:30:40
+   |
+30 |     CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_SINGLESTEP,
+   |                                        ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `vmm-backend` (lib) generated 1 warning (run `cargo fix --lib -p vmm-backend` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/live_k3s_postgres.rs (target/debug/deps/live_k3s_postgres-dac1cb4de2f80664)
+
+running 1 test
+test k1_k3s_cluster_postgres_client_streams_patched ... [host-assert] CPU-MSR-CONTRACT §1.1 baseline:
+[host-assert]   PASS  family-model-stepping: expected 06_9e_0c, observed 06_9e_0c
+[host-assert]   PASS  host-microcode-rev: expected 0x00000000000000f8, observed 0x00000000000000f8
+[host-assert]   PASS  mxcsr-mask: expected 0xffff, observed 0xffff
+[host-assert]   PASS  maxphyaddr-min: expected >= 39, observed 39
+[host-assert]   PASS  rtm-disabled: expected rtm physically absent (the IA32_TSX_CTRL pin is not installed by this skeleton), observed rtm-absent (XBEGIN #UDs; already non-usable)
+[host-assert]   PASS  host-absent HRESET: expected absent, observed absent
+[host-assert]   PASS  host-absent PCONFIG: expected absent, observed absent
+[host-assert]   PASS  host-absent RDPID: expected absent, observed absent
+[host-assert]   PASS  host-absent SERIALIZE: expected absent, observed absent
+[host-assert]   PASS  host-absent SHA: expected absent, observed absent
+[host-assert]   PASS  host-absent TPAUSE: expected absent, observed absent
+[host-assert]   PASS  host-absent UMONITOR: expected absent, observed absent
+[host-assert]   PASS  host-absent UMWAIT: expected absent, observed absent
+[k3s] cmdline: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all rdinit=/k3s-init
+[telemetry] recording this run to k3s-run.k1.ndjson
+[telemetry]   watch it: cargo run -p telemetry --bin console -- --source file:k3s-run.k1.ndjson
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x1272418 work=73631412 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=73633205 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=73633205 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=73633208 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=73636209 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=73640184 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=73640184 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=73640195 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=73640367 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296dc7 work=74064795 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff82ba3479 work=74069541 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0xffffffff8128b422 work=74069551 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff82ba2b76 work=95972318 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=99049321 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0xffffffff81297a36 work=99049324 disposition=AllowFixed(4276095232)
+[    0.000000] Linux version 6.18.35 (hypervizor@hypervizor) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all rdinit=/k3s-init
+[    0.000000] x86/CPU: Running old microcode
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009ffff] usable
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x00000000fedfffff] usable
+[    0.000000] BIOS-e820: [mem 0x00000000fee00000-0x00000000fee00fff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fee01000-0x00000003ffffffff] usable
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] DMI not present or invalid.
+[    0.000000] tsc: Detected 2000.000 MHz processor
+[    0.000004] last_pfn = 0x400000 max_arch_pfn = 0x400000000
+[    0.000004] MTRRs disabled by BIOS
+[    0.000005] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000005] last_pfn = 0x100000 max_arch_pfn = 0x400000000
+[    0.000595] Using GB pages for direct mapping
+[    0.000831] RAMDISK: [mem 0x71bf1000-0x7fffffff]
+[    0.000831] ACPI: Early table checksum verification disabled
+[    0.000832] ACPI: RSDP 0x00000000000E0000 000024 (v02 HARMNY)
+[    0.000833] ACPI: XSDT 0x00000000000E0040 00002C (v01 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000835] ACPI: APIC 0x00000000000E0080 000034 (v05 HARMNY HARMONYT 00000001 HARM 00000001)
+[    0.000837] ACPI: Reserving APIC table memory at [mem 0xe0080-0xe00b3]
+[    0.000851] Zone ranges:
+[    0.000851]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000852]   DMA32    [mem 0x0000000001000000-0x00000000ffffffff]
+[    0.000852]   Normal   [mem 0x0000000100000000-0x00000003ffffffff]
+[    0.000853]   Device   empty
+[    0.000854] Movable zone start for each node
+[    0.000854] Early memory node ranges
+[    0.000854]   node   0: [mem 0x0000000000001000-0x000000000009ffff]
+[    0.000855]   node   0: [mem 0x0000000000100000-0x00000000fedfffff]
+[    0.000856]   node   0: [mem 0x00000000fee01000-0x00000003ffffffff]
+[    0.000858] Initmem setup node 0 [mem 0x0000000000001000-0x00000003ffffffff]
+[    0.000860] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000880] On node 0, zone DMA: 96 pages in unavailable ranges
+[    0.006122] On node 0, zone DMA32: 1 pages in unavailable ranges
+[    0.021908] ACPI: No IOAPIC entries present
+[    0.021908] ACPI: Using ACPI for processor (LAPIC) configuration information
+[    0.021910] CPU topo: Max. logical packages:   1
+[    0.021910] CPU topo: Max. logical dies:       1
+[    0.021911] CPU topo: Max. dies per package:   1
+[    0.021912] CPU topo: Max. threads per core:   1
+[    0.021912] CPU topo: Num. cores per package:     1
+[    0.021913] CPU topo: Num. threads per package:   1
+[    0.021913] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
+[    0.021915] Cannot find an available gap in the 32-bit address range
+[    0.021915] PCI devices with unassigned 32-bit BARs may not work!
+[    0.021916] [mem 0x400100000-0x4004fffff] available for PCI devices
+[    0.021916] Booting paravirtualized kernel on bare hardware
+[    0.021917] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.024501] setup_percpu: NR_CPUS:240 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
+[    0.024535] percpu: Embedded 39 pages/cpu s127000 r0 d32744 u2097152
+[    0.024542] Kernel command line: console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check lpj=4000000 nokaslr maxcpus=1 nox2apic hpet=disable cgroup_no_v1=all rdinit=/k3s-init
+[    0.024585] random: crng init done
+[    0.024585] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.024848] Dentry cache hash table entries: 2097152 (order: 12, 16777216 bytes, linear)
+[    0.024981] Inode-cache hash table entries: 1048576 (order: 11, 8388608 bytes, linear)
+[    0.024984] software IO TLB: area num 1.
+[    0.027128] Built 1 zonelists, mobility grouping on.  Total pages: 4194206
+[    0.027129] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.040050] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+[    0.040065] rcu: Hierarchical RCU implementation.
+[    0.040066] rcu: 	RCU event tracing is enabled.
+[    0.040066] rcu: 	RCU restricting CPUs from NR_CPUS=240 to nr_cpu_ids=1.
+[    0.040067] 	Tracing variant of Tasks RCU enabled.
+[    0.040067] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.040068] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+[    0.040069] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.
+[    0.040071] NR_IRQS: 15616, nr_irqs: 32, preallocated irqs: 16
+[    0.040204] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.040216] Console: colour dummy device 80x25
+[    0.040217] printk: legacy console [ttyS0] enabled
+[    0.040274] ACPI: Core revision 20250807
+[    0.040280] ACPI: setting ELCR to 0001 (from 0000)
+[    0.040281] APIC: Switch to symmetric I/O mode setup
+[    0.040283] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff82b9d57f work=114350103 disposition=EmulateVtime
+[    0.040285] Calibrating delay loop (skipped) preset value.. 800.00 BogoMIPS (lpj=4000000)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff818810c2 work=114352439 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff81287e39 work=114352769 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff81287e46 work=114352769 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0xffffffff81287d1c work=114352780 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0xffffffff812874ee work=114352883 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x140 data=n/a rip=0xffffffff81287f65 work=114353187 disposition=DenyGp
+[    0.040288] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.040290] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=114357009 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0xffffffff8128444b work=114357081 disposition=AllowFixed(167775241)
+[    0.040292] mitigations: Enabled attack vectors: user_kernel, user_user, SMT mitigations: auto
+[    0.040294] Speculative Store Bypass: Vulnerable
+[    0.040295] SRBDS: Vulnerable: No microcode
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284be2 work=114361832 disposition=DenyGp
+[    0.040297] unchecked MSR access error: RDMSR from 0x123 at rIP: 0xffffffff81284be2 (native_read_msr+0x2/0x10)
+[    0.040299] Call Trace:
+[    0.040300]  <TASK>
+[    0.040301]  cpu_select_mitigations+0x969/0x1e40
+[    0.040303]  arch_cpu_finalize_init+0xbe/0x140
+[    0.040306]  start_kernel+0x54b/0x5d0
+[    0.040309]  x86_64_start_reservations+0x20/0x20
+[    0.040312]  x86_64_start_kernel+0xc0/0xc0
+[    0.040314]  common_startup_64+0x13b/0x148
+[    0.040316]  </TASK>
+[    0.040317] Spectre V2 : Mitigation: Retpolines
+[    0.040318] RETBleed: Vulnerable
+[    0.040319] MDS: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.040321] MMIO Stale Data: Vulnerable: Clear CPU buffers attempted, no microcode
+[    0.040322] VMSCAPE: Vulnerable
+[    0.040323] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.040325] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e7e work=114392550 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x123 data=0x0 rip=0xffffffff81284e9c work=114392611 disposition=DenyGp
+[    0.040327] unchecked MSR access error: WRMSR to 0x123 (tried to write 0x0000000000000000) at rIP: 0xffffffff81284e9c (update_gds_msr+0x3c/0x80)
+[    0.040331] Call Trace:
+[    0.040332]  <TASK>
+[    0.040332]  cpu_select_mitigations+0x1ae6/0x1e40
+[    0.040335]  arch_cpu_finalize_init+0xbe/0x140
+[    0.040337]  start_kernel+0x54b/0x5d0
+[    0.040340]  x86_64_start_reservations+0x20/0x20
+[    0.040343]  x86_64_start_kernel+0xc0/0xc0
+[    0.040346]  common_startup_64+0x13b/0x148
+[    0.040348]  </TASK>
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x123 data=n/a rip=0xffffffff81284e9e work=114413846 disposition=DenyGp
+[    0.040349] GDS: Mitigation: Microcode
+[    0.040350] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.040351] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.040353] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.040354] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.040356] x86/fpu: Enabled xstate features 0x7, context size is 832 bytes, using 'standard' format.
+[    0.046186] Freeing SMP alternatives memory: 48K
+[    0.046187] pid_max: default: 32768 minimum: 301
+[    0.046194] LSM: initializing lsm=capability,landlock
+[    0.046204] landlock: Up and running.
+[    0.046208] Mount-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.046210] Mountpoint-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.046238] cgroup: Disabling cpuset control group subsystem in v1 mounts
+[    0.046241] cgroup: Disabling cpu control group subsystem in v1 mounts
+[    0.046242] cgroup: Disabling cpuacct control group subsystem in v1 mounts
+[    0.046245] cgroup: Disabling blkio control group subsystem in v1 mounts
+[    0.046249] cgroup: Disabling memory control group subsystem in v1 mounts
+[    0.046251] cgroup: Disabling devices control group subsystem in v1 mounts
+[    0.046253] cgroup: Disabling freezer control group subsystem in v1 mounts
+[    0.046255] cgroup: Disabling net_cls control group subsystem in v1 mounts
+[    0.046257] cgroup: Disabling perf_event control group subsystem in v1 mounts
+[    0.046259] cgroup: Disabling net_prio control group subsystem in v1 mounts
+[    0.046261] cgroup: Disabling hugetlb control group subsystem in v1 mounts
+[    0.046262] cgroup: Disabling pids control group subsystem in v1 mounts
+[    0.046265] cgroup: Disabling rdma control group subsystem in v1 mounts
+[    0.046267] ACPI Warning: AcpiEnable failed (20250807/utxfinit-147)
+[    0.046270] ACPI: Unable to enable ACPI
+[    0.046275] smpboot: CPU0: Intel Deterministic vCPU (CFL-class) @ 2.00GHz (family: 0x6, model: 0x9e, stepping: 0xc)
+[    0.046322] Performance Events: unsupported CPU family 6 model 158 no PMU driver, software events only.
+[    0.046327] signal: max sigframe size: 1360
+[    0.046334] rcu: Hierarchical SRCU implementation.
+[    0.046335] rcu: 	Max phase no-delay instances is 1000.
+[    0.046356] smp: Bringing up secondary CPUs ...
+[    0.046357] smp: Brought up 1 node, 1 CPU
+[    0.046358] smpboot: Total of 1 processors activated (800.00 BogoMIPS)
+[    0.046366] Memory: 16152668K/16776824K available (15511K kernel code, 1167K rwdata, 4332K rodata, 2112K init, 2396K bss, 620164K reserved, 0K cma-reserved)
+[    0.046577] devtmpfs: initialized
+[    0.046586] x86/mm: Memory block size: 128MB
+[    0.047012] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.047015] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+[    0.047017] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+[    0.047051] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.047086] audit: initializing netlink subsys (disabled)
+[    0.047105] thermal_sys: Registered thermal governor 'step_wise'
+[    0.047106] audit: type=2000 audit(943920000.000:1): state=initialized audit_enabled=0 res=1
+[    0.047110] cpuidle: using governor menu
+[    0.047134] PCI: Fatal: No config space access function found
+[    0.047174] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.047175] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.047177] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.047178] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.047212] ACPI: Interpreter disabled.
+[    0.047216] iommu: Default domain type: Translated
+[    0.047217] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.047247] SCSI subsystem initialized
+[    0.047250] pps_core: LinuxPPS API ver. 1 registered
+[    0.047252] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.047254] PTP clock support registered
+[    0.047325] PCI: System does not support PCI
+[    0.047330] vgaarb: loaded
+[    0.047344] clocksource: Switched to clocksource tsc-early
+[    0.047374] pnp: PnP ACPI: disabled
+[    0.047719] NET: Registered PF_INET protocol family
+[    0.047727] IP idents hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.048272] tcp_listen_portaddr_hash hash table entries: 8192 (order: 5, 131072 bytes, linear)
+[    0.048282] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.048285] TCP established hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.048418] TCP bind hash table entries: 65536 (order: 9, 2097152 bytes, linear)
+[    0.048486] TCP: Hash tables configured (established 131072 bind 65536)
+[    0.048489] UDP hash table entries: 8192 (order: 7, 524288 bytes, linear)
+[    0.048515] UDP-Lite hash table entries: 8192 (order: 7, 524288 bytes, linear)
+[    0.048546] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.048549] PCI: CLS 0 bytes, default 64
+[    0.048550] PCI-DMA: Using software bounce buffering for IO (SWIOTLB)
+[    0.048551] software IO TLB: mapped [mem 0x00000000fae00000-0x00000000fee00000] (64MB)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x606 data=n/a rip=0xffffffff82b91ab4 work=122629824 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x64e data=n/a rip=0xffffffff81252803 work=122629958 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x34 data=n/a rip=0xffffffff81252803 work=122630030 disposition=DenyGp
+[    0.048581] Trying to unpack rootfs image as initramfs...
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fc data=n/a rip=0xffffffff81252803 work=130771735 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fd data=n/a rip=0xffffffff81252803 work=130771803 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fe data=n/a rip=0xffffffff81252803 work=130771871 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x60d data=n/a rip=0xffffffff81252803 work=130771941 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f8 data=n/a rip=0xffffffff81252803 work=130772009 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3f9 data=n/a rip=0xffffffff81252803 work=130772077 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3fa data=n/a rip=0xffffffff81252803 work=130772145 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x630 data=n/a rip=0xffffffff81252803 work=130772213 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x631 data=n/a rip=0xffffffff81252803 work=130772281 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x632 data=n/a rip=0xffffffff81252803 work=130772349 disposition=DenyGp
+[    0.050285] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x39a85c9bff6, max_idle_ns: 881590591483 ns
+[    0.050285] clocksource: Switched to clocksource tsc
+[    0.050285] platform rtc_cmos: registered platform RTC device (no PNP device found)
+[    0.050285] workingset: timestamp_bits=46 max_order=22 bucket_order=0
+[    0.050285] Key type cifs.spnego registered
+[    0.050285] Key type cifs.idmap registered
+[    0.050285] fuse: init (API version 7.45)
+[    0.050285] SGI XFS with security attributes, scrub, repair, no debug enabled
+[    0.050285] 9p: Installing v9fs 9p2000 file system support
+[    0.051948] NET: Registered PF_ALG protocol family
+[    0.051952] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 249)
+[    0.060163] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
+[    0.060176] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450
+[    0.060611] brd: module loaded
+[    0.060878] loop: module loaded
+[    0.060899] tun: Universal TUN/TAP device driver, 1.6
+[    0.060926] VFIO - User Level meta-driver version: 0.3
+[    0.061282] xt_time: kernel timezone is -0000
+[    0.061285] IPVS: Registered protocols (TCP, UDP, SCTP, AH, ESP)
+[    0.061289] IPVS: Connection hash table configured (size=4096, memory=32Kbytes)
+[    0.061306] IPVS: ipvs loaded.
+[    0.061307] IPVS: [rr] scheduler registered.
+[    0.061308] IPVS: [wrr] scheduler registered.
+[    0.061309] IPVS: [lc] scheduler registered.
+[    0.061310] IPVS: [wlc] scheduler registered.
+[    0.061311] IPVS: [fo] scheduler registered.
+[    0.061313] IPVS: [ovf] scheduler registered.
+[    0.061314] IPVS: [lblc] scheduler registered.
+[    0.061316] IPVS: [lblcr] scheduler registered.
+[    0.061317] IPVS: [dh] scheduler registered.
+[    0.061318] IPVS: [sh] scheduler registered.
+[    0.061319] IPVS: [sed] scheduler registered.
+[    0.061320] IPVS: [nq] scheduler registered.
+[    0.061321] IPVS: [sip] pe registered.
+[    0.061357] Initializing XFRM netlink socket
+[    0.061371] NET: Registered PF_INET6 protocol family
+[    0.061443] Segment Routing with IPv6
+[    0.061446] In-situ OAM (IOAM) with IPv6
+[    0.061459] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.061503] NET: Registered PF_PACKET protocol family
+[    0.061511] Bridge firewalling registered
+[    0.061518] 9pnet: Installing 9P2000 support
+[    0.061521] Key type dns_resolver registered
+[    0.070508] NET: Registered PF_VSOCK protocol family
+[    0.070523] microcode: Current revision: 0x00000001
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x8b data=0x0 rip=0xffffffff8128cdf8 work=151651798 disposition=DenyIgnoreWrite
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0xffffffff8128ce03 work=151651798 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0xffffffff8128ce35 work=151651801 disposition=AllowFixed(0)
+[    0.070530] IPI shorthand broadcast: enabled
+[    0.071217] sched_clock: Marking stable (70386348, 80072)->(77525105, -7058685)
+[    0.071234] registered taskstats version 1
+[    0.072581] alg: No test for fips(ansi_cprng) (fips_ansi_cprng)
+[    0.538135] Freeing initrd memory: 233532K
+[    0.538248] Freeing unused kernel image (initmem) memory: 2112K
+[    0.538258] Write protecting the kernel read-only data: 22528k
+[    0.538377] Freeing unused kernel image (text/rodata gap) memory: 872K
+[    0.538462] Freeing unused kernel image (rodata/data gap) memory: 1812K
+[    0.538464] Run /k3s-init as init process
+K8S49: DIAG-CNI56 lo_mtu=65536 candidate_bridge_mtu=65486
+K8S49: DIAG-CNI56 bridge_plain=OK
+K8S49: DIAG-CNI56 bridge_mtu_65486=OK
+K8S49: DIAG-CNI56 bridge_mtu_1450=OK
+K8S49: starting k3s server (k3s version v1.36.2+k3s1 (01b6f04a)) — log -> /run/k3s.log (not ttyS0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2024673234 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=1042888080 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7645 disposition=EmulateVtime
+K8S49: ready: apiserver /readyz
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5064 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=82074430 disposition=EmulateVtime
+K8S49: ready: node/det-node Ready
+K8S49: CLUSTER_UP single-node k3s cluster is Ready
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3575 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6204319 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=133 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2987 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3788 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7208 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13090 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9523 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13250 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10527 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=40224 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11538 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20468 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10561 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37085 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8483 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=86431 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12544 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9525 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8047 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14577 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10685 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10041 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10746 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13288 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12160 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9333 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8095 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8498 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12516 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11539 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9333 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13353 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10750 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10152 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10672 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32590 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8968 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19819 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12027 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8092 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13744 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10979 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8033 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15732 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10790 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10167 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10559 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13440 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8611 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8089 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7954 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9263 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13972 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26007 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8133 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14984 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26186 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25725 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9471 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37978 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=60135 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34903 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10448 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9421 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12401 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9432 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31190 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13824 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9867 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9247 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14590 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12367 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22734 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9961 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11401 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7285 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11594 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25742 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7248 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12329 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10923 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25911 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8460 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16876 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9245 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17386 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8292 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5492 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9902 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23789 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5394 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26945 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8176 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8121 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6881 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10532 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6034 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5557 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5361 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6730 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11010 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7647 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5369 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12671 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11493 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=317208 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17938 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6878 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16133 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8062 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=97722 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10004 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8206 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6139 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13155 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8209 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9867 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6888 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11981 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6096 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5381 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5556 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7362 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10880 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=104511 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7246 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11856 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7998 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7518 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6920 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16706 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6103 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14568 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6671 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7869 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10006 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6912 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5464 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10708 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8067 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7523 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6840 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=91928 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5881 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6080 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5484 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22739 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11240 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8023 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6732 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10726 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8870 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8752 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21902 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19476 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8161 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15426 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6519 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7437 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9735 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9785 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7828 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13944 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9343 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7459 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14911 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26347 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5974 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7644 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5384 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8378 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=60794 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8231 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=86284 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15209 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8057 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=946549 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16484 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8305 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21462 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5454 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10674 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10030 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22192 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5498 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12427 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8123 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7944 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6656 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11955 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6117 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8328 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5965 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=112926 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9756 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7340 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16119 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7940 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8095 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7998 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=330078 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=693262 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7116 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=36541 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=82847 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5944 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=39846 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7307 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7248 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17239 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8130 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10396 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8150 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11858 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7369 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7941 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21574 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6067 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10021 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9810 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7875 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11808 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9318 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=155384 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6901 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16672 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=574151 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15288 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=89149 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14699 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10032 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7361 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=318486 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11353 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8219 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8106 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=84276 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12267 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6163 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7171 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5364 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5966 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9968 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8452 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6459 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12592 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9311 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7943 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20236 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=33160 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6937 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31310 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5507 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=351062 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10101 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22592 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8297 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14427 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9273 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9479 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8110 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11578 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7351 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7114 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=315157 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5888 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10034 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9502 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7453 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11634 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23836 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26651 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6077 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34374 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6427 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35315 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5247 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5815 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9498 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25552 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6974 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=46095 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8292 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26234 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=36611 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11073 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5695 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4500 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3748 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20405 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9429 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6006 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6402 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28664 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8878 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6695 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=314213 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35734 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6570 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=36479 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4448 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4589 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8227 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28972 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7031 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=27517 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21314 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6418 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5716 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=30061 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4495 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4485 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=278406 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=24736 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23639 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8125 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6138 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9926 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23925 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6589 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21440 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34892 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=834955 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34256 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4927 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26094 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=39127 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7155 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3724 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10031 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6515 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25552 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6474 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28937 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4813 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4630 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5928 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=227602 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10617 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23767 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20716 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9869 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8223 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=27336 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6426 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=88075 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=36004 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14539 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=493353 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4651 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9479 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6407 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3890 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=208705 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6294 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21027 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5272 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17360 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12109 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31891 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=321738 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13221 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15881 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35707 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13729 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37826 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17701 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34901 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12757 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=40904 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13041 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21350 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15420 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=47150 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15928 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=33045 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11370 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17479 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22168 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32733 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12633 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37840 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11993 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32094 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13407 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34025 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17126 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14822 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11280 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=55107 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23664 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35624 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=336591 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=46100 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12789 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=45859 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=91311 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12794 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16898 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32957 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13921 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=38596 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13814 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15050 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28359 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17433 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=27850 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=30677 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12401 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32937 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16588 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15062 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13795 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19019 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13959 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17517 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10870555 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25494 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8278 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10660 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3235 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19693 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=965 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20238 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8452 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=29530 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3968 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5208 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20122 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37468 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6452 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=30947 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4493 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=144071 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4582 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20774 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16698 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=46503 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=967078 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3876 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=980 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22719 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5256 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35223 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4137 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=24999 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3379 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23458 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5540 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28014 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=18692 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21132 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20867 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21193 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10679 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=310689 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20848 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=965 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37735 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=83170 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=250907 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=798827 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23403 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7975 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=54320 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7253 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16410 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=135 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4771 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5038 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=73890196 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26006 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=29789 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=65931 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=792391 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=63949 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14589 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15848 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=18540 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28439 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11217 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=33141 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12670 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34374 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12548 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32414 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=327880 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=33275 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13414 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37660 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=68239 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12166 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25224 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=38781 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13378 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=52983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12737 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34788 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26989 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34018 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17392 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14301 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19233 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31060 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11076 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=46201 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12866 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=45008 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12499 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=32155 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14320 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26694 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12476 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35800 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12665 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10595 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31320 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17701 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=112559 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11667 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14701 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11307 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12934 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=43694 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6981 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16378 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4871 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14866 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14014 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13387 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=37302 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=120137 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14546 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15476 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4959 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22772 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14934 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35121 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13961 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10541 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11726 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=27219 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=27173 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10495 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12083 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11555 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=43952 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12542 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14533 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16227 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14984 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11691 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16218 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=88197 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25910 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=29201 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4039 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=104164 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11712 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13728 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22218 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=18405 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4727 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10985 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4779 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15830 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28226 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11890 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6853 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12894 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12813 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12670 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22767 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17529 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12718 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10565 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11499 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=62499 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31426 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17660 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16188 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14361 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4777 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26410 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16809 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16975 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=84657938 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11835 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79991354 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9742 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79831898 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=24502 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76606032 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12054 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80433347 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12742 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80065503 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15639 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77422708 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=24688 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76660680 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10042 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80286592 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9746 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76586041 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12737 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75912663 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12849 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76462102 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14672 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79757676 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11046 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79855799 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14767 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76226368 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9940 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76347828 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12414 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80085457 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10565 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80021470 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=30826 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76441376 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11614 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76744121 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10232 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80124734 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8758 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80913643 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11485 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79254146 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9992 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=82542676 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13729 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76978546 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8061 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75757339 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7896 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76061459 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10725 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75796095 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7914 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79828553 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11076 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75766790 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28582 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76968484 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7994 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77030407 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7902 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77305512 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10361 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80172400 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10596 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75884357 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12038 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77067091 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28789 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75861565 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10362 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76634823 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28704 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75404724 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9282 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79961345 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8029 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76064298 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13532 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76808557 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14970 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75817037 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8986 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75851116 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9232 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75873858 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9130 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77225726 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10571 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76357064 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10030 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76507803 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15111 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76983526 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3364 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79861334 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=1008 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76007843 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3192 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79982438 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3255 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76512173 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19044 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75860226 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9076 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75796723 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19003 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76055380 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=972 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75904766 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=1969 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80136854 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8228 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76476000 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5849 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80282698 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10879 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77092874 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3782 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75752548 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10145 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76863698 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9170 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76248542 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5171 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76684594 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7101 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76562835 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12580 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75882286 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21883 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76125944 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5101 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79927710 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3687 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=84262623 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=70601 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79996216 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4524 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76315219 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5309 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76963279 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17345 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75869152 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7300 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79935788 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14670 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75944694 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12351 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75647909 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=956 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75871880 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5480 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76147433 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3270 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80243009 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5381 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76845359 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13961 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75758594 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11535 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=83209896 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31507 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76390496 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28147 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75907299 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2075 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75890171 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21395 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76177958 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7368 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80140168 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11778 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79879897 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3160 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79864521 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9654 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80154297 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=114252 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80058503 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5245 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75971032 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22185 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76665751 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=30446 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75959529 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3340 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77969748 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5252 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=84605218 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10612 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76673318 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14314 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76108830 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11043 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79984482 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=12279 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75293765 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=78071 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=82101799 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6337 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76559455 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7715 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79842047 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13902 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75923682 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8362 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76749071 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8957215 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=89733279 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8898 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76179119 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6311 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79848512 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9625 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77391707 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11656 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77447177 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=10470 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75805099 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11471 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79883177 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7935 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76622818 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6296 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76849608 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8956 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75900596 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13528 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75975398 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=18085 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77439672 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17331 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=86363473 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14362 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76325488 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=107663 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=84563786 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3365 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79693003 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=113032 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76578047 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2827 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75870700 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4572 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79772640 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4216 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75664161 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=311693 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76283832 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4565 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76637111 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=15989 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75911195 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=1035 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79962730 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4421 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=83620010 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20187 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76295691 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=19428 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77154703 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=35579 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75871479 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23332 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=83500560 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5858 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75750813 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=34833 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75603673 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11580 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76670367 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8006 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79766749 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76702512 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21833 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=81026135 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4627 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75495357 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2637 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76030412 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=975 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80635597 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9186 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=78223618 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=965 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75863950 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7144 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79963395 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3486 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76609671 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=11053 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76041248 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=1035 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76619727 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6710 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80085863 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17587 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80203536 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5831 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75881996 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3415 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75845035 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4287 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80238321 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3092 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80613855 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8874 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79929285 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76123910 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5756 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77447852 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5676 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75975103 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4059 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76805619 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=18380 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76211666 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6571 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=79963829 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16982 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75835354 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=9421 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77028481 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=775087 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75899480 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4057 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=80064181 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3264 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=77342985 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7253 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=76781548 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=133 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75835219 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5761 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75804743 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13190 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=75811853 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2698 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=156376506 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6681 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26636 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=1252 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=7342 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4738 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25174 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4452 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=16142 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5193 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=24156 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4535 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=36136 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8565 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4154 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2728 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=28034 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4818 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26962 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3437 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=48115 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2796 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=43281 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=17151 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20647 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22355 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6726 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3413 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26067 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21497 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25403 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3462 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=33735 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3802 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20987 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=985 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22465 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6734 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26311 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3327 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=25647 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6461 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6684 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=13202 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=30265 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2776 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=21209 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2072 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=26267 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6802 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4810 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=954 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4935 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5875 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=24561 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=5730 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=14723 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=69384 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=20952 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=2072 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4138 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23381 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4046 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=6178 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4803 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=23896 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=4669 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=31563 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=3983 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=36567 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=18001 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=22077 disposition=EmulateVtime
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3b data=n/a rip=0xffffffff81296cb1 work=8903 disposition=EmulateVtime
