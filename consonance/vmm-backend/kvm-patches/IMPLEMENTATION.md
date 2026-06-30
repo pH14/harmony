@@ -20,6 +20,31 @@ after the unhandleable-emulation guard, but 6.12 spells that guard
 was already ported in the canonical tree before this task; this task verified it
 and added its canonical patch file. No redesign (a non-goal).
 
+**Cross-model review fix — MTF stale-arm (P1).** Codex + pi independently found that
+the one-shot `mtf_step_armed` was cleared *only* in `handle_monitor_trap`. If the
+single-stepped instruction itself exits to userspace (MMIO/PIO/MSR/HLT/
+`KVM_EXIT_DETERMINISM`) rather than taking the MTF exit, the bool + the MTF
+exec-control stayed set, so the next entry would deliver a **stale
+`KVM_EXIT_DET_STEP`** (rejected as an unhandled exit → abort); pi added that the
+leftover bit also makes snapshot/restore unsound (hidden live state not in the
+serialized blob). Fix (in 0005, both the 6.18 canonical patch and the 6.12 proxy):
+`vmx_handle_exit` disarms (`mtf_step_armed = false` + `exec_controls_clearbit(...,
+CPU_BASED_MONITOR_TRAP_FLAG)`) on **any non-MTF exit to userspace** (`ret <= 0`).
+The `ret <= 0` guard is load-bearing: in-kernel-handled exits return `> 0` and
+re-enter with the MTF still armed, so single-stepping through a demand-paged EPT
+fixup still lands its `DET_STEP` (clearing on *every* exit would drop the step →
+overshoot). Because every way `single_step_once` returns to the VMM (the snapshot
+boundary) now leaves the MTF clear, and `VcpuState` captures only `KVM_GET_*`
+architectural state (never `mtf_step_armed`/exec-controls — they are not exposed by
+any ioctl, and a restored vCPU starts MTF-clear), **snapshot/restore is sound**.
+Userspace defense-in-depth (`consonance/vmm-backend/src/kvm.rs` `decode_exit`)
+swallows any stray `KVM_EXIT_DET_STEP` as a transparent re-entry instead of
+aborting. The pi "reason-43 classifier missing" note was a verified false positive
+(`kvm.rs` already maps `KVM_EXIT_DET_STEP → StepStop::SingleStepTrap`).
+Re-validated on the box: `live_m1_m2` 4/4 deterministic-twice + k3s **k1** (below),
+0 skid, no stale DET_STEP. NB the userspace half of this fix + the DIAG/SPDX/ndjson
+cleanup land on the task-56 bundle branch (where those files live), not here.
+
 **Build (canonical, gate #2 — box `/root/kvm-spike/linux-6.18.35`, 2026-06-30).**
 The 5-patch series `git am`-applies clean onto pristine `v6.18.35` **and
 reproduces the built tree byte-for-byte** (`git diff` empty vs the build commit).

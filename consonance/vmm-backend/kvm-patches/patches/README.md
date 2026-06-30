@@ -34,7 +34,13 @@ was proven on:
   monitor-trap VM-exit returns `KVM_EXIT_DET_STEP` (43). Unlike a TF/IA32_FMASK
   single-step it fires *through* guest syscall/exception/interrupt delivery (the
   issue #34 Phase-2 overshoot root cause). Per-vCPU one-shot
-  `vcpu->arch.mtf_step_armed`.
+  `vcpu->arch.mtf_step_armed`. The arm is a **strict one-shot**: if the stepped
+  instruction itself exits to userspace (MMIO/PIO/MSR/HLT/`KVM_EXIT_DETERMINISM`)
+  instead of taking the MTF exit, `vmx_handle_exit` disarms it (clears the bool +
+  the exec-control) on that non-MTF exit, so no stale `KVM_EXIT_DET_STEP` can reach
+  the next entry and no hidden MTF state survives a snapshot boundary. In-kernel-
+  handled exits re-enter with the MTF still armed, so stepping through a demand-
+  paged fault still lands its `DET_STEP`.
 
 - `0001-KVM-x86-add-KVM_EXIT_DETERMINISM-userspace-exit-ABI.patch`
 - `0002-KVM-x86-emulate-intercepted-RDTSC-RDTSCP-RDRAND-RDSE.patch`

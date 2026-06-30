@@ -1,4 +1,4 @@
-From 83a4bb005323dad05c2f950cdb6f221cfa6e4fff Mon Sep 17 00:00:00 2001
+From eb326b1309ebd62b358a5a23cc14be75b60dab1a Mon Sep 17 00:00:00 2001
 From: harmony <harmony@box>
 Date: Tue, 30 Jun 2026 22:27:30 +0200
 Subject: [PATCH] KVM: VMX: MTF-based deterministic single-step (patch 0005,
@@ -10,10 +10,10 @@ with KVM_EXIT_DET_STEP (43). Ported from the box-proven deb612 6.12.90 delta;
 arm point is vmx_vcpu_pre_run (6.18 uses vmx_unhandleable_emulation_required).
 ---
  arch/x86/include/asm/kvm_host.h |  2 ++
- arch/x86/kvm/vmx/vmx.c          | 11 +++++++++++
+ arch/x86/kvm/vmx/vmx.c          | 29 +++++++++++++++++++++++++++++
  arch/x86/kvm/x86.c              |  8 ++++++++
  include/uapi/linux/kvm.h        |  3 +++
- 4 files changed, 24 insertions(+)
+ 4 files changed, 42 insertions(+)
 
 diff --git a/arch/x86/include/asm/kvm_host.h b/arch/x86/include/asm/kvm_host.h
 index d9eb87098..18b0a8074 100644
@@ -29,7 +29,7 @@ index d9eb87098..18b0a8074 100644
  	bool xfd_no_write_intercept;
  	u64 microcode_version;
 diff --git a/arch/x86/kvm/vmx/vmx.c b/arch/x86/kvm/vmx/vmx.c
-index 01c2d6152..9f94a35e6 100644
+index 01c2d6152..1e9e1ee9c 100644
 --- a/arch/x86/kvm/vmx/vmx.c
 +++ b/arch/x86/kvm/vmx/vmx.c
 @@ -5930,6 +5930,10 @@ int vmx_vcpu_pre_run(struct kvm_vcpu *vcpu)
@@ -57,6 +57,31 @@ index 01c2d6152..9f94a35e6 100644
  	return 1;
  }
  
+@@ -6695,6 +6706,24 @@ int vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
+ {
+ 	int ret = __vmx_handle_exit(vcpu, exit_fastpath);
+ 
++	/*
++	 * Deterministic single-step (harmony 0005): the one-shot MTF arm is
++	 * cleared in handle_monitor_trap when the step lands its own MTF exit.  But
++	 * if the single-stepped instruction itself exits to userspace (MMIO / PIO /
++	 * MSR / HLT / KVM_EXIT_DETERMINISM), that handler never runs, leaving
++	 * mtf_step_armed and the MTF exec-control set, so the next entry would
++	 * deliver a stale KVM_EXIT_DET_STEP.  Disarm on any non-MTF exit to
++	 * userspace (ret <= 0).  In-kernel-handled exits return > 0 and re-enter
++	 * with the MTF still armed, so stepping through a demand-paged fault still
++	 * lands its DET_STEP correctly.
++	 */
++	if (ret <= 0 && vcpu->kvm->arch.deterministic_intercepts &&
++	    vcpu->arch.mtf_step_armed &&
++	    vmx_get_exit_reason(vcpu).basic != EXIT_REASON_MONITOR_TRAP_FLAG) {
++		vcpu->arch.mtf_step_armed = false;
++		exec_controls_clearbit(to_vmx(vcpu), CPU_BASED_MONITOR_TRAP_FLAG);
++	}
++
+ 	/*
+ 	 * Exit to user space when bus lock detected to inform that there is
+ 	 * a bus lock in guest.
 diff --git a/arch/x86/kvm/x86.c b/arch/x86/kvm/x86.c
 index acce9a5cc..f89036a0a 100644
 --- a/arch/x86/kvm/x86.c
