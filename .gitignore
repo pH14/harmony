@@ -13,3 +13,7 @@
 spikes/*
 /mutants.out
 /mutants.out.old
+
+# Run/telemetry outputs (e.g. k3s-run.*.ndjson) are data, not source.
+*.ndjson
+*.log

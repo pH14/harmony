@@ -147,7 +147,6 @@ impl InjectionPlanner {
             let arm = target - self.cfg.skid_margin;
             let stopped = backend.run_until_overflow(arm)?;
             if stopped >= target {
-                eprintln!("DIAG-SKID49 phase=1-OVERFLOW armed_at={} target={} stopped_at={} over={} skid_from_armed={}", arm, target, stopped, stopped.saturating_sub(target), stopped.saturating_sub(arm));
                 return Err(VtimeError::SkidExceeded {
                     armed_at: arm,
                     target,
@@ -168,7 +167,6 @@ impl InjectionPlanner {
             single_steps_used += 1;
         }
         if current > target {
-            eprintln!("DIAG-SKID49 phase=2-SINGLESTEP armed_at={} target={} stopped_at={} over={}", armed_at, target, current, current.saturating_sub(target));
             return Err(VtimeError::SkidExceeded {
                 armed_at,
                 target,

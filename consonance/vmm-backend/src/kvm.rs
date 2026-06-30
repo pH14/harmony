@@ -371,6 +371,11 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
         KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),
         // Run-loop control exits — consumed internally, never surfaced.
         KVM_EXIT_IRQ_WINDOW_OPEN => Ok(None),
+        // harmony 0005 (defense-in-depth): a one-shot MTF single-step is disarmed
+        // in-kernel on its own exit (vmx_handle_exit), so a stale KVM_EXIT_DET_STEP
+        // cannot normally reach a non-stepping `run`; if one ever races through,
+        // swallow it as a transparent re-entry rather than aborting as "unhandled".
+        KVM_EXIT_DET_STEP => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
     }
 }

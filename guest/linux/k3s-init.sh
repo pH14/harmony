@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # /init of the **Postgres-on-k3s workload image** (task 49). Selected by the kernel
 # `rdinit=/k3s-init` cmdline param. Brings up a single-node lightweight Kubernetes
 # cluster (k3s) inside the deterministic guest, then runs a CLIENT pod that makes

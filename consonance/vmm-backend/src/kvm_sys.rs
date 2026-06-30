@@ -27,11 +27,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::AsRawFd;
 
 use kvm_bindings::{
-    CpuId, KVM_CAP_X86_USER_SPACE_MSR,
-    KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL, KVM_MSR_EXIT_REASON_UNKNOWN,
-    KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_guest_debug, kvm_interrupt, kvm_mp_state,
-    kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run, kvm_sregs2,
-    kvm_userspace_memory_region, kvm_xsave,
+    CpuId, KVM_CAP_X86_USER_SPACE_MSR, KVM_MSR_EXIT_REASON_FILTER, KVM_MSR_EXIT_REASON_INVAL,
+    KVM_MSR_EXIT_REASON_UNKNOWN, KVM_MSR_FILTER_MAX_RANGES, Msrs, kvm_enable_cap, kvm_guest_debug,
+    kvm_interrupt, kvm_mp_state, kvm_msr_entry, kvm_msr_filter, kvm_msr_filter_range, kvm_run,
+    kvm_sregs2, kvm_userspace_memory_region, kvm_xsave,
 };
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
@@ -416,9 +415,7 @@ impl KvmBackend {
     fn run_armed(&mut self, armed_at: u64) -> Result<LiveStop> {
         self.pmu_arm(armed_at)?;
         let fd = self.vcpu.as_raw_fd();
-        let mut iters: u64 = 0;
         loop {
-            iters += 1;
             // Deliver any pending injectable vector (or arm the window). P2(a): the
             // same handshake the single-step phase uses, so a pending IRQ is never
             // delayed past the deadline.
@@ -430,8 +427,6 @@ impl KvmBackend {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     // A signal broke us out (the overflow kick, or a spurious one).
                     if let Some(stop) = self.free_run_stop(armed_at)? {
-                        let w = self.pmu_work().unwrap_or(0);
-                        if w.saturating_sub(armed_at) >= 256 { eprintln!("DIAG-STOP49 path=EINTR-SIGIO work={} armed_at={} over={} iters={} exit_reason={:#x}", w, armed_at, w.saturating_sub(armed_at), iters, self.run_page().exit_reason()); }
                         return Ok(stop);
                     }
                     continue;
@@ -446,8 +441,6 @@ impl KvmBackend {
                 // IRQ past the deadline).
                 StepStop::Interrupted | StepStop::Reenter => {
                     if let Some(stop) = self.free_run_stop(armed_at)? {
-                        let w = self.pmu_work().unwrap_or(0);
-                        if w.saturating_sub(armed_at) >= 256 { eprintln!("DIAG-STOP49 path=INTR-CLASSIFY work={} armed_at={} over={} iters={} exit_reason={:#x}", w, armed_at, w.saturating_sub(armed_at), iters, self.run_page().exit_reason()); }
                         return Ok(stop);
                     }
                     continue;
@@ -460,8 +453,6 @@ impl KvmBackend {
                     ));
                 }
                 StepStop::GuestExit => {
-                    let w = self.pmu_work().unwrap_or(0);
-                    if w.saturating_sub(armed_at) >= 256 { eprintln!("DIAG-STOP49 path=GUEST-EXIT work={} armed_at={} over={} iters={} exit_reason={:#x}", w, armed_at, w.saturating_sub(armed_at), iters, self.run_page().exit_reason()); }
                     return self.take_guest_exit_stop();
                 }
             }
@@ -510,12 +501,10 @@ impl KvmBackend {
     /// entry rather than delayed past the deadline + reordered.
     fn single_step_once(&mut self) -> Result<LiveStop> {
         self.enable_single_step()?;
-        let w_entry = self.pmu_work().unwrap_or(0);
         let fd = self.vcpu.as_raw_fd();
         loop {
-            // Preserve + deliver any pending injectable IRQ (P2(a)); clears the window
-            // when none is pending, so an IRQ-window exit cannot loop.
-            let pend_before = self.pending_irq;
+            // Deliver any pending injectable IRQ (P2(a)); clears the window when none
+            // is pending, so an IRQ-window exit cannot loop.
             self.inject_pending(fd)?;
             // 0005: arm one-shot MTF for the next instruction (exits KVM_EXIT_DET_STEP).
             unsafe { raw_mtf_step(fd) }?;
@@ -534,13 +523,14 @@ impl KvmBackend {
                 // is just a re-entry (the planner bounds progress via the work count).
                 StepStop::SingleStepTrap => {
                     let w = self.pmu_work()?;
-                    if w.saturating_sub(w_entry) > 1 { eprintln!("DIAG-STEP49 path=SINGLESTEP-TRAP delta={} w_entry={} w_exit={} exit_reason={:#x} injected={:?}", w.saturating_sub(w_entry), w_entry, w, self.run_page().exit_reason(), pend_before); }
                     return Ok(LiveStop::Count(w));
                 }
                 StepStop::Interrupted | StepStop::Reenter => continue,
                 StepStop::GuestExit => {
-                    let w = self.pmu_work().unwrap_or(0);
-                    if w.saturating_sub(w_entry) > 1 { eprintln!("DIAG-STEP49 path=GUEST-EXIT delta={} w_entry={} w_exit={} exit_reason={:#x} injected={:?}", w.saturating_sub(w_entry), w_entry, w, self.run_page().exit_reason(), pend_before); }
+                    // The stepped instruction took its own exit to userspace; the
+                    // in-kernel one-shot MTF (mtf_step_armed + the exec-control) is
+                    // disarmed on that exit by vmx_handle_exit (harmony 0005), so no
+                    // stale KVM_EXIT_DET_STEP survives into the next run or a snapshot.
                     return self.take_guest_exit_stop();
                 }
             }
@@ -951,7 +941,6 @@ impl CpuBackend for LiveCpu<'_> {
     ) -> std::result::Result<u64, vtime::BackendError> {
         match self.backend.run_armed(armed_at) {
             Ok(LiveStop::Count(work)) => {
-                if work >= self.deadline { eprintln!("DIAG-SKID49 work={} armed_at={} deadline={} over={} skid_from_armed={}", work, armed_at, self.deadline, work.saturating_sub(self.deadline), work.saturating_sub(armed_at)); }
                 self.work_cache = work;
                 Ok(work)
             }
