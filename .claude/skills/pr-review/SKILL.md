@@ -5,8 +5,8 @@ description: >
   Use this whenever the user asks to review a PR, look over a task branch, check a
   delegated agent's work, or give feedback on a change — even if they just say
   "take a look at PR 3" or name a task branch like task-02-snapshot-store. Covers
-  finding the right task spec, running the gates, a cross-model second pass (GPT-5.5
-  through the pi harness), and posting the review via gh.
+  finding the right task spec, running the gates, a cross-model second pass (codex /
+  GPT-5.5), and posting the review via gh.
 ---
 
 # PR review
@@ -162,13 +162,13 @@ first-pass reading misses real bugs:
 
 ## 5. Cross-model second pass (MANDATORY)
 
-Single-reviewer variance is real and large. In a live calibration on the CPU/MSR contract,
-`codex review` (GPT-5.5) and pi (GPT-5.5) — same model family, same commit — found
-**completely disjoint** sets of real blocking findings (2 vs 3, zero overlap): codex caught
-a backend-mechanism gap (instructions the contract says it traps that stock KVM has no
-userspace exit for) and a TOML-grammar violation; pi caught stale cross-file tables, an
-un-enumerated reachable instruction, and missing reference MSRs. **This pass is mandatory.
-Never skip it, and never merge a PR without a clean cross-model pass.** Launch it **blind** —
+Single-reviewer variance is real and large — your own read misses things a different model
+catches. The cross-model pass is **`codex review` (GPT-5.5)**: a model different from the one
+doing the primary review, run over the same diff. In a live calibration on the CPU/MSR
+contract it independently caught real blocking findings the primary read missed (a
+backend-mechanism gap — instructions the contract says it traps that stock KVM has no
+userspace exit for — and a TOML-grammar violation). **This pass is mandatory. Never skip it,
+and never merge a PR without a clean codex pass.** Launch it **blind** —
 don't seed it with your own findings; an anchored reviewer re-treads your path, an
 independent one covers what you missed.
 
@@ -176,7 +176,7 @@ independent one covers what you missed.
 
 `codex review` is OpenAI's native non-interactive reviewer hitting GPT-5.5 directly — it
 reads the repo and runs tools itself, so there's no worktree-inlining dance and no headless
-stall (pi's failure mode). Run it from a detached PR-head worktree against `main`:
+stall. Run it from a detached PR-head worktree against `main`:
 
 ```sh
 git -C ~/workspace/harmony worktree add --detach ../harmony-review-pr<N> origin/<head-branch>
@@ -195,88 +195,22 @@ gtimeout 1200 codex review --base main \
   than generic.
 - `approval_policy=never` + `sandbox_mode=workspace-write` (workdir + /tmp only) — it can
   build/test but can't escape or hang on a prompt. The worktree is disposable.
-- xhigh is codex's default effort here and completes reliably (unlike pi's xhigh, which
-  stalled on the large contract).
+- xhigh is codex's default effort here and completes reliably.
 - Output is verbose (an execution trace); the findings are the final `codex` block. Extract
   with `grep -nE '\[P[0-9]\]' /tmp/codex-review-pr<N>.md` and read the tail. Map codex
   severities P1→blocking, P2→suggestion (or blocking by your judgment), P3→nit.
 
-### High-stakes artifacts: run BOTH codex and pi, union the findings
+### High-stakes artifacts
 
 For the determinism contract, security-critical crates, or anything where a missed leak is
-expensive, run **both** passes and union the findings — the calibration above is the proof
-that one alone misses real bugs. For routine crate PRs, the codex pass alone is the bar.
-
-### Fallback / second opinion: pi (GPT-5.5)
-
-Use pi when codex is unavailable, or as the second reviewer on high-stakes artifacts.
-**Run pi in INTERACTIVE mode — pipe the prompt on stdin, NOT `-p`.** `pi -p` (headless
-print mode) stalls indefinitely on substantive review prompts: it emits nothing and times
-out at any budget (verified up to an hour), every thinking level, tools on or off — a
-wasted hour, not a signal. Interactive mode with the same model completes in a few minutes.
-Because interactive mode runs `--tools off` (it can't read the repo), **inline the files
-under review into the prompt** — `cat` the diff / crate / spec / contract into the prompt
-text. It fits GPT-5.5's context, even a multi-thousand-line contract.
-
-```sh
-cd ../harmony-review-pr<N>   # the PR-head review worktree
-# Build a self-contained prompt: review instructions, then the inlined files.
-{
-  cat <<'EOF'
-You are reviewing GitHub PR #<N> (<PR title>) for this repo — a deterministic,
-Antithesis-style KVM hypervisor (same seed => bit-identical execution). The attached
-task spec and conventions define what correct means: the spec's Public API section is a
-contract (exact names, types, semantics), determinism is the project's reason to exist,
-and library code must never panic on untrusted input. Cross-check shared constants
-against INTEGRATION.md. Review the code below for real bugs: contract violations,
-determinism leaks, panics reachable from untrusted input, state save/restore flaws,
-tests that miss the spec's semantics. Also judge TEST-SUITE SUFFICIENCY against the
-repo's quality toolchain (a green gate is the floor, not the bar): is new logic genuinely
-covered (not just executed); would a mutation in it be killed by a test pinning exact
-values; do new state machines/codecs/invariants have property or stateful tests against
-an independent model (not a mirror of the impl); is new saturating/bit arithmetic
-proof-worthy but only sampled; does a new untrusted-input parser lack fuzz/adversarial
-coverage; was a coverage floor or lint quietly lowered? Flag anywhere quality slips or a
-tool the code plainly calls for is skipped. You have NO file tools — review only the text
-below. Report each finding with file:line, a severity
-(blocking/suggestion/question/nit), and the concrete input or scenario that triggers it.
-If you find nothing real, say so plainly — do not pad.
-EOF
-  echo; echo "##### tasks/00-CONVENTIONS.md #####";  cat ../harmony/tasks/00-CONVENTIONS.md
-  echo; echo "##### tasks/<NN>-<task>.md #####";      cat ../harmony/tasks/<NN>-<task>.md
-  echo; echo "##### docs/INTEGRATION.md #####";       cat ../harmony/docs/INTEGRATION.md
-  echo; echo "##### <crate / diff / contract under review> #####"; cat <files...>
-} > /tmp/pi-prompt-pr<N>.txt
-
-gtimeout 1100 pi --provider openai-codex --model gpt-5.5 --thinking xhigh \
-  --no-session --no-skills --no-extensions --no-context-files --tools off \
-  < /tmp/pi-prompt-pr<N>.txt \
-  > /tmp/pi-review-pr<N>.md 2>&1
-```
-
-Why each piece is there (so a broken run is debuggable, not cargo-culted):
-
-- `--provider openai-codex --model gpt-5.5` — the authenticated route to GPT-5.5 here.
-- `--thinking xhigh` — max effort (off→minimal→low→medium→high→xhigh). `high` also works
-  and is faster; drop to it if xhigh runs long.
-- **No `-p`.** Interactive mode; the heredoc EOF on the piped stdin makes pi run once and
-  exit. This is the whole reason the pass works — do not add `-p` back.
-- `--tools off` + inlined files — interactive tool-use is unreliable; inlining is robust
-  and keeps the worktree pristine.
-- `--no-session --no-skills --no-extensions --no-context-files` — hermetic.
-
-If the run produces 0 lines, it's almost always because `-p` crept back in or the prompt
-wasn't piped on stdin — fix that and rerun. Confirm pi is alive with a trivial
-`pi --provider openai-codex --model gpt-5.5 --thinking low --tools off "reply OK"` (no
-`-p`). The pass is **not optional**: if GPT-5.5 is genuinely unreachable, do NOT merge —
-halt and escalate to the integrator rather than skipping.
-
-Treat its output as leads, not verdicts. Verify each new behavioral finding with a repro
-in the worktree before it enters the review, and drop what doesn't hold up.
+expensive, give the codex pass extra scrutiny: read its full reasoning (not just the `[P]`
+findings), run it from a clean PR-head worktree so it can build/test itself, and verify each
+behavioral finding with a repro in the worktree before it enters the review — treat its
+output as leads, not verdicts, and drop what doesn't hold up.
 
 ### Re-review after significant findings (mandatory)
 
-If the cross-model pass (or the combined review) produced **any blocking finding**, then
+If the codex pass produced **any blocking finding**, then
 after the author fixes them you MUST run the cross-model pass **again** on the updated PR
 head, and keep iterating until a cross-model pass returns with **no blocking findings**.
 Fixes introduce new code and can introduce new bugs; a spec or contract with many findings
