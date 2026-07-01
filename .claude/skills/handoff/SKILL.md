@@ -13,7 +13,7 @@ description: >
 The foreman loop normally drives `tasks/NN-*.md` specs end to end. This skill is for work
 done **outside** that queue — a design ruling, a tooling spike, a doc — that you still want
 to flow through the **same** machinery: the mandatory cross-model review (`codex review`,
-GPT-5.5 — the sole cross-model pass since `1884b9a` dropped pi), the iterate-until-clean cycle,
+GPT-5.5 — the sole cross-model pass since `c21711d` dropped pi), the iterate-until-clean cycle,
 and auto-merge. The foreman picks
 up any **ready (non-draft) PR**; this skill makes sure the PR is shaped so that pickup works
 and the review is grounded.
