@@ -271,6 +271,28 @@ fn decode_terminal_and_control_exits() {
 }
 
 #[test]
+fn decode_stale_force_exit_and_det_step_are_swallowed() {
+    // Defense-in-depth (both patched one-shots): a stale KVM_EXIT_PREEMPT (0004) or
+    // KVM_EXIT_DET_STEP (0005) reaching `decode_exit` on a plain `run()` must be a
+    // transparent re-entry (Ok(None)), NOT a loud "unhandled" abort. This is the fix
+    // for the 0004 disarm asymmetry: 0004's one-shot arm persists in the kernel until
+    // an NMI fires it, so an arm set for a `run_until` free-run can outlive an early
+    // guest exit and later surface as KVM_EXIT_PREEMPT on any host NMI. Aborting there
+    // would make run completion depend on host-NMI timing (a determinism defect); the
+    // kernel has already cleared the flag by the time it reaches userspace, so the
+    // swallow self-heals with guest state and the work counter untouched.
+    for reason in [KVM_EXIT_PREEMPT, KVM_EXIT_DET_STEP] {
+        let s = SynRun::new();
+        set_reason(&s, reason);
+        assert_eq!(
+            decode_exit(s.page()).unwrap(),
+            None,
+            "stale one-shot reason {reason} must swallow to a transparent re-entry"
+        );
+    }
+}
+
+#[test]
 fn decode_error_and_unknown_exits_fail_closed() {
     // Each fail-closed reason carries its own distinct message (so each match arm
     // is load-bearing, not collapsible into the `_` arm).

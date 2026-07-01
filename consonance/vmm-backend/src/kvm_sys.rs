@@ -440,6 +440,18 @@ impl KvmBackend {
     /// No-op on stock KVM (`!deterministic_intercepts`): the cap is off, so the ioctl
     /// would `EINVAL`; the `pmu_sys` `SIGIO` kick remains the (non-deterministic) fallback
     /// there. The determinism box always runs the patched backend.
+    ///
+    /// **Disarm asymmetry with 0005 (defense-in-depth for a stale arm).** Unlike 0005's
+    /// MTF step — which the kernel disarms on its *own* exit (`vmx_handle_exit`) — patch
+    /// 0004 clears `preempt_armed` **only** when the perf-overflow NMI fires it; there is
+    /// no clear-on-userspace-return and no disarm ioctl (see
+    /// `kvm-patches/patches/README.md`). So an arm set here can outlive an **early guest
+    /// exit** (the guest took a genuine PIO/MMIO exit before the overflow), leaving the
+    /// kernel flag set until some later NMI fires it — potentially on a plain `run()`,
+    /// surfacing as `KVM_EXIT_PREEMPT`. That stale exit is swallowed as a transparent
+    /// re-entry in [`decode_exit`](crate::kvm::decode_exit) (it does not corrupt guest
+    /// state or the work counter), so leaving the arm set across an early exit is safe and
+    /// re-arming here every entry is idempotent.
     fn arm_preempt_exit(&self) -> Result<()> {
         if !self.deterministic_intercepts {
             return Ok(());

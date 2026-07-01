@@ -96,7 +96,8 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// **Why `work >= deadline` is now fail-closed (task 55 — the in-kernel force-exit).**
 /// The preemption is anchored by a `perf_event` branch-counter overflow armed at
 /// `deadline − SKID_MARGIN`. The overflow fires a host **PMI** (an NMI); under the
-/// patched KVM (patch 0004, `KVM_CAP_X86_DETERMINISTIC_PREEMPT` + the one-shot arm)
+/// patched KVM (patch 0004 — the one-shot `KVM_ARM_PREEMPT_EXIT` arm, gated on the
+/// existing `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` opt-in, no separate cap)
 /// that NMI VM-exit returns to userspace as `KVM_EXIT_PREEMPT` **instead of
 /// re-entering**, so the free-run stops with only the **bounded hardware-PMI skid**
 /// (~128 retired branches), never the unbounded `SIGIO`-delivery latency a CPU-bound
@@ -115,18 +116,21 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// workload-dependent hole. The force-exit closes it at the source (bounded skid), so
 /// the universal guarantee is restored and the fallback is removed.
 ///
-/// **Residual boundary race (cross-model review; tracked in pH14/harmony#34).** The
-/// "deterministic function of the instruction stream" claim above holds for a *deep*
-/// exit-free region (the observed 28207-branch case: the `SIGIO` cannot possibly take
-/// effect before the next exit, so every same-seed run is outrun identically). It does
-/// NOT hold at the *boundary*: for a deadline whose next exit sits a knife-edge distance
-/// past it (comparable to the `SIGIO`-latency variance), whether the `SIGIO` fires within
-/// margin (→ single-step `Exit::Deadline`) or is outrun (→ this natural-exit fallback)
-/// can flip run-to-run → same-seed divergence. So this is a *workload-dependent*
-/// guarantee: solid for Postgres (r1/r2/r3 bit-identical across all its deadlines), but a
-/// knife-edge deadline in another workload could make its determinism gate flaky — caught
-/// loudly by the gate, never silent. The universal-soundness fix (an in-kernel force-exit
-/// with bounded skid) is tracked in #34; this fallback is the shipped interim.
+/// **Historical: the boundary race that motivated 0004 (closed by task 55 / this PR).**
+/// The removed natural-exit fallback's "deterministic function of the instruction stream"
+/// claim held for a *deep* exit-free region (the observed 28207-branch case: the `SIGIO`
+/// cannot possibly take effect before the next exit, so every same-seed run is outrun
+/// identically). It did NOT hold at the *boundary*: for a deadline whose next exit sat a
+/// knife-edge distance past it (comparable to the `SIGIO`-latency variance), whether the
+/// `SIGIO` fired within margin (→ single-step `Exit::Deadline`) or was outrun (→ the
+/// fallback's natural exit) could flip run-to-run → same-seed divergence. That made the
+/// old guarantee *workload-dependent*: solid for Postgres (r1/r2/r3 bit-identical across
+/// all its deadlines), but a knife-edge deadline in another workload could flake its
+/// determinism gate. This is exactly the residual race the cross-model review raised (once
+/// tracked as pH14/harmony#34). Patch 0004's in-kernel force-exit removes the unbounded
+/// `SIGIO` skid at the source, so the free-run always stops within margin regardless of
+/// workload and the race is **closed** — the fallback is gone and `work >= deadline` is
+/// fail-closed (above). #34 should close on merge.
 ///
 /// PRIMARY structural guarantee: with `skid_margin > max_skid` the free-run stops
 /// STRICTLY before the deadline branch and the single-step lands exactly ON it

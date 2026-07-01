@@ -384,6 +384,19 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
         // cannot normally reach a non-stepping `run`; if one ever races through,
         // swallow it as a transparent re-entry rather than aborting as "unhandled".
         KVM_EXIT_DET_STEP => Ok(None),
+        // harmony 0004 (defense-in-depth): the one-shot force-exit arm
+        // (KVM_ARM_PREEMPT_EXIT) is disarmed in-kernel ONLY when the perf-overflow NMI
+        // fires it — unlike 0005, there is no clear-on-own-exit and no disarm ioctl (see
+        // the 0004/0005 disarm asymmetry in kvm-patches/patches/README.md). So an arm
+        // set for a `run_until` free-run can outlive an EARLY guest exit (the guest took
+        // a genuine PIO/MMIO exit before the overflow), leaving `preempt_armed` set in
+        // the kernel; a later plain `run()` that takes any host NMI then returns
+        // KVM_EXIT_PREEMPT. The kernel has already cleared the flag by the time it
+        // reaches userspace (the NMI fired it), guest state and the work counter are
+        // untouched by the serviced-NMI exit, so swallow it as a transparent re-entry —
+        // this self-heals the stale arm instead of aborting as "unhandled" (which would
+        // make run completion depend on host-NMI timing, a determinism defect).
+        KVM_EXIT_PREEMPT => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
     }
 }
