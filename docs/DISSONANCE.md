@@ -151,6 +151,49 @@ The control transport carries an `Environment` as an **opaque, versioned blob** 
 the structure (that is the `environment` crate's contract with the services and the explorer),
 which lets the transport be fixed independently of the fault catalog.
 
+### Ruling (task 93): keep `EnvCodec::compose` — genesis-only branching is rejected
+
+PR #46 left one composition question open for re-validation with implementation signal: does the
+explorer keep composing a genesis-complete base env with a branch-local delta
+(`EnvCodec::compose`) to mint a portable `Bug.env`, or switch to **genesis-only branching** (never
+branch below a non-genesis snapshot, so no `compose`)? With task 12 implemented, the ruling is
+**keep `compose`**, on three grounds:
+
+1. **Empirical weight.** In a coverage-guided toy campaign (task 12's gate machine, default
+   `CoverageStrategy`, 50 campaigns × 300 steps), **66% of Multiverse steps branch below a
+   non-genesis base, and 66% of raw bug discoveries happen there** — the exploit mode `compose`
+   exists for is the *majority* of the search, not a rare tail. Genesis-only branching would not
+   merely forfeit the snapshot-tree speedup; it would remove the exploit half of
+   explore/exploit entirely (a corpus entry's snapshot would be pointless to keep).
+2. **The semantics are clean *because of* the single-`Moment` ruling.** With both planes on one
+   retired-instruction axis, `compose(base, tail, at)` is one-axis integer re-keying: `base`
+   contributes only `m < at`, the tail shifts to `m + at ≥ at` — collision-free by construction,
+   overflow rejected (never wrapped), injectivity Kani-proved. The feared re-keyed-override
+   collisions cannot occur.
+3. **Implementation signal.** In task 12 `compose` is load-bearing in three places (bug rebase on
+   report, rebasing a snapshot forked below a non-genesis base so every corpus entry stays
+   genesis-complete, and nested-snapshot chains), each pinned by replay gates — including the
+   256-case property test `compose_rebase_replays_from_genesis`
+   (`branch(genesis, compose(base, delta))` reproduces the run that produced `delta` bit-for-bit).
+
+**The one real edge, and its contract.** `compose` is sound only when a decision is answered the
+same way whether reached from genesis or resumed from a mid-run branch. Overrides are
+splice-invariant by re-keying; **seed-serviced decisions are not**, because `SeededEnv` draws from
+*sequential* PRNG streams — a splice would desync the stream state. The production
+`EnvCodec::compose` therefore **fails closed** (`UnsupportedComposition`) on pure-`Seeded` inputs,
+seed/policy mismatches, and `StandingFault`s (whose window is on the *V-time* axis, needing a
+runtime `Moment → VTime` map to re-key). This scope is now **the contract**, not a stopgap: the
+frontier's `Machine::recorded_env` must emit a **tail-complete** delta — every decision answered
+since the branch appears as an override — so a composed reproducer never re-draws the sequential
+seed stream across the splice. (The alternative — counter-mode seed answers keyed by `Moment`, as
+the task-12 toy does — remains a valid future optimization if tail-complete blobs grow too large,
+but is not required and is not scheduled.) Standing faults stay non-composable until a
+`Moment → VTime` map exists; a bug under a standing fault reproduces via its own genesis-rooted
+env, which carries the standing set verbatim.
+
+The invariant is unchanged and not up for revisiting: the reproducer is **genesis-complete and
+portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.
+
 ## The two loops: Variation and Theme
 
 | | **Variation** (inner) | **Theme** (outer) |
