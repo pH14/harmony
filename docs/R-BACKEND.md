@@ -37,7 +37,7 @@ floor `KvmBackend` can't meet, which `PatchedKvmBackend`/`DirectVmxBackend` rais
 
 ## Implementation: the patch, and the one deferred optimization
 
-The patch is out-of-tree against the pinned KVM version, and small — a **four-patch series**
+The patch is out-of-tree against the pinned KVM version, and small — a **five-patch series**
 (`consonance/vmm-backend/kvm-patches/`, `git am`-clean on `linux-6.18.35`) in
 `arch/x86/kvm/vmx/vmx.c`, `arch/x86/kvm/x86.c`, `arch/x86/include/asm/kvm_host.h`,
 `include/uapi/linux/kvm.h`. Patches **0001–0003** do three mechanical things: (1) enable the
@@ -52,9 +52,12 @@ an NMI that already VM-exits with `PIN_BASED_NMI_EXITING` and is serviced in
 `KVM_EXIT_PREEMPT` reason (42) instead of re-entering, so the LAPIC-timer deadline is hit with
 only the bounded hardware-PMI skid (~128 retired branches, well inside the `SKID_MARGIN = 256`
 arm-early window) rather than the unbounded `SIGIO`-delivery latency a CPU-bound guest can
-outrun. All four are gated on the **same** opt-in cap `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS`
-(no separate cap — the pinned design folds the force-exit into the existing per-VM determinism
-opt-in; default-off → stock behavior). The ongoing cost is the rebase treadmill (re-apply per
+outrun. Patch **0005** adds MTF (Monitor-Trap-Flag) deterministic single-step
+(`KVM_ARM_MTF_STEP` one-shot arm → `KVM_EXIT_DET_STEP` reason 43), used by `run_until`'s
+exact-landing phase to step *through* the guest's own syscall/exception. All five are gated on
+the **same** opt-in cap `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (no separate cap — the pinned
+design folds the force-exit and MTF step into the existing per-VM determinism opt-in;
+default-off → stock behavior). The ongoing cost is the rebase treadmill (re-apply per
 kernel version, in the hot exit path), not the patch size. RDRAND/RDSEED are infrequent → the
 simple userspace round-trip is fine. `0x6e0` needs no patch (the contract hides it).
 

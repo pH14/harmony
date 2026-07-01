@@ -1,8 +1,0 @@
-# Patch-hash manifest for the patched-KVM determinism series (4 patches).
-# Targets the pinned linux-6.18.35 (guest/linux/versions.lock KERNEL_VERSION).
-# `git am`-clean in order 0001 -> 0002 -> 0003 -> 0004. Verify with:
-#   shasum -a 256 -c MANIFEST.sha256
-3cd29fd0e54d46e943d8435125230cd38b32436263d498fa315dc0a7bf53f4ee  0001-KVM-x86-add-KVM_EXIT_DETERMINISM-userspace-exit-ABI.patch
-522d94b4fdf3e7736a7fb33cc075a53baf60a169b139b5ac3139853ca868aafa  0002-KVM-x86-emulate-intercepted-RDTSC-RDTSCP-RDRAND-RDSE.patch
-72742b1f74b7dcc250f6cd2c1d44f27fa0413b393a8bdacd6277827a4b4124b3  0003-KVM-VMX-enable-RDTSC-RDRAND-RDSEED-exiting-for-the-d.patch
-45d414578bb83404d1dc84df56153e09d5f30b92ed2fdba3e21557978936c563  0004-KVM-x86-add-KVM_EXIT_PREEMPT-in-kernel-force-exit-pr.patch

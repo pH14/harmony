@@ -194,7 +194,8 @@ do not touch it.
 
 ## Patch 0004 — in-kernel force-exit preemption (task 55)
 
-The series grew to **four patches**. 0004 adds deterministic in-kernel preemption so the V-time
+This task added **0004** (the series is now five with 0005's MTF single-step, landed
+separately). 0004 adds deterministic in-kernel preemption so the V-time
 LAPIC-timer deadline is hit with a **bounded skid** for every workload (replacing task 47/54's
 unbounded `SIGIO` overflow-kick). Design (pinned in the decision log, modeled on 0001/0003):
 

@@ -6,10 +6,6 @@
 KERNEL_VERSION=6.18.35
 KERNEL_URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.35.tar.xz
 KERNEL_SHA256=f78602932219125e211c5f5bfd84edcfd4ec5ce88fc944f8248413f665bef236
-# The patched-KVM determinism backend applies a 4-patch series to THIS kernel tag
-# (consonance/vmm-backend/kvm-patches/, git am-clean; hashes in that dir's
-# patches/MANIFEST.sha256). Patch 0004 adds the in-kernel force-exit preemption
-# (KVM_EXIT_PREEMPT, task 55). The modules are built/loaded per that dir's BUILD.md.
 BUSYBOX_VERSION=1.38.0
 BUSYBOX_URL=https://busybox.net/downloads/busybox-1.38.0.tar.bz2
 BUSYBOX_SHA256=34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
