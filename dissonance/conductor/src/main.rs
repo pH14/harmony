@@ -66,6 +66,19 @@ struct BoxArgs {
     /// V-time (ns) each branch runs past the snapshot before its deadline.
     #[arg(long, default_value_t = 5_000_000_000)]
     deadline_delta: u64,
+    /// Kernel bzImage filename under guest/build (or guest/linux).
+    #[arg(long, default_value = "bzImage")]
+    kernel: String,
+    /// Initramfs filename under guest/build (or guest/linux). Defaults to the
+    /// bare-Postgres image; point at `initramfs-docker.cpio.gz` to reuse the
+    /// runc-Postgres image already staged on the box.
+    #[arg(long, default_value = "initramfs-postgres.cpio.gz")]
+    initramfs: String,
+    /// The serial marker after which the base snapshot is sealed (the
+    /// mid-workload, post-readiness point the gate wants). Default: the
+    /// postmaster-ready banner.
+    #[arg(long, default_value = "database system is ready to accept connections")]
+    ready_marker: String,
 }
 
 /// Distinct, non-boot branch seeds (a multiplicative hash folded into a base) —
@@ -120,7 +133,7 @@ fn run_mock(args: SweepArgs) -> ExitCode {
 /// vacuous pass.
 #[cfg(target_os = "linux")]
 fn run_box(args: BoxArgs) -> ExitCode {
-    boxrun::run(args.sweep, args.deadline_delta)
+    boxrun::run(args)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -171,8 +184,16 @@ fn finish(
 }
 
 /// The box composition root. Linux-only (`boot_linux_selected` + `perf_event`).
+///
+/// The one piece of **workload-aware policy** in the whole path lives here (the
+/// server and adapter stay workload-blind): the live guest is driven to a
+/// readiness marker on its serial *before* the sweep seals the base, so the
+/// snapshot lands **mid-workload, post-readiness** (the gate's point) rather
+/// than at boot entry. Choosing *where* to snapshot is a property of the guest;
+/// the snapshot *mechanism* (the verb) is not.
 #[cfg(target_os = "linux")]
 mod boxrun {
+    use std::io::Write;
     use std::process::ExitCode;
 
     use conductor::{SweepConfig, run_session, sweep_client};
@@ -180,8 +201,9 @@ mod boxrun {
     use vmm_backend::Backend;
     use vmm_core::bringup::{BackendKind, boot_linux_selected};
     use vmm_core::control::{ControlServer, VmmFactory};
+    use vmm_core::vmm::{Step, Vmm};
 
-    use super::{SweepArgs, finish, seeds};
+    use super::{BoxArgs, finish, seeds};
 
     /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
     const GUEST_RAM_LEN: usize = 2 << 30;
@@ -190,6 +212,9 @@ mod boxrun {
     /// The determinism command line (identical to the branching demo).
     const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check \
                            lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
+    /// A safety cap on the boot-to-marker drive (the external `timeout` is the
+    /// real bound; this stops a wedged guest from looping forever).
+    const MAX_BOOT_STEPS: u64 = 50_000_000_000;
 
     fn repo_root() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -209,7 +234,44 @@ mod boxrun {
         None
     }
 
-    pub fn run(args: SweepArgs, deadline_delta: u64) -> ExitCode {
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Drive the live guest until `marker` appears on the serial, streaming new
+    /// serial bytes to stderr so a hang shows the last line reached. Returns the
+    /// number of steps taken, or an error string if the guest terminated first.
+    fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
+        let stderr = std::io::stderr();
+        let mut printed = vmm.serial().len();
+        let mut steps = 0u64;
+        while steps < MAX_BOOT_STEPS {
+            match vmm.step() {
+                Ok(Step::Continued) => {}
+                Ok(Step::Terminal(r)) => {
+                    return Err(format!(
+                        "guest reached a terminal ({r:?}) at step {steps} before the readiness \
+                         marker appeared"
+                    ));
+                }
+                Err(e) => return Err(format!("step error at {steps}: {e}")),
+            }
+            steps += 1;
+            let serial = vmm.serial();
+            if serial.len() > printed {
+                let mut h = stderr.lock();
+                let _ = h.write_all(&serial[printed..]);
+                let _ = h.flush();
+                printed = serial.len();
+            }
+            if contains(serial, marker) {
+                return Ok(steps);
+            }
+        }
+        Err(format!("marker not seen within {MAX_BOOT_STEPS} steps"))
+    }
+
+    pub fn run(args: BoxArgs) -> ExitCode {
         if !std::path::Path::new("/dev/kvm").exists() {
             eprintln!(
                 "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
@@ -227,18 +289,21 @@ mod boxrun {
             );
             return ExitCode::FAILURE;
         }
-        let (Some(kernel), Some(initramfs)) =
-            (artifact("bzImage"), artifact("initramfs-postgres.cpio.gz"))
+        let (Some(kernel), Some(initramfs)) = (artifact(&args.kernel), artifact(&args.initramfs))
         else {
             eprintln!(
-                "[conductor] guest image missing — build it first: `make -C guest fetch && \
-                 make -C guest/linux postgres-image`."
+                "[conductor] guest image missing ({} / {}) — build it first: `make -C guest fetch \
+                 && make -C guest/linux postgres-image`, or pass --initramfs for an image already \
+                 on the box (e.g. initramfs-docker.cpio.gz).",
+                args.kernel, args.initramfs
             );
             return ExitCode::FAILURE;
         };
 
-        // Boot the live Postgres guest.
-        let live = match boot_linux_selected(
+        // Boot the live guest and drive it to the readiness marker, so the base
+        // snapshot the sweep seals is mid-workload (the gate's point). This is
+        // the workload-aware step; everything after it is workload-blind.
+        let mut live = match boot_linux_selected(
             BackendKind::Patched,
             &kernel,
             &initramfs,
@@ -252,6 +317,21 @@ mod boxrun {
                 return ExitCode::FAILURE;
             }
         };
+        println!(
+            "[conductor] box mode: booting the guest to the readiness marker {:?} …",
+            args.ready_marker
+        );
+        match drive_to_marker(&mut live, args.ready_marker.as_bytes()) {
+            Ok(steps) => println!(
+                "\n[conductor] readiness marker reached at step {steps}; the base snapshot will be \
+                 sealed at the next snapshottable boundary at/after this point.\n"
+            ),
+            Err(e) => {
+                eprintln!("\n[conductor] failed to reach the readiness marker: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+
         // The fork factory: fresh, equivalently-composed patched VMs whose
         // boot-loaded image the restore immediately overwrites.
         let factory: VmmFactory<Box<dyn Backend>> = {
@@ -271,11 +351,12 @@ mod boxrun {
         let mut server = ControlServer::new(live, factory);
 
         let cfg = SweepConfig {
-            seeds: seeds(args.seeds),
-            runs_per_seed: args.runs.max(2),
-            deadline_delta: Some(deadline_delta),
+            seeds: seeds(args.sweep.seeds),
+            runs_per_seed: args.sweep.runs.max(2),
+            deadline_delta: Some(args.deadline_delta),
             // Postgres is interrupt-driven; the snapshot search may need many
-            // steps to find a sealable boundary. Generous retry budget.
+            // steps to find a sealable boundary at/after readiness. Generous
+            // retry budget (task 41 made mid-workload points snapshottable).
             snapshot_retry_step: 1_000_000,
             snapshot_max_attempts: 100_000,
         };
@@ -284,11 +365,11 @@ mod boxrun {
             policy: FaultPolicy::none(),
         };
         println!(
-            "[conductor] box mode: booting Postgres, then {} seeds x {} runs; each branch runs \
-             {} ns of V-time past the snapshot.\n",
+            "[conductor] box mode: {} seeds x {} runs; each branch runs {} ns of V-time past the \
+             snapshot.\n",
             cfg.seeds.len(),
             cfg.runs_per_seed,
-            deadline_delta
+            args.deadline_delta
         );
         let (served, client) = run_session(&mut server, move |stream| {
             sweep_client(stream, initial, cfg)
