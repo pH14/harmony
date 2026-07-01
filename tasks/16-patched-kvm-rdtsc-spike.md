@@ -1,8 +1,10 @@
 # Task 16 — `spikes/patched-kvm-rdtsc/`: patched-KVM RDTSC/RNG interception feasibility spike
 
-> **Historical (task 91):** the GO'd patch series + build recipe this spike produced now live,
-> tracked, at `consonance/vmm-backend/kvm-patches/` (next to `patched_kvm.rs`). The throwaway
-> measurement crate is not retained; paths below describe the spike as it was originally built.
+> **Historical:** the GO'd patch series + build recipe this spike produced now live, tracked, at
+> `consonance/vmm-backend/kvm-patches/` (next to `patched_kvm.rs`), folded into task 57's
+> canonical linux-6.18.35 port. There is no task 91 — that reference was a phantom, fixed by
+> task 62. The throwaway measurement crate is not retained; paths below describe the spike as it
+> was originally built.
 
 Read `tasks/00-CONVENTIONS.md` first. Touch only `spikes/patched-kvm-rdtsc/`. This directory is
 **not** part of the cargo workspace; it has its own `Cargo.toml`, its own gates, and a

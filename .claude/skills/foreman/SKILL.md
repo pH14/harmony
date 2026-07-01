@@ -31,7 +31,7 @@ dissonance branching stream (39 → 40). **Maximize box (real-KVM) execution; mi
 theory-only PRs.** Concretely, overriding the per-PR review default below:
 - **Tier the review.** *Substantive* PRs (crate code, determinism leaks, the CPU/MSR contract,
   wire formats, `unsafe`) get the full **pr-review** treatment incl. the mandatory cross-model
-  (GPT-5.5/codex) pass. *Light* PRs (docs, specs, ROADMAP, feedback, handoff plans) get a foreman
+  pass (`codex review`, GPT-5.5 — the sole cross-model pass). *Light* PRs (docs, specs, ROADMAP, feedback, handoff plans) get a foreman
   sanity read + the standard gates, then merge — **no cross-model pass, no multi-round loop.**
 - **A green box gate outranks a review round.** For box-only frontier tasks the determinism gate
   on the box (boots, runs, bit-identical `state_hash`) is the decisive signal; once it is green and
@@ -160,7 +160,7 @@ PushNotification the user (and say it in your loop report) — do not improvise 
 - a spec/INTEGRATION.md contradiction needs an integrator ruling (post the ruling only if
   the user already decided; else escalate);
 - the same task fails review twice on the same root cause, or a respawned worker stalls again;
-- infrastructure breaks (box unreachable, gh/pi auth dead, gates broken on main);
+- infrastructure breaks (box unreachable, gh/codex auth dead, gates broken on main);
 - the task queue is empty and no PRs are open — **the loop's exit condition**.
 
 ## 5. Schedule the next wakeup
@@ -177,7 +177,7 @@ anything escalated, and when you'll wake next.
 ## Ground rules
 
 - Everything runs on the Mac — foreman, workers, reviews, merges — using local gh /
-  Anthropic / pi auth. The box is reached over SSH from inside sessions only when a gate
+  Anthropic / codex auth. The box is reached over SSH from inside sessions only when a gate
   or task genuinely needs Linux/KVM. The laptop must stay awake for the loop to progress:
   workers are spawned under `caffeinate -i` automatically (agent-spawn.sh), and the
   foreman session itself should be started as `caffeinate -i claude` so wakeups fire while

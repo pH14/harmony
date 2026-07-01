@@ -4,9 +4,11 @@ Cross-cutting infra task (hard rule 1 waived for CI, `docs/`, and adding
 `tests/public_api.rs` + `tests/public-api.txt` to each crate). **No existing public
 API changed** — the snapshots capture exactly what exists today.
 
-> Filed as `docs/IMPLEMENTATION-quality-d.md` rather than overwriting the root
-> `IMPLEMENTATION.md`, which currently records quality-a's cross-cutting work and
-> shouldn't be clobbered.
+> Originally filed as `docs/IMPLEMENTATION-quality-d.md` rather than overwriting the root
+> `IMPLEMENTATION.md`, which recorded quality-a's cross-cutting work and shouldn't be
+> clobbered. Task 62 relocated all three per-task diaries (this one, quality-a's, and
+> task 06's) out of the authoritative-looking root/`docs/` slots into `docs/history/`,
+> since none of them is *the* project's implementation notes — each is a private diary.
 
 ## What landed
 - **Per-crate snapshot guard** in all four crates (`hypercall-proto`, `snapshot-store`,
