@@ -165,6 +165,83 @@ The control transport carries an `Environment` as an **opaque, versioned blob** 
 the structure (that is the `environment` crate's contract with the services and the explorer),
 which lets the transport be fixed independently of the fault catalog.
 
+### Ruling (task 93): keep `EnvCodec::compose` — genesis-only branching is rejected
+
+PR #46 left one composition question open for re-validation with implementation signal: does the
+explorer keep composing a genesis-complete base env with a branch-local delta
+(`EnvCodec::compose`) to mint a portable `Bug.env`, or switch to **genesis-only branching** (never
+branch below a non-genesis snapshot, so no `compose`)? With task 12 implemented, the ruling is
+**keep `compose`**, on three grounds:
+
+1. **Structural weight.** The strategy *by design* spends the majority of the search in the mode
+   `compose` serves: every exploit step branches below a corpus snapshot, and with the default
+   `explore_period = 3` that is ~2/3 of all steps. Genesis-only branching would not merely forfeit
+   the snapshot-tree speedup; it would remove the exploit half of explore/exploit entirely (a
+   corpus entry's snapshot would be pointless to keep). A toy measurement (task 12's gate machine,
+   50 campaigns × 300 steps) is consistent: 66% of steps branched below a non-genesis base and 66%
+   of raw bug discoveries landed there — a consistency check of the structural argument, not an
+   independent fact about real-guest campaigns.
+2. **The semantics are clean *because of* the single-`Moment` ruling.** With both planes on one
+   retired-instruction axis, `compose(base, tail, at)` is one-axis integer re-keying: `base`
+   contributes only `m < at`, the tail shifts to `m + at ≥ at` — collision-free by construction,
+   overflow rejected (never wrapped), injectivity Kani-proved. The feared re-keyed-override
+   collisions cannot occur.
+3. **Implementation signal.** In task 12 `compose` is load-bearing in three places (bug rebase on
+   report, rebasing a snapshot forked below a non-genesis base so every corpus entry stays
+   genesis-complete, and nested-snapshot chains), each pinned by replay gates — including the
+   256-case property test `compose_rebase_replays_from_genesis`
+   (`branch(genesis, compose(base, delta))` reproduces the run that produced `delta` bit-for-bit).
+
+**The one real edge, and its contract.** `compose` is sound only when a decision is answered the
+same way whether reached from genesis or resumed from a mid-run branch. Overrides are
+splice-invariant by re-keying; **seed-serviced decisions are not**, because `SeededEnv` draws from
+*sequential* PRNG streams — a splice would desync the stream state. The production
+`EnvCodec::compose` therefore **fails closed** (`UnsupportedComposition`) on pure-`Seeded` inputs,
+seed/policy mismatches, and `StandingFault`s (whose window is on the *V-time* axis, needing a
+runtime `Moment → VTime` map to re-key). This scope is now **the contract**, not a stopgap, and it binds
+the frontier adapter (the R2 `Machine` implementation) on four points:
+
+- **Tail-completeness.** `Machine::recorded_env` must emit a **tail-complete** delta — every
+  decision answered since the branch appears as an override — so a composed reproducer never
+  re-draws the sequential seed stream across the splice. (The alternative — counter-mode seed
+  answers keyed by `Moment`, as the task-12 toy does — remains a valid future optimization if
+  tail-complete blobs grow too large, but is not required and is not scheduled.)
+- **`at` provenance.** The production `compose(base, tail, at)` needs the branch's absolute
+  `Moment`, but the explorer seam is `compose(base, branch_local)` over opaque blobs — and a
+  tail-complete delta by definition carries only since-the-branch overrides. So the adapter's
+  `Environment` blob format **must carry the branch offset** (the absolute `Moment` the delta is
+  keyed from — the production analogue of the toy blob's `base_offset` field), letting the adapter
+  recover `at` from the delta alone. A corpus base additionally records the `Moment` its snapshot
+  was taken at, so a mutation can be sliced at the right offset (the toy's `pos`).
+- **Fallibility.** The explorer seam's `compose` is infallible; the production one returns
+  `Result`. Under this contract a compose failure is unreachable in the campaign flow (corpus
+  bases and deltas are always post-run `Recorded` artifacts; seeds/policies match by construction;
+  standing faults are confined below) — and note the call path: the seam's `compose` is invoked by
+  the *explorer* (`Explorer::report` / snapshot admission), not by a `Machine` method, so the
+  adapter **cannot** route a failure out as a `MachineError`. Ruling: the adapter's `EnvCodec`
+  impl **panics** on `UnsupportedComposition`/`Overflow` — an invariant violation is a defect in
+  the adapter/contract, not a run outcome, and the campaign aborts loudly (the loud-failure
+  intent; never a silently-minted reproducer that does not replay). Making the seam fallible
+  (`compose → Result`) remains an **allowed task-58 API adjustment** if `Result` plumbing through
+  the explorer is preferred over the panic.
+- **Standing-fault confinement (v1).** Standing faults stay non-composable until a
+  `Moment → VTime` map exists, so until then they are **confined to genesis-based runs**: no
+  `StandingFault` in a branch-local delta, and a corpus entry whose env carries standing faults is
+  never branched below. Under that rule every standing-fault bug is found in a genesis-rooted run,
+  whose `recorded_env` is already genesis-complete and carries the standing set verbatim — no
+  composition needed. Enforcement cannot live in the explorer — the Theme and its strategies are
+  schema-blind and cannot detect a standing-fault-carrying blob — so it lives in two places:
+  (a) **vacuously, in the v1 vocabulary** — the v1 frontier fault catalog has *no* standing faults
+  at all (task 59 is point faults at a `Moment`), so the confinement rule holds by construction
+  until standing faults enter; and (b) when they do enter, **in the adapter's schema-aware
+  `EnvCodec`** — `mutate` and `compose` see the decoded blob, so `mutate` never introduces a
+  `StandingFault` into a branch-local delta and never slices a standing-fault-carrying base into
+  one. The fail-closed production `compose` is the backstop: any violation that slips through
+  becomes the loud abort of the fallibility bullet above, never a mis-keyed reproducer.
+
+The invariant is unchanged and not up for revisiting: the reproducer is **genesis-complete and
+portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.
+
 ## The two loops: Variation and Theme
 
 | | **Variation** (inner) | **Theme** (outer) |
