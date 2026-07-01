@@ -77,6 +77,8 @@ pub(crate) fn kvm_err(e: kvm_ioctls::Error) -> BackendError {
 
 /// `KVM_EXIT_DETERMINISM` (patch 0001).
 pub(crate) const KVM_EXIT_DETERMINISM: u32 = 41;
+/// harmony 0005: MTF single-step exit (one instruction retired, incl. through events).
+pub(crate) const KVM_EXIT_DET_STEP: u32 = 43;
 /// `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (patch 0001) — opt-in, settable only
 /// before vCPU creation.
 pub(crate) const KVM_CAP_X86_DETERMINISTIC_INTERCEPTS: u32 = 245;
@@ -369,6 +371,11 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
         KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),
         // Run-loop control exits — consumed internally, never surfaced.
         KVM_EXIT_IRQ_WINDOW_OPEN => Ok(None),
+        // harmony 0005 (defense-in-depth): a one-shot MTF single-step is disarmed
+        // in-kernel on its own exit (vmx_handle_exit), so a stale KVM_EXIT_DET_STEP
+        // cannot normally reach a non-stepping `run`; if one ever races through,
+        // swallow it as a transparent re-entry rather than aborting as "unhandled".
+        KVM_EXIT_DET_STEP => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
     }
 }
@@ -398,6 +405,7 @@ pub(crate) enum StepStop {
 pub(crate) fn classify_step_exit(page: RunPage) -> StepStop {
     match page.exit_reason() {
         KVM_EXIT_DEBUG => StepStop::SingleStepTrap,
+        KVM_EXIT_DET_STEP => StepStop::SingleStepTrap,
         KVM_EXIT_INTR => StepStop::Interrupted,
         KVM_EXIT_IRQ_WINDOW_OPEN => StepStop::Reenter,
         _ => StepStop::GuestExit,

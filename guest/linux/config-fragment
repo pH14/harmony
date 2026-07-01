@@ -31,13 +31,26 @@ CONFIG_KERNEL_GZIP=y
 # CONFIG_KERNEL_XZ is not set
 
 ## CPU / topology
-# Exactly one vCPU, forever: no SMP alternatives, no IPIs, no cross-CPU races.
-# (overrides Kata base.conf CONFIG_SMP=y; the cmdline also passes nosmp/maxcpus=1.)
-# CONFIG_SMP is not set
+# SMP=y (kept from the Kata base) so the cpuset cgroup-v2 controller exists â k3s/
+# kubelet hard-require it. maxcpus=1 keeps exactly ONE online vCPU (the determinism
+# lever: no second CPU to race or IPI); the VMM exposes a single vCPU regardless.
+# Documented IMPLEMENTATION.md follow-on (CPUSETS), determinism re-validated via r2.
+CONFIG_SMP=y
+# SCHED_MC_PRIO (Intel Turbo-Boost-Max core ordering; default y under SMP) is meaningless
+# on a single vCPU and `select`s CPU_FREQ + X86_INTEL_PSTATE (a select overrides a plain
+# "not set") â disable it so the cpufreq stack (a non-determinism source) stays off.
+# CONFIG_SCHED_MC_PRIO is not set
 # Single deterministic memory domain. (overrides Kata x86_64/numa.conf CONFIG_NUMA=y.)
 # CONFIG_NUMA is not set
-# No frequency scaling: timing behavior must not drift with governors.
-# (overrides Kata cpu.conf CONFIG_CPU_FREQ=y + its performance governor.)
+# No frequency scaling: timing must not drift with governors. With SMP=y the x86
+# cpufreq DRIVERS meet their deps and pull CPU_FREQ back on, so disable the drivers
+# too. (overrides Kata cpu.conf CONFIG_CPU_FREQ=y + perf governor and
+# x86_64/acpi.conf CONFIG_ACPI_CPU_FREQ_PSS=y.)
+# CONFIG_X86_INTEL_PSTATE is not set
+# CONFIG_X86_ACPI_CPUFREQ is not set
+# CONFIG_X86_PCC_CPUFREQ is not set
+# CONFIG_X86_AMD_PSTATE is not set
+# CONFIG_ACPI_CPU_FREQ_PSS is not set
 # CONFIG_CPU_FREQ is not set
 
 ## Time

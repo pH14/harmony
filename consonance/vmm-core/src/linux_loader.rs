@@ -125,6 +125,21 @@ const E820_RESERVED: u32 = 2;
 /// (`0xFEC00000`) is deliberately NOT reserved: Linux runs in virtual-wire mode (no
 /// MADT) and never uses it.
 const LAPIC_MMIO_PAGE: u64 = 0xFEE0_0000;
+/// GPA of the minimal ACPI tables (RSDP -> XSDT -> MADT). Placed in the legacy
+/// BIOS region `[0xA0000, 0x100000)`, which the memslot backs but the usable-RAM
+/// E820 map deliberately omits — so the kernel reads the tables via the RSDP
+/// pointer yet never allocates over them, and no E820 split is needed. Static
+/// bytes (no timestamps) => byte-identical every boot.
+pub const ACPI_RSDP_GPA: u64 = 0x000E_0000;
+/// GPA of the XSDT (36-byte header + one 8-byte entry pointing at the MADT).
+const ACPI_XSDT_GPA: u64 = ACPI_RSDP_GPA + 0x40;
+/// GPA of the MADT (APIC) table.
+const ACPI_MADT_GPA: u64 = ACPI_RSDP_GPA + 0x80;
+/// Local-APIC MMIO base advertised in the MADT — must equal the contract's xAPIC
+/// base and the backend memslot hole ([`LAPIC_MMIO_PAGE`]).
+const ACPI_LAPIC_BASE: u32 = LAPIC_MMIO_PAGE as u32;
+/// Boot-CPU local-APIC ID. The VMM models a single vCPU with APIC ID 0.
+const ACPI_BOOT_APIC_ID: u8 = 0;
 /// `boot_params.e820_table` capacity (`E820_MAX_ENTRIES_ZEROPAGE`).
 const E820_MAX_ENTRIES: usize = 128;
 
@@ -244,7 +259,15 @@ pub struct BootE820Entry {
 pub struct BootParams {
     /// Everything before `e820_entries` (screen_info, apm, EDD, setup_data
     /// pointers, …) — zeroed; the kernel tolerates a zero screen_info.
-    _head: [u8; 0x1e8],
+    _head: [u8; 0x070],
+    /// Physical address of the ACPI RSDP (`boot_params.acpi_rsdp_addr`, offset
+    /// `0x070`), little-endian. Pointing the SMP kernel at our MADT (whose
+    /// Local-APIC entry sets `acpi_lapic`) flips `apic_intr_mode` from
+    /// `APIC_VIRTUAL_WIRE_NO_CONFIG` to `APIC_VIRTUAL_WIRE`, which is what makes
+    /// `native_smp_prepare_cpus` register the LAPIC-timer clockevent (task 56).
+    pub acpi_rsdp_addr: [u8; 8],
+    /// Bytes `0x078..0x1e8` (rest of the pre-`e820_entries` header) — zeroed.
+    _head2: [u8; 0x1e8 - 0x078],
     /// Number of valid [`Self::e820_table`] entries. Offset `0x1e8`.
     pub e820_entries: u8,
     /// Padding from `0x1e9` up to the setup header at `0x1f1`.
@@ -606,6 +629,7 @@ pub fn load(
 
     // 6. Identity page table + boot GDT.
     write_page_tables(mem, ram)?;
+    write_acpi_tables(mem)?;
     write_gdt(mem)?;
 
     Ok(LinuxImage {
@@ -751,7 +775,81 @@ fn build_boot_params(
         };
         bp.e820_entries = 2;
     }
+    bp.acpi_rsdp_addr = ACPI_RSDP_GPA.to_le_bytes();
     bp
+}
+
+/// ACPI 1-byte checksum: the value that makes the sum of `bytes` zero (mod 256).
+fn acpi_checksum(bytes: &[u8]) -> u8 {
+    bytes
+        .iter()
+        .fold(0u8, |a, b| a.wrapping_add(*b))
+        .wrapping_neg()
+}
+
+/// Write a minimal ACPI table set — RSDP -> XSDT -> MADT — into the guest's legacy
+/// BIOS region and return the RSDP GPA (for `boot_params.acpi_rsdp_addr`). The MADT
+/// carries one Processor-Local-APIC entry and **no** IO-APIC entry, so Linux sets
+/// `acpi_lapic` (=> `apic_intr_mode == APIC_VIRTUAL_WIRE`) without enabling the
+/// IO-APIC routing the VMM does not model. With `CONFIG_SMP=y` that is exactly what
+/// makes `native_smp_prepare_cpus` set up the LAPIC-timer clockevent so the periodic
+/// tick fires and the tree-RCU idle `HLT` resumes (task 56). All bytes are static
+/// (no timestamps) => byte-identical every boot, so the tables are part of the
+/// deterministic guest input.
+fn write_acpi_tables(mem: &mut [u8]) -> Result<(), LinuxLoadError> {
+    let oob = LinuxLoadError::RamTooSmall { ram: ACPI_RSDP_GPA };
+    const OEMID: &[u8; 6] = b"HARMNY";
+    const OEM_TABLE_ID: &[u8; 8] = b"HARMONYT";
+    const CREATOR_ID: &[u8; 4] = b"HARM";
+
+    // --- MADT (signature "APIC"): 36-byte SDT header + 8-byte flags/addr + one
+    //     8-byte Processor-Local-APIC structure = 52 bytes. ---
+    let mut madt = [0u8; 52];
+    madt[0..4].copy_from_slice(b"APIC");
+    madt[4..8].copy_from_slice(&52u32.to_le_bytes());
+    madt[8] = 5; // revision (ACPI 4.0+)
+    madt[10..16].copy_from_slice(OEMID);
+    madt[16..24].copy_from_slice(OEM_TABLE_ID);
+    madt[24..28].copy_from_slice(&1u32.to_le_bytes());
+    madt[28..32].copy_from_slice(CREATOR_ID);
+    madt[32..36].copy_from_slice(&1u32.to_le_bytes());
+    madt[36..40].copy_from_slice(&ACPI_LAPIC_BASE.to_le_bytes()); // Local APIC address
+    madt[40..44].copy_from_slice(&1u32.to_le_bytes()); // flags: PCAT_COMPAT (8259 present)
+    madt[44] = 0; // structure type: Processor Local APIC
+    madt[45] = 8; // structure length
+    madt[46] = 0; // ACPI processor UID
+    madt[47] = ACPI_BOOT_APIC_ID; // APIC ID
+    madt[48..52].copy_from_slice(&1u32.to_le_bytes()); // local-APIC flags: Enabled
+    madt[9] = acpi_checksum(&madt);
+
+    // --- XSDT (signature "XSDT"): 36-byte header + one 8-byte entry -> MADT. ---
+    let mut xsdt = [0u8; 44];
+    xsdt[0..4].copy_from_slice(b"XSDT");
+    xsdt[4..8].copy_from_slice(&44u32.to_le_bytes());
+    xsdt[8] = 1;
+    xsdt[10..16].copy_from_slice(OEMID);
+    xsdt[16..24].copy_from_slice(OEM_TABLE_ID);
+    xsdt[24..28].copy_from_slice(&1u32.to_le_bytes());
+    xsdt[28..32].copy_from_slice(CREATOR_ID);
+    xsdt[32..36].copy_from_slice(&1u32.to_le_bytes());
+    xsdt[36..44].copy_from_slice(&ACPI_MADT_GPA.to_le_bytes());
+    xsdt[9] = acpi_checksum(&xsdt);
+
+    // --- RSDP (ACPI 2.0, 36 bytes): two checksums (first 20 bytes, then all 36). ---
+    let mut rsdp = [0u8; 36];
+    rsdp[0..8].copy_from_slice(b"RSD PTR ");
+    rsdp[9..15].copy_from_slice(OEMID);
+    rsdp[15] = 2; // revision (ACPI 2.0+ => XSDT present)
+    // rsdp[16..20] RsdtAddress = 0 (the 64-bit XSDT is authoritative)
+    rsdp[20..24].copy_from_slice(&36u32.to_le_bytes()); // length
+    rsdp[24..32].copy_from_slice(&ACPI_XSDT_GPA.to_le_bytes());
+    rsdp[8] = acpi_checksum(&rsdp[0..20]); // legacy checksum (first 20 bytes)
+    rsdp[32] = acpi_checksum(&rsdp); // extended checksum (all 36 bytes)
+
+    write_at(mem, ACPI_MADT_GPA, &madt, oob)?;
+    write_at(mem, ACPI_XSDT_GPA, &xsdt, oob)?;
+    write_at(mem, ACPI_RSDP_GPA, &rsdp, oob)?;
+    Ok(())
 }
 
 /// Write the identity page table — PML4[0] → PDPT, PDPT[0] → one PD, and that PD's
@@ -802,6 +900,43 @@ pub const GDT_DATA: u64 = 0x00CF_9300_0000_FFFF;
 mod tests {
     use super::*;
     use core::mem::{offset_of, size_of};
+
+    /// The minimal ACPI tables (RSDP → XSDT → MADT, task 56 MADT+ARAT keystone) are
+    /// fully static, so their exact bytes are pinned here. This is both a determinism
+    /// guard on the ACPI guest input and a mutation guard: it fixes the computed 1-byte
+    /// checksums (`madt[9]`, `xsdt[9]`, `rsdp[8]`, `rsdp[32]`), the RSDP→XSDT→MADT GPA
+    /// pointers (the `ACPI_RSDP_GPA + 0x40 / + 0x80` offset arithmetic), and that
+    /// `write_acpi_tables` actually emits the bytes. Read from the fixed `ACPI_RSDP_GPA`
+    /// base (not the derived offsets) so a wrong offset lands the table outside the
+    /// asserted window.
+    #[test]
+    fn acpi_tables_are_byte_exact() {
+        let base = ACPI_RSDP_GPA as usize;
+        let mut mem = vec![0u8; base + 0x1000];
+        write_acpi_tables(&mut mem).expect("write_acpi_tables into a large-enough buffer");
+        // RSDP @ +0x00 (36 B), XSDT @ +0x40 (44 B), MADT @ +0x80 (52 B); zeros in the gaps.
+        const GOLDEN: [u8; 0xC0] = [
+            0x52, 0x53, 0x44, 0x20, 0x50, 0x54, 0x52, 0x20, 0x10, 0x48, 0x41, 0x52, 0x4d, 0x4e,
+            0x59, 0x02, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x40, 0x00, 0x0e, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x8e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0x53, 0x44, 0x54, 0x2c, 0x00,
+            0x00, 0x00, 0x01, 0x97, 0x48, 0x41, 0x52, 0x4d, 0x4e, 0x59, 0x48, 0x41, 0x52, 0x4d,
+            0x4f, 0x4e, 0x59, 0x54, 0x01, 0x00, 0x00, 0x00, 0x48, 0x41, 0x52, 0x4d, 0x01, 0x00,
+            0x00, 0x00, 0x80, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x41, 0x50, 0x49, 0x43, 0x34, 0x00, 0x00, 0x00, 0x05, 0x57, 0x48, 0x41,
+            0x52, 0x4d, 0x4e, 0x59, 0x48, 0x41, 0x52, 0x4d, 0x4f, 0x4e, 0x59, 0x54, 0x01, 0x00,
+            0x00, 0x00, 0x48, 0x41, 0x52, 0x4d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0xfe,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(
+            &mem[base..base + GOLDEN.len()],
+            &GOLDEN[..],
+            "ACPI RSDP/XSDT/MADT bytes drifted (checksum, offset arithmetic, or table content)"
+        );
+    }
 
     /// A minimal but valid bzImage `SetupHeader` bytes prefix for tests: a buffer
     /// with the magics, version, xloadflags, setup_sects, pref_address, init_size
@@ -874,6 +1009,7 @@ mod tests {
     #[test]
     fn boot_params_field_offsets() {
         // The gate-1 absolute offsets within boot_params (the x86 boot protocol).
+        assert_eq!(offset_of!(BootParams, acpi_rsdp_addr), 0x070);
         assert_eq!(offset_of!(BootParams, e820_entries), 0x1e8);
         assert_eq!(offset_of!(BootParams, hdr), 0x1f1);
         assert_eq!(offset_of!(BootParams, e820_table), 0x2d0);

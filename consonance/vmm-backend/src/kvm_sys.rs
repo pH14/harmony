@@ -71,6 +71,8 @@ const KVM_RUN: u64 = ioc(0, 0xAE, 0x80, 0);
 /// VM-entry (the userspace-irqchip injection path; kvm-ioctls exposes no safe
 /// wrapper for it, unlike `KVM_NMI`, so it is a direct ioctl like the MSR filter).
 const KVM_INTERRUPT: u64 = ioc(1, 0xAE, 0x86, size_of::<kvm_interrupt>() as u64);
+/// `_IO(KVMIO, 0xe5)` — harmony 0005: arm a one-shot MTF single-step.
+const KVM_ARM_MTF_STEP: u64 = ioc(0, 0xAE, 0xe5, 0);
 /// `_IOW(KVMIO, 0xC6, struct kvm_msr_filter)` — install the MSR filter.
 const KVM_X86_SET_MSR_FILTER: u64 = ioc(1, 0xAE, 0xC6, size_of::<kvm_msr_filter>() as u64);
 /// `_IOR(KVMIO, 0xCC, struct kvm_sregs2)` — read sregs incl. PDPTRs/flags.
@@ -144,10 +146,17 @@ pub struct KvmBackend {
     /// same thread, so on a deterministic guest stream the two read identical work
     /// counts (the box-validation invariant — see `pmu` module docs).
     pmu: Option<PmuBranchCounter>,
-    /// Whether `KVM_GUESTDBG_SINGLESTEP` is currently armed on the vCPU, so the
-    /// single-step ioctl is issued once per `run_until` (not per step) and always
-    /// disarmed before the next `run`.
+    /// Whether single-step is currently armed for `run_until`, so it is set up once
+    /// per `run_until` (not per step) and always disarmed before the next `run`.
     single_step_armed: bool,
+    /// Whether this backend opted into `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (the
+    /// patched-KVM path). Selects the single-step mechanism: the patched one-shot
+    /// MTF (`KVM_ARM_MTF_STEP` → `KVM_EXIT_DET_STEP`, which steps *through* the
+    /// guest's own syscall/exception) when `true`; stock `KVM_GUESTDBG_SINGLESTEP`
+    /// when `false`. The MTF ioctl is patched-only and would `EINVAL` on stock KVM
+    /// or any VM that did not enable the cap, so the stock `run_until` caller
+    /// (e.g. `live_preemption`) must never issue it.
+    deterministic_intercepts: bool,
     /// The first-entry PMU-reset discipline (P1(b)): resets the shared-thread branch
     /// counter at the first `run`/`run_until` of this VM's life — and again at the
     /// first entry after a `restore` — so it shares vmm-core's work-counter baseline
@@ -239,6 +248,7 @@ impl KvmBackend {
             // perf access still creates a backend that can `run()`/save/restore.
             pmu: PmuBranchCounter::open().ok(),
             single_step_armed: false,
+            deterministic_intercepts,
             reset_arm: FirstEntryReset::new(),
             exit_poison: ExitPoison::default(),
         })
@@ -451,7 +461,9 @@ impl KvmBackend {
                         "run_until: unexpected single-step debug exit during free-run",
                     ));
                 }
-                StepStop::GuestExit => return self.take_guest_exit_stop(),
+                StepStop::GuestExit => {
+                    return self.take_guest_exit_stop();
+                }
             }
         }
     }
@@ -500,9 +512,19 @@ impl KvmBackend {
         self.enable_single_step()?;
         let fd = self.vcpu.as_raw_fd();
         loop {
-            // Preserve + deliver any pending injectable IRQ (P2(a)); clears the window
-            // when none is pending, so an IRQ-window exit cannot loop.
+            // Deliver any pending injectable IRQ (P2(a)); clears the window when none
+            // is pending, so an IRQ-window exit cannot loop.
             self.inject_pending(fd)?;
+            // Patched path only: arm the one-shot MTF for the next instruction (exits
+            // `KVM_EXIT_DET_STEP`, stepping THROUGH the guest's own syscall/exception).
+            // The stock path uses the sticky `KVM_GUESTDBG_SINGLESTEP` armed in
+            // `enable_single_step`; the MTF ioctl is patched-only and `EINVAL`s on a
+            // non-determinism VM, so it must never be issued there (regressed the stock
+            // `run_until`/`live_preemption` gate).
+            if self.deterministic_intercepts {
+                // SAFETY (raw ioctl seam): one-shot MTF arm on the owned vCPU.
+                unsafe { raw_mtf_step(fd) }?;
+            }
             // SAFETY (raw ioctl seam): single-stepped `KVM_RUN` on the owned vCPU.
             let rc = unsafe { raw_kvm_run(fd) };
             if rc < 0 {
@@ -516,40 +538,60 @@ impl KvmBackend {
                 // The single-step trap is the stop signal (one instruction retired);
                 // the overflow is disarmed in this phase, so a signal/IRQ-window exit
                 // is just a re-entry (the planner bounds progress via the work count).
-                StepStop::SingleStepTrap => return Ok(LiveStop::Count(self.pmu_work()?)),
+                StepStop::SingleStepTrap => {
+                    let w = self.pmu_work()?;
+                    return Ok(LiveStop::Count(w));
+                }
                 StepStop::Interrupted | StepStop::Reenter => continue,
-                StepStop::GuestExit => return self.take_guest_exit_stop(),
+                StepStop::GuestExit => {
+                    // The stepped instruction took its own exit to userspace; the
+                    // in-kernel one-shot MTF (mtf_step_armed + the exec-control) is
+                    // disarmed on that exit by vmx_handle_exit (harmony 0005), so no
+                    // stale KVM_EXIT_DET_STEP survives into the next run or a snapshot.
+                    return self.take_guest_exit_stop();
+                }
             }
         }
     }
 
-    /// Arm `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` (once per `run_until`).
-    /// Also disarms the PMU overflow + drains its ring: phase 1's overflow already
-    /// fired, so for the (≤ skid_margin) exact-landing steps the counter must only
-    /// count (no second overflow could fire mid-skid-margin, and the phase-1 record
-    /// is consumed so a long run never fills the ring).
+    /// Arm single-step (once per `run_until`) and disarm the PMU overflow + drain its
+    /// ring: phase 1's overflow already fired, so for the (≤ skid_margin) exact-landing
+    /// steps the counter must only count (no second overflow could fire mid-skid-margin,
+    /// and the phase-1 record is consumed so a long run never fills the ring).
+    ///
+    /// Mechanism by backend: the **patched** path arms a per-step one-shot MTF in
+    /// [`Self::single_step_once`] (it steps *through* the guest's own syscall/exception,
+    /// which TF cannot — issue #34); the **stock** path arms the sticky
+    /// `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP` here (the MTF ioctl is
+    /// patched-only and would `EINVAL` on stock KVM).
     fn enable_single_step(&mut self) -> Result<()> {
         if self.single_step_armed {
             return Ok(());
         }
         self.pmu_disarm()?;
-        let dbg = kvm_guest_debug {
-            control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
-            ..Default::default()
-        };
-        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        if !self.deterministic_intercepts {
+            // Stock KVM: TF-based single-step (each retired instruction → KVM_EXIT_DEBUG).
+            let dbg = kvm_guest_debug {
+                control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_SINGLESTEP,
+                ..Default::default()
+            };
+            self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        }
         self.single_step_armed = true;
         Ok(())
     }
 
-    /// Disarm guest-debug single-step, restoring normal execution for the next
-    /// `run`. No-op if it was never armed.
+    /// Disarm single-step, restoring normal execution for the next `run`. No-op if it
+    /// was never armed. Only the stock path armed guest-debug; the patched path's MTF
+    /// is a per-step one-shot (no sticky vCPU state to clear).
     fn disable_single_step(&mut self) -> Result<()> {
         if !self.single_step_armed {
             return Ok(());
         }
-        let dbg = kvm_guest_debug::default(); // control = 0: disable
-        self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        if !self.deterministic_intercepts {
+            let dbg = kvm_guest_debug::default(); // control = 0: disable
+            self.vcpu.set_guest_debug(&dbg).map_err(kvm_err)?;
+        }
         self.single_step_armed = false;
         Ok(())
     }
@@ -726,6 +768,27 @@ unsafe fn raw_set_msr_filter(fd: std::os::fd::RawFd, filter: &kvm_msr_filter) ->
 #[cfg(miri)]
 unsafe fn raw_set_msr_filter(_fd: std::os::fd::RawFd, _filter: &kvm_msr_filter) -> Result<()> {
     Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// harmony 0005: arm a one-shot MTF single-step. The next `KVM_RUN` exits with
+/// `KVM_EXIT_DET_STEP` after exactly one instruction — including THROUGH the guest's
+/// own syscall/exception (unlike TF single-step, cleared on event delivery / FMASK).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd.
+#[cfg(not(miri))]
+unsafe fn raw_mtf_step(fd: std::os::fd::RawFd) -> Result<()> {
+    // SAFETY: argument-less ioctl on the owned vCPU fd.
+    let rc = unsafe { libc::ioctl(fd, KVM_ARM_MTF_STEP as libc::c_ulong) };
+    if rc < 0 {
+        return Err(BackendError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(miri)]
+unsafe fn raw_mtf_step(_fd: std::os::fd::RawFd) -> Result<()> {
+    Ok(())
 }
 
 /// Issue the `KVM_INTERRUPT` ioctl, queueing maskable IRQ `vector` for the next

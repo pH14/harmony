@@ -526,7 +526,7 @@ mod tests {
     fn canonical_form_well_formed() {
         let form = canonical::serialize(contract());
         // Header anchors (literal §6 spelling).
-        assert!(form.starts_with("contract-version=3\n"));
+        assert!(form.starts_with("contract-version=4\n"));
         assert!(form.contains("\nkernel-tag=v6.18.35\n"));
         assert!(form.contains("\ncpuid-baseline=det-cfl-v1\n"));
         assert!(form.contains("\nmxcsr-mask=0x0000ffff\n"));
@@ -554,7 +554,7 @@ mod tests {
 
     /// **GOLDEN** §6 canonical form — the exact byte string the serializer must
     /// emit for the ratified v3 contract (det-cfl-v1), committed at
-    /// `src/contract/testdata/canonical-v3.txt`. This locks **every** §6 spelling
+    /// `src/contract/testdata/canonical-v4.txt`. This locks **every** §6 spelling
     /// and ordering decision (header scalars, CPUID `dyn:` tokens, MSR formula ids,
     /// the timer device order, the 3-hex `xapic.<offset>` form, the 2-hex `cmos`
     /// tokens, and the bracketed `host-assert cr4-force-reserved [PKE, PKS]`), so
@@ -568,18 +568,18 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn canonical_form_matches_golden() {
-        let golden = include_str!("testdata/canonical-v3.txt");
+        let golden = include_str!("testdata/canonical-v4.txt");
         let form = canonical::serialize(contract());
         assert_eq!(
             form, golden,
             "§6 canonical form drifted from the committed golden \
-             (src/contract/testdata/canonical-v3.txt). If this is an intended, reviewed §6 \
+             (src/contract/testdata/canonical-v4.txt). If this is an intended, reviewed §6 \
              change, bump contract-version and regenerate the golden file (contract::tests::regen_golden)."
         );
         // The committed v3 hash is sha256 of exactly the golden bytes.
         let hex: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
-            hex, "e01f0835576444c269c6603fc4984d0b425785373f4c49613d75ce896565c832",
+            hex, "30839ae67142f265066be1051e93fcb4a1839c30bd3edd6d875ecdc1a37ddb67",
             "contract_hash must be sha256 of the golden canonical bytes"
         );
     }
@@ -711,12 +711,12 @@ host-absent = [\"RDPID\", \"SHA\"]\n";
     /// `cargo test -p vmm-core contract::tests::regen_golden -- --ignored`.
     /// Then update `canonical_form_matches_golden`'s expected hash to the new value.
     #[test]
-    #[ignore = "writes src/contract/testdata/canonical-v3.txt; run manually on a reviewed §6 bump"]
+    #[ignore = "writes src/contract/testdata/canonical-v4.txt; run manually on a reviewed §6 bump"]
     fn regen_golden() {
         let form = canonical::serialize(contract());
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/src/contract/testdata/canonical-v3.txt"
+            "/src/contract/testdata/canonical-v4.txt"
         );
         std::fs::write(path, &form).expect("write golden");
     }
