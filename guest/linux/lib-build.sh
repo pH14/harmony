@@ -45,6 +45,10 @@ ART_DIR=$GUEST_DIR/build
 # - native (not the bind-mounted repo), because the repo may sit on a
 #   case-insensitive macOS filesystem, and a kernel tree cannot be extracted
 #   onto one (case-colliding header names).
+# "hypervizor" here is a hashed MANIFEST.sha256 input (build path embedded in the
+# reproducible-build recipe) — deliberately NOT renamed to "harmony" post-task-90.
+# See tasks/90-rename-harmony.md's close-out note; ruled document-as-deliberately-stale
+# by task 62, not a rebaseline. Do not touch this string.
 BUILD_ROOT=${GUEST_BUILD_ROOT:-/tmp/hypervizor-guest-build}
 
 KSRC=$BUILD_ROOT/linux-$KERNEL_VERSION
@@ -56,6 +60,9 @@ BBOBJ=$BUILD_ROOT/busybox-build
 # SOURCE_DATE_EPOCH, no kconfig header timestamps. LOCALVERSION is fixed in
 # the config fragment (empty, LOCALVERSION_AUTO=n).
 export KBUILD_BUILD_TIMESTAMP='Thu Jan  1 00:00:00 UTC 1970'
+# "hypervizor" (both vars below) is a hashed MANIFEST.sha256 input — deliberately NOT
+# renamed post-task-90; see tasks/90-rename-harmony.md's close-out note (task 62 ruling:
+# document-as-deliberately-stale). Do not touch these strings.
 export KBUILD_BUILD_USER=hypervizor
 export KBUILD_BUILD_HOST=hypervizor
 export KBUILD_BUILD_VERSION=1

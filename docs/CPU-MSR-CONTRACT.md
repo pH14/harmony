@@ -348,6 +348,13 @@ it is hard-closed rather than residual.
 
 ## 2. Frozen CPUID model — baseline `det-cfl-v1`
 
+> **Margin note — single-vCPU ruling (task 62).** This section's frozen single-core/single-thread
+> topology (leaf 0xB row below, the CPUID.1:ECX[21]=0/HTT[28]=0 stance, `MSR_CORE_THREAD_COUNT`
+> pinned to `1/1`) describes the **v1 contract**: an SMP-*built* kernel with exactly one
+> *online* vCPU (task 56 shipped `CONFIG_SMP=y` + `maxcpus=1`; the kernel config is SMP-capable,
+> the running topology is not). Real multi-vCPU is out of scope until explicitly re-ruled —
+> deferred, not foreclosed. See `docs/DISSONANCE.md`'s matching ruling and `docs/ROADMAP.md`.
+
 Baseline name: **`det-cfl-v1`** — a synthetic single-socket, single-core, single-thread
 client CPU modeled on Coffee Lake-S (GenuineIntel, family 6, model 0x9E, stepping 0xC — the
 Intel Core i9-9900K determinism box, microcode `0xf8`), with every leak-vector feature

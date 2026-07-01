@@ -33,6 +33,20 @@ exactly.
   deterministic, every bug reproduces exactly. Crates in `dissonance/`.
 - **unison** — the determinism harness (replay-equivalence / `compare_runs` / `bisect_divergence`).
 
+## Ruling: single-vCPU is the v1 contract (task 62)
+
+`Moment` throughout this document is defined as `InsnCount`, and the one-outstanding-decision
+model below ("exactly one decision is ever outstanding") both assume the lone-vCPU determinism
+model PLAN.md originally called "one vCPU, period." Task 56 shipped a `CONFIG_SMP=y` guest
+(`maxcpus=1`) without any doc acknowledging the axiom had been quietly cracked. **Integrator
+ruling:** the v1 contract is an **SMP-built kernel with exactly one *online* vCPU** — real
+multi-vCPU (more than one online at once) is out of scope until explicitly re-ruled, deferred
+not foreclosed (deterministic SMP is a potential edge over Antithesis, which is
+single-core-pinned; see `docs/REVIEW-2026-07.md` gap 5). This preserves `Moment = InsnCount` and
+the one-outstanding-decision model below exactly as written — they describe the one *online*
+vCPU. A matching margin note lives at `docs/CPU-MSR-CONTRACT.md`'s topology section (§441/1481
+citation points). See also `docs/ROADMAP.md`.
+
 ## What dissonance is
 
 Dissonance treats a running guest as a black box and asks: *under what conditions does it break?*
@@ -169,8 +183,11 @@ In seeded mode the Variation has zero stops (the seed answers everything), so a 
 campaign is the Theme alone.
 
 `snapshot` / `branch` are **Theme navigation, not perturbations** — they are not recorded into a
-run's `Environment`. A `snapshot` at a **quiescent** point (snapshots are quiescent-only) becomes a
-base the Theme forks two ways — `branch(s, env_drop)` + `branch(s, env_deliver)`, two
+run's `Environment`. A `snapshot` at **any V-time point** (task 41 lifted the original
+quiescent-only limit by capturing in-flight CPU event/interrupt state — see `tasks/41-non-
+quiescent-snapshot.md`; a never-halting interrupt-driven guest like Postgres is now snapshottable
+mid-workload, not just at boot) becomes a base the Theme forks two ways —
+`branch(s, env_drop)` + `branch(s, env_deliver)`, two
 `Environment`s that answer the interesting decision differently; each replays from the base to that
 `Moment` and diverges there. This is the one place the loops interlock, growing a tree of
 variations from a single moment — without ever snapshotting while a decision is armed.
@@ -204,7 +221,7 @@ surface in-band and are *answered* via `run(resolve)`):
 | Verb | Returns | Meaning |
 |---|---|---|
 | `hello(caps)` | `Caps` | negotiate protocol/blob versions + coverage geometry |
-| `snapshot` | `SnapId` | capture state at a quiescent point (pool-wide handle) |
+| `snapshot` | `SnapId` | capture state at any V-time point, including mid-workload (task 41; pool-wide handle) |
 | `drop(snap)` | `()` | release a snapshot (corpus GC) |
 | `branch(snap, env)` | `()` | restore + reseed from `env` — explore a new future |
 | `replay(snap)` | `()` | restore verbatim — reproduce / determinism gate |
@@ -286,16 +303,17 @@ snapshot/branch at a `Moment`).
   to compose). Tasks 38/48/49 run real Linux TCP stacks (Postgres; a k3s cluster, pod-to-pod over the
   CNI) intra-guest and replay **deterministic-twice**, because the guest's timers ride the
   V-time-backed TSC/LAPIC/PIT/CMOS surface (the contract denies a PV clock) and entropy is seeded. The
-  open frontier is now the **guest flow utility** itself (task 50 non-goal): *what* enforces a
-  `NetFlow` policy on the CNI (tc-netem / nftables / a userspace L4 proxy) and the `net_decide`
-  hypercall-service wiring.
+  guest flow utility itself is now built (`dissonance/flow`, task 51 — see the crate table below);
+  the open frontier is wiring it into a real path: the `net_decide` hypercall-service + enforcement
+  loop is **task 61** (the net vertical).
 - **The decision-class taxonomy** is the one contract shared between the control transport (which
   names classes in `StopMask`) and the guest fault catalog (which defines them). Keep them in sync.
 - **Layer-conflict semantics** (D7): the exact rules for how a higher `harmony-<env>` layer adds vs.
   constrains a lower layer's classes are sketched (namespacing) but not pinned.
 - **Host control-plane realization**: `HostFault` + `perturb` + uniform `Moment` stamping across
-  both planes is specified here but not yet built (task 45). The existing `Environment` (task 24)
-  covers the guest planes only.
+  both planes is specified here but not yet built — that is **task 59** (host-plane enforcement:
+  `perturb` for `CorruptMemory` + `InjectInterrupt` at a `Moment`, the first real fault vocabulary
+  with zero guest cooperation). The existing `Environment` (task 24) covers the guest planes only.
 
 ## Crates and tasks
 
@@ -304,13 +322,14 @@ snapshot/branch at a `Moment`).
 | `dissonance/environment` | the **guest control-plane** `decide` seam, the catalog (incl. the per-flow `NetFlow` network seam), `SeededEnv`, the recorded-replay format | `tasks/24-environment.md`, `tasks/50-net-fault-boundary.md` |
 | `dissonance/control-proto` | the control-transport wire types + versioned codec | `tasks/25-control-proto.md` |
 | `dissonance/explorer` | the Variation/Theme engine, corpus, scoring, strategy | `tasks/12-explorer.md` |
-| *(host plane)* | `HostFault` + `perturb` + uniform `Moment` stamping in consonance | `tasks/45-host-control-plane.md` |
+| `dissonance/flow` | the pure-logic L4 flow-fault proxy core behind task 50's `net_decide` seam: `FlowEvent`s in, a deterministic V-time-scheduled stream of `FlowAction`s out, via a `FlowEngine` trait (`ToxiproxyEngine` + `PassthroughEngine`) | `tasks/51-flow.md` |
+| *(host plane)* | `HostFault` + `perturb` + uniform `Moment` stamping in consonance | `tasks/45-host-control-plane.md`, enforcement lands in `tasks/59-host-plane-enforcement.md` |
 
 > The host-side L2 switch crate `dissonance/pv-net` (task 26) was **retired** by task 50: it modeled a
 > host-routed multi-VM topology the project does not use. Networking is now a per-flow guest-plane
-> decision (`NetFlow`, owned by `environment`), enforced in-guest.
+> decision (`NetFlow`, owned by `environment`), enforced in-guest by `dissonance/flow`.
 
-`environment`, `control-proto`, `explorer` are pure-logic and laptop-gate-testable. The
-frontier glue — the socket server, the reactive-suspension run loop, the `net_decide`
-hypercall-service + the guest flow utility that enforces a `NetFlow` answer on the CNI, and the
+`environment`, `control-proto`, `explorer`, `flow` are pure-logic and laptop-gate-testable. The
+frontier glue — the socket server, the reactive-suspension run loop (task 58), the `net_decide`
+hypercall-service + wiring `flow` into a real enforcement loop on the CNI (task 61), and the
 host-plane `perturb` enforcement — lives in `consonance/vmm-core` and is built against these crates.
