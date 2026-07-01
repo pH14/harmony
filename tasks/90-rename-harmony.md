@@ -1,5 +1,15 @@
 # Task 90 — project rename & regrouping: *harmony* / *consonance* / *dissonance* / *unison*
 
+> **Close-out note (task 62, 2026-07-01).** This rename is **~95% executed**, not fully pending as
+> the header below still implies: the source layout, crate names, docs, and skills already use
+> `harmony`/`consonance`/`dissonance`/`unison` throughout. The real straggler is narrow and
+> **deliberate**: the `hypervizor` strings at `guest/linux/lib-build.sh:48,59,60` are **hashed
+> `MANIFEST.sha256` build inputs** (the task-43 landmine — changing them invalidates the manifest
+> and forces a rebaseline). **Integrator ruling: document-as-deliberately-stale**, not
+> rebaseline-now. A comment sits at each site pointing back here; the strings themselves are
+> untouched. If a rebaseline is ever scheduled for other reasons (e.g. task 43's `harmony-linux`
+> tier landing), fold this rename in as part of it rather than doing it standalone.
+
 > **DEFERRED CHORE · PLANNED FREEZE-WINDOW · DO NOT AUTO-SPAWN.** This is a tree-wide mechanical
 > rename that conflicts with **every** in-flight branch. The foreman must **not** pick it up in the
 > normal numeric auto-spawn flow. Numbered 90 to keep it out of the day-to-day queue.

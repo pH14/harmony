@@ -7,9 +7,31 @@ performance counters, hypercall-only I/O, and copy-on-write snapshot/branching. 
 building **one crate (or one directory) in isolation**. Other components are built by other
 workers in parallel; integration happens later and is not your concern.
 
+## Task classes
+
+Most tasks below are **delegable**: one crate/directory, gates run laptop-side, no box needed.
+A second class exists and covers roughly two-thirds of the recent queue (tasks 41–57, and any
+future KVM bring-up / integration work):
+
+- **Frontier tasks** — box-only (need `/dev/kvm`, a real bare-metal box; see `docs/BOX-PINNING.md`
+  and `docs/BUILDING.md`'s capability matrix). A frontier task's spec names an explicit **surface
+  list** of the crates/dirs it may touch — that list is the boundary in place of hard rule 1
+  below, since integration work legitimately spans `consonance/vmm-core` plus whichever crates it
+  wires together. Frontier gates are the **box gates** (real KVM run, live boot, `state_hash`
+  determinism check, etc., run over SSH per `docs/box-access` conventions) **plus** the
+  **portable-logic gates** (the standard suite below) for any pure-logic code the task also
+  touches. A frontier spec must still be **runnable from the repo**: box paths, SSH hosts, and
+  environment tags belong in the spec's **Environment** section, not scattered through the prose
+  as ad hoc asides — a reader should be able to tell, from one place, exactly what needs the box
+  and what doesn't.
+
+Everything else in this document (hard rules, gates, style, deliverable) applies to both classes;
+"your directory" for a frontier task means its spec's surface list, not a single crate dir.
+
 ## Hard rules
 
-1. **Touch only your directory.** Your task file names it — `consonance/<crate>/` for the
+1. **Touch only your directory** (or, for a **frontier task**, your spec's named surface list —
+   see Task classes above). Your task file names it — `consonance/<crate>/` for the
    deterministic hypervisor (the substrate / engine), `dissonance/<crate>/` for the bug finder
    built on it (e.g. `consonance/snapshot-store/`, `dissonance/explorer/`). The root `Cargo.toml`
    already globs both `consonance/*` and `dissonance/*`, so your crate joins the workspace just by
