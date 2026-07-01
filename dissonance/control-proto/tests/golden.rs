@@ -400,6 +400,7 @@ fn err_simple_unit_variants() {
     check_reply(34, Err(ControlError::MalformedEnvironment), &[0x01, 0x06]);
     check_reply(35, Err(ControlError::ResolveWithoutDecision), &[0x01, 0x07]);
     check_reply(36, Err(ControlError::MalformedAnswer), &[0x01, 0x08]);
+    check_reply(42, Err(ControlError::Unsupported), &[0x01, 0x0A]);
 }
 
 #[test]
