@@ -34,6 +34,7 @@
 
 pub mod bringup;
 pub mod contract;
+pub mod control;
 pub mod corpus;
 pub mod devices;
 pub mod entry;

@@ -729,6 +729,23 @@ impl<B: Backend> Vmm<B> {
         }
     }
 
+    /// The **effective V-time** in whole nanoseconds — `snapshot_vns` of the
+    /// deterministic last-intercept anchor, i.e. exactly the V-time the `VTIM`
+    /// hash chunk folds in (see [`Vmm::state_blob`]) — or `None` when the
+    /// determinism path is not wired. Skid-free (never a live counter read) and
+    /// identical across same-seed runs at the same point, so the control
+    /// transport's `run(until)` deadline check (task 58) can compare it against a
+    /// V-time deadline without perturbing determinism. Unlike
+    /// [`Vmm::save_vtime`] it is **total**: at a non-synchronized point it
+    /// reports the last-intercept V-time (a lower bound on the true V-time) —
+    /// fine for a monotone deadline check, but never a snapshot's `vns` (that
+    /// exactness is `save_vtime`'s job, which fails closed instead).
+    pub fn effective_vns(&self) -> Option<u64> {
+        self.vtime
+            .as_ref()
+            .map(|vt| vt.clock.snapshot_vns(vt.last_intercept_work))
+    }
+
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
     /// the clock with `vns_base = snap.vns`, **reset the hardware work counter to
     /// 0**, re-apply `IA32_TSC_ADJUST` from the snapshot, and restore the entropy
