@@ -13,10 +13,11 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{
-    SNAP_AT, SNAP_AT2, TOTAL_DECISIONS, ToyCodec, ToyEnv, ToyMachine, VTIME_STEP, decode,
+    SNAP_AT, SNAP_AT2, TOTAL_DECISIONS, ToyCodec, ToyEnv, ToyMachine, VTIME_STEP, config, decode,
     drive_to_terminal, encode,
 };
 use explorer::{CoverageStrategy, EnvCodec, Explorer, Machine, StopConditions, StopMask, VTime};
+use proptest::prelude::*;
 
 fn all() -> StopConditions {
     StopConditions {
@@ -287,6 +288,62 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
         "the nested bug env reproduces the run bit-for-bit from genesis"
     );
     assert_eq!(mid_stop, g_stop);
+}
+
+proptest! {
+    #![proptest_config(config(256))]
+
+    /// Task-93 property gate — `branch(genesis, compose(base, delta))` reproduces
+    /// the run that produced `delta`, for arbitrary campaigns, corpus bases
+    /// (genesis-rooted *and* nested, since a campaign admits both), and mutation
+    /// salts. This is the ruling's condition for keeping `compose`: the composed
+    /// genesis-complete env replays the non-genesis-based run bit-for-bit.
+    #[test]
+    fn compose_rebase_replays_from_genesis(
+        campaign_seed in any::<u64>(),
+        warmup_steps in 1u64..8,
+        entry_pick in any::<usize>(),
+        salt in any::<u64>(),
+    ) {
+        let codec = ToyCodec;
+        let mut ex = Explorer::new(
+            ToyMachine::new(),
+            CoverageStrategy::new(campaign_seed),
+            Box::new(ToyCodec),
+        )
+        .unwrap();
+        let genesis = ex.genesis();
+        let all = StopConditions { deadline: None, on: StopMask::ALL };
+
+        // Warm the corpus so there are non-genesis bases to branch below.
+        for _ in 0..warmup_steps {
+            ex.multiverse_step().unwrap();
+        }
+        prop_assume!(!ex.corpus().is_empty());
+        let (snap, base_env, _) = ex.corpus().entry(entry_pick % ex.corpus().len()).unwrap();
+        let base_env = base_env.clone();
+        prop_assert_ne!(snap, genesis, "corpus bases are mid-run snapshots");
+
+        // A run branched below the non-genesis base produces the delta.
+        let branch_local_in = codec.mutate(&base_env, salt);
+        let outcome = ex.timeline(snap, &branch_local_in, &all).unwrap();
+        let mid_hash = ex.machine_mut().hash().unwrap();
+        let mid_stop = outcome.stop.clone();
+
+        // The property: composing the base with the delta yields a
+        // genesis-complete env that reproduces that run from genesis.
+        let composed = codec.compose(&base_env, &outcome.env);
+        prop_assert_eq!(
+            decode(&composed).unwrap().base_offset, 0,
+            "the composed env is genesis-complete"
+        );
+        ex.machine_mut().branch(genesis, &composed).unwrap();
+        let g_stop = drive_to_terminal(ex.machine_mut(), &all, None).unwrap();
+        let g_hash = ex.machine_mut().hash().unwrap();
+
+        prop_assert_eq!(mid_hash, g_hash, "composed env replays the run bit-for-bit");
+        prop_assert_eq!(mid_stop, g_stop, "and reproduces its terminal stop");
+    }
 }
 
 /// 2b round-2 end-to-end — drive a real `explore` campaign (which forks both
