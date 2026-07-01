@@ -1,5 +1,14 @@
 # Task 93 — revisit the explorer reproducer-composition model (EnvCodec::compose vs genesis-only)
 
+> **✅ RESOLVED (2026-07-01, PR #39).** Ruling: **keep `EnvCodec::compose`; genesis-only rejected**
+> — see `docs/DISSONANCE.md` §"Ruling (task 93)", which also pins the four-point adapter contract
+> (tail-completeness, blob-carried branch offset, panic-on-`UnsupportedComposition`, standing-fault
+> confinement + sequencing guard). Note the un-defer paragraph below reads as *favoring*
+> genesis-only; the ruling found the opposite for a code-level reason it had missed — corpus bases
+> and deltas are always post-run `Recorded` artifacts, so `compose`'s fail-closed `Seeded` path is
+> vacuous in the campaign flow. The header is preserved as the historical input to the ruling; do
+> not implement from it.
+
 > **UN-DEFERRED (2026-07 review) · RESOLVE BEFORE TASK 58.** Originally parked as low-priority
 > pending implementation signal from task 12. The 2026-07 review (`docs/REVIEW-2026-07.md` gap #4)
 > produced that signal early, and it is worse than this file anticipated: the two `EnvCodec`s do

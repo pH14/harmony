@@ -238,6 +238,13 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   `StandingFault` into a branch-local delta and never slices a standing-fault-carrying base into
   one. The fail-closed production `compose` is the backstop: any violation that slips through
   becomes the loud abort of the fallibility bullet above, never a mis-keyed reproducer.
+  **Sequencing guard:** standing faults must not enter the frontier fault vocabulary *before*
+  either the `Moment → VTime` map exists (making them composable — the confinement rule
+  dissolves) or a schema-visible corpus-base eligibility hook is added to the Theme's selection
+  path. On the codec seam alone, "never branched below" is enforceable only as the loud abort —
+  by the time `mutate` sees the blob the strategy has already selected the `SnapId`, and `mutate`
+  returns an `Environment`; it cannot redirect the branch. Whichever task introduces standing
+  faults owns one of those two prerequisites.
 
 The invariant is unchanged and not up for revisiting: the reproducer is **genesis-complete and
 portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.

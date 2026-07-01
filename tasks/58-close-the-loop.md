@@ -8,8 +8,16 @@
 > decisions, no coverage, no perturb enforcement. Those are tasks 59–61; this task makes the
 > explorer drive a real VM at all.
 >
-> **Depends on the task-93 ruling** (compose vs genesis-only). Do not bind the `EnvCodec` seam
-> before that ruling lands — the current seams do not line up (explorer: 2-arg infallible
+> **Depends on the task-93 ruling** (compose vs genesis-only) — **✅ landed 2026-07-01 (PR #39):
+> keep `compose`**. Bind the seam per `docs/DISSONANCE.md` §"Ruling (task 93)", which specifies the
+> adapter contract this task must implement: `recorded_env` emits **tail-complete** deltas; the
+> adapter's `Environment` blob carries the **branch offset** (production analogue of the toy's
+> `base_offset`) so `at` is recoverable from the delta alone; the adapter's `EnvCodec::compose`
+> **panics** on `UnsupportedComposition`/`Overflow` (unreachable under the contract; a fallible
+> seam is an allowed API adjustment); and the ruling's end-to-end acceptance gate applies — mint a
+> bug below a non-genesis base, `branch(genesis, bug.env)`, require the same stop + hash. (The
+> seam-mismatch text below is the historical pre-ruling state.) Do not bind the `EnvCodec` seam
+> from the text below — the current seams do not line up (explorer: 2-arg infallible
 > `compose`, `dissonance/explorer/src/seam.rs:110`; environment: 3-arg fallible, fails closed on
 > `Seeded` bases, `dissonance/environment/src/envcodec.rs:140-150`), and genesis-only would delete
 > the mismatch outright.
