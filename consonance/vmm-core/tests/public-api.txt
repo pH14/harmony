@@ -113,16 +113,17 @@ impl zerocopy::KnownLayout for vmm_core::linux_loader::BootE820Entry where u32: 
 pub type vmm_core::linux_loader::BootE820Entry::PointerMetadata = <u32 as zerocopy::KnownLayout>::PointerMetadata
 impl zerocopy::TryFromBytes for vmm_core::linux_loader::BootE820Entry where u64: zerocopy::TryFromBytes, u32: zerocopy::TryFromBytes
 #[repr(C)] pub struct vmm_core::linux_loader::BootParams
+pub vmm_core::linux_loader::BootParams::acpi_rsdp_addr: [u8; 8]
 pub vmm_core::linux_loader::BootParams::e820_entries: u8
 pub vmm_core::linux_loader::BootParams::e820_table: [vmm_core::linux_loader::BootE820Entry; 128]
 pub vmm_core::linux_loader::BootParams::hdr: vmm_core::linux_loader::SetupHeader
-impl zerocopy::FromBytes for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::FromBytes, u8: zerocopy::FromBytes, [u8; 8]: zerocopy::FromBytes, vmm_core::linux_loader::SetupHeader: zerocopy::FromBytes, [u8; 100]: zerocopy::FromBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::FromBytes, [u8; 816]: zerocopy::FromBytes
-impl zerocopy::FromZeros for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::FromZeros, u8: zerocopy::FromZeros, [u8; 8]: zerocopy::FromZeros, vmm_core::linux_loader::SetupHeader: zerocopy::FromZeros, [u8; 100]: zerocopy::FromZeros, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::FromZeros, [u8; 816]: zerocopy::FromZeros
-impl zerocopy::Immutable for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::Immutable, u8: zerocopy::Immutable, [u8; 8]: zerocopy::Immutable, vmm_core::linux_loader::SetupHeader: zerocopy::Immutable, [u8; 100]: zerocopy::Immutable, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::Immutable, [u8; 816]: zerocopy::Immutable
-impl zerocopy::IntoBytes for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::IntoBytes, u8: zerocopy::IntoBytes, [u8; 8]: zerocopy::IntoBytes, vmm_core::linux_loader::SetupHeader: zerocopy::IntoBytes, [u8; 100]: zerocopy::IntoBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::IntoBytes, [u8; 816]: zerocopy::IntoBytes, (): zerocopy::util::macro_util::PaddingFree<Self, { _ }>
+impl zerocopy::FromBytes for vmm_core::linux_loader::BootParams where [u8; 112]: zerocopy::FromBytes, [u8; 8]: zerocopy::FromBytes, [u8; 368]: zerocopy::FromBytes, u8: zerocopy::FromBytes, vmm_core::linux_loader::SetupHeader: zerocopy::FromBytes, [u8; 100]: zerocopy::FromBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::FromBytes, [u8; 816]: zerocopy::FromBytes
+impl zerocopy::FromZeros for vmm_core::linux_loader::BootParams where [u8; 112]: zerocopy::FromZeros, [u8; 8]: zerocopy::FromZeros, [u8; 368]: zerocopy::FromZeros, u8: zerocopy::FromZeros, vmm_core::linux_loader::SetupHeader: zerocopy::FromZeros, [u8; 100]: zerocopy::FromZeros, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::FromZeros, [u8; 816]: zerocopy::FromZeros
+impl zerocopy::Immutable for vmm_core::linux_loader::BootParams where [u8; 112]: zerocopy::Immutable, [u8; 8]: zerocopy::Immutable, [u8; 368]: zerocopy::Immutable, u8: zerocopy::Immutable, vmm_core::linux_loader::SetupHeader: zerocopy::Immutable, [u8; 100]: zerocopy::Immutable, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::Immutable, [u8; 816]: zerocopy::Immutable
+impl zerocopy::IntoBytes for vmm_core::linux_loader::BootParams where [u8; 112]: zerocopy::IntoBytes, [u8; 8]: zerocopy::IntoBytes, [u8; 368]: zerocopy::IntoBytes, u8: zerocopy::IntoBytes, vmm_core::linux_loader::SetupHeader: zerocopy::IntoBytes, [u8; 100]: zerocopy::IntoBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::IntoBytes, [u8; 816]: zerocopy::IntoBytes, (): zerocopy::util::macro_util::PaddingFree<Self, { _ }>
 impl zerocopy::KnownLayout for vmm_core::linux_loader::BootParams where [u8; 816]: zerocopy::KnownLayout
 pub type vmm_core::linux_loader::BootParams::PointerMetadata = <[u8; 816] as zerocopy::KnownLayout>::PointerMetadata
-impl zerocopy::TryFromBytes for vmm_core::linux_loader::BootParams where [u8; 488]: zerocopy::TryFromBytes, u8: zerocopy::TryFromBytes, [u8; 8]: zerocopy::TryFromBytes, vmm_core::linux_loader::SetupHeader: zerocopy::TryFromBytes, [u8; 100]: zerocopy::TryFromBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::TryFromBytes, [u8; 816]: zerocopy::TryFromBytes
+impl zerocopy::TryFromBytes for vmm_core::linux_loader::BootParams where [u8; 112]: zerocopy::TryFromBytes, [u8; 8]: zerocopy::TryFromBytes, [u8; 368]: zerocopy::TryFromBytes, u8: zerocopy::TryFromBytes, vmm_core::linux_loader::SetupHeader: zerocopy::TryFromBytes, [u8; 100]: zerocopy::TryFromBytes, [vmm_core::linux_loader::BootE820Entry; 128]: zerocopy::TryFromBytes, [u8; 816]: zerocopy::TryFromBytes
 pub struct vmm_core::linux_loader::GpaRange
 pub vmm_core::linux_loader::GpaRange::len: u64
 pub vmm_core::linux_loader::GpaRange::start: u64
@@ -181,6 +182,7 @@ impl zerocopy::IntoBytes for vmm_core::linux_loader::SetupHeader where u8: zeroc
 impl zerocopy::KnownLayout for vmm_core::linux_loader::SetupHeader where u32: zerocopy::KnownLayout
 pub type vmm_core::linux_loader::SetupHeader::PointerMetadata = <u32 as zerocopy::KnownLayout>::PointerMetadata
 impl zerocopy::TryFromBytes for vmm_core::linux_loader::SetupHeader where u8: zerocopy::TryFromBytes, u16: zerocopy::TryFromBytes, u32: zerocopy::TryFromBytes, u64: zerocopy::TryFromBytes
+pub const vmm_core::linux_loader::ACPI_RSDP_GPA: u64
 pub const vmm_core::linux_loader::BOOT_PARAMS_GPA: u64
 pub const vmm_core::linux_loader::CMDLINE_GPA: u64
 pub const vmm_core::linux_loader::CMDLINE_MAX: usize
