@@ -85,40 +85,40 @@ Two tiers, because a KVM run is microseconds-of-ioctls, not the nanoseconds libf
 The C1 payloads are the seed corpus for C2.
 
 ### C3 — Real workloads (the "known useful workload" one)
-The unblock without a Linux guest: **SQLite needs no OS** — it talks to storage only through a
-pluggable VFS (`SQLITE_OS_OTHER` + a registered custom VFS), so a freestanding payload can map
-its file ops straight onto our `Block` hypercall service. The point of spending SQLite on the
-corpus is to **drive a real application across the device boundary**, so it must use a *disk*
-DB, not `:memory:` — `:memory:` is malloc'd B-tree pages that never cross the hypercall seam
-(already covered by `compute` + the instruction sweep). "In memory" means the **host-side
-block backing is RAM** (deterministic, no real disk), not that SQLite bypasses the interface.
 
-- **C3a — SQLite-with-disk over the `Block` service (freestanding payload).** Build the SQLite
-  amalgamation + `speedtest1.c` (SQLite's own canonical, self-checking benchmark) as a
-  Part-A-style payload with a **custom VFS that maps `xRead`/`xWrite`/`xFileSize`/`xTruncate`/
-  `xSync` onto the `Block` hypercall service** (single-vCPU ⇒ locking and `xSync` durability are
-  no-ops; rollback-journal mode, no WAL/shm). The host serves it from an **in-RAM block buffer
-  that is part of `vm_state` and the `state_hash`**. Runs under O1 (determinism), O2 (golden
-  digest of speedtest1's self-check). The near-term payoff is **O1 over a real workload that
-  crosses the writable device boundary**: run the same client workload twice at one seed, pause
-  at checkpoints (`compare_runs`' cadence), and assert identical VM state at every point — "same
-  workload ⇒ identical VM behavior," now through real block reads *and writes*. It also proves
-  the abstraction end-to-end: SQLite's 4 KB page (8 sectors) over the 7-sector
-  `BLOCK_READ_MAX_SECTORS` cap forces the VFS to chunk I/O — an impedance mismatch `:memory:`
-  would never reveal. Crash-consistency/durability (the fault model, task 23) is a *later*
-  extension on top, not part of this. **Hard dependency: the writable `Block` device (task 22).**
+> **Struck and retargeted (task 62).** Tasks 22 (host `BLOCK_WRITE` to real storage) and 23
+> (crash-consistency) were struck by the Wave-3 design decision: storage is **RAM-backed inside
+> the guest** (brd / loop-over-ext4-image — real ext4, real `fsync`, contents already in the
+> hashed/snapshotted guest RAM), not a host `Block` service (see `docs/ROADMAP.md`). The
+> "known useful real workload" slot below is **Postgres-on-RAM**, already delivered by tasks
+> 36–38/48/49 (bare Postgres → runc → k3s, each deterministic-twice), not the SQLite-over-`Block`
+> design this section originally described. The SQLite-freestanding-VFS design is kept below only
+> as historical record of the struck approach — it is **not** on the corpus backlog.
+
+The original unblock-without-a-Linux-guest idea: **SQLite needs no OS** — it talks to storage only
+through a pluggable VFS (`SQLITE_OS_OTHER` + a registered custom VFS), so a freestanding payload
+could map its file ops straight onto a `Block` hypercall service. This is struck (see above); the
+corpus's real-workload entry is Postgres-on-RAM instead.
+
+- **C3a — Postgres-on-RAM (retargeted, task 62).** Bare Postgres (task 37) escalating to
+  runc/k3s (tasks 48/49), running against RAM-backed ext4 inside the guest. Determinism proof is
+  the same O1 shape (same seed twice ⇒ identical `state_hash`) already demonstrated end-to-end by
+  those tasks; no `Block`-service hard dependency, no host-side write path. *(Historical: this
+  slot originally named "SQLite-with-disk over the `Block` service," a freestanding payload with
+  a custom VFS mapping `xRead`/`xWrite`/`xFileSize`/`xTruncate`/`xSync` onto a host `Block`
+  hypercall — struck with tasks 22/23.)*
 - **C3b — Linux-guest workloads (gated).** Memcached + `memtier_benchmark`, etc. These need a
-  guest OS. Their **I/O is already mostly determinized by construction** (see "Device
-  determinism" below): block-read/write is the `Block` service, host-RAM-backed and snapshotted;
-  the network is R3's in-guest fault-injecting bridge. So C3b waits on **a guest OS + R3
-  (net/fault model)**, not a new device-model ruling.
+  guest OS (now available — task 34+). Their **I/O is already mostly determinized by
+  construction** (see "Device determinism" below): storage is guest-RAM-backed ext4; the network
+  is the per-flow, host-decides/guest-enforces model (task 50). C3b waits on a general Linux
+  workload slot opening up on the queue, not on any further device-model ruling.
 
 ## Staging & dependency gates
 
 The discipline (from ROADMAP): don't spec a task whose interface depends on an unmade
 decision. C1 and the fast C2 tier depend only on merged crates + the existing Part-A pipeline;
-C3a additionally needs the writable `Block` device (task 22, frontier); the gated tail (C3b and
-the storage fault model, 23) waits on a guest OS + R3 — **not** a new device-model ruling.
+C3a (Postgres-on-RAM) is **already delivered** by tasks 36–38/48/49; the gated tail (C3b) waits
+on queue space, not a new device-model ruling. Tasks 22/23 are struck (see above).
 
 ### Device determinism (why disk/external I/O is mostly already solved)
 
@@ -149,25 +149,28 @@ Concretely:
 - **Disk read — done.** `ServiceId::Block = 3` is a *read-only*, sector-based, synchronous
   service. Content-addressed image ⇒ identical bytes; sync copy ⇒ no timing leak. Only a
   conformance payload is owed.
-- **Disk write — task 22 (near-term): a block device that works.** A `BLOCK_WRITE` opcode on
-  `ServiceId::Block`, host-backed by a buffer in `vm_state` + the `state_hash` (deterministic;
-  branches/restores correctly). That is the *whole* near-term scope: enough to run a real
-  workload across the writable device boundary and let **O1 catch any write-divergence** (disk
-  contents are in the hash). **No fault model yet.**
-- **Storage fault model — task 23 (deferred, R3-adjacent).** Deterministically lose / reorder /
-  tear un-`fsync`'d writes at a crash point → the durability / crash-consistency capability the
-  mission ultimately exists for. Real, but **explicitly not now** — sequence it after the block
-  device and the SQLite determinism test land, alongside R3's fault scheduler. (When it lands it
-  cannot sit on tmpfs: `fsync` is a no-op there, so durability would be untestable.)
-- **Network / external — R3.** No external IRQ lines; distribution is simulated *inside* the
-  guest as containers on a deterministic fault-injecting bridge, driven by the seed-derived
-  fault schedule (task 11). A true `external-net` hypercall is the escape, determinized like
-  the rest (prefer a *simulated* peer — a real external service can't be branched). This is
-  the existing **R3** ruling; nothing new.
+- **Disk write — struck (task 22, retired by task 62).** The original near-term plan was a
+  `BLOCK_WRITE` opcode on a host `ServiceId::Block`. Superseded: writable storage is supplied
+  **inside the guest** instead — a RAM-backed ext4 (brd/loop), whose contents live in
+  already-hashed guest RAM, needing no new hypercall service. See `docs/ROADMAP.md`.
+- **Storage fault model — deferred (task 23, D1).** Deterministically lose / reorder / tear
+  un-`fsync`'d writes at a crash point → the durability / crash-consistency capability the
+  mission ultimately exists for. Real, but genuinely deferred — the guest-RAM-backed approach
+  above cannot express it (an instant/no-op `fsync` on RAM has no durable-vs-volatile split), so
+  this capability waits on **D1**, a host-side snapshot-store-backed RAM-disk model, tracked in
+  `docs/ROADMAP.md`'s deferred register — not task 23 in its original host-`Block`-write shape.
+- **Network / external — the per-flow, host-decides/guest-enforces model (task 50).** No
+  external IRQ lines; distribution is simulated *inside* the guest as containers on the intra-guest
+  CNI, with the host answering a per-flow policy (`NetFlow`) that the guest enforces with its own
+  mechanisms (netem/tbf/nftables). See `docs/DISSONANCE.md`'s guest fault model. *(Historical: this
+  bullet originally named a host-side fault-injecting bridge and the retired R3/task-11 fault
+  schedule and `dissonance/pv-net`, task 26 — both retired by task 50; there is no host-routed
+  frame stream.)*
 
 ### Current device surface — what exists vs. what a standard system needs
 
-Full findings and the writable-storage plan: **`docs/BLOCK-DEVICE.md`** (grounds tasks 22/23).
+Full findings and the (struck) writable-storage plan: **`docs/BLOCK-DEVICE.md`** — historical
+grounding doc for tasks 22/23, both struck; see the notes above and `docs/ROADMAP.md`.
 
 The hypercall surface is deliberately minimal (Antithesis "real device models removed") and is
 genuinely thin today. The **complete** set of services is `Console, Entropy, Block, Event`; the
@@ -179,23 +182,23 @@ guest's whole callable API is `console_write` / `entropy_fill` / `block_capacity
 | Console (out) | ✅ output-only (`console_write`) | logs / serial |
 | Entropy | ✅ deterministic (`entropy_fill`) | `/dev/random` source |
 | Block **read** | ✅ read-only | boot a read-only rootfs (live-CD model) |
-| Block **write** | ❌ **task 22** | persistent storage (DBs, `/var`); ephemeral writable bits can be a tmpfs overlay |
+| Block **write** | N/A — **struck (task 22)**; solved instead by guest-RAM-backed ext4 (brd/loop), not a host service | persistent storage (DBs, `/var`) — delivered this way by tasks 36–38/48/49 (Postgres-on-RAM through k3s) |
 | Clock / TSC | ✅ V-time | all guest clocks |
 | Interrupts | ✅ LAPIC timer (V-time) | only async event; push input arrives this way |
 | Data **input** (host→guest) | ❌ not in the ABI (`INTEGRATION.md:30`) | interactive stdin; most servers don't need it |
-| **Network** | ❌ **no service at all** | see below |
+| **Network** | intra-guest ✅ (comes free with the Linux guest, task 34+); external/fault-injected ❌ (deferred) | see below |
 
 **Network is not a host device in this model — by design, not omission.** A distributed system
-runs *inside one guest* as containers on a virtual bridge (`RESEARCH.md:37`); that intra-guest
-network is the **guest kernel's own stack** (loopback/bridge/veth) on deterministic CPU+RAM, so
-it comes **free with a Linux guest** — there is no emulated NIC to build. What is genuinely
-absent is (a) the *external-net* escape (guest ↔ real world) and (b) the *fault-injecting* bridge
-(delay/drop/partition) — both are the **R3** ruling, deliberately deferred.
+runs *inside one guest* as containers on the guest's own network stack (loopback/bridge/veth) on
+deterministic CPU+RAM, so it comes **free with a Linux guest** — there is no emulated NIC to
+build, and no host-side switch (`dissonance/pv-net`, task 26, was retired by task 50). What is
+genuinely absent is the *external-net* escape (guest ↔ real world) — deliberately deferred,
+outside Wave 4's scope.
 
-**So the near-term blockers to running a standard system are vmm-core bring-up (frontier — the
-thing that actually boots Linux) and writable block (task 22), not network.** A read-only rootfs
-+ tmpfs-for-writable-bits boots a real system on today's design; persistent storage needs 22;
-intra-guest networking needs only the Linux guest; external/fault-injected networking is R3.
+**vmm-core bring-up and Linux-guest boot were the near-term blockers, and are now delivered**
+(task 34+ through Wave 3's Postgres/k3s escalation). Persistent storage is guest-RAM-backed ext4
+(no host `Block`-write dependency, task 22 struck); intra-guest networking comes with the Linux
+guest; external/fault-injected networking is deliberately deferred.
 
 ### Gating
 
@@ -208,7 +211,7 @@ intra-guest networking needs only the Linux guest; external/fault-injected netwo
 | Source | Borrow | For | Caveat |
 |--------|--------|-----|--------|
 | **kvm-unit-tests** | freestanding bare-metal CPU/KVM test kernels (tsc, apic, msr, vmx) | C1 instruction sweep — ready-made cases | needs an entry/console shim to our Part-A protocol; their harness assumes QEMU testdev ports |
-| **SQLite** amalgamation + `speedtest1.c` + `sqllogictest` | a real, self-checking workload that runs freestanding via a **custom VFS over the `Block` service** (`SQLITE_OS_OTHER`) | C3a | C toolchain + libc shim; needs a writable `Block` path; pin the amalgamation version + sha256 like `versions.lock` |
+| **SQLite** amalgamation + `speedtest1.c` + `sqllogictest` *(historical — struck)* | originally: a freestanding workload via a **custom VFS over a `Block` service** (`SQLITE_OS_OTHER`) | *(struck; C3a is now Postgres-on-RAM)* | superseded by tasks 22/23 being struck — see C3 above |
 | **Memcached** + `memtier_benchmark` / `mc-crusher` | canonical KV/net workload + load generator | C3b (gated) | needs net + Linux guest |
 | **rr** test suite; **Antithesis prior art** (`preestablished/determinism-hypervisor`, `oss-garage/bedrock`, see [[prior-art-det-hypervisors]]) | determinism test ideas & corpora to mine | C1/C2 | adapt to our hypercall protocol |
 | **Nyx / kAFL** | *snapshot-reset loop mechanics only* (`RESEARCH.md:81`) | C2 real-KVM tier speed | do **not** host the engine inside Nyx (nested virt breaks PMU/TSC determinism) |
@@ -222,15 +225,16 @@ intra-guest networking needs only the Linux guest; external/fault-injected netwo
   "no sibling deps" rule of wave-1 parallel crates doesn't apply — it's the layer that *binds*).
 - **`guest/payloads/`** *(task 18)* — the C1 micro-payloads, via the documented "add a payload"
   flow; goldens in `guest/golden/`.
-- **`guest/workloads/sqlite/`** *(task 20)* — the C3a freestanding SQLite payload + libc shim +
-  the custom VFS over the `Block` service.
-- **writable `Block` device** *(task 22)* — a `BLOCK_WRITE` opcode on `ServiceId::Block` (a
-  hypercall-proto contract addition → integrator/foreman, like the contract bump) + a host-side
-  block backing in `vm_state` + the `state_hash`. A block device that *works*; dependency of
-  task 20. **No fault model** — that is task 23.
-- **storage fault model** *(task 23, deferred / R3-adjacent)* — deterministic lose/reorder/tear
-  of un-`fsync`'d writes at a crash point → durability/crash-consistency, the mission's eventual
-  marquee capability. Sequenced after 22 + the SQLite determinism test, alongside R3.
+- **`guest/workloads/postgres/` + k3s tier** *(tasks 36–38, 48, 49 — delivered)* — the C3a
+  real workload: bare Postgres escalating through runc to a single-node k3s cluster, all against
+  guest-RAM-backed ext4. Supersedes the struck task 20 (SQLite-over-`Block`).
+- **Tasks 22 and 20 are struck** (host `BLOCK_WRITE` device + the SQLite-over-`Block` workload
+  that depended on it) — see C3 above and `docs/ROADMAP.md`.
+- **storage fault model** *(D1, deferred)* — deterministic lose/reorder/tear of un-`fsync`'d
+  writes at a crash point → durability/crash-consistency, the mission's eventual marquee
+  capability. Needs a host-side snapshot-store-backed RAM-disk model (D1 in `docs/ROADMAP.md`'s
+  deferred register) since guest-RAM-backed ext4 cannot express it. *(Historical: this slot was
+  task 23, "sequenced after 22 + the SQLite determinism test" — both struck.)*
 - **`fuzz/`** *(task 19)* — `cargo-fuzz` targets for the C2-fast tier.
 - **`docs/corpus-manifest.toml`** — the registry (one entry per corpus item): name, kind,
   source path, applicable oracles, golden ref, RNG-tag. A golden-style artifact like
@@ -243,28 +247,32 @@ intra-guest networking needs only the Linux guest; external/fault-injected netwo
 | 17 | `det-corpus` harness (oracle runner + manifest) | **delegable-now** (generic over `Machine`, ToyMachine-tested) | unison (merged) | runner crate + manifest schema + JSON report |
 | 18 | Instruction-sweep payloads (C1) | **delegable-now** (Part A) + box for goldens | task 04 pipeline, contract 06, lapic 13, R1 | one payload per trapped insn/MSR + goldens + conformance table |
 | 19 | Determinism fuzzer (C2) | partly delegable (fast tier, Mac); box for real-KVM tier | 17, 18 (seed corpus), `arbitrary` | `cargo-fuzz` targets + corpus + CI wiring |
-| 22 | **Writable `Block` device** (`BLOCK_WRITE` + snapshotted backing) | contract addition (integrator) + host-side (frontier) | hypercall-proto contract, vmm-core `Block` service | `BLOCK_WRITE` opcode + backing in `vm_state`/`state_hash` (no fault model) |
-| 21 | Device-verb conformance sweep (C1-analog for `Block`) | **delegable-now**ish (shape) + box for goldens | 17, 22 (for write round-trip) | block-read/write payloads: read==image, write→read round-trips & survives snapshot |
-| 20 | **SQLite-with-disk** workload (C3a) — VFS over `Block` | delegable-ish (freestanding C) + box for det gate | task 04 pipeline, 18 (libc/console shim), 17, **22** | sqlite+speedtest1 payload + custom VFS + golden + **O1 (pause-and-compare)** + O2 gates |
-| 23 | Storage fault model (crash-consistency) | **deferred** / gated | 22, R3 fault sched | seed-scheduled lose/reorder/tear-on-crash; durability assertions |
-| — | Linux-guest workloads: Memcached, other net (C3b) | **gated (guest OS + R3)** / frontier | Part B Linux, R3 net/fault | KV/net workload under O1/O2 |
+| 22 | ~~Writable `Block` device~~ | **struck** (task 62) | — | superseded by guest-RAM-backed ext4 (tasks 36–38) |
+| 21 | ~~Device-verb conformance sweep for `Block`~~ | **struck** (depended on 22) | — | — |
+| 20 | ~~SQLite-with-disk workload~~ | **struck** (depended on 22) | — | superseded by Postgres-on-RAM (36–38/48/49) |
+| 36–38, 48, 49 | Postgres-on-RAM → runc → k3s (C3a, delivered) | **merged** | task 04 pipeline, guest-RAM-backed ext4 | real workload, deterministic-twice, O1-equivalent proof already run |
+| 23 | Storage fault model (crash-consistency) | **deferred (D1)** | D1 host-side RAM-disk model | seed-scheduled lose/reorder/tear-on-crash; durability assertions |
+| — | Linux-guest workloads: Memcached, other net (C3b) | **gated (queue space)** | Linux guest (delivered), net-fault boundary (task 50, delivered) | KV/net workload under O1/O2 |
 
 ### Recommended order
+
+*(Historical note: step 2 below — 22 → 21 → 20, the writable-`Block`-device leg — was struck by
+task 62; the real workload it targeted, Postgres-on-RAM through k3s, is already delivered by
+tasks 36–38/48/49.)*
+
 1. **17** (harness) and **18** (sweep) in parallel — 17 is pure-logic Mac work, 18 is payloads
    + box goldens. Together they make O1/O2/O3 real on the cheapest corpus.
-2. **22** (writable `Block` device) → **21** (device-verb sweep) → **20** (SQLite-with-disk):
-   build a block device that *works*, prove it with the cheap conformance sweep, then drive the
-   *large* real workload across it and run **O1** (pause at checkpoints, compare two runs) —
-   "same workload ⇒ identical VM behavior" through real block writes. No fault model in this leg.
-3. **19** (fuzzer) seeded from 18's corpus — fast tier first (Mac), real-KVM tier on the box.
-4. Land **R3** (net/fault) + a guest OS with the user; then spec the storage fault model (**23**,
-   crash-consistency) and C3b.
+2. **19** (fuzzer) seeded from 18's corpus — fast tier first (Mac), real-KVM tier on the box.
+3. C3b (Memcached/other net workloads) whenever queue space opens up — its prerequisites (Linux
+   guest, net-fault boundary) are already delivered.
+4. Storage fault model (D1, crash-consistency) after task 60's first campaign, per
+   `docs/ROADMAP.md`'s deferred register.
 
 ## Non-goals
 
 - Replacing `unison` — this builds *on* it; the generic bisector stays domain-free.
-- A general guest OS — C3a deliberately *exercises* the device boundary (`Block` service,
-  host-RAM-backed) but needs no guest OS; C3b waits on a guest OS + R3.
+- A general guest OS — no longer applicable; the Linux guest is delivered (task 34+). C3b
+  workloads wait on queue space, not a guest OS.
 - Performance benchmarking — speedtest1 is a *correctness* workload here, timing is irrelevant
   (and V-time-derived anyway).
 - Hosting the engine inside Nyx — see borrow table.
