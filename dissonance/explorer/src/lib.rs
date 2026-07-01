@@ -24,9 +24,11 @@
 //! ## The seams (defined locally, conventions rule 2)
 //!
 //! The engine codes against a [`Machine`]/[`MachineFactory`] driver seam and an
-//! [`EnvCodec`] minting seam, both defined in this crate. In production a thin
-//! R2-socket adapter implements [`Machine`] (frontier, vmm-core) and the
-//! `environment` crate's codec backs [`EnvCodec`]; in tests an in-crate
+//! [`EnvCodec`] minting seam, both defined in this crate. In production the
+//! [`mod@adapter`] module's [`SocketMachine`] implements [`Machine`] over a
+//! `control-proto` client stream (against vmm-core's control-transport server,
+//! task 58) and [`SpecEnvCodec`] binds [`EnvCodec`] to the `environment`
+//! crate's real reproducer codec per the task-93 ruling; in tests an in-crate
 //! deterministic **toy machine** does both — so the same engine and the same
 //! determinism gate run both sides unchanged.
 //!
@@ -45,8 +47,11 @@
 //! [`MachineFactory`], and [`EnvCodec`] traits) · `strategy` ([`Strategy`],
 //! [`SeedStrategy`], [`CoverageStrategy`]) · `corpus` ([`Corpus`], the
 //! deterministic novelty index) · `engine` ([`Explorer`], [`RunOutcome`],
-//! [`Bug`]) · `prng` (the local xorshift64\* generator the strategies draw from).
+//! [`Bug`]) · `prng` (the local xorshift64\* generator the strategies draw
+//! from) · [`mod@adapter`] (the R2 socket adapter: [`SocketMachine`],
+//! [`SpecEnvCodec`], and the [`AdapterEnv`] blob — task 58).
 
+pub mod adapter;
 mod corpus;
 mod engine;
 mod error;
@@ -54,6 +59,7 @@ mod prng;
 mod seam;
 mod strategy;
 
+pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
 pub use corpus::{Corpus, CovScore};
 pub use engine::{Bug, Explorer, RunOutcome};
 pub use error::MachineError;

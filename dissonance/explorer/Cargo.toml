@@ -11,6 +11,13 @@ workspace = true
 [dependencies]
 thiserror = "2"
 sha2 = "0.10"
+# Task-58 sibling exceptions (the spec names explorer as the home of the
+# socket-backed `Machine`): `control-proto` is the R2 wire codec the adapter
+# speaks; `environment` is the real reproducer codec the `EnvCodec` seam is
+# bound to per the task-93 ruling (`docs/DISSONANCE.md`). Pinned `version`
+# alongside `path` for `cargo deny`'s wildcard ban.
+control-proto = { path = "../control-proto", version = "0.1.0" }
+environment = { path = "../environment", version = "0.1.0" }
 
 [dev-dependencies]
 proptest = "1"
