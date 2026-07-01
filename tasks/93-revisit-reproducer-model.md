@@ -1,9 +1,16 @@
 # Task 93 — revisit the explorer reproducer-composition model (EnvCodec::compose vs genesis-only)
 
-> **DEFERRED FOLLOW-ON · DO NOT AUTO-SPAWN · LOW PRIORITY.** Revisit **tomorrow / after the
-> current queue clears**, and after task 92. This is a design re-validation, not a defect — the
-> current model is shipped and coherent; this task exists to confirm (or simplify) it once we have
-> implementation signal from task 12.
+> **UN-DEFERRED (2026-07 review) · RESOLVE BEFORE TASK 58.** Originally parked as low-priority
+> pending implementation signal from task 12. The 2026-07 review (`docs/REVIEW-2026-07.md` gap #4)
+> produced that signal early, and it is worse than this file anticipated: the two `EnvCodec`s do
+> not bind — `explorer::EnvCodec::compose(base, branch_local)` is 2-arg and infallible
+> (`dissonance/explorer/src/seam.rs:110`) while `environment::EnvCodec::compose(base, tail, at)`
+> is 3-arg and fallible (`dissonance/environment/src/envcodec.rs:140`), and the real `compose`
+> **fails closed on exactly the common cases** — `Seeded` bases and standing faults
+> (`envcodec.rs:142-150`) — which the explorer's `SeedStrategy` produces by default. So the
+> explorer's genesis-complete-reproducer gate has only ever passed against its toy codec. That is
+> strong evidence for the **genesis-only** alternative below (delete `compose`). Task 58 must not
+> bind the seam before this ruling lands; task 92 is no longer a prerequisite.
 
 Read `docs/DISSONANCE.md` and `tasks/12-explorer.md` first.
 
