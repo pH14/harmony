@@ -1,11 +1,17 @@
-# Block device — findings & the writable-storage plan
+# Block device — findings & the writable-storage plan (historical)
+
+> **Struck (task 62).** Tasks 22 and 23, which this document grounds, were both struck by the
+> Wave-3 design decision: writable storage is supplied **inside the guest** (RAM-backed ext4,
+> brd/loop) instead of via a host `Block` service — see `docs/ROADMAP.md` and
+> `docs/DETERMINISM-CORPUS.md`'s C3 section. Kept below as historical record of the
+> device-surface audit that led to that decision; task 22/23 references in it are dead.
 
 Findings from auditing the device surface while planning the determinism corpus
-(`docs/DETERMINISM-CORPUS.md`). This is the grounding doc for **task 22** (writable block
-device) and **task 23** (storage fault model). TL;DR: the `Block` service is read-only *as MVP
-scope, not as a design stance*; writes are not a determinism problem; writable storage is core
-to the mission and the near-term unblocker for both the SQLite workload and "run a standard
-system."
+(`docs/DETERMINISM-CORPUS.md`). This was the grounding doc for **task 22** (writable block
+device) and **task 23** (storage fault model), both struck. TL;DR (historical): the `Block`
+service is read-only *as MVP scope, not as a design stance*; writes are not a determinism
+problem — but the project resolved the actual near-term need (a real writable-storage workload)
+by going guest-RAM-backed instead of building this host device.
 
 ## 1. Status today: read-only, and why
 

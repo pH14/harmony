@@ -123,7 +123,9 @@ on queue space, not a new device-model ruling. Tasks 22/23 are struck (see above
 ### Device determinism (why disk/external I/O is mostly already solved)
 
 The plan for disk and external devices is *there are no devices* — everything is the one
-**synchronous** VMCALL channel, which removes both halves of the ReVirt reduction up front:
+**synchronous** hypercall channel (the port-I/O doorbell on stock KVM, `docs/INTEGRATION.md`
+§1 — historically sketched as `VMCALL` before task 20; see `PLAN.md` Part B's notes), which
+removes both halves of the ReVirt reduction up front:
 
 - **No async timing.** `INTEGRATION.md §1`: single in-flight, vCPU blocked for the exchange —
   no DMA, no completion IRQs, no ordering. R1 omits the IOAPIC for exactly this reason ("no
