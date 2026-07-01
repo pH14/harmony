@@ -200,21 +200,30 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   recover `at` from the delta alone. A corpus base additionally records the `Moment` its snapshot
   was taken at, so a mutation can be sliced at the right offset (the toy's `pos`).
 - **Fallibility.** The explorer seam's `compose` is infallible; the production one returns
-  `Result`. Ruling: **no seam signature change** — under this contract a compose failure is
-  unreachable in the campaign flow (corpus bases and deltas are always post-run `Recorded`
-  artifacts; seeds/policies match by construction; standing faults are confined below), so the
-  adapter treats `UnsupportedComposition`/`Overflow` as a **loud invariant violation**, surfaced
-  as a `MachineError` that aborts the step per the two-result-categories rule. Silently minting a
-  reproducer that does not replay is never a reachable outcome.
+  `Result`. Under this contract a compose failure is unreachable in the campaign flow (corpus
+  bases and deltas are always post-run `Recorded` artifacts; seeds/policies match by construction;
+  standing faults are confined below) — and note the call path: the seam's `compose` is invoked by
+  the *explorer* (`Explorer::report` / snapshot admission), not by a `Machine` method, so the
+  adapter **cannot** route a failure out as a `MachineError`. Ruling: the adapter's `EnvCodec`
+  impl **panics** on `UnsupportedComposition`/`Overflow` — an invariant violation is a defect in
+  the adapter/contract, not a run outcome, and the campaign aborts loudly (the loud-failure
+  intent; never a silently-minted reproducer that does not replay). Making the seam fallible
+  (`compose → Result`) remains an **allowed task-58 API adjustment** if `Result` plumbing through
+  the explorer is preferred over the panic.
 - **Standing-fault confinement (v1).** Standing faults stay non-composable until a
-  `Moment → VTime` map exists, so until then they are **confined to genesis-based runs**: the
-  strategy/codec must not introduce a `StandingFault` into a branch-local delta, and a corpus
-  entry whose env carries standing faults is **not eligible as an exploit base** (it is admitted,
-  replayable, and mutable from genesis — just never branched below). Under that rule every
-  standing-fault bug is found in a genesis-rooted run, whose `recorded_env` is already
-  genesis-complete and carries the standing set verbatim — no composition needed. A violation of
-  the confinement rule is caught by the fail-closed `compose` and surfaces as the loud
-  `MachineError` above, never as a mis-keyed reproducer.
+  `Moment → VTime` map exists, so until then they are **confined to genesis-based runs**: no
+  `StandingFault` in a branch-local delta, and a corpus entry whose env carries standing faults is
+  never branched below. Under that rule every standing-fault bug is found in a genesis-rooted run,
+  whose `recorded_env` is already genesis-complete and carries the standing set verbatim — no
+  composition needed. Enforcement cannot live in the explorer — the Theme and its strategies are
+  schema-blind and cannot detect a standing-fault-carrying blob — so it lives in two places:
+  (a) **vacuously, in the v1 vocabulary** — the v1 frontier fault catalog has *no* standing faults
+  at all (task 59 is point faults at a `Moment`), so the confinement rule holds by construction
+  until standing faults enter; and (b) when they do enter, **in the adapter's schema-aware
+  `EnvCodec`** — `mutate` and `compose` see the decoded blob, so `mutate` never introduces a
+  `StandingFault` into a branch-local delta and never slices a standing-fault-carrying base into
+  one. The fail-closed production `compose` is the backstop: any violation that slips through
+  becomes the loud abort of the fallibility bullet above, never a mis-keyed reproducer.
 
 The invariant is unchanged and not up for revisiting: the reproducer is **genesis-complete and
 portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.
