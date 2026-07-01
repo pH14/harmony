@@ -159,12 +159,14 @@ explorer keep composing a genesis-complete base env with a branch-local delta
 branch below a non-genesis snapshot, so no `compose`)? With task 12 implemented, the ruling is
 **keep `compose`**, on three grounds:
 
-1. **Empirical weight.** In a coverage-guided toy campaign (task 12's gate machine, default
-   `CoverageStrategy`, 50 campaigns × 300 steps), **66% of Multiverse steps branch below a
-   non-genesis base, and 66% of raw bug discoveries happen there** — the exploit mode `compose`
-   exists for is the *majority* of the search, not a rare tail. Genesis-only branching would not
-   merely forfeit the snapshot-tree speedup; it would remove the exploit half of
-   explore/exploit entirely (a corpus entry's snapshot would be pointless to keep).
+1. **Structural weight.** The strategy *by design* spends the majority of the search in the mode
+   `compose` serves: every exploit step branches below a corpus snapshot, and with the default
+   `explore_period = 3` that is ~2/3 of all steps. Genesis-only branching would not merely forfeit
+   the snapshot-tree speedup; it would remove the exploit half of explore/exploit entirely (a
+   corpus entry's snapshot would be pointless to keep). A toy measurement (task 12's gate machine,
+   50 campaigns × 300 steps) is consistent: 66% of steps branched below a non-genesis base and 66%
+   of raw bug discoveries landed there — a consistency check of the structural argument, not an
+   independent fact about real-guest campaigns.
 2. **The semantics are clean *because of* the single-`Moment` ruling.** With both planes on one
    retired-instruction axis, `compose(base, tail, at)` is one-axis integer re-keying: `base`
    contributes only `m < at`, the tail shifts to `m + at ≥ at` — collision-free by construction,
@@ -182,14 +184,37 @@ splice-invariant by re-keying; **seed-serviced decisions are not**, because `See
 *sequential* PRNG streams — a splice would desync the stream state. The production
 `EnvCodec::compose` therefore **fails closed** (`UnsupportedComposition`) on pure-`Seeded` inputs,
 seed/policy mismatches, and `StandingFault`s (whose window is on the *V-time* axis, needing a
-runtime `Moment → VTime` map to re-key). This scope is now **the contract**, not a stopgap: the
-frontier's `Machine::recorded_env` must emit a **tail-complete** delta — every decision answered
-since the branch appears as an override — so a composed reproducer never re-draws the sequential
-seed stream across the splice. (The alternative — counter-mode seed answers keyed by `Moment`, as
-the task-12 toy does — remains a valid future optimization if tail-complete blobs grow too large,
-but is not required and is not scheduled.) Standing faults stay non-composable until a
-`Moment → VTime` map exists; a bug under a standing fault reproduces via its own genesis-rooted
-env, which carries the standing set verbatim.
+runtime `Moment → VTime` map to re-key). This scope is now **the contract**, not a stopgap, and it binds
+the frontier adapter (the R2 `Machine` implementation) on four points:
+
+- **Tail-completeness.** `Machine::recorded_env` must emit a **tail-complete** delta — every
+  decision answered since the branch appears as an override — so a composed reproducer never
+  re-draws the sequential seed stream across the splice. (The alternative — counter-mode seed
+  answers keyed by `Moment`, as the task-12 toy does — remains a valid future optimization if
+  tail-complete blobs grow too large, but is not required and is not scheduled.)
+- **`at` provenance.** The production `compose(base, tail, at)` needs the branch's absolute
+  `Moment`, but the explorer seam is `compose(base, branch_local)` over opaque blobs — and a
+  tail-complete delta by definition carries only since-the-branch overrides. So the adapter's
+  `Environment` blob format **must carry the branch offset** (the absolute `Moment` the delta is
+  keyed from — the production analogue of the toy blob's `base_offset` field), letting the adapter
+  recover `at` from the delta alone. A corpus base additionally records the `Moment` its snapshot
+  was taken at, so a mutation can be sliced at the right offset (the toy's `pos`).
+- **Fallibility.** The explorer seam's `compose` is infallible; the production one returns
+  `Result`. Ruling: **no seam signature change** — under this contract a compose failure is
+  unreachable in the campaign flow (corpus bases and deltas are always post-run `Recorded`
+  artifacts; seeds/policies match by construction; standing faults are confined below), so the
+  adapter treats `UnsupportedComposition`/`Overflow` as a **loud invariant violation**, surfaced
+  as a `MachineError` that aborts the step per the two-result-categories rule. Silently minting a
+  reproducer that does not replay is never a reachable outcome.
+- **Standing-fault confinement (v1).** Standing faults stay non-composable until a
+  `Moment → VTime` map exists, so until then they are **confined to genesis-based runs**: the
+  strategy/codec must not introduce a `StandingFault` into a branch-local delta, and a corpus
+  entry whose env carries standing faults is **not eligible as an exploit base** (it is admitted,
+  replayable, and mutable from genesis — just never branched below). Under that rule every
+  standing-fault bug is found in a genesis-rooted run, whose `recorded_env` is already
+  genesis-complete and carries the standing set verbatim — no composition needed. A violation of
+  the confinement rule is caught by the fail-closed `compose` and surfaces as the loud
+  `MachineError` above, never as a mis-keyed reproducer.
 
 The invariant is unchanged and not up for revisiting: the reproducer is **genesis-complete and
 portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.

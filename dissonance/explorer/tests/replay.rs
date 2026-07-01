@@ -298,6 +298,12 @@ proptest! {
     /// (genesis-rooted *and* nested, since a campaign admits both), and mutation
     /// salts. This is the ruling's condition for keeping `compose`: the composed
     /// genesis-complete env replays the non-genesis-based run bit-for-bit.
+    ///
+    /// Scope: this exercises `ToyCodec`/`ToyMachine`, so it validates the *model*
+    /// (one-axis re-keying over splice-invariant seed answers), not the production
+    /// `environment::EnvCodec::compose` under the tail-complete contract — that
+    /// instantiation, against the real codec and `recorded_env`, is the frontier
+    /// R2-adapter task's acceptance gate per the task-93 ruling.
     #[test]
     fn compose_rebase_replays_from_genesis(
         campaign_seed in any::<u64>(),

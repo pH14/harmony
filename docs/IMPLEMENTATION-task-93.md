@@ -48,9 +48,18 @@ option, not scheduled.
   `explore_period` fraction of steps, and bugs land there proportionally) is a
   property of the strategy, not the toy.
 - The **tail-complete `recorded_env` contract** binds the frontier R2 adapter
-  (vmm-core glue, not yet built). Nothing in the pure-logic crates enforces it;
-  it should become an acceptance gate of the frontier task that implements
-  `Machine` over `control-proto`.
+  (vmm-core glue, not yet built). Nothing in the pure-logic crates enforces it at
+  runtime — `Explorer::report` composes without a replay check, so a `Machine`
+  impl that violates the contract mints a silently-wrong `Bug.env` (compose
+  succeeds; the artifact just doesn't reproduce). The frontier task's acceptance
+  gate must therefore be **end-to-end on the real machine**: mint a bug below a
+  non-genesis base, then `branch(genesis, bug.env)` and require the same stop +
+  hash — i.e. this PR's property gate re-instantiated against the production
+  codec and real `recorded_env`, not the toy. (The runtime alternative — a
+  verify-on-report replay of every minted bug — was considered and rejected as
+  the default: it costs a full replay per bug and the end-to-end gate catches the
+  same contract violation once, at integration; it remains a reasonable opt-in
+  paranoia knob for the frontier if replays turn out cheap.)
 - Standing faults remain non-composable (cross-axis: V-time window vs `Moment`
   offset) until a runtime `Moment → VTime` map exists — per the ruling, a bug
   under a standing fault reproduces via its own genesis-rooted env.
