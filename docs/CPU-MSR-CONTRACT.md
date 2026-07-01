@@ -209,6 +209,36 @@ determinism backend, decoupled behind a `Backend` trait that nothing above it ma
 stock `KvmBackend` is bring-up-only and direct-VMX (b) is preserved. The three not-stock-serviceable
 surfaces above are exactly that trait's enumerated, fail-closed backend-dependent exits.
 
+**Patched-KVM patch series — five patches (`consonance/vmm-backend/kvm-patches/`).** The
+out-of-tree patch is `git am`-clean on the pinned `linux-6.18.35` (KERNEL_VERSION in
+`guest/linux/versions.lock`) and gated, in all five, on the single per-VM opt-in cap
+`KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (default-off ⇒ byte-identical stock behavior):
+
+- **0001** — `KVM_EXIT_DETERMINISM` (reason 41) userspace-exit ABI + `kvm_run.determinism`
+  payload + the cap.
+- **0002** — emulate the intercepted `RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED` to userspace.
+- **0003** — enable the `RDTSC`/`RDRAND`/`RDSEED`-exiting VMX controls and route the exits.
+- **0004 (task 55)** — **deterministic in-kernel force-exit preemption.** Adds the
+  `KVM_EXIT_PREEMPT` exit reason (**42**) and a per-vCPU **one-shot arm** (the
+  `KVM_ARM_PREEMPT_EXIT` vcpu ioctl → `vcpu->arch.preempt_armed`). When armed, the V-time
+  retired-branch `perf_event` overflow's PMI — an NMI that VM-exits under
+  `PIN_BASED_NMI_EXITING` and is serviced in `vmx_vcpu_enter_exit()` — makes
+  `handle_exception_nmi` **return to userspace with `KVM_EXIT_PREEMPT`** instead of
+  re-entering, so the LAPIC-timer V-time deadline (§5) is hit with only the bounded
+  hardware-PMI skid (~128 retired branches, inside the backend's `SKID_MARGIN = 256`
+  arm-early window) rather than the unbounded `SIGIO`-delivery latency a CPU-bound, exit-free
+  guest region can outrun. The arm reuses the existing intercepts cap (no separate
+  `KVM_CAP_X86_DETERMINISTIC_PREEMPT` — the pinned design folds it into the one determinism
+  opt-in); `run_until` is fail-closed (a guest exit at/past the deadline is a loud determinism
+  violation, never delivered). This is the universal-soundness fix over task 54's
+  workload-dependent natural-exit fallback (now removed).
+- **0005** — **MTF (Monitor-Trap-Flag) deterministic single-step.** Adds the
+  `KVM_EXIT_DET_STEP` exit reason (**43**) and the one-shot `KVM_ARM_MTF_STEP` vcpu ioctl:
+  the exact-landing single-step phase of `run_until` steps *through* the guest's own
+  syscall/exception via MTF (rather than stock `KVM_GUESTDBG_SINGLESTEP`), and the one-shot
+  arm is cleared on any non-MTF exit so no stale `KVM_EXIT_DET_STEP` reaches the next run or a
+  snapshot.
+
 ### 1.1 Host-homogeneity assumption — the determinism domain (normative)
 
 **The determinism guarantee is defined over a homogeneous, single-tenant, pinned-core

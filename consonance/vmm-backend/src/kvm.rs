@@ -83,6 +83,14 @@ pub(crate) const KVM_EXIT_DET_STEP: u32 = 43;
 /// before vCPU creation.
 pub(crate) const KVM_CAP_X86_DETERMINISTIC_INTERCEPTS: u32 = 245;
 
+/// `KVM_EXIT_PREEMPT` (patch 0004) — the in-kernel **force-exit** preemption: when
+/// the one-shot arm is set, the perf-overflow PMI's NMI VM-exit returns to userspace
+/// with this reason **instead of re-entering**, so the V-time deadline is hit with
+/// only the bounded hardware-PMI skid (task 55). It carries no payload — the work
+/// count is read from the perf counter, exactly like the `SIGIO`-kick path it
+/// replaces. Stock KVM never arms it, so it is never produced there.
+pub(crate) const KVM_EXIT_PREEMPT: u32 = 42;
+
 /// `determinism.insn` kinds (kernel → user, patch 0001).
 const KVM_DETERMINISM_RDTSC: u32 = 0;
 const KVM_DETERMINISM_RDTSCP: u32 = 1;
@@ -376,6 +384,19 @@ pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
         // cannot normally reach a non-stepping `run`; if one ever races through,
         // swallow it as a transparent re-entry rather than aborting as "unhandled".
         KVM_EXIT_DET_STEP => Ok(None),
+        // harmony 0004 (defense-in-depth): the one-shot force-exit arm
+        // (KVM_ARM_PREEMPT_EXIT) is disarmed in-kernel ONLY when the perf-overflow NMI
+        // fires it — unlike 0005, there is no clear-on-own-exit and no disarm ioctl (see
+        // the 0004/0005 disarm asymmetry in kvm-patches/patches/README.md). So an arm
+        // set for a `run_until` free-run can outlive an EARLY guest exit (the guest took
+        // a genuine PIO/MMIO exit before the overflow), leaving `preempt_armed` set in
+        // the kernel; a later plain `run()` that takes any host NMI then returns
+        // KVM_EXIT_PREEMPT. The kernel has already cleared the flag by the time it
+        // reaches userspace (the NMI fired it), guest state and the work counter are
+        // untouched by the serviced-NMI exit, so swallow it as a transparent re-entry —
+        // this self-heals the stale arm instead of aborting as "unhandled" (which would
+        // make run completion depend on host-NMI timing, a determinism defect).
+        KVM_EXIT_PREEMPT => Ok(None),
         _ => Err(BackendError::Internal("unhandled KVM exit reason")),
     }
 }
@@ -394,6 +415,13 @@ pub(crate) enum StepStop {
     /// reason is usually observed as the ioctl's `EINTR` return; handled here too
     /// for the rare in-band case.)
     Interrupted,
+    /// `KVM_EXIT_PREEMPT` (patch 0004): the in-kernel **force-exit** fired — the
+    /// perf-overflow PMI's NMI VM-exit returned to userspace instead of re-entering.
+    /// Handled exactly like [`Interrupted`](Self::Interrupted): read the counter and
+    /// stop iff the overflow reached the armed point (it always has — the NMI fires
+    /// at the overflow). This is the bounded-skid kick that replaces the unbounded
+    /// `SIGIO` for the deterministic preemption (task 55).
+    Preempt,
     /// `KVM_EXIT_IRQ_WINDOW_OPEN`: a run-loop control exit; re-enter.
     Reenter,
     /// Any other reason: a genuine guest exit — decode it with [`decode_exit`] and
@@ -407,6 +435,7 @@ pub(crate) fn classify_step_exit(page: RunPage) -> StepStop {
         KVM_EXIT_DEBUG => StepStop::SingleStepTrap,
         KVM_EXIT_DET_STEP => StepStop::SingleStepTrap,
         KVM_EXIT_INTR => StepStop::Interrupted,
+        KVM_EXIT_PREEMPT => StepStop::Preempt,
         KVM_EXIT_IRQ_WINDOW_OPEN => StepStop::Reenter,
         _ => StepStop::GuestExit,
     }

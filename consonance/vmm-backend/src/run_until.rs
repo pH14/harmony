@@ -59,9 +59,10 @@ pub(crate) trait PreemptCpu: CpuBackend {
     /// exit**, if one occurred. When `Some`, the work value those calls returned to
     /// the planner is a sentinel (the deadline, to stop it) — the *real* stop is
     /// this exit at `work`. [`drive_run_until`] compares `work` to the deadline:
-    /// only an exit at `work < deadline` is genuinely early; one at `work >=
-    /// deadline` (the SIGIO-delay race — the overflow already reached the deadline
-    /// before a natural exit surfaced) is the deadline, not an early exit (P1(a)).
+    /// only an exit at `work < deadline` is genuinely early and delivered; one at
+    /// `work >= deadline` **fails closed** (task 55) — the in-kernel force-exit stops
+    /// the free-run strictly before the deadline, so a reported exit there means the
+    /// bounded skid was exceeded, a determinism violation (P1(a)).
     fn take_guest_exit(&mut self) -> Option<(Exit, u64)>;
 
     /// Take the typed [`BackendError`] behind the most recent
@@ -74,70 +75,69 @@ pub(crate) trait PreemptCpu: CpuBackend {
 /// Drive `cpu` to **exactly** `deadline` retired-branch work units via the
 /// arm-overflow-early → single-step planner, then map the outcome to an [`Exit`].
 ///
-/// **The complete boundary rule (P1 round-4; natural-exit fallback, task 54).** At
-/// the exact deadline a `pmu_work() == deadline` read does NOT by itself say whether
-/// the guest stopped AT the deadline branch or ran one more *non-counted* instruction
-/// past it — an IO/MMIO/HLT/read-style instruction retires no conditional branch, so
-/// it can execute (and commit a guest-visible side effect) while the counter still
-/// reads `deadline`. So the decision turns on **whether a guest exit was reported**,
-/// not on the count alone:
+/// **The boundary rule (P1 round-4; fail-closed restored, task 55).** At the exact
+/// deadline a `pmu_work() == deadline` read does NOT by itself say whether the guest
+/// stopped AT the deadline branch or ran one more *non-counted* instruction past it —
+/// an IO/MMIO/HLT/read-style instruction retires no conditional branch, so it can
+/// execute (and commit a guest-visible side effect) while the counter still reads
+/// `deadline`. So the decision turns on **whether a guest exit was reported**, not on
+/// the count alone:
 ///
 /// - **no** guest exit (the single-step stopped AT the deadline branch — nothing ran
 ///   past it) → [`Exit::Deadline`]: the **timer wins**. The post-deadline instruction
 ///   runs on the *next* entry, AFTER the timer ISR — its side effect is not yet
 ///   committed, so nothing is lost and the boundary is host-timing-independent;
-/// - **a guest exit**, whatever its work count (`< deadline`, `== deadline`, or
-///   `> deadline`) → **deliver it** (`Ok(exit)`). `work < deadline` is a genuinely
-///   early exit; `work >= deadline` is the **natural-exit fallback** — the deadline
-///   fell inside an exit-free region whose next natural exit is at/past it, so the
-///   timer is delivered *late but deterministically* (see below). Either way the
-///   guest-visible PIO/MMIO/read state is never dropped.
+/// - a guest exit **at `work < deadline`** → **deliver it** (`Ok(exit)`): a genuinely
+///   early IO/MMIO/read-style exit carries guest-visible state, never dropped;
+/// - a guest exit **at `work >= deadline`** → **fail closed** (a loud
+///   [`BackendError::Internal`]). With the in-kernel force-exit this cannot happen in
+///   normal operation, so if it does it is a determinism violation (see below).
 ///
-/// **The natural-exit fallback (task 54 — the determinism crux).** The preemption
-/// mechanism arms a `perf_event` branch-counter overflow that raises an `O_ASYNC`
-/// `SIGIO`, which `EINTR`s `KVM_RUN` near `deadline − SKID_MARGIN`; the planner then
-/// single-steps to the exact deadline. A guest exit at `work >= deadline` occurs
-/// **iff `[deadline − SKID_MARGIN, next-natural-exit]` is exit-free with that next
-/// exit at/past the deadline** — because inside an exit-free region there is **no VM
-/// exit for the queued `SIGIO` to take effect at**, so the guest *always* runs to the
-/// same next natural exit. That exit is a fixed instruction in the deterministic guest
-/// stream, so its retired-branch count (`work`) is **identical across same-seed runs**.
+/// **Why `work >= deadline` is now fail-closed (task 55 — the in-kernel force-exit).**
+/// The preemption is anchored by a `perf_event` branch-counter overflow armed at
+/// `deadline − SKID_MARGIN`. The overflow fires a host **PMI** (an NMI); under the
+/// patched KVM (patch 0004 — the one-shot `KVM_ARM_PREEMPT_EXIT` arm, gated on the
+/// existing `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` opt-in, no separate cap)
+/// that NMI VM-exit returns to userspace as `KVM_EXIT_PREEMPT` **instead of
+/// re-entering**, so the free-run stops with only the **bounded hardware-PMI skid**
+/// (~128 retired branches), never the unbounded `SIGIO`-delivery latency a CPU-bound
+/// guest could outrun. Because `skid < SKID_MARGIN`, the free-run **always** stops
+/// STRICTLY before the deadline, and the single-step lands at exactly the deadline —
+/// so a *reported guest exit* at or past the deadline is impossible. If one is ever
+/// observed, the in-kernel skid exceeded the margin: a genuine determinism violation,
+/// surfaced loudly rather than papered over.
 ///
-/// Therefore whether a deadline is "single-step-reachable" (a SIGIO-effect/exit at or
-/// before it) or "must be delivered at the next natural exit" (an exit-free region
-/// spans it) is a **deterministic function of the instruction stream**, NOT of the
-/// nondeterministic `SIGIO` latency — which is absorbed by the single-step in the
-/// former case and irrelevant in the latter. Delivering the guest exit drops
-/// **nothing**: the exit is returned now, and the missed timer **self-heals** — the
-/// next `run_until(deadline)` sees `now > deadline` → [`PlanOutcome::TargetInPast`] →
-/// fires `Exit::Deadline` at the next exit boundary. Both the exit and the (late)
-/// timer are delivered; only the timer's instant moves, deterministically. This is
-/// **not** a `SKID_MARGIN` change (still 256): widening the margin to single-step
-/// across such a region is determinism-safe but performance-prohibitive — the box
-/// observed a 28207-branch exit-free region, i.e. ~28k single-steps per tick.
+/// This replaces **task 54's natural-exit fallback**, which single-stepped/delivered
+/// such an exit "late but deterministically" by relying on the *deterministic* shape
+/// of the instruction stream around an exit-free region. That held for Postgres
+/// (box-bit-identical) but carried a residual **boundary race**: a deadline whose next
+/// guest exit sits a knife-edge past it could resolve as single-step→`Exit::Deadline`
+/// **or** outrun→natural-exit depending on the nondeterministic `SIGIO` latency — a
+/// workload-dependent hole. The force-exit closes it at the source (bounded skid), so
+/// the universal guarantee is restored and the fallback is removed.
 ///
-/// **Residual boundary race (cross-model review; tracked in pH14/harmony#34).** The
-/// "deterministic function of the instruction stream" claim above holds for a *deep*
-/// exit-free region (the observed 28207-branch case: the `SIGIO` cannot possibly take
-/// effect before the next exit, so every same-seed run is outrun identically). It does
-/// NOT hold at the *boundary*: for a deadline whose next exit sits a knife-edge distance
-/// past it (comparable to the `SIGIO`-latency variance), whether the `SIGIO` fires within
-/// margin (→ single-step `Exit::Deadline`) or is outrun (→ this natural-exit fallback)
-/// can flip run-to-run → same-seed divergence. So this is a *workload-dependent*
-/// guarantee: solid for Postgres (r1/r2/r3 bit-identical across all its deadlines), but a
-/// knife-edge deadline in another workload could make its determinism gate flaky — caught
-/// loudly by the gate, never silent. The universal-soundness fix (an in-kernel force-exit
-/// with bounded skid) is tracked in #34; this fallback is the shipped interim.
+/// **Historical: the boundary race that motivated 0004 (closed by task 55 / this PR).**
+/// The removed natural-exit fallback's "deterministic function of the instruction stream"
+/// claim held for a *deep* exit-free region (the observed 28207-branch case: the `SIGIO`
+/// cannot possibly take effect before the next exit, so every same-seed run is outrun
+/// identically). It did NOT hold at the *boundary*: for a deadline whose next exit sat a
+/// knife-edge distance past it (comparable to the `SIGIO`-latency variance), whether the
+/// `SIGIO` fired within margin (→ single-step `Exit::Deadline`) or was outrun (→ the
+/// fallback's natural exit) could flip run-to-run → same-seed divergence. That made the
+/// old guarantee *workload-dependent*: solid for Postgres (r1/r2/r3 bit-identical across
+/// all its deadlines), but a knife-edge deadline in another workload could flake its
+/// determinism gate. This is exactly the residual race the cross-model review raised (once
+/// tracked as pH14/harmony#34). Patch 0004's in-kernel force-exit removes the unbounded
+/// `SIGIO` skid at the source, so the free-run always stops within margin regardless of
+/// workload and the race is **closed** — the fallback is gone and `work >= deadline` is
+/// fail-closed (above). #34 should close on merge.
 ///
 /// PRIMARY structural guarantee: with `skid_margin > max_skid` the free-run stops
 /// STRICTLY before the deadline branch and the single-step lands exactly ON it
-/// (stopping before the next instruction). So in the common case no non-counted
-/// post-deadline instruction is free-run-executed and the no-exit `Deadline` is
-/// exact. The `work >= deadline` guest-exit arms are the natural-exit fallback above —
-/// reached only when an exit-free region forces the guest to its next natural exit;
-/// they deliver that exit (never drop it) and let the timer self-heal. (A snapshot
-/// taken at a returned `Deadline` is exact: nothing ran past the branch, no pending
-/// completion is held.)
+/// (stopping before the next instruction). So no non-counted post-deadline instruction
+/// is free-run-executed and the no-exit `Deadline` is exact. (A snapshot taken at a
+/// returned `Deadline` is exact: nothing ran past the branch, no pending completion is
+/// held.)
 ///
 /// **The precision invariant (P1 round-6).** EVERY returned `Exit::Deadline` is
 /// positioned by the precise single-step, NEVER by the instruction-imprecise overflow.
@@ -176,22 +176,26 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
                 // completion is already armed on the backend, exactly like a plain
                 // `run`, so the VMM services it and resumes.
                 GuestExitDisposition::Early => Ok(exit),
-                // work == deadline / work > deadline WITH a reported exit: the
-                // NATURAL-EXIT FALLBACK (task 54). The deadline fell inside an
-                // exit-free region whose next natural exit is at/past it — there was no
-                // VM exit for the queued SIGIO to act on, so the guest ran
-                // deterministically to this FIXED instruction in the stream (its work
-                // count is identical across same-seed runs). **Deliver** the exit:
-                // nothing is dropped, and the missed timer self-heals on the next
-                // `run_until` (now > deadline → `TargetInPast` fires `Deadline` at the
-                // next exit boundary). Whether a deadline lands here or is
-                // single-step-reachable is a deterministic function of the instruction
-                // stream, not of the nondeterministic SIGIO latency (see the fn doc's
-                // determinism argument). Was a loud fail-close pre-task-54; that
-                // dropped the proven-deterministic late timer and deadlocked real
-                // Linux/runc.
-                GuestExitDisposition::AtDeadline => Ok(exit),
-                GuestExitDisposition::PastDeadline => Ok(exit),
+                // work == deadline / work > deadline WITH a reported exit: FAIL CLOSED
+                // (task 55 — the natural-exit fallback is REMOVED). The patched-KVM
+                // in-kernel force-exit (patch 0004 `KVM_EXIT_PREEMPT`) makes the
+                // free-run ALWAYS stop STRICTLY before the deadline — the skid is the
+                // bounded hardware-PMI latency (~128 retired branches), well inside
+                // `SKID_MARGIN = 256` — so the single-step always lands at exactly the
+                // deadline and a guest exit AT/PAST it can no longer occur in normal
+                // operation. If one ever does, the in-kernel skid blew the margin: a
+                // genuine determinism violation, surfaced LOUDLY rather than papered
+                // over by delivering a host-timing-dependent late exit. (Task 54's
+                // SIGIO-latency natural-exit fallback delivered such an exit
+                // deterministically *for Postgres* but had a residual boundary race —
+                // see the module doc; the force-exit closes the hole at the source.)
+                GuestExitDisposition::AtDeadline | GuestExitDisposition::PastDeadline => {
+                    Err(BackendError::Internal(
+                        "run_until: a guest exit landed AT or PAST the V-time deadline — the \
+                         in-kernel force-exit skid exceeded SKID_MARGIN (determinism violation; \
+                         the bounded-skid preemption must stop strictly before the deadline)",
+                    ))
+                }
             },
             // No guest exit: the single-step stopped AT the deadline branch — nothing
             // ran past it, so the TIMER WINS. The post-deadline instruction runs on the
@@ -223,29 +227,34 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
 
 /// The disposition of a genuine guest exit relative to the requested deadline — a
 /// pure comparison isolated so it is covered, mutation-tested, and property-tested
-/// (the box-only FFI never makes this call). Since task 54 **all three dispositions
-/// deliver the exit** ([`drive_run_until`] returns `Ok(exit)`); the variant only
-/// names which case it is for the determinism argument (and any logging).
+/// (the box-only FFI never makes this call). Task 55 restores **fail-closed**: only
+/// [`Early`](Self::Early) is delivered; [`AtDeadline`](Self::AtDeadline) /
+/// [`PastDeadline`](Self::PastDeadline) are a determinism violation under the
+/// in-kernel force-exit (the bounded-skid preemption must stop strictly before the
+/// deadline) — [`drive_run_until`] turns them into a loud [`BackendError::Internal`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum GuestExitDisposition {
     /// `work_at_exit < deadline`: a genuinely-early exit — delivered to the VMM.
     Early,
     /// `work_at_exit == deadline` **with a reported guest exit**: a natural exit
-    /// coincident with the deadline. The natural-exit fallback delivers it; the timer
-    /// self-heals on the next `run_until`. (The timer-wins `Exit::Deadline` is the
-    /// distinct *no-exit* `==` land — the single-step stopped AT the branch.)
+    /// coincident with the deadline. Fails closed (task 55): the force-exit stops the
+    /// free-run strictly before the deadline, so a reported exit AT it means the skid
+    /// reached the deadline branch — a determinism hazard. (The timer-wins
+    /// `Exit::Deadline` is the distinct *no-exit* `==` land — the single-step stopped
+    /// AT the branch with nothing reported past it.)
     AtDeadline,
-    /// `work_at_exit > deadline`: the deadline fell inside an exit-free region whose
-    /// next natural exit is past it (the queued SIGIO had no exit to act on, so the
-    /// guest ran deterministically to this fixed exit). The natural-exit fallback
-    /// delivers it and the timer self-heals — late, but a deterministic function of
-    /// the instruction stream, not of SIGIO latency. See [`drive_run_until`].
+    /// `work_at_exit > deadline`: a guest exit PAST the deadline. Fails closed
+    /// (task 55): with the in-kernel force-exit bounding the skid below `SKID_MARGIN`,
+    /// the free-run never runs past the deadline, so this can only mean the skid blew
+    /// the margin — a genuine determinism violation, never silently absorbed. (This
+    /// was task 54's racy SIGIO-latency natural-exit fallback; the force-exit removes
+    /// both the deep outrun and the boundary race it carried.) See [`drive_run_until`].
     PastDeadline,
 }
 
 /// Classify a guest exit at `work_at_exit` against `deadline`. Pure arithmetic.
-/// (Since task 54 every disposition is delivered by [`drive_run_until`]; this only
-/// names the case.)
+/// ([`drive_run_until`] delivers only [`GuestExitDisposition::Early`]; the other two
+/// fail closed — this names which case it is.)
 pub(crate) fn classify_guest_exit(work_at_exit: u64, deadline: u64) -> GuestExitDisposition {
     match work_at_exit.cmp(&deadline) {
         std::cmp::Ordering::Less => GuestExitDisposition::Early,
@@ -620,7 +629,9 @@ mod tests {
     /// (`skid`), because inside an exit-free region there is no VM exit for the queued
     /// SIGIO to take effect at. So whatever the (nondeterministic) `skid`, the free-run
     /// reports a guest exit at the same `natural_exit_at`. With `natural_exit_at >
-    /// deadline` this is the `PastDeadline` natural-exit fallback.
+    /// deadline` this is the `PastDeadline` overshoot — task 54 delivered it (the
+    /// natural-exit fallback); task 55 fails closed on it (the in-kernel force-exit
+    /// makes it unreachable in normal operation).
     struct ExitFreeRegionCpu {
         work: u64,
         natural_exit_at: u64,
@@ -701,25 +712,37 @@ mod tests {
         );
     }
 
-    /// Task 54 natural-exit fallback — the complete 3-case rule for a *reported guest
-    /// exit*: a genuine exit is **delivered regardless of its work count** —
-    /// `work < deadline` (genuinely early), `work == deadline` (a natural exit at the
-    /// deadline), and `work > deadline` (the exit-free-region overshoot) all return
-    /// the exit. Nothing is dropped; the missed timer self-heals on the next
-    /// `run_until` (now > deadline → `TargetInPast`). Pre-task-54 the latter two
-    /// fail-closed loudly — that dropped the proven-deterministic late timer and
-    /// deadlocked real Linux/runc. (The timer-wins `Deadline` is the *no-exit* case,
-    /// asserted in `lands_exactly_at_deadline_with_no_guest_exit`.)
+    /// Task 55 fail-closed rule for a *reported guest exit*: an exit at `work <
+    /// deadline` (genuinely early) is **delivered**; an exit AT (`==`) or PAST (`>`)
+    /// the deadline is a determinism violation — the in-kernel force-exit guarantees
+    /// the free-run stops strictly before the deadline, so a reported exit there means
+    /// the skid blew `SKID_MARGIN` — and is a loud [`BackendError::Internal`], never
+    /// delivered. (Reverts task 54's natural-exit fallback, which delivered the late
+    /// exit; that carried a boundary race the force-exit removes. The timer-wins
+    /// `Deadline` is the *no-exit* case, in `lands_exactly_at_deadline_with_no_guest_exit`.)
     #[test]
-    fn reported_guest_exit_is_always_delivered() {
+    fn early_guest_exit_delivered_at_or_past_deadline_fails_closed() {
         let d = 1_000_000;
-        for work_at_exit in [d - 1, d, d + 5] {
+        // Genuinely early: delivered verbatim.
+        let mut early = ExitAtCpu::new(d - 1, d);
+        assert_eq!(
+            drive_run_until(&planner(), &mut early, d).unwrap(),
+            GUEST_EXIT,
+            "an exit short of the deadline is delivered, never dropped"
+        );
+        // At or past the deadline: fail closed, loud.
+        for work_at_exit in [d, d + 5] {
             let mut cpu = ExitAtCpu::new(work_at_exit, d);
-            assert_eq!(
-                drive_run_until(&planner(), &mut cpu, d).unwrap(),
-                GUEST_EXIT,
-                "a guest exit at work={work_at_exit} (deadline {d}) is delivered, never dropped"
-            );
+            match drive_run_until(&planner(), &mut cpu, d) {
+                Err(BackendError::Internal(msg)) => assert!(
+                    msg.contains("deadline"),
+                    "the error names the deadline-overrun determinism hazard: {msg}"
+                ),
+                other => panic!(
+                    "a guest exit at work={work_at_exit} (deadline {d}) must fail closed, got \
+                     {other:?}"
+                ),
+            }
         }
     }
 
@@ -1049,12 +1072,13 @@ mod tests {
             prop_assert_eq!(cpu.work(), deadline);
         }
 
-        /// Task 54 property: for ALL (work_at_exit, deadline), the pure classifier
-        /// matches the comparison, AND `drive_run_until` **delivers the guest exit for
-        /// every disposition** — genuinely-early (`<`), natural-exit-at-the-deadline
-        /// (`==`), and the exit-free-region overshoot (`>`). None is ever dropped or
-        /// turned into an error. (The timer-wins `Deadline` is the no-exit land,
-        /// covered separately.)
+        /// Task 55 property: for ALL (work_at_exit, deadline), the pure classifier
+        /// matches the comparison, AND `drive_run_until` **delivers ONLY the
+        /// genuinely-early (`<`) exit** while an exit AT (`==`) or PAST (`>`) the
+        /// deadline **fails closed** (a loud determinism error). (Reverts task 54's
+        /// deliver-everything fallback; the in-kernel force-exit makes `>= deadline`
+        /// unreachable in normal operation. The timer-wins `Deadline` is the no-exit
+        /// land, covered separately.)
         #[test]
         fn drive_run_until_classifies_any_guest_exit(
             deadline in 1u64..=1_000_000,
@@ -1067,22 +1091,30 @@ mod tests {
 
             let mut cpu = ExitAtCpu::new(work_at_exit, deadline);
             let got = drive_run_until(&planner(), &mut cpu, deadline);
-            prop_assert!(
-                matches!(got, Ok(ref e) if *e == GUEST_EXIT),
-                "every disposition delivers the genuine guest exit, got {got:?}"
-            );
+            if work_at_exit < deadline {
+                prop_assert!(
+                    matches!(got, Ok(ref e) if *e == GUEST_EXIT),
+                    "an early exit is delivered, got {got:?}"
+                );
+            } else {
+                prop_assert!(
+                    matches!(got, Err(BackendError::Internal(_))),
+                    "an exit at/past the deadline fails closed, got {got:?}"
+                );
+            }
         }
 
-        /// Task 54 — THE determinism property of the natural-exit fallback. A deadline
-        /// inside an exit-free region is delivered at the SAME next natural exit across
-        /// two runs whose ONLY difference is the (nondeterministic) SIGIO latency /
-        /// skid. The next natural exit is a fixed function of the instruction stream
-        /// (`natural_exit_at`), so the delivered exit AND its work count are checked
-        /// against an INDEPENDENT reference (that fixed natural exit) — not merely
-        /// against the other run — and the two runs agree. A regression that let the
-        /// skid leak into the result (or dropped the late exit) fails here.
+        /// Task 55 — a guest exit PAST the deadline (task 54's exit-free-region
+        /// overshoot) now **fails closed**, identically regardless of the
+        /// (nondeterministic) SIGIO/skid latency. The in-kernel force-exit makes such an
+        /// overshoot impossible in normal operation; should the abstract planner ever
+        /// surface one, `drive_run_until` rejects it loudly rather than delivering a
+        /// host-timing-dependent late exit. The disposition is a pure function of the
+        /// instruction stream (`natural_exit_at > deadline`), so the rejection is the
+        /// SAME across two runs whose only difference is `skid` — proving the boundary
+        /// race is gone (no skid-dependent deliver-vs-reject split remains).
         #[test]
-        fn exit_free_region_delivers_at_the_same_natural_exit_regardless_of_skid(
+        fn exit_free_region_overshoot_fails_closed_regardless_of_skid(
             deadline in 1_000u64..=1_000_000,
             past in 1u64..=200_000,        // how far past the deadline the natural exit is
             skid_a in 0u64..SKID_MARGIN,
@@ -1097,19 +1129,11 @@ mod tests {
                     skid,
                     stashed: None,
                 };
-                let exit = drive_run_until(&planner(), &mut cpu, deadline)
-                    .expect("the natural-exit fallback delivers, never errors");
-                (exit, cpu.work())
+                drive_run_until(&planner(), &mut cpu, deadline)
             };
-            let a = run(skid_a);
-            let b = run(skid_b);
-            // Independent reference: the stream's next natural exit, GUEST_EXIT at
-            // natural_exit_at — independent of skid.
-            let expected = (GUEST_EXIT, natural_exit_at);
-            prop_assert_eq!(&a, &expected);
-            prop_assert_eq!(&b, &expected);
-            // And the two runs agree: the SIGIO latency is irrelevant (determinism).
-            prop_assert_eq!(a, b);
+            // Both runs reject the past-deadline exit loudly — independent of skid.
+            prop_assert!(matches!(run(skid_a), Err(BackendError::Internal(_))));
+            prop_assert!(matches!(run(skid_b), Err(BackendError::Internal(_))));
         }
     }
 

@@ -73,6 +73,12 @@ const KVM_RUN: u64 = ioc(0, 0xAE, 0x80, 0);
 const KVM_INTERRUPT: u64 = ioc(1, 0xAE, 0x86, size_of::<kvm_interrupt>() as u64);
 /// `_IO(KVMIO, 0xe5)` — harmony 0005: arm a one-shot MTF single-step.
 const KVM_ARM_MTF_STEP: u64 = ioc(0, 0xAE, 0xe5, 0);
+/// `_IO(KVMIO, 0xE4)` — arm the one-shot in-kernel force-exit (patch 0004). No
+/// argument: it sets the per-vCPU `preempt_armed` flag so the next perf-overflow NMI
+/// VM-exit returns `KVM_EXIT_PREEMPT` to userspace instead of re-entering (gated on
+/// the determinism opt-in cap; EINVAL on stock KVM). One-shot — the kernel clears it
+/// when it fires — so `run_armed` re-arms before every free-run entry.
+const KVM_ARM_PREEMPT_EXIT: u64 = ioc(0, 0xAE, 0xE4, 0);
 /// `_IOW(KVMIO, 0xC6, struct kvm_msr_filter)` — install the MSR filter.
 const KVM_X86_SET_MSR_FILTER: u64 = ioc(1, 0xAE, 0xC6, size_of::<kvm_msr_filter>() as u64);
 /// `_IOR(KVMIO, 0xCC, struct kvm_sregs2)` — read sregs incl. PDPTRs/flags.
@@ -150,12 +156,20 @@ pub struct KvmBackend {
     /// per `run_until` (not per step) and always disarmed before the next `run`.
     single_step_armed: bool,
     /// Whether this backend opted into `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` (the
-    /// patched-KVM path). Selects the single-step mechanism: the patched one-shot
-    /// MTF (`KVM_ARM_MTF_STEP` → `KVM_EXIT_DET_STEP`, which steps *through* the
-    /// guest's own syscall/exception) when `true`; stock `KVM_GUESTDBG_SINGLESTEP`
-    /// when `false`. The MTF ioctl is patched-only and would `EINVAL` on stock KVM
-    /// or any VM that did not enable the cap, so the stock `run_until` caller
-    /// (e.g. `live_preemption`) must never issue it.
+    /// patched-KVM path). Gates both patched determinism mechanisms:
+    /// - the single-step mechanism — the patched one-shot MTF (`KVM_ARM_MTF_STEP` →
+    ///   `KVM_EXIT_DET_STEP`, which steps *through* the guest's own syscall/exception)
+    ///   when `true`; stock `KVM_GUESTDBG_SINGLESTEP` when `false`;
+    /// - the free-run force-exit (task 55, patch 0004) — when `true`, `run_until`'s
+    ///   free-run arms the one-shot in-kernel `KVM_ARM_PREEMPT_EXIT` before every entry,
+    ///   so the V-time deadline is hit with the bounded hardware-PMI skid rather than the
+    ///   unbounded `SIGIO` kick; when `false` (stock KVM, which cannot honor the cap) the
+    ///   arm is skipped and the `pmu_sys` `SIGIO` kick remains the (non-deterministic)
+    ///   fallback — stock KVM is not a determinism backend, so this is acceptable.
+    ///
+    /// Both ioctls are patched-only and would `EINVAL` on stock KVM or any VM that did
+    /// not enable the cap, so the stock `run_until` caller (e.g. `live_preemption`) must
+    /// never issue them.
     deterministic_intercepts: bool,
     /// The first-entry PMU-reset discipline (P1(b)): resets the shared-thread branch
     /// counter at the first `run`/`run_until` of this VM's life — and again at the
@@ -416,6 +430,41 @@ impl KvmBackend {
         }
     }
 
+    /// Arm the patched KVM's **one-shot in-kernel force-exit** (`KVM_ARM_PREEMPT_EXIT`,
+    /// patch 0004): the next perf-overflow PMI's NMI VM-exit returns to userspace with
+    /// `KVM_EXIT_PREEMPT` instead of re-entering, so the free-run stops with only the
+    /// bounded hardware-PMI skid (task 55). One-shot — the kernel clears the flag when
+    /// it fires — so `run_armed` calls this before EVERY free-run entry (re-arming
+    /// after a spurious NMI is idempotent and cheap).
+    ///
+    /// No-op on stock KVM (`!deterministic_intercepts`): the cap is off, so the ioctl
+    /// would `EINVAL`; the `pmu_sys` `SIGIO` kick remains the (non-deterministic) fallback
+    /// there. The determinism box always runs the patched backend.
+    ///
+    /// **Disarm asymmetry with 0005 (defense-in-depth for a stale arm).** Unlike 0005's
+    /// MTF step — which the kernel disarms on its *own* exit (`vmx_handle_exit`) — patch
+    /// 0004 clears `preempt_armed` **only** when the perf-overflow NMI fires it; there is
+    /// no clear-on-userspace-return and no disarm ioctl (see
+    /// `kvm-patches/patches/README.md`). So an arm set here can outlive an **early guest
+    /// exit** (the guest took a genuine PIO/MMIO exit before the overflow), leaving the
+    /// kernel flag set until some later NMI fires it — potentially on a plain `run()`,
+    /// surfacing as `KVM_EXIT_PREEMPT`. That stale exit is swallowed as a transparent
+    /// re-entry in [`decode_exit`](crate::kvm::decode_exit) (it does not corrupt guest
+    /// state or the work counter), so leaving the arm set across an early exit is safe and
+    /// re-arming here every entry is idempotent.
+    fn arm_preempt_exit(&self) -> Result<()> {
+        if !self.deterministic_intercepts {
+            return Ok(());
+        }
+        // SAFETY (raw ioctl seam): `KVM_ARM_PREEMPT_EXIT` takes no argument; it sets
+        // the one-shot `preempt_armed` flag on the owned vCPU. Excluded under Miri.
+        let rc = unsafe { raw_arm_preempt_exit(self.vcpu.as_raw_fd()) };
+        if rc < 0 {
+            return Err(BackendError::Io(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
     /// Planner phase 1: arm the overflow at `armed_at`, free-run the guest until the
     /// overflow signal kicks `KVM_RUN` out (an `EINTR`) at-or-past `armed_at`, or a
     /// genuine guest exit happens first. A pending maskable IRQ set before
@@ -429,6 +478,10 @@ impl KvmBackend {
             // same handshake the single-step phase uses, so a pending IRQ is never
             // delayed past the deadline.
             self.inject_pending(fd)?;
+            // Arm the in-kernel force-exit (patch 0004) so the perf-overflow PMI's NMI
+            // VM-exit returns KVM_EXIT_PREEMPT instead of re-entering — the bounded-skid
+            // kick (task 55). One-shot, so re-arm before EVERY entry. No-op on stock KVM.
+            self.arm_preempt_exit()?;
             // SAFETY (raw ioctl seam): `KVM_RUN` on the owned vCPU.
             let rc = unsafe { raw_kvm_run(fd) };
             if rc < 0 {
@@ -443,12 +496,14 @@ impl KvmBackend {
                 return Err(BackendError::Io(err));
             }
             match classify_step_exit(self.run_page()) {
-                // P1(b): EVERY non-guest-exit stop — the signal-as-KVM_EXIT_INTR path
-                // AND the IRQ_WINDOW_OPEN re-entry — reads the PMU and stops if the
-                // overflow already crossed `armed_at`, rather than blindly re-entering
-                // (which would overshoot the exact preemption point / inject a stale
-                // IRQ past the deadline).
-                StepStop::Interrupted | StepStop::Reenter => {
+                // P1(b): EVERY non-guest-exit stop — the signal-as-KVM_EXIT_INTR path,
+                // the in-kernel KVM_EXIT_PREEMPT force-exit (patch 0004, task 55), AND
+                // the IRQ_WINDOW_OPEN re-entry — reads the PMU and stops if the overflow
+                // already crossed `armed_at`, rather than blindly re-entering (which
+                // would overshoot the exact preemption point / inject a stale IRQ past
+                // the deadline). KVM_EXIT_PREEMPT is the bounded-skid kick that makes
+                // this stop land STRICTLY before the deadline on the patched box.
+                StepStop::Interrupted | StepStop::Preempt | StepStop::Reenter => {
                     if let Some(stop) = self.free_run_stop(armed_at)? {
                         return Ok(stop);
                     }
@@ -542,7 +597,9 @@ impl KvmBackend {
                     let w = self.pmu_work()?;
                     return Ok(LiveStop::Count(w));
                 }
-                StepStop::Interrupted | StepStop::Reenter => continue,
+                // Preempt is not armed during single-step (the force-exit is a free-run
+                // mechanism), but a late/stray NMI exit is just a re-entry like a signal.
+                StepStop::Interrupted | StepStop::Preempt | StepStop::Reenter => continue,
                 StepStop::GuestExit => {
                     // The stepped instruction took its own exit to userspace; the
                     // in-kernel one-shot MTF (mtf_step_armed + the exec-control) is
@@ -820,6 +877,26 @@ unsafe fn raw_interrupt(fd: std::os::fd::RawFd, vector: u32) -> Result<()> {
 #[cfg(miri)]
 unsafe fn raw_interrupt(_fd: std::os::fd::RawFd, _vector: u32) -> Result<()> {
     Err(BackendError::Internal("ioctl unavailable under miri"))
+}
+
+/// Issue the `KVM_ARM_PREEMPT_EXIT` ioctl (patch 0004): arm the one-shot in-kernel
+/// force-exit on the next perf-overflow NMI VM-exit. Returns the raw `ioctl` result
+/// (`< 0` on error — e.g. `EINVAL` if the determinism cap is not enabled). The caller
+/// only issues it when `deterministic_intercepts` (the patched backend).
+///
+/// # Safety
+/// `fd` must be a valid vCPU fd.
+#[cfg(not(miri))]
+unsafe fn raw_arm_preempt_exit(fd: std::os::fd::RawFd) -> libc::c_int {
+    // SAFETY: `KVM_ARM_PREEMPT_EXIT` takes no argument; the kernel sets the one-shot
+    // `vcpu->arch.preempt_armed` flag on the owned vCPU.
+    unsafe { libc::ioctl(fd, KVM_ARM_PREEMPT_EXIT as libc::c_ulong, 0) }
+}
+
+/// Miri stub for the `KVM_ARM_PREEMPT_EXIT` ioctl (never reached under Miri).
+#[cfg(miri)]
+unsafe fn raw_arm_preempt_exit(_fd: std::os::fd::RawFd) -> libc::c_int {
+    -1
 }
 
 /// `KVM_GET_SREGS2` — read sregs incl. PDPTRs/flags (kvm-ioctls exposes no SREGS2

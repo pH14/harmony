@@ -29,6 +29,15 @@ was proven on:
   armed, `handle_exception_nmi()` returns to userspace with `KVM_EXIT_PREEMPT`
   (42) instead of re-entering, so the V-time deadline is hit with only the
   bounded hardware-PMI skid. Per-vCPU one-shot `vcpu->arch.preempt_armed`.
+  **Disarm asymmetry with 0005 (note for the userspace backend).** 0004's arm is
+  cleared **only** when the NMI fires it — there is no clear-on-own-exit and no
+  disarm ioctl (contrast 0005 below, which `vmx_handle_exit` disarms on any
+  non-MTF exit). So an arm set for a `run_until` free-run can outlive an early
+  guest exit (a PIO/MMIO exit before the overflow) and later surface as a stale
+  `KVM_EXIT_PREEMPT` on a plain `run()` that takes any host NMI. The kernel has
+  already cleared the flag by then and neither guest state nor the work counter is
+  touched, so the userspace backend swallows such a stale exit as a transparent
+  re-entry (`decode_exit`, `src/kvm.rs`) rather than treating it as unhandled.
 - `0005` — MTF (Monitor-Trap-Flag) deterministic single-step. `KVM_ARM_MTF_STEP`
   (`_IO(KVMIO, 0xe5)`) arms a one-shot MTF in `vmx_vcpu_pre_run`; the resulting
   monitor-trap VM-exit returns `KVM_EXIT_DET_STEP` (43). Unlike a TF/IA32_FMASK

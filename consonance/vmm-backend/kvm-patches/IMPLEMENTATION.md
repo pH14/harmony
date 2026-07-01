@@ -191,3 +191,49 @@ do not touch it.
   V-time fast path decision: fine for occasional reads, worth optimizing only for
   hot RDTSC loops. Re-measure on a release build / the real kernel before deciding.
 - Non-goals untouched: AMD/SVM, multi-vCPU, nested control propagation, upstreaming.
+
+## Patch 0004 — in-kernel force-exit preemption (task 55)
+
+This task added **0004** (the series is now five with 0005's MTF single-step, landed
+separately). 0004 adds deterministic in-kernel preemption so the V-time
+LAPIC-timer deadline is hit with a **bounded skid** for every workload (replacing task 47/54's
+unbounded `SIGIO` overflow-kick). Design (pinned in the decision log, modeled on 0001/0003):
+
+- **`include/uapi/linux/kvm.h`:** `KVM_EXIT_PREEMPT` exit reason (**42**) and the one-shot arm
+  ioctl `KVM_ARM_PREEMPT_EXIT` (`_IO(KVMIO, 0xe4)` — `0xe3`/`KVM_HAS_DEVICE_ATTR` was the highest
+  used). No new `kvm_run` payload (the exit carries no data; userspace reads the work count from
+  its own `perf_event`).
+- **`arch/x86/include/asm/kvm_host.h`:** a per-vCPU one-shot `bool preempt_armed` in
+  `kvm_vcpu_arch`.
+- **`arch/x86/kvm/x86.c`:** the `KVM_ARM_PREEMPT_EXIT` vcpu-ioctl case (after `KVM_NMI`), gated on
+  `kvm->arch.deterministic_intercepts` (reuses the existing cap — **no** separate
+  `KVM_CAP_X86_DETERMINISTIC_PREEMPT`), sets `vcpu->arch.preempt_armed = true`.
+- **`arch/x86/kvm/vmx/vmx.c`:** the hook in `handle_exception_nmi`. The retired-branch
+  `perf_event` overflow fires a host PMI (an NMI); with `PIN_BASED_NMI_EXITING` it VM-exits and is
+  serviced in `vmx_vcpu_enter_exit()` **before** `handle_exception_nmi` runs. We split
+  `if (is_machine_check(intr_info) || is_nmi(intr_info)) return 1;` so that, for an NMI, if armed
+  (and opted in), we clear the flag, set `kvm_run->exit_reason = KVM_EXIT_PREEMPT`, and **`return
+  0`** (to userspace) instead of `return 1` (re-enter). The skid is then only the bounded
+  hardware-PMI latency.
+
+**Hook choice — option (a), not a perf-callback (option b).** The guest PMU is off, so on the
+pinned single-vCPU/single-core box the only PMI source is our determinism counter; the armed NMI
+VM-exit is ours. The one-shot arm + re-arm-each-entry makes a stray host NMI (watchdog) harmless:
+a spurious force-exit with `work < armed_at` is re-entered (userspace re-arms), never a wrong
+preemption. No perf-internal coupling — minimal, `git am`-clean.
+
+### Box validation (see `RESULTS.md`)
+
+Built on the 6.12.90 box-proxy, loaded, and run: `live_preemption` deterministic-twice, **max
+skid = 1 retired branch ≪ SKID_MARGIN 256** (36 preemptions), the in-kernel `KVM_EXIT_PREEMPT`
+fired 36/36, **zero `PastDeadline`**, reverted to stock. The 6.18.35 canonical build is
+`git am`-clean and `x86.o`/`vmx.o` compile (full `kvm.ko`/`kvm-intel.ko` per `BUILD.md` Part 1).
+
+### Reproducibility gotcha (6.12 proxy)
+
+`make -C $B M=arch/x86/kvm` reads `.c` from the **objtree `$B`** (VPATH objtree-first), so the
+0004 `.c` edits (x86.c, vmx.c) must be copied into **`$B/arch/x86/kvm/`** — not only the `$CM`
+srctree BUILD.md Part 2 step 3 names (`$CM` is correct for the headers, which `$B` lacks). The
+`apply_patch_612.py` edits land in the `linux-6.12.90` source; copy that tree's `arch/x86/kvm`
+into `$B` before `make`. Symptom if missed: `KVM_ARM_PREEMPT_EXIT` → `EINVAL` (the case isn't in
+the loaded module).
