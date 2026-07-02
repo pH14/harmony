@@ -145,14 +145,12 @@ pub enum ControlError {
         floor: u64,
     },
     /// A `perturb` stages a fault at a `Moment` that **already carries one**.
-    /// **Interim, pending an integrator ruling:** task 59 gate 1 asks for multiple
-    /// faults per `Moment`, but task 45's `EnvSpec` override map is
-    /// `BTreeMap<Moment, Action>` — one action per `Moment` — so a second same-
-    /// `Moment` stage cannot be recorded without losing the first. Rather than emit
-    /// a non-reproducing reproducer, the frontier **loudly rejects** the second
-    /// stage until the vocabulary question is ruled on (widen the override map vs.
-    /// amend gate 1). Easy to relax once resolved.
-    #[error("perturb Moment {at} already carries a staged fault (one fault per Moment, interim)")]
+    /// Task 45's `EnvSpec` override map is `BTreeMap<Moment, Action>` — **one
+    /// action per `Moment`** — so a second same-`Moment` stage cannot be recorded
+    /// without losing the first; rather than emit a non-reproducing reproducer, the
+    /// frontier **loudly rejects** it. (The one-fault-per-`Moment` rule is the
+    /// integrator's final ruling — spec amendment PR #54.)
+    #[error("perturb Moment {at} already carries a staged fault (one fault per Moment)")]
     PerturbMomentTaken {
         /// The already-occupied `Moment`.
         at: u64,

@@ -181,15 +181,14 @@ pub struct ControlServer<B: Backend> {
     /// each `Moment` is reached (a re-run rewinds via `branch`/`replay`, which
     /// re-stages).
     ///
-    /// **One fault per `Moment` (interim, pending an integrator ruling).** Task 59
-    /// gate 1 asks for multiple faults per `Moment`, but task 45's [`EnvSpec`]
-    /// override map is `BTreeMap<Moment, Action>` — one action per `Moment` — so a
-    /// second same-`Moment` fault cannot be recorded without losing the first
-    /// (a non-reproducing reproducer). Until the vocabulary question is ruled on,
-    /// the frontier **loudly rejects** a second same-`Moment` stage
-    /// ([`ControlError::PerturbMomentTaken`]), which keeps every emitted reproducer
-    /// exact and is trivial to relax. A `BTreeMap` so no insertion order can reach
-    /// the apply sequence. See `IMPLEMENTATION.md` and PR #51 review.
+    /// **One fault per `Moment`.** Task 45's [`EnvSpec`] override map is
+    /// `BTreeMap<Moment, Action>` — one action per `Moment` — so a second
+    /// same-`Moment` fault cannot be recorded without losing the first
+    /// (a non-reproducing reproducer). The frontier therefore **loudly rejects** a
+    /// second same-`Moment` stage ([`ControlError::PerturbMomentTaken`]), keeping
+    /// every emitted reproducer exact. (The one-fault-per-`Moment` rule is the
+    /// integrator's final ruling — spec amendment PR #54.) A `BTreeMap` so no
+    /// insertion order can reach the apply sequence.
     schedule: BTreeMap<environment::Moment, environment::HostFault>,
     /// The **active recorded reproducer** (task 59 requirement 3): every applied
     /// host fault is stamped here via task-45's [`EnvSpec::perturb`], so the env
@@ -328,7 +327,7 @@ impl<B: Backend> ControlServer<B> {
     /// (nothing that would mint a reproducer that does not reproduce is ever
     /// staged). A malformed blob is [`ControlError::MalformedEnvironment`]; the
     /// remaining rejections (past `Moment`, out-of-range gpa, out-of-scope clock
-    /// fault, and the interim same-`Moment` conflict) are the shared gate's.
+    /// fault, and the same-`Moment` conflict) are the shared gate's.
     fn perturb(
         &mut self,
         fault: &control_proto::HostFault,
@@ -358,9 +357,9 @@ impl<B: Backend> ControlServer<B> {
     ///   `floor` is the current effective V-time (perturb) or the restored
     ///   snapshot's V-time (branch); `at == floor` is fine (applies immediately and
     ///   truthfully).
-    /// - **Same-`Moment` conflict** (`at` already staged) → the interim
-    ///   [`ControlError::PerturbMomentTaken`] (task-45/59 vocab contradiction,
-    ///   escalated — see the [`schedule`](ControlServer::schedule) doc).
+    /// - **Same-`Moment` conflict** (`at` already staged) →
+    ///   [`ControlError::PerturbMomentTaken`] (one fault per `Moment` — see the
+    ///   [`schedule`](ControlServer::schedule) doc).
     /// - **Out-of-range [`CorruptMemory`](environment::HostFault::CorruptMemory)**
     ///   (`gpa + 8 > guest RAM`) → [`ControlError::PerturbOutOfRange`] (never
     ///   clipped/wrapped).
@@ -1034,8 +1033,8 @@ mod tests {
             .unwrap(),
             Ok(Reply::Unit)
         );
-        // A second fault at the SAME Moment is the interim loud rejection (task-45
-        // one-action-per-Moment vs. task-59 multi-fault, escalated).
+        // A second fault at the SAME Moment is a loud rejection (task-45
+        // one-action-per-Moment; the recorded env never silently drops a fault).
         assert_eq!(
             s.handle(&perturb(
                 environment::HostFault::InjectInterrupt { vector: 33 },
@@ -1737,11 +1736,11 @@ mod tests {
     }
 
     #[test]
-    fn second_fault_at_one_moment_is_the_interim_loud_rejection() {
-        // Interim (task-45 one-action-per-Moment vs. task-59 multi-fault, escalated
-        // to the integrator — PR #51): a second stage at an occupied Moment is
-        // loudly rejected, so `recorded_env()` never silently drops a fault. The
-        // first stage stands and still applies.
+    fn second_fault_at_one_moment_is_loudly_rejected() {
+        // Task 45 is one-action-per-Moment (integrator ruling, spec amendment PR
+        // #54): a second stage at an occupied Moment is loudly rejected, so
+        // `recorded_env()` never silently drops a fault. The first stage stands and
+        // still applies.
         let live = enforce_vmm(1, enforce_image(), 0xAB);
         let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
         let mut s = ControlServer::new(live, factory);
@@ -1972,8 +1971,8 @@ mod tests {
 
         /// Gate 1 proptest (≥256 cases): an arbitrary staged schedule applied twice
         /// yields identical state evolution. `Moment`s are **distinct** (a
-        /// `BTreeMap` key — the interim one-fault-per-Moment rule rejects duplicates,
-        /// so the schedule under test never carries them) in `1..=100_000` (each arms
+        /// `BTreeMap` key — the one-fault-per-Moment rule rejects duplicates, so the
+        /// schedule under test never carries them) in `1..=100_000` (each arms
         /// a forward arrival); faults are in-range CorruptMemory (any gpa whose word
         /// fits the 16 KiB RAM, any mask) or InjectInterrupt (any non-reserved vector).
         #[test]

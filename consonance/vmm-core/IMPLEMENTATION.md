@@ -3228,7 +3228,7 @@ coincide numerically (`Moment == work == vns`), which is what makes the portable
   gate** (PR #51 round 1, blocking item 1) that a `branch` env host fault also uses, so both reject
   identically. Rejects loud, *before* staging: a malformed blob → `MalformedEnvironment`; a **past
   `Moment`** (`at < effective_vns`) → `PerturbPastMoment` (a fault recorded behind its true apply
-  point would not replay); a **same-`Moment` conflict** → the interim `PerturbMomentTaken`; an
+  point would not replay); a **same-`Moment` conflict** → `PerturbMomentTaken`; an
   out-of-range `CorruptMemory` gpa → `PerturbOutOfRange`; the out-of-scope clock faults →
   `Unsupported`. (`PerturbPastMoment`/`PerturbMomentTaken` are new `control-proto` variants,
   discriminants 12/13.)
@@ -3270,17 +3270,15 @@ coincide numerically (`Moment == work == vns`), which is what makes the portable
 - **`SkewTime` / `SetClockRate` are deferred** (spec-mandated): they mutate the V-time clock itself
   (epoch/ratio) and interact with the armed-deadline machinery. `apply_host_fault` and `perturb`
   reject them loud (a follow-on lights them up once the two simple faults have proven the seam).
-- **One fault per `Moment` — interim loud rejection, ESCALATED (PR #51 round 1, blocking item 2).**
-  Task 59 gate 1 asks for multiple faults per `Moment`, but task 45's `EnvSpec` override map is
-  `BTreeMap<Moment, Action>` (one action per `Moment`), so a second same-`Moment` fault cannot be
-  recorded without losing the first — an *accepted* schedule would emit a non-reproducing reproducer.
-  This is a genuine **task-45-vs-task-59 spec contradiction**, escalated to the integrator (widen the
-  environment-crate override map to carry multiple host faults per `Moment` **vs.** amend gate 1);
-  **not** resolved here (do not restructure the environment crate). **Interim:** the frontier loudly
-  rejects a second same-`Moment` stage with a distinct `ControlError::PerturbMomentTaken`, so every
-  emitted reproducer stays exact and the recorded env never silently drops a fault. Trivial to relax
-  once ruled on. The schedule is consequently `BTreeMap<Moment, HostFault>` (one per `Moment`), and
-  the gate-1 proptest generates **distinct** `Moment`s (a `BTreeMap` key).
+- **One fault per `Moment` (integrator ruling, spec amendment PR #54).** Task 45's `EnvSpec` override
+  map is `BTreeMap<Moment, Action>` (one action per `Moment`), so a second same-`Moment` fault cannot
+  be recorded without losing the first — an *accepted* schedule would emit a non-reproducing
+  reproducer. The task-45-vs-task-59 question (widen the override map to carry multiple host faults
+  per `Moment` **vs.** keep one-per-`Moment`) was escalated during PR #51 round 1 and **ruled: keep
+  one fault per `Moment`.** The frontier loudly rejects a second same-`Moment` stage with a distinct
+  `ControlError::PerturbMomentTaken`, so every emitted reproducer stays exact and the recorded env
+  never silently drops a fault. The schedule is consequently `BTreeMap<Moment, HostFault>` (one per
+  `Moment`), and the gate-1 proptest generates **distinct** `Moment`s (a `BTreeMap` key).
 - **`InjectInterrupt` apply is session-fatal on failure** (reserved vector / unwired LAPIC): a run
   that cannot deliver a staged interrupt is unvouched, so it tears the session down (`ServeError`)
   rather than silently skipping (which would desync the recorded env from the run). The gpa/vector
