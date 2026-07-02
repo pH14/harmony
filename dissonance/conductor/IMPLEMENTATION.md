@@ -126,10 +126,13 @@ explorer, and the new conductor crate.
 
 ## The box gate — result (PASS) + runbook
 
-**The box milestone gate ran and PASSED**, executed by the foreman on the determinism box (core 2
-per the `docs/BOX-PINNING.md` frontier ruling; patched KVM loaded for the run; **reverted to stock
-`1396736` + verified** after; head `0b28d3f`; the ht42 bare-Postgres image `initramfs-postgres.cpio.gz`
-+ the current SMP bzImage; log `/root/pr44-gate.log`). Run table, verbatim:
+**The box milestone gate ran and PASSED**, on the determinism box (core 2 per the
+`docs/BOX-PINNING.md` frontier ruling; patched KVM loaded for the run; **reverted to stock `1396736` +
+verified** after; the ht42 bare-Postgres image `initramfs-postgres.cpio.gz` + the current SMP bzImage).
+First green on head `0b28d3f`; **re-verified green on head `cab4120`** after the round-5 revert of the
+deadline force-exit (round 4's `step_until` regressed determinism — see the limitation note below — and
+the intermediate head `30417d8` diverged one run; the revert restored the byte-identical golden run,
+same hashes as `0b28d3f`). Run table, verbatim (`cab4120`, log `/root/pr44-gate3.log`):
 
 ```
 readiness marker at step 98985; base sealed at the next snapshottable boundary
