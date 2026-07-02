@@ -47,10 +47,24 @@ with everything not serving it explicitly deferred.
 | 61 | net vertical: `net_decide` service + in-guest flow agent + `flow` shell | first true guest-plane path; hypercall stack gets a consumer | frontier, not yet started |
 | 62 | doc-debt sweep + the SMP/single-vCPU + task-90 rulings | docs stop lying to newcomers and to the foreman | this document |
 | 93 | resolve compose-vs-genesis-only | the reproducer model is real, not toy-tested | **resolved — keep `compose`, genesis-only rejected** (PR #39; see `docs/DISSONANCE.md` §"Ruling (task 93)") |
-| 94 | rename: Variation→Modulation, Theme→Progression (docs/specs/code) | one vocabulary across the project | queued after 58–61 |
+| 94 | rename: Variation→Modulation, Theme→Progression (docs/specs/code) | one vocabulary across the project | **re-sequenced (foreman, 2026-07-02): right after 58 + 64 merge, before 65+ spawns** — both `docs/EXPLORATION.md` and `docs/RESOLUTION.md` are already post-rename, and 64 refactors the explorer the rename touches (64's spec says coordinate) |
 
 Task 93 (reproducer model) was un-deferred and resolved as part of the Wave-4 push so task 58
 doesn't bake in the wrong seam — see `docs/DISSONANCE.md`'s reproducer section for the ruling.
+
+## Wave 5 — exploration (design ruled 2026-07-01, merged as PR #43)
+
+`docs/EXPLORATION.md` rules the search-and-scoring architecture behind the Progression's three
+seams: the live/replay-plane split, Sensor → Cell → Archive scoring, parent-rooted virtual
+exemplars + lazy materialization (composing via the task-93 `compose` contract), the
+Tactic/Selector decomposition of `Strategy`, and a phased plan with two GO/NO-GO gates. Tasks
+**63–76** (phases A–J): 63 seal-validation `[GO/NO-GO #1]` · 64 spine (the keystone contract) ·
+65 RunTrace · 66 matcher DSL · 67 logtmpl/CellFn · 68 lazy materialization · 69 seeded-bug
+benchmark + correlation `[GO/NO-GO #2]` · 70 selector-bandit · 71 regime tactics · 72 exact PCT ·
+73 guest SDK · 74 OTel channel · 75 oracles · 76 triage. Dispatch order: 63 ∥ 64 first (63 also
+needs 58 merged); 65 after 64+58; 66/67 after 64; 71 after 64; 68 after 63 = GO; 69 after
+60+65+67+68; 70/72 only after 69 = GO; 73→74 and 75→76 off-path. **Don't build past a GO/NO-GO
+without passing it.**
 
 ## Resolution — the epoch loop (design ruled 2026-07-02)
 
