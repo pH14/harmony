@@ -47,9 +47,9 @@ Keep workloads on distinct physical cores so concurrent spikes never contend:
 | Task 07 — PMU skid measurement | `taskset -c 2` | cpu10 | most pinning-sensitive workload |
 | Task 08 — snapshot/restore latency | `taskset -c 4` (or `-c 4,1`) | cpu12 (and cpu9) | KVM vCPU ± driver thread — keep off the CI cores |
 | **Self-hosted CI runner** | **cores 5,6,7** (`AllowedCPUs=5-7,13-15`) | — (uses both threads) | systemd `ci.slice` cpuset; see "CI runner isolation" below |
-| Frontier determinism gates (task-58 box gate; Wave-5 gates 63/68/69/72; the 49/55/56 gate history) | `taskset -c 2` | cpu10 | **one frontier gate at a time on core 2 — serialize**; a second concurrent frontier run takes a spare core and records it here. (Foreman ruling 2026-07-02, resolving 63-says-core-2 vs the task-41 demo's ad-hoc core 4: core 2 is the standing frontier-gate core.) |
+| Frontier determinism gates (task-58/65 box gates; Wave-5 gates 63/68/69/72; the 49/55/56 gate history) | leased core from {2, 1, 3} via `scripts/box-window.sh` | cpu10/9/11 | **Refined ruling (foreman, 2026-07-02): serialize the patched-KVM module *transitions*, parallelize the gates.** `box-window.sh acquire <name>` joins (or opens) the shared patched-module window and prints the leased core; `release <name>` — last lease out reverts to stock 1396736 + verifies. Up to 3 concurrent gates on distinct cores, siblings idle. **Measurement gates (skid, seal-rate — anything whose numbers are microarchitecture-sensitive) use `acquire <name> --exclusive`**: sole occupancy, no co-runners. Never load/rmmod KVM directly when using the coordinator. |
 
-Cores 1,3 are spare. When a new box workload appears, give it a spare core and record it here.
+Cores 1,3 are frontier-leasable via the window coordinator (above). When a new *standing* box workload appears, give it a core and record it here.
 
 ## How to pin
 
