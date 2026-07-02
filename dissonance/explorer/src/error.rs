@@ -7,7 +7,7 @@ use thiserror::Error;
 /// of dissonance's two result categories (`docs/DISSONANCE.md`). A VM or
 /// transport failure is a `MachineError`; a guest-observable outcome is a
 /// [`StopReason`](crate::StopReason). The two are never confused: a
-/// `MachineError` aborts the Multiverse step **loudly** and is never recorded as
+/// `MachineError` aborts the Progression step **loudly** and is never recorded as
 /// a [`Bug`](crate::Bug) (only [`StopReason::Crash`](crate::StopReason::Crash)
 /// and [`StopReason::Assertion`](crate::StopReason::Assertion) are).
 ///

@@ -126,14 +126,14 @@ pub fn explorer::Explorer<M>::frontier(&self) -> &explorer::Frontier
 pub fn explorer::Explorer<M>::genesis(&self) -> explorer::SnapId
 pub fn explorer::Explorer<M>::machine_mut(&mut self) -> &mut M
 pub fn explorer::Explorer<M>::materialize(&mut self, explorer::ExemplarRef) -> core::result::Result<explorer::SnapId, explorer::MachineError>
-pub fn explorer::Explorer<M>::multiverse_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
+pub fn explorer::Explorer<M>::modulation(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
 pub fn explorer::Explorer<M>::new(M, alloc::boxed::Box<dyn explorer::EnvCodec>, explorer::Composition, u64) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::Explorer<M>::progression_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
 pub fn explorer::Explorer<M>::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Explorer<M>::sealed_count(&self) -> usize
 pub fn explorer::Explorer<M>::set_stop_conditions(&mut self, explorer::StopConditions)
 pub fn explorer::Explorer<M>::stop_conditions(&self) -> &explorer::StopConditions
 pub fn explorer::Explorer<M>::sweep_dead_seals(&mut self) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::Explorer<M>::timeline(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
 pub struct explorer::Feature
 pub explorer::Feature::channel: explorer::ChannelId
 pub explorer::Feature::id: explorer::FeatureId

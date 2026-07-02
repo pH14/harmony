@@ -26,7 +26,7 @@ fn composition(tactic: Box<dyn Tactic>) -> Composition {
     }
 }
 
-/// Run one Timeline with `tactic` answering decisions under `mask`, then assert
+/// Run one Modulation with `tactic` answering decisions under `mask`, then assert
 /// the recorded env replays the run bit-for-bit. Returns the decoded override
 /// count so the caller can characterize the artifact.
 fn run_and_replay(tactic: Box<dyn Tactic>, mask: StopMask, base_seed: u64) -> usize {
@@ -44,7 +44,7 @@ fn run_and_replay(tactic: Box<dyn Tactic>, mask: StopMask, base_seed: u64) -> us
     };
 
     let env0 = ToyCodec.seeded(base_seed);
-    let outcome = ex.timeline(genesis, &env0, &until).unwrap();
+    let outcome = ex.modulation(genesis, &env0, &until).unwrap();
     let h1 = ex.machine_mut().hash().unwrap();
 
     // Replay the recorded env from the same base.

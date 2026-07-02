@@ -59,7 +59,7 @@ pub trait Machine {
     /// explorer reads it for novelty scoring but never interprets its layout.
     fn coverage(&self) -> &[u8];
 
-    /// The reproducer [`Environment`] accumulated over the current Timeline: the
+    /// The reproducer [`Environment`] accumulated over the current Modulation: the
     /// base seed/policy plus the answers resolved since the last
     /// `branch`/`replay`, keyed by decision index since that branch. The machine
     /// owns the blob backing (it mediates every `run(resolve)`), so it — not the

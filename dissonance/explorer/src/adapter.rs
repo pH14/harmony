@@ -356,7 +356,7 @@ struct SnapMeta {
 /// and the error mapping.
 ///
 /// The adapter owns the recording side of the task-93 contract: it tracks the
-/// env each Timeline was branched with, stamps every resolved decision at its
+/// env each Modulation was branched with, stamps every resolved decision at its
 /// stop `Moment`, and emits the tail-complete branch-local delta from
 /// [`recorded_env`](Machine::recorded_env).
 pub struct SocketMachine<S: Read + Write> {
@@ -371,7 +371,7 @@ pub struct SocketMachine<S: Read + Write> {
     /// zero-width (no producer exists), so this is empty and never updated.
     coverage: Vec<u8>,
     snaps: BTreeMap<u64, SnapMeta>,
-    /// The (branch-local) spec the current Timeline runs under, plus every
+    /// The (branch-local) spec the current Modulation runs under, plus every
     /// decision answered since the branch (stamped by `run(resolve)`).
     current: EnvSpec,
     /// The absolute `Moment` of the current branch origin.
@@ -610,7 +610,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
             env: wire_env,
         })? {
             control_proto::Reply::Unit => {
-                // The new Timeline: its overrides are keyed from the snapshot's
+                // The new Modulation: its overrides are keyed from the snapshot's
                 // capture Moment (the blob's own base_offset is advisory — the
                 // authoritative origin is where the branch actually restored to).
                 self.current = recorded(&decoded.spec);
@@ -629,7 +629,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         let Some(meta) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
-        // Verbatim restore of the SAME timeline: the recording reverts to what
+        // Verbatim restore of the SAME Modulation: the recording reverts to what
         // was active at capture, keyed relative to the **branch origin at
         // capture** (`meta.branch_offset`) — NOT the snapshot's V-time. A
         // snapshot taken mid-timeline has `branch_offset < vtime`; restoring the
@@ -684,7 +684,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
             )));
         };
         // Tail-completeness (task-93): the server accepted the resolve, so the
-        // answered decision is stamped into the current Timeline's recording
+        // answered decision is stamped into the current Modulation's recording
         // at the Moment it surfaced (branch-local key). An answer that is not
         // a valid catalog Answer cannot be recorded faithfully — loud abort.
         // `pending_decision` is consumed **only** when a resolve is actually

@@ -13,19 +13,21 @@
 //!
 //! ## The two loops
 //!
-//! - **Timeline (inner, [`Explorer::timeline`]):** drive ONE run forward —
+//! - **Modulation (inner, [`Explorer::modulation`]):** drive ONE run forward —
 //!   `run` ⇄ `run(resolve)` — answering each surfaced [`StopReason::Decision`]
 //!   via the **open-loop [`Tactic`]** and capturing every sealable
 //!   [`StopReason::SnapshotPoint`] as parent-rooted [`VirtualExemplar`]
 //!   material. Ends at a terminal [`StopReason`].
-//! - **Multiverse (outer, [`Explorer::multiverse_step`]):** across runs — the
+//! - **Progression (outer, [`Explorer::progression_step`]):** across runs — the
 //!   [`Selector`] picks a frontier exemplar (or genesis), the engine
 //!   materializes it and mints the next [`Environment`] through the codec, runs
-//!   one Timeline, folds the run into the [`Archive`] (timeline admission), and
-//!   judges it with the [`Oracle`]. One Multiverse step = one Timeline.
+//!   one Modulation, folds the run into the [`Archive`] (timeline admission),
+//!   and judges it with the [`Oracle`]. One Progression step = one Modulation.
 //!
-//! (These are the loop pair `docs/EXPLORATION.md` names Modulation/Progression
-//! post-rename — task 94 unifies the naming tree-wide.)
+//! (These are the loop pair `docs/EXPLORATION.md` also names
+//! Modulation/Progression; task 94 unified the naming across docs, specs, and
+//! code — the temporal-axis term of art "timeline admission" is a distinct
+//! concept and stays.)
 //!
 //! ## The seams (defined locally, conventions rule 2)
 //!
@@ -135,7 +137,7 @@ pub struct Answer(pub Vec<u8>);
 
 /// Which decision *classes* a `run` surfaces, mirroring the control-proto /
 /// `DecisionClass` bits. Everything not selected the environment answers
-/// locally (the seed), so a campaign tunes how reactive a Timeline is by which
+/// locally (the seed), so a campaign tunes how reactive a Modulation is by which
 /// bits it sets. Interpreted by the [`Machine`]; the explorer carries it through
 /// unparsed.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
@@ -143,8 +145,8 @@ pub struct StopMask(pub u32);
 
 impl StopMask {
     /// Surface nothing — the environment's seed answers every decision locally,
-    /// so a Timeline driven with this mask has zero stops (pure seed-driven
-    /// exploration, the Multiverse alone). The seed-campaign mask, and the mask
+    /// so a Modulation driven with this mask has zero stops (pure seed-driven
+    /// exploration, the Progression alone). The seed-campaign mask, and the mask
     /// the engine re-materializes evicted exemplars under (a re-materialization
     /// is a pinned replay, never a fresh exploration).
     pub const NONE: StopMask = StopMask(0);
@@ -194,7 +196,7 @@ pub enum StopReason {
         /// Opaque crash detail (e.g. a panic message / register dump).
         info: Vec<u8>,
     },
-    /// A decision surfaced for the explorer to answer (the Timeline's inner
+    /// A decision surfaced for the explorer to answer (the Modulation's inner
     /// step); resolved by `run(resolve)`. Not terminal.
     Decision {
         /// The V-time at the stop.
@@ -214,7 +216,7 @@ pub enum StopReason {
         /// Opaque assertion detail.
         data: Vec<u8>,
     },
-    /// A quiescent point the explorer may snapshot to fork the Multiverse. Not
+    /// A quiescent point the explorer may snapshot to fork the Progression. Not
     /// terminal.
     SnapshotPoint {
         /// The V-time at the stop.
@@ -235,7 +237,7 @@ impl StopReason {
         }
     }
 
-    /// Whether this is a **terminal** stop that ends a Timeline. Everything but
+    /// Whether this is a **terminal** stop that ends a Modulation. Everything but
     /// [`Decision`](StopReason::Decision) and
     /// [`SnapshotPoint`](StopReason::SnapshotPoint) — the two the driver acts on
     /// and continues past — ends the run.
