@@ -299,11 +299,13 @@ impl Archive for CoverageArchive {
             feats.extend(sensed.iter().filter(|(m, _)| *m == at).map(|(_, f)| *f));
 
             // Each feature keys its own (finest-slice) cell; fresh = unoccupied.
-            let mut fresh: Vec<CellKey> = Vec::new();
+            // A BTreeSet dedups in O(log n) per key (a big fork carries many
+            // features) and keeps the claim order canonical.
+            let mut fresh: BTreeSet<CellKey> = BTreeSet::new();
             for f in feats {
                 let key = cells.key(at, &FeatureSet::singleton(f));
-                if self.frontier.occupant(&key).is_none() && !fresh.contains(&key) {
-                    fresh.push(key);
+                if self.frontier.occupant(&key).is_none() {
+                    fresh.insert(key);
                 }
             }
             if fresh.is_empty() {

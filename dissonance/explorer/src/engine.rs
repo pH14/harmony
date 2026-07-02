@@ -223,9 +223,15 @@ impl<M: Machine> Explorer<M> {
     /// campaign under this-after-every-step finds byte-identical bugs and
     /// admissions. A production archive trims seals by expected re-execution
     /// cost instead (Agamotto economics); the safety property is the same.
+    ///
+    /// Error-safe: each mapping is removed only **after** its `drop_snap`
+    /// succeeds, so a mid-way backend failure forgets nothing — every
+    /// undropped handle (the failed one included) stays cached and the call is
+    /// retryable.
     pub fn evict_seals(&mut self) -> Result<(), MachineError> {
-        for (_, seal) in std::mem::take(&mut self.seals) {
+        while let Some((&id, &seal)) = self.seals.first_key_value() {
             self.machine.drop_snap(seal)?;
+            self.seals.remove(&id);
         }
         Ok(())
     }
@@ -242,12 +248,14 @@ impl<M: Machine> Explorer<M> {
         env: &Environment,
         until: &StopConditions,
     ) -> Result<RunOutcome, MachineError> {
-        // Drop any forks left pending by a prior *direct* `timeline` call
-        // (only `multiverse_step` admits/drains them) so a repeated or aborted
-        // direct run never leaks a backend handle — rather than a bare `clear()`
-        // that would forget the seal without `drop_snap`.
-        for pending in std::mem::take(&mut self.pending_forks) {
+        // Drop any forks left pending by a prior *direct* `timeline` call or an
+        // aborted Multiverse step (only `multiverse_step` admits/drains them)
+        // so no backend handle is ever leaked — and error-safely: a pending is
+        // removed only AFTER its `drop_snap` succeeds, so a mid-way backend
+        // failure forgets nothing and the next call retries the leftovers.
+        while let Some(pending) = self.pending_forks.last() {
             self.machine.drop_snap(pending.seal)?;
+            self.pending_forks.pop();
         }
         self.machine.branch(base, env)?;
         let mut resolve: Option<Answer> = None;
@@ -361,11 +369,11 @@ impl<M: Machine> Explorer<M> {
 
         // 4. Build the fork candidates: parent-rooted exemplars plus their
         //    genesis-complete envs (the suffix-chain fold, memoized here so the
-        //    schema-blind archive never composes).
-        let pending = std::mem::take(&mut self.pending_forks);
-        let mut forks: Vec<Fork> = Vec::with_capacity(pending.len());
-        let mut fork_seals: Vec<SnapId> = Vec::with_capacity(pending.len());
-        for p in pending {
+        //    schema-blind archive never composes). The pendings — and their
+        //    seals — stay owned by `self.pending_forks` until step 5 transfers
+        //    or drops each one, so an error can never orphan a handle.
+        let mut forks: Vec<Fork> = Vec::with_capacity(self.pending_forks.len());
+        for p in &self.pending_forks {
             let env = match &base_env {
                 None => p.suffix.clone(),
                 Some(base) => self.codec.compose(base, &p.suffix),
@@ -374,23 +382,26 @@ impl<M: Machine> Explorer<M> {
                 exemplar: VirtualExemplar {
                     parent: base_snap,
                     seed: minted,
-                    suffix: p.suffix,
+                    suffix: p.suffix.clone(),
                     at: p.at,
                 },
                 env,
-                coverage: Some(CoverageView { map: p.coverage }),
+                coverage: Some(CoverageView {
+                    map: p.coverage.clone(),
+                }),
             });
-            fork_seals.push(p.seal);
         }
 
         // 5. Timeline admission. The archive appends the forks it admits to the
         //    frontier in fork order (a subsequence); walk the forks against the
         //    new entries in lockstep — a fork matching the next unclaimed entry
-        //    keeps its seal under that entry's **stable id**, any other fork's
-        //    seal is dropped. An archive that appended something that is *not*
-        //    the next fork (a foreign entry) simply gets no seal and
-        //    re-materializes on first exploit — robust, never a leak, never a
-        //    mis-assignment.
+        //    moves its seal into the cache under that entry's **stable id**,
+        //    any other fork's seal is dropped. An archive that appended
+        //    something that is *not* the next fork (a foreign entry) simply
+        //    gets no seal and re-materializes on first exploit — robust, never
+        //    a mis-assignment. Error-safe: a pending leaves the queue only once
+        //    its seal is cached or dropped, so a mid-way `drop_snap` failure
+        //    forgets nothing (the next `timeline` retries the leftovers).
         let before = self.archive.frontier().len();
         let reward = self
             .archive
@@ -403,15 +414,17 @@ impl<M: Machine> Explorer<M> {
             .map(|(r, e)| (r, e.exemplar.clone()))
             .collect();
         let mut ni = 0usize;
-        for (fork, seal) in forks.iter().zip(fork_seals) {
+        for fork in &forks {
             let admitted = new_entries
                 .get(ni)
                 .is_some_and(|(_, exemplar)| *exemplar == fork.exemplar);
             if admitted {
-                self.seals.insert(new_entries[ni].0.0, seal);
+                let p = self.pending_forks.remove(0);
+                self.seals.insert(new_entries[ni].0.0, p.seal);
                 ni += 1;
             } else {
-                self.machine.drop_snap(seal)?;
+                self.machine.drop_snap(self.pending_forks[0].seal)?;
+                self.pending_forks.remove(0);
             }
         }
 
@@ -490,7 +503,9 @@ impl<M: Machine> Explorer<M> {
     /// was evicted by the archive). Ids are never reused, so an unresolvable
     /// id's seal is provably orphaned; dropping it is pure GC. Called after
     /// every [`Archive::evict`]; public so a custom driver interleaving its
-    /// own eviction can GC at the same point.
+    /// own eviction can GC at the same point. Error-safe: a mapping is removed
+    /// only **after** its `drop_snap` succeeds, so a mid-way failure forgets
+    /// nothing and the next sweep retries the leftovers.
     pub fn sweep_dead_seals(&mut self) -> Result<(), MachineError> {
         let dead: Vec<u64> = self
             .seals
@@ -499,8 +514,9 @@ impl<M: Machine> Explorer<M> {
             .filter(|&id| self.archive.frontier().get(ExemplarRef(id)).is_none())
             .collect();
         for id in dead {
-            if let Some(seal) = self.seals.remove(&id) {
+            if let Some(&seal) = self.seals.get(&id) {
                 self.machine.drop_snap(seal)?;
+                self.seals.remove(&id);
             }
         }
         Ok(())

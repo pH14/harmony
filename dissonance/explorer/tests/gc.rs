@@ -94,6 +94,40 @@ fn each_admitted_entry_keeps_its_own_fork_seal() {
     }
 }
 
+/// A `drop_snap` failure mid-eviction forgets nothing: a mapping is removed
+/// only after its drop succeeds, so every undropped handle (the failed one
+/// included) stays cached and the call is retryable — never silently orphaned.
+#[test]
+fn failed_seal_eviction_forgets_no_handle() {
+    let mut ex =
+        Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 7).unwrap();
+    ex.multiverse_step().unwrap();
+    assert_eq!(ex.sealed_count(), 2, "both fork seals are cached");
+
+    // Sabotage: release the first seal behind the engine's back, so the
+    // engine's own drop of that (now stale) handle fails loudly.
+    let s0 = ex
+        .seal_of(explorer::ExemplarRef(0))
+        .expect("entry 0 is sealed");
+    ex.machine_mut().drop_snap(s0).unwrap();
+
+    // Eviction hits the stale handle first (BTreeMap order) and aborts —
+    // forgetting nothing: every mapping is still cached, retry-ably.
+    assert!(matches!(
+        ex.evict_seals(),
+        Err(MachineError::UnknownSnapshot(_))
+    ));
+    assert_eq!(
+        ex.sealed_count(),
+        2,
+        "a failed eviction forgets no mapping (the failed one included)"
+    );
+    assert!(
+        ex.seal_of(explorer::ExemplarRef(1)).is_some(),
+        "undropped seals remain cached"
+    );
+}
+
 /// A `recorded_env` failure *after* the `SnapshotPoint` seal already succeeded
 /// must release that handle, not leak it. The timeline aborts with the original
 /// error and the freshly-minted seal is dropped (only genesis remains).

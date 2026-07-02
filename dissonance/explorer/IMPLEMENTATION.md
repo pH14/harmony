@@ -68,6 +68,16 @@ across a 12-step compacting campaign) plus the
 `frontier_removal_keeps_identities_stable` unit pin (ids stable, never reused,
 serde round-trip preserves the id counter).
 
+**Seal cleanup is error-safe (round-2 review, P2).** Every cleanup path —
+`evict_seals`, `sweep_dead_seals`, the timeline's leftover-pending drain, and
+the post-admission transfer/drop walk — removes a handle from engine ownership
+only **after** its `drop_snap` succeeds (or after it is cached under its
+entry's id), so a mid-way backend failure forgets nothing and the next call
+retries the leftovers. Gated by `gc::failed_seal_eviction_forgets_no_handle`
+(a sabotaged stale handle aborts eviction with every mapping still cached).
+The default archive's fresh-cell dedup is a `BTreeSet` (was a linear
+`Vec::contains` scan per feature).
+
 **`Prng` deserialization funnels through `new` (round-1 review, blocking #2).**
 xorshift64\* has one absorbing state — zero — which `Prng::new` makes
 unreachable; a derived `Deserialize` would let an untrusted `{"state":0}` blob
