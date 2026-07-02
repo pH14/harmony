@@ -6,8 +6,12 @@
 #   <task-slug>  matches a tasks/*<slug>*.md spec (e.g. "vtime", "snapshot-store")
 #   --engine     deepseek routes the worker through DeepSeek's Anthropic-compatible
 #                endpoint (requires DEEPSEEK_API_KEY in the environment)
-#   --model      worker model id (default: claude-opus-4-8 — Opus 4.8; Fable 5 is
-#                disabled). Ignored when --engine deepseek (DeepSeek picks the model).
+#   --model      worker model id (default: claude-opus-4-8 — Opus 4.8, the baseline for
+#                ordinary tasks). Pass --model claude-fable-5 to route a high-complexity
+#                task (deep architectural reasoning, cross-crate refactors, gnarly
+#                determinism bugs) to Fable 5 instead, or --model claude-sonnet-5 for a
+#                quick/simple task (docs, small mechanical fixes, low-risk cleanup).
+#                Ignored when --engine deepseek (DeepSeek picks the model).
 #   --perm       permission mode (default: auto — the classifier auto-approves low-risk
 #                commands and blocks risky ones; good for unattended/foreman runs).
 #                Other values: acceptEdits, default, bypassPermissions.
@@ -24,7 +28,8 @@ cd "$(dirname "$0")/.."
 SLUG="${1:?usage: agent-spawn.sh <task-slug> [--engine claude|deepseek] [--model ID] [--yolo]}"
 shift
 ENGINE=claude
-MODEL=claude-opus-4-8          # Opus 4.8 — workers' default model (Fable 5 is disabled)
+MODEL=claude-opus-4-8          # Opus 4.8 — baseline model; --model claude-fable-5 for high-complexity,
+                                # --model claude-sonnet-5 for quick/simple tasks
 # auto: classifier auto-approves low-risk commands, blocks risky ones — unattended-friendly
 PERMFLAGS="--permission-mode auto"
 while [[ $# -gt 0 ]]; do
@@ -68,7 +73,8 @@ EOF
 # caffeinate (macOS): keep the machine from idle-sleeping while a worker runs
 CAFF=""
 command -v caffeinate >/dev/null && CAFF="caffeinate -i "
-# Default (claude) engine pins the model explicitly to Opus 4.8; deepseek ignores it.
+# Default (claude) engine pins the model explicitly (Opus 4.8 baseline, or Fable 5 /
+# Sonnet 5 via --model for high-complexity / quick-simple tasks); deepseek ignores it.
 MODELFLAG="--model $MODEL"
 if [[ "$ENGINE" == deepseek ]]; then
     : "${DEEPSEEK_API_KEY:?--engine deepseek requires DEEPSEEK_API_KEY}"

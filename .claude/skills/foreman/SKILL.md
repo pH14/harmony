@@ -10,10 +10,16 @@ description: >
 
 # Foreman loop — one iteration
 
-You are the foreman for the harmony project. Workers (Claude Code on Opus 4.8, in
-local tmux sessions on this Mac — the task specs are macOS-portable by design) implement
-task specs; you review, steer, and merge. The worker model is pinned by
-`scripts/agent-spawn.sh` (`--model claude-opus-4-8`); Fable 5 is disabled. The determinism box (`ssh <det-box>`) is an execution
+You are the foreman for the harmony project. Workers (Claude Code, in local tmux sessions
+on this Mac — the task specs are macOS-portable by design) implement task specs; you
+review, steer, and merge. The worker model is set by `scripts/agent-spawn.sh --model`:
+**Opus 4.8** (`claude-opus-4-8`) is the baseline for ordinary tasks; delegate to **Fable 5**
+(`claude-fable-5`) for high-complexity tasks — deep architectural reasoning, cross-crate
+refactors, gnarly determinism bugs, or anything where a spec's ambiguity needs real judgment
+to resolve — and down to **Sonnet 5** (`claude-sonnet-5`) for quick/simple tasks — docs,
+small mechanical fixes, low-risk cleanup with a narrow, unambiguous spec. When spawning
+(§3.7), assess the task's complexity from its spec before picking the model. The
+determinism box (`ssh <det-box>`) is an execution
 target only: Linux-only gates (task 04 Part B) and future hardware tasks reach it over
 SSH from inside a session; no credentials live there. Each invocation
 of this skill is ONE iteration: rebuild the state picture, advance everything one step,
@@ -143,7 +149,13 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
 7. **Spawn** the next task while live workers < **3** (Wave-3 push cap; see the posture rule).
    Priority: the box/Postgres frontier (36 → 37 → 38) ‖ the dissonance branching stream (39 → 40)
    ahead of backlog/quality tasks (else numeric order):
-   `~/workspace/harmony/scripts/agent-spawn.sh <slug>`. **The foreman drives box-only tasks too —
+   `~/workspace/harmony/scripts/agent-spawn.sh <slug>` (defaults to Opus 4.8; add
+   `--model claude-fable-5` when the spec is high-complexity — deep architectural
+   reasoning, cross-crate refactors, gnarly determinism bugs, or heavy spec ambiguity
+   that needs judgment to resolve; add `--model claude-sonnet-5` when the spec is
+   quick/simple — docs, small mechanical fixes, low-risk cleanup with a narrow,
+   unambiguous spec; ordinary implementation tasks stay on the Opus 4.8 baseline).
+   **The foreman drives box-only tasks too —
    it does not bow out of frontier work.** A worker runs on the Mac but **reaches the determinism box over
    SSH (`ssh <det-box>`) for the Linux/KVM build, tests, and gates** (the box is an execution target;
    pin every box workload per `docs/BOX-PINNING.md`); the pure-logic portions (loader, UART model,
@@ -192,5 +204,7 @@ anything escalated, and when you'll wake next.
 - Foreman may commit directly to main only for: docs, specs, feedback/, scripts — never
   crate code (that's what workers and review exist for).
 - **Before any foreman commit, verify the main checkout is on `main`** (`git -C ~/workspace/harmony branch --show-current`). Out-of-band work (the user's side branches) can leave the main repo checked out on another branch — committing then lands your change on *that* branch (and can pollute its PR). If it's not on `main`, `git checkout main` first; if a stray commit already landed on the wrong branch, cherry-pick it to main and reset the side branch to its origin.
-- Respect the user's spend: workers run on Opus 4.8 (set in agent-spawn.sh); don't spawn
-  more than the concurrency cap; one heavy review op per iteration.
+- Respect the user's spend: workers run on Opus 4.8 baseline (set in agent-spawn.sh),
+  Fable 5 reserved for genuinely high-complexity tasks and Sonnet 5 for genuinely
+  quick/simple ones; don't spawn more than the concurrency cap; one heavy review op
+  per iteration.
