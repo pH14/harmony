@@ -85,8 +85,18 @@ determinism lints pass with zero `#[allow]`s). The parse tree is a
 struct-keyed maps; the same trick the spine `Frontier` uses for its cell index).
 The similarity threshold is an integer cross-multiply widened to `u128`, so no
 line length can overflow it (a debug-build overflow would be a panic on untrusted
-input). Library code never `unwrap`s on untrusted input; `from_json` returns a
-typed error (including a version guard) rather than panicking.
+input). Library code never `unwrap`s on untrusted input; the two decode paths are
+hardened against adversarial bytes:
+
+- `Codebook::from_json` returns a typed error for an unknown version **and** for a
+  parse tree that references an out-of-range template id (`Error::DanglingTemplate`)
+  — otherwise the next `ingest` would index `self.templates[id]` out of bounds and
+  panic. Fuzzed by `corrupting_tree_ids_never_yields_a_panicking_codebook`.
+- `decode_cell_key` bounds its `Vec::with_capacity` by the actual buffer size, so a
+  forged 4-byte field count (up to `u32::MAX`) cannot drive a huge speculative
+  allocation. Fuzzed by `decode_cell_key_is_total_on_arbitrary_bytes`.
+
+(Both were round-1 review P1s.)
 
 ## Fixtures
 

@@ -143,6 +143,70 @@ proptest! {
         let same_tuple = cell.fields(&fa) == cell.fields(&fb);
         prop_assert_eq!(cell.key(Moment(0), &fa) == cell.key(Moment(1), &fb), same_tuple);
     }
+
+    /// Adversarial totality: `decode_cell_key` never panics (and never over-
+    /// allocates) on arbitrary bytes — the forged-count regression, fuzzed.
+    /// Whatever it accepts must re-encode to a prefix-consistent form.
+    #[test]
+    fn decode_cell_key_is_total_on_arbitrary_bytes(bytes in prop::collection::vec(any::<u8>(), 0..64)) {
+        if let Some(fields) = decode_cell_key(&bytes) {
+            // A successful decode is an exact left inverse: re-encoding reproduces
+            // the input, so acceptance is never lossy.
+            prop_assert_eq!(encode_cell_key(&fields), bytes);
+        }
+    }
+
+    /// Adversarial totality: `Codebook::from_json` never panics on arbitrary
+    /// bytes, and any codebook it *accepts* is safe to keep clustering — the next
+    /// `ingest` cannot index out of bounds (the dangling-template regression).
+    #[test]
+    fn from_json_is_total_on_arbitrary_bytes(
+        bytes in prop::collection::vec(any::<u8>(), 0..256),
+        line in "[a-z0-9 ]{0,24}",
+    ) {
+        if let Ok(mut cb) = Codebook::from_json(&bytes) {
+            let a = cb.ingest(&line);
+            prop_assert!(a.template < cb.len() as u64);
+        }
+    }
+
+    /// Targeted fuzz of the dangling-template guard: build a real codebook, then
+    /// rewrite every parse-tree id to an arbitrary value. `from_json` must either
+    /// reject it (typed error) or return a codebook whose every tree id is in
+    /// range — in which case further `ingest`s never panic.
+    #[test]
+    fn corrupting_tree_ids_never_yields_a_panicking_codebook(
+        seed_lines in prop::collection::vec("[a-z]{1,4} [a-z0-9]{1,4}", 1..12),
+        // Mix small (often in-range → accepted) and arbitrary (usually
+        // out-of-range → rejected) ids so both branches get exercised.
+        replacements in prop::collection::vec(prop_oneof![0u64..6, any::<u64>()], 1..40),
+        probe in "[a-z0-9 ]{0,24}",
+    ) {
+        let mut src = Codebook::default();
+        for l in &seed_lines { src.ingest(l); }
+
+        let mut v: serde_json::Value = serde_json::from_slice(&src.to_json()).unwrap();
+        let mut r = replacements.iter().cloned().cycle();
+        if let Some(tree) = v["tree"].as_array_mut() {
+            for pair in tree.iter_mut() {
+                if let Some(ids) = pair[1].as_array_mut() {
+                    for id in ids.iter_mut() {
+                        *id = serde_json::json!(r.next().unwrap());
+                    }
+                }
+            }
+        }
+        let bytes = serde_json::to_vec(&v).unwrap();
+
+        match Codebook::from_json(&bytes) {
+            Err(_) => {} // rejected — safe
+            Ok(mut cb) => {
+                // Accepted ⇒ ingest is index-safe, however adversarial the probe.
+                let a = cb.ingest(&probe);
+                prop_assert!(a.template < cb.len() as u64);
+            }
+        }
+    }
 }
 
 /// A state channel's *latest* value is what the key folds — exercised outside

@@ -212,7 +212,12 @@ pub fn encode_cell_key(fields: &[Option<u64>]) -> CellKey {
 /// Present so injectivity is provable by round-trip in tests.
 pub fn decode_cell_key(bytes: &[u8]) -> Option<Vec<Option<u64>>> {
     let count = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?) as usize;
-    let mut fields = Vec::with_capacity(count);
+    // Bound the prealloc by what the buffer can actually hold: every field costs
+    // at least its 1-byte length tag, so no well-formed buffer has more than
+    // `bytes.len() - 4` fields. Without this, a forged count (up to ~4 billion)
+    // would reserve a huge allocation from four untrusted bytes.
+    let cap = count.min(bytes.len().saturating_sub(4));
+    let mut fields = Vec::with_capacity(cap);
     let mut i = 4;
     for _ in 0..count {
         match *bytes.get(i)? {
@@ -335,6 +340,21 @@ mod tests {
         let mut good = encode_cell_key(&[Some(1)]);
         good.push(0xFF);
         assert_eq!(decode_cell_key(&good), None);
+    }
+
+    /// A forged field count (up to `u32::MAX`) in four untrusted bytes must not
+    /// drive a huge speculative allocation: the prealloc is bounded by what the
+    /// buffer can hold, and decoding still returns `None` fast. Regression for
+    /// the round-1 review's unbounded-`with_capacity` P1.
+    #[test]
+    fn decode_does_not_prealloc_from_a_forged_count() {
+        // count = u32::MAX, but no field bytes follow → `None`, no ~4 GiB alloc.
+        assert_eq!(decode_cell_key(&[0xFF, 0xFF, 0xFF, 0xFF]), None);
+        // A large count with a handful of trailing bytes decodes only as far as
+        // the buffer allows, then fails cleanly.
+        let mut forged = 1_000_000u32.to_le_bytes().to_vec();
+        forged.extend_from_slice(&[0, 0, 0]); // three absent fields, then EOF
+        assert_eq!(decode_cell_key(&forged), None);
     }
 
     #[test]

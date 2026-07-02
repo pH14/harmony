@@ -22,6 +22,17 @@ pub enum Error {
         /// The version this build serializes and can reload.
         expected: u16,
     },
+
+    /// The serialized codebook's parse tree references a template id that does
+    /// not exist. Loading it would let the next `ingest` index out of bounds and
+    /// panic, so a codebook with a dangling reference is refused on load.
+    #[error("codebook references template id {id} but only {count} templates exist")]
+    DanglingTemplate {
+        /// The out-of-range template id found in a leaf.
+        id: u64,
+        /// How many templates the codebook actually holds.
+        count: usize,
+    },
 }
 
 /// The crate result alias.

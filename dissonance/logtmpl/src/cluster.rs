@@ -258,7 +258,8 @@ impl Codebook {
     }
 
     /// Reload a codebook from [`to_json`](Codebook::to_json) bytes. Refuses a
-    /// version this build does not understand rather than clustering wrongly.
+    /// version this build does not understand, or a parse tree that references a
+    /// non-existent template, rather than clustering wrongly or panicking later.
     pub fn from_json(bytes: &[u8]) -> Result<Self> {
         let cb: Codebook = serde_json::from_slice(bytes).map_err(Error::Decode)?;
         if cb.version != CODEBOOK_VERSION {
@@ -267,7 +268,24 @@ impl Codebook {
                 expected: CODEBOOK_VERSION,
             });
         }
+        cb.check_tree_refs()?;
         Ok(cb)
+    }
+
+    /// Every template id the parse tree references must exist. A codebook decoded
+    /// from untrusted bytes could otherwise point a leaf at an out-of-range id,
+    /// and the next [`ingest`](Codebook::ingest) would index `self.templates[id]`
+    /// out of bounds and panic (conventions rule 4: no panic on untrusted input).
+    fn check_tree_refs(&self) -> Result<()> {
+        let count = self.templates.len();
+        for ids in self.tree.values() {
+            for &id in ids {
+                if id as usize >= count {
+                    return Err(Error::DanglingTemplate { id, count });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -429,5 +447,27 @@ mod tests {
     fn from_json_rejects_garbage_without_panic() {
         assert!(Codebook::from_json(b"not json at all").is_err());
         assert!(Codebook::from_json(b"").is_err());
+    }
+
+    /// A codebook whose parse tree references a non-existent template id is
+    /// refused on load — otherwise the next `ingest` would index
+    /// `self.templates[id]` out of bounds and panic. Regression for the round-1
+    /// review's dangling-template-ref P1.
+    #[test]
+    fn from_json_rejects_a_dangling_template_id() {
+        let mut c = cb();
+        c.ingest("a b c"); // one template (id 0), one leaf
+        let mut v: serde_json::Value = serde_json::from_slice(&c.to_json()).unwrap();
+        // The tree serializes as `[[leaf_key, [ids…]], …]`; point the first
+        // leaf at a template that does not exist.
+        v["tree"][0][1] = serde_json::json!([999]);
+        let bytes = serde_json::to_vec(&v).unwrap();
+        match Codebook::from_json(&bytes) {
+            Err(Error::DanglingTemplate { id, count }) => {
+                assert_eq!(id, 999);
+                assert_eq!(count, 1);
+            }
+            other => panic!("expected a dangling-template error, got {other:?}"),
+        }
     }
 }
