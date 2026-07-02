@@ -89,15 +89,18 @@ fn seeds(n: usize) -> Vec<u64> {
         .collect()
 }
 
-/// Reject a seed count below 2 up front, before the sweep runs: the divergence
-/// gate (`>= 2 distinct hashes across seeds`) is unsatisfiable with fewer than
-/// two seeds, so running the whole sweep and then failing `verify` would be a
-/// confusing false gate. Returns `true` if the count is acceptable.
-fn seeds_ok(n: usize) -> bool {
-    if n < 2 {
+/// Reject too few seeds up front, before the sweep runs, so a valid-looking
+/// run cannot print `GATES PASS` below the required bar. `min` is the mode's
+/// floor: the mock demo uses `2` (the divergence gate's minimum — fewer can
+/// never diverge), the **box milestone uses `8`** (the task-58 gate is
+/// `N >= 8`, so a `--seeds 2..7` box run that happened to produce ≥ 2 distinct
+/// hashes must NOT be able to report a milestone PASS). Returns `true` if the
+/// count meets `min`.
+fn seeds_ok(n: usize, min: usize) -> bool {
+    if n < min {
         eprintln!(
-            "[conductor] --seeds must be >= 2: the divergence gate needs at least two seeds to \
-             produce two distinct futures (the milestone gate wants N >= 8). Got {n}."
+            "[conductor] --seeds must be >= {min} here: got {n}. The divergence gate needs at \
+             least 2 distinct futures, and the box milestone gate is N >= 8."
         );
         return false;
     }
@@ -114,7 +117,7 @@ fn main() -> ExitCode {
 
 /// The portable demo: scripted mock guest, sweep, table, verdicts.
 fn run_mock(args: SweepArgs) -> ExitCode {
-    if !seeds_ok(args.seeds) {
+    if !seeds_ok(args.seeds, 2) {
         return ExitCode::FAILURE;
     }
     let cfg = SweepConfig {
@@ -303,7 +306,9 @@ mod boxrun {
     }
 
     pub fn run(args: BoxArgs) -> ExitCode {
-        if !super::seeds_ok(args.sweep.seeds) {
+        // The box milestone gate is N >= 8 — enforce it so a smaller box run
+        // can never print a milestone PASS below the bar.
+        if !super::seeds_ok(args.sweep.seeds, 8) {
             return ExitCode::FAILURE;
         }
         if !std::path::Path::new("/dev/kvm").exists() {

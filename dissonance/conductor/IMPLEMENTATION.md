@@ -106,74 +106,80 @@ in-process unix socketpair, mock guest:
 
 `conductor/tests/determinism_proptest.rs` proves the branch/run/hash + replay properties (and
 session-independence) over **256 cases**. Plus the server's own unit tests (`vmm-core/src/control.rs`,
-16 tests) and the adapter's (`explorer/src/adapter.rs`, 10 tests incl. the three ruling panics).
+16 tests) and the adapter's (`explorer/src/adapter.rs`, incl. the ruling panics — compose
+seed/overflow/non-genesis, mutate non-genesis, non-adapter blob — and the scripted-stream regression
+tests for the connect-origin probe, the replay-origin restore, the tail-completeness recording, and
+the coverage-geometry guard).
 
 Demo (`cargo run -p conductor -- mock --seeds 8 --runs 2`): 8 seeds × 2 runs, every seed bit-identical
 across its runs, **8 distinct futures**, replay == capture, GATES PASS.
 
-### Gate 2 — box (the milestone): **handed to the foreman** (see below)
+### Gate 2 — box (the milestone): **PASS** (foreman-executed — run table below)
 
 ### Gate 3 — standard suite on every touched crate: **PASS**
 
 `build` / `nextest` / `clippy -D warnings` / `fmt` / `cargo deny` green on control-proto (55),
-environment (91, untouched), explorer (57), vmm-core (285), conductor (6). No golden re-blessing —
+environment (91, untouched), explorer (63), vmm-core (285), conductor (6). No golden re-blessing —
 the server is additive; existing `live_*` gates are byte-identical (nothing in the determinism path
 changed; `effective_vns` and `state_blob` are unchanged). Public-API snapshots refreshed for vmm-core,
 explorer, and the new conductor crate.
 
-## The box gate — runbook for the foreman
+## The box gate — result (PASS) + runbook
 
-Not run in this session, for three converging reasons, none of them a code gap:
+**The box milestone gate ran and PASSED**, executed by the foreman on the determinism box (core 2
+per the `docs/BOX-PINNING.md` frontier ruling; patched KVM loaded for the run; **reverted to stock
+`1396736` + verified** after; head `0b28d3f`; the ht42 bare-Postgres image `initramfs-postgres.cpio.gz`
++ the current SMP bzImage; log `/root/pr44-gate.log`). Run table, verbatim:
 
-1. **No-push constraint.** This worktree is not pushed (per the task instructions), so `conductor box`
-   cannot be built on the box until the foreman checks the branch out there.
-2. **Shared patched KVM is in use.** At the time of writing, PR-33's `live_runc_postgres` gate is
-   running on core 2 holding the patched KVM module (`lsmod kvm` = 1400832). The box's `run-patched.sh`
-   flow refuses to (re)load or revert KVM while `kvm_intel` is in use, and reverting mid-run would break
-   PR-33 — so a patched gate cannot be sequenced until that run finishes and reverts.
-3. **Image.** The bare-Postgres image (`initramfs-postgres.cpio.gz`) is not built on the box; only the
-   runc-Postgres (`initramfs-docker.cpio.gz`) and k3s images are staged. The box mode takes
-   `--initramfs` so it can reuse the docker image, or the foreman can build the bare image.
+```
+readiness marker at step 98985; base sealed at the next snapshottable boundary
+base snapshot: sealed at V-time 442905523 (2 attempts), capture state_hash 7dcb1690…b236621c
+seed                  run  stop                     state_hash
+0x9e1fb946911491d5    0,1  Crash@463031443[65B]     64378902…  (both runs identical)
+0x3c46338d10ca15ea    0,1  Crash@463031443[65B]     bb3e5b4d…
+0xda8eadd3938199ff    0,1  Crash@463031443[65B]     b90384b4…
+0x78f5261a13771d94    0,1  Crash@463031443[65B]     ccae2fdf…
+0x173da060922a81a9    0,1  Crash@463031443[65B]     5dc1d145…
+0xb5641aa715e005be    0,1  Crash@463031443[65B]     711adf8a…
+0x53ac94ed95578953    0,1  Crash@463031443[65B]     a337632b…
+0xf1930d34140d0d68    0,1  Crash@463031443[65B]     2cbf688c…
+replay(base): state_hash 7dcb1690…b236621c (== capture)
+GATES PASS: per-seed reproducible, >= 2 distinct futures, replay == capture
+```
 
-The complete live path is delivered and **cross-compiles + clippies clean for `x86_64-unknown-linux-gnu`**
-(the box-only `boot_linux_selected` + `perf_event` path). To run gate 2 on the box, per
-`docs/BOX-PINNING.md` (use a spare core — 1 or 3 — while core 2 is occupied; never core 4/5–7):
+**Bar exceeded:** 8/8 seeds bit-identical across their run pairs, **8/8 distinct futures** (needed ≥ 2),
+verbatim base replay. The uniform `Crash@463031443` stop is the documented workload convention — the
+Postgres image's clean terminal is a forced reboot → `Shutdown` → `Crash{Shutdown}` under the
+workload-blind mapping — at an identical Moment across seeds because post-CRNG-seal guests are
+byte-identical (the honest-divergence note below, observed exactly); the entropy fork surfaces in the
+`VTIM` hash chunk → 8 distinct hashes.
+
+The command (per `docs/BOX-PINNING.md`), for reproduction:
 
 ```sh
-# On the box, with the branch checked out and the patched KVM loaded for THIS run
-# (coordinate: only load/revert when `lsmod | awk '$1=="kvm_intel"{print $3}'` == 0):
-taskset -c 3 timeout 3600 cargo run -p conductor --release -- box \
+# On the box, patched KVM loaded for THIS run (coordinate: only load/revert when
+# `lsmod | awk '$1=="kvm_intel"{print $3}'` == 0):
+taskset -c 2 timeout 3600 cargo run -p conductor --release -- box \
     --seeds 8 --runs 2 \
-    --initramfs initramfs-docker.cpio.gz \
     --ready-marker 'database system is ready to accept connections'
 # ALWAYS revert KVM to stock afterwards and verify: lsmod | grep '^kvm ' == 1396736
 ```
 
 **What gate 2 asserts** (the milestone bar): one snapshot **mid-workload, post-readiness** (the
 `--ready-marker` step drives the live guest there before the sweep seals — this is the *only*
-workload-aware policy in the path; the server + adapter stay workload-blind), then **N ≥ 8 seeds**, each
-run **twice** → bit-identical `state_hash` per seed, **≥ 2 distinct hashes across seeds**, and
-`replay(base)` → identical hash to the capture. `conductor box` prints exactly this run table and the
-gate verdicts (`verify(&report, 2)`); **record the printed table here** once it runs.
+workload-aware policy in the path; the server + adapter stay workload-blind), then **N ≥ 8 seeds**
+(the box path enforces `--seeds >= 8`), each run **twice** → bit-identical `state_hash` per seed,
+**≥ 2 distinct hashes across seeds**, and `replay(base)` → identical hash to the capture. `conductor
+box` prints exactly this run table and the gate verdicts (`verify(&report, 2)`).
 
 > **Honest expectation on divergence (from the task-40 branching demo).** A snapshot sealed *after* the
 > kernel CRNG is seeded (which happens before the first console byte, so any post-readiness seal is)
 > makes the entropy fork surface only in the host-side entropy bookkeeping — the branches are otherwise
 > byte-identical guests. That still satisfies gate 2's letter: the entropy stream position rides the
 > `VTIM` hash chunk (`wire_snapshot_hashing` is on), so distinct seeds still produce **distinct
-> `state_hash`es**. Gate 2 asks for ≥ 2 distinct hashes, not guest-observable divergence (unlike the
-> stricter task-40 demo). This is the expected, correct shape for a mid-workload seal; it is not a
-> weaker gate, it is the honest one for this snapshot phase.
-
-**Box run table (to be filled by the foreman):**
-
-```
-base snapshot: sealed at V-time <…> (<…> attempts), capture state_hash <…>
-seed                  run  stop                     state_hash
-<…>
-replay(base): state_hash <…> (== capture)
-GATES: <PASS/FAIL>
-```
+> `state_hash`es** (observed: 8 distinct). Gate 2 asks for ≥ 2 distinct hashes, not guest-observable
+> divergence (unlike the stricter task-40 demo). This is the expected, correct shape for a mid-workload
+> seal; it is not a weaker gate, it is the honest one for this snapshot phase.
 
 ## Deviations considered
 
@@ -208,6 +214,7 @@ GATES: <PASS/FAIL>
   counter on the box), so `run_session` keeps the server on the calling thread and the client on a
   spawned thread. A multi-VM explorer (N concurrent sessions) is out of scope; the fresh-VM restore
   discipline already anticipates it (each restore re-baselines the work counter).
-- **The box gate has not been executed** — see the runbook. The portable gates prove the *identical*
-  server + adapter + sweep code against a deterministic guest; the box run swaps the mock guest for the
-  real Postgres guest via `boot_linux_selected`, workload-blind. When it runs, paste the run table above.
+- **The box gate PASSED** (foreman-executed — run table above). The portable gates prove the *identical*
+  server + adapter + sweep code against a deterministic guest; the box run swapped the mock guest for the
+  real Postgres guest via `boot_linux_selected`, workload-blind, and cleared the milestone bar (8/8
+  reproducible, 8 distinct futures, verbatim base replay).

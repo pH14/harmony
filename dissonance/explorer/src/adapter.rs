@@ -329,13 +329,24 @@ impl crate::EnvCodec for SpecEnvCodec {
 // SocketMachine — the driver seam over a control-proto client stream
 // ---------------------------------------------------------------------------
 
-/// Per-snapshot client bookkeeping: the absolute `Moment` the snapshot was
-/// captured at, and the (branch-local) spec that was active — so `replay`
-/// restores the adapter's recording state along with the VM, and a later
-/// branch below the snapshot keys its delta from the right offset.
+/// Per-snapshot client bookkeeping captured at `snapshot` time so a later
+/// `replay`/`branch` restores the adapter's recording state along with the VM.
 #[derive(Clone, Debug)]
 struct SnapMeta {
+    /// The absolute `Moment` (effective V-time) the snapshot was captured at —
+    /// the `pos` of the timeline at capture, and the origin a **`branch`** off
+    /// this snapshot roots its new timeline at.
     vtime: u64,
+    /// The **branch origin** that was active when the snapshot was taken (the
+    /// `Moment` [`spec`](Self::spec)'s overrides are keyed relative to). For a
+    /// snapshot taken mid-timeline this differs from [`vtime`](Self::vtime)
+    /// (the origin is where the *branch* began; `vtime` is how far it has run).
+    /// **`replay`** restores *this* as the branch offset — not `vtime` — so the
+    /// restored recording's keys keep their true origin and `recorded_env`
+    /// advertises the correct `base_offset`.
+    branch_offset: u64,
+    /// The (branch-local) spec active at capture — its overrides are keyed
+    /// relative to [`branch_offset`](Self::branch_offset).
     spec: EnvSpec,
 }
 
@@ -618,16 +629,23 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         let Some(meta) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
-        let (origin, spec) = (meta.vtime, meta.spec.clone());
+        // Verbatim restore of the SAME timeline: the recording reverts to what
+        // was active at capture, keyed relative to the **branch origin at
+        // capture** (`meta.branch_offset`) — NOT the snapshot's V-time. A
+        // snapshot taken mid-timeline has `branch_offset < vtime`; restoring the
+        // branch offset to `vtime` (the pre-fix bug) would leave `self.current`'s
+        // keys relative to the true origin while `branch_offset` claimed the
+        // snapshot point, so a post-replay `recorded_env` would advertise the
+        // wrong `base_offset` — a silent mis-key once keys exist (dormant in v1:
+        // no decisions ⇒ no keys). `pos` is the snapshot point (`vtime`).
+        let (branch_offset, pos, spec) = (meta.branch_offset, meta.vtime, meta.spec.clone());
         match self.call(&control_proto::Request::Replay(control_proto::SnapId(
             snap.0,
         )))? {
             control_proto::Reply::Unit => {
-                // Verbatim: the recording state reverts to what was active
-                // when the snapshot was taken.
                 self.current = spec;
-                self.branch_offset = origin;
-                self.pos = origin;
+                self.branch_offset = branch_offset;
+                self.pos = pos;
                 self.pending_decision = None;
                 Ok(())
             }
@@ -706,6 +724,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
                     id.0,
                     SnapMeta {
                         vtime: self.pos,
+                        branch_offset: self.branch_offset,
                         spec: self.current.clone(),
                     },
                 );
@@ -773,7 +792,9 @@ mod tests {
     use super::{
         ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
     };
-    use crate::{Answer, EnvCodec, Environment, Machine, MachineError, StopConditions, StopMask};
+    use crate::{
+        Answer, EnvCodec, Environment, Machine, MachineError, StopConditions, StopMask, VTime,
+    };
 
     fn spec_with_overrides(seed: u64, keys: &[u64]) -> EnvSpec {
         let mut overrides = BTreeMap::new();
@@ -1149,6 +1170,51 @@ mod tests {
             recorded.pos, 5000,
             "pos is the branch origin before any run"
         );
+    }
+
+    /// The replay-origin fix (latent mis-key, task-58/61): `replay(snap)`
+    /// restores the branch origin that was active **at capture**, not the
+    /// snapshot's V-time. A snapshot taken mid-timeline (`branch_offset <
+    /// vtime`) then replays with the correct origin, so `recorded_env`
+    /// advertises the true `base_offset` — otherwise a post-replay delta would
+    /// be mis-keyed once decisions exist (dormant in v1).
+    #[test]
+    fn replay_restores_the_branch_origin_at_capture_not_the_snapshot_vtime() {
+        use control_proto::{Reply, SnapId as WsSnapId, StopReason as Ws, VTime as WsVTime};
+        let stream = scripted(&[
+            (1, server_caps_reply()),        // hello
+            (2, probe_reply(50)),            // connect probe → origin 50
+            (3, Reply::SnapId(WsSnapId(1))), // snapshot S1 @ 50 (branch base)
+            (4, Reply::Unit),                // branch(S1, seeded) → timeline rooted at 50
+            (
+                5,
+                Reply::Stop(Ws::Deadline {
+                    vtime: WsVTime(200),
+                }),
+            ), // run → advance pos to 200 (branch_offset stays 50)
+            (6, Reply::SnapId(WsSnapId(2))), // snapshot S2 @ vtime 200, branch_offset 50
+            (7, Reply::Unit),                // replay(S2)
+        ]);
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let s1 = m.snapshot().unwrap();
+        m.branch(s1, &SpecEnvCodec.seeded(7)).unwrap();
+        let _ = m
+            .run(
+                &StopConditions {
+                    deadline: Some(VTime(200)),
+                    on: StopMask::NONE,
+                },
+                None,
+            )
+            .unwrap();
+        let s2 = m.snapshot().unwrap();
+        m.replay(s2).unwrap();
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        assert_eq!(
+            recorded.base_offset, 50,
+            "replay restores the branch origin at capture (50), not the snapshot V-time (200)"
+        );
+        assert_eq!(recorded.pos, 200, "pos is the snapshot point");
     }
 
     /// The coverage-geometry guard (blocking): a server advertising a non-zero
