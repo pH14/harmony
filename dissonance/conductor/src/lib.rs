@@ -198,7 +198,7 @@ pub fn run_sweep<M: Machine>(
     let snapshot_vtime = vt;
     let base_hash = machine.hash()?;
 
-    // 3. The multiverse: per seed, branch → run → hash, repeated.
+    // 3. The progression: per seed, branch → run → hash, repeated.
     let until = StopConditions {
         // Saturating (as above): an overflowing deadline means "to the end".
         deadline: cfg

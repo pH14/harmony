@@ -16,7 +16,7 @@
 //!   (verbatim — the determinism-gate / repro path) or [`Branch`](Request::Branch)
 //!   (reseed with a new [`Environment`] — the explore path). The choice is
 //!   explicit at every call site.
-//! - **Schema-blind to `Environment`.** R2 ferries the variation unit as an
+//! - **Schema-blind to `Environment`.** R2 ferries the modulation unit as an
 //!   opaque, versioned blob ([`Environment`]) and a per-decision answer as opaque
 //!   [`Answer`]. It never parses them — their structure is task 24's contract.
 //!   This is what lets R2 be coded ahead of the fault model.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! [`EnvCodec`] — the vocabulary-aware **proposal seam**. The Theme (the outer
+//! [`EnvCodec`] — the vocabulary-aware **proposal seam**. The Progression (the outer
 //! search loop) is structurally blind to fault semantics: it cannot *invent* a
 //! legal [`HostFault`]/[`Answer`], so it asks the codec to `seeded` a fresh
 //! environment, `mutate` an existing one, or `compose` two on the single
@@ -20,13 +20,13 @@ use crate::recorded::{EnvSpec, StandingFault};
 /// happen to coincide do not draw the same stream.
 const MUTATE_DOMAIN: u64 = 0x4D75_7461_7465_2121; // "Mutate!!"
 
-/// The proposal seam the Theme calls. A unit type: every operation is a pure
+/// The proposal seam the Progression calls. A unit type: every operation is a pure
 /// function of its inputs, holding no state of its own.
 ///
-/// This is one of the three opaque seams that make the Theme
+/// This is one of the three opaque seams that make the Progression
 /// *agnostic-by-interface* (navigation, scoring, **proposal**): vocabulary
 /// knowledge lives here, not in the search policy, so adding a fault type grows
-/// the codec and never the Theme (the dissonance D-invariant).
+/// the codec and never the Progression (the dissonance D-invariant).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EnvCodec;
 
