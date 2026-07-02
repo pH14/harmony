@@ -300,6 +300,10 @@ pub struct SocketMachine<S: Read + Write> {
     stream: S,
     seq: u32,
     inbuf: Vec<u8>,
+    /// The request-encode scratch buffer, reused (cleared) per [`call`](Self::call)
+    /// so the hot request/reply path does not churn the heap every verb —
+    /// mirroring the server's reused `outbuf`.
+    outbuf: Vec<u8>,
     /// The coverage view for the most recent run. The negotiated geometry is
     /// zero-width (no producer exists), so this is empty and never updated.
     coverage: Vec<u8>,
@@ -332,6 +336,7 @@ impl<S: Read + Write> SocketMachine<S> {
             stream,
             seq: 0,
             inbuf: Vec::new(),
+            outbuf: Vec::new(),
             coverage: Vec::new(),
             snaps: BTreeMap::new(),
             current: recorded(&initial),
@@ -372,11 +377,11 @@ impl<S: Read + Write> SocketMachine<S> {
     /// sequence number, or an error reply all surface as [`MachineError`].
     fn call(&mut self, req: &control_proto::Request) -> Result<control_proto::Reply, MachineError> {
         self.seq = self.seq.wrapping_add(1);
-        let mut out = Vec::new();
-        control_proto::encode_request(self.seq, req, &mut out)
+        self.outbuf.clear();
+        control_proto::encode_request(self.seq, req, &mut self.outbuf)
             .map_err(|e| MachineError::Transport(format!("request encode failed: {e}")))?;
         self.stream
-            .write_all(&out)
+            .write_all(&self.outbuf)
             .and_then(|()| self.stream.flush())
             .map_err(|e| MachineError::Transport(format!("socket write failed: {e}")))?;
         let mut chunk = [0u8; 4096];
@@ -560,7 +565,17 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         // answered decision is stamped into the current Timeline's recording
         // at the Moment it surfaced (branch-local key). An answer that is not
         // a valid catalog Answer cannot be recorded faithfully — loud abort.
-        if let (Some(answer), Some(at)) = (resolve, self.pending_decision.take()) {
+        // `pending_decision` is consumed **only** when a resolve is actually
+        // applied: a `run(None)` issued while a decision is still outstanding
+        // (a probe/continue between the Decision stop and its answer) must NOT
+        // discard it, or the answering `run(resolve)` would record nothing and
+        // `recorded_env` would emit a delta missing that decision's answer — a
+        // reproducer that replays to a different hash. (Dormant under task-58
+        // seed-driven runs, which never surface a decision; correct for the
+        // task-61 reactive path this machinery exists for.)
+        if let Some(answer) = resolve
+            && let Some(at) = self.pending_decision.take()
+        {
             let decoded = environment::Answer::decode(&answer.0).map_err(|e| {
                 MachineError::Transport(format!(
                     "resolve accepted but the answer bytes are not a catalog Answer ({e:?}) — \
@@ -641,16 +656,20 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
 #[cfg(test)]
 mod tests {
     //! Pure-logic adapter tests: the blob codec, the `EnvCodec` binding (incl.
-    //! its ruling-mandated panics), and the wire↔seam conversions, driven with
-    //! no server. The live loopback (this adapter against the vmm-core server)
-    //! is `dissonance/conductor`'s integration suite.
+    //! its ruling-mandated panics), the wire↔seam conversions, and the
+    //! tail-completeness recording state machine (driven over a scripted
+    //! reply stream). The live loopback (this adapter against the real vmm-core
+    //! server) is `dissonance/conductor`'s integration suite.
 
     use std::collections::BTreeMap;
+    use std::io::{Cursor, Read, Write};
 
     use environment::{Action, EnvSpec, FaultPolicy, HostFault};
 
-    use super::{ADAPTER_BLOB_VERSION, AdapterEnv, SpecEnvCodec, control_error_to_machine};
-    use crate::{EnvCodec, Environment, MachineError};
+    use super::{
+        ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
+    };
+    use crate::{Answer, EnvCodec, Environment, Machine, MachineError, StopConditions, StopMask};
 
     fn spec_with_overrides(seed: u64, keys: &[u64]) -> EnvSpec {
         let mut overrides = BTreeMap::new();
@@ -893,5 +912,127 @@ mod tests {
             }
             other => panic!("expected two crashes, got {other:?}"),
         }
+    }
+
+    // ---- tail-completeness recording over a scripted reply stream ----------
+
+    /// A duplex stream that replays pre-encoded reply frames to the client and
+    /// swallows the client's requests — enough to drive `SocketMachine`'s
+    /// request/reply state machine without a real server.
+    struct ScriptedStream {
+        replies: Cursor<Vec<u8>>,
+    }
+
+    impl Read for ScriptedStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.replies.read(buf)
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len()) // discard requests
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a scripted stream from a sequence of `(seq, reply)` frames.
+    fn scripted(frames: &[(u32, control_proto::Reply)]) -> ScriptedStream {
+        let mut bytes = Vec::new();
+        for (seq, reply) in frames {
+            control_proto::encode_reply(*seq, &Ok(reply.clone()), &mut bytes).unwrap();
+        }
+        ScriptedStream {
+            replies: Cursor::new(bytes),
+        }
+    }
+
+    fn server_caps_reply() -> control_proto::Reply {
+        control_proto::Reply::Hello(control_proto::Caps {
+            protocol_version: 1,
+            env_version_min: EnvSpec::BLOB_VERSION,
+            env_version_max: EnvSpec::BLOB_VERSION,
+            coverage: control_proto::CoverageGeometry {
+                map_bytes: 0,
+                producer: 0,
+            },
+            flags: control_proto::CapFlags::NONE,
+        })
+    }
+
+    /// The task-93 tail-completeness fix: a `run(None)` issued **while a
+    /// decision is still outstanding** (a probe/continue between the `Decision`
+    /// stop and its answer) must NOT discard the pending decision, so the later
+    /// answering `run(resolve)` still records it. (Dormant under seed-driven
+    /// task 58, which never surfaces a decision; correct for the task-61
+    /// reactive path this recording machinery exists for.)
+    #[test]
+    fn a_none_resolve_between_a_decision_and_its_answer_keeps_the_pending_decision() {
+        use control_proto::{DecisionId, Reply, StopReason as Ws, VTime as WsVTime};
+        let stream = scripted(&[
+            (1, server_caps_reply()), // hello
+            (
+                2,
+                Reply::Stop(Ws::Decision {
+                    vtime: WsVTime(100),
+                    id: DecisionId(5),
+                    ctx: vec![],
+                }),
+            ), // run #1
+            (
+                3,
+                Reply::Stop(Ws::SnapshotPoint {
+                    vtime: WsVTime(110),
+                }),
+            ), // run #2: the None-resolve probe
+            (
+                4,
+                Reply::Stop(Ws::Quiescent {
+                    vtime: WsVTime(120),
+                }),
+            ), // run #3: the answering resolve
+        ]);
+        let mut m = SocketMachine::connect(
+            stream,
+            EnvSpec::Seeded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+            },
+        )
+        .unwrap();
+        let until = StopConditions {
+            deadline: None,
+            on: StopMask::NONE,
+        };
+        // run #1 surfaces the decision at Moment 100.
+        assert!(matches!(
+            m.run(&until, None).unwrap(),
+            crate::StopReason::Decision { .. }
+        ));
+        // run #2 is a probe with no resolve — the pending decision must survive.
+        assert!(matches!(
+            m.run(&until, None).unwrap(),
+            crate::StopReason::SnapshotPoint { .. }
+        ));
+        // run #3 answers it; the answer is recorded tail-completely at Moment 100.
+        let answer = Answer(environment::Answer::Nominal.encode());
+        assert!(matches!(
+            m.run(&until, Some(&answer)).unwrap(),
+            crate::StopReason::Quiescent { .. }
+        ));
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let keys: Vec<u64> = recorded.spec.overrides().keys().copied().collect();
+        assert_eq!(
+            keys,
+            vec![100],
+            "the decision answered after an intervening run(None) is still recorded (branch \
+             offset 0, so the absolute Moment 100)"
+        );
+        assert!(matches!(
+            recorded.spec.overrides().get(&100),
+            Some(Action::Guest(environment::Answer::Nominal))
+        ));
     }
 }

@@ -89,6 +89,21 @@ fn seeds(n: usize) -> Vec<u64> {
         .collect()
 }
 
+/// Reject a seed count below 2 up front, before the sweep runs: the divergence
+/// gate (`>= 2 distinct hashes across seeds`) is unsatisfiable with fewer than
+/// two seeds, so running the whole sweep and then failing `verify` would be a
+/// confusing false gate. Returns `true` if the count is acceptable.
+fn seeds_ok(n: usize) -> bool {
+    if n < 2 {
+        eprintln!(
+            "[conductor] --seeds must be >= 2: the divergence gate needs at least two seeds to \
+             produce two distinct futures (the milestone gate wants N >= 8). Got {n}."
+        );
+        return false;
+    }
+    true
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.mode {
@@ -99,6 +114,9 @@ fn main() -> ExitCode {
 
 /// The portable demo: scripted mock guest, sweep, table, verdicts.
 fn run_mock(args: SweepArgs) -> ExitCode {
+    if !seeds_ok(args.seeds) {
+        return ExitCode::FAILURE;
+    }
     let cfg = SweepConfig {
         seeds: seeds(args.seeds),
         runs_per_seed: args.runs.max(2),
@@ -241,9 +259,20 @@ mod boxrun {
     /// Drive the live guest until `marker` appears on the serial, streaming new
     /// serial bytes to stderr so a hang shows the last line reached. Returns the
     /// number of steps taken, or an error string if the guest terminated first.
+    ///
+    /// The marker is scanned **only over newly-emitted bytes** (with a
+    /// `marker.len()-1` overlap so a match straddling the boundary is not
+    /// missed), gated on the serial actually growing. Rescanning the whole
+    /// ever-growing buffer every step would be `O(steps × serial_len)` — on a
+    /// real Postgres boot (millions of steps, a large console) that alone can
+    /// make the drive look hung.
     fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
         let stderr = std::io::stderr();
         let mut printed = vmm.serial().len();
+        // Where the next marker scan starts: keep a marker-1 overlap behind
+        // `printed` so a match split across two batches of new bytes is seen.
+        let overlap = marker.len().saturating_sub(1);
+        let mut scan_from = printed.saturating_sub(overlap);
         let mut steps = 0u64;
         while steps < MAX_BOOT_STEPS {
             match vmm.step() {
@@ -263,15 +292,20 @@ mod boxrun {
                 let _ = h.write_all(&serial[printed..]);
                 let _ = h.flush();
                 printed = serial.len();
-            }
-            if contains(serial, marker) {
-                return Ok(steps);
+                // Only scan the fresh tail (plus the overlap) — not the whole buffer.
+                if contains(&serial[scan_from..], marker) {
+                    return Ok(steps);
+                }
+                scan_from = serial.len().saturating_sub(overlap);
             }
         }
         Err(format!("marker not seen within {MAX_BOOT_STEPS} steps"))
     }
 
     pub fn run(args: BoxArgs) -> ExitCode {
+        if !super::seeds_ok(args.sweep.seeds) {
+            return ExitCode::FAILURE;
+        }
         if !std::path::Path::new("/dev/kvm").exists() {
             eprintln!(
                 "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
@@ -333,21 +367,21 @@ mod boxrun {
         }
 
         // The fork factory: fresh, equivalently-composed patched VMs whose
-        // boot-loaded image the restore immediately overwrites.
-        let factory: VmmFactory<Box<dyn Backend>> = {
-            let kernel = kernel.clone();
-            let initramfs = initramfs.clone();
-            Box::new(move || {
-                boot_linux_selected(
-                    BackendKind::Patched,
-                    &kernel,
-                    &initramfs,
-                    GUEST_RAM_LEN,
-                    CMDLINE,
-                    BOOT_SEED,
-                )
-            })
-        };
+        // boot-loaded image the restore immediately overwrites. `live` is
+        // already booted (it owns its guest RAM), so **move** the sole
+        // kernel/initramfs copies into the closure rather than cloning them —
+        // an initramfs is tens/hundreds of MB, and cloning would keep two
+        // copies resident for the whole run.
+        let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+            boot_linux_selected(
+                BackendKind::Patched,
+                &kernel,
+                &initramfs,
+                GUEST_RAM_LEN,
+                CMDLINE,
+                BOOT_SEED,
+            )
+        });
         let mut server = ControlServer::new(live, factory);
 
         let cfg = SweepConfig {
