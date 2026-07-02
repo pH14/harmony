@@ -49,7 +49,8 @@ impl SeqMutators {
 
     /// **Insert:** add a fresh v1 host fault at a free `Moment`, or copy an
     /// existing host region (one host override, sanitized to v1) to a free slot.
-    /// Never clobbers a guest override.
+    /// The destination is always a **genuinely free** `Moment`, so `insert` never
+    /// clobbers any existing override (guest or host) — it adds exactly one.
     pub fn insert(env: &EnvSpec, salt: u64) -> EnvSpec {
         let mut overrides = env.overrides().clone();
         let mut rng = Prng::new(salt ^ INSERT_DOMAIN);
@@ -68,7 +69,7 @@ impl SeqMutators {
         } else {
             v1_host_fault_from(&mut rng)
         };
-        let dst = free_non_guest_slot(&overrides, &mut rng);
+        let dst = free_slot(&overrides, &mut rng);
         overrides.insert(dst, Action::Host(fault));
         rebuild(env, overrides)
     }
@@ -190,16 +191,19 @@ fn standing_of(env: &EnvSpec) -> Vec<StandingFault> {
     }
 }
 
-/// A deterministic `Moment` slot that does **not** hold a guest action — inherited
-/// verbatim from [`environment::EnvCodec`]'s `free_non_guest_slot`: draw one word,
-/// then scan upward past any guest-occupied slot. It may land free or overwrite
-/// another host action (both legal); it never overwrites a guest override.
-/// Terminates because guest overrides are finite. The scan's `wrapping_add` is a
-/// slot search, not a `Moment` translation — no override's key is ever
-/// arithmetic-wrapped.
-fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment {
+/// A deterministic **genuinely free** `Moment` slot — one holding *no* override
+/// of either plane. Draw one word, then scan upward past **any** occupant (guest
+/// or host). `insert`'s contract is "add a fresh fault at a free `Moment`", so it
+/// must never land on an occupied slot and silently drop the incumbent — a
+/// same-`Moment` override replacement is exactly the class the task-59 ruling-B
+/// outlawed. (This is stricter than `environment::EnvCodec`'s own
+/// `free_non_guest_slot`, which tolerates overwriting a host action; the
+/// region-scoped mutators here do not.) Terminates because overrides are finite.
+/// The scan's `wrapping_add` is a slot search, not a `Moment` translation — no
+/// override's key is ever arithmetic-wrapped.
+fn free_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment {
     let mut d = rng.next_u64();
-    while matches!(map.get(&d), Some(Action::Guest(_))) {
+    while map.contains_key(&d) {
         d = d.wrapping_add(1);
     }
     d
@@ -253,6 +257,53 @@ mod tests {
             f,
             HostFault::CorruptMemory { .. } | HostFault::InjectInterrupt { .. }
         )
+    }
+
+    /// `insert` never clobbers a pre-existing **host** override even when its
+    /// drawn destination lands exactly on one (the ruling-B regression). It skips
+    /// to the next free slot and adds exactly one override.
+    #[test]
+    fn insert_never_clobbers_an_existing_host_override() {
+        // Find a salt whose insert takes the fresh branch (copy coin odd), then
+        // pre-occupy its free-slot draw with a host fault so the old
+        // guest-only-skip code would have replaced it.
+        for salt in 0u64..10_000 {
+            let mut p = Prng::new(salt ^ INSERT_DOMAIN);
+            let coin = p.next_u64(); // host_keys non-empty below, so this is drawn
+            if coin & 1 == 0 {
+                continue; // copy branch — we want the fresh branch's slot draw
+            }
+            let dst = p.next_u64(); // the fresh branch's free_slot first draw
+            let other = dst.wrapping_add(1000);
+            if other == dst {
+                continue;
+            }
+            let spec = EnvSpec::Recorded {
+                seed: 0,
+                policy: FaultPolicy::none(),
+                overrides: BTreeMap::from([
+                    (dst, Action::Host(HostFault::InjectInterrupt { vector: 7 })),
+                    (
+                        other,
+                        Action::Host(HostFault::InjectInterrupt { vector: 9 }),
+                    ),
+                ]),
+                standing: vec![],
+            };
+            let out = SeqMutators::insert(&spec, salt);
+            assert_eq!(
+                out.overrides().get(&dst),
+                spec.overrides().get(&dst),
+                "the host override at the drawn slot must survive verbatim"
+            );
+            assert_eq!(
+                out.overrides().len(),
+                spec.overrides().len() + 1,
+                "insert adds exactly one override, clobbering none"
+            );
+            return;
+        }
+        panic!("no fresh-branch salt with a distinct destination found in range");
     }
 
     /// Every operator is a pure function of `(env, salt)`.

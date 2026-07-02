@@ -87,11 +87,22 @@ with a retained (guest or out-of-region host) override **fails closed** (the env
 is returned unchanged), so no guest is ever clobbered and no two overrides ever
 collapse onto one `Moment`.
 
-`free_non_guest_slot` is inherited verbatim from `environment::EnvCodec`'s
-same-named helper (draw a word, scan upward past guest-occupied slots with
-`wrapping_add`). That wrap is a *slot search*, not a `Moment` translation — no
+`free_slot` (draw a word, scan upward with `wrapping_add` past **any** occupant)
+guarantees `insert`'s destination is genuinely free, so it adds exactly one
+override and never replaces an incumbent. This is deliberately **stricter** than
+`environment::EnvCodec`'s `free_non_guest_slot`, which tolerates overwriting a
+host action — a same-`Moment` host replacement is the silent-drop class the
+task-59 ruling-B outlawed, so the region-scoped mutators here reject it (round-1
+review fix). The wrap is a *slot search*, not a `Moment` translation — no
 override's key is ever arithmetic-wrapped, satisfying "reject overflow, never
 wrap" for the translation paths that matter.
+
+`stationary_rate()` special-cases a **frozen chain** (`P(C→S) == P(S→C) == 0`,
+which `new` accepts as a valid degenerate "never leaves Calm" regime): the
+`p+q` denominator is zero, so it returns the **calm** table's probability — the
+exact long-run rate the frozen process exhibits from its Calm start state —
+rather than a degenerate `0` that would hand the statistical gates a wrong
+baseline (round-1 review fix).
 
 ## Deviations considered and rejected
 
