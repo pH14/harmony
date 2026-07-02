@@ -55,6 +55,14 @@
 //!   standing faults exist); `mutate` still refuses (panics on) a
 //!   standing-fault-carrying base rather than slicing one into a branch-local
 //!   delta, so the confinement rule is enforced here the day they appear.
+//! - **Genesis-complete bases only (task-68 boundary).** `mutate`/`compose`
+//!   re-key a base's overrides as **absolute** Moments, which is correct only
+//!   for a genesis-complete base (`base_offset == 0`) — the only kind the v1
+//!   explorer flow ever feeds them (every corpus base is rebased to
+//!   genesis-complete; `seeded` mints `base_offset == 0`). A `base_offset > 0`
+//!   base is a **parent-rooted chain** (relative keys) owned by task 68; both
+//!   seams **panic** on one rather than splice in the wrong coordinate system
+//!   (the same fail-loud, never-silently-mis-key discipline).
 //!
 //! ## Error mapping (two categories, preserved)
 //!
@@ -210,6 +218,23 @@ impl crate::EnvCodec for SpecEnvCodec {
 
     fn mutate(&self, base: &Environment, salt: u64) -> Environment {
         let b = Self::require(base, "mutate");
+        // Coordinate-system guard (task 58/68). The slice below treats the
+        // base's override keys and `pos` as **absolute** Moments — true only
+        // for a **genesis-complete** base (`base_offset == 0`), the only kind
+        // the v1 explorer flow ever feeds here (every corpus base is rebased to
+        // genesis-complete via `compose`; `seeded` mints `base_offset == 0`). A
+        // `base_offset > 0` base is a **parent-rooted chain** whose keys are
+        // relative to its own origin — re-keying it here would silently splice
+        // in the wrong coordinate system. Chains are task-68 scope; fail loud
+        // (task-93 ruling: never silently mis-key) until it owns the relative
+        // arithmetic (`cut = b.pos - b.base_offset`, checked).
+        assert_eq!(
+            b.base_offset, 0,
+            "SpecEnvCodec::mutate: base is not genesis-complete (base_offset={}); parent-rooted \
+             chains with relative keys are task 68 — refusing to slice in the wrong coordinate \
+             system rather than silently mis-key (task-93 ruling)",
+            b.base_offset
+        );
         // A corpus base is genesis-complete; the branch it seeds runs from the
         // base snapshot's capture point, so slice the suffix at `pos` into a
         // branch-local delta (keys re-based to the branch origin), preserving
@@ -262,6 +287,24 @@ impl crate::EnvCodec for SpecEnvCodec {
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment {
         let b = Self::require(base, "compose");
         let d = Self::require(branch_local, "compose");
+        // Coordinate-system guard (task 58/68), symmetric with `mutate`. The
+        // splice keeps the base's overrides where `m < at` and shifts the delta
+        // by `+at` — correct only when the base's keys are **absolute**, i.e. a
+        // **genesis-complete** base (`base_offset == 0`), the only kind the v1
+        // flow composes against (a bug is rebased onto the genesis-complete
+        // corpus base; a snapshot forked below one is rebased through it). A
+        // `base_offset > 0` base is a task-68 parent-rooted chain whose correct
+        // splice point is `d.base_offset - b.base_offset` (checked); doing the
+        // absolute arithmetic on it would silently mis-key. Fail loud until
+        // task 68 owns the relative form. (The delta's `base_offset > 0` is
+        // fine — it IS the splice point `at`.)
+        assert_eq!(
+            b.base_offset, 0,
+            "SpecEnvCodec::compose: base is not genesis-complete (base_offset={}); parent-rooted \
+             chains are task 68 — refusing to splice in the wrong coordinate system rather than \
+             silently mis-key (task-93 ruling)",
+            b.base_offset
+        );
         // The ruling's "`at` provenance": the delta carries the absolute
         // Moment it is keyed from, so `at` is recoverable from the delta alone.
         let at = d.base_offset;
@@ -877,6 +920,41 @@ mod tests {
             bytes: vec![1, 2, 3],
         };
         let _ = SpecEnvCodec.compose(&junk, &junk);
+    }
+
+    // The coordinate-system guard (task 58/68): `mutate`/`compose` panic on a
+    // non-genesis base (base_offset > 0 — a parent-rooted chain, task 68) rather
+    // than re-key in the wrong coordinate system. In v1 every base fed here is
+    // genesis-complete, so this never fires; the guard is the fail-loud handoff.
+
+    #[test]
+    #[should_panic(expected = "base is not genesis-complete")]
+    fn mutate_panics_on_a_non_genesis_base_chain_is_task_68() {
+        let base = AdapterEnv {
+            base_offset: 100, // parent-rooted, relative keys
+            pos: 200,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        let _ = SpecEnvCodec.mutate(&base, 0x1);
+    }
+
+    #[test]
+    #[should_panic(expected = "base is not genesis-complete")]
+    fn compose_panics_on_a_non_genesis_base_chain_is_task_68() {
+        let base = AdapterEnv {
+            base_offset: 100, // parent-rooted, relative keys
+            pos: 200,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        let delta = AdapterEnv {
+            base_offset: 200,
+            pos: 300,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        let _ = SpecEnvCodec.compose(&base, &delta);
     }
 
     #[test]

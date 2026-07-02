@@ -14,7 +14,7 @@ pub fn conductor::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core
 pub fn conductor::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
 pub struct conductor::RunRow
 pub conductor::RunRow::hash: [u8; 32]
-pub conductor::RunRow::stop: alloc::string::String
+pub conductor::RunRow::stop: explorer::StopReason
 pub struct conductor::SeedRow
 pub conductor::SeedRow::runs: alloc::vec::Vec<conductor::RunRow>
 pub conductor::SeedRow::seed: u64

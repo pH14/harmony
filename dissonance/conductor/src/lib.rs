@@ -92,8 +92,12 @@ impl Default for SweepConfig {
 /// One `branch → run → hash` observation.
 #[derive(Clone, Debug)]
 pub struct RunRow {
-    /// A compact stop description (`Deadline@…` / `Quiescent@…` / `Crash@…`).
-    pub stop: String,
+    /// The terminal [`StopReason`] — the **real value**, not a rendered string:
+    /// [`verify`] compares it directly (`StopReason` is `Eq`), so two runs of a
+    /// seed that reproduce the hash but stop with different *detail* (e.g. two
+    /// crashes with different info bytes) are still caught. Rendered for display
+    /// only, via [`fmt_stop`].
+    pub stop: StopReason,
     /// The terminal `state_hash`.
     pub hash: [u8; 32],
 }
@@ -210,10 +214,7 @@ pub fn run_sweep<M: Machine>(
             machine.branch(base, &codec.seeded(seed))?;
             let stop = machine.run(&until, None)?;
             let hash = machine.hash()?;
-            runs.push(RunRow {
-                stop: fmt_stop(&stop),
-                hash,
-            });
+            runs.push(RunRow { stop, hash });
         }
         rows.push(SeedRow { seed, runs });
     }
@@ -275,7 +276,7 @@ pub fn render_table(report: &SweepReport) -> String {
                     "{:#018x}   {:>4}  {:<24} {}",
                     row.seed,
                     i,
-                    run.stop,
+                    fmt_stop(&run.stop),
                     hex(&run.hash)
                 ),
             );
