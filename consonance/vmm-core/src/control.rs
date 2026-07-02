@@ -400,6 +400,33 @@ impl<B: Backend> ControlServer<B> {
         at: environment::Moment,
         floor: environment::Moment,
     ) -> Result<(), ControlError> {
+        // One fault per `Moment` — reject a duplicate against **both** the still-
+        // staged schedule **and** the already-applied faults recorded in the
+        // reproducer (PR #51 round-2 finding): once a fault at `at` has applied it is
+        // gone from the schedule but present in `recorded`, and re-staging it would
+        // overwrite it in `recorded_env()` (an applied fault silently vanishing). The
+        // remaining, occupancy-free checks are shared with the branch-env path.
+        if self.schedule.contains_key(&at) || self.recorded.overrides().contains_key(&at) {
+            return Err(ControlError::PerturbMomentTaken { at });
+        }
+        self.check_fault_admissible(fault, at, floor)
+    }
+
+    /// The **occupancy-free** admissibility checks for a host fault, shared by
+    /// [`perturb`](ControlServer::perturb)'s [`validate_host_fault`](ControlServer::validate_host_fault)
+    /// and by the branch-env pre-swap validation (PR #51 round-5): the backend can
+    /// arm the exact-count seam, the `Moment` is not behind the `floor`, the gpa is
+    /// in range, and the fault class is in scope. It reads only the **current**
+    /// `vmm` (its capability + RAM size) and the given `floor`, so the branch path
+    /// can call it against the *live* VM using the snapshot's V-time as the floor —
+    /// **before** swapping in the restored VM (making a rejected branch
+    /// side-effect-free).
+    fn check_fault_admissible(
+        &self,
+        fault: &environment::HostFault,
+        at: environment::Moment,
+        floor: environment::Moment,
+    ) -> Result<(), ControlError> {
         let vmm = self.vmm.as_ref().ok_or(ControlError::Unsupported)?;
         // **Capability check, up front (PR #51 round-2 finding).** Host-plane
         // enforcement needs the exact-count arrival seam ([`Vmm::arm_arrival`]); on a
@@ -412,14 +439,6 @@ impl<B: Backend> ControlServer<B> {
         }
         if at < floor {
             return Err(ControlError::PerturbPastMoment { at, floor });
-        }
-        // One fault per `Moment` — reject a duplicate against **both** the still-
-        // staged schedule **and** the already-applied faults recorded in the
-        // reproducer (PR #51 round-2 finding): once a fault at `at` has applied it is
-        // gone from the schedule but present in `recorded`, and re-staging it would
-        // overwrite it in `recorded_env()` (an applied fault silently vanishing).
-        if self.schedule.contains_key(&at) || self.recorded.overrides().contains_key(&at) {
-            return Err(ControlError::PerturbMomentTaken { at });
         }
         match fault {
             environment::HostFault::CorruptMemory { gpa, .. } => {
@@ -543,6 +562,27 @@ impl<B: Backend> ControlServer<B> {
         let Ok(vm_state) = self.engine.vm_state(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
+        // 1b. **Validate the branch env's host schedule BEFORE any swap (PR #51
+        //     round-5, blocking item 1).** A rejected branch must be side-effect-free
+        //     — so validate against the STILL-LIVE VM (its capability + RAM size,
+        //     which the factory mirrors) with the `floor` derived from the snapshot's
+        //     own V-time (`vm_state.vtime.snapshot_vns`) — no restore needed. If any
+        //     fault is inadmissible (unarmable backend, out-of-range gpa, out-of-scope
+        //     clock fault, a `Moment` behind the snapshot, or an intra-env duplicate
+        //     `Moment` — ruling B), reply the recoverable `ControlError` with the old
+        //     VM untouched. (The `RestoreFailed` path below still mutates — a genuine
+        //     restore failure cannot be pre-validated — and is documented there.)
+        let restored_floor = vm_state.vtime.snapshot_vns;
+        let mut seen: std::collections::BTreeSet<environment::Moment> =
+            std::collections::BTreeSet::new();
+        for (m, fault) in &host {
+            if let Err(e) = self.check_fault_admissible(fault, *m, restored_floor) {
+                return Ok(Err(e));
+            }
+            if !seen.insert(*m) {
+                return Ok(Err(ControlError::PerturbMomentTaken { at: *m }));
+            }
+        }
         // 2. Drop the live VM (frees its work counter — the box allows one
         //    open at a time), then boot the fresh restore target. A factory
         //    failure is fatal: the session has no VM anymore.
@@ -567,7 +607,13 @@ impl<B: Backend> ControlServer<B> {
                 // The VM was still REPLACED (a fresh boot), so the old timeline's
                 // staged faults + recorded reproducer must not survive attached to
                 // it (PR #51 round-2 finding): reset on every path that swaps the VM,
-                // not just success.
+                // not just success. **This is the one branch/replay path that mutates
+                // on a recoverable error** (PR #51 round-5): a genuine restore failure
+                // cannot be pre-validated (it is only discovered by attempting the
+                // restore into the fresh VM), so — unlike the host-fault rejection
+                // above, which is now side-effect-free — a `RestoreFailed` leaves the
+                // session on the reset fresh boot. Callers treat `RestoreFailed` as
+                // "the session VM was replaced; re-establish your point."
                 self.reset_schedule_to_fresh_vm();
                 return Ok(Err(ControlError::RestoreFailed));
             }
@@ -585,25 +631,11 @@ impl<B: Backend> ControlServer<B> {
         //    scratch (task 59): drop any stale staged faults and reset the recorded
         //    reproducer to a bare `Seeded` at the **restored stream's** seed
         //    ([`reset_schedule_to_fresh_vm`]), then stage the branch env's own host
-        //    overrides — through the **same
-        //    [`validate_host_fault`](ControlServer::validate_host_fault) gate as
-        //    `perturb`** (PR #51 review, blocking item 1c), with the floor set to
-        //    the restored snapshot's V-time. A bad env fault (out-of-range gpa,
-        //    an out-of-scope clock fault, or a `Moment` behind the snapshot) is a
-        //    recoverable `ControlError` reply here — not a later session-fatal
-        //    `ServeError` at apply time — and the schedule is left empty on
-        //    rejection (nothing partially staged). `run` applies + records the rest.
+        //    overrides. The overrides were already validated (admissible, in-`Moment`
+        //    order, no duplicates) at step 1b against the live VM — side-effect-free —
+        //    so this only stages them; `run` applies + records them.
         self.reset_schedule_to_fresh_vm();
-        let floor = self
-            .vmm
-            .as_ref()
-            .and_then(|v| v.effective_vns())
-            .unwrap_or(0);
         for (m, fault) in host {
-            if let Err(e) = self.validate_host_fault(&fault, m, floor) {
-                self.schedule.clear();
-                return Ok(Err(e));
-            }
             self.schedule.insert(m, fault);
         }
         Ok(Ok(Reply::Unit))
@@ -663,13 +695,20 @@ impl<B: Backend> ControlServer<B> {
     /// env ([`ControlServer::recorded_env`]). With no faults staged this is
     /// byte-for-byte the task-58 loop (arrival is never armed).
     ///
-    /// **Drain is bounded by the deadline (PR #51 review, blocking item 1b).** A
-    /// fault whose `Moment` lies *beyond* `until.deadline` is never armed (step 3),
-    /// so a natural exit that overshoots both the deadline and that `Moment` must
-    /// **not** apply it: the drain ceiling is `min(vns, deadline)`, so a
-    /// beyond-deadline fault stays staged and the run stops at the deadline exactly
-    /// as "such a fault is never reached" promises — it never applies late (which
-    /// would record it at a `Moment` earlier than its true apply point).
+    /// **Exact vs. late vs. future (PR #51 round-2/5).** At each V-time `vns` the
+    /// drain classifies a staged `Moment m`:
+    /// - `m == vns` → **exact arrival**: apply now (the arrival landed here, or the
+    ///   guest is exactly at the current point). This holds **regardless of the
+    ///   deadline** — applying at `m == vns` is never "late" (round-5 item 3).
+    /// - `m < vns` → **late/crossed**: the guest executed *past* `m` (only possible
+    ///   on an overshoot), so it can never be applied at its recorded count — the
+    ///   schedule is **poisoned** (round-3) and every later `run`/`perturb`/`snapshot`
+    ///   rejects until a `branch`/`replay` rewinds.
+    /// - `m > vns` → **future**: not yet reached; left staged (or dropped at a
+    ///   terminal, round-5 item 2).
+    ///
+    /// The deadline only gates **arming** (arm only `m ≤ deadline`, matching task-58's
+    /// no-hard-force-exit posture) and the **stop** (`vns ≥ deadline` → `Deadline`).
     fn run(
         &mut self,
         until: &control_proto::StopConditions,
@@ -681,21 +720,24 @@ impl<B: Backend> ControlServer<B> {
             return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
         }
         loop {
-            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            let vns = vmm.effective_vns().unwrap_or(0);
+            let vns = self
+                .vmm
+                .as_ref()
+                .ok_or(ServeError::Poisoned)?
+                .effective_vns()
+                .unwrap_or(0);
 
-            // 1. Apply every fault whose `Moment` the run has reached, bounded by
-            //    the deadline: `min(vns, deadline)`. Arrival is exact, so normally
-            //    only the just-armed `Moment`; a `Moment` beyond the deadline is
-            //    left staged (never applied late). Each applied fault is stamped
-            //    into the recorded env — its recorded `Moment` equals its true apply
-            //    point (stage-time validation guarantees `Moment ≥ floor`, and
-            //    arrival lands exactly, so `vns == Moment` here).
-            let ceiling = match until.deadline {
-                Some(d) => vns.min(d.0),
-                None => vns,
-            };
-            while let Some((&m, _)) = self.schedule.range(..=ceiling).next() {
+            // 1. Drain: apply exact-arrival faults (`m == vns`), poison a crossed one
+            //    (`m < vns`). Each applied fault is stamped into the recorded env at
+            //    its true apply point (`vns == m`).
+            while let Some((&m, _)) = self.schedule.range(..=vns).next() {
+                if m < vns {
+                    self.schedule_poisoned = Some((m, vns));
+                    return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                        moment: m,
+                        vtime: vns,
+                    }));
+                }
                 let fault = self.schedule.remove(&m).expect("range key exists");
                 // An apply failure (out-of-range gpa — pre-validated at stage time;
                 // a reserved vector; an unwired LAPIC) is substrate-level breakage
@@ -707,28 +749,16 @@ impl<B: Backend> ControlServer<B> {
             }
 
             // 2. Opportunistic V-time deadline (task-58 semantics, unchanged): stop
-            //    at the first boundary at-or-past the deadline.
+            //    at the first boundary at-or-past the deadline. The drain above has
+            //    already applied every `m == vns` and poisoned any `m < vns`, so the
+            //    schedule now carries only future faults (`m > vns`) — left staged
+            //    for a later `run`.
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             let vns = vmm.effective_vns().unwrap_or(0);
             if let Some(deadline) = until.deadline
                 && vns >= deadline.0
             {
                 vmm.clear_arrival();
-                // A fault whose `Moment` the run **overshot** (`deadline < m <= vns`:
-                // never armed because it is beyond the deadline, but the guest ran
-                // past it) can never be applied at its recorded count on any later
-                // `run` — fail loud rather than carry it forward to apply from the
-                // past (PR #51 round-2 finding). **Poison** the schedule so a
-                // re-sent `run`/`perturb`/`snapshot` keeps rejecting until a rewind
-                // (round-3): leaving it merely staged would let the next `run` drain
-                // it with `vns > m`.
-                if let Some((&m, _)) = self.schedule.range(..=vns).next() {
-                    self.schedule_poisoned = Some((m, vns));
-                    return Ok(Err(ControlError::ScheduleUnsatisfiable {
-                        moment: m,
-                        vtime: vns,
-                    }));
-                }
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: VTime(vns) })));
             }
 
@@ -750,25 +780,27 @@ impl<B: Backend> ControlServer<B> {
                 None => vmm.clear_arrival(),
             }
 
-            // 4. Step. A terminal stop ends the run; staged faults beyond the
-            //    terminal never apply (the guest halted first — the same on replay).
+            // 4. Step. A terminal stop ends the run.
             match vmm.step()? {
                 Step::Continued => {}
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
-                    // Defensive crossed-`Moment` guard (mirrors the deadline path): a
-                    // terminal reached with a staged `Moment` at-or-behind it would be
-                    // an unapplied fault the guest ran past — fail loud rather than
-                    // carry it forward. (Not reachable in the exact-arrival path — an
-                    // armed `Moment` lands before any terminal — but never silent.)
-                    if let Some((&m, _)) = self.schedule.range(..=vns).next() {
+                    // A crossed fault (`m < vns`: the guest ran past it) poisons — it
+                    // can never apply at its recorded count. But every remaining
+                    // future/at-terminal fault (`m >= vns`) is now **unreachable**:
+                    // the guest has halted, so it never applies — drop it (round-5
+                    // item 2), else a later `snapshot` is permanently
+                    // `SnapshotWhileArmed`. `recorded` carries only APPLIED faults, so
+                    // the reproducer stays faithful (replay halts at the same point).
+                    if let Some((&m, _)) = self.schedule.range(..vns).next() {
                         self.schedule_poisoned = Some((m, vns));
                         return Ok(Err(ControlError::ScheduleUnsatisfiable {
                             moment: m,
                             vtime: vns,
                         }));
                     }
+                    self.schedule.clear();
                     return Ok(Ok(Reply::Stop(map_terminal(reason, vns))));
                 }
             }
@@ -2182,6 +2214,162 @@ mod tests {
             })
             .unwrap(),
             Ok(Reply::Unit)
+        );
+    }
+
+    /// Build a branch env carrying a single host fault at `m`.
+    fn host_env(m: u64, fault: EnvHostFault) -> Environment {
+        let mut spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        spec.record(m, environment::Action::Host(fault));
+        Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        }
+    }
+
+    #[test]
+    fn a_rejected_branch_env_fault_is_side_effect_free() {
+        // PR #51 round-5 item 1: a branch whose env carries an inadmissible host
+        // fault must reject WITHOUT swapping the VM — the old timeline is untouched,
+        // so the client's state is exactly what it was before the (failed) branch.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        let before = s.vmm().unwrap().state_hash();
+
+        // An out-of-range gpa is rejected — validated against the LIVE VM before any
+        // drop/restore/reseed.
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(
+                    1000,
+                    EnvHostFault::CorruptMemory {
+                        gpa: RAM as u64 - 4,
+                        mask: BitMask(0xFF),
+                    },
+                ),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbOutOfRange {
+                gpa: RAM as u64 - 4,
+                ram_len: RAM as u64,
+            })
+        );
+        // The live VM is BYTE-IDENTICAL to before: not dropped, not restored, not
+        // reseeded — the rejected branch had no side effect.
+        assert_eq!(
+            s.vmm().unwrap().state_hash(),
+            before,
+            "a rejected branch env fault must leave the old VM untouched"
+        );
+        // And the session is fully usable: it can still snapshot + branch cleanly.
+        let base2 = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base2,
+                env: seeded_env(9),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
+    fn a_terminal_stop_drops_unreachable_future_faults() {
+        // PR #51 round-5 item 2: a run that reaches a terminal stop with a staged
+        // FUTURE fault (m > vns) drops it — the guest halted and it can never apply,
+        // so a later `snapshot` must NOT be permanently `SnapshotWhileArmed`. (Task-60
+        // crash campaigns stage faults into runs that terminate before the Moment.)
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        // The live VM is at V-time 500 and HLTs (terminal) on the next step. Stage a
+        // fault far beyond that terminal point.
+        stage_corrupt(&mut s, 100_000);
+        // A snapshot now is refused (a fault is staged).
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotWhileArmed)
+        );
+        // Run to the terminal HLT: the unreachable future fault is dropped.
+        assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            0,
+            "the unreachable future fault never applied"
+        );
+        // A snapshot is **no longer `SnapshotWhileArmed`** — the schedule was cleared
+        // at the terminal, so the client is no longer permanently blocked. (The
+        // terminal HLT is not itself a V-time-synchronized snapshot point, so the
+        // reply is `NotQuiescent` — a different, run-a-little-further condition — but
+        // crucially NOT the armed-schedule block this item is about.)
+        assert_ne!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotWhileArmed),
+            "the future fault was dropped, so the schedule is no longer armed"
+        );
+    }
+
+    #[test]
+    fn a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned() {
+        // PR #51 round-5 item 3: a fault at exactly the current V-time (m == vns) is
+        // EXACT arrival, not late — even when the run's deadline is already expired
+        // (d < vns). It must apply and stop with `Deadline`, never poison. Live VM
+        // RDTSCs to V-time 500; the fault is staged at 500; the deadline is 300.
+        let mut s = rdtsc_then_hlt_server(500);
+        hello(&mut s);
+        stage_corrupt(&mut s, 500);
+        match run_with_deadline(&mut s, 300) {
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, VTime(500)),
+            other => panic!("expected Deadline{{500}}, got {other:?}"),
+        }
+        // The exact-arrival fault APPLIED (recorded), and the schedule is NOT poisoned
+        // — a later run works.
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            1,
+            "the m==vns fault applied"
+        );
+        assert_ne!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the exact-arrival upset landed"
+        );
+        assert!(
+            matches!(run_all_res(&mut s), Ok(Reply::Stop(_))),
+            "not poisoned"
+        );
+    }
+
+    #[test]
+    fn a_branch_env_moment_occupies_the_schedule_for_ruling_b() {
+        // Ruling B across the branch→perturb boundary (PR #51 round-5 suggestion): a
+        // branch env stages a fault at Moment M; a later `perturb` at M is then the
+        // loud `PerturbMomentTaken` (one fault per Moment holds after a branch, not
+        // just within a fresh session). Pins the invariant so a future batch-validate
+        // refactor can't silently regress it.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(1000, EnvHostFault::InjectInterrupt { vector: 40 }),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 41 }.encode()),
+                at: Moment(1000),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbMomentTaken { at: 1000 }),
+            "a branch-staged Moment occupies the schedule for ruling B"
         );
     }
 

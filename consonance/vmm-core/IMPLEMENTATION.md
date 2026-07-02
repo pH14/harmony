@@ -3420,3 +3420,45 @@ verb-sequence net but over an `IdleBackend` (`run`/`run_until` return a natural 
 **every** arrival is reached through the idle jump), asserting `recorded_env()` reproduces the live
 `state_hash` across random `perturb`/`run`/`branch`/`replay` sequences. This interaction is also noted
 as evidence for task 77's idle-wake-vs-IRQ arbitration unification charter.
+
+### PR #51 round 5 — three host-fault error-path edges (recoverable errors leaving unpredictable state)
+
+All Mac-portable; no box re-run. The theme: a recoverable-error path that left the session in a state
+the client couldn't predict.
+
+1. **Branch-env fault validation ran AFTER the VM swap.** A rejected branch env fault returned a
+   recoverable `ControlError` from a session that had already dropped the old VM, restored+reseeded
+   the snapshot, and reset `recorded` — the client couldn't tell the branch had effectively happened.
+   Fix: validate the whole host schedule **before any swap** (blocking item 1). Extracted the
+   occupancy-free checks into `check_fault_admissible`; `restore` now runs them against the
+   **still-live** VM (its capability + RAM size, which the factory mirrors) with the `floor` derived
+   from the snapshot's own V-time (`vm_state.vtime.snapshot_vns` — no restore needed), plus a
+   `BTreeSet` intra-env duplicate-`Moment` guard. A rejected branch is now **side-effect-free** (the
+   old VM is byte-identical). The one remaining mutating-error path — `RestoreFailed` — genuinely
+   can't be pre-validated (only discovered by attempting the restore) and is documented as such.
+2. **Terminal stop kept unreachable future faults staged.** A run that reached a terminal stop with a
+   staged future fault (`m > vns`) left `self.schedule` populated, so every later `snapshot` was
+   permanently `SnapshotWhileArmed` — and task-60 crash campaigns stage faults into runs that
+   terminate before the `Moment` (a mainline path). Fix: at a terminal stop, **drop** the unreachable
+   `m ≥ vns` faults (keeping the crossed-`Moment` `m < vns` poison exactly as is). `recorded` carries
+   only APPLIED faults, so the reproducer stays faithful (replay halts at the same point).
+3. **A fault at `m == vns` was wrongly poisoned under an expired deadline.** The old
+   `ceiling = min(vns, deadline)` drain excluded a fault at exactly the current V-time when the
+   deadline was already expired (`d < vns`), so the crossed-guard then poisoned a perfectly
+   satisfiable schedule. Applying at `m == vns` is **exact arrival, not late** — only `m < vns` is
+   "ran past". Fix: the drain now classifies per fault — `m == vns` → apply (regardless of deadline);
+   `m < vns` → poison; `m > vns` → future. The deadline only gates arming and the stop. This removed
+   the `ceiling` entirely and unified the two round-2 crossed-checks into the single drain
+   classification; every round-2/3/4 test still passes.
+
+**Ruling-B pin (suggestion).** `a_branch_env_moment_occupies_the_schedule_for_ruling_b` — a
+branch-staged `Moment` occupies the schedule, so a later `perturb` at it is `PerturbMomentTaken`.
+(An `EnvSpec`'s `BTreeMap<Moment, Action>` cannot itself carry two faults at one `Moment`, so the
+`BTreeSet` guard in step 1b is future-proofing against a batch-validate refactor; the cross-verb
+boundary is what a portable test can pin.)
+
+**Tests:** `a_rejected_branch_env_fault_is_side_effect_free` (old VM byte-identical after a rejected
+branch), `a_terminal_stop_drops_unreachable_future_faults` (terminal → not `SnapshotWhileArmed`),
+`a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned` (`m == vns`, `d < vns` → applies +
+`Deadline`, no poison), `a_branch_env_moment_occupies_the_schedule_for_ruling_b`. No wire/public-api
+changes (all internal; `SnapshotWhileArmed`/`PerturbMomentTaken`/`ScheduleUnsatisfiable` already exist).
