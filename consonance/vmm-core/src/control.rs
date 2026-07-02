@@ -338,14 +338,34 @@ impl<B: Backend> ControlServer<B> {
         }
     }
 
+    /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
+    /// iff the live VM's [`effective_vns`](Vmm::effective_vns) is **exact** (at a
+    /// V-time intercept — [`Vmm::is_synchronized`]) rather than a stale lower bound.
+    /// It is `true` after a deadline stop that landed on an arrival, a `restore` /
+    /// `branch` (both anchor at the snapshot's intercept), a successful seal, or a
+    /// fresh boot — and `false` after a terminal stop or any non-intercept exit,
+    /// where the guest may have retired branches past the last-intercept anchor.
+    ///
+    /// The control plane trusts `effective_vns` as an exact position in exactly two
+    /// places, both gated on this: the [`perturb`](ControlServer::perturb) floor and
+    /// the `m == vns` exact-arrival drain in [`run`](ControlServer::run). Every other
+    /// `effective_vns` consumer uses it only as a monotone lower bound (the deadline
+    /// check, the informational `Deadline`/terminal `vtime`) or does not use it at
+    /// all (the `branch` floor is the snapshot's `vm_state.vtime.snapshot_vns`, and
+    /// `recorded` is stamped at the staged `Moment`, never at `effective_vns`).
+    fn synchronized(&self) -> bool {
+        self.vmm.as_ref().is_some_and(|v| v.is_synchronized())
+    }
+
     /// `perturb(fault, at)`: decode the opaque host-fault blob and **stage** it at
     /// `Moment` `at` for [`ControlServer::run`] to apply — going through the same
     /// [`validate_host_fault`](ControlServer::validate_host_fault) gate a
     /// [`Request::Branch`] env host fault does, so the two paths reject identically
     /// (nothing that would mint a reproducer that does not reproduce is ever
     /// staged). A malformed blob is [`ControlError::MalformedEnvironment`]; the
-    /// remaining rejections (past `Moment`, out-of-range gpa, out-of-scope clock
-    /// fault, and the same-`Moment` conflict) are the shared gate's.
+    /// remaining rejections (unsynchronized point, past `Moment`, out-of-range gpa,
+    /// out-of-scope clock fault, and the same-`Moment` conflict) are below / the
+    /// shared gate's.
     fn perturb(
         &mut self,
         fault: &control_proto::HostFault,
@@ -358,9 +378,22 @@ impl<B: Backend> ControlServer<B> {
         }
         let decoded = environment::HostFault::decode(&fault.0)
             .map_err(|_| ControlError::MalformedEnvironment)?;
-        // Floor = the live VM's current V-time: a `Moment` behind it could only
-        // apply *later* than recorded (a non-reproducing reproducer). `0` when
-        // V-time is unwired (nothing has advanced).
+        // Capability first (an unarmable backend can't enforce host faults at all —
+        // Unsupported, not the run-a-little-further NotSynchronized).
+        if !self.vmm.as_ref().is_some_and(|v| v.can_arm_arrival()) {
+            return Err(ControlError::Unsupported);
+        }
+        // **Synchronization gate (PR #51 round-7, family root cause).** The floor
+        // below is `effective_vns`; at a non-intercept stop (a terminal HLT / debug /
+        // shutdown, or a non-intercept exit) that value is only a lower bound, so a
+        // fault staged at `at == floor` could be recorded at a `Moment` the guest has
+        // already executed past — a reproducer that does not reproduce. Reject; the
+        // client rewinds (branch/replay lands on an intercept) first.
+        if !self.synchronized() {
+            return Err(ControlError::NotSynchronized);
+        }
+        // Floor = the live VM's current (now exact) V-time: a `Moment` behind it could
+        // only apply *later* than recorded.
         let floor = self
             .vmm
             .as_ref()
@@ -720,18 +753,22 @@ impl<B: Backend> ControlServer<B> {
             return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
         }
         loop {
-            let vns = self
-                .vmm
-                .as_ref()
-                .ok_or(ServeError::Poisoned)?
-                .effective_vns()
-                .unwrap_or(0);
+            let (vns, synchronized) = {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                (vmm.effective_vns().unwrap_or(0), vmm.is_synchronized())
+            };
 
-            // 1. Drain: apply exact-arrival faults (`m == vns`), poison a crossed one
-            //    (`m < vns`). Each applied fault is stamped into the recorded env at
-            //    its true apply point (`vns == m`).
+            // 1. Drain: apply an **exact arrival** — `m == vns` at a **synchronized**
+            //    point (`effective_vns` is exact there). A `Moment` at-or-below a vns
+            //    that is *not* provably exact must NOT be applied as an exact arrival:
+            //    `m < vns` is crossed (the guest is past `m`), and `m == vns` at an
+            //    *unsynchronized* point rests on a lower-bound vns so the guest may
+            //    have run past `m` too — either way poison (the recorded apply point
+            //    can't be trusted). This is the drain half of the round-7 family fix;
+            //    the `perturb` gate ensures nothing is *staged* at an unsynchronized
+            //    point in the first place, so this is the in-run belt-and-suspenders.
             while let Some((&m, _)) = self.schedule.range(..=vns).next() {
-                if m < vns {
+                if m < vns || !synchronized {
                     self.schedule_poisoned = Some((m, vns));
                     return Ok(Err(ControlError::ScheduleUnsatisfiable {
                         moment: m,
@@ -2317,6 +2354,103 @@ mod tests {
             run_all_res(&mut s),
             Ok(Reply::Stop(StopReason::Quiescent { .. }))
         ));
+    }
+
+    #[test]
+    fn perturb_after_a_terminal_stop_is_rejected_not_synchronized() {
+        // PR #51 round-7 (family root cause): after a natural terminal stop the VM is
+        // NOT at a V-time intercept, so `effective_vns` is only a lower bound —
+        // staging a fault against it could record it at a `Moment` the guest already
+        // executed past. `perturb` must reject with `NotSynchronized`; the client
+        // rewinds (branch/replay lands on an intercept) and can then stage.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s); // synchronized (post-RDTSC, V-time 500)
+        // Run to the terminal HLT → unsynchronized.
+        assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
+        let inject = |vector: u8| Request::Perturb {
+            fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
+            at: Moment(1000),
+        };
+        assert_eq!(
+            s.handle(&inject(40)).unwrap(),
+            Err(ControlError::NotSynchronized),
+            "a perturb at an unsynchronized (terminal) point is rejected"
+        );
+        // A rewind restores onto a V-time intercept → synchronized → perturb accepted.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.handle(&inject(40)).unwrap(), Ok(Reply::Unit));
+    }
+
+    #[test]
+    fn perturb_after_a_synchronized_deadline_stop_reproduces() {
+        // The positive half of the sync gate + a recorded-env replay-equivalence
+        // check: a `perturb` after a **deadline stop that landed on an arrival**
+        // (synchronized) is accepted, and the recorded env — branched from base and
+        // re-run — reproduces the live `state_hash` across the multi-run session.
+        let run_to = |s: &mut ControlServer<ArrivalBackend>, d: u64| {
+            s.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(VTime(d)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+        };
+        let perturb = |s: &mut ControlServer<ArrivalBackend>, gpa: u64, at: u64| {
+            s.handle(&Request::Perturb {
+                fault: HostFault(
+                    EnvHostFault::CorruptMemory {
+                        gpa,
+                        mask: BitMask(0xDEAD_0000_BEEF),
+                    }
+                    .encode(),
+                ),
+                at: Moment(at),
+            })
+            .unwrap()
+        };
+
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let base = arr_snap(&mut s);
+        // Stage + apply the first fault at Moment 100, stopping AT it (a synchronized
+        // arrival deadline stop).
+        assert_eq!(perturb(&mut s, 0x40, 100), Ok(Reply::Unit));
+        assert!(matches!(
+            run_to(&mut s, 100),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        // The deadline stop landed on the arrival → synchronized → a second perturb is
+        // accepted (NOT NotSynchronized).
+        assert_eq!(perturb(&mut s, 0x80, 300), Ok(Reply::Unit));
+        assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
+        let h_live = arr_hash(&s);
+        let recorded = s.recorded_env().clone();
+        assert_eq!(recorded.host_faults().count(), 2, "both faults recorded");
+
+        // Replay-equivalence: branch the recorded env from base and re-run → the same
+        // live hash.
+        let mut r = arrival_server();
+        arr_hello(&mut r);
+        let base_r = arr_snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: recorded.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+        assert_eq!(
+            h_live,
+            arr_hash(&r),
+            "recorded env reproduces the multi-run hash"
+        );
+        let _ = base;
     }
 
     #[test]

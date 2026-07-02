@@ -758,6 +758,23 @@ impl<B: Backend> Vmm<B> {
             .map(|vt| vt.clock.snapshot_vns(vt.last_intercept_work))
     }
 
+    /// `true` iff [`effective_vns`](Vmm::effective_vns) is **exact** — the VM is at a
+    /// V-time-intercept boundary (`RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED` / a TSC MSR / an
+    /// exact-count `run_until` `Deadline`, or fresh / just-restored), so
+    /// `last_intercept_work` *is* the current retired count. At any other point (a
+    /// terminal `HLT`, a `Shutdown`/debug exit, a serial/MMIO exit) the guest may
+    /// have retired branches since the last intercept, so `effective_vns` is only a
+    /// **lower bound** and this is `false`.
+    ///
+    /// The control plane (PR #51 round-7) requires this wherever it trusts
+    /// `effective_vns` as an exact position — the `perturb` floor and the `m == vns`
+    /// exact-arrival drain — so a fault is never recorded at a `Moment` the guest has
+    /// already executed past (the same exactness [`save_vtime`](Vmm::save_vtime) fails
+    /// closed on). `false` when V-time is unwired.
+    pub fn is_synchronized(&self) -> bool {
+        self.vtime.is_some() && self.vtime_synchronized
+    }
+
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
     /// the clock with `vns_base = snap.vns`, **reset the hardware work counter to
     /// 0**, re-apply `IA32_TSC_ADJUST` from the snapshot, and restore the entropy

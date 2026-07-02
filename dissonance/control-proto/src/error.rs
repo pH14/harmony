@@ -170,6 +170,16 @@ pub enum ControlError {
         /// The effective V-time the run reached (already beyond `moment`).
         vtime: u64,
     },
+    /// A `perturb` arrived at a **non-V-time-synchronized point** — the VM's last
+    /// stop was a terminal (HLT / shutdown / debug) or another non-intercept exit,
+    /// so its effective V-time is only a *lower bound* on the true retired count,
+    /// not the exact position. Staging a fault against a lower-bound floor could
+    /// record it at a `Moment` the guest has already executed past — a reproducer
+    /// that does not reproduce. The client must first reach a synchronized point
+    /// (rewind via `branch`/`replay`, which restores onto a V-time intercept) before
+    /// staging (task 59; PR #51 round-7 — the exact-`effective_vns` family).
+    #[error("perturb at a non-synchronized point (effective V-time is a lower bound)")]
+    NotSynchronized,
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

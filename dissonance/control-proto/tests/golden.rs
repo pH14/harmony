@@ -462,6 +462,12 @@ fn err_schedule_unsatisfiable() {
 }
 
 #[test]
+fn err_not_synchronized() {
+    // RESULT_ERR (0x01), CE_NOT_SYNCHRONIZED (0x0F), no payload.
+    check_reply(47, Err(ControlError::NotSynchronized), &[0x01, 0x0F]);
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,

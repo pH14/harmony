@@ -11,6 +11,7 @@ pub control_proto::ControlError::BadEnvVersion(u16)
 pub control_proto::ControlError::MalformedAnswer
 pub control_proto::ControlError::MalformedEnvironment
 pub control_proto::ControlError::NotQuiescent
+pub control_proto::ControlError::NotSynchronized
 pub control_proto::ControlError::PerturbMomentTaken
 pub control_proto::ControlError::PerturbMomentTaken::at: u64
 pub control_proto::ControlError::PerturbOutOfRange

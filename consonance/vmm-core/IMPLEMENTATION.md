@@ -3498,3 +3498,40 @@ No wire/public-api changes.
 the apply ceiling, the `vns == Moment` recording invariant) treats it as the derived V-time axis, so
 `work_for_vns(moment)` is correct under the enforcement-plane reading (they coincide at ratio 1). The
 integrator picks the axis (likely amending the host.rs doc); not this PR's call.
+
+### PR #51 round 7 — the exact-`effective_vns` family fix
+
+Three findings across rounds 6–7 shared one root cause: **the control plane trusted `effective_vns()`
+as an exact position where it is only the last-intercept lower bound** (round-6 terminal clear;
+round-5's `m == vns` immediate drain, mandated without a sync guard). Closed as a family rather than
+another point patch.
+
+**The synchronization predicate.** `Vmm::is_synchronized()` exposes the existing `vtime_synchronized`
+flag — `true` iff `effective_vns` is exact (the VM is at a V-time intercept: RDTSC/RDTSCP/RDRAND/RDSEED
+/ a TSC MSR / an exact-count `run_until` `Deadline`, or fresh / just-restored), `false` at any
+non-intercept stop (terminal HLT / debug / shutdown, or a serial/MMIO exit) where the guest may have
+retired branches past the anchor. `ControlServer::synchronized()` is the session-level predicate over
+it — `true` after a deadline stop that landed on an arrival, a `restore`/`branch` (anchored at the
+snapshot's intercept), a seal, or a fresh boot; `false` after a terminal or a non-intercept exit.
+
+**The two exact-`effective_vns` consumers, both gated:**
+- **`perturb`** rejects with the new wire-additive `ControlError::NotSynchronized` (disc 15) when
+  `!synchronized` — so a fault is never staged against a lower-bound floor (the round-6/7 failure:
+  `perturb` after a terminal, then a run applies + records it as an exact arrival while the guest is
+  already past that count). The client rewinds (branch/replay lands on an intercept) first.
+- **The `run` `m == vns` drain** applies only at a synchronized point; `m < vns` (crossed) or `m == vns`
+  at an unsynchronized point (lower-bound vns) both **poison** (the recorded apply point can't be
+  trusted). The `perturb` gate already prevents staging at an unsynchronized point, so this is the
+  in-run belt-and-suspenders.
+
+**Audit of every `effective_vns()` consumer in control.rs** (per the review): the `perturb` floor and
+the drain — now gated. Everything else uses it only as a **monotone lower bound** (the opportunistic
+deadline check; the informational `Deadline`/terminal-stop `vtime`) or **not at all** for exactness:
+the `branch` floor is the snapshot's `vm_state.vtime.snapshot_vns` (round 5), and `recorded` is always
+stamped at the staged `Moment`, never at `effective_vns`.
+
+**Tests:** `perturb_after_a_terminal_stop_is_rejected_not_synchronized` (terminal → `NotSynchronized`;
+rewind → accepted) and `perturb_after_a_synchronized_deadline_stop_reproduces` (a perturb after a
+synchronized arrival-deadline stop is accepted, and the multi-run recorded env replays to the identical
+`state_hash`). `control-proto`: `NotSynchronized` (disc 15) + golden + generator + regenerated
+`public-api.txt`; `vmm-core/tests/public-api.txt` hand-adds `Vmm::is_synchronized`.
