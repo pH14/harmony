@@ -1,0 +1,60 @@
+pub mod runtrace
+pub enum runtrace::Retain
+pub runtrace::Retain::EnvOnly
+pub runtrace::Retain::Full
+pub enum runtrace::RetentionPolicy
+pub runtrace::RetentionPolicy::All
+pub runtrace::RetentionPolicy::EnvOnly
+pub runtrace::RetentionPolicy::Interesting
+impl runtrace::RetentionPolicy
+pub fn runtrace::RetentionPolicy::as_str(&self) -> &'static str
+pub fn runtrace::RetentionPolicy::parse(&str) -> core::option::Option<runtrace::RetentionPolicy>
+pub enum runtrace::TraceError
+pub runtrace::TraceError::IdMismatch
+pub runtrace::TraceError::IdMismatch::found: runtrace::TraceId
+pub runtrace::TraceError::IdMismatch::requested: runtrace::TraceId
+pub runtrace::TraceError::Ingest(alloc::string::String)
+pub runtrace::TraceError::Io(std::io::error::Error)
+pub runtrace::TraceError::Magic
+pub runtrace::TraceError::NonCanonical
+pub runtrace::TraceError::NotFound(runtrace::TraceId)
+pub runtrace::TraceError::NotRetained(runtrace::TraceId)
+pub runtrace::TraceError::Oversize
+pub runtrace::TraceError::Oversize::len: usize
+pub runtrace::TraceError::Oversize::what: &'static str
+pub runtrace::TraceError::Trailing
+pub runtrace::TraceError::Truncated
+pub runtrace::TraceError::Utf8
+pub runtrace::TraceError::Version
+pub runtrace::TraceError::Version::found: u16
+pub runtrace::TraceError::Version::supported: u16
+pub struct runtrace::ChunkDecoder
+impl runtrace::ChunkDecoder
+pub fn runtrace::ChunkDecoder::finish(self) -> core::option::Option<(explorer::spine::Moment, explorer::spine::Record)>
+pub fn runtrace::ChunkDecoder::new(explorer::spine::StreamId) -> Self
+pub fn runtrace::ChunkDecoder::push(&mut self, explorer::spine::Moment, &[u8]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Record)>
+pub struct runtrace::TraceId(pub [u8; 32])
+impl runtrace::TraceId
+pub fn runtrace::TraceId::from_hex(&str) -> core::option::Option<runtrace::TraceId>
+pub fn runtrace::TraceId::of(&explorer::Environment) -> runtrace::TraceId
+pub fn runtrace::TraceId::to_hex(&self) -> alloc::string::String
+impl core::fmt::Debug for runtrace::TraceId
+pub fn runtrace::TraceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for runtrace::TraceId
+pub fn runtrace::TraceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct runtrace::TraceStore
+impl runtrace::TraceStore
+pub fn runtrace::TraceStore::dir(&self) -> &std::path::Path
+pub fn runtrace::TraceStore::env(&self, runtrace::TraceId) -> core::result::Result<explorer::Environment, runtrace::TraceError>
+pub fn runtrace::TraceStore::has_journal(&self, runtrace::TraceId) -> bool
+pub fn runtrace::TraceStore::ids(&self) -> core::result::Result<alloc::vec::Vec<runtrace::TraceId>, runtrace::TraceError>
+pub fn runtrace::TraceStore::load(&self, runtrace::TraceId) -> core::result::Result<explorer::spine::RunTrace, runtrace::TraceError>
+pub fn runtrace::TraceStore::open(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<runtrace::TraceStore, runtrace::TraceError>
+pub fn runtrace::TraceStore::record(&self, &explorer::spine::RunTrace, runtrace::Retain) -> core::result::Result<runtrace::TraceId, runtrace::TraceError>
+pub const runtrace::TRACE_FORMAT_VERSION: u16
+pub fn runtrace::decode(&[u8]) -> core::result::Result<explorer::spine::RunTrace, runtrace::TraceError>
+pub fn runtrace::decode_chunks(explorer::spine::StreamId, &[(explorer::spine::Moment, alloc::vec::Vec<u8>)]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Record)>
+pub fn runtrace::encode(&explorer::spine::RunTrace) -> core::result::Result<alloc::vec::Vec<u8>, runtrace::TraceError>
+pub fn runtrace::encode_env(&explorer::Environment) -> alloc::vec::Vec<u8>
+pub fn runtrace::ingest_ndjson(&str) -> core::result::Result<alloc::vec::Vec<(explorer::spine::Moment, alloc::vec::Vec<u8>)>, runtrace::TraceError>
+pub fn runtrace::retain_for(runtrace::RetentionPolicy, &explorer::StopReason, bool) -> runtrace::Retain

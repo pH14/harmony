@@ -98,6 +98,28 @@ pub fn default_fork_script() -> Vec<Exit> {
     ]
 }
 
+/// The fork script for the **task-65 recording** demo: like
+/// [`default_fork_script`] but it first writes a recognizable console banner to
+/// COM1 (port `0x3F8`), so the recorded [`RunTrace`](explorer::RunTrace) has
+/// **non-empty `records`** the scrape decoder splits into lines. The banner is
+/// seed-independent (identical across seeds — divergence lives in the env's seed,
+/// not the console), then two RDRAND draws carry the seed into the run and a
+/// clean `Hlt` terminates it.
+pub fn recording_fork_script() -> Vec<Exit> {
+    let mut script = vec![Exit::Rdtsc];
+    for &b in b"MOCK-READY\n" {
+        script.push(Exit::Io {
+            port: 0x3F8,
+            size: 1,
+            write: Some(b as u32),
+        });
+    }
+    script.push(Exit::Rdrand { width: 8 });
+    script.push(Exit::Rdrand { width: 8 });
+    script.push(Exit::Hlt);
+    script
+}
+
 /// Compose the mock control server: a live VM advanced to a synchronized
 /// (post-RDTSC) boundary — so the session's first `snapshot` seals first-try —
 /// and a factory that boots fork VMs with `fork_script`. Every fork VM is

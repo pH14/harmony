@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use explorer::{Environment, Moment, Record, RunTrace, StopReason, VTime, Value};
+use explorer::{Environment, Moment, RunTrace, StopReason, VTime, Value};
 use matcher::stub::RecordRec;
 use matcher::{During, MatchExpr, Role, SignalDecl, SignalId, SignalSet};
 use proptest::prelude::*;
@@ -107,10 +107,8 @@ fn arb_record() -> impl Strategy<Value = RecordRec> {
             }
             RecordRec {
                 moment: Moment(m),
-                record: Record {
-                    kind: kind.to_string(),
-                    attrs,
-                },
+                kind: kind.to_string(),
+                attrs,
             }
         })
 }
@@ -152,11 +150,11 @@ fn naive_glob(pat: &[u8], text: &[u8]) -> bool {
 /// The independent reference for "does this record match this expression?" —
 /// exact kind, every attr glob (naive), and the `during` predicate.
 pub fn ref_match(rec: &RecordRec, expr: &MatchExpr, earliest_fault: Option<Moment>) -> bool {
-    if rec.record.kind != expr.kind {
+    if rec.kind != expr.kind {
         return false;
     }
     for (k, pat) in &expr.attr {
-        match rec.record.attrs.get(k) {
+        match rec.attrs.get(k) {
             Some(v) => {
                 if !naive_glob(pat.as_bytes(), &render(v)) {
                     return false;

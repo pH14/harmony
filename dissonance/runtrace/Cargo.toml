@@ -1,0 +1,34 @@
+[package]
+name = "runtrace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The replay-plane RunTrace journal: a versioned canonical codec, a directory-backed TraceStore, and the scrape-tier console decoder (task 65)"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The search-plane spine vocabulary the journal serializes and the scrape
+# decoder produces (`RunTrace`, `Record`, `StreamId`, `Moment`, `StopReason`,
+# `Environment`, …). runtrace is replay-plane *infrastructure* built ON the
+# explorer's contract (task 65 charter): it depends on `explorer` and consumes
+# spine vocab, exactly the Wave-5 plugin direction tasks 66/67/70+ reuse.
+explorer = { path = "../explorer", version = "0.1.0" }
+# Content-addressed `TraceId = blake3(canonical env bytes)` (rule-5 whitelist).
+blake3 = "1"
+# Typed, no-panic library errors (rule-5 whitelist).
+thiserror = "2"
+# The telemetry NDJSON Console recording the scrape ingest helper reads. Parsed
+# with a minimal local view of the wire (conventions rule 2 — the telemetry
+# schema is mirrored locally, never depended on), so runtrace stays a pure
+# dissonance replay-plane crate with no consonance edge.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Property tests (≥256 cases): decode totality/losslessness, journal roundtrip
+# canonicality, version-bump compatibility, re-derive stability.
+proptest = "1"
+# Directory-backed TraceStore tests want a throwaway dir per case.
+tempfile = "3"
