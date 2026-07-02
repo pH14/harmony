@@ -470,7 +470,7 @@ fn profile(kernel: &[u8], initramfs: &[u8], start: Instant) -> Profile {
         let span_start: VTime = s.parse().expect("SPAN_START is a u64");
         let span_end: VTime = e.parse().expect("SPAN_END is a u64");
         assert!(span_start < span_end, "SPAN_START must be < SPAN_END");
-        let busy = std::env::var("BUSY_CENTERS")
+        let busy: Vec<BusyWindow> = std::env::var("BUSY_CENTERS")
             .ok()
             .map(|v| {
                 v.split(',')
