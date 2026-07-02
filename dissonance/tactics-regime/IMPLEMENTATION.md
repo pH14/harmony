@@ -57,6 +57,32 @@ Wiring a real machine to stamp this tag is the campaign/integration task's job
   PRNG. This ties every regime step to an actual governed fault draw and keeps
   the stationary-rate accounting exact.
 
+### Emitted faults are always admissible (round-2 fix)
+
+The tactic answers a decision *live* (its answer is staged, unlike a recorded
+override that `RecordedEnv::decide` can silently ignore), so it must never emit a
+fault the frontier's admissibility check would reject and abort on. The only
+guest fault whose admissibility is point-relative is `BlockTorn(n)` (needs
+`n ≤ len`), and an **open-loop** tactic never sees the request length — the spine
+`DecisionPoint`'s `ctx` is opaque and carries no bounds, and `environment`'s
+`DecisionPoint` has no decoder. So rather than a runtime "sample-then-fall-back"
+(which would silently turn a configured `BlockTorn` into a no-op), `StateTable`
+**refuses point-relative faults at construction** (`RegimeError::UnboundableFault`).
+Every fault the tactic can emit is therefore bound-free and *unconditionally*
+admissible for its class — verified by `emitted_fault_is_admissible_at_short_request`,
+which drives a storm-forced fault against a `len == 4` `BlockIo` point and asserts
+`DecisionPoint::admits`. The default eligible lists already comply.
+
+### Region operators anchor on the schedule (round-2 fix)
+
+`delete`/`shift` originally drew the region low bound from a uniform `u64`; real
+recorded schedules cluster `Moment`s far below `2^64`, so the region intersected
+an override with probability `≈ 0` and the AFLNet-style operators were no-ops on
+any realistic schedule. `anchored_region` now picks an existing **host** key
+uniformly and jitters the bounds `± REGION_MAX` around it, so the region always
+contains its anchor: `delete` removes `≥ 1` and `shift` has a non-empty region.
+Pinned by `region_ops_hit_a_realistic_schedule` (a `~1e9` schedule).
+
 ### Statistical gates: which statistic
 
 - **Burstiness (b)** uses the **windowed Fano factor** (count variance / count

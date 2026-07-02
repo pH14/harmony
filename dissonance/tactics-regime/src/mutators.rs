@@ -74,13 +74,17 @@ impl SeqMutators {
         rebuild(env, overrides)
     }
 
-    /// **Delete:** remove every **host** override in a `Moment` range `[lo, hi]`;
-    /// guest overrides in the range are preserved verbatim.
+    /// **Delete:** remove every **host** override in a `Moment` region anchored on
+    /// an existing host override (see [`anchored_region`]); guest overrides in the
+    /// region are preserved verbatim. A no-op when there is no host override.
     pub fn delete(env: &EnvSpec, salt: u64) -> EnvSpec {
         let mut overrides = env.overrides().clone();
         let mut rng = Prng::new(salt ^ DELETE_DOMAIN);
-        let lo = rng.next_u64();
-        let hi = lo.saturating_add(rng.next_u64() % REGION_MAX);
+        let keys = host_keys(&overrides);
+        if keys.is_empty() {
+            return rebuild(env, overrides);
+        }
+        let (lo, hi) = anchored_region(&keys, &mut rng);
         let victims: Vec<Moment> = overrides
             .range(lo..=hi)
             .filter(|(_, a)| matches!(a, Action::Host(_)))
@@ -114,8 +118,11 @@ impl SeqMutators {
     pub fn shift(env: &EnvSpec, salt: u64) -> EnvSpec {
         let overrides = env.overrides().clone();
         let mut rng = Prng::new(salt ^ SHIFT_DOMAIN);
-        let lo = rng.next_u64();
-        let hi = lo.saturating_add(rng.next_u64() % REGION_MAX);
+        let keys = host_keys(&overrides);
+        if keys.is_empty() {
+            return rebuild(env, overrides);
+        }
+        let (lo, hi) = anchored_region(&keys, &mut rng);
         let mag = rng.next_u64() % REGION_MAX;
         let neg = rng.next_u64() & 1 == 1;
 
@@ -124,6 +131,8 @@ impl SeqMutators {
             .filter(|(_, a)| matches!(a, Action::Host(_)))
             .map(|(m, _)| *m)
             .collect();
+        // The anchor is a host key inside `[lo, hi]`, so the region is non-empty;
+        // the guard stays defensive.
         if region.is_empty() {
             return rebuild(env, overrides);
         }
@@ -161,6 +170,23 @@ impl SeqMutators {
         }
         rebuild(env, result)
     }
+}
+
+/// A `[lo, hi]` region **anchored on the schedule**: pick an existing key
+/// uniformly, then jitter the bounds `± REGION_MAX` around it. Real recorded
+/// schedules cluster `Moment`s at magnitudes far below `2^64`, so a region drawn
+/// from a uniform `u64` low bound would intersect an override with probability
+/// `~REGION_MAX/2^64 ≈ 0` — making the region operators no-ops on any realistic
+/// schedule. Anchoring guarantees the region contains its anchor, so `delete`
+/// always removes it and `shift` always has a non-empty region. `keys` must be
+/// non-empty (the callers check). Uses `saturating_{sub,add}` for the bound
+/// jitter only — a clamp on the *region window*, never a `Moment` translation, so
+/// no override's key is wrapped or saturated.
+fn anchored_region(keys: &[Moment], rng: &mut Prng) -> (Moment, Moment) {
+    let anchor = keys[(rng.next_u64() % keys.len() as u64) as usize];
+    let lo = anchor.saturating_sub(rng.next_u64() % REGION_MAX);
+    let hi = anchor.saturating_add(rng.next_u64() % REGION_MAX);
+    (lo, hi)
 }
 
 /// The host-keyed `Moment`s of an override map, in ascending order.
@@ -259,51 +285,38 @@ mod tests {
         )
     }
 
-    /// `insert` never clobbers a pre-existing **host** override even when its
-    /// drawn destination lands exactly on one (the ruling-B regression). It skips
-    /// to the next free slot and adds exactly one override.
+    /// `free_slot` skips **any** occupant — host or guest — so `insert` can never
+    /// land on an occupied `Moment` and silently drop the incumbent (the ruling-B
+    /// regression). Unit-tested directly: seed a `Prng`, pre-occupy its exact
+    /// first draw, and assert the returned slot moved past it. (Tested at the
+    /// helper because `insert`'s fresh branch consumes a variable number of words
+    /// in `v1_host_fault_from` before `free_slot` draws, so the collision `Moment`
+    /// is not simply the word after the copy coin.)
     #[test]
-    fn insert_never_clobbers_an_existing_host_override() {
-        // Find a salt whose insert takes the fresh branch (copy coin odd), then
-        // pre-occupy its free-slot draw with a host fault so the old
-        // guest-only-skip code would have replaced it.
-        for salt in 0u64..10_000 {
-            let mut p = Prng::new(salt ^ INSERT_DOMAIN);
-            let coin = p.next_u64(); // host_keys non-empty below, so this is drawn
-            if coin & 1 == 0 {
-                continue; // copy branch — we want the fresh branch's slot draw
-            }
-            let dst = p.next_u64(); // the fresh branch's free_slot first draw
-            let other = dst.wrapping_add(1000);
-            if other == dst {
-                continue;
-            }
-            let spec = EnvSpec::Recorded {
-                seed: 0,
-                policy: FaultPolicy::none(),
-                overrides: BTreeMap::from([
-                    (dst, Action::Host(HostFault::InjectInterrupt { vector: 7 })),
-                    (
-                        other,
-                        Action::Host(HostFault::InjectInterrupt { vector: 9 }),
-                    ),
-                ]),
-                standing: vec![],
-            };
-            let out = SeqMutators::insert(&spec, salt);
-            assert_eq!(
-                out.overrides().get(&dst),
-                spec.overrides().get(&dst),
-                "the host override at the drawn slot must survive verbatim"
-            );
-            assert_eq!(
-                out.overrides().len(),
-                spec.overrides().len() + 1,
-                "insert adds exactly one override, clobbering none"
-            );
-            return;
-        }
-        panic!("no fresh-branch salt with a distinct destination found in range");
+    fn free_slot_skips_any_occupant() {
+        let seed = 0xC0FF_EE00_1234_5678u64;
+        let first = Prng::new(seed).next_u64();
+
+        // A HOST occupant at the first draw: the pre-fix guest-only skip would
+        // have returned `first` and clobbered it; now we skip to `first + 1`.
+        let host_map = BTreeMap::from([(
+            first,
+            Action::Host(HostFault::InjectInterrupt { vector: 1 }),
+        )]);
+        let got = free_slot(&host_map, &mut Prng::new(seed));
+        assert_eq!(got, first.wrapping_add(1), "must skip a host-occupied slot");
+        assert!(!host_map.contains_key(&got));
+
+        // A GUEST occupant is likewise skipped.
+        let guest_map = BTreeMap::from([(first, Action::Guest(Answer::Nominal))]);
+        assert_eq!(
+            free_slot(&guest_map, &mut Prng::new(seed)),
+            first.wrapping_add(1),
+            "must skip a guest-occupied slot"
+        );
+
+        // A free first draw is returned as-is.
+        assert_eq!(free_slot(&BTreeMap::new(), &mut Prng::new(seed)), first);
     }
 
     /// Every operator is a pure function of `(env, salt)`.
@@ -322,26 +335,44 @@ mod tests {
         }
     }
 
-    /// Retarget never emits a deferred host fault, even when the victim was one.
+    /// Whether a host fault is task-59-deferred (not v1).
+    fn is_deferred(f: &HostFault) -> bool {
+        matches!(f, HostFault::SkewTime(_) | HostFault::SetClockRate(_))
+    }
+
+    /// Retarget converts exactly one deferred fault to v1: the retargeted slot
+    /// becomes v1, and the deferred-fault count drops by one (it never introduces
+    /// a NEW deferred fault). Asserts the real property — not the earlier
+    /// tautology (`is_v1 || is_deferred` is true of all four variants).
     #[test]
-    fn retarget_confines_to_v1_even_from_deferred() {
+    fn retarget_converts_one_deferred_to_v1() {
         let mut spec = EnvSpec::Seeded {
             seed: 1,
             policy: FaultPolicy::none(),
         };
         spec.perturb(HostFault::SkewTime(VTime(9)), 50);
         spec.perturb(HostFault::SetClockRate(Ratio::new(3, 4).unwrap()), 60);
-        for salt in 0u64..64 {
+        let deferred_count = |s: &EnvSpec| s.host_faults().filter(|(_, f)| is_deferred(f)).count();
+        assert_eq!(deferred_count(&spec), 2, "both host faults start deferred");
+
+        for salt in 0u64..128 {
+            // The victim key is `host_keys[word0 % len]` with the two sorted keys.
+            let mut rng = Prng::new(salt ^ RETARGET_DOMAIN);
+            let keys = [50u64, 60u64];
+            let chosen = keys[(rng.next_u64() % keys.len() as u64) as usize];
+
             let out = SeqMutators::retarget(&spec, salt);
-            for (_, f) in out.host_faults() {
-                // The retargeted key is now v1; the untouched one may still be
-                // deferred — but at least one becomes v1 and none becomes a *new*
-                // deferred fault. Assert nothing outside {v1, original deferred}.
-                assert!(
-                    is_v1(&f) || matches!(f, HostFault::SkewTime(_) | HostFault::SetClockRate(_)),
-                    "retarget produced an out-of-vocabulary fault"
-                );
+            match out.overrides().get(&chosen) {
+                Some(Action::Host(f)) => {
+                    assert!(is_v1(f), "the retargeted slot must become v1")
+                }
+                other => panic!("expected a host override at {chosen}, got {other:?}"),
             }
+            assert_eq!(
+                deferred_count(&out),
+                1,
+                "retarget converts exactly one deferred fault and introduces none"
+            );
         }
     }
 
@@ -397,5 +428,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The region operators **anchor on the schedule**, so they act on a
+    /// realistic recorded env whose `Moment`s cluster far below `2^64` — a
+    /// uniform-`u64` low bound would make them no-ops. On a schedule near `1e9`,
+    /// `delete` removes at least one host override for *every* salt (the region
+    /// always contains its host anchor) and `shift` relocates for at least one.
+    #[test]
+    fn region_ops_hit_a_realistic_schedule() {
+        let mut spec = EnvSpec::Seeded {
+            seed: 0,
+            policy: FaultPolicy::none(),
+        };
+        for i in 0..8u64 {
+            spec.perturb(
+                HostFault::InjectInterrupt { vector: i as u8 },
+                1_000_000_000 + i * 50,
+            );
+        }
+        let host_count = |s: &EnvSpec| s.host_faults().count();
+        let host_moments = |s: &EnvSpec| {
+            let mut v: Vec<Moment> = s.host_faults().map(|(m, _)| m).collect();
+            v.sort_unstable();
+            v
+        };
+        let base_hosts = host_count(&spec);
+        let base_moments = host_moments(&spec);
+
+        let mut shift_relocated = false;
+        for salt in 0u64..64 {
+            let deleted = SeqMutators::delete(&spec, salt);
+            assert!(
+                host_count(&deleted) < base_hosts,
+                "salt {salt}: anchored delete must remove >=1 host override from a clustered schedule"
+            );
+            if host_moments(&SeqMutators::shift(&spec, salt)) != base_moments {
+                shift_relocated = true;
+            }
+        }
+        assert!(
+            shift_relocated,
+            "anchored shift must relocate a host override on the clustered schedule"
+        );
     }
 }

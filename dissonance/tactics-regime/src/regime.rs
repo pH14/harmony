@@ -31,6 +31,15 @@ pub enum RegimeError {
     /// An eligible fault did not belong to the class it was filed under.
     #[error("an eligible fault does not belong to its fault class")]
     WrongClass,
+    /// A **point-relative** fault (whose admissibility needs the live decision
+    /// point's bounds — only `BlockTorn(n)`, which requires `n <= len`) was placed
+    /// in a table. An open-loop tactic never sees those bounds (the spine
+    /// `DecisionPoint`'s `ctx` is opaque and carries no request length), so it
+    /// cannot guarantee such a fault admissible and would risk aborting a valid
+    /// short-request point. Refused at construction so **every** emitted fault is
+    /// unconditionally admissible for its class.
+    #[error("a point-relative fault (e.g. BlockTorn) cannot be emitted by a context-free tactic")]
+    UnboundableFault,
 }
 
 /// One regime of the two-state chain.
@@ -147,7 +156,10 @@ impl StateTable {
     /// independent of outcome — the [`ClassPolicy`](environment::FaultPolicy)
     /// contract). The word decides both the Bernoulli trial and the eligible
     /// index. A supply class (or an empty eligible list) answers
-    /// [`Answer::Nominal`] without perturbation.
+    /// [`Answer::Nominal`] without perturbation. Every fault it can emit is
+    /// bound-free (point-relative faults are refused at construction — see
+    /// [`RegimeError::UnboundableFault`]), so the result is **always admissible**
+    /// for its class at any decision point.
     fn sample(&self, class: DecisionClass, rng: &mut Prng) -> Answer {
         let w = rng.next_u64();
         match self.eligible(class) {
@@ -160,18 +172,30 @@ impl StateTable {
     }
 }
 
-/// Canonicalize an eligible list: reject any foreign-class fault, then sort and
-/// deduplicate so the bytes/behavior are order-independent.
+/// Canonicalize an eligible list: reject any foreign-class or point-relative
+/// fault, then sort and deduplicate so the bytes/behavior are order-independent.
 fn canonical(faults: &[Fault], class: DecisionClass) -> Result<Vec<Fault>, RegimeError> {
     for f in faults {
         if f.class() != class {
             return Err(RegimeError::WrongClass);
+        }
+        if is_point_relative(*f) {
+            return Err(RegimeError::UnboundableFault);
         }
     }
     let mut v = faults.to_vec();
     v.sort_unstable();
     v.dedup();
     Ok(v)
+}
+
+/// Whether a fault's admissibility depends on the live decision point's bounds.
+/// Only [`Fault::BlockTorn`] does (`n <= len` against the request length); every
+/// other guest fault is bound-free (its admissibility is class-match only). A
+/// context-free tactic can guarantee bound-free faults admissible but not
+/// point-relative ones, so [`canonical`] refuses the latter.
+fn is_point_relative(f: Fault) -> bool {
+    matches!(f, Fault::BlockTorn(_))
 }
 
 /// The default net eligible list (a full drop and a reset — the two convergent
@@ -531,6 +555,22 @@ mod tests {
         assert_eq!(
             StateTable::new(1, 2, &[Fault::BlockEio], &[], &[]).unwrap_err(),
             RegimeError::WrongClass
+        );
+    }
+
+    /// A point-relative fault (`BlockTorn`, whose admissibility needs the request
+    /// length) is refused at construction — a context-free tactic cannot emit it
+    /// without risking an abort at a short-request point. Bound-free block faults
+    /// are accepted.
+    #[test]
+    fn new_rejects_point_relative_faults() {
+        assert_eq!(
+            StateTable::new(1, 2, &[], &[Fault::BlockTorn(4096)], &[]).unwrap_err(),
+            RegimeError::UnboundableFault
+        );
+        assert!(
+            StateTable::new(1, 2, &[], &[Fault::BlockEio, Fault::BlockNospc], &[]).is_ok(),
+            "bound-free block faults are accepted"
         );
     }
 

@@ -5,6 +5,7 @@ pub tactics_regime::Regime::Storm
 pub enum tactics_regime::RegimeError
 pub tactics_regime::RegimeError::BadDenominator
 pub tactics_regime::RegimeError::NumeratorTooLarge
+pub tactics_regime::RegimeError::UnboundableFault
 pub tactics_regime::RegimeError::WrongClass
 pub struct tactics_regime::RegimeParams
 impl tactics_regime::RegimeParams

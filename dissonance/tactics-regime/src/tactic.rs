@@ -184,6 +184,40 @@ mod tests {
         }
     }
 
+    /// Every fault the tactic emits is **admissible** even at a short-request
+    /// BlockIo point: because point-relative faults are refused from the table
+    /// (`RegimeError::UnboundableFault`), a storm-forced fault always passes
+    /// `DecisionPoint::admits` against a `len == 4` request — no valid config can
+    /// turn a decision into a run abort.
+    #[test]
+    fn emitted_fault_is_admissible_at_short_request() {
+        use environment::{BlockOp, DecisionPoint as EnvPoint};
+        // Always-storm, always-fault over the default (bound-free) block list.
+        let params = RegimeParams::new(
+            (1, 1),
+            (0, 1),
+            StateTable::uniform(0, crate::regime::DEN_CAP).unwrap(),
+            StateTable::uniform(crate::regime::DEN_CAP, crate::regime::DEN_CAP).unwrap(),
+        )
+        .unwrap();
+        let mut t = RegimeTactic::new(params);
+        let mut rng = Prng::new(5);
+        // A deliberately tiny request — the toughest bound for a torn-write fault.
+        let short = EnvPoint::BlockIo {
+            op: BlockOp::Write,
+            lba: 0,
+            len: 4,
+        };
+        for i in 0..200 {
+            let a = t.decide(&point(DecisionClass::BlockIo, i), &mut rng);
+            let decoded = EnvAnswer::decode(&a.0).expect("decodable answer");
+            assert!(
+                short.admits(&decoded),
+                "emitted answer {decoded:?} must be admissible at a len=4 BlockIo point"
+            );
+        }
+    }
+
     /// Same seed + same point sequence + same rng seed ⇒ identical answer
     /// sequence (statistical gate (a), determinism).
     #[test]
