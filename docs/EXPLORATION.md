@@ -25,7 +25,7 @@ This is the wave **after** the loop closes. It assumes the frontier glue is land
 
 | Prereq task | Supplies | This doc's dependence |
 |---|---|---|
-| **58** — socket server + reactive-suspension run loop (the R2 `Machine` adapter) | the live `Machine`: `branch`/`replay`/`run`/`snapshot`/`hash`/`coverage` over `control-proto` | every phase — the Progression finally drives a real guest |
+| **58** — socket server + socket-backed `Machine` (the R2 adapter — **seed-driven**; reactive-suspension `run(resolve)` is a task-58 non-goal and arrives with the first guest-plane service, task 61) | the live `Machine`: `branch`/`replay`/`run`/`snapshot`/`hash`/`coverage` over `control-proto` | every phase — the Progression finally drives a real guest |
 | **59** — host-plane `perturb` enforcement (`CorruptMemory`, `InjectInterrupt` @ `Moment`) | the first zero-cooperation fault vocabulary; **`InjectInterrupt` is the PCT lever** | Phase G (schedule entropy) |
 | **61** — the net vertical (`net_decide` service + `flow` on the CNI) | per-flow network faults enforced in-guest | Phase G (fault content), G-partitions |
 | **41** — non-quiescent snapshot | seal at any V-time, mid-workload | Phase A (validate), Phase C (materialization) |
@@ -96,7 +96,9 @@ lives entirely behind Scoring.
 ### RunTrace — the serializable, decoded bundle
 
 The run stops being opaque and becomes a versioned, serializable bundle so the replay plane can work
-offline:
+offline. (The sketches below are illustrative; **the task-64 spine is authoritative for exact
+field/method names and time units** — it keys these on `Moment`/`moment()`, and the
+`Moment`-vs-`VTime` unit ruling is escalated to the foreman per task 65, not decided here.)
 
 ```rust
 struct RunTrace {
