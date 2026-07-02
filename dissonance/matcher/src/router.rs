@@ -32,11 +32,15 @@
 //!
 //! ## Purity + determinism
 //!
-//! Both structs are pure functions of the `RunTrace`: records are processed in
-//! a canonical `(Moment, index)` order, output is sorted, and every derived id
-//! / fingerprint is a `sha2` digest of canonical bytes — no floats, no
-//! `HashMap` iteration, seedless. Evaluating the same trace twice yields
-//! byte-identical output.
+//! Both structs are pure functions of the `RunTrace`'s **content**, never of a
+//! channel source's record *emission order*: the sensor stream is sorted by
+//! `(Moment, channel, id)`, `state_max` folds through a `BTreeMap` keyed by
+//! `Moment` (`max` is order-independent), and the oracle orders its verdicts by
+//! `(Moment, fingerprint)` — no `(Moment, index)` tie-break that could leak
+//! emission order (the round-3 fix). Every derived id / fingerprint is a `sha2`
+//! digest of canonical bytes; no floats, no `HashMap` iteration, seedless.
+//! Evaluating the same trace — in any record order — yields byte-identical
+//! output.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -75,15 +79,6 @@ pub trait ContextSource {
 /// IJON-style magnitude bucket.
 fn bucket(v: u64) -> u64 {
     64 - u64::from(v.leading_zeros())
-}
-
-/// The canonical `(Moment, original-index)` processing order — deterministic
-/// and independent of the source's emission order, so `state_max`'s fold is a
-/// true timeline max and the output stream is stable.
-fn canonical_order<R: Matchable>(recs: &[R]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..recs.len()).collect();
-    order.sort_by_key(|&i| (recs[i].moment(), i));
-    order
 }
 
 /// Whether `rec` matches `expr`: exact `kind`, every `attr` glob satisfied by
@@ -250,19 +245,24 @@ impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
     pub fn features(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
         let recs = self.source.records(t);
         let earliest_fault = self.context.fault_moments(t).into_iter().min();
-        let order = canonical_order(&recs);
         let mut out: Vec<(Moment, Feature)> = Vec::new();
 
+        // No record-ordering step: `sometimes`/`cell` push per matching record
+        // (in any order) and the whole stream is sorted by content at the end;
+        // `state_max` folds through a `BTreeMap` keyed by `Moment`. Nothing keys
+        // on the source's emission order, so the output is a pure function of
+        // record *content* — no `(Moment, index)` tie-break to leak emission
+        // order (round-3 determinism fix).
         for decl in self.signals.signals() {
             let Some(&channel) = self.channels.get(&decl.name) else {
                 continue;
             };
             match decl.role {
                 Role::Sometimes => {
-                    for &i in &order {
-                        if record_matches(&recs[i], &decl.expr, earliest_fault) {
+                    for rec in &recs {
+                        if record_matches(rec, &decl.expr, earliest_fault) {
                             out.push((
-                                recs[i].moment(),
+                                rec.moment(),
                                 Feature {
                                     channel,
                                     id: Self::FIRED_FEATURE,
@@ -272,45 +272,57 @@ impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
                     }
                 }
                 Role::Cell => {
-                    for &i in &order {
-                        if record_matches(&recs[i], &decl.expr, earliest_fault) {
+                    for rec in &recs {
+                        if record_matches(rec, &decl.expr, earliest_fault) {
                             out.push((
-                                recs[i].moment(),
+                                rec.moment(),
                                 Feature {
                                     channel,
-                                    id: cell_id(&recs[i], &decl.expr),
+                                    id: cell_id(rec, &decl.expr),
                                 },
                             ));
                         }
                     }
                 }
                 Role::StateMax => {
-                    let mut running_max: Option<u64> = None;
-                    let mut last_bucket = 0u64;
-                    for &i in &order {
-                        if !record_matches(&recs[i], &decl.expr, earliest_fault) {
-                            continue;
+                    // The register's value at a Moment is `max(all valid values
+                    // at that Moment)`; `max` is order-independent, so folding
+                    // per-Moment maxima through a `BTreeMap` (sorted by `Moment`)
+                    // is content-deterministic. Walk the Moments ascending,
+                    // carry the running max, and emit one feature each Moment its
+                    // log2 bucket increases. A non-integer / absent `attr_max` on
+                    // a matched record is a counted decode miss
+                    // (`decode_misses`), never a panic and never folded.
+                    let Some(attr) = decl.expr.attr_max.as_deref() else {
+                        // Validation guarantees a state_max carries an attr_max;
+                        // stay safe if a hand-built decl slipped past it.
+                        continue;
+                    };
+                    let mut per_moment: BTreeMap<Moment, u64> = BTreeMap::new();
+                    for rec in &recs {
+                        if record_matches(rec, &decl.expr, earliest_fault)
+                            && let Some(v) = rec.attr(attr).as_ref().and_then(value::as_u64)
+                        {
+                            per_moment
+                                .entry(rec.moment())
+                                .and_modify(|cur| *cur = (*cur).max(v))
+                                .or_insert(v);
                         }
-                        let Some(attr) = decl.expr.attr_max.as_deref() else {
-                            continue;
-                        };
-                        // A non-integer / absent value is a counted decode miss
-                        // (see `decode_misses`), never a panic and never a
-                        // feature.
-                        if let Some(v) = recs[i].attr(attr).as_ref().and_then(value::as_u64) {
-                            let m = running_max.map_or(v, |cur| cur.max(v));
-                            running_max = Some(m);
-                            let b = bucket(m);
-                            if b > last_bucket {
-                                last_bucket = b;
-                                out.push((
-                                    recs[i].moment(),
-                                    Feature {
-                                        channel,
-                                        id: FeatureId(b),
-                                    },
-                                ));
-                            }
+                    }
+                    let mut running_max = 0u64;
+                    let mut last_bucket = 0u64;
+                    for (&m, &vmax) in &per_moment {
+                        running_max = running_max.max(vmax);
+                        let b = bucket(running_max);
+                        if b > last_bucket {
+                            last_bucket = b;
+                            out.push((
+                                m,
+                                Feature {
+                                    channel,
+                                    id: FeatureId(b),
+                                },
+                            ));
                         }
                     }
                 }
@@ -381,53 +393,62 @@ pub struct MatchOracle<S: ChannelSource, C: ContextSource> {
     signals: SignalSet,
     source: S,
     context: C,
-    /// Indices of the `never` declarations, sorted by **name** — a
-    /// permutation-invariant iteration order, so the earliest-violation
-    /// tie-break (two `never` signals matching the same record) never depends
-    /// on declaration order (task-66 semantics 4).
-    never_idx: Vec<usize>,
 }
 
 impl<S: ChannelSource, C: ContextSource> MatchOracle<S, C> {
     /// Build an oracle over a signal set, a channel source, and a context source.
     pub fn new(signals: SignalSet, source: S, context: C) -> Self {
-        let mut never_idx: Vec<usize> = signals
-            .signals()
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.role == Role::Never)
-            .map(|(i, _)| i)
-            .collect();
-        never_idx.sort_by(|&a, &b| signals.signals()[a].name.cmp(&signals.signals()[b].name));
         Self {
             signals,
             source,
             context,
-            never_idx,
         }
     }
 
-    /// Every `never`-rule violation in the run, one [`Bug`] per matching
-    /// `(signal, record)` pair, in canonical `(Moment, record-index, name)`
-    /// order. [`judge`](Oracle::judge) returns the first of these.
-    pub fn verdicts(&self, t: &RunTrace) -> Vec<Bug> {
+    /// Every `never`-rule violation as its content coordinates `(Moment,
+    /// fingerprint)`, in no particular order — the raw hits that [`verdicts`]
+    /// and [`judge`](Oracle::judge) order deterministically.
+    ///
+    /// A bug's identity is `(Moment, fingerprint)`: the [`Bug::env`] and
+    /// [`Bug::stop`] are the run's, identical for every hit, so the fingerprint
+    /// (`sha2(name ‖ kind ‖ matched attr bytes)`) fully distinguishes them —
+    /// and it is a function of record *content*, never of emission or
+    /// declaration order.
+    ///
+    /// [`verdicts`]: MatchOracle::verdicts
+    fn never_hits(&self, t: &RunTrace) -> Vec<(Moment, [u8; 32])> {
         let recs = self.source.records(t);
         let earliest_fault = self.context.fault_moments(t).into_iter().min();
-        let order = canonical_order(&recs);
-        let mut out = Vec::new();
-        for &i in &order {
-            for &di in &self.never_idx {
-                let decl = &self.signals.signals()[di];
-                if record_matches(&recs[i], &decl.expr, earliest_fault) {
-                    out.push(Bug {
-                        env: t.env.clone(),
-                        stop: t.terminal.clone(),
-                        fingerprint: never_fingerprint(&decl.name, &recs[i], &decl.expr),
-                    });
+        let mut hits = Vec::new();
+        for decl in self.signals.signals() {
+            if decl.role != Role::Never {
+                continue;
+            }
+            for rec in &recs {
+                if record_matches(rec, &decl.expr, earliest_fault) {
+                    hits.push((rec.moment(), never_fingerprint(&decl.name, rec, &decl.expr)));
                 }
             }
         }
-        out
+        hits
+    }
+
+    /// Every `never`-rule violation, one [`Bug`] per matching `(signal, record)`
+    /// pair, ordered by content `(Moment, fingerprint)`. That ordering is a pure
+    /// function of the trace — invariant under both declaration order (round 1)
+    /// and the source's emission order of same-Moment records (round 3);
+    /// same-`(Moment, fingerprint)` ties are, by definition, the same bug.
+    /// [`judge`](Oracle::judge) returns the first of these.
+    pub fn verdicts(&self, t: &RunTrace) -> Vec<Bug> {
+        let mut hits = self.never_hits(t);
+        hits.sort_unstable();
+        hits.into_iter()
+            .map(|(_, fingerprint)| Bug {
+                env: t.env.clone(),
+                stop: t.terminal.clone(),
+                fingerprint,
+            })
+            .collect()
     }
 
     /// The set of `never` signals that matched at least one record — the
@@ -453,25 +474,18 @@ impl<S: ChannelSource, C: ContextSource> MatchOracle<S, C> {
 
 impl<S: ChannelSource, C: ContextSource> Oracle for MatchOracle<S, C> {
     fn judge(&self, t: &RunTrace) -> Option<Bug> {
-        // The earliest `never`-violation; re-judging after a fix finds the next
-        // (the offline replay-plane property). Walk canonical order and stop —
-        // `never_idx` is name-sorted so the tie-break is permutation-invariant.
-        let recs = self.source.records(t);
-        let earliest_fault = self.context.fault_moments(t).into_iter().min();
-        let order = canonical_order(&recs);
-        for &i in &order {
-            for &di in &self.never_idx {
-                let decl = &self.signals.signals()[di];
-                if record_matches(&recs[i], &decl.expr, earliest_fault) {
-                    return Some(Bug {
-                        env: t.env.clone(),
-                        stop: t.terminal.clone(),
-                        fingerprint: never_fingerprint(&decl.name, &recs[i], &decl.expr),
-                    });
-                }
-            }
-        }
-        None
+        // The content-earliest `never`-violation: the minimum `(Moment,
+        // fingerprint)` hit, so it is deterministic regardless of emission or
+        // declaration order. Re-judging after a fix surfaces the next (the
+        // offline replay-plane property).
+        self.never_hits(t)
+            .into_iter()
+            .min()
+            .map(|(_, fingerprint)| Bug {
+                env: t.env.clone(),
+                stop: t.terminal.clone(),
+                fingerprint,
+            })
     }
 }
 
@@ -697,5 +711,88 @@ mod tests {
             Err(MatchError::ChannelSpaceExhausted { base, count })
                 if base == u16::MAX && count == 2
         ));
+    }
+
+    /// Regression (codex round-3 P1, replay-plane purity): with several records
+    /// sharing a Moment, the feature stream and the oracle verdicts must be a
+    /// pure function of record *content* — never of the source's emission order.
+    #[test]
+    fn same_moment_emission_order_does_not_affect_output() {
+        let signals = SignalSet::from_json(
+            r#"{ "signals": [
+                { "name": "reg",  "role": "state_max", "match": { "kind": "span", "attr": { "name": "wal" }, "attr_max": "lsn" } },
+                { "name": "n.x",  "role": "never",     "match": { "kind": "span", "attr": { "op": "x" } } },
+                { "name": "n.y",  "role": "never",     "match": { "kind": "span", "attr": { "op": "y" } } },
+                { "name": "cell", "role": "cell",      "match": { "kind": "log",  "attr": { "phase": "*" } } }
+            ] }"#,
+        )
+        .unwrap();
+
+        // Four records, all at Moment 5, with distinct content.
+        let a = rec(
+            5,
+            "span",
+            &[
+                ("name", Value::Str("wal".into())),
+                ("lsn", Value::UInt(8)),
+                ("op", Value::Str("x".into())),
+            ],
+        );
+        let b = rec(
+            5,
+            "span",
+            &[
+                ("name", Value::Str("wal".into())),
+                ("lsn", Value::UInt(3)),
+                ("op", Value::Str("y".into())),
+            ],
+        );
+        let c = rec(5, "log", &[("phase", Value::Str("ready".into()))]);
+        let d = rec(5, "log", &[("phase", Value::Str("starting".into()))]);
+
+        let forward = vec![a.clone(), b.clone(), c.clone(), d.clone()];
+        let reversed: Vec<RecordRec> = forward.iter().rev().cloned().collect();
+
+        let eval = |recs: Vec<RecordRec>| {
+            let sensor = MatchSensor::new(
+                signals.clone(),
+                OwnedRecords(recs.clone()),
+                FaultMoments(vec![]),
+                BASE,
+            )
+            .unwrap();
+            let oracle =
+                MatchOracle::new(signals.clone(), OwnedRecords(recs), FaultMoments(vec![]));
+            (
+                serde_json::to_string(&sensor.features(&trace())).unwrap(),
+                oracle.judge(&trace()),
+                oracle.verdicts(&trace()),
+            )
+        };
+        let (f_fwd, j_fwd, v_fwd) = eval(forward);
+        let (f_rev, j_rev, v_rev) = eval(reversed);
+        assert_eq!(f_fwd, f_rev, "feature stream depends on emission order");
+        assert_eq!(j_fwd, j_rev, "judge verdict depends on emission order");
+        assert_eq!(v_fwd, v_rev, "verdict list depends on emission order");
+
+        // The state_max register reports bucket 4 (max(8, 3) = 8) exactly once —
+        // never an intermediate bucket 2 from folding 3 before 8.
+        let sensor = MatchSensor::new(
+            signals,
+            OwnedRecords(vec![a, b, c, d]),
+            FaultMoments(vec![]),
+            BASE,
+        )
+        .unwrap();
+        let reg_ch = sensor.channel_of(&SignalId("reg".into())).unwrap();
+        let reg_ids: Vec<u64> = sensor
+            .features(&trace())
+            .into_iter()
+            .filter(|(_, f)| f.channel == reg_ch)
+            .map(|(_, f)| f.id.0)
+            .collect();
+        assert_eq!(reg_ids, vec![4], "per-Moment max bucket only");
+        // Two never signals matched at the same Moment → two distinct verdicts.
+        assert_eq!(v_fwd.len(), 2);
     }
 }

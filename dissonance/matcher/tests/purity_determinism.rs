@@ -6,11 +6,28 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+
 use common::{arb_faults, arb_records, arb_signal_set, trace};
-use explorer::{ChannelId, Oracle};
-use matcher::stub::{FaultMoments, OwnedRecords};
+use explorer::{ChannelId, Feature, FeatureSet, Moment, Oracle};
+use matcher::stub::{FaultMoments, OwnedRecords, RecordRec};
 use matcher::{MatchOracle, MatchSensor, SignalSet};
 use proptest::prelude::*;
+
+/// Group a feature stream into the per-`Moment` [`FeatureSet`] a `CellFn` keys —
+/// the spine-level view the router feeds downstream.
+fn feature_sets(stream: &[(Moment, Feature)]) -> BTreeMap<Moment, FeatureSet> {
+    let mut m: BTreeMap<Moment, FeatureSet> = BTreeMap::new();
+    for (moment, f) in stream {
+        m.entry(*moment).or_default().insert(*f);
+    }
+    m
+}
+
+/// A record stream paired with a random shuffle of itself.
+fn records_and_shuffle() -> impl Strategy<Value = (Vec<RecordRec>, Vec<RecordRec>)> {
+    arb_records().prop_flat_map(|recs| (Just(recs.clone()), Just(recs).prop_shuffle()))
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -83,5 +100,61 @@ proptest! {
                 sensor_p.channel_of(&decl.name)
             );
         }
+
+        // (3) Emission-order invariance (round-3): reversing the source's record
+        // order — which permutes any same-Moment records — changes nothing. The
+        // output is a pure function of record *content*, not emission order.
+        let reversed_recs: Vec<_> = recs.iter().rev().cloned().collect();
+        let sensor_e = MatchSensor::new(
+            set.clone(),
+            OwnedRecords(reversed_recs.clone()),
+            FaultMoments(faults.clone()),
+            ChannelId(1),
+        )
+        .unwrap();
+        let oracle_e = MatchOracle::new(
+            set.clone(),
+            OwnedRecords(reversed_recs),
+            FaultMoments(faults.clone()),
+        );
+        prop_assert_eq!(
+            serde_json::to_string(&f1).unwrap(),
+            serde_json::to_string(&sensor_e.features(&t)).unwrap(),
+            "reversing emission order changed the feature stream"
+        );
+        prop_assert_eq!(oracle.verdicts(&t), oracle_e.verdicts(&t));
+        prop_assert_eq!(oracle.judge(&t), oracle_e.judge(&t));
+    }
+
+    /// Round-3 P1, the dedicated shuffle proptest: a **random permutation** of
+    /// the source's records (which reorders same-Moment records arbitrarily)
+    /// yields the identical per-`Moment` `FeatureSet`, the identical raw feature
+    /// stream, and the identical `judge()` / `verdicts()` output. The router's
+    /// result is a pure function of record content, never of emission order.
+    #[test]
+    fn shuffling_emission_order_preserves_featureset_and_judge(
+        (recs, shuffled) in records_and_shuffle(),
+        set in arb_signal_set(),
+        faults in arb_faults(),
+    ) {
+        let t = trace();
+        let eval = |r: Vec<RecordRec>| {
+            let sensor = MatchSensor::new(
+                set.clone(),
+                OwnedRecords(r.clone()),
+                FaultMoments(faults.clone()),
+                ChannelId(1),
+            )
+            .unwrap();
+            let oracle = MatchOracle::new(set.clone(), OwnedRecords(r), FaultMoments(faults.clone()));
+            (sensor.features(&t), oracle.judge(&t), oracle.verdicts(&t))
+        };
+        let (f1, j1, v1) = eval(recs);
+        let (f2, j2, v2) = eval(shuffled);
+
+        prop_assert_eq!(feature_sets(&f1), feature_sets(&f2), "FeatureSet differs under shuffle");
+        prop_assert_eq!(f1, f2, "raw feature stream differs under shuffle");
+        prop_assert_eq!(j1, j2, "judge() differs under shuffle");
+        prop_assert_eq!(v1, v2, "verdicts() differ under shuffle");
     }
 }

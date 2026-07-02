@@ -74,11 +74,20 @@ match by its one declared `Role`.
   silent empty set — an explicit `"signals": []` stays legal) and
   `deny_unknown_fields` at every level rejects a misspelled key rather than
   silently ignoring it (which could vacate the set or broaden a match).
-- **Output ordering.** Both structs process records in a canonical
-  `(Moment, index)` order and the sensor sorts its stream by
-  `(Moment, channel, id)`, so evaluation is a deterministic, permutation- and
-  emission-order-invariant function of the trace (no `HashMap`, no floats,
-  seedless).
+- **Content-based determinism — no emission-order leak** (round-3 P1). Output
+  must be a pure function of record *content*, but `Matchable` exposes only
+  `kind()` / `attr(k)` / `moment()` — no attribute *enumeration*, so a record has
+  no full "canonical bytes" a generic sort could key on. Rather than a
+  `(Moment, index)` tie-break (which would degenerate to the source's emission
+  order for same-Moment records), each consumer keys on the content it actually
+  uses: the sensor sorts its whole stream by `(Moment, channel, id)`;
+  `state_max` folds per-Moment maxima through a `BTreeMap<Moment, u64>` (`max` is
+  order-independent, so intra-Moment order cannot matter — and it emits one
+  bucket per Moment, never an intermediate bucket from a mid-Moment partial
+  fold); the oracle orders verdicts by `(Moment, fingerprint)` and `judge()`
+  returns the min. There is no `HashMap` iteration, no floats, no seed — the
+  same trace in *any* record order yields byte-identical output (the shuffle
+  proptest pins this).
 
 ## Provisional / superseded elsewhere
 
@@ -123,11 +132,15 @@ match by its one declared `Role`.
 
 ## Gates
 
-All green on macOS (dev) — `build`, `nextest` (35 tests), `clippy -D warnings`,
-`fmt --check`, `cargo deny check`, all `--all-features`. No `unsafe`, so no Miri
-gate applies. Property suites (≥256 cases each): router totality, catalog
-partition, purity/determinism + permutation-invariance, glob-vs-reference (512),
-config round-trip. Regression tests cover every review finding: missing/unknown
-key rejected, channel-base/coverage-collision + space-exhaustion rejected,
-`state_max`-without-`attr_max` rejected, and megabyte pathological globs staying
-linear. Total test runtime well under the ~3-minute budget.
+All green on macOS (dev) — `build`, `nextest` (37 tests), `clippy -D warnings`,
+`fmt --check`, `cargo deny check`, all `--all-features`, plus the public-API
+snapshot test (`tests/public_api.rs` + committed `tests/public-api.txt`, run in
+the `public-api` CI job on the pinned nightly — the crate is now in that job's
+package list). No `unsafe`, so no Miri gate applies. Property suites (≥256 cases
+each): router totality, catalog partition, purity/determinism (declaration-
+permutation, emission-reversal, and a **shuffle** proptest asserting identical
+`FeatureSet` + `judge()`), glob-vs-reference (512), config round-trip. Regression
+tests cover every review finding: missing/unknown key rejected, channel-base /
+coverage-collision + space-exhaustion rejected, `state_max`-without-`attr_max`
+rejected, same-Moment emission-order invariance, and megabyte pathological globs
+staying linear. Total test runtime well under the ~3-minute budget.
