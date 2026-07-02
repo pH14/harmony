@@ -6,6 +6,18 @@ that bundle becomes bytes and back. Dependencies 58 (`ControlServer`) and 64
 (`spine.rs`) are **already merged into `main`**, so this branch builds directly
 on them (the spec was written when they were unmerged).
 
+## Round-4 review response (PR #48)
+
+One blocking item from the round-3 cross-model pass:
+
+- **Content-address verification on read** — `TraceStore::load`/`env` now re-hash
+  the decoded env and reject it with `TraceError::IdMismatch { requested, found }`
+  unless `TraceId::of(&env) == id`. The store is content-addressed, so a renamed,
+  swapped, or tampered file (whose bytes decode fine but hash to a different id)
+  is no longer served on the strength of its filename. Renamed-file test added;
+  the conductor's now-redundant explicit re-check was removed (the store enforces
+  it).
+
 ## Round-3 review response (PR #48)
 
 Four small blocking items from the round-2 cross-model pass:

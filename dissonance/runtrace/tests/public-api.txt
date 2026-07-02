@@ -10,6 +10,9 @@ impl runtrace::RetentionPolicy
 pub fn runtrace::RetentionPolicy::as_str(&self) -> &'static str
 pub fn runtrace::RetentionPolicy::parse(&str) -> core::option::Option<runtrace::RetentionPolicy>
 pub enum runtrace::TraceError
+pub runtrace::TraceError::IdMismatch
+pub runtrace::TraceError::IdMismatch::found: runtrace::TraceId
+pub runtrace::TraceError::IdMismatch::requested: runtrace::TraceId
 pub runtrace::TraceError::Ingest(alloc::string::String)
 pub runtrace::TraceError::Io(std::io::error::Error)
 pub runtrace::TraceError::Magic

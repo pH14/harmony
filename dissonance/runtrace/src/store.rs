@@ -143,10 +143,17 @@ impl TraceStore {
 
     /// Load the full [`RunTrace`] behind `id`. [`TraceError::NotRetained`] if the
     /// run was recorded env-only (regenerate it by replay from
-    /// [`env`](Self::env)); [`TraceError::NotFound`] if the id is unknown.
+    /// [`env`](Self::env)); [`TraceError::NotFound`] if the id is unknown;
+    /// [`TraceError::IdMismatch`] if the decoded env does not hash back to `id`
+    /// (a renamed/tampered store file — the store is content-addressed, so it
+    /// never trusts the filename).
     pub fn load(&self, id: TraceId) -> Result<RunTrace, TraceError> {
         match std::fs::read(self.path(id, "trace")) {
-            Ok(bytes) => codec::decode(&bytes),
+            Ok(bytes) => {
+                let trace = codec::decode(&bytes)?;
+                verify_address(id, &trace.env)?;
+                Ok(trace)
+            }
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 if self.path(id, "env").exists() {
                     Err(TraceError::NotRetained(id))
@@ -159,10 +166,15 @@ impl TraceStore {
     }
 
     /// Load the always-persisted [`Environment`] behind `id` (the reproducer).
-    /// [`TraceError::NotFound`] if the id is unknown.
+    /// [`TraceError::NotFound`] if the id is unknown; [`TraceError::IdMismatch`]
+    /// if the decoded env does not hash back to `id` (renamed/tampered file).
     pub fn env(&self, id: TraceId) -> Result<Environment, TraceError> {
         match std::fs::read(self.path(id, "env")) {
-            Ok(bytes) => codec::decode_env(&bytes),
+            Ok(bytes) => {
+                let env = codec::decode_env(&bytes)?;
+                verify_address(id, &env)?;
+                Ok(env)
+            }
             Err(e) if e.kind() == ErrorKind::NotFound => Err(TraceError::NotFound(id)),
             Err(e) => Err(TraceError::Io(e)),
         }
@@ -191,6 +203,19 @@ impl TraceStore {
         out.sort_unstable();
         out.dedup();
         Ok(out)
+    }
+}
+
+/// Re-verify a loaded artifact's **content address**: the decoded env must hash
+/// back to the id it was filed under, else the file was renamed/swapped/tampered
+/// ([`TraceError::IdMismatch`]). The store is content-addressed, so a filename is
+/// never trusted on its own.
+fn verify_address(requested: TraceId, env: &Environment) -> Result<(), TraceError> {
+    let found = TraceId::of(env);
+    if found == requested {
+        Ok(())
+    } else {
+        Err(TraceError::IdMismatch { requested, found })
     }
 }
 

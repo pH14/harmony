@@ -493,6 +493,9 @@ pub fn verify_store_reload(store: &TraceStore, report: &RecordReport) -> Vec<Str
     for row in &report.rows {
         let id = row.trace_id;
         let where_ = format!("trace {id} (seed {:#018x} run {})", row.seed, row.run);
+        // `env`/`load` re-verify the content address internally (an
+        // `IdMismatch` surfaces here as a reload failure), so a successful read
+        // already proves the artifact hashes back to its id.
         let env = match store.env(id) {
             Ok(e) => e,
             Err(e) => {
@@ -500,12 +503,6 @@ pub fn verify_store_reload(store: &TraceStore, report: &RecordReport) -> Vec<Str
                 continue;
             }
         };
-        // The env sidecar is content-addressed by exactly these bytes.
-        if runtrace::TraceId::of(&env) != id {
-            failures.push(format!(
-                "{where_}: reloaded env is not content-addressed to its id"
-            ));
-        }
         if row.retained {
             // The gate must actually LOAD the journal — no `has_journal` guard —
             // and the reloaded trace must match the report row, not merely share

@@ -126,6 +126,20 @@ pub enum TraceError {
     /// regenerates by replay from its env (task 65 §3).
     #[error("trace {0} was recorded env-only; its journal is not retained")]
     NotRetained(TraceId),
+    /// A loaded artifact does not hash back to the id it was filed under — a
+    /// renamed, swapped, or tampered store file. The store is **content-addressed**
+    /// (`TraceId = blake3(canonical env bytes)`), so every read re-verifies the
+    /// decoded env's address against the requested id rather than trusting the
+    /// filename.
+    #[error(
+        "trace {requested} decoded to a different content address {found} (store file renamed or tampered)"
+    )]
+    IdMismatch {
+        /// The id the caller asked for (the filename stem).
+        requested: TraceId,
+        /// The content address the decoded env actually hashes to.
+        found: TraceId,
+    },
     /// A telemetry NDJSON line could not be parsed while ingesting a `Console`
     /// recording ([`crate::ingest_ndjson`]).
     #[error("malformed telemetry NDJSON while ingesting a Console recording: {0}")]

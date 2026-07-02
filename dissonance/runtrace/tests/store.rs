@@ -80,6 +80,48 @@ fn unknown_ids_are_not_found() {
 }
 
 #[test]
+fn a_renamed_store_file_fails_content_address_verification() {
+    // The store is content-addressed: a file renamed under the wrong id decodes
+    // fine but must NOT be served — load/env re-verify the decoded env hashes
+    // back to the requested id.
+    let dir = tempfile::tempdir().unwrap();
+    let store = TraceStore::open(dir.path()).unwrap();
+    let t = trace(b"authentic", crash());
+    let real = store.record(&t, Retain::Full).unwrap();
+
+    // Forge files under a DIFFERENT id, byte-copied from the real artifacts.
+    let forged = TraceId([0xAB; 32]);
+    assert_ne!(forged, real);
+    let p = dir.path();
+    std::fs::copy(
+        p.join(format!("{real}.env")),
+        p.join(format!("{forged}.env")),
+    )
+    .unwrap();
+    std::fs::copy(
+        p.join(format!("{real}.trace")),
+        p.join(format!("{forged}.trace")),
+    )
+    .unwrap();
+
+    // Reading under the forged id decodes but fails the content-address check.
+    assert!(matches!(
+        store.env(forged),
+        Err(runtrace::TraceError::IdMismatch { requested, found })
+            if requested == forged && found == real
+    ));
+    assert!(matches!(
+        store.load(forged),
+        Err(runtrace::TraceError::IdMismatch { requested, found })
+            if requested == forged && found == real
+    ));
+
+    // The authentic id still loads cleanly.
+    assert_eq!(store.load(real).unwrap(), t);
+    assert_eq!(store.env(real).unwrap(), t.env);
+}
+
+#[test]
 fn ids_are_listed_in_deterministic_sorted_order() {
     let dir = tempfile::tempdir().unwrap();
     let store = TraceStore::open(dir.path()).unwrap();
