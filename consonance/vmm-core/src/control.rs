@@ -531,6 +531,7 @@ impl<B: Backend> ControlServer<B> {
     /// run (PR #44 pass 5; the `#34`/`#55` stale-arm class). Making the deadline a
     /// hard bound needs the backend to reset the `run_until` arm across runs — a
     /// `patched_kvm`/`pmu_sys` change **outside task-58's surface**, deferred.
+    ///
     /// `run(until)` becomes **"run to `min(next staged Moment, until)`"** (task
     /// 59): before each step, apply every host fault staged at-or-before the
     /// current [`Moment`], then arm the exact-count arrival
