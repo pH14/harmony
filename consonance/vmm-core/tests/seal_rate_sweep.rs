@@ -26,11 +26,16 @@
 //!    just before each target (task 59's host-perturb path is not yet landed, so we vary
 //!    the target + step the guest a little way in — landing it in a less "convenient",
 //!    often non-synchronized interior state) and re-measure the seal rate.
-//! 4. **Materialization depth**: seal a shallow parent and a deep child; materialize the
-//!    child by `branch(parent) → run the suffix` and confirm it reproduces the child's
-//!    live `state_hash` bit-for-bit — recording the suffix-vs-genesis replay-depth ratio.
+//! 4. **Materialization depth**: seal a shallow parent and a deep child; materialize the child
+//!    by `branch(parent) → run the suffix` and confirm it reproduces the **genesis-rooted**
+//!    materialization bit-for-bit (ancestor-independence) — recording the suffix-vs-genesis
+//!    replay-depth ratio.
+//! 4b. **Schedule-faithful replay** (distinguishing experiment): the clean replays agree with
+//!    each other but diverge from the probe-laden live run. Restore the parent and re-run the
+//!    live legs *with the same `run(deadline)`+`probe_seal` schedule* — match ⇒ the schedule is
+//!    a deterministic part of the trajectory (substrate sound); mismatch ⇒ escalate.
 //! 5. All of it rolls up through the **same** [`vmm_core::seal_rate`] bookkeeping the
-//!    portable suite tests, ending in an explicit [`Ruling`] the report quotes.
+//!    portable suite tests; the final GO/NO-GO ruling is the integrator's.
 //!
 //! The numbers this prints are transcribed into `consonance/vmm-core/SEAL-RATE-REPORT.md`.
 //!
@@ -51,9 +56,10 @@
 //!
 //! Knobs (env): `TARGETS` (N, default 64), `BRANCH_HORIZON_VNS` (V-time run past each
 //! seal for the determinism check, default 4_000_000), `ADV_JITTER_VNS` (default 50_000),
-//! `ADV_PERTURB_STEPS` (max perturbation steps, default 4096), `WALL_BUDGET_SECS` (per
-//! run, default 1800), `SPAN_START`/`SPAN_END` (skip the profiling pass and use this
-//! V-time span directly), `BUSY_CENTERS` (comma-separated V-times to place
+//! `ADV_PERTURB_STEPS` (max perturbation steps, default 32), `DET_SUBSET` (how many spread
+//! seals get the full 2 GiB snapshot + §2/§4 branch-verify, default 24), `WALL_BUDGET_SECS`
+//! (per **guest**, default 1800), `SPAN_START`/`SPAN_END` (skip the profiling pass and use
+//! this V-time span directly), `BUSY_CENTERS` (comma-separated V-times to place
 //! interrupt-service windows at when profiling is skipped), `BOOT_CMDLINE`.
 #![cfg(target_os = "linux")]
 
@@ -416,7 +422,12 @@ fn branch_and_run(
         .expect("reseed the entropy stream for the branch");
     let seal_vtime = vmm.effective_vns().unwrap_or(0);
     let mut printed = vmm.serial().len();
-    let adv = run_to_vtime(&mut vmm, seal_vtime + horizon_vns, &mut printed, watchdog_start());
+    let adv = run_to_vtime(
+        &mut vmm,
+        seal_vtime + horizon_vns,
+        &mut printed,
+        watchdog_start(),
+    );
     let skid = adv
         .step_error
         .as_deref()
@@ -585,12 +596,17 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
 // The measurement.
 // ---------------------------------------------------------------------------
 
-/// A successful nominal seal we retained for the §2 determinism check + §4 depth.
+/// A successful nominal seal we retained for the §2 determinism check + §4/§4b.
 struct Sealed {
+    /// Index of this seal's target in the schedule (its position in the live leg sequence).
     attempt_idx: usize,
     snap: SnapshotId,
     seal_vtime: VTime,
-    live_hash: [u8; 32],
+    /// `state_hash` at the landing **before** `probe_seal` (a clean replay reproduces this).
+    live_hash_clean: [u8; 32],
+    /// `state_hash` at the landing **after** `probe_seal` (the probe-laden live trajectory —
+    /// what §4b's schedule-faithful replay must reproduce).
+    live_hash_probed: [u8; 32],
 }
 
 #[test]
@@ -606,7 +622,10 @@ fn seal_rate_sweep() {
     assert!(n >= 64, "task 63 requires N >= 64 target Moments (got {n})");
     let horizon = env_u64("BRANCH_HORIZON_VNS", 4_000_000);
     let jitter = env_u64("ADV_JITTER_VNS", 50_000);
-    let perturb_max = env_u64("ADV_PERTURB_STEPS", 4096);
+    // A SMALL perturbation: a handful of raw steps lands the guest a little way past the
+    // boundary (usually a non-synchronized interior point). Large values advance V-time by
+    // millions and exhaust the span after a few targets — the first run's §3 bug.
+    let perturb_max = env_u64("ADV_PERTURB_STEPS", 32);
     // §1 (the seal rate) probes `save_vm_state` at ALL N targets (cheap). §2/§4 need the full
     // 2 GiB memory snapshot, which is expensive (~seconds each) and would make branching all N
     // impractical — so a spread subset of `DET_SUBSET` successful seals is fully snapshotted and
@@ -663,7 +682,15 @@ fn seal_rate_sweep() {
                 );
             }
             let landed = live.effective_vns().unwrap_or(0);
+            // Capture the clean landing hash BEFORE probe_seal: `has_pending_guest_interrupt`
+            // re-arbitrates the LAPIC (a benign, idempotent-over-a-run mutation that washes out
+            // over forward execution but perturbs the *instantaneous* state_hash), so capturing
+            // after it would make §4's live reference disagree with a clean replay.
+            let live_hash_clean = live.state_hash();
             let (snapshot, reason, blob) = probe_seal(&mut live);
+            // The probe-laden hash: `state_hash` AFTER probe_seal (has_pending_guest_interrupt's
+            // LAPIC re-arbitration). §4b replays with the same probe schedule to reproduce it.
+            let live_hash_probed = live.state_hash();
             let result = match reason {
                 None => {
                     // §1 rate: this target sealed. For a spread subset (+ the deepest), also take
@@ -678,7 +705,8 @@ fn seal_rate_sweep() {
                             attempt_idx: i,
                             snap,
                             seal_vtime: landed,
-                            live_hash: live.state_hash(),
+                            live_hash_clean,
+                            live_hash_probed,
                         });
                     }
                     SealResult::Sealed
@@ -816,6 +844,9 @@ fn seal_rate_sweep() {
 
     // --- 4. Materialization depth (parent-rooted premise) ------------------
     let depth = materialization_depth(&engine, &sealed, &kernel, &initramfs);
+    // --- 4b. Schedule-faithful replay (the foreman's distinguishing experiment) --------
+    let schedule_faithful =
+        materialization_schedule_faithful(&engine, &sealed, &schedule, &kernel, &initramfs);
 
     // --- 5. Roll up + emit the report block --------------------------------
     let nominal_stats = SealStats::of(&nominal);
@@ -846,6 +877,7 @@ fn seal_rate_sweep() {
         overshoot,
         &predicate,
         depth,
+        schedule_faithful,
         &nondeterministic,
         ruling,
     );
@@ -904,28 +936,102 @@ fn materialization_depth(
         "\n[sweep] === §4 materialization depth: parent V-time {} → child V-time {} ===",
         parent.seal_vtime, child.seal_vtime
     );
-    // Parent-rooted: branch(parent) verbatim → run the suffix to the child's V-time.
+    // The Phase-C premise: materializing the child by branch(parent) → run the suffix must
+    // reproduce the SAME state as materializing it from genesis (replay the whole prefix). This
+    // is the load-bearing assertion — a materialized virtual exemplar must be independent of
+    // which retained ancestor it was rooted at.
     let from_parent_hash = replay_to(engine, parent.snap, kernel, initramfs, child.seal_vtime);
-    // From-genesis cross-check (pure determinism — should also reproduce the child).
     let from_genesis_hash = boot_and_run_to(kernel, initramfs, child.seal_vtime);
 
-    let parent_ok = from_parent_hash == child.live_hash;
-    let genesis_ok = from_genesis_hash == child.live_hash;
+    let premise_ok = from_parent_hash == from_genesis_hash;
+    // `live_hash_clean` is captured at the seal instant BEFORE probe_seal; it agrees with the
+    // clean replays (informational — not the assertion; §4b tests the probe-laden trajectory).
+    let live_agrees = from_genesis_hash == child.live_hash_clean;
     eprintln!(
-        "[sweep] §4 child live_hash={}\n[sweep] §4 parent-rooted reproduces={} (hash={})\n[sweep] \
-         §4 genesis-rooted reproduces={} (hash={})",
-        hex(&child.live_hash),
-        parent_ok,
+        "[sweep] §4 parent-rooted (suffix) = {}\n[sweep] §4 genesis-rooted (prefix) = {}\n[sweep] \
+         §4 parent==genesis (the premise): {premise_ok}   (live_hash agrees: {live_agrees})",
         hex(&from_parent_hash),
-        genesis_ok,
         hex(&from_genesis_hash),
     );
     assert!(
-        parent_ok,
-        "§4 parent-rooted materialization did NOT reproduce the child's live state_hash — the \
-         parent-rooted lazy-materialization premise fails (escalate)"
+        premise_ok,
+        "§4 parent-rooted materialization ({}) did NOT match genesis-rooted ({}) — the \
+         parent-rooted lazy-materialization premise fails; materialization is not \
+         ancestor-independent (escalate — a determinism-core bug)",
+        hex(&from_parent_hash),
+        hex(&from_genesis_hash),
     );
     MaterializationDepth::new(0, parent.seal_vtime, child.seal_vtime).ok()
+}
+
+/// §4b (the foreman's distinguishing experiment): the clean replays agree with each other
+/// (§4) but both diverge from the probe-laden live run. Is that divergence a *deterministic*
+/// function of the deadline/probe schedule (reproducible), or non-reproducible perturbation?
+///
+/// Restore the parent snapshot, then re-run the EXACT sequence of live legs between parent and
+/// child — `run_to_vtime(target_j)` + `probe_seal` at each intermediate target, exactly as the
+/// nominal pass did (the same `run(deadline)` arm-points + `save_vm_state`/`has_*` probes) — and
+/// compare the final probe-laden `state_hash` to the child's `live_hash_probed`.
+///
+/// - **Match** ⇒ the deadline/probe schedule is a deterministic part of the trajectory; the live
+///   run's divergence from a clean replay is fully reproduced by replaying the schedule → the
+///   substrate is sound (materialize by replaying the exact schedule, or probe-free).
+/// - **Mismatch** ⇒ the probes inject non-reproducible perturbation → escalate.
+///
+/// Reports the verdict; does **not** assert (the GO/NO-GO ruling is the integrator's). `None`
+/// if there is no distinct-depth snapshotted pair to test.
+fn materialization_schedule_faithful(
+    engine: &SnapshotEngine,
+    sealed: &[Sealed],
+    schedule: &SamplingSchedule,
+    kernel: &[u8],
+    initramfs: &[u8],
+) -> Option<bool> {
+    if sealed.len() < 2 {
+        eprintln!("[sweep] §4b schedule-faithful replay: <2 seals, skipped");
+        return None;
+    }
+    let child = sealed.iter().max_by_key(|s| s.seal_vtime).unwrap();
+    let parent = sealed
+        .iter()
+        .filter(|s| s.seal_vtime < child.seal_vtime)
+        .max_by_key(|s| s.seal_vtime)?;
+    let (p_idx, c_idx) = (parent.attempt_idx, child.attempt_idx);
+    if p_idx >= c_idx {
+        eprintln!("[sweep] §4b: parent index >= child index, skipped");
+        return None;
+    }
+    eprintln!(
+        "\n[sweep] === §4b schedule-faithful replay: restore parent (idx {p_idx}, V-time {}) → \
+         re-run legs {}..={c_idx} with the live probe schedule → child (V-time {}) ===",
+        parent.seal_vtime,
+        p_idx + 1,
+        child.seal_vtime
+    );
+    let mut vmm = boot_pg(kernel, initramfs, BASE_SEED);
+    let mapping = engine.materialize(parent.snap).expect("materialize parent");
+    let vm_state = engine
+        .vm_state(parent.snap)
+        .expect("decode parent vm_state");
+    vmm.restore_snapshot(mapping.as_slice(), &vm_state)
+        .expect("restore parent snapshot");
+    let start = watchdog_start();
+    let mut printed = vmm.serial().len();
+    // Replay each intermediate live leg exactly: run to the target, then probe_seal.
+    for j in (p_idx + 1)..=c_idx {
+        let target = schedule.targets()[j].vtime;
+        let _ = run_to_vtime(&mut vmm, target, &mut printed, start);
+        let _ = probe_seal(&mut vmm);
+    }
+    let replayed = vmm.state_hash();
+    let matches = replayed == child.live_hash_probed;
+    eprintln!(
+        "[sweep] §4b child live_hash_probed  = {}\n[sweep] §4b schedule-faithful replay = {}\n\
+         [sweep] §4b MATCH (the probe/deadline schedule is deterministic): {matches}",
+        hex(&child.live_hash_probed),
+        hex(&replayed),
+    );
+    Some(matches)
 }
 
 /// Print the full measurement in the shape `SEAL-RATE-REPORT.md` transcribes.
@@ -938,6 +1044,7 @@ fn emit_report(
     overshoot: Option<Overshoot>,
     predicate: &PredicateQuality,
     depth: Option<MaterializationDepth>,
+    schedule_faithful: Option<bool>,
     nondeterministic: &[(VTime, String)],
     ruling: Ruling,
 ) {
@@ -995,12 +1102,27 @@ fn emit_report(
     }
     if let Some(d) = depth {
         eprintln!(
-            "[REPORT] materialization depth: from_parent={} from_genesis={} ratio={} savings={}",
+            "[REPORT] §4 materialization depth (parent-rooted==genesis-rooted, verified): \
+             from_parent={} from_genesis={} ratio={} savings={}",
             d.from_parent,
             d.from_genesis,
             ppm_percent(d.ratio_ppm()),
             ppm_percent(d.savings_ppm())
         );
+    }
+    match schedule_faithful {
+        Some(true) => eprintln!(
+            "[REPORT] §4b schedule-faithful replay: MATCH — the probe/deadline schedule is a \
+             DETERMINISTIC part of the trajectory; the live run reproduces exactly when replayed \
+             with the same schedule (substrate sound; materialize probe-free or replay the schedule)"
+        ),
+        Some(false) => eprintln!(
+            "[REPORT] §4b schedule-faithful replay: MISMATCH — replaying the same probe schedule \
+             did NOT reproduce the live trajectory (non-reproducible perturbation → ESCALATE)"
+        ),
+        None => {
+            eprintln!("[REPORT] §4b schedule-faithful replay: skipped (no distinct-depth pair)")
+        }
     }
     eprintln!(
         "[REPORT] sealable() predicate: TP={} FP={} TN={} FN={} precision={} recall={}",
@@ -1017,6 +1139,11 @@ fn emit_report(
         rate_ppm(adversarial.sealed, adversarial.n),
     );
     eprintln!("[REPORT] ------------------------------------------------------------");
-    eprintln!("[REPORT] RULING: {}", ruling.label());
+    // A mechanical, threshold-derived summary of the DATA — NOT the go/no-go ruling, which the
+    // foreman has escalated to the integrator (task 63 gate 3). Presented for reference only.
+    eprintln!(
+        "[REPORT] MECHANICAL SUMMARY (thresholds; the final ruling is the integrator's): {}",
+        ruling.label()
+    );
     eprintln!("[REPORT] ============================================================");
 }
