@@ -318,9 +318,7 @@ pub struct DecisionPoint {
 /// A stable reference to a frontier entry (its admission-order index). Opaque
 /// enough for a [`Selector`] — it carries no cell meaning — while staying
 /// `Copy`/`Ord` for deterministic bookkeeping.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 pub struct ExemplarRef(pub usize);
 
 /// One admitted frontier entry: the exemplar, its genesis-complete environment

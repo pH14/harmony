@@ -1,35 +1,9 @@
 pub mod explorer
-pub mod explorer::adapter
-pub struct explorer::adapter::AdapterEnv
-pub explorer::adapter::AdapterEnv::base_offset: u64
-pub explorer::adapter::AdapterEnv::pos: u64
-pub explorer::adapter::AdapterEnv::spec: environment::recorded::EnvSpec
-impl explorer::adapter::AdapterEnv
-pub fn explorer::adapter::AdapterEnv::decode(&explorer::Environment) -> core::result::Result<explorer::adapter::AdapterEnv, explorer::MachineError>
-pub fn explorer::adapter::AdapterEnv::encode(&self) -> explorer::Environment
-pub struct explorer::adapter::SocketMachine<S: std::io::Read + std::io::Write>
-impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
-pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
-impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
-pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::coverage(&self) -> &[u8]
-pub fn explorer::adapter::SocketMachine<S>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
-pub struct explorer::adapter::SpecEnvCodec
-impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
-pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
-pub const explorer::adapter::ADAPTER_BLOB_VERSION: u16
-pub fn explorer::adapter::client_caps() -> control_proto::types::Caps
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
 pub explorer::MachineError::NotQuiescent
 pub explorer::MachineError::Transport(alloc::string::String)
+pub explorer::MachineError::UnknownExemplar(u64)
 pub explorer::MachineError::UnknownSnapshot(u64)
 pub enum explorer::StopReason
 pub explorer::StopReason::Assertion
@@ -53,83 +27,150 @@ impl explorer::StopReason
 pub fn explorer::StopReason::is_bug(&self) -> bool
 pub fn explorer::StopReason::is_terminal(&self) -> bool
 pub fn explorer::StopReason::vtime(&self) -> explorer::VTime
-pub struct explorer::AdapterEnv
-pub explorer::AdapterEnv::base_offset: u64
-pub explorer::AdapterEnv::pos: u64
-pub explorer::AdapterEnv::spec: environment::recorded::EnvSpec
-impl explorer::adapter::AdapterEnv
-pub fn explorer::adapter::AdapterEnv::decode(&explorer::Environment) -> core::result::Result<explorer::adapter::AdapterEnv, explorer::MachineError>
-pub fn explorer::adapter::AdapterEnv::encode(&self) -> explorer::Environment
+pub enum explorer::Value
+pub explorer::Value::Bool(bool)
+pub explorer::Value::Bytes(alloc::vec::Vec<u8>)
+pub explorer::Value::Int(i64)
+pub explorer::Value::Str(alloc::string::String)
+pub explorer::Value::UInt(u64)
 pub struct explorer::Answer(pub alloc::vec::Vec<u8>)
 pub struct explorer::Bug
 pub explorer::Bug::env: explorer::Environment
 pub explorer::Bug::fingerprint: [u8; 32]
 pub explorer::Bug::stop: explorer::StopReason
-pub struct explorer::Corpus
-impl explorer::Corpus
-pub fn explorer::Corpus::admit(&mut self, explorer::SnapId, explorer::Environment, &[u8]) -> bool
-pub fn explorer::Corpus::base_env(&self, explorer::SnapId) -> core::option::Option<&explorer::Environment>
-pub fn explorer::Corpus::drain_evicted(&mut self) -> alloc::vec::Vec<explorer::SnapId>
-pub fn explorer::Corpus::entry(&self, usize) -> core::option::Option<(explorer::SnapId, &explorer::Environment, explorer::CovScore)>
-pub fn explorer::Corpus::is_empty(&self) -> bool
-pub fn explorer::Corpus::len(&self) -> usize
-pub fn explorer::Corpus::new() -> Self
-pub fn explorer::Corpus::novelty(&self, &[u8]) -> explorer::CovScore
-pub fn explorer::Corpus::select(&self, u64) -> core::option::Option<(explorer::SnapId, &explorer::Environment)>
-pub fn explorer::Corpus::with_capacity(usize) -> Self
-impl core::default::Default for explorer::Corpus
-pub fn explorer::Corpus::default() -> Self
-pub struct explorer::CovScore(pub u64)
-pub struct explorer::CoverageStrategy
-impl explorer::CoverageStrategy
-pub fn explorer::CoverageStrategy::new(u64) -> Self
-pub fn explorer::CoverageStrategy::with_explore_period(self, u64) -> Self
-impl explorer::Strategy for explorer::CoverageStrategy
-pub fn explorer::CoverageStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
-pub fn explorer::CoverageStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
+pub struct explorer::ChannelId(pub u16)
+pub struct explorer::Composition
+pub explorer::Composition::archive: alloc::boxed::Box<dyn explorer::Archive>
+pub explorer::Composition::cells: alloc::boxed::Box<dyn explorer::CellFn>
+pub explorer::Composition::oracle: alloc::boxed::Box<dyn explorer::Oracle>
+pub explorer::Composition::selector: alloc::boxed::Box<dyn explorer::Selector>
+pub explorer::Composition::sensors: alloc::vec::Vec<alloc::boxed::Box<dyn explorer::Sensor>>
+pub explorer::Composition::tactic: alloc::boxed::Box<dyn explorer::Tactic>
+impl explorer::Composition
+pub fn explorer::Composition::defaults() -> Self
+pub struct explorer::CoverageArchive
+impl explorer::CoverageArchive
+pub fn explorer::CoverageArchive::new() -> Self
+pub fn explorer::CoverageArchive::with_sealable(alloc::boxed::Box<dyn core::ops::function::Fn(explorer::Moment) -> bool>) -> Self
+impl core::default::Default for explorer::CoverageArchive
+pub fn explorer::CoverageArchive::default() -> Self
+impl explorer::Archive for explorer::CoverageArchive
+pub fn explorer::CoverageArchive::admissible(&self, explorer::Moment) -> bool
+pub fn explorer::CoverageArchive::admit(&mut self, &explorer::RunTrace, &[explorer::Fork], &dyn explorer::CellFn, &[alloc::boxed::Box<dyn explorer::Sensor>]) -> explorer::Reward
+pub fn explorer::CoverageArchive::evict(&mut self)
+pub fn explorer::CoverageArchive::frontier(&self) -> &explorer::Frontier
+pub struct explorer::CoverageView
+pub explorer::CoverageView::map: alloc::vec::Vec<u8>
+pub struct explorer::DecisionPoint
+pub explorer::DecisionPoint::at: explorer::Moment
+pub explorer::DecisionPoint::ctx: alloc::vec::Vec<u8>
+pub explorer::DecisionPoint::id: u64
+pub struct explorer::DeclineTactic
+impl explorer::DeclineTactic
+pub fn explorer::DeclineTactic::new() -> Self
+impl explorer::Tactic for explorer::DeclineTactic
+pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
 pub struct explorer::Environment
 pub explorer::Environment::blob_version: u16
 pub explorer::Environment::bytes: alloc::vec::Vec<u8>
-pub struct explorer::Explorer<M: explorer::Machine, S: explorer::Strategy>
-impl<M: explorer::Machine, S: explorer::Strategy> explorer::Explorer<M, S>
-pub fn explorer::Explorer<M, S>::corpus(&self) -> &explorer::Corpus
-pub fn explorer::Explorer<M, S>::explore(&mut self, u64) -> core::result::Result<alloc::vec::Vec<explorer::Bug>, explorer::MachineError>
-pub fn explorer::Explorer<M, S>::genesis(&self) -> explorer::SnapId
-pub fn explorer::Explorer<M, S>::machine_mut(&mut self) -> &mut M
-pub fn explorer::Explorer<M, S>::multiverse_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
-pub fn explorer::Explorer<M, S>::new(M, S, alloc::boxed::Box<dyn explorer::EnvCodec>) -> core::result::Result<Self, explorer::MachineError>
-pub fn explorer::Explorer<M, S>::set_corpus_capacity(&mut self, usize) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::Explorer<M, S>::set_stop_conditions(&mut self, explorer::StopConditions)
-pub fn explorer::Explorer<M, S>::stop_conditions(&self) -> &explorer::StopConditions
-pub fn explorer::Explorer<M, S>::timeline(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
+pub struct explorer::ExemplarRef(pub usize)
+pub struct explorer::ExploreExploitSelector
+impl explorer::ExploreExploitSelector
+pub fn explorer::ExploreExploitSelector::new() -> Self
+pub fn explorer::ExploreExploitSelector::with_explore_period(self, u64) -> Self
+impl core::default::Default for explorer::ExploreExploitSelector
+pub fn explorer::ExploreExploitSelector::default() -> Self
+impl explorer::Selector for explorer::ExploreExploitSelector
+pub fn explorer::ExploreExploitSelector::choose(&mut self, &explorer::Frontier, &mut explorer::Prng) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::ExploreExploitSelector::reward(&mut self, explorer::ExemplarRef, explorer::Reward)
+pub struct explorer::Explorer<M: explorer::Machine>
+impl<M: explorer::Machine> explorer::Explorer<M>
+pub fn explorer::Explorer<M>::archive(&self) -> &dyn explorer::Archive
+pub fn explorer::Explorer<M>::evict_seals(&mut self) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Explorer<M>::explore(&mut self, u64) -> core::result::Result<alloc::vec::Vec<explorer::Bug>, explorer::MachineError>
+pub fn explorer::Explorer<M>::frontier(&self) -> &explorer::Frontier
+pub fn explorer::Explorer<M>::genesis(&self) -> explorer::SnapId
+pub fn explorer::Explorer<M>::machine_mut(&mut self) -> &mut M
+pub fn explorer::Explorer<M>::materialize(&mut self, explorer::ExemplarRef) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::Explorer<M>::multiverse_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
+pub fn explorer::Explorer<M>::new(M, alloc::boxed::Box<dyn explorer::EnvCodec>, explorer::Composition, u64) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::Explorer<M>::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
+pub fn explorer::Explorer<M>::sealed_count(&self) -> usize
+pub fn explorer::Explorer<M>::set_stop_conditions(&mut self, explorer::StopConditions)
+pub fn explorer::Explorer<M>::stop_conditions(&self) -> &explorer::StopConditions
+pub fn explorer::Explorer<M>::timeline(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
+pub struct explorer::Feature
+pub explorer::Feature::channel: explorer::ChannelId
+pub explorer::Feature::id: explorer::FeatureId
+impl core::iter::traits::collect::FromIterator<explorer::Feature> for explorer::FeatureSet
+pub fn explorer::FeatureSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = explorer::Feature>>(I) -> Self
+pub struct explorer::FeatureId(pub u64)
+pub struct explorer::FeatureSet
+impl explorer::FeatureSet
+pub fn explorer::FeatureSet::contains(&self, &explorer::Feature) -> bool
+pub fn explorer::FeatureSet::insert(&mut self, explorer::Feature) -> bool
+pub fn explorer::FeatureSet::is_empty(&self) -> bool
+pub fn explorer::FeatureSet::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = &explorer::Feature>
+pub fn explorer::FeatureSet::len(&self) -> usize
+pub fn explorer::FeatureSet::new() -> Self
+pub fn explorer::FeatureSet::singleton(explorer::Feature) -> Self
+impl core::iter::traits::collect::FromIterator<explorer::Feature> for explorer::FeatureSet
+pub fn explorer::FeatureSet::from_iter<I: core::iter::traits::collect::IntoIterator<Item = explorer::Feature>>(I) -> Self
+pub struct explorer::Fork
+pub explorer::Fork::coverage: core::option::Option<explorer::CoverageView>
+pub explorer::Fork::env: explorer::Environment
+pub explorer::Fork::exemplar: explorer::VirtualExemplar
+pub struct explorer::Frontier
+impl explorer::Frontier
+pub fn explorer::Frontier::claim(&mut self, explorer::CellKey, explorer::ExemplarRef) -> bool
+pub fn explorer::Frontier::get(&self, explorer::ExemplarRef) -> core::option::Option<&explorer::FrontierEntry>
+pub fn explorer::Frontier::insert(&mut self, explorer::FrontierEntry) -> explorer::ExemplarRef
+pub fn explorer::Frontier::is_empty(&self) -> bool
+pub fn explorer::Frontier::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (explorer::ExemplarRef, &explorer::FrontierEntry)>
+pub fn explorer::Frontier::len(&self) -> usize
+pub fn explorer::Frontier::new() -> Self
+pub fn explorer::Frontier::nth(&self, u64) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::Frontier::occupant(&self, &explorer::CellKey) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::Frontier::occupied_cells(&self) -> usize
+pub fn explorer::Frontier::occupy(&mut self, explorer::CellKey, explorer::ExemplarRef) -> core::option::Option<explorer::ExemplarRef>
+pub struct explorer::FrontierEntry
+pub explorer::FrontierEntry::env: explorer::Environment
+pub explorer::FrontierEntry::exemplar: explorer::VirtualExemplar
+pub explorer::FrontierEntry::reward: explorer::Reward
+pub struct explorer::GenesisSelector
+impl explorer::GenesisSelector
+pub fn explorer::GenesisSelector::new() -> Self
+impl explorer::Selector for explorer::GenesisSelector
+pub fn explorer::GenesisSelector::choose(&mut self, &explorer::Frontier, &mut explorer::Prng) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::GenesisSelector::reward(&mut self, explorer::ExemplarRef, explorer::Reward)
+pub struct explorer::GuestEvent
+pub explorer::GuestEvent::attrs: alloc::collections::btree::map::BTreeMap<alloc::string::String, explorer::Value>
+pub explorer::GuestEvent::kind: alloc::string::String
+pub struct explorer::IdentityCells
+impl explorer::IdentityCells
+pub fn explorer::IdentityCells::new() -> Self
+impl explorer::CellFn for explorer::IdentityCells
+pub fn explorer::IdentityCells::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
+pub struct explorer::Moment(pub u64)
+pub struct explorer::Prng
+impl explorer::Prng
+pub fn explorer::Prng::new(u64) -> Self
+pub fn explorer::Prng::next_u64(&mut self) -> u64
+pub struct explorer::Record
+pub explorer::Record::attrs: alloc::collections::btree::map::BTreeMap<alloc::string::String, explorer::Value>
+pub explorer::Record::kind: alloc::string::String
+pub struct explorer::Reward
+pub explorer::Reward::new_cells: u64
 pub struct explorer::RunOutcome
-pub explorer::RunOutcome::coverage_novelty: explorer::CovScore
 pub explorer::RunOutcome::env: explorer::Environment
 pub explorer::RunOutcome::stop: explorer::StopReason
-pub struct explorer::SeedStrategy
-impl explorer::SeedStrategy
-pub fn explorer::SeedStrategy::new(u64) -> Self
-impl explorer::Strategy for explorer::SeedStrategy
-pub fn explorer::SeedStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
-pub fn explorer::SeedStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
+pub struct explorer::RunTrace
+pub explorer::RunTrace::coverage: core::option::Option<explorer::CoverageView>
+pub explorer::RunTrace::env: explorer::Environment
+pub explorer::RunTrace::events: alloc::vec::Vec<(explorer::Moment, explorer::GuestEvent)>
+pub explorer::RunTrace::records: alloc::vec::Vec<(explorer::Moment, explorer::Record)>
+pub explorer::RunTrace::terminal: explorer::StopReason
 pub struct explorer::SnapId(pub u64)
-pub struct explorer::SocketMachine<S: std::io::Read + std::io::Write>
-impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
-pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
-impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
-pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::coverage(&self) -> &[u8]
-pub fn explorer::adapter::SocketMachine<S>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
-pub struct explorer::SpecEnvCodec
-impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
-pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::VTime>
 pub explorer::StopConditions::on: explorer::StopMask
@@ -137,16 +178,36 @@ pub struct explorer::StopMask(pub u32)
 impl explorer::StopMask
 pub const explorer::StopMask::ALL: explorer::StopMask
 pub const explorer::StopMask::NONE: explorer::StopMask
+pub struct explorer::TerminalOracle
+impl explorer::TerminalOracle
+pub fn explorer::TerminalOracle::new() -> Self
+impl explorer::Oracle for explorer::TerminalOracle
+pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
 pub struct explorer::VTime(pub u64)
-pub const explorer::ADAPTER_BLOB_VERSION: u16
+pub struct explorer::VirtualExemplar
+pub explorer::VirtualExemplar::at: explorer::Moment
+pub explorer::VirtualExemplar::parent: explorer::SnapId
+pub explorer::VirtualExemplar::seed: u64
+pub explorer::VirtualExemplar::suffix: explorer::Environment
+pub const explorer::COVERAGE_CHANNEL: explorer::ChannelId
+pub trait explorer::Archive
+pub fn explorer::Archive::admissible(&self, explorer::Moment) -> bool
+pub fn explorer::Archive::admit(&mut self, &explorer::RunTrace, &[explorer::Fork], &dyn explorer::CellFn, &[alloc::boxed::Box<dyn explorer::Sensor>]) -> explorer::Reward
+pub fn explorer::Archive::evict(&mut self)
+pub fn explorer::Archive::frontier(&self) -> &explorer::Frontier
+impl explorer::Archive for explorer::CoverageArchive
+pub fn explorer::CoverageArchive::admissible(&self, explorer::Moment) -> bool
+pub fn explorer::CoverageArchive::admit(&mut self, &explorer::RunTrace, &[explorer::Fork], &dyn explorer::CellFn, &[alloc::boxed::Box<dyn explorer::Sensor>]) -> explorer::Reward
+pub fn explorer::CoverageArchive::evict(&mut self)
+pub fn explorer::CoverageArchive::frontier(&self) -> &explorer::Frontier
+pub trait explorer::CellFn
+pub fn explorer::CellFn::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
+impl explorer::CellFn for explorer::IdentityCells
+pub fn explorer::IdentityCells::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
 pub trait explorer::EnvCodec
 pub fn explorer::EnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::EnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
 pub fn explorer::EnvCodec::seeded(&self, u64) -> explorer::Environment
-impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
-pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub trait explorer::Machine
 pub fn explorer::Machine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::coverage(&self) -> &[u8]
@@ -156,25 +217,30 @@ pub fn explorer::Machine::recorded_env(&self) -> core::result::Result<explorer::
 pub fn explorer::Machine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
 pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
-impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
-pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::coverage(&self) -> &[u8]
-pub fn explorer::adapter::SocketMachine<S>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::MachineError>
-pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
 pub trait explorer::MachineFactory
 pub type explorer::MachineFactory::M: explorer::Machine
 pub fn explorer::MachineFactory::spawn(&self) -> Self::M
-pub trait explorer::Strategy
-pub fn explorer::Strategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
-pub fn explorer::Strategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
-impl explorer::Strategy for explorer::CoverageStrategy
-pub fn explorer::CoverageStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
-pub fn explorer::CoverageStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
-impl explorer::Strategy for explorer::SeedStrategy
-pub fn explorer::SeedStrategy::choose(&mut self, &[u8], &[u8]) -> explorer::Answer
-pub fn explorer::SeedStrategy::next_env(&mut self, &explorer::Corpus, explorer::SnapId, &dyn explorer::EnvCodec) -> (explorer::SnapId, explorer::Environment)
-pub fn explorer::client_caps() -> control_proto::types::Caps
+pub trait explorer::Matchable
+pub fn explorer::Matchable::attr(&self, &str) -> core::option::Option<explorer::Value>
+pub fn explorer::Matchable::kind(&self) -> &str
+pub fn explorer::Matchable::moment(&self) -> explorer::Moment
+pub trait explorer::Oracle
+pub fn explorer::Oracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+impl explorer::Oracle for explorer::TerminalOracle
+pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+pub trait explorer::Selector
+pub fn explorer::Selector::choose(&mut self, &explorer::Frontier, &mut explorer::Prng) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::Selector::reward(&mut self, explorer::ExemplarRef, explorer::Reward)
+impl explorer::Selector for explorer::ExploreExploitSelector
+pub fn explorer::ExploreExploitSelector::choose(&mut self, &explorer::Frontier, &mut explorer::Prng) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::ExploreExploitSelector::reward(&mut self, explorer::ExemplarRef, explorer::Reward)
+impl explorer::Selector for explorer::GenesisSelector
+pub fn explorer::GenesisSelector::choose(&mut self, &explorer::Frontier, &mut explorer::Prng) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::GenesisSelector::reward(&mut self, explorer::ExemplarRef, explorer::Reward)
+pub trait explorer::Sensor
+pub fn explorer::Sensor::observe(&self, &explorer::RunTrace) -> alloc::vec::Vec<(explorer::Moment, explorer::Feature)>
+pub trait explorer::Tactic
+pub fn explorer::Tactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
+impl explorer::Tactic for explorer::DeclineTactic
+pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
+pub type explorer::CellKey = alloc::vec::Vec<u8>

@@ -296,12 +296,7 @@ impl Archive for CoverageArchive {
                 .as_ref()
                 .map(coverage_features)
                 .unwrap_or_default();
-            feats.extend(
-                sensed
-                    .iter()
-                    .filter(|(m, _)| *m == at)
-                    .map(|(_, f)| *f),
-            );
+            feats.extend(sensed.iter().filter(|(m, _)| *m == at).map(|(_, f)| *f));
 
             // Each feature keys its own (finest-slice) cell; fresh = unoccupied.
             let mut fresh: Vec<CellKey> = Vec::new();
@@ -537,9 +532,7 @@ mod tests {
     /// nonzero guard).
     #[test]
     fn coverage_features_pack_edge_and_bucket() {
-        let feats = coverage_features(&CoverageView {
-            map: vec![0, 1, 9],
-        });
+        let feats = coverage_features(&CoverageView { map: vec![0, 1, 9] });
         assert_eq!(
             feats,
             vec![
@@ -587,10 +580,7 @@ mod tests {
     #[test]
     fn timeline_admission_folds_across_forks() {
         let mut a = CoverageArchive::new();
-        let r = admit(
-            &mut a,
-            &[fork(40, &[1, 1, 0]), fork(60, &[1, 1, 1])],
-        );
+        let r = admit(&mut a, &[fork(40, &[1, 1, 0]), fork(60, &[1, 1, 1])]);
         // Fork 1 claims edges 0+1; fork 2 only edge 2 is fresh.
         assert_eq!(r.new_cells, 3);
         assert_eq!(a.frontier().len(), 2);
@@ -610,10 +600,7 @@ mod tests {
         let mut a = CoverageArchive::with_sealable(Box::new(|at| at.0 >= 60));
         assert!(!a.admissible(Moment(40)));
         assert!(a.admissible(Moment(60)));
-        let r = admit(
-            &mut a,
-            &[fork(40, &[1, 0, 0]), fork(60, &[0, 1, 0])],
-        );
+        let r = admit(&mut a, &[fork(40, &[1, 0, 0]), fork(60, &[0, 1, 0])]);
         assert_eq!(r.new_cells, 1, "only the sealable fork admits");
         assert_eq!(a.frontier().len(), 1);
         assert_eq!(
@@ -674,7 +661,9 @@ mod tests {
         // Sorted: (0,3) then (1,0x0201); 2-byte channel LE + 8-byte id LE each.
         assert_eq!(
             key,
-            vec![0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0x01, 0x02, 0, 0, 0, 0, 0, 0]
+            vec![
+                0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0x01, 0x02, 0, 0, 0, 0, 0, 0
+            ]
         );
         // Moment-blind: same slice, same key at another moment.
         assert_eq!(key, IdentityCells.key(Moment(60), &set));

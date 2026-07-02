@@ -31,8 +31,8 @@ use crate::error::MachineError;
 use crate::prng::Prng;
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{
-    Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment,
-    Oracle, RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
+    Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment, Oracle,
+    RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
 };
 use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason, VTime};
 
@@ -446,7 +446,7 @@ impl<M: Machine> Explorer<M> {
     /// overrides pin what the run answered; the seed answers the rest; nothing
     /// surfaces) — then sealed. Determinism makes the result identical to the
     /// evicted seal, which is why eviction is never a correctness concern.
-    fn materialize(&mut self, r: ExemplarRef) -> Result<SnapId, MachineError> {
+    pub fn materialize(&mut self, r: ExemplarRef) -> Result<SnapId, MachineError> {
         if let Some(&seal) = self.seals.get(&r.0) {
             return Ok(seal);
         }
