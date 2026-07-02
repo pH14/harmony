@@ -85,10 +85,8 @@ const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliabl
 const MAX_STEPS: u64 = 50_000_000_000;
 
 /// postgres announces this once the cluster is accepting connections (post-readiness = the
-/// span we sample).
+/// span we sample). The terminal itself is detected via `Step::Terminal`, not a serial marker.
 const PG_READY: &[u8] = b"database system is ready to accept connections";
-/// `pg-init.sh` prints this after a clean shutdown (the workload's terminal marker).
-const GUEST_READY: &[u8] = b"GUEST_READY";
 
 type DynVmm = Vmm<Box<dyn Backend>>;
 
@@ -606,6 +604,10 @@ fn seal_rate_sweep() {
         cmdline()
     );
 
+    // not order-observable: a test-only wall-clock watchdog (belt-and-braces with the external
+    // `timeout`) that bounds this `#[ignore]`d box gate; it never reaches guest state, the serial
+    // capture, or any hash — mirrors `live_branching_demo.rs`.
+    #[allow(clippy::disallowed_methods)]
     let start = Instant::now();
 
     // --- Profiling: span + busy windows ------------------------------------
