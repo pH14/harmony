@@ -10,9 +10,11 @@
 > superpower, and the property the box gate proves.
 >
 > Depends on **task 64** (the spine: `Matchable`/`Sensor`/`Record`/`RunTrace.records`), **task 65**
-> (Record plumbing — the raw event stream this crate decodes), **task 66** (the matcher DSL — the
-> consumer of `Matchable for Span`), **task 73** (the Event-service transport conventions the
-> bridge follows); the box gate additionally needs task 58's live `Machine`.
+> (Record plumbing — where decoded records land), **task 73** (the Event-service transport
+> conventions + the raw `(Moment, event_id, bytes)` capture the bridge rides); **task 66** is
+> coordinate, not blocking (66 consumes `Matchable for Span` — the arrow points the other way).
+> The box gate additionally needs task 58's live `Machine` and task 61's userspace-transport
+> convention (or task 73 landing it) — the in-guest bridge daemon needs the userspace hypercall path.
 
 Read first: `tasks/00-CONVENTIONS.md`; `docs/EXPLORATION.md` (signal tiers, the matcher DSL, the
 Phase I row); `docs/DISSONANCE.md` (the `Event` service, guest planes, enforcement-determinism
@@ -43,8 +45,7 @@ additions per the existing `build-*.sh` conventions); `consonance/vmm-core/tests
 Of the three signal tiers, **scrape** is the primary channel, and OTel is its richest signal: any
 already-instrumented workload emits a structured causal record with **zero recompile** — point
 `OTEL_EXPORTER_OTLP_ENDPOINT` at the bridge and it flows. The load-bearing insight (Mallory's):
-**spans' parent/child + link edges ARE the happens-before graph.** The HB-summary sensor below is
-Mallory-over-spans — its novelty signal without its network interception, and deterministic besides.
+**spans' parent/child + link edges ARE the happens-before graph.**
 
 ## The guest bridge (`guest/otel-bridge`)
 
@@ -61,22 +62,23 @@ workload (guest-resident code — Linux-only per the task-61 precedent; note it 
   over the `Event` service. All decode lives host-side in `dissonance/otel`, where it is portable
   and proptestable; the bridge stays tiny and dependency-free.
 - **Chunking is mandatory.** `event_emit` caps one event at `MAX_PAYLOAD − 4` = 4068 bytes and
-  explicitly never fragments, and OTLP batches routinely exceed that. Follow task 73's Event-id
-  namespace + framing conventions; if 73 has not pinned a chunked-stream convention at dispatch,
-  define one here and hand it back (proposed: one event id from 73's registry; payload = 8-byte
-  header `{batch_seq: u32, chunk_idx: u16, flags: u16 (bit0 = LAST)}` + bytes). Issue `event_emit`
-  via the task-73 SDK transport — the path task 61's flow agent uses; never invent a second one.
+  never fragments; OTLP batches routinely exceed that. Frame chunks under the otel event id from
+  73's namespace registry; if 73 hasn't pinned chunk framing at dispatch, define it here and hand
+  it back (proposed: payload = 8-byte header `{batch_seq: u32, chunk_idx: u16, flags: u16 (bit0 =
+  LAST)}` + bytes). Issue `event_emit` via the task-73 SDK transport — the path task 61's flow
+  agent uses; never invent a second one.
 - **AlwaysOn sampling.** Workloads run `OTEL_TRACES_SAMPLER=always_on`; the bridge never samples,
-  drops, or reorders. Determinism holds by the enforcement-determinism discipline: every bridge
-  input is determinized (intra-guest loopback TCP, V-time clocks, seeded entropy) — no wall-clock,
-  no unseeded RNG, anywhere in it.
+  drops, or reorders. Determinism holds by enforcement-determinism: every bridge input is
+  determinized (loopback TCP, V-time clocks, seeded entropy) — no wall-clock or unseeded RNG in it.
 
 ## The host plugin (`dissonance/otel`)
 
-- **Reassembly + decode**: consume the raw id-tagged event stream in the shape task 65 pins,
-  reassemble chunks, decode OTLP, yield `(Moment, Record)` entries for `RunTrace.records` (a
-  record's `Moment` = its batch's final chunk). Hostile/incomplete chunk sequences are dropped and
-  counted — never a panic (rule 4).
+- **Reassembly + decode**: the raw input is task 73's `(Moment, event_id, bytes)` EventSink
+  capture (the otel event-id range allocated from 73's namespace registry) — NOT task 65's
+  newline-split console `Record { stream, line }`: binary OTLP bodies cannot ride a newline-split
+  decode. Reassemble chunks, decode OTLP, yield `(Moment, Record)` entries for `RunTrace.records`
+  (a record's `Moment` = its batch's final chunk); hostile/incomplete chunk sequences are dropped
+  and counted — never a panic (rule 4).
 - **Canonical span forest**: an owned, serde `Span` (trace/span/parent ids, name, kind,
   start/end nanos, attributes as `BTreeMap`, links, status) and a `SpanForest` with a canonical
   byte encoding — sorted deterministically, **invariant under batch and chunk boundaries** — the
@@ -104,14 +106,13 @@ workload (guest-resident code — Linux-only per the task-61 precedent; note it 
 
 ## The dependency ruling: hand-rolled OTLP decode, no `prost`
 
-OTLP protobuf decode is not whitelist-covered, and the ruling is **hand-roll the spans-only
-subset** rather than grant `prost` + `opentelemetry-proto`. Justification: the subset is six
-message types (`ExportTraceServiceRequest` → `ResourceSpans` → `ScopeSpans` → `Span`, plus
-`KeyValue`/`AnyValue`/`Link`/`Status`) over protobuf's four wire types; the OTLP trace proto is
-stable and evolves additively, and unknown fields skip cleanly by wire type, so the decoder is
-forward-compatible by construction. Hand-rolling keeps whitelist purity, gives rule-4 panic-free
-control over hostile bytes, and keeps `prost-derive`/`syn`/`quote` plus a generated surface ~50×
-the subset out of the tree. Write a **test-only encoder** in the same crate so proptests round-trip
+OTLP protobuf decode is not whitelist-covered; the ruling: **hand-roll the spans-only subset**
+rather than grant `prost` + `opentelemetry-proto`. Six message types (`ExportTraceServiceRequest`
+→ `ResourceSpans` → `ScopeSpans` → `Span`, plus `KeyValue`/`AnyValue`/`Link`/`Status`) over
+protobuf's four wire types; the OTLP proto evolves additively and unknown fields skip cleanly by
+wire type, so the decoder is forward-compatible. Hand-rolling keeps whitelist purity, rule-4
+panic-free control over hostile bytes, and keeps `prost-derive`/`syn`/`quote` plus a ~50×
+generated surface out of the tree. Write a **test-only encoder** so proptests round-trip
 generated span trees; commit real-SDK fixture bytes besides. Metrics/logs later = ask-by-comment.
 
 ## Prior art
@@ -156,5 +157,4 @@ reporting; no detached pollers + idle.
   policies beyond AlwaysOn (head/tail sampling would trade determinism for nothing).
 - **Host-side network sniffing** — Mallory's approach; ours is in-guest and deterministic, better.
 - The Elle checker itself (task 75) — but arrange nothing that blocks op-history spans feeding it.
-- A k8s-events scrape channel (follow-on, same `Record` plumbing); the matcher DSL engine itself
-  (task 66 — this task supplies its `Matchable` input, not the engine).
+- A k8s-events scrape channel (follow-on, same `Record` plumbing); the matcher DSL engine (66).

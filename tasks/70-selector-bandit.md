@@ -1,6 +1,6 @@
 # Task 70 — `dissonance/selector-bandit`: Selector v2 (count-based) + v3 (bandit + STADS stop)
 
-> **Delegable logic (single crate, Mac-gated) + one frontier validation gate · HARD-GATED on
+> **FRONTIER (portable-heavy: the crate itself is Mac-gated; one box gate) · HARD-GATED on
 > task 69 = GO.** Phase F of `docs/EXPLORATION.md`: the first real search cleverness, built only
 > because Phase E validated that cell novelty correlates with bugs. Two `Selector` policies over
 > task 64's spine — **v2** Go-Explore count-based weighting, **v3** an EcoFuzz-shaped
@@ -26,6 +26,10 @@ sibling dependency is `dissonance/explorer` (the sanctioned plugin dependency: i
 spine traits and reuses `explorer::stads`), plus the conventions whitelist. One acceptance gate
 (gate 4, beats-baseline) is **box-only**: it runs the task-69 benchmark through the task-69
 campaign harness; everything else closes locally.
+
+Surface list: `dissonance/selector-bandit/` (the new crate — portable), plus the task-69
+campaign bin's selector-flag wiring in `consonance/vmm-core` (naming which `Selector` a campaign
+runs — the box gate's harness hook); read-only everywhere else.
 
 ## Context
 
@@ -69,7 +73,9 @@ choice; pin the chosen policy with tests). The **STADS estimator** (reuse
 `dissonance/explorer/src/stads.rs` — task 69's contract; do not reimplement) supplies the
 exhaustion signal: per-arm Good–Turing discovery probability de-prioritizes spent regions, and
 the campaign-level estimate is the stopping rule — expose `should_stop(&self) -> bool` so a
-campaign ends when estimated discovery probability falls below a configured ε.
+campaign ends when estimated discovery probability falls below a configured ε. No `f32`/`f64`
+anywhere in the crate (mirror task 71's no-float gate): decay/EXP3-style weights and Good–Turing
+ε comparisons are cross-multiplied integer rationals (conventions rule 4).
 
 Reward plumbing: consume the spine `Reward` as landed. If it lacks the new-cells-per-branch
 count v3 needs, the additive extension is a task-64 API adjustment coordinated through the
@@ -82,6 +88,13 @@ foreman — never a parallel reward type forked here.
    sequence of choices is identical — the fixed `Selector` contract.
 3. **Progression blindness:** opaque `CellKey`s and `Reward`s only. The crate imports no fault
    type, no signal channel, no `CellFn`; its dependency surface is `explorer` + the whitelist.
+
+### Tactic-portfolio arm seam (ruling)
+
+This crate **defines** the `Arm` trait and the arm-selection / arm-level-reward interface (hard
+rule 2: interfaces live in the consumer — the selection policy consumes arms). Task 72 depends
+on this crate and implements the arms. Arm-level reward is routed by the campaign root —
+distinct from the spine's exemplar-keyed `Selector::reward` — so no spine change is required.
 
 ## Acceptance gates
 
@@ -96,7 +109,7 @@ foreman — never a parallel reward type forked here.
 4. **Box gate (frontier; requires task 69 = GO):** on the task-69 benchmark, v2 and v3 **each
    beat the v1 baseline median time-to-seeded-bug** — median branches-to-find over **≥20 seeds
    per selector per bug**, same trigger thresholds and budgets as 69's report, medians +
-   variance reported (Klees discipline). Append the comparison table to
+   variance reported (Klees-style trial discipline). Append the comparison table to
    `dissonance/benchmark/CORRELATION-REPORT.md` or the crate's `IMPLEMENTATION.md`.
 
 ## Box-safety (CRITICAL — gate 4 only)
@@ -116,4 +129,6 @@ foreground and READ results before reporting; no detached pollers + idle.
   73's catalog; the other named follow-on.
 - Any `Archive`, `CellFn`, `Sensor`, or `Oracle` change — a weak signal routes to task 67, not
   to search-side compensation.
-- Tactic work (regime faults, PCT, portfolio-as-bandit-arms) — Phase G, tasks 71/72.
+- Tactic work (regime faults, PCT, arm implementations, PCT policy) — Phase G, tasks 71/72.
+  **Defining the `Arm` interface is in scope here** (the arm-seam ruling above); building arms
+  is not.

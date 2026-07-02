@@ -1,12 +1,12 @@
 # Task 75 — Phase J1: the oracle layer — trace/probe bifurcation + the Elle-shaped checker
 
-> **MIXED · Phase J1 of `docs/EXPLORATION.md`.** Two surfaces, split so the foreman can dispatch
-> them separately (task-63 style): **`dissonance/oracle-elle`** is a delegable pure crate,
-> laptop-gated; the **probe-oracle mechanism** is explorer engine work with a **frontier box
-> gate**. Portable surface depends on **task 64** (the spine: `Oracle`/`Bug`/`RunTrace`) and
-> **task 65** (the stored-corpus format gate 3 re-judges). The box gates additionally need
-> **58** (a live `Machine`), **59** (faults to induce the anomaly), **68** (compose-based
-> genesis-complete reproducers), **74** (op-history spans), and **69**'s planted convergence bug.
+> **FRONTIER · Phase J1 of `docs/EXPLORATION.md`.** Two surfaces, dispatched separately (task-63
+> style): **`dissonance/oracle-elle`** is a delegable pure crate, laptop-gated; the **probe-oracle
+> mechanism** is explorer engine work with a **frontier box gate**. Portable surface depends on
+> **task 64** (the spine: `Oracle`/`Bug`/`RunTrace`) and **task 65** (the stored-corpus format
+> gate 3 re-judges). The box gates additionally need **58** (a live `Machine`), **59** (faults),
+> **68** (genesis-complete reproducers), **74** (op-history spans), and **69**'s benchmark
+> manifest — **this task builds bug (vi)**, the planted convergence failure, into it.
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/EXPLORATION.md` ("Oracles: trace vs. probe" — this
 task codifies it — plus "The organizing split" and "Triage"), `docs/DISSONANCE.md` (the
@@ -16,24 +16,25 @@ here) and `dissonance/explorer/src/spine.rs` once 64 lands (until then `src/engi
 
 ## Environment
 
-Portable surface (delegable): `dissonance/oracle-elle` (a new pure-logic crate, macOS + Linux)
-and the `ProbeOracle` spine extension in `dissonance/explorer`, both mock-tested laptop-side. Box
-surface (frontier): the two box gates below — patched KVM, the built Postgres image, a live
-task-58 server. Pin per `docs/BOX-PINNING.md`; revert KVM to stock **1396736** + verify.
+Portable surfaces (laptop-side): `dissonance/oracle-elle` (new pure crate, macOS + Linux) and the
+`ProbeOracle`/fingerprint extension in `dissonance/explorer`. Box surface (frontier): the box gates
+below — patched KVM, the built Postgres image, a live task-58 server. Pin per `docs/BOX-PINNING.md`;
+revert KVM to stock **1396736** + verify. Dispatch split (foreman): **worker A** = oracle-elle
+(delegable); **worker B** = explorer probe mechanism + guest payload + box gates (frontier).
 
-Surface list (frontier waiver of hard rule 1, box work only): `dissonance/explorer` (probe
-mechanism), the campaign/conductor bin (task 58/60's), and the Postgres image's transaction
-driver (the guest-side "arrange the workload" addition). `dissonance/oracle-elle` is single-crate
-work under the standard rules, depending only on `dissonance/explorer` (the task-64 plugin
-pattern: interfaces live in the consumer; plugins implement them).
+Surface list (frontier waiver of hard rule 1): `dissonance/explorer` (probe mechanism +
+fingerprint minting — portable); the campaign/conductor bin (task 58/60's); `guest/` (the
+bug-(vi) payload + task-69 manifest wiring per 69's extension conventions, plus the Postgres
+image's transaction driver). `dissonance/oracle-elle` is single-crate work under the standard
+rules, depending only on `dissonance/explorer` (the task-64 plugin pattern: interfaces live in
+the consumer; plugins implement them).
 
 ## Context
 
-Oracles are how a deterministic search learns a run is *wrong*, not merely *different*. The
-spine (task 64) ships the `Oracle` trait and a `Bug` whose fingerprint task 12 stubbed as a
-stop-reason-only digest; nothing yet judges semantics. This task codifies the trace/probe
-bifurcation, ships the first semantic trace oracle, pins the `Bug` fingerprint schema every later
-oracle and the triage suite (task 76) share, and builds the probe mechanism for live oracles.
+Oracles are how a deterministic search learns a run is *wrong*, not merely *different*. The spine
+(task 64) ships `Oracle` and a `Bug` whose fingerprint task 12 stubbed as stop-reason-only;
+nothing yet judges semantics. This task codifies the trace/probe split, ships the first semantic
+trace oracle, pins the shared fingerprint schema (task 76), and builds the probe mechanism.
 
 ## The ruling, codified (EXPLORATION "Oracles: trace vs. probe")
 
@@ -44,17 +45,16 @@ oracle and the triage suite (task 76) share, and builds the probe mechanism for 
   stop?" require running *forward* from a state — a directed probe on a **throwaway terminal
   branch**, discarded so it never contaminates the timeline. This is a specialized
   Tactic+`Machine` interaction, **not** a `judge(&RunTrace)` call; do not force it into `Oracle`.
-- **Prefer trace oracles** by arranging workloads to emit what checkers need (e.g. Elle final
-  reads in the workload), so the oracle stays pure — because of **the strong offline property**:
-  re-running a NEW oracle over stored `RunTrace`s finds REAL bugs with zero VM time. Gate 3 makes
-  this a test, not a slogan.
+- **Prefer trace oracles** — arrange workloads to emit what checkers need (e.g. Elle final reads)
+  so the oracle stays pure. **The strong offline property**: re-running a NEW oracle over stored
+  `RunTrace`s finds REAL bugs with zero VM time; gate 3 makes this a test, not a slogan.
 
 ## Surface 1 (delegable): `dissonance/oracle-elle` — the isolation checker
 
-**Honest scope: not a full Elle port.** An Elle-*shaped* isolation checker over a recorded
-operation history — ops decoded from `RunTrace.records`/`events` (OTel spans per task 74, SDK
-events per task 73) via an `OpDecode` seam defined locally in this crate (hard rule 2). Full Elle
-— cycle-typed anomalies up through SI and serializability — is the anchor and follow-on ladder.
+**Honest scope: not a full Elle port** (the follow-on ladder — see Non-goals). An Elle-*shaped*
+isolation checker over a recorded operation history — ops decoded from `RunTrace.records`/`events`
+(OTel spans per task 74, SDK events per task 73) via an `OpDecode` seam defined locally in this
+crate (hard rule 2).
 
 - **Op model** (local): `Op { session, txn, kind: Read | Write | Append, key, value, at: Moment }`
   plus commit/abort events. Recoverability is the *workload's* job (the thin-SDK ruling): unique
@@ -86,9 +86,10 @@ canonical (BTree-ordered) encoding of the three **stable coordinates**:
 
 Mint-time fingerprints are tagged **provisional** — they over-split by design (Igor's ordering:
 minimize first, then dedup; task 76 recanonicalizes coordinates 2–3). **Forbidden in the digest
-at both stages:** `CellKey`s or any learned/codebook feature (they drift as codebooks evolve —
-cells are triage *grouping* only, never identity) and coverage/stack hashes (Klees et al.: they
-actively miscount). Supersedes task 12's stop-reason-only digest — update the minting site.
+at both stages:** `CellKey`s or any learned/codebook feature (codebooks drift — cells are triage
+*grouping* only, never identity) and coverage/stack hashes (Klees et al.: they actively
+miscount). Supersedes task 12's stop-reason-only digest and task 66's `MatchOracle` fingerprint
+minting (66 marks its scheme provisional) — update both minting sites.
 
 ## Surface 2 (frontier): the probe mechanism (explorer engine + box)
 
@@ -104,12 +105,11 @@ pub trait ProbeOracle {
 
 The mechanism is engine plumbing between the Progression and the `Machine` (like materialization —
 a function, not a loop change): from the chosen terminal state, `branch` a **throwaway** branch
-with a quiesced env (nominal answers, empty fault schedule — the faults stop), `run` to
-`plan.horizon`, record the probe's `RunTrace`, call `judge_probe` (pure — the liveness is in
-*producing* the trace, not judging it), then `drop_snap` the branch. On a verdict:
-`Bug.env = compose(original env, probe delta)` — genesis-complete, replaying the run *and* the
-failed convergence window. The probe run is **never** admitted to the `Archive`; nothing it did
-reaches the trunk, frontier, or any codebook.
+with a quiesced env (nominal answers, empty fault schedule), `run` to `plan.horizon`, record the
+probe's `RunTrace`, call `judge_probe` (pure — the liveness is in *producing* the trace, not
+judging it), then `drop_snap` the branch. On a verdict: `Bug.env = compose(original env, probe
+delta)` — genesis-complete, replaying the run *and* the failed convergence window. The probe run
+is **never** admitted to the `Archive`.
 
 ## Acceptance gates
 
@@ -130,10 +130,11 @@ Box (frontier — after the delegable surface merges):
    per task 60's discipline) induces an anomaly the declared level forbids; the checker catches it
    **from the recorded history**, offline; the minted reproducer replays the identical terminal
    hash **25/25** (task 60's pattern); a nominal control run judges clean.
-5. **Liveness probe, uncontaminated:** task 69's planted convergence failure is caught by a probe
-   on a discarded branch — and the timeline is demonstrably uncontaminated: the archive/trunk
-   digest (frontier + admitted exemplars + retained snapshot set) is byte-identical before and
-   after the probe phase, and the probe's branch is dropped.
+5. **Liveness probe, uncontaminated:** benchmark bug (vi) — the planted convergence failure this
+   task builds into task 69's manifest, mirroring 72's bug (v) — is caught by a probe on a discarded
+   branch; the timeline is demonstrably uncontaminated: the archive/trunk digest (frontier +
+   admitted exemplars + retained snapshot set) is byte-identical before and after the probe
+   phase, and the probe's branch is dropped.
 
 ## Box-safety (CRITICAL)
 
@@ -154,7 +155,6 @@ foreground and READ results before reporting; no detached pollers + idle.
 
 - A full Elle port — cycle-typed anomalies through SI/serializability are the anchor and the
   follow-on ladder, not v1. Linearizability checking is likewise a later oracle plugin.
-- History checking in the guest/SDK (the thin-SDK ruling: harmony ships hooks + transport only;
-  checking lives at the evaluator layer).
+- History checking in the guest/SDK — the thin-SDK ruling; checking lives at the evaluator layer.
 - Probe *scheduling* policy (when/which states to probe) — Selector/Tactic work, tasks 70–72.
 - Triage — minimize/localize/explain/dedup is task 76; this task only mints the artifacts.

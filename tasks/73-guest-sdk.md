@@ -77,11 +77,13 @@ mapping follows the task-61 flow-agent convention when it lands.
    IJON-style numeric registers `state_max(reg, v)` / `state_set(reg, v)`; lifecycle
    `setup_complete()`. All emissions ride the **existing Event service** (`ServiceId::Event = 4`,
    op 1) under a versioned, byte-deterministic payload convention documented in the crate — task 74
-   (OTel) rides these same transport conventions. Always emits only on violation; sometimes emits on
-   **every** hit (features are a timestamped stream, task 64). The host stamps each emission at the
-   `Moment` it surfaces; the guest never timestamps. **No `random()` is built**: the guest-random
-   primitive already exists — the Entropy hypercall (`Client::entropy_fill`, host `SeededEntropy`,
-   the same seeded stream RDRAND draws) — cite it; re-export at most.
+   (OTel) rides these same transport conventions. The SDK owns a registry of event-id namespace
+   ranges (assertions / state registers / buggify / reserved-for-plugins, e.g. 74's otel chunks) so
+   channel plugins allocate ids without collision. Always emits only on violation; sometimes emits
+   on **every** hit (features are a timestamped stream, task 64). The host stamps each emission at
+   the `Moment` it surfaces; the guest never timestamps. **No `random()` is built**: the Entropy
+   hypercall (`Client::entropy_fill`, host `SeededEntropy` — the seeded stream RDRAND draws) is
+   already the guest-random primitive; cite it, re-export at most.
 2. **Buggify = a `DecisionClass` on the FAULT stream** (`dissonance/environment` + `ServiceId::Sdk`):
    `buggify(point) -> bool` asks the host (`DecisionPoint::Buggify { point }`); the host answers
    `Nominal` (don't fire) or `Fault(BuggifyFire)`, recorded at its `Moment` like every guest-plane
@@ -89,9 +91,8 @@ mapping follows the task-61 flow-agent convention when it lands.
    `seeded.rs`) — never entangled with the workload's entropy **supply** stream. Point identity is
    the design: **catalog-registered points, per-point host-side biasing** (a `FaultPolicy`
    extension keyed by point id — the guest never sees probabilities), and **never-fired detection**
-   in the catalog report. This identity point is the deliberate improvement over FoundationDB's
-   anonymous `get_random` form — a buggify site is a named, steerable, auditable coordinate, not an
-   anonymous coin flip.
+   in the catalog report — the deliberate improvement over FoundationDB's anonymous `get_random`
+   (a buggify site is a named, steerable, auditable coordinate, not an anonymous coin flip).
 3. **Host-side link-tier decode** (`dissonance/link` — the decode lives here, a plugin crate beside
    65's recorder, depending on `explorer` for the spine vocab per task 64's rule-2 layout): raw
    `(Moment, event_id, bytes)` tuples → typed `(Moment, GuestEvent)` into `RunTrace.events`
@@ -100,7 +101,9 @@ mapping follows the task-61 flow-agent convention when it lands.
    (declared-at-init set + fired counts → the never-fired report, format **unified with task 66's
    config-declared catalog** — the declared signal set *is* the catalog, one report across link and
    scrape); the **link `Sensor`** (an `assert_sometimes` hit or a state-register change ⇒
-   `(Moment, Feature)`, and thereby a checkpoint candidate via the spine `Archive`'s admission);
+   `(Moment, Feature)` into the feature stream; `Archive` admission still requires a novel
+   `(cell, Moment)` — task 64 semantics — so per-hit checkpoint candidacy requires the
+   campaign's `CellFn` config to include the sometimes channel);
    the **`AlwaysViolation` `Oracle`** (`StopReason::Assertion` terminal ⇒ `Bug` with
    genesis-complete env and stable fingerprint). Decode is total and panic-free on arbitrary bytes.
 4. **Run-loop surfacing** (vmm-core, the named seams only): always-violation and
@@ -114,7 +117,7 @@ mapping follows the task-61 flow-agent convention when it lands.
   unanimous that a few state annotations beat any amount of blind coverage.
 - **FoundationDB / BUGGIFY (Strange Loop 2014) [eng]** — the buggify design, minus the anonymity:
   our catalog identity (registration, per-point biasing, never-fired audit) is the improvement.
-- **AFLGo (CCS 2017) [beyond]** — a declared-but-unhit sometimes-assertion is a directed-search
+- **AFLGo (CCS 2017) [eng]** — a declared-but-unhit sometimes-assertion is a directed-search
   target; that mode is a task-70 follow-on, not built here.
 
 ## Acceptance gates

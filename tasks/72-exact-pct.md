@@ -3,13 +3,13 @@
 > **FRONTIER · the schedule-entropy capability.** Probabilistic Concurrency Testing, made *exact*
 > by determinism: pass 1 replays and **counts** the `k` scheduling `Moment`s; pass 2 places the
 > `d−1` change points **exactly** (uniform over the counted `k`) and realizes them as
-> `InjectInterrupt @ Moment`. All crate logic is portable and Mac-gated; only the proof gate is
+> `InjectInterrupt @ Moment`. All crate logic is portable and Mac-gated; only the proof gates are
 > box-only. Depends on **task 59** (`InjectInterrupt` enforcement — the PCT lever) and **task 64**
-> (the `Tactic` spine); the box gate additionally needs **task 58** (the live `Machine`) and cites
-> **task 69**'s seeded-bug benchmark (69 specs the planted depth-2 ordering bug as the shared
-> fixture — coordinate on its harness). **Task 70** owns the Selector/bandit machinery the
-> portfolio arms plug into — whoever lands second conforms to the arm interface; the foreman
-> sequences.
+> (the `Tactic` spine); the box gate additionally needs **task 58** (the live `Machine`) and
+> **task 69**'s seeded-bug benchmark (69's non-goals defer bugs (iv)/(v) here — **this task builds
+> bug (v) into 69's benchmark manifest**; coordinate on its harness). **Task 70** owns the
+> Selector/bandit machinery and defines the `Arm` interface in `dissonance/selector-bandit`; this
+> crate depends on it and implements the arms; the foreman sequences.
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/EXPLORATION.md` ("The Proposal seam: Tactic +
 EnvCodec" — the **PCT via determinism** paragraph is this task's heart — plus the Phase G roadmap
@@ -25,13 +25,16 @@ Selector/bandit reward machinery), `dissonance/environment/src/host.rs` (`HostFa
 ## Environment
 
 Surface list (frontier waiver of hard rule 1): `dissonance/tactics-pct/` (one new crate, branch
-`task/tactics-pct`; may depend on `dissonance/explorer`, `dissonance/environment`, and
-`dissonance/tactics-regime` per the task-64 plugin pattern). The census fold, placement sampler,
-guarantee arithmetic, and arm definitions are pure logic, macOS + Linux, mock-testable. The proof
-gate is **box-only** (patched KVM; tasks 58 + 59 landed; task 69's benchmark image): run it from
-an `#[ignore]`d integration test or bin inside the crate that drives the task-58 server over
-`control-proto` — read-only use of everything outside the crate, no production changes elsewhere.
-Pin per `docs/BOX-PINNING.md`; KVM discipline per the Box-safety block below.
+`task/tactics-pct`; may depend on `dissonance/explorer`, `dissonance/environment`,
+`dissonance/tactics-regime`, and `dissonance/selector-bandit` per the task-64 plugin pattern)
+and `guest/` (the planted-bug payloads this task owns — bug (v), depth-2 ordering, and bug (iv),
+partition-duration, gate 6 — plus init/manifest wiring per task 69's benchmark conventions). The
+census fold, placement sampler, guarantee arithmetic, and arm implementations are pure logic,
+macOS + Linux, mock-testable. The proof gates are **box-only** (patched KVM; tasks 58 + 59
+landed; task 69's benchmark image): run from an `#[ignore]`d integration test or bin inside the
+crate that drives the task-58 server over `control-proto` — read-only use of everything outside
+the crate/guest surface, no production changes elsewhere. Pin per `docs/BOX-PINNING.md`; KVM
+discipline per the Box-safety block below.
 
 ## Context
 
@@ -76,21 +79,16 @@ overflow-checked (rejected, never wrapped).
 
 ### 3. The portfolio as bandit arms (G3)
 
-The arm interface, consistent with task 70's `Selector` (sketch — align exact shape with 70):
-
-```rust
-pub trait Arm {
-    fn id(&self) -> &ArmId;                                  // stable: "quiet", "fault-regime", "pct:2", …
-    fn tactic(&self, seed: u64) -> Box<dyn Tactic>;          // fresh per run, seeded, open-loop
-    fn prepare(&self, env: &EnvSpec, salt: u64) -> EnvSpec;  // schedule-side prep (identity for entropy-only arms)
-}
-```
+The `Arm` trait is **defined in `dissonance/selector-bandit`** (task 70; hard rule 2 — the
+selection policy is the consumer of arms). This crate depends on selector-bandit and
+**implements** the arms; it never defines the interface.
 
 Register five arms (Coyote's lesson: a diversified portfolio dominates any single strategy):
 **quiet** (all-nominal — the determinism canary + baseline histories), **fault-regime** (wraps
 task 71's `RegimeTactic`), **pct(d)** (this task, `d ∈ {2,3}`; `prepare` runs the two passes),
 **value-fuzz** (supply-class value perturbation — v1-thin), **swizzle** (clustered rolling
-`Process` restarts — v1-thin). Reward flows through task 70's `Selector::reward`; this crate ships
+`Process` restarts — v1-thin). Arm-level reward is **campaign-root-routed** per 70's ruling —
+distinct from the spine's exemplar-keyed `Selector::reward`, no spine change — this crate ships
 arms, never selection policy.
 
 ## Invariants (restate in the crate docs; each is gated)
@@ -121,6 +119,12 @@ arms, never selection policy.
 5. **Arms registered:** the five arms load into a toy-`Machine` campaign; the `quiet` arm
    reproduces the nominal baseline bit-identically (the determinism canary lives). Live campaign
    integration rides task 70's gates.
+6. **Box gate — bug (iv) / fault-regime arm (the Phase-G roadmap gate: "finds a
+   partition-duration bug the IID version misses"); GATED ON TASK 61 LANDING:** build bug (iv)
+   (partition-duration) into 69's manifest; at an equal budget the **fault-regime arm** finds it
+   and the IID fault tactic does not. Requires task 61's standing net faults — DISSONANCE.md's
+   standing-fault sequencing guard (the Moment→VTime map / eligibility hook) is 61's to own.
+   Gates 1–5 do not block on 61; this gate alone waits for it.
 
 ## Box-safety (CRITICAL)
 

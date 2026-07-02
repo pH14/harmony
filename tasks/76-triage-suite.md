@@ -1,6 +1,6 @@
 # Task 76 — Phase J2: `dissonance/triage` — minimize / localize / explain / dedup
 
-> **MOSTLY DELEGABLE · Phase J2 of `docs/EXPLORATION.md`.** One new pure crate,
+> **FRONTIER · Phase J2 of `docs/EXPLORATION.md`.** One new pure crate,
 > `dissonance/triage`: all four algorithms are pure over the `Machine` seam and mock-tested
 > laptop-side; **one frontier box gate** at the end runs them against task 69's planted bugs.
 > Depends on **task 75** (`Bug` artifacts + the fingerprint schema this task canonicalizes),
@@ -11,7 +11,8 @@ Read first: `tasks/00-CONVENTIONS.md`, `docs/EXPLORATION.md` ("Triage: determini
 statistics into algorithms" — this task implements it, plus "The Navigation seam" for the
 parent-chain economics), `docs/DISSONANCE.md` (the reproducer/`compose` ruling; `SnapId`s are
 ephemeral pool handles, never part of an artifact), `tasks/75-oracles.md` (the fingerprint
-schema), `dissonance/explorer/src/spine.rs` (`Machine`, `Bug`, `RunTrace`, `Oracle`),
+schema), `dissonance/explorer/src/seam.rs` (`Machine` — it lives here today, not `spine.rs`),
+`dissonance/explorer/src/spine.rs` (`Bug`, `RunTrace`, `Oracle`),
 `tasks/60-first-campaign-planted-bug.md` (the N/N replay discipline).
 
 ## Environment
@@ -32,7 +33,8 @@ with provisional fingerprints; this crate is the pipeline that makes them canoni
 
 ## The seams (defined here, hard rule 2)
 
-Triage depends on `dissonance/explorer` (the spine) and stays schema-blind via one local seam
+Triage depends on `dissonance/explorer` (the spine — the sanctioned plugin-crate exception to
+rule 2 per task 64; call it out in `IMPLEMENTATION.md`) and stays schema-blind via one local seam
 that the schema-aware codec (`dissonance/environment`) implements at integration and a mock
 implements in tests:
 
@@ -111,14 +113,16 @@ foreground and READ results before reporting; no detached pollers + idle.
 ## Prior art
 
 - **LDFI / Molly** (Alvaro et al., SIGMOD 2015) [beyond] — backward, lineage-driven fault
-  reasoning, uniquely enabled by deterministic replay; v1 ships the counterfactual half.
+  reasoning. Antithesis has deterministic replay too, but its search only runs *forward*;
+  determinism supplies the lineage, LDFI supplies the backward step. v1 ships the counterfactual
+  half.
 - **ddmin** (Zeller & Hildebrandt, TSE 2002) [eng] — the minimization algorithm, cheap here
   because every replay is conclusive.
 - **Igor** (CCS 2021) [eng] — minimize-then-cluster: dedup after reduction, not before.
 - **Klees et al.** (CCS 2018) [eng] — coverage/stack-hash dedup actively over-merges; the case
   for stable coordinates.
-- **Antithesis causality analysis** [secret] — Localize reproduces the published behavior from
-  open primitives (trunk bisection + inevitability probing).
+- **Antithesis causality analysis** (proprietary — reproduced here from open primitives) —
+  Localize reproduces the published behavior (trunk bisection + inevitability probing).
 
 ## Non-goals
 

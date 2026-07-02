@@ -32,11 +32,16 @@ Surface list (frontier waiver of hard rule 1):
 - `guest/` — the two new planted-bug payloads + init wiring, beside task 60's (follow
   `guest/linux/pg-init.sh` workload-init conventions).
 - `dissonance/benchmark/` — **new crate**: the benchmark manifest (bugs, trigger thresholds,
-  serial markers), the correlation statistics, and report generation. Pure logic.
+  serial markers), the correlation statistics, and report generation. Pure logic; whitelist-only
+  deps — the correlation statistics are hand-rolled (rank/Spearman math over integers), no
+  stats crates.
 - `dissonance/explorer/src/stads.rs` — **new module** (the one explorer touch): species
   accumulation + Good–Turing/Chao1 over an opaque cell-discovery event stream. Progression-blind
-  by construction — it folds counts of opaque `CellKey` discoveries, nothing else. **Task 70's
-  Selector v3 consumes this via its existing `explorer` dependency; this location is a contract.**
+  by construction — it folds counts of opaque `CellKey` discoveries, nothing else.
+  Integer/rational arithmetic only — Good–Turing as the fraction `f1/n`, Chao1 via
+  cross-multiplied comparisons; floats may appear only in report rendering, never in the
+  estimator. **Task 70's Selector v3 consumes this via its existing `explorer` dependency for
+  state-affecting policy; this location is a contract.**
 - `consonance/vmm-core` — extend the task-60 campaign bin to drive benchmark campaigns and emit a
   per-branch discovery-event log (branch index, cumulative distinct cells, per-bug find branch)
   that `dissonance/benchmark` analyzes offline.
@@ -70,11 +75,15 @@ Three bugs now, of distinct classes:
 3. **Rare-entropy-value** — a branch taken only on a rare seeded-entropy value (the task-42
    pattern, e.g. a `gen_random_uuid()` prefix match) that then poisons state and crashes.
 
-Tasks 71/72 later add **(iv)** a partition-duration bug (fires only when a partition outlasts a
-lease/timeout window — task 71's beats-baseline gate) and **(v)** a depth-2 concurrency/ordering
-bug (two ordered scheduling perturbations — task 72's PCT gate). Design the manifest so those
-slot in without restructuring; this benchmark is the shared fixture for every later
-beats-baseline gate.
+Later tasks extend the fixture: **(iv)** a partition-duration bug (fires only when a partition
+outlasts a lease/timeout window) — task **72's** portfolio box gate, via its fault-regime arm,
+additionally requiring task 61 (standing net faults); **(v)** a depth-2 concurrency/ordering bug
+(two ordered scheduling perturbations) — task 72's PCT gate; **(vi)** a planted
+convergence/liveness failure — non-crashing (e.g. a supervised process that permanently stops
+making progress after a specific fault burst but does not die), observable from the recorded
+history or a forward probe — built by **task 75** under the same conventions as (iv)/(v). Design
+the manifest so those slot in without restructuring; this benchmark is the shared fixture for
+every later beats-baseline gate.
 
 Every bug inherits task 60's requirements: deterministically triggerable (right
 `(seed, fault schedule)` ⇒ fires every time; nominal ⇒ never), crash-observable via a
@@ -87,8 +96,8 @@ time-to-find dials into ~10²–10³ branches — campaigns must finish on the b
 
 Two configurations, identical budgets: **signal** (Phase-D stack — 65 RunTraces → 67 sensors +
 CellFn v1 → 64 Archive with the default v1 Selector → 68 materialization) and **baseline**
-(task 60's blind seed search). **≥20 seeds per configuration** (Klees). From each campaign's
-discovery-event log, measure:
+(task 60's blind seed search). **≥20 seeds per configuration** (Klees-style trial discipline).
+From each campaign's discovery-event log, measure:
 
 1. **Novelty↔progress across seeds** — rank correlation (Spearman) between cells discovered at a
    fixed budget and time-to-bug, per bug: does a run that discovers more cells find bugs sooner?
@@ -137,7 +146,7 @@ foreground and READ results before reporting; no detached pollers + idle.
 ## Non-goals
 
 - Selector v2/v3 or any search-policy work — that is task 70, gated on this GO.
-- Building bugs (iv)/(v) — tasks 71/72 extend the fixture; the manifest here just must not
+- Building bugs (iv)/(v)/(vi) — tasks 72/75 extend the fixture; the manifest here just must not
   preclude them.
 - Fixing a weak CellFn in this task — a NO-GO routes to a task-67 iteration, then re-measure.
 - Triage/minimization; net-fault bugs (task 61); real (non-planted) bug hunts.
