@@ -214,6 +214,15 @@ impl crate::EnvCodec for SpecEnvCodec {
         // base snapshot's capture point, so slice the suffix at `pos` into a
         // branch-local delta (keys re-based to the branch origin), preserving
         // seed/policy so a later genesis recompose is stream-consistent.
+        //
+        // NOTE (v1 sequencing): the underlying `environment::EnvCodec::mutate`
+        // inserts a **host-plane** `Action::Host` override, so a mutate-minted
+        // env is `Recorded` with an override. The seed-driven task-58 server
+        // rejects any override-carrying `branch` env with `Unsupported` (host-
+        // plane enforcement is task 59) — so mutate is only *usable* against the
+        // server once task 59 lands. It is exercised here for the codec/rebasing
+        // contract (compose consistency, slicing at `pos`), not as a live
+        // campaign proposal yet.
         let (seed, policy) = (b.spec.seed(), b.spec.policy().clone());
         if let EnvSpec::Recorded { standing, .. } = &b.spec
             && !standing.is_empty()
@@ -329,8 +338,24 @@ impl<S: Read + Write> SocketMachine<S> {
     /// root knowledge), so a genesis snapshot taken before any branch records
     /// the right spec.
     ///
-    /// The coverage buffer is sized from the negotiated geometry — zero-width
-    /// until a coverage producer exists.
+    /// **Coverage geometry is rejected unless zero-width.** v1 has no coverage
+    /// producer, so a non-zero `map_bytes` is either a misconfigured or hostile
+    /// server; it is refused with a loud [`MachineError`] rather than sized into
+    /// an unbounded allocation from a transport-provided `u32` (conventions
+    /// rule 4 — never allocate on an untrusted length).
+    ///
+    /// **The current V-time is probed before returning**, so `pos` (and the
+    /// pre-branch `branch_offset`) reflect where the server's live VM actually
+    /// sits — **not** `0`. This is load-bearing: [`Explorer::new`](crate::Explorer::new)
+    /// snapshots the freshly-connected machine *immediately*, before any `run`,
+    /// and the server's VM may be sitting mid-workload (post-readiness); without
+    /// the probe the genesis `SnapMeta.vtime` would record `0`, and a later
+    /// `branch` off it would key its `recorded_env` delta from `0` instead of
+    /// the true origin — a silently-mis-keyed reproducer, exactly the class the
+    /// task-93 ruling forbids (`compose` cannot detect it). The probe is a
+    /// `run` with an already-met deadline (`0`): the server checks the deadline
+    /// before entering the guest, so it returns the effective V-time without
+    /// advancing the VM.
     pub fn connect(stream: S, initial: EnvSpec) -> Result<Self, MachineError> {
         let mut machine = SocketMachine {
             stream,
@@ -369,7 +394,33 @@ impl<S: Read + Write> SocketMachine<S> {
                 EnvSpec::BLOB_VERSION
             )));
         }
-        machine.coverage = vec![0; caps.coverage.map_bytes as usize];
+        // v1 has no coverage producer: refuse a non-zero geometry rather than
+        // allocate `map_bytes` (a transport-provided u32, up to ~4 GiB) blind.
+        if caps.coverage.map_bytes != 0 || caps.coverage.producer != 0 {
+            return Err(MachineError::Transport(format!(
+                "server advertised a non-zero coverage geometry (map_bytes={}, producer={}) but \
+                 v1 has no coverage producer — refusing to allocate on an untrusted length",
+                caps.coverage.map_bytes, caps.coverage.producer
+            )));
+        }
+        machine.coverage = Vec::new();
+
+        // Probe the server's current effective V-time so `pos`/`branch_offset`
+        // are the true origin before the first (immediate) snapshot — see the
+        // doc above. A deadline of `0` is already met, so this does not advance
+        // the VM.
+        let origin = machine
+            .run(
+                &StopConditions {
+                    deadline: Some(VTime(0)),
+                    on: crate::StopMask::NONE,
+                },
+                None,
+            )?
+            .vtime()
+            .0;
+        machine.pos = origin;
+        machine.branch_offset = origin;
         Ok(machine)
     }
 
@@ -543,6 +594,16 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         }
     }
 
+    /// Advance the server VM. `until.on` (the [`StopMask`](crate::StopMask)) is
+    /// carried to the server verbatim, but in **v1 it selects nothing**: no
+    /// decision class can surface (there is no cooperating SDK / reactive
+    /// service yet — task 61), so a `run` only ever ends at the always-on
+    /// terminal classes (crash / quiescence / deadline). The mask becomes
+    /// live when a decision-surfacing guest exists; until then any mask value
+    /// yields the same terminal-only behavior. `resolve` is likewise inert on
+    /// the seed-driven server (it answers `ResolveWithoutDecision`), but the
+    /// recording machinery below is exercised the moment task 61 surfaces a
+    /// decision.
     fn run(
         &mut self,
         until: &StopConditions,
@@ -950,16 +1011,89 @@ mod tests {
     }
 
     fn server_caps_reply() -> control_proto::Reply {
+        server_caps_reply_geo(0, 0)
+    }
+
+    /// A `Hello` reply with a chosen coverage geometry (for the guard test).
+    fn server_caps_reply_geo(map_bytes: u32, producer: u8) -> control_proto::Reply {
         control_proto::Reply::Hello(control_proto::Caps {
             protocol_version: 1,
             env_version_min: EnvSpec::BLOB_VERSION,
             env_version_max: EnvSpec::BLOB_VERSION,
             coverage: control_proto::CoverageGeometry {
-                map_bytes: 0,
-                producer: 0,
+                map_bytes,
+                producer,
             },
             flags: control_proto::CapFlags::NONE,
         })
+    }
+
+    /// The connect-time V-time probe reply: a `run(deadline:0)` stops immediately
+    /// with `Deadline{vtime}`.
+    fn probe_reply(vtime: u64) -> control_proto::Reply {
+        control_proto::Reply::Stop(control_proto::StopReason::Deadline {
+            vtime: control_proto::VTime(vtime),
+        })
+    }
+
+    fn seeded_env(seed: u64) -> EnvSpec {
+        EnvSpec::Seeded {
+            seed,
+            policy: FaultPolicy::none(),
+        }
+    }
+
+    /// The snapshot-origin fix (blocking, task-93 class): `connect` probes the
+    /// server's current V-time, so a snapshot taken *immediately* (as
+    /// `Explorer::new` does, before any `run`) records the true origin — not
+    /// `0`. Against a server whose live VM sits post-readiness (here V-time
+    /// 5000), a `branch` off that genesis snapshot then keys its `recorded_env`
+    /// delta from 5000, not 0 — otherwise the reproducer would be silently
+    /// mis-keyed (undetectable by `compose`).
+    #[test]
+    fn snapshot_immediately_after_connect_records_the_true_origin_not_zero() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let stream = scripted(&[
+            (1, server_caps_reply()),        // hello
+            (2, probe_reply(5000)),          // connect's V-time probe: post-readiness
+            (3, Reply::SnapId(WsSnapId(1))), // snapshot (taken immediately, no run)
+            (4, Reply::Unit),                // branch
+        ]);
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+        m.branch(snap, &SpecEnvCodec.seeded(7)).unwrap();
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        assert_eq!(
+            recorded.base_offset, 5000,
+            "the branch-local delta is keyed from the true post-readiness origin, not 0"
+        );
+        assert_eq!(
+            recorded.pos, 5000,
+            "pos is the branch origin before any run"
+        );
+    }
+
+    /// The coverage-geometry guard (blocking): a server advertising a non-zero
+    /// coverage geometry is refused (v1 has no producer) rather than sized into
+    /// an unbounded allocation from the transport-provided `u32`.
+    #[test]
+    fn connect_refuses_a_non_zero_coverage_geometry() {
+        // A huge map_bytes is exactly the unbounded-allocation risk.
+        let stream = scripted(&[(1, server_caps_reply_geo(u32::MAX, 0))]);
+        assert!(matches!(
+            SocketMachine::connect(stream, seeded_env(1)),
+            Err(MachineError::Transport(_))
+        ));
+        // A non-zero producer tag (with zero map_bytes) is likewise unexpected in v1.
+        let stream = scripted(&[(1, server_caps_reply_geo(0, 3))]);
+        assert!(matches!(
+            SocketMachine::connect(stream, seeded_env(1)),
+            Err(MachineError::Transport(_))
+        ));
+        // Zero-width geometry is accepted (the negotiated v1 shape); the probe
+        // then completes the handshake.
+        let stream = scripted(&[(1, server_caps_reply()), (2, probe_reply(0))]);
+        assert!(SocketMachine::connect(stream, seeded_env(1)).is_ok());
     }
 
     /// The task-93 tail-completeness fix: a `run(None)` issued **while a
@@ -973,8 +1107,9 @@ mod tests {
         use control_proto::{DecisionId, Reply, StopReason as Ws, VTime as WsVTime};
         let stream = scripted(&[
             (1, server_caps_reply()), // hello
+            (2, probe_reply(0)),      // connect's V-time probe (origin 0)
             (
-                2,
+                3,
                 Reply::Stop(Ws::Decision {
                     vtime: WsVTime(100),
                     id: DecisionId(5),
@@ -982,26 +1117,19 @@ mod tests {
                 }),
             ), // run #1
             (
-                3,
+                4,
                 Reply::Stop(Ws::SnapshotPoint {
                     vtime: WsVTime(110),
                 }),
             ), // run #2: the None-resolve probe
             (
-                4,
+                5,
                 Reply::Stop(Ws::Quiescent {
                     vtime: WsVTime(120),
                 }),
             ), // run #3: the answering resolve
         ]);
-        let mut m = SocketMachine::connect(
-            stream,
-            EnvSpec::Seeded {
-                seed: 7,
-                policy: FaultPolicy::none(),
-            },
-        )
-        .unwrap();
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
         let until = StopConditions {
             deadline: None,
             on: StopMask::NONE,

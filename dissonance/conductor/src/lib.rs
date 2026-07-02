@@ -175,7 +175,10 @@ pub fn run_sweep<M: Machine>(
                 }
                 let stop = machine.run(
                     &StopConditions {
-                        deadline: Some(VTime(vt + cfg.snapshot_retry_step)),
+                        // Saturating: a deadline that would overflow the axis
+                        // just means "run to the end", never a wrapped-small
+                        // deadline that would stop immediately.
+                        deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
                         on: StopMask::NONE,
                     },
                     None,
@@ -194,7 +197,10 @@ pub fn run_sweep<M: Machine>(
 
     // 3. The multiverse: per seed, branch → run → hash, repeated.
     let until = StopConditions {
-        deadline: cfg.deadline_delta.map(|d| VTime(snapshot_vtime + d)),
+        // Saturating (as above): an overflowing deadline means "to the end".
+        deadline: cfg
+            .deadline_delta
+            .map(|d| VTime(snapshot_vtime.saturating_add(d))),
         on: StopMask::NONE,
     };
     let mut rows = Vec::with_capacity(cfg.seeds.len());
@@ -292,7 +298,10 @@ pub fn render_table(report: &SweepReport) -> String {
 
 /// The task-58 gates over a [`SweepReport`]:
 ///
-/// 1. **Reproducibility** — every seed's repeated runs are bit-identical.
+/// 1. **Reproducibility** — every seed's repeated runs are bit-identical, in
+///    **both** the terminal `state_hash` and the [`StopReason`] (a run that
+///    reproduces the hash but stops for a different reason is still a
+///    determinism failure — e.g. `Deadline` vs `Quiescent` at the same point).
 /// 2. **Divergence** — at least `min_distinct` distinct terminal hashes across
 ///    seeds (the box gate asks ≥ 2).
 /// 3. **Replay** — `replay(base)` hashes identically to the original capture.
@@ -313,6 +322,12 @@ pub fn verify(report: &SweepReport, min_distinct: usize) -> Vec<String> {
                     row.seed,
                     hex(&run.hash),
                     hex(&first.hash)
+                ));
+            }
+            if run.stop != first.stop {
+                failures.push(format!(
+                    "seed {:#018x}: run {i} stop {:?} != run 0 stop {:?} — NOT reproducible",
+                    row.seed, run.stop, first.stop
                 ));
             }
         }
