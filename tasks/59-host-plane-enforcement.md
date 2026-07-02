@@ -36,7 +36,13 @@ seam. Record the deferral in `IMPLEMENTATION.md`.
 1. **Staged-fault schedule in the server/Vmm:** `perturb(fault, at)` stages `(Moment, HostFault)`
    into an ordered queue; `run(until)` becomes "run to `min(next staged Moment, until)`" —
    reusing the `run_until` deadline path — apply every fault staged at that count, then continue.
-   Multiple faults at one `Moment` apply in stage order (deterministic; pin it with a test).
+   Staging a second fault at an already-occupied `Moment` is **loudly rejected** (a distinct
+   `ControlError`, wire-additive); stage-order semantics apply across distinct `Moment`s.
+   *(Integrator ruling, 2026-07-02: task 45's one-`Action`-per-`Moment` override map stands —
+   recording a same-`Moment` stack would silently drop all but the last fault, minting a
+   reproducer that does not reproduce. Adjacent `Moment`s express the same burst. Widening
+   `Action` to carry multiple host faults is deferred until a consumer (69/71/72) needs true
+   simultaneity; that change is a `blob_version` bump in `dissonance/environment`.)*
 2. **Apply:**
    - `CorruptMemory`: XOR/AND the `BitMask` at `gpa` in guest RAM between instructions. Fail
      loud (`ControlError`) on out-of-range `gpa` — never silently clip.
@@ -47,9 +53,9 @@ seam. Record the deferral in `IMPLEMENTATION.md`.
 
 ## Acceptance gates
 
-1. **Portable:** mock-backend tests — staging order, multiple-faults-per-Moment determinism,
-   out-of-range rejection, and a proptest (≥256 cases) that an arbitrary staged schedule applied
-   twice yields identical state evolution.
+1. **Portable:** mock-backend tests — staging order, loud same-`Moment` conflict rejection
+   (per the ruling above), out-of-range rejection, and a proptest (≥256 cases) that an
+   arbitrary staged schedule applied twice yields identical state evolution.
 2. **Box gate:** against the Postgres workload — a `CorruptMemory` and an `InjectInterrupt`
    staged at chosen `Moment`s: (a) same schedule run twice → bit-identical `state_hash`;
    (b) `replay` of the emitted `Recorded` env → same hash again (record → replay closure);
