@@ -54,8 +54,10 @@ Empirical confirmation (gate 3, zero behavior change):
 ## Surface touched
 
 - **`dissonance/explorer`** — `timeline()`→`modulation()`, `multiverse_step()`→`progression_step()`
-  across `lib.rs`/`engine.rs`/`seam.rs`/`error.rs`/`adapter.rs`, all tests, the vendored
-  behavior-equiv `reference/mod.rs`, `IMPLEMENTATION.md`, and the `public-api.txt` golden.
+  across `lib.rs`/`engine.rs`/`seam.rs`/`error.rs`/`adapter.rs`, all tests, `IMPLEMENTATION.md`,
+  and the `public-api.txt` golden. **`tests/reference/mod.rs` is deliberately left untouched** — it
+  is the task-12 engine frozen verbatim for the behavior-equivalence gate (see *Exclusion-list
+  compliance* below).
 - **58/60 consumers & catalog** — `conductor` ("the multiverse"→"the progression"; "current
   Timeline"→"Modulation"), `control-proto` ("the variation unit"→"the modulation unit"),
   `environment` (doc comments: "Theme"→"Progression"; kept "ordered timeline").
@@ -77,7 +79,10 @@ old→new to be meaningful): `docs/EXPLORATION.md:18,20` and `docs/RESOLUTION.md
 ("formerly Theme/Variation…"); the task-94 rows in `docs/REVIEW-2026-07.md:126` and
 `docs/ROADMAP.md:50`.
 
-**(c) Historical records** (a record, not a lie to maintain): `docs/IMPLEMENTATION-task-93.md:19`
+**(c) Historical / frozen records** (a record, not a lie to maintain):
+`dissonance/explorer/tests/reference/mod.rs` (`fn timeline`/`fn multiverse_step`, "pre-refactor
+Timeline" — the task-12 engine frozen verbatim, the behavior-equivalence golden; kept exactly as
+the pre-rename code, see *Exclusion-list compliance*); `docs/IMPLEMENTATION-task-93.md:19`
 ("300 Multiverse steps" — task 93's run); `docs/history/IMPLEMENTATION-task06.md:124,127,144`
 ("structural themes", "Theme A/B" section labels); the `tasks/12` historical note.
 
@@ -102,6 +107,25 @@ record and old→new decoder, so it necessarily names both vocabularies througho
 surviving loop-name uses there are historical specs (kept by design), the task-94 spec itself,
 and forward decode-notes in future specs (64/66/67) that already point at this rename.
 
+## Exclusion-list compliance
+
+Three frozen/hashed surfaces were kept out of the rename:
+
+- **Hashed strings — untouched.** No renamed identifier reaches a hash, wire byte, or golden
+  (see *Determinism-neutral by construction*): `Bug.fingerprint` hashes the `StopReason` (no loop
+  name), the `control-proto` verb set has no loop-named variant, and the `sha2`/`blake3` inputs in
+  the touched crates are unchanged. The only golden edited is `public-api.txt` (the two method
+  signatures), which is *not* a hashed run artifact.
+- **Frozen reference model — untouched.** `dissonance/explorer/tests/reference/mod.rs` is the
+  task-12 engine *frozen verbatim* — the golden the behavior-equivalence gate diffs the refactored
+  engine against. Its internal `timeline`/`multiverse_step` names are part of that frozen record,
+  so it is byte-identical to `main` (`git diff main -- …/reference/mod.rs` is empty). The gate still
+  passes (`fifty_campaigns_are_byte_identical_across_the_refactor`): the reference's internal method
+  names never enter the comparison, which is over run outputs.
+- **History docs — untouched.** `docs/history/IMPLEMENTATION-task06.md` and
+  `docs/IMPLEMENTATION-task-93.md` keep their original wording; their "Theme A/B" / "Multiverse
+  steps" are historical records (and, for task06, unrelated section labels).
+
 ## Deviations considered and rejected
 
 - **Renaming "timeline admission" → "modulation admission".** Rejected: `EXPLORATION.md`
@@ -111,6 +135,10 @@ and forward decode-notes in future specs (64/66/67) that already point at this r
 - **Renaming the VMM "multiverse" in `consonance/`.** Rejected: it is the branch-tree primitive
   (task 48/49), a substrate concept distinct from dissonance's search loop, and outside this
   task's surface. Left as incidental and listed above.
+- **Renaming the frozen reference model's methods** (`tests/reference/mod.rs`). Initially applied,
+  then **reverted**: it is the pre-refactor engine frozen verbatim, and its `timeline`/
+  `multiverse_step` names are part of that record — renaming it would make it no longer verbatim.
+  Left byte-identical to `main`; classified under gate-1 category (c).
 - **Hand-editing `public-api.txt`.** Rejected in favor of regenerating with the real
   `cargo public-api -sss` (pinned nightly) so the sort is authoritative, not guessed.
 

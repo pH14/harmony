@@ -301,7 +301,7 @@ fn checksum(bytes: &[u8]) -> u64 {
 
 // ---- engine.rs (verbatim) ----
 
-/// The result of one pre-refactor Modulation.
+/// The result of one pre-refactor Timeline.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunOutcome {
     pub stop: StopReason,
@@ -383,7 +383,7 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         &mut self.machine
     }
 
-    pub fn modulation(
+    pub fn timeline(
         &mut self,
         base: SnapId,
         env: &Environment,
@@ -431,13 +431,13 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         }
     }
 
-    pub fn progression_step(&mut self) -> Result<Option<Bug>, MachineError> {
+    pub fn multiverse_step(&mut self) -> Result<Option<Bug>, MachineError> {
         let until = self.until.clone();
         let (base_snap, branch_env) =
             self.strategy
                 .next_env(&self.corpus, self.genesis, self.env.as_ref());
 
-        let outcome = self.modulation(base_snap, &branch_env, &until)?;
+        let outcome = self.timeline(base_snap, &branch_env, &until)?;
 
         let bug = if outcome.stop.is_bug() {
             Some(self.report(base_snap, &outcome))
@@ -476,7 +476,7 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         let mut bugs = Vec::new();
         let mut seen: BTreeSet<[u8; 32]> = BTreeSet::new();
         for _ in 0..steps {
-            if let Some(bug) = self.progression_step()?
+            if let Some(bug) = self.multiverse_step()?
                 && seen.insert(bug.fingerprint)
             {
                 bugs.push(bug);
