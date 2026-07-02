@@ -55,7 +55,9 @@
 //! ```
 //!
 //! Knobs (env): `TARGETS` (N, default 64), `BRANCH_HORIZON_VNS` (V-time run past each
-//! seal for the determinism check, default 4_000_000), `ADV_JITTER_VNS` (default 50_000),
+//! seal for the determinism check, default 4_000_000), `MIN_VERIFIED_HORIZON_VNS` (a §2 pair
+//! verified over less V-time than this is excluded from `det_verified` as `horizon_insufficient`,
+//! default 2 % of the horizon), `ADV_JITTER_VNS` (default 50_000),
 //! `ADV_PERTURB_STEPS` (max perturbation steps, default 32), `DET_SUBSET` (how many spread
 //! seals get the full 2 GiB snapshot + §2/§4 branch-verify, default 24), `WALL_BUDGET_SECS`
 //! (per **guest**, default 1800), `SPAN_START`/`SPAN_END` (skip the profiling pass and use
@@ -645,6 +647,10 @@ fn seal_rate_sweep() {
     let n = env_usize("TARGETS", 64);
     assert!(n >= 64, "task 63 requires N >= 64 target Moments (got {n})");
     let horizon = env_u64("BRANCH_HORIZON_VNS", 4_000_000);
+    // A §2 pair that hit terminal almost immediately verified ~zero horizon — worthless as
+    // determinism evidence. Pairs whose actual verified horizon is below this floor (default 2 %
+    // of the requested horizon) are EXCLUDED from `det_verified` and reported `horizon_insufficient`.
+    let min_verified_horizon = env_u64("MIN_VERIFIED_HORIZON_VNS", (horizon / 50).max(1));
     let jitter = env_u64("ADV_JITTER_VNS", 50_000);
     // A SMALL perturbation: a handful of raw steps lands the guest a little way past the
     // boundary (usually a non-synchronized interior point). Large values advance V-time by
@@ -767,9 +773,12 @@ fn seal_rate_sweep() {
     eprintln!("\n[sweep] === branch-determinism check: 2 same-seed branches per sealed point ===");
     let mut nondeterministic: Vec<(VTime, String)> = Vec::new();
     // Per-pair ACTUAL verified horizon (min of the two branches' reached V-time, minus the seal)
-    // + whether either branch hit terminal early. A same-hash pair verified over a truncated
-    // horizon is weaker evidence — recorded, never silently counted as full-horizon.
-    let mut verified_horizons: Vec<(VTime, VTime, bool)> = Vec::new();
+    // + whether either branch hit terminal early + whether the pair was bit-identical. A
+    // same-hash pair verified over a truncated horizon is weaker evidence — recorded, and (below
+    // the floor) excluded from `det_verified` as `horizon_insufficient` rather than counted.
+    let mut verified_horizons: Vec<(VTime, VTime, bool, bool)> = Vec::new();
+    // Bit-identical but verified over less than the floor horizon: (seal_vtime, horizon).
+    let mut horizon_insufficient: Vec<(VTime, VTime)> = Vec::new();
     for (vi, s) in sealed.iter().enumerate() {
         eprintln!(
             "[sweep] branch-verify {}/{} at V-time {} …",
@@ -784,20 +793,18 @@ fn seal_rate_sweep() {
             .min(b2.reached_vtime)
             .saturating_sub(s.seal_vtime);
         let early_terminal = b1.early_terminal || b2.early_terminal;
-        verified_horizons.push((s.seal_vtime, verified_horizon, early_terminal));
-        if early_terminal {
-            eprintln!(
-                "[sweep]   (seal at {} verified over a TRUNCATED horizon {verified_horizon} < \
-                 requested {horizon} — hit terminal; same-hash still holds but is weaker evidence)",
-                s.seal_vtime
-            );
-        }
-        let ok = b1.step_error.is_none()
+        let bit_identical = b1.step_error.is_none()
             && b2.step_error.is_none()
             && !b1.skid
             && !b2.skid
             && b1.hash == b2.hash;
-        if !ok {
+        verified_horizons.push((
+            s.seal_vtime,
+            verified_horizon,
+            early_terminal,
+            bit_identical,
+        ));
+        if !bit_identical {
             let why = format!(
                 "hash1={} hash2={} err1={:?} err2={:?} skid1={} skid2={}",
                 hex(&b1.hash),
@@ -815,26 +822,44 @@ fn seal_rate_sweep() {
             // §2: reclassify the seal as a failure.
             nominal[s.attempt_idx].result =
                 SealResult::Failed(FailureReason::BranchNondeterministic);
+        } else if verified_horizon < min_verified_horizon {
+            // Bit-identical, but over too little horizon to be evidence — set aside (neither
+            // `det_verified` nor a failure): a seal AT terminal would otherwise contribute a
+            // zero-horizon "verification".
+            horizon_insufficient.push((s.seal_vtime, verified_horizon));
+            eprintln!(
+                "[sweep]   (seal at {} EXCLUDED from det_verified: verified horizon {verified_horizon} \
+                 < floor {min_verified_horizon} — horizon_insufficient; bit-identical but not evidence)",
+                s.seal_vtime
+            );
+        } else if early_terminal {
+            eprintln!(
+                "[sweep]   (seal at {} verified over a TRUNCATED-but-sufficient horizon {verified_horizon} \
+                 < requested {horizon} — hit terminal; counts, weaker evidence than a full horizon)",
+                s.seal_vtime
+            );
         }
     }
-    // Honest subset counts (not a global bool): how many of the branch-verified spread subset
-    // were bit-identical, out of how many were checked. `rule()` requires all-checked-passed
-    // AND at least one checked.
-    let det_sealed_total = sealed.len();
-    let det_verified = det_sealed_total - nondeterministic.len();
-    let det_early_terminal = verified_horizons.iter().filter(|(_, _, e)| *e).count();
-    let det_full_horizon = verified_horizons.len() - det_early_terminal;
-    let det_min_horizon = verified_horizons
+    // Honest subset counts (not a global bool): a pair counts as `det_verified` only if it was
+    // bit-identical AND verified over ≥ the horizon floor. `det_sealed_total` = valid-evidence
+    // pairs (verified + diverged); `horizon_insufficient` pairs give no evidence and are set
+    // aside. `rule()` requires all-valid-checked-passed AND at least one.
+    let counted: Vec<&(VTime, VTime, bool, bool)> = verified_horizons
         .iter()
-        .map(|(_, h, _)| *h)
-        .min()
-        .unwrap_or(0);
+        .filter(|(_, h, _, bit)| *bit && *h >= min_verified_horizon)
+        .collect();
+    let det_verified = counted.len();
+    let det_sealed_total = det_verified + nondeterministic.len();
+    let det_early_terminal = counted.iter().filter(|(_, _, e, _)| *e).count();
+    let det_full_horizon = det_verified - det_early_terminal;
+    let det_min_horizon = counted.iter().map(|(_, h, _, _)| *h).min().unwrap_or(0);
     eprintln!(
         "[sweep] branch-determinism: {det_verified}/{det_sealed_total} branch-verified points \
-         bit-identical (a spread subset of {} sealed; the §2 DET_SUBSET deviation) — {det_full_horizon} \
-         verified to the full horizon {horizon}, {det_early_terminal} truncated at terminal \
-         (min verified horizon {det_min_horizon})",
+         bit-identical (spread subset of {} sealed; §2 DET_SUBSET deviation) — {det_full_horizon} \
+         to the full horizon {horizon}, {det_early_terminal} truncated-but-≥floor (min {det_min_horizon}), \
+         {} horizon_insufficient (< floor {min_verified_horizon}, excluded)",
         nominal.iter().filter(|a| a.result.is_sealed()).count(),
+        horizon_insufficient.len(),
     );
 
     // --- 3. Adversarial pass (§3) + interior grid-probe (supports §5) -------
@@ -995,6 +1020,7 @@ fn seal_rate_sweep() {
         schedule_faithful,
         &nondeterministic,
         &inputs.determinism_summary(),
+        horizon_insufficient.len(),
         ruling,
     );
 
@@ -1180,6 +1206,7 @@ fn emit_report(
     schedule_faithful: Option<bool>,
     nondeterministic: &[(VTime, String)],
     det_summary: &str,
+    horizon_insufficient: usize,
     ruling: Ruling,
 ) {
     eprintln!("\n[REPORT] ======================= SEAL-RATE MEASUREMENT =======================");
@@ -1226,7 +1253,8 @@ fn emit_report(
         }
     }
     eprintln!(
-        "[REPORT] branch-determinism: {det_summary} bit-identical; {} nondeterministic (must be 0)",
+        "[REPORT] branch-determinism: {det_summary} bit-identical; {} nondeterministic (must be 0); \
+         {horizon_insufficient} horizon_insufficient (excluded)",
         nondeterministic.len()
     );
     if let Some(o) = overshoot {

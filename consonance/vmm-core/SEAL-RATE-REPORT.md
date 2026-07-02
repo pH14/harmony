@@ -133,7 +133,7 @@ on PR #50.
 | Metric | Measured (guarded) |
 |---|---|
 | **§1 nominal seal rate** (run→boundary→seal) | **64 / 64 = 100.0000 %** — no failures |
-| **§2 branch-from-seal determinism** | **9 / 9 bit-identical**; 0 nondeterministic. **Honest horizon:** 6 verified to the full `BRANCH_HORIZON_VNS=1 000 000`, **3 truncated at terminal** (min verified horizon **32 239** — the deepest, near workload end). Prior full runs add 17/17 (26/26 total, same caveat on the deepest). |
+| **§2 branch-from-seal determinism** | **9 / 9 bit-identical**; 0 nondeterministic. **Honest horizon:** 6 verified to the full `BRANCH_HORIZON_VNS=1 000 000`, **3 truncated at terminal** (min verified horizon **32 239** — the deepest, near workload end). All 3 truncated pairs are **above** the `MIN_VERIFIED_HORIZON_VNS` floor (default 2 % = 20 000) → **0 `horizon_insufficient`** excluded; `det_verified` = 9/9. Prior full runs add 17/17 (26/26 total, same caveat on the deepest). |
 | **§3 adversarial (jittered boundaries)** | **26 / 26 = 100.0000 %** — denominators **26 probed / 38 skipped-overshot / 0 unprobed** (break=none), coverage 40.6 % ≥ 10 % floor |
 | §5 interior grid-probe (non-boundary) | 17 / 26 = 65.3846 % (9 `non-synchronized`) |
 | **§4 materialization premise** | **parent-rooted == genesis-rooted** (`2c71f9ab…`); ratio **1.6561 %** (from_parent 7 667 740 / from_genesis 462 999 204) → **savings 98.34 %** |
