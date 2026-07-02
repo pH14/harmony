@@ -1,0 +1,22 @@
+[package]
+name = "logtmpl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The log-template scrape sensor (Drain-style clustering + internal codebook) and CellFn v1 — the first multi-channel point-in-time cell function (dissonance task 67)"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# The one sanctioned sibling: the search-plane spine (task 64). We implement its
+# `Sensor`/`CellFn`/`Matchable` traits and import its vocabulary (`Moment`,
+# `Feature`, `Record`, …); we never redefine spine items. Pinned `version`
+# alongside `path` for `cargo deny`'s wildcard ban.
+explorer = { path = "../explorer", version = "0.1.0" }
+
+[dev-dependencies]
+proptest = "1"
