@@ -479,6 +479,17 @@ pub struct Vmm<B: Backend> {
     /// in. The chunk is the same bytes a [`Vmm::save_vm_state`] would seal, so two
     /// states whose canonical blob differs hash differently.
     snapshot_hashing: bool,
+    /// The **host-fault arrival deadline** (task 59): an absolute retired-branch
+    /// **work count** at which a staged [`HostFault`](environment::HostFault) is
+    /// to be applied, armed by [`Vmm::arm_arrival`] and folded into
+    /// [`step`](Vmm::step)'s `run_until` alongside the task-47 preemption
+    /// deadline ([`Vmm::run_until_deadline`]). `None` (the default, and every
+    /// protected M1/M2/corpus/Linux-boot path — none stages a fault) keeps
+    /// `run_until` gated exactly as before, so those goldens are byte-for-byte
+    /// unchanged. Like the preemption deadline it is a pure function of the
+    /// (seed-deterministic) work axis, so arrival lands at the same instruction
+    /// across same-seed runs.
+    arrival_deadline: Option<Vtime>,
 }
 
 impl<B: Backend> Vmm<B> {
@@ -504,6 +515,7 @@ impl<B: Backend> Vmm<B> {
             lapic: None,
             legacy: None,
             snapshot_hashing: false,
+            arrival_deadline: None,
         }
     }
 
@@ -1325,8 +1337,10 @@ impl<B: Backend> Vmm<B> {
         // On the preemption path, capture the pre-call work so a `Deadline` can be told
         // apart: the `Drive` path single-steps work strictly FORWARD (reached > before),
         // while the no-entry overdue/at-deadline zero-step returns `reached == before` with
-        // NO `KVM_RUN` (round-12). `preemption_deadline()` is `Some` ⇒ V-time is wired.
-        let deadline = self.preemption_deadline();
+        // NO `KVM_RUN` (round-12). `run_until_deadline()` is `Some` ⇒ V-time is wired;
+        // it folds the task-47 LAPIC-timer preemption deadline together with the
+        // task-59 host-fault arrival deadline, taking whichever work count is nearer.
+        let deadline = self.run_until_deadline();
         let work_before = match deadline {
             Some(_) => Some(
                 self.vtime
@@ -1917,6 +1931,139 @@ impl<B: Backend> Vmm<B> {
             .as_ref()
             .expect("armed_timer_deadline_vns implies V-time wired");
         Some(Vtime(vt.clock.work_for_vns(deadline_vns)))
+    }
+
+    /// The `run_until` work-count deadline for the next [`step`](Vmm::step): the
+    /// **nearer** of the task-47 LAPIC-timer [`preemption_deadline`](Self::preemption_deadline)
+    /// and the task-59 host-fault [`arrival_deadline`](Self::arrival_deadline).
+    /// `None` (neither armed) keeps the plain open-ended `run()`, so every path
+    /// that stages no fault and arms no timer is byte-for-byte unchanged. Taking
+    /// the min is what lets a timer preemption and a fault arrival coexist: the
+    /// guest is forced out at whichever seed-deterministic work count comes first,
+    /// and the loser stays armed for the following step.
+    fn run_until_deadline(&self) -> Option<Vtime> {
+        match (self.preemption_deadline(), self.arrival_deadline) {
+            (Some(p), Some(a)) => Some(Vtime(p.0.min(a.0))),
+            (only, None) | (None, only) => only,
+        }
+    }
+
+    /// Arm a **host-fault arrival deadline** at `moment` (task 59): the next
+    /// [`step`](Vmm::step) runs (via `run_until`) no further than the
+    /// retired-branch work count whose effective V-time is `moment`, so the
+    /// frontier can stop *between instructions* at exactly that count and apply a
+    /// staged fault. `moment` is on the single [`Moment`](environment::Moment)
+    /// axis (a V-time / retired-count; [`effective_vns`](Vmm::effective_vns)
+    /// reports the same axis).
+    ///
+    /// Returns `true` iff the deadline was armed. It arms **only on the
+    /// determinism-complete path** (V-time wired *and* a deterministic
+    /// retired-branch counter), exactly like [`preemption_deadline`](Self::preemption_deadline):
+    /// arrival needs the exact-count `run_until` seam, which stock KVM / M1 / M2
+    /// do not provide. When it returns `false` the caller falls back to running to
+    /// a natural exit and comparing [`effective_vns`](Vmm::effective_vns).
+    pub fn arm_arrival(&mut self, moment: environment::Moment) -> bool {
+        if !self.backend.capabilities().deterministic_tsc {
+            self.arrival_deadline = None;
+            return false;
+        }
+        let Some(vt) = self.vtime.as_ref() else {
+            self.arrival_deadline = None;
+            return false;
+        };
+        self.arrival_deadline = Some(Vtime(vt.clock.work_for_vns(moment)));
+        true
+    }
+
+    /// Disarm any [`arm_arrival`](Vmm::arm_arrival) deadline, so the next
+    /// [`step`](Vmm::step) is bounded only by the task-47 preemption deadline (or
+    /// runs open-ended if none is armed). Idempotent.
+    pub fn clear_arrival(&mut self) {
+        self.arrival_deadline = None;
+    }
+
+    /// Apply one host-plane [`HostFault`](environment::HostFault) **imperatively,
+    /// between instructions** (task 59) — the enforcement seam task 45 declared
+    /// frontier. Called by the frontier when a run has arrived at the fault's
+    /// [`Moment`](environment::Moment):
+    ///
+    /// - [`CorruptMemory`](environment::HostFault::CorruptMemory): XOR the
+    ///   [`BitMask`](environment::BitMask) into the little-endian 8-byte word at
+    ///   guest-physical `gpa` in the owned [`GuestRam`] (on the box KVM reads the
+    ///   guest through this same backing, so the corruption is live on the next
+    ///   entry). **Fails loud** ([`VmmError::ContractViolation`]) when
+    ///   `gpa + 8 > guest RAM` rather than clip or wrap — a corruption at an
+    ///   unrepresentable address would not replay. (The server rejects the same
+    ///   condition earlier, at stage time, with a recoverable `ControlError`; this
+    ///   is the defensive backstop.)
+    /// - [`InjectInterrupt`](environment::HostFault::InjectInterrupt): raise the
+    ///   `vector` into the userspace-LAPIC IRR so the **existing** IRQ arbitration
+    ///   ([`service_pending_irqs`](Self::service_pending_irqs)) delivers it at the
+    ///   next injectable entry — delivery ordering vs. the V-time timer stays
+    ///   deterministic. Requires the LAPIC wired (the Linux boot path) and a
+    ///   non-reserved `vector` (`≥ 16`); both fail loud otherwise.
+    /// - [`SkewTime`](environment::HostFault::SkewTime) /
+    ///   [`SetClockRate`](environment::HostFault::SetClockRate): **out of scope**
+    ///   for task 59 (they mutate the V-time clock itself; a follow-on lights them
+    ///   up). Rejected loud so a schedule carrying one never silently no-ops.
+    pub fn apply_host_fault(&mut self, fault: &environment::HostFault) -> Result<(), VmmError> {
+        match fault {
+            environment::HostFault::CorruptMemory { gpa, mask } => {
+                self.corrupt_memory(*gpa, mask.0)
+            }
+            environment::HostFault::InjectInterrupt { vector } => self.inject_host_interrupt(*vector),
+            environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
+                Err(VmmError::ContractViolation(
+                    "SkewTime/SetClockRate host faults are out of scope for task 59 (they mutate \
+                     the V-time clock itself) — a follow-on lights them up; refusing to silently \
+                     no-op a staged clock fault"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+
+    /// XOR `mask` (as a little-endian 64-bit word) into the 8 guest-physical bytes
+    /// at `gpa`. The single-event-upset apply of [`CorruptMemory`]; a pure
+    /// function of `(gpa, mask)` over the current RAM, so replaying the same fault
+    /// at the same [`Moment`](environment::Moment) reproduces it bit-for-bit.
+    /// Fails loud on `gpa + 8 > ram` (never clips/wraps).
+    ///
+    /// [`CorruptMemory`]: environment::HostFault::CorruptMemory
+    fn corrupt_memory(&mut self, gpa: u64, mask: u64) -> Result<(), VmmError> {
+        let ram = self.ram.as_mut_bytes();
+        let end = gpa.checked_add(8).filter(|&e| e <= ram.len() as u64);
+        let Some(end) = end else {
+            return Err(VmmError::ContractViolation(format!(
+                "CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {} bytes) — refusing \
+                 to clip or wrap the upset",
+                ram.len()
+            )));
+        };
+        let start = gpa as usize;
+        let end = end as usize;
+        let word = u64::from_le_bytes(ram[start..end].try_into().expect("slice is exactly 8 bytes"));
+        ram[start..end].copy_from_slice(&(word ^ mask).to_le_bytes());
+        Ok(())
+    }
+
+    /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ
+    /// arbitration delivers it — the [`InjectInterrupt`] apply. Fails loud if the
+    /// LAPIC is unwired (there is no arbitration path to assert through) or the
+    /// vector is architecturally reserved (`< 16`).
+    ///
+    /// [`InjectInterrupt`]: environment::HostFault::InjectInterrupt
+    fn inject_host_interrupt(&mut self, vector: u8) -> Result<(), VmmError> {
+        let Some(lapic) = self.lapic.as_mut() else {
+            return Err(VmmError::ContractViolation(format!(
+                "InjectInterrupt vector {vector:#x} but the userspace LAPIC is unwired — no IRQ \
+                 arbitration path to assert the vector through (task 59 enforces host interrupts \
+                 through the Linux-boot xAPIC)"
+            )));
+        };
+        lapic.raise(vector).map_err(|e| {
+            VmmError::ContractViolation(format!("InjectInterrupt vector {vector:#x} rejected: {e:?}"))
+        })
     }
 
     /// The next-timer **V-time deadline (ns)** on the determinism-complete path, or
