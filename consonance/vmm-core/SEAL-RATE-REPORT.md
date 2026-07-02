@@ -121,40 +121,51 @@ The only open questions the box run answers are the **exact** nominal/adversaria
 robustness gap?) and the **grid density** (the overshoot distribution → unrestricted vs
 grid-restricted GO).
 
-## 6. Measured result (box)
+## 6. Measured result (box) — corrected, guarded-harness re-run
 
 Determinism box, patched KVM 1400832, `taskset -c 2`, det-cfl-v1 PASS. Post-readiness span
 `[441861206, 463031443)` (≈ 21.17 M ns of V-time), **N = 64** (64 uniform; 0 busy windows
-auto-detected in this workload's post-readiness phase). §2/§4 branch-verified on a spread
-snapshot subset (9 this run + 17 in a prior full run = **26 sealed points branch-verified,
-all bit-identical**). Raw `[REPORT]` on PR #50.
+auto-detected). §2/§4 branch-verified on a spread snapshot subset (`DET_SUBSET=8` → 9 points).
+Numbers below are from the **guarded** harness (§3 overshoot guard + honest denominators);
+they **supersede** an earlier contaminated run — see the ⚠️ correction below. Raw `[REPORT]`
+on PR #50.
 
-| Metric | Measured |
+| Metric | Measured (guarded) |
 |---|---|
 | **§1 nominal seal rate** (run→boundary→seal) | **64 / 64 = 100.0000 %** — no failures |
-| **§2 branch-from-seal determinism** | **26/26 bit-identical** (9 + prior 17); 0 nondeterministic |
-| §3 adversarial (jittered boundaries) | 34 / 56 = 60.7143 % (22 `non-synchronized`) |
-| §5 interior grid-probe (non-boundary) | 24 / 55 = 43.6364 % (31 `non-synchronized`) |
+| **§2 branch-from-seal determinism** | **9 / 9 bit-identical**; 0 nondeterministic. **Honest horizon:** 6 verified to the full `BRANCH_HORIZON_VNS=1 000 000`, **3 truncated at terminal** (min verified horizon **32 239** — the deepest, near workload end). Prior full runs add 17/17 (26/26 total, same caveat on the deepest). |
+| **§3 adversarial (jittered boundaries)** | **26 / 26 = 100.0000 %** — denominators **26 probed / 38 skipped-overshot / 0 unprobed** (break=none), coverage 40.6 % ≥ 10 % floor |
+| §5 interior grid-probe (non-boundary) | 17 / 26 = 65.3846 % (9 `non-synchronized`) |
 | **§4 materialization premise** | **parent-rooted == genesis-rooted** (`2c71f9ab…`); ratio **1.6561 %** (from_parent 7 667 740 / from_genesis 462 999 204) → **savings 98.34 %** |
 | **§4b schedule-faithful replay** | **MATCH** (`1c04e4cc…` == `1c04e4cc…`) — the probe/deadline schedule is a *deterministic* part of the trajectory |
 | addressability — overshoot (ns) | min 7 · **p50 284 069 · p90 4 764 144** · max 6 748 854 · mean 1 260 128; exact_hits 0/64 |
-| `sealable()` precision / recall | **TP 122 · FP 0 · TN 53 · FN 0 → 100 % / 100 %** |
+| `sealable()` precision / recall | **TP 107 · FP 0 · TN 9 · FN 0 → 100 % / 100 %** |
+| mechanical summary (thresholds) | **GO (grid-restricted)** |
+
+> ⚠️ **Correction (why §3/§5 changed).** An earlier run measured §3 = 34/56 = **60.7 %** and §5
+> = 24/55 = **43.6 %**. Those were **contaminated**: without the overshoot guard, a boundary
+> landing (p90 overshoot ≈ 4.76 M ns ≈ **14× the ~340 K-ns target spacing**) carried the guest
+> *past* later jittered targets, whose "adversarial boundary" seal then actually probed the prior
+> non-synchronized interior and was miscounted as a boundary failure. The `non-synchronized`
+> cluster was exactly that artifact. The guarded re-run skips overshot targets (38 of 64 here)
+> and measures **§3 = 100 %**. This **moves the mechanical summary from NO-GO/RESTRICTED to GO
+> (grid-restricted)** — material for the integrator's fork.
 
 Reading:
-- **Boundary-addressed sealing is 100 % and 100 %-deterministic**, and **materialization is
-  ancestor-independent** (§4 premise holds; cost = the **1.66 %** suffix, not the prefix — the
-  baseline task 68 must beat live). This is the archive's actual pattern (`run(deadline)→seal`).
+- **Boundary-addressed sealing is 100 % nominal AND 100 % adversarial**, 100 %-deterministic
+  (§2), and **materialization is ancestor-independent** (§4 premise holds; cost = the **1.66 %**
+  suffix — the baseline task 68 must beat live). This is the archive's actual pattern
+  (`run(deadline)→seal`). Task 41 genuinely cleared the "0 of 8392" barrier and is robust to the
+  jittered/busier boundaries §3 exercises.
 - **§4b MATCH ⇒ the substrate is sound**: the live trajectory reproduces bit-for-bit when
-  replayed with the same probe/deadline schedule. The live-vs-clean-replay divergence
-  (`1c04e4cc` vs `2c71f9ab`) is a *deterministic, reproducible* schedule effect, not
-  non-reproducible perturbation.
-- **But sealing at an *exact arbitrary interior* V-time is not addressable**: interior /
-  adversarial points fail ~40–60 % (`non-synchronized`), and — correcting §5's projection —
-  the boundary grid is **coarse, not dense** (p90 overshoot ≈ 4.76 M ns ≈ 22 % of the span; 0
-  targets hit exactly). You can seal only at the nearest synchronized boundary, which can be
-  millions of ns past the requested `Moment`.
+  replayed with the same probe/deadline schedule (a *deterministic, reproducible* schedule
+  effect, not non-reproducible perturbation).
+- **The only restriction is addressability**: sealing at an *exact arbitrary interior* V-time is
+  not possible (§5 interior 65 %; 9 `non-synchronized`), and the boundary grid is **coarse** (p90
+  overshoot ≈ 4.76 M ns; 0/64 exact; 38/64 jittered targets collapsed onto a prior boundary). You
+  seal only at the nearest synchronized boundary, which can be millions of ns past the `Moment`.
 - The `sealable()` predicate separates boundary (sealable) from interior (non-sealable) points
-  **perfectly (100 % / 100 %)** over the 175-point union — it cleanly keys the Phase-A2 set.
+  **perfectly (100 % / 100 %)** — it cleanly keys the Phase-A2 set.
 
 ## 7. Runbook (what the foreman runs)
 
@@ -191,29 +202,32 @@ Also refresh the box-only public-API snapshot for the new `seal_rate` module:
 ## 8. Handoff
 
 - **Portable gate (gate 1): DONE & GREEN** — `src/seal_rate/` (schedule, bookkeeping,
-  `sealable`, ruling, mock) with 22 unit/proptest cases (512 cases each). No `/dev/kvm`, no
-  float, no `HashMap`-into-output.
+  `sealable`, ruling incl. the §3 coverage floor, mock) with 26 unit/proptest cases (512 cases
+  each). No `/dev/kvm`, no float, no `HashMap`-into-output.
 - **Box harness (gates 2–3 substrate): DONE & RUN** — `tests/seal_rate_sweep.rs`, additive, no
-  new deps. Compiled + clippy-clean + executed on the box (rc=0); KVM reverted to stock.
-- **Measurement (gate 2 numbers): DONE** — see §6. **Final ruling (gate 3): escalated to the
-  integrator** (foreman ruling 2026-07-02) — §9 presents the fork, not the verdict.
-- Still open: refresh the box-only public-API snapshot for the new `seal_rate` module
-  (`UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`).
+  new deps. Compiled + clippy-clean + executed on the box (rc=0, guarded re-run); KVM reverted
+  to stock and verified.
+- **Measurement (gate 2 numbers): DONE** — see §6 (corrected, guarded harness). **Final ruling
+  (gate 3): escalated to the integrator** (foreman ruling 2026-07-02) — §9 presents the fork.
+- **public-API snapshot: refreshed** for the new `seal_rate` module (regenerated on the box).
 
 ## 9. The fork (ruling escalated to the integrator)
 
-The measurement is **not** the clean GO the projection expected, nor a substrate failure. It
-splits along one axis:
+On the **corrected** (guarded) data the mechanical summary is **GO (grid-restricted)**. It still
+splits along one axis for the integrator:
 
-**Substrate soundness — PASS.** §1 nominal 100 %, §2 determinism 26/26, §4 premise holds
-(materialization ancestor-independent, cost = 1.66 % suffix), **§4b MATCH** (the live
-trajectory reproduces bit-for-bit under the same probe/deadline schedule). No task-41/63
+**Substrate soundness — PASS (strongly).** §1 nominal 100 %, **§3 adversarial 100 %** (jittered,
+busier boundaries — the contaminated 60.7 % was a harness artifact; see §6 ⚠️), §2 determinism
+9/9 this run (26/26 across runs; 3 of 9 verified over a truncated horizon, min 32 239 — honest,
+still bit-identical), §4 premise holds (ancestor-independent, cost = 1.66 % suffix), **§4b MATCH**
+(the live trajectory reproduces bit-for-bit under the same probe/deadline schedule). No task-41/63
 determinism-core regression. Task 41 genuinely cleared the "0 of 8392" barrier.
 
-**Addressability — RESTRICTED.** Sealing works at the **nearest synchronized boundary**
-(100 %), but **not at an exact arbitrary interior `Moment`** (interior/adversarial ~40–60 %
-`non-synchronized`), and the boundary grid is **coarse** (p90 overshoot ≈ 4.76 M ns ≈ 22 % of
-the span; 0/64 exact hits). This is the fundamental V-time-exactness limit, not a task-41 gap.
+**Addressability — RESTRICTED.** Sealing works at the **nearest synchronized boundary** (nominal
++ adversarial both 100 %), but **not at an exact arbitrary interior `Moment`** (interior 65 %
+`non-synchronized`), and the boundary grid is **coarse** (p90 overshoot ≈ 4.76 M ns; 0/64 exact;
+38/64 jittered targets collapsed onto a prior boundary). This is the fundamental V-time-exactness
+limit, not a task-41 gap.
 
 So the two admissible readings the integrator chooses between:
 
@@ -227,5 +241,7 @@ So the two admissible readings the integrator chooses between:
   **§4b rider**: to reproduce a probe-laden trajectory, materialize probe-free or replay the
   exact `run(deadline)`+probe schedule (both deterministic).
 
-The mechanical threshold summary the harness prints is **NO-GO / RESTRICTED** (driven by the
-coarse grid + sub-threshold adversarial rate). **The integrator makes the Phase-C call.**
+On the corrected data the mechanical threshold summary is **GO (grid-restricted)** — every rate
+bar is met (nominal + adversarial 100 %, §3 coverage 40.6 % ≥ 10 %, determinism clean) and the
+only reason it is *grid-restricted* rather than unrestricted is the coarse boundary grid (p90
+overshoot ≫ the dense threshold). **The integrator makes the Phase-C call.**

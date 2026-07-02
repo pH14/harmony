@@ -3620,13 +3620,17 @@ waiver of hard rule 1) honored — only `consonance/vmm-core` touched:
 
 **Status:** gate 1 DONE & GREEN on macOS. **Gate 2 (box measurement): DONE** — `tests/seal_rate_sweep.rs`
 compiled + clippy-clean + run to completion on the determinism box (rc=0; KVM reverted to stock
-1396736, verified). Measured: §1 nominal **64/64 = 100 %**, §2 branch-determinism **26/26
-bit-identical**, §4 parent-rooted **== genesis-rooted** (ratio 1.66 %), **§4b MATCH** (the probe/
+1396736, verified). Measured (corrected, **guarded** harness — round-2/2b review): §1 nominal
+**64/64 = 100 %**, **§3 adversarial 100 %** (26/26; 38 skipped-overshot, 0 unprobed — the earlier
+34/56 = 60.7 % was an overshoot-contamination artifact), §5 interior 17/26 = 65 %, §2
+branch-determinism **9/9 this run** (6 full-horizon + 3 truncated-at-terminal, min 32 239; 26/26
+across runs), §4 parent-rooted **== genesis-rooted** (ratio 1.66 %), **§4b MATCH** (the probe/
 deadline schedule is a *deterministic* part of the trajectory → substrate sound), `sealable()`
-**100 %/100 %**; but addressability is **coarse** (overshoot p90 ≈ 4.76 M ns) and interior/adversarial
-~40–60 % `non-synchronized`. Full numbers in `SEAL-RATE-REPORT.md` §6 + PR #50. **Gate 3 (final
-ruling): escalated to the integrator** (foreman ruling) — the report §9 presents the GO(boundary-keyed)
-vs NO-GO/RESTRICTED fork.
+**100 %/100 %**; addressability is **coarse** (overshoot p90 ≈ 4.76 M ns; 0/64 exact; 38/64
+jittered targets collapse). **Mechanical summary: GO (grid-restricted)** (the corrected §3 clears
+the 95 % bar — up from NO-GO/RESTRICTED on the contaminated data). Full numbers in
+`SEAL-RATE-REPORT.md` §6 + PR #50. **Gate 3 (final ruling): escalated to the integrator** — §9
+presents the GO(boundary-keyed) fork.
 
 ### The load-bearing substrate finding
 

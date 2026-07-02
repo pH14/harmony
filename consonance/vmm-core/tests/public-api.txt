@@ -336,15 +336,18 @@ impl vmm_core::seal_rate::PredicateQuality
 pub fn vmm_core::seal_rate::PredicateQuality::measure(&[vmm_core::seal_rate::SealAttempt], impl core::ops::function::Fn(&vmm_core::seal_rate::CpuSnapshot) -> bool) -> Self
 pub struct vmm_core::seal_rate::RulingInputs
 pub vmm_core::seal_rate::RulingInputs::adversarial: vmm_core::seal_rate::SealStats
+pub vmm_core::seal_rate::RulingInputs::adversarial_scheduled: usize
 pub vmm_core::seal_rate::RulingInputs::det_sealed_total: usize
 pub vmm_core::seal_rate::RulingInputs::det_verified: usize
 pub vmm_core::seal_rate::RulingInputs::nominal: vmm_core::seal_rate::SealStats
 pub vmm_core::seal_rate::RulingInputs::overshoot: core::option::Option<vmm_core::seal_rate::Overshoot>
 impl vmm_core::seal_rate::RulingInputs
+pub fn vmm_core::seal_rate::RulingInputs::adversarial_coverage_ok(&self, vmm_core::seal_rate::RulingThresholds) -> bool
 pub fn vmm_core::seal_rate::RulingInputs::determinism_ok(&self) -> bool
 pub fn vmm_core::seal_rate::RulingInputs::determinism_summary(&self) -> alloc::string::String
 pub struct vmm_core::seal_rate::RulingThresholds
 pub vmm_core::seal_rate::RulingThresholds::dense_grid_overshoot: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::RulingThresholds::min_adversarial_coverage_ppm: u32
 pub vmm_core::seal_rate::RulingThresholds::min_adversarial_ppm: u32
 pub vmm_core::seal_rate::RulingThresholds::min_nominal_ppm: u32
 impl core::default::Default for vmm_core::seal_rate::RulingThresholds
