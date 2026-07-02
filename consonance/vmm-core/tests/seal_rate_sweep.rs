@@ -501,7 +501,7 @@ fn profile(kernel: &[u8], initramfs: &[u8], start: Instant) -> Profile {
     let mut ready = false;
     let mut busy_centers: Vec<VTime> = Vec::new();
     let mut steps = 0u64;
-    let mut terminal_vtime;
+    let terminal_vtime;
     loop {
         match vmm.step() {
             Ok(Step::Continued) => {}
