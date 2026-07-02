@@ -82,7 +82,7 @@ use control_proto::{
     Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, HashScope, Reply, Request, SnapId,
     StopReason, VTime, decode_request, encode_reply,
 };
-use environment::{EnvError, EnvSpec};
+use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
@@ -328,14 +328,21 @@ impl<B: Backend> ControlServer<B> {
                     Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                 };
                 // Seed-driven scope: only the seed is enforceable. An env
-                // carrying overrides or standing faults must be REJECTED, not
-                // silently run without them (a silent no-op would mint
-                // reproducers that do not reproduce). Tasks 59/61 light these up.
+                // carrying overrides, standing faults, or a **non-nominal fault
+                // policy** must be REJECTED, not silently run without them — a
+                // silent no-op would mint reproducers that do not reproduce. A
+                // non-`none` `FaultPolicy` makes the seeded stream answer some
+                // decisions with faults, which the seed-driven server has no
+                // service wired to enforce (same class as the overrides
+                // rejection). Tasks 59/61 light these up.
                 let has_standing = matches!(
                     &spec,
                     EnvSpec::Recorded { standing, .. } if !standing.is_empty()
                 );
-                if !spec.overrides().is_empty() || has_standing {
+                if !spec.overrides().is_empty()
+                    || has_standing
+                    || spec.policy() != &FaultPolicy::none()
+                {
                     return Ok(Err(ControlError::Unsupported));
                 }
                 Some(spec.seed())
@@ -388,16 +395,25 @@ impl<B: Backend> ControlServer<B> {
     }
 
     /// `run(until)`: step the event loop to a terminal stop or the V-time
-    /// deadline. When a deadline is set the run advances via
-    /// [`Vmm::step_until`](crate::vmm::Vmm::step_until), which **arms the
-    /// force-exit at the deadline** (the task-47/55 path): a compute-bound guest
-    /// with no natural VM-exit is preempted *at* the deadline instead of
-    /// overshooting it unboundedly — so the deadline is a hard bound on the run,
-    /// not merely checked at natural exits. The pre-step
-    /// [`effective_vns`](Vmm::effective_vns) check makes an already-met deadline
-    /// return immediately without entering the guest; the stop V-time is the
-    /// first work count whose V-time reaches the deadline (the documented
-    /// at-or-after-intercept semantic), deterministic across same-seed runs.
+    /// deadline. The deadline is checked against [`Vmm::effective_vns`]
+    /// **before** each step, so a run already at-or-past its deadline stops
+    /// immediately (without entering the guest), and the stop point is the first
+    /// V-time-intercept boundary at-or-after the deadline — deterministic across
+    /// same-seed runs, because effective V-time is.
+    ///
+    /// **Deadline enforcement is opportunistic, not a hard force-exit.** The
+    /// deadline is observed at each step's V-time boundary: a guest that keeps
+    /// taking VM-exits (any real workload — and a compute-bound one is preempted
+    /// by task-47's LAPIC-timer force-exit, which advances the anchor) is bounded
+    /// within one exit/preemption of the deadline. A *hard* force-exit at an
+    /// arbitrary deadline (round 4's `step_until`) was **reverted**: on the box it
+    /// armed `run_until` at the far sweep deadline on every step, and because
+    /// every run terminates *before* that deadline (the workload reboots first),
+    /// each left an un-hit PMU/planner arm behind — stale state that accumulated
+    /// across restore boundaries and finally diverged a `state_hash` on the 16th
+    /// run (PR #44 pass 5; the `#34`/`#55` stale-arm class). Making the deadline a
+    /// hard bound needs the backend to reset the `run_until` arm across runs — a
+    /// `patched_kvm`/`pmu_sys` change **outside task-58's surface**, deferred.
     fn run(
         &mut self,
         until: &control_proto::StopConditions,
@@ -410,13 +426,7 @@ impl<B: Backend> ControlServer<B> {
             {
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: VTime(vns) })));
             }
-            // Arm the force-exit at the deadline (bounded advance); an open run
-            // otherwise (a terminal-only run, no deadline to arm).
-            let step = match until.deadline {
-                Some(deadline) => vmm.step_until(deadline.0)?,
-                None => vmm.step()?,
-            };
-            match step {
+            match vmm.step()? {
                 Step::Continued => {}
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
@@ -691,6 +701,31 @@ mod tests {
             Err(ControlError::Unsupported),
             "overrides need the task-59/61 enforcement loops"
         );
+
+        // A non-nominal FaultPolicy (same class): the seeded stream would answer
+        // some decisions with faults, which no service is wired to enforce yet.
+        let mut policy = FaultPolicy::none();
+        policy
+            .set_class(
+                environment::DecisionClass::BlockIo,
+                1,
+                2,
+                &[environment::Fault::BlockEio],
+            )
+            .unwrap();
+        let faulting = Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: EnvSpec::Seeded { seed: 7, policy }.encode(),
+        };
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: faulting
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported),
+            "a non-none fault policy is unenforceable until task 59/61"
+        );
     }
 
     #[test]
@@ -814,54 +849,6 @@ mod tests {
         // And the pending scripted exit was NOT consumed: a deadline-free run
         // still reaches its Hlt terminal.
         assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
-    }
-
-    #[test]
-    fn run_bounds_a_no_exit_guest_at_the_deadline_not_the_next_natural_exit() {
-        // The P1 bound (round 4): a guest with a **no-natural-exit** segment
-        // (a scripted `Exit::Deadline`, which the mock rewrites to the armed
-        // `run_until` work count) BEFORE a `Hlt` it would eventually reach. A
-        // `run` with a V-time deadline shorter than that `Hlt` must stop AT the
-        // deadline — force-exited via `step_until` — not overshoot to the Hlt.
-        // (The live VM is at V-time 500; the deadline 5000 lands inside the
-        // no-exit segment.)
-        let live = vmm_at_sync(
-            vec![
-                Exit::Deadline {
-                    reached: vmm_backend::Vtime(0),
-                },
-                Exit::Hlt,
-            ],
-            500,
-            0x1234,
-        );
-        let mut s = ControlServer::new(
-            live,
-            Box::new(|| {
-                Err(VmmError::ContractViolation(
-                    "factory unused in this test".into(),
-                ))
-            }),
-        );
-        hello(&mut s);
-        let req = Request::Run {
-            until: StopConditions {
-                deadline: Some(VTime(5000)),
-                on: StopMask::NONE,
-            },
-            resolve: None,
-        };
-        match s.handle(&req).unwrap() {
-            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(
-                vtime,
-                VTime(5000),
-                "the run is bounded exactly at the armed deadline"
-            ),
-            other => panic!(
-                "expected a bounded Deadline{{5000}}, got {other:?} (a Quiescent would \
-                             mean the run overshot to the natural Hlt)"
-            ),
-        }
     }
 
     #[test]

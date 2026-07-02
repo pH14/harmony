@@ -214,6 +214,16 @@ box` prints exactly this run table and the gate verdicts (`verify(&report, 2)`).
   counter on the box), so `run_session` keeps the server on the calling thread and the client on a
   spawned thread. A multi-VM explorer (N concurrent sessions) is out of scope; the fresh-VM restore
   discipline already anticipates it (each restore re-baselines the work counter).
+- **`run(until)`'s deadline is enforced opportunistically, not as a hard force-exit.** It is observed at
+  each step's V-time boundary; a guest that keeps taking VM-exits (any real workload — a compute-bound
+  one is preempted by task-47's LAPIC-timer force-exit) is bounded within one exit of the deadline. A
+  hard `run_until` force-exit at an arbitrary deadline was tried (PR #44 round 4) and **reverted**: on
+  the box it armed `run_until` at the far sweep deadline every step, and because every run terminates
+  before that deadline (the workload reboots first) each left an un-hit PMU/planner arm behind — stale
+  state that accumulated across restores and diverged a `state_hash` on the 16th run (the `#34`/`#55`
+  stale-arm class). Making the deadline a hard bound needs the backend to reset the `run_until` arm
+  across runs — a `patched_kvm`/`pmu_sys` change **outside task-58's surface**, flagged for the task
+  that owns the planner.
 - **The box gate PASSED** (foreman-executed — run table above). The portable gates prove the *identical*
   server + adapter + sweep code against a deterministic guest; the box run swapped the mock guest for the
   real Postgres guest via `boot_linux_selected`, workload-blind, and cleared the milestone bar (8/8

@@ -24,7 +24,6 @@
 //! guest and the box's Postgres image; only the composition root (the binary)
 //! knows which.
 
-use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
 use environment::EnvSpec;
@@ -378,35 +377,6 @@ pub fn sweep_client(
 ) -> Result<SweepReport, MachineError> {
     let mut machine = SocketMachine::connect(stream, initial)?;
     run_sweep(&mut machine, &explorer::SpecEnvCodec, &cfg)
-}
-
-/// A raw-frame control-proto call over a stream — for driving wire-level cases
-/// the typed adapter deliberately cannot express (`perturb`, non-`Whole` hash
-/// scopes, a verb before `hello`). Panics on transport/framing failures (test
-/// harness use).
-pub fn raw_call<S: Read + Write>(
-    stream: &mut S,
-    seq: u32,
-    req: &control_proto::Request,
-) -> Result<control_proto::Reply, control_proto::ControlError> {
-    let mut out = Vec::new();
-    control_proto::encode_request(seq, req, &mut out).expect("encode request");
-    stream.write_all(&out).expect("write request");
-    stream.flush().expect("flush request");
-    let mut inbuf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        if let Some((got_seq, reply, consumed)) =
-            control_proto::decode_reply(&inbuf).expect("reply framing")
-        {
-            assert_eq!(got_seq, seq, "reply echoes the request seq");
-            assert_eq!(consumed, inbuf.len(), "one reply per request");
-            return reply;
-        }
-        let n = stream.read(&mut chunk).expect("read reply");
-        assert_ne!(n, 0, "server closed mid-reply");
-        inbuf.extend_from_slice(&chunk[..n]);
-    }
 }
 
 #[cfg(test)]

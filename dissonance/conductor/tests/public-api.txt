@@ -35,7 +35,6 @@ pub conductor::SweepReport::snapshot_vtime: u64
 pub fn conductor::fmt_stop(&explorer::StopReason) -> alloc::string::String
 pub fn conductor::hex(&[u8; 32]) -> alloc::string::String
 pub fn conductor::probe_vtime<M: explorer::seam::Machine>(&mut M) -> core::result::Result<u64, explorer::error::MachineError>
-pub fn conductor::raw_call<S: std::io::Read + std::io::Write>(&mut S, u32, &control_proto::types::Request) -> core::result::Result<control_proto::types::Reply, control_proto::error::ControlError>
 pub fn conductor::render_table(&conductor::SweepReport) -> alloc::string::String
 pub fn conductor::run_session<B, T>(&mut vmm_core::control::ControlServer<B>, impl core::ops::function::FnOnce(std::os::unix::net::stream::UnixStream) -> T + core::marker::Send + 'static) -> (core::result::Result<(), vmm_core::control::ServeError>, T) where B: vmm_backend::backend::Backend, T: core::marker::Send + 'static
 pub fn conductor::run_sweep<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::SweepConfig) -> core::result::Result<conductor::SweepReport, explorer::error::MachineError>

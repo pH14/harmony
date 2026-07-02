@@ -1270,49 +1270,6 @@ impl<B: Backend> Vmm<B> {
     /// (port read, `Rdmsr`, `Cpuid`) are resolved back to the backend; any
     /// unmodeled exit is a loud [`VmmError::ContractViolation`].
     pub fn step(&mut self) -> Result<Step, VmmError> {
-        self.step_bounded(None)
-    }
-
-    /// Like [`step`](Self::step), but **bounds the guest's advance at V-time
-    /// `deadline_vns`** (retired-branch nanoseconds) using the task-47/55
-    /// force-exit path — so a compute-bound guest with no natural VM-exit is
-    /// preempted *at* the deadline rather than overshooting it unboundedly.
-    ///
-    /// The frontier's `run(until)` loop (the control transport, task 58) uses
-    /// this to make a V-time deadline a **hard** stop, not merely one checked at
-    /// natural exits: the run cannot run past the deadline waiting for the guest
-    /// to exit on its own. The armed exit is `min(deadline_vns, the LAPIC-timer
-    /// preemption deadline)`, so a due timer still fires first; a deadline that
-    /// lands between intercepts stops at the first work count whose V-time
-    /// reaches it (the documented at-or-after-intercept semantic), and the stop
-    /// is bit-identical across same-seed runs (the force-exit work count is a
-    /// deterministic function of `deadline_vns`, seed-independent).
-    ///
-    /// Requires the **determinism-complete path** (V-time wired + a backend with
-    /// a deterministic retired-branch counter) to arm the force-exit; off it
-    /// (stock KVM, no counter) it degrades to a plain [`step`](Self::step) and
-    /// the caller's deadline is enforced only opportunistically at natural exits
-    /// (the best a non-deterministic backend can do — and not a determinism
-    /// path anyway).
-    pub fn step_until(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
-        // Arm the force-exit only where `run_until` is deterministic (the same
-        // gate as `preemption_deadline`): V-time wired + a deterministic counter.
-        let forced = if self.backend.capabilities().deterministic_tsc {
-            self.vtime
-                .as_ref()
-                .map(|vt| vt.clock.work_for_vns(deadline_vns))
-        } else {
-            None
-        };
-        self.step_bounded(forced)
-    }
-
-    /// The shared body of [`step`](Self::step) / [`step_until`](Self::step_until):
-    /// drive the vCPU for one exit and dispatch it. `extra_deadline_work` is an
-    /// optional caller-supplied force-exit **work count** folded (via `min`)
-    /// into the LAPIC-timer preemption deadline; `None` reproduces `step`
-    /// exactly (the protected goldens' path is byte-for-byte unchanged).
-    fn step_bounded(&mut self, extra_deadline_work: Option<u64>) -> Result<Step, VmmError> {
         if let Some(reason) = self.terminal {
             return Ok(Step::Terminal(reason));
         }
@@ -1369,16 +1326,7 @@ impl<B: Backend> Vmm<B> {
         // apart: the `Drive` path single-steps work strictly FORWARD (reached > before),
         // while the no-entry overdue/at-deadline zero-step returns `reached == before` with
         // NO `KVM_RUN` (round-12). `preemption_deadline()` is `Some` ⇒ V-time is wired.
-        // The force-exit deadline: the LAPIC-timer preemption deadline, tightened
-        // by any caller-supplied `extra_deadline_work` (task-58 `run(until)`), so
-        // a due timer still fires first but the run cannot overshoot the caller's
-        // V-time deadline. `None` (plain `step`, no armed timer) keeps open `run()`.
-        let deadline = match (self.preemption_deadline(), extra_deadline_work) {
-            (Some(p), Some(e)) => Some(Vtime(p.0.min(e))),
-            (Some(p), None) => Some(p),
-            (None, Some(e)) => Some(Vtime(e)),
-            (None, None) => None,
-        };
+        let deadline = self.preemption_deadline();
         let work_before = match deadline {
             Some(_) => Some(
                 self.vtime
@@ -4488,66 +4436,6 @@ mod tests {
             &[reached],
             "on_deadline records each measured preemption landing"
         );
-    }
-
-    #[test]
-    fn step_until_bounds_a_no_exit_guest_at_the_armed_deadline() {
-        // The task-58 `run(until)` bound: a compute-bound guest with **no natural
-        // VM-exit** (modelled by a scripted `Exit::Deadline` — the mock rewrites
-        // its `reached` to the work count the VMM armed via `run_until`) followed
-        // by a `Hlt` it would eventually reach. `step_until(D)` must force-exit AT
-        // the armed deadline `D` and NOT run through to the natural `Hlt`.
-        let mut v = vtime_vmm(
-            vec![
-                Exit::Rdtsc,                          // sync to a V-time-intercept boundary (anchor = 0)
-                Exit::Deadline { reached: Vtime(0) }, // the "runs forever" segment
-                Exit::Hlt,                            // the natural exit that must NOT be reached
-            ],
-            Box::new(ScriptedWork::at(0)),
-            7,
-        );
-        assert_eq!(v.step().unwrap(), Step::Continued); // Rdtsc → synchronized, anchor 0
-        assert_eq!(
-            v.effective_vns(),
-            Some(0),
-            "at the sync boundary V-time is 0"
-        );
-
-        // Arm a deadline at V-time 5000 (1 ns/branch ⇒ work 5000). No LAPIC is
-        // wired, so `preemption_deadline` is None and the ONLY armed deadline is
-        // this one — proving `step_until` arms it on its own.
-        let step = v.step_until(5000).expect("step_until");
-        assert_eq!(
-            step,
-            Step::Continued,
-            "the guest force-exited at the deadline (serviced as an Exit::Deadline), not terminal"
-        );
-        assert_eq!(
-            v.effective_vns(),
-            Some(5000),
-            "the run is bounded exactly at the armed deadline, not overshooting"
-        );
-        assert!(
-            v.terminal_reason().is_none(),
-            "the natural Hlt after the no-exit segment was NOT reached"
-        );
-        // Continuing (unbounded) now reaches that natural Hlt — proving the
-        // deadline is what stopped the earlier advance, not the script running out.
-        assert_eq!(v.step().unwrap(), Step::Terminal(TerminalReason::Hlt));
-    }
-
-    #[test]
-    fn plain_step_is_unchanged_by_the_bounded_refactor() {
-        // `step()` == `step_bounded(None)`: with no deadline armed and no LAPIC,
-        // a scripted Hlt terminates exactly as before (the protected-golden path
-        // is byte-for-byte unchanged).
-        let mut v = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Hlt],
-            Box::new(ScriptedWork::at(0)),
-            7,
-        );
-        assert_eq!(v.step().unwrap(), Step::Continued);
-        assert_eq!(v.step().unwrap(), Step::Terminal(TerminalReason::Hlt));
     }
 
     /// P1 round-13 — the comprehensive zero-step invariant: a `run_until` that returns

@@ -17,12 +17,43 @@
 //! The ≥256-case proptest of the branch/run/hash + replay properties lives in
 //! `tests/determinism_proptest.rs`.
 
+use std::io::{Read, Write};
+
 use conductor::mock::{self, default_fork_script};
-use conductor::{SweepConfig, raw_call, run_session, run_sweep, sweep_client, verify};
+use conductor::{SweepConfig, run_session, run_sweep, sweep_client, verify};
 use control_proto::{ControlError, HashScope, HostFault, Moment, Reply, Request, SnapId};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime};
+
+/// A raw-frame control-proto call over a stream — the test harness for
+/// wire-level cases the typed adapter deliberately cannot express (`perturb`,
+/// non-`Whole` hash scopes, a verb before `hello`). **Test-only** (it panics on
+/// transport/framing failures, so it is not part of the crate's public API).
+fn raw_call<S: Read + Write>(
+    stream: &mut S,
+    seq: u32,
+    req: &Request,
+) -> Result<Reply, ControlError> {
+    let mut out = Vec::new();
+    control_proto::encode_request(seq, req, &mut out).expect("encode request");
+    stream.write_all(&out).expect("write request");
+    stream.flush().expect("flush request");
+    let mut inbuf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some((got_seq, reply, consumed)) =
+            control_proto::decode_reply(&inbuf).expect("reply framing")
+        {
+            assert_eq!(got_seq, seq, "reply echoes the request seq");
+            assert_eq!(consumed, inbuf.len(), "one reply per request");
+            return reply;
+        }
+        let n = stream.read(&mut chunk).expect("read reply");
+        assert_ne!(n, 0, "server closed mid-reply");
+        inbuf.extend_from_slice(&chunk[..n]);
+    }
+}
 
 /// The env the mock live VM boots under.
 fn boot_env() -> EnvSpec {
