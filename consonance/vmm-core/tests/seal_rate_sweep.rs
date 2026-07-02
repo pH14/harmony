@@ -198,6 +198,16 @@ fn splitmix64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
+/// A fresh **per-guest** watchdog clock. `run_to_vtime` bounds each guest run by
+/// `WALL_BUDGET_SECS` measured from this — so a legitimately long multi-phase sweep never
+/// trips the budget just because the *cumulative* time crossed it (a global start would).
+/// not order-observable: a test-only wall-clock watchdog, belt-and-braces with the external
+/// `timeout`; it never reaches guest state, the serial capture, or any hash.
+#[allow(clippy::disallowed_methods)]
+fn watchdog_start() -> Instant {
+    Instant::now()
+}
+
 // ---------------------------------------------------------------------------
 // Run-control primitives.
 // ---------------------------------------------------------------------------
@@ -394,7 +404,6 @@ fn branch_and_run(
     initramfs: &[u8],
     seed: u64,
     horizon_vns: VTime,
-    start: Instant,
 ) -> BranchOutcome {
     let mut vmm = boot_pg(kernel, initramfs, seed);
     let mapping = engine
@@ -407,7 +416,7 @@ fn branch_and_run(
         .expect("reseed the entropy stream for the branch");
     let seal_vtime = vmm.effective_vns().unwrap_or(0);
     let mut printed = vmm.serial().len();
-    let adv = run_to_vtime(&mut vmm, seal_vtime + horizon_vns, &mut printed, start);
+    let adv = run_to_vtime(&mut vmm, seal_vtime + horizon_vns, &mut printed, watchdog_start());
     let skid = adv
         .step_error
         .as_deref()
@@ -428,7 +437,6 @@ fn replay_to(
     kernel: &[u8],
     initramfs: &[u8],
     to_vtime: VTime,
-    start: Instant,
 ) -> [u8; 32] {
     let mut vmm = boot_pg(kernel, initramfs, BASE_SEED);
     let mapping = engine.materialize(snap).expect("materialize");
@@ -436,16 +444,16 @@ fn replay_to(
     vmm.restore_snapshot(mapping.as_slice(), &vm_state)
         .expect("restore");
     let mut printed = vmm.serial().len();
-    let _ = run_to_vtime(&mut vmm, to_vtime, &mut printed, start);
+    let _ = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
     vmm.state_hash()
 }
 
 /// Boot a fresh VM at `BASE_SEED` and run to `to_vtime` from genesis, returning the reached
 /// `state_hash` — the from-genesis leg of §4.
-fn boot_and_run_to(kernel: &[u8], initramfs: &[u8], to_vtime: VTime, start: Instant) -> [u8; 32] {
+fn boot_and_run_to(kernel: &[u8], initramfs: &[u8], to_vtime: VTime) -> [u8; 32] {
     let mut vmm = boot_pg(kernel, initramfs, BASE_SEED);
     let mut printed = 0usize;
-    let _ = run_to_vtime(&mut vmm, to_vtime, &mut printed, start);
+    let _ = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
     vmm.state_hash()
 }
 
@@ -464,7 +472,8 @@ struct Profile {
 /// the terminal V-time (span end), and up to three interrupt-service busy windows (V-times
 /// where a genuine active event injection is in flight). Deterministic (same seed ⇒ same
 /// timeline as the measurement passes).
-fn profile(kernel: &[u8], initramfs: &[u8], start: Instant) -> Profile {
+fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
+    let start = watchdog_start();
     // Allow skipping the (expensive) profiling run by pinning the span + busy centers.
     if let (Ok(s), Ok(e)) = (std::env::var("SPAN_START"), std::env::var("SPAN_END")) {
         let span_start: VTime = s.parse().expect("SPAN_START is a u64");
@@ -598,20 +607,20 @@ fn seal_rate_sweep() {
     let horizon = env_u64("BRANCH_HORIZON_VNS", 4_000_000);
     let jitter = env_u64("ADV_JITTER_VNS", 50_000);
     let perturb_max = env_u64("ADV_PERTURB_STEPS", 4096);
+    // §1 (the seal rate) probes `save_vm_state` at ALL N targets (cheap). §2/§4 need the full
+    // 2 GiB memory snapshot, which is expensive (~seconds each) and would make branching all N
+    // impractical — so a spread subset of `DET_SUBSET` successful seals is fully snapshotted and
+    // branch-verified (see IMPLEMENTATION.md; the ruling needs a determinism-clean spread, not
+    // all N). Independent `snapshot_base`s (not a derive chain) keep materialize O(1)-layer.
+    let n_det = env_usize("DET_SUBSET", 24).max(2);
     eprintln!(
-        "[sweep] TARGETS={n} BRANCH_HORIZON_VNS={horizon} ADV_JITTER_VNS={jitter} \
-         ADV_PERTURB_STEPS={perturb_max} cmdline={:?}",
+        "[sweep] TARGETS={n} DET_SUBSET={n_det} BRANCH_HORIZON_VNS={horizon} \
+         ADV_JITTER_VNS={jitter} ADV_PERTURB_STEPS={perturb_max} cmdline={:?}",
         cmdline()
     );
 
-    // not order-observable: a test-only wall-clock watchdog (belt-and-braces with the external
-    // `timeout`) that bounds this `#[ignore]`d box gate; it never reaches guest state, the serial
-    // capture, or any hash — mirrors `live_branching_demo.rs`.
-    #[allow(clippy::disallowed_methods)]
-    let start = Instant::now();
-
     // --- Profiling: span + busy windows ------------------------------------
-    let prof = profile(&kernel, &initramfs, start);
+    let prof = profile(&kernel, &initramfs);
     let schedule = SamplingSchedule::build(prof.span_start, prof.span_end, n, &prof.busy)
         .expect("build the sampling schedule over the post-readiness span");
     eprintln!(
@@ -631,10 +640,13 @@ fn seal_rate_sweep() {
     let mut nominal: Vec<SealAttempt> = Vec::with_capacity(schedule.len());
     let mut engine = SnapshotEngine::new(GUEST_RAM_LEN);
     let mut sealed: Vec<Sealed> = Vec::new();
+    let last_idx = schedule.len().saturating_sub(1);
+    // Snapshot a successful seal every `snap_stride` targets (+ always the deepest, for §4).
+    let snap_stride = (schedule.len() / n_det).max(1);
     {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let mut printed = 0usize;
-        let mut prev_snap: Option<SnapshotId> = None;
+        let start = watchdog_start();
         for (i, &target) in schedule.targets().iter().enumerate() {
             let adv = run_to_vtime(&mut live, target.vtime, &mut printed, start);
             if let Some(r) = adv.terminal {
@@ -652,29 +664,26 @@ fn seal_rate_sweep() {
             }
             let landed = live.effective_vns().unwrap_or(0);
             let (snapshot, reason, blob) = probe_seal(&mut live);
-            let result = match (reason, blob) {
-                (None, Some(blob)) => {
-                    // Store the memory image alongside the vm_state (base for the first,
-                    // dirty-deduped derive for the rest — bounds store memory).
-                    let snap = match prev_snap {
-                        None => engine
+            let result = match reason {
+                None => {
+                    // §1 rate: this target sealed. For a spread subset (+ the deepest), also take
+                    // the full 2 GiB snapshot for the §2 determinism check + §4 depth. Independent
+                    // `snapshot_base`s so materialize is O(1)-layer; the store dedups store-wide.
+                    if i % snap_stride == 0 || i == last_idx {
+                        let blob = blob.expect("a sealed point always yields an encoded vm_state");
+                        let snap = engine
                             .snapshot_base(live.guest_memory(), &blob)
-                            .expect("snapshot base"),
-                        Some(parent) => engine
-                            .snapshot_derive(parent, live.guest_memory(), None, &blob)
-                            .expect("snapshot derive"),
-                    };
-                    prev_snap = Some(snap);
-                    sealed.push(Sealed {
-                        attempt_idx: i,
-                        snap,
-                        seal_vtime: landed,
-                        live_hash: live.state_hash(),
-                    });
+                            .expect("snapshot the sealed guest image");
+                        sealed.push(Sealed {
+                            attempt_idx: i,
+                            snap,
+                            seal_vtime: landed,
+                            live_hash: live.state_hash(),
+                        });
+                    }
                     SealResult::Sealed
                 }
-                (Some(reason), _) => SealResult::Failed(reason),
-                (None, None) => unreachable!("sealed Ok always yields a blob"),
+                Some(reason) => SealResult::Failed(reason),
             };
             nominal.push(SealAttempt {
                 target,
@@ -684,7 +693,7 @@ fn seal_rate_sweep() {
             });
         }
         eprintln!(
-            "[sweep] nominal: {} sealed / {} targets ({} retained for determinism check)",
+            "[sweep] nominal: {} sealed / {} targets ({} full snapshots retained for §2/§4)",
             nominal.iter().filter(|a| a.result.is_sealed()).count(),
             nominal.len(),
             sealed.len()
@@ -696,24 +705,8 @@ fn seal_rate_sweep() {
     eprintln!("\n[sweep] === branch-determinism check: 2 same-seed branches per sealed point ===");
     let mut nondeterministic: Vec<(VTime, String)> = Vec::new();
     for s in &sealed {
-        let b1 = branch_and_run(
-            &engine,
-            s.snap,
-            &kernel,
-            &initramfs,
-            BRANCH_SEED,
-            horizon,
-            start,
-        );
-        let b2 = branch_and_run(
-            &engine,
-            s.snap,
-            &kernel,
-            &initramfs,
-            BRANCH_SEED,
-            horizon,
-            start,
-        );
+        let b1 = branch_and_run(&engine, s.snap, &kernel, &initramfs, BRANCH_SEED, horizon);
+        let b2 = branch_and_run(&engine, s.snap, &kernel, &initramfs, BRANCH_SEED, horizon);
         let ok = b1.step_error.is_none()
             && b2.step_error.is_none()
             && !b1.skid
@@ -767,6 +760,7 @@ fn seal_rate_sweep() {
     {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let mut printed = 0usize;
+        let start = watchdog_start();
         for &target in adv_schedule.targets() {
             let adv = run_to_vtime(&mut live, target.vtime, &mut printed, start);
             if adv.terminal.is_some() || adv.step_error.is_some() {
@@ -815,7 +809,7 @@ fn seal_rate_sweep() {
     );
 
     // --- 4. Materialization depth (parent-rooted premise) ------------------
-    let depth = materialization_depth(&engine, &sealed, &kernel, &initramfs, start);
+    let depth = materialization_depth(&engine, &sealed, &kernel, &initramfs);
 
     // --- 5. Roll up + emit the report block --------------------------------
     let nominal_stats = SealStats::of(&nominal);
@@ -881,7 +875,6 @@ fn materialization_depth(
     sealed: &[Sealed],
     kernel: &[u8],
     initramfs: &[u8],
-    start: Instant,
 ) -> Option<MaterializationDepth> {
     if sealed.len() < 2 {
         eprintln!("[sweep] §4 materialization depth: <2 seals, skipped");
@@ -906,16 +899,9 @@ fn materialization_depth(
         parent.seal_vtime, child.seal_vtime
     );
     // Parent-rooted: branch(parent) verbatim → run the suffix to the child's V-time.
-    let from_parent_hash = replay_to(
-        engine,
-        parent.snap,
-        kernel,
-        initramfs,
-        child.seal_vtime,
-        start,
-    );
+    let from_parent_hash = replay_to(engine, parent.snap, kernel, initramfs, child.seal_vtime);
     // From-genesis cross-check (pure determinism — should also reproduce the child).
-    let from_genesis_hash = boot_and_run_to(kernel, initramfs, child.seal_vtime, start);
+    let from_genesis_hash = boot_and_run_to(kernel, initramfs, child.seal_vtime);
 
     let parent_ok = from_parent_hash == child.live_hash;
     let genesis_ok = from_genesis_hash == child.live_hash;
