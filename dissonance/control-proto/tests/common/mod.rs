@@ -143,6 +143,8 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
         (any::<u64>(), any::<u64>())
             .prop_map(|(at, floor)| ControlError::PerturbPastMoment { at, floor }),
         any::<u64>().prop_map(|at| ControlError::PerturbMomentTaken { at }),
+        (any::<u64>(), any::<u64>())
+            .prop_map(|(moment, vtime)| ControlError::ScheduleUnsatisfiable { moment, vtime }),
         arb_protocol_error().prop_map(ControlError::Protocol),
     ]
 }

@@ -3312,3 +3312,51 @@ coincide numerically (`Moment == work == vns`), which is what makes the portable
   "rejects any override-carrying branch env with Unsupported" is now stale for the *host* plane
   (host overrides are enforced; guest overrides still `Unsupported`). Left for the integrator, since
   explorer does not depend on `vmm-core` and its tests do not exercise the real server.
+
+### PR #51 round 2 — five corners of "recorded apply point == actual apply point, or fail loud"
+
+A fresh cross-model pass found five more instances of the same invariant breaking at edges of the
+verb space. All fixed behind the existing validate/run/restore seams, plus a structural proptest.
+
+1. **Crossed-`Moment` survival across `run` calls.** A fault beyond a run's deadline that the guest
+   *executed past* (`deadline < m <= vns` after a natural-exit overshoot) was left staged and would be
+   drained by a later `run` with `vns > m` — applied from the past, recorded at `m`. On the deadline
+   return (and defensively on terminal) the run now detects any staged `Moment <= vns` and fails loud
+   with the new `ControlError::ScheduleUnsatisfiable { moment, vtime }` (disc 14). The caller must
+   rewind (`branch`/`replay`, which clears the schedule).
+2. **Re-`perturb` at an already-**applied** `Moment`.** `validate_host_fault`'s conflict check
+   consulted only the still-staged schedule; once a fault applied it was gone from the schedule but
+   present in `recorded`, and a second `perturb(at=m)` (when `vtime == m`, clearing the floor check)
+   would overwrite it via `EnvSpec::perturb` — an applied fault vanishing from `recorded_env()`. The
+   check now also rejects `Moment`s present in `recorded.overrides()`.
+3. **`arm_arrival == false` ignored on unarmable backends.** A stock-KVM server (`deterministic_tsc =
+   false`) or a V-time-unwired VM accepted a perturb, ran to a natural exit past `m`, and applied
+   late. New `Vmm::can_arm_arrival()` is capability-checked **up front** in `validate_host_fault`, so
+   `perturb` (and `branch` host overrides) answer `Unsupported` at stage time on such a backend. The
+   mock reports `deterministic_tsc = true`, so the enforcement tests stay armable.
+4a. **Stale schedule on a recoverable restore failure.** The schedule/recorded reset happened only on
+   restore *success*; a recoverable `RestoreFailed` (fresh VM kept) left the old timeline's staged
+   faults attached to the fresh boot. Factored into `reset_schedule_to_fresh_vm`, now called on
+   **every** path that replaces the VM.
+4b. **`replay` carried the recorded seed from the wrong stream.** `replay` reused the prior session's
+   recorded seed, but the restored snapshot may sit under a different entropy seed — `recorded_env()`
+   then stamped the wrong stream and could not reproduce. The recorded seed is now derived from the
+   restored VM's **actual entropy stream** (`Vmm::entropy_state()`, the raw xorshift word — a fixed
+   point of `SeededEntropy::new`, so re-seeding a fresh VM with it reproduces the stream) for both
+   `branch` and `replay`, and `ControlServer::new` seeds `recorded` from the live VM too (so a session
+   that runs before its first `branch`/`replay` still reproduces).
+
+**Structural test (the net the review asked for).** `verb_sequence_recorded_env_reproduces_live_hash`
+is a proptest that drives a random sequence of `perturb`/`run`/`branch`/`replay` against an
+exact-arrival mock (`ArrivalBackend`: `run_until` lands at the deadline, `run` is terminal — so a
+random sequence needs no pre-scripted exits) and, after every completed run, asserts that branching
+`recorded_env()` from the starting snapshot on a fresh server and running reproduces the live
+`state_hash`. It covers the whole verb space (would have caught round-1's three and round-2's five);
+findings 1/2/3/4a additionally have dedicated corner tests, since their triggers (deadline overshoot,
+`vtime == applied Moment`, an unarmable backend, a failing factory) are specific harness setups the
+random generator over one armable backend does not by itself produce.
+
+**Round-2 cross-crate:** `control-proto` gained `ControlError::ScheduleUnsatisfiable` (disc 14, codec
++ golden + generator + regenerated `public-api.txt`); `vmm-core/tests/public-api.txt` hand-added
+`Vmm::{can_arm_arrival, entropy_state}` (same Linux-generated-file discipline as above, verified
+against a macOS `cargo public-api` run).

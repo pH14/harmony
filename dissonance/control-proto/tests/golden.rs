@@ -446,6 +446,22 @@ fn err_perturb_moment_taken() {
 }
 
 #[test]
+fn err_schedule_unsatisfiable() {
+    // RESULT_ERR (0x01), CE_SCHEDULE_UNSATISFIABLE (0x0E), moment (u64 LE), vtime (u64 LE).
+    check_reply(
+        46,
+        Err(ControlError::ScheduleUnsatisfiable {
+            moment: 0x64,
+            vtime: 0xC8,
+        }),
+        &[
+            0x01, 0x0E, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    );
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,

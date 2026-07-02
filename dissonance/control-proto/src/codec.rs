@@ -83,6 +83,7 @@ const CE_UNSUPPORTED: u8 = 10;
 const CE_PERTURB_OUT_OF_RANGE: u8 = 11;
 const CE_PERTURB_PAST_MOMENT: u8 = 12;
 const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
+const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -527,6 +528,11 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             w.push(CE_PERTURB_MOMENT_TAKEN);
             put_u64(w, *at);
         }
+        Ce::ScheduleUnsatisfiable { moment, vtime } => {
+            w.push(CE_SCHEDULE_UNSATISFIABLE);
+            put_u64(w, *moment);
+            put_u64(w, *vtime);
+        }
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -560,6 +566,10 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
             floor: r.u64()?,
         },
         CE_PERTURB_MOMENT_TAKEN => Ce::PerturbMomentTaken { at: r.u64()? },
+        CE_SCHEDULE_UNSATISFIABLE => Ce::ScheduleUnsatisfiable {
+            moment: r.u64()?,
+            vtime: r.u64()?,
+        },
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,

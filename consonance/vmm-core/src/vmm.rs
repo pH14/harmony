@@ -1963,16 +1963,46 @@ impl<B: Backend> Vmm<B> {
     /// do not provide. When it returns `false` the caller falls back to running to
     /// a natural exit and comparing [`effective_vns`](Vmm::effective_vns).
     pub fn arm_arrival(&mut self, moment: environment::Moment) -> bool {
-        if !self.backend.capabilities().deterministic_tsc {
+        if !self.can_arm_arrival() {
             self.arrival_deadline = None;
             return false;
         }
-        let Some(vt) = self.vtime.as_ref() else {
-            self.arrival_deadline = None;
-            return false;
-        };
+        let vt = self
+            .vtime
+            .as_ref()
+            .expect("can_arm_arrival implies V-time wired");
         self.arrival_deadline = Some(Vtime(vt.clock.work_for_vns(moment)));
         true
+    }
+
+    /// `true` iff [`arm_arrival`](Vmm::arm_arrival) can arm an **exact-count**
+    /// arrival on this backend — the determinism-complete path (V-time wired *and*
+    /// a deterministic retired-branch counter). The frontier capability-checks this
+    /// **once, up front** before accepting a host-plane perturbation: without the
+    /// exact-arrival seam a staged fault could only be applied at a natural exit
+    /// *past* its `Moment` (stock KVM / M1 / M2), which host-plane enforcement
+    /// forbids — so such a backend rejects `perturb` rather than silently applying
+    /// late (task 59; PR #51 round-2 finding). Pure; does not touch the arm.
+    pub fn can_arm_arrival(&self) -> bool {
+        self.vtime.is_some() && self.backend.capabilities().deterministic_tsc
+    }
+
+    /// The current **entropy-stream state** of the seeded RNG (the raw xorshift
+    /// word), or `None` when V-time / the seeded stream is unwired. Because
+    /// [`reseed_entropy`](Vmm::reseed_entropy) seeds via `SeededEntropy::new(seed)`
+    /// and a non-zero state is a fixed point of that seeding, re-seeding a fresh VM
+    /// with **this** value reproduces the current stream exactly — which is why the
+    /// control server records it as the reproducer's seed after a `replay` (whose
+    /// restored snapshot may sit mid-stream, under a seed unrelated to the prior
+    /// session — PR #51 round-2 finding) as well as after a `branch`.
+    pub fn entropy_state(&self) -> Option<u64> {
+        self.vtime.as_ref().map(|vt| {
+            let bytes = vt.entropy.save_state();
+            let mut buf = [0u8; 8];
+            // `SeededEntropy::save_state` is always the 8-byte LE state word.
+            buf.copy_from_slice(&bytes[..8]);
+            u64::from_le_bytes(buf)
+        })
     }
 
     /// Disarm any [`arm_arrival`](Vmm::arm_arrival) deadline, so the next

@@ -300,8 +300,10 @@ pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend>
 impl<B: vmm_backend::backend::Backend> vmm_core::vmm::Vmm<B>
 pub fn vmm_core::vmm::Vmm<B>::apply_host_fault(&mut self, &environment::host::HostFault) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::arm_arrival(&mut self, environment::host::Moment) -> bool
+pub fn vmm_core::vmm::Vmm<B>::can_arm_arrival(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::clear_arrival(&mut self)
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
+pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
 pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::has_active_event_injection(&self) -> bool

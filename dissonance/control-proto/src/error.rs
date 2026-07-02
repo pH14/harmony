@@ -155,6 +155,21 @@ pub enum ControlError {
         /// The already-occupied `Moment`.
         at: u64,
     },
+    /// A `run` reached its V-time deadline having **overshot a staged `Moment`**
+    /// without applying it (`moment <= vtime`, but the deadline was below it so it
+    /// was never armed). The guest has now executed past that `Moment`, so the
+    /// fault can never be applied at its recorded count — the schedule is
+    /// unsatisfiable. Failed loud (task 59) rather than let a later `run` apply it
+    /// from the past while recording the earlier `Moment` (a reproducer that does
+    /// not reproduce). The caller must rewind (`branch`/`replay`, which clears the
+    /// schedule) before continuing.
+    #[error("run overshot staged Moment {moment} (now at V-time {vtime}); schedule unsatisfiable")]
+    ScheduleUnsatisfiable {
+        /// The staged `Moment` the run executed past without applying.
+        moment: u64,
+        /// The effective V-time the run reached (already beyond `moment`).
+        vtime: u64,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),
