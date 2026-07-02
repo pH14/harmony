@@ -64,8 +64,8 @@ pub trait Machine {
     /// `branch`/`replay`, keyed by decision index since that branch. The machine
     /// owns the blob backing (it mediates every `run(resolve)`), so it — not the
     /// schema-blind explorer — emits the recorded blob; the explorer ferries it
-    /// into a [`RunOutcome`](crate::RunOutcome)/[`Corpus`](crate::Corpus) without
-    /// parsing it.
+    /// into a [`RunOutcome`](crate::RunOutcome)/[`Frontier`](crate::Frontier)
+    /// without parsing it.
     fn recorded_env(&self) -> Result<Environment, MachineError>;
 }
 
@@ -88,11 +88,9 @@ pub trait MachineFactory {
 /// toy machine. The strategy *decides* (seed / which override to mutate — that is
 /// policy); the codec *encodes* (task 24's structure).
 pub trait EnvCodec {
-    /// A fresh pure-seeded environment (no overrides) — the [`SeedStrategy`]'s
-    /// draw and the empty-corpus / genesis base. Genesis-complete (decision index
-    /// zero).
-    ///
-    /// [`SeedStrategy`]: crate::SeedStrategy
+    /// A fresh pure-seeded environment (no overrides) — the explore step's
+    /// draw and the empty-frontier / genesis base. Genesis-complete (decision
+    /// index zero).
     fn seeded(&self, seed: u64) -> Environment;
 
     /// A coverage-guided mutation of `base`: decode, tweak the seed or one

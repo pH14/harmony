@@ -3,14 +3,15 @@ name = "explorer"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "The Timeline/Multiverse coverage-guided exploration engine — all of dissonance policy (task 12)"
+description = "The coverage-guided exploration engine and the Wave-5 search-plane trait spine — all of dissonance policy (tasks 12 + 64)"
 
 [lints]
 workspace = true
 
 [dependencies]
-thiserror = "2"
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+thiserror = "2"
 # Task-58 sibling exceptions (the spec names explorer as the home of the
 # socket-backed `Machine`): `control-proto` is the R2 wire codec the adapter
 # speaks; `environment` is the real reproducer codec the `EnvCodec` seam is
@@ -21,3 +22,4 @@ environment = { path = "../environment", version = "0.1.0" }
 
 [dev-dependencies]
 proptest = "1"
+serde_json = "1"

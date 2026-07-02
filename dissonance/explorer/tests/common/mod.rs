@@ -32,8 +32,9 @@ use proptest::prelude::ProptestConfig;
 use sha2::{Digest, Sha256};
 
 use explorer::{
-    Answer, EnvCodec, Environment, Machine, MachineError, MachineFactory, SnapId, StopConditions,
-    StopReason, VTime,
+    Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, Environment,
+    ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError, MachineFactory,
+    Prng, SnapId, StopConditions, StopReason, Tactic, TerminalOracle, VTime,
 };
 
 // ---- the toy's fixed shape ----
@@ -630,6 +631,58 @@ pub fn drive_to_snapshot(m: &mut ToyMachine, until: &StopConditions) -> (SnapId,
             }
             other => panic!("expected a SnapshotPoint before terminating, got {other:?}"),
         }
+    }
+}
+
+/// A tiny order-independent FNV-1a checksum, used by [`PinTactic`] to fold the
+/// decision ctx into its draw (the open-loop analogue of the pre-refactor
+/// coverage strategy's ctx term — the live-coverage term is gone by ruling).
+pub fn fnv(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// A test tactic that **pins** every surfaced decision: one campaign-stream
+/// draw folded with the ctx checksum, low byte answered. Open-loop by
+/// construction (state-free; inputs are exactly `(pt, rng)`), and it records
+/// real overrides into the reproducer — the pinning half the replay gates need.
+#[derive(Clone, Debug, Default)]
+pub struct PinTactic;
+
+impl Tactic for PinTactic {
+    fn decide(&mut self, pt: &DecisionPoint, rng: &mut Prng) -> Answer {
+        let r = rng.next_u64() ^ fnv(&pt.ctx);
+        Answer(vec![(r & 0xff) as u8])
+    }
+}
+
+/// The default composition with the answering half swapped for [`PinTactic`]
+/// — the coverage-guided campaign shape the replay/GC/smoke gates drive.
+pub fn pin_composition() -> Composition {
+    Composition {
+        tactic: Box::new(PinTactic),
+        selector: Box::new(ExploreExploitSelector::new()),
+        archive: Box::new(CoverageArchive::new()),
+        oracle: Box::new(TerminalOracle::new()),
+        cells: Box::new(IdentityCells::new()),
+        sensors: Vec::new(),
+    }
+}
+
+/// The pure-DST composition: decline every decision, always explore from
+/// genesis (the pre-refactor `SeedStrategy` decomposed).
+pub fn seed_composition() -> Composition {
+    Composition {
+        tactic: Box::new(DeclineTactic::new()),
+        selector: Box::new(GenesisSelector::new()),
+        archive: Box::new(CoverageArchive::new()),
+        oracle: Box::new(TerminalOracle::new()),
+        cells: Box::new(IdentityCells::new()),
+        sensors: Vec::new(),
     }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The **R2 socket adapter** (task 58): the first non-toy [`Machine`] — an
 //! implementation of the driver seam over a `control-proto` client stream —
-//! plus [`SpecEnvCodec`], the binding of the [`EnvCodec`] proposal seam to
+//! plus [`SpecEnvCodec`], the binding of the [`EnvCodec`](crate::EnvCodec) proposal seam to
 //! `environment`'s real reproducer codec per the task-93 ruling
 //! (`docs/DISSONANCE.md` §"Ruling (task 93)").
 //!
@@ -14,12 +14,12 @@
 //! - **`base_offset`** — the absolute `Moment` the blob's overrides are keyed
 //!   from (`0` = genesis-complete). This is the ruling's "`at` provenance"
 //!   point: a branch-local delta carries only since-the-branch overrides, so
-//!   the offset must ride the blob for [`EnvCodec::compose`] to recover `at`
+//!   the offset must ride the blob for [`compose`](crate::EnvCodec::compose) to recover `at`
 //!   from the delta alone (the production analogue of the toy blob's
 //!   `base_offset`).
 //! - **`pos`** — the absolute `Moment` the blob was captured at (a corpus
 //!   base records where its snapshot was taken, so a later
-//!   [`mutate`](EnvCodec::mutate) can slice the suffix at the right offset —
+//!   [`mutate`](crate::EnvCodec::mutate) can slice the suffix at the right offset —
 //!   the toy's `pos`).
 //!
 //! **The `Moment` axis, on this substrate.** `environment::Moment` is defined
@@ -66,7 +66,7 @@
 //!
 //! ## Error mapping (two categories, preserved)
 //!
-//! A wire [`ControlError`] maps onto [`MachineError`] without ever crossing
+//! A wire [`ControlError`](control_proto::ControlError) maps onto [`MachineError`] without ever crossing
 //! into [`StopReason`]: `UnknownSnapshot` → `UnknownSnapshot`, `NotQuiescent`
 //! / `SnapshotWhileArmed` → `NotQuiescent`, `BadEnvVersion` /
 //! `MalformedEnvironment` → `BadEnvironment`, and everything else (including
