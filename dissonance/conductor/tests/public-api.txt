@@ -37,6 +37,7 @@ pub conductor::record::RecordedRun::retained: bool
 pub conductor::record::RecordedRun::run: usize
 pub conductor::record::RecordedRun::seed: u64
 pub conductor::record::RecordedRun::stamps_monotone: bool
+pub conductor::record::RecordedRun::state_hash: [u8; 32]
 pub conductor::record::RecordedRun::stop: explorer::StopReason
 pub conductor::record::RecordedRun::trace_id: runtrace::error::TraceId
 pub fn conductor::record::render_record_table(&conductor::record::RecordReport) -> alloc::string::String

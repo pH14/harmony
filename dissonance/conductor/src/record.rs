@@ -35,8 +35,8 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError, server_caps};
 
 use control_proto::{
-    ControlError, Environment as WireEnv, Reply, Request, SnapId, StopConditions, StopMask,
-    VTime as WireVTime,
+    ControlError, Environment as WireEnv, HashScope, Reply, Request, SnapId, StopConditions,
+    StopMask, VTime as WireVTime,
 };
 
 /// The **single** V-time → [`Moment`] mapping (task 65 §4: "exactly one
@@ -72,6 +72,13 @@ pub struct RecordedRun {
     pub trace_id: TraceId,
     /// The run's terminal stop.
     pub stop: StopReason,
+    /// The whole-VM `state_hash` at the terminal — the **guest-state**
+    /// determinism primitive the task-58 sweep gates on. Unlike the journal
+    /// digest (console + terminal + env), this proves the guest reached a
+    /// bit-identical *machine state*: per-seed equality is reproducibility,
+    /// cross-seed inequality is real divergence (the seed reaching VM state via
+    /// the entropy path). The `--record` path would otherwise bypass this.
+    pub state_hash: [u8; 32],
     /// How many console records the run produced.
     pub records_len: usize,
     /// The serialized journal's length in bytes.
@@ -155,6 +162,23 @@ fn run<B: Backend>(
         Reply::Stop(wire) => Ok(stop_from_wire(wire)),
         other => Err(RecordError::Protocol(format!(
             "run: unexpected reply {other:?}"
+        ))),
+    }
+}
+
+/// The whole-VM `state_hash` at the current point — the determinism primitive
+/// the task-58 sweep gates on. Read-only (does not advance the guest), so it is
+/// the terminal state hash when called right after a `run`.
+fn hash<B: Backend>(server: &mut ControlServer<B>) -> Result<[u8; 32], RecordError> {
+    match call(
+        server,
+        &Request::Hash {
+            scope: HashScope::Whole,
+        },
+    )? {
+        Reply::Hash(h) => Ok(h),
+        other => Err(RecordError::Protocol(format!(
+            "hash: unexpected reply {other:?}"
         ))),
     }
 }
@@ -249,6 +273,12 @@ pub fn run_recording<B: Backend>(
             let stop = run(server, deadline)?;
             let terminal_vtime = stop.vtime().0;
             let console = drained_serial(server, cursor)?;
+            // The guest-state determinism primitive at the terminal (read-only;
+            // the state is stable at the stop). Gated per seed (equality =
+            // reproducible) and across seeds (inequality = real divergence) —
+            // the strong property `--record` would otherwise bypass. This is the
+            // same hash the task-58 sweep checks, at the same point.
+            let state_hash = hash(server)?;
 
             // The whole console is stamped at the stop's Moment (stop-granular).
             let chunks = vec![(stamp(stop.vtime()), console.clone())];
@@ -307,6 +337,7 @@ pub fn run_recording<B: Backend>(
                 run: run_idx,
                 trace_id: id,
                 stop,
+                state_hash,
                 records_len: trace.records.len(),
                 journal_len: journal.len(),
                 journal_digest,
@@ -393,19 +424,18 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
 /// The task-65 gate checks over a [`RecordReport`] — a **pure** check on the
 /// report the recording loop produced (no store access):
 ///
-/// 1. **Per-seed byte-identity** — every run of a seed shares one `TraceId` and
-///    byte-identical journal (determinism: same env + same run ⇒ same bytes);
-///    fewer than two runs cannot demonstrate it.
-/// 2. **Divergence** — at least `min_distinct` distinct **journal digests**
-///    across seeds. Deliberately *not* `TraceId`s: `TraceId = blake3(env)` and
-///    the env embeds the seed, so distinct seeds give distinct ids **by
-///    construction** — that check cannot fail. The journal digest covers the
-///    whole serialized run (`terminal` + `records` + `coverage` + `env`), so it
-///    reflects the recorded artifact, not just the seed label. (Guest-*state*
-///    divergence — different seeds reaching different `state_hash` — is the
-///    task-58 sweep's job via `hash()`; the recorded `RunTrace` carries no state
-///    hash, so a workload whose observable output is seed-independent, e.g. the
-///    scripted mock, still diverges here only through its env-bearing journal.)
+/// 1. **Per-seed determinism** — every run of a seed shares one whole-VM
+///    `state_hash` (**guest-state** reproducibility, mirroring the task-58 sweep),
+///    one `TraceId`, and byte-identical journal bytes; fewer than two runs cannot
+///    demonstrate it.
+/// 2. **Divergence** — at least `min_distinct` distinct **`state_hash`es** across
+///    seeds. This is the strong guest-state property: `--record`'s journal
+///    byte-identity alone proves only console/terminal determinism, not that the
+///    seed reached a distinct *machine state* (an RDRAND-seeding regression would
+///    leave console identical yet is caught here). The `state_hash` is the same
+///    primitive the sweep gates on, captured at the same point; `TraceId`
+///    (`blake3(env)`) and the journal digest both embed the seed and so diverge
+///    *by construction* — they cannot certify this.
 /// 3. **Non-empty, monotone records.**
 ///
 /// The lossless-reload / re-derive half of gate 3 is [`verify_store_reload`], a
@@ -424,12 +454,19 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
     for (seed, runs) in &by_seed {
         if runs.len() < 2 {
             failures.push(format!(
-                "seed {seed:#018x}: only {} run — byte-identity needs at least 2 runs to compare",
+                "seed {seed:#018x}: only {} run — determinism needs at least 2 runs to compare",
                 runs.len()
             ));
         }
         let first_id = runs[0].trace_id;
+        let first_hash = runs[0].state_hash;
         for r in runs {
+            if r.state_hash != first_hash {
+                failures.push(format!(
+                    "seed {seed:#018x}: run {} state_hash != run 0 — guest state NOT reproducible",
+                    r.run
+                ));
+            }
             if r.trace_id != first_id {
                 failures.push(format!(
                     "seed {seed:#018x}: run {} TraceId {} != run 0 {} — not content-stable",
@@ -454,14 +491,16 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
         }
     }
 
-    // Divergence over the serialized-run digest, not the env-derived TraceId.
-    let mut distinct: Vec<[u8; 32]> = report.rows.iter().map(|r| r.journal_digest).collect();
+    // Divergence over the guest-state hash — the strong property (not the
+    // env-derived TraceId, nor the env-bearing journal digest, both of which
+    // diverge by construction).
+    let mut distinct: Vec<[u8; 32]> = report.rows.iter().map(|r| r.state_hash).collect();
     distinct.sort_unstable();
     distinct.dedup();
     if distinct.len() < min_distinct {
         failures.push(format!(
-            "only {} distinct journal digest(s) across {} seeds (need >= {min_distinct}) — runs \
-             did not diverge",
+            "only {} distinct state_hash(es) across {} seeds (need >= {min_distinct}) — guest \
+             states did not diverge",
             distinct.len(),
             by_seed.len()
         ));
@@ -562,19 +601,23 @@ pub fn render_record_table(report: &RecordReport) -> String {
         report.snapshot_vtime
     ));
     out.push_str(&format!(
-        "{:<20} {:>3}  {:<20} {:>6} {:>7}  {:<7}  {}\n",
-        "seed", "run", "stop", "recs", "journal", "retain", "trace_id"
+        "{:<20} {:>3}  {:<20} {:>6} {:>7}  {:<6}  {:<14}  {:<14}\n",
+        "seed", "run", "stop", "recs", "journal", "retain", "state_hash", "trace_id"
     ));
+    // 12-hex (6-byte) prefixes keep the table readable while still letting a
+    // reader eyeball per-seed equality and cross-seed divergence.
+    let short = |bytes: &[u8; 32]| crate::hex(bytes).chars().take(12).collect::<String>();
     for r in &report.rows {
         out.push_str(&format!(
-            "{:#018x} {:>3}  {:<20} {:>6} {:>7}  {:<7}  {}\n",
+            "{:#018x} {:>3}  {:<20} {:>6} {:>7}  {:<6}  {:<14}  {:<14}\n",
             r.seed,
             r.run,
             crate::fmt_stop(&r.stop),
             r.records_len,
             r.journal_len,
             if r.retained { "full" } else { "env" },
-            r.trace_id,
+            short(&r.state_hash),
+            short(&r.trace_id.0),
         ));
     }
     out

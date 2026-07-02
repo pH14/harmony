@@ -6,6 +6,24 @@ that bundle becomes bytes and back. Dependencies 58 (`ControlServer`) and 64
 (`spine.rs`) are **already merged into `main`**, so this branch builds directly
 on them (the spec was written when they were unmerged).
 
+## Round-6 review response (PR #48)
+
+One blocking item that changed *what gate 6 proves*: the `--record` path bypassed
+the sweep's `state_hash` checks, so journal byte-identity certified only
+console/terminal determinism, not **guest-state** determinism.
+
+- The recording loop now captures `hash(Whole)` after each run into
+  `RecordedRun.state_hash` (the same primitive, at the same point, as the task-58
+  sweep). `verify_record` gates on **per-seed `state_hash` equality across runs**
+  (guest-state reproducibility) and **cross-seed `state_hash` divergence**
+  (≥ `min_distinct` distinct — the real property: an RDRAND-seeding regression
+  leaves the console identical but is caught here). Divergence moved off the
+  env-bearing journal digest (which diverges by construction) onto `state_hash`.
+  New non-vacuity test (`verify_record_flags_non_diverging_guest_state`) proves
+  the gate fails when seeds share a state. The mock certifies the same strong
+  property (its seeded RDRAND reaches VM state → distinct per-seed hashes), so
+  one box cycle now certifies guest-state determinism, not just console/terminal.
+
 ## Round-4 review response (PR #48)
 
 One blocking item from the round-3 cross-model pass:

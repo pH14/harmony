@@ -155,6 +155,71 @@ fn a_recording_campaign_is_deterministic_per_seed_and_divergent_across_seeds() {
     assert_eq!(a.rows.len(), 8, "4 seeds x 2 runs");
     assert!(a.rows.iter().all(|r| r.journal_matches_first_run));
     assert!(a.rows.iter().all(|r| r.stamps_monotone));
+
+    // The strong guest-state property (mirroring the task-58 sweep): per seed
+    // the state_hash is identical across runs, and across seeds it diverges.
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut by_seed: BTreeMap<u64, Vec<[u8; 32]>> = BTreeMap::new();
+    for r in &a.rows {
+        by_seed.entry(r.seed).or_default().push(r.state_hash);
+    }
+    for (seed, hashes) in &by_seed {
+        assert!(
+            hashes.windows(2).all(|w| w[0] == w[1]),
+            "seed {seed:#018x}: state_hash not reproducible across runs"
+        );
+    }
+    let distinct: BTreeSet<[u8; 32]> = a.rows.iter().map(|r| r.state_hash).collect();
+    assert!(
+        distinct.len() >= 2,
+        "guest states did not diverge across seeds ({} distinct)",
+        distinct.len()
+    );
+    // Cross-run state_hash reproducibility holds between whole campaigns too.
+    let hashes = |r: &conductor::record::RecordReport| {
+        r.rows.iter().map(|x| x.state_hash).collect::<Vec<_>>()
+    };
+    assert_eq!(hashes(&a), hashes(&b), "state hashes are bit-reproducible");
+}
+
+#[test]
+fn verify_record_flags_non_diverging_guest_state() {
+    // Non-vacuity of the state_hash divergence gate: a synthetic report whose
+    // seeds share one state_hash (an RDRAND-seeding regression: identical guest
+    // state despite distinct seeds/journals) must FAIL divergence, even though
+    // per-seed determinism holds.
+    use conductor::record::{RecordReport, RecordedRun};
+    use explorer::{StopReason, VTime};
+    let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
+        seed,
+        run,
+        trace_id: runtrace::TraceId([id_byte; 32]),
+        stop: StopReason::Quiescent { vtime: VTime(1) },
+        state_hash: [0xEE; 32], // SAME across every seed — no guest divergence
+        records_len: 1,
+        journal_len: 10,
+        journal_digest: [id_byte; 32],
+        retained: true,
+        stamps_monotone: true,
+        journal_matches_first_run: true,
+        console_head: vec![],
+    };
+    let report = RecordReport {
+        snapshot_vtime: 0,
+        rows: vec![
+            row(0x1111, 0, 1),
+            row(0x1111, 1, 1),
+            row(0x2222, 0, 2),
+            row(0x2222, 1, 2),
+        ],
+    };
+    let failures = verify_record(&report, 2);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("state_hash(es)") && f.contains("did not diverge")),
+        "identical guest state across seeds must fail divergence, got {failures:?}"
+    );
 }
 
 #[test]
