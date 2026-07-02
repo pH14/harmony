@@ -33,7 +33,11 @@ fn mock_recording_decodes_reencodes_and_rederives() {
     let trace = decode(&bytes).expect("mock recording decodes");
 
     // Canonical: re-encoding the decoded trace reproduces the committed bytes.
-    assert_eq!(encode(&trace), bytes, "the committed journal is canonical");
+    assert_eq!(
+        encode(&trace).expect("fixture trace encodes"),
+        bytes,
+        "the committed journal is canonical"
+    );
 
     // The recording fork writes the "MOCK-READY" banner, so the console decodes
     // into at least one record and the marker sensor finds it.
@@ -49,7 +53,7 @@ fn mock_recording_decodes_reencodes_and_rederives() {
     );
 
     // Re-derivation is stable across a decode round-trip.
-    let reloaded = decode(&encode(&trace)).unwrap();
+    let reloaded = decode(&encode(&trace).expect("fixture trace encodes")).unwrap();
     assert_eq!(sensor.observe(&reloaded), features);
 }
 
@@ -62,13 +66,17 @@ fn real_guest_slice_decodes_and_rederives_when_present() {
         return;
     };
     let trace = decode(&bytes).expect("real-guest slice decodes");
-    assert_eq!(encode(&trace), bytes, "the committed slice is canonical");
+    assert_eq!(
+        encode(&trace).expect("fixture trace encodes"),
+        bytes,
+        "the committed slice is canonical"
+    );
     assert!(
         !trace.records.is_empty(),
         "the real-guest slice has console records"
     );
     // Re-derive with the readiness-banner marker (present in a Postgres console).
     let sensor = MarkerSensor::new(b"database system is ready to accept connections");
-    let reloaded = decode(&encode(&trace)).unwrap();
+    let reloaded = decode(&encode(&trace).expect("fixture trace encodes")).unwrap();
     assert_eq!(sensor.observe(&reloaded), sensor.observe(&trace));
 }

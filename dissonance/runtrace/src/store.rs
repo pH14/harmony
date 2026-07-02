@@ -120,12 +120,23 @@ impl TraceStore {
     /// prior journal, so [`has_journal`](Self::has_journal)/[`load`](Self::load)
     /// always reflect the last-recorded policy rather than serving a stale
     /// (though content-identical) journal under an env-only policy.
+    ///
+    /// Under [`Retain::Full`] the journal is encoded (and size-validated —
+    /// [`TraceError::Oversize`]) **before any file is written**, so an
+    /// unrepresentable trace persists *nothing*, never a torn env sidecar.
     pub fn record(&self, t: &RunTrace, retain: Retain) -> Result<TraceId, TraceError> {
         let id = TraceId::of(&t.env);
+        // Encode (and size-check) up front so a Full record that cannot be
+        // represented fails before touching the filesystem. EnvOnly needs no
+        // journal; the env sidecar has no `u32` prefix, so it is always writable.
+        let journal = match retain {
+            Retain::Full => Some(codec::encode(t)?),
+            Retain::EnvOnly => None,
+        };
         write_atomic(&self.path(id, "env"), &codec::encode_env(&t.env))?;
-        match retain {
-            Retain::Full => write_atomic(&self.path(id, "trace"), &codec::encode(t))?,
-            Retain::EnvOnly => remove_if_present(&self.path(id, "trace"))?,
+        match journal {
+            Some(bytes) => write_atomic(&self.path(id, "trace"), &bytes)?,
+            None => remove_if_present(&self.path(id, "trace"))?,
         }
         Ok(id)
     }

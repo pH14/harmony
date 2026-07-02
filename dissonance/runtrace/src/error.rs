@@ -101,6 +101,17 @@ pub enum TraceError {
     /// which would break `encode(decode(b)) == b` for the accepted bytes.
     #[error("non-canonical trace journal (map keys not strictly increasing)")]
     NonCanonical,
+    /// A field is too large to encode: a byte blob or collection whose length
+    /// exceeds the `u32` the on-disk format length-prefixes it with (> 4 GiB).
+    /// [`encode`](crate::encode) fails **loudly** here rather than saturating the
+    /// prefix and persisting a journal that can never decode.
+    #[error("trace field {what} is too large to encode ({len} bytes exceeds u32 prefix)")]
+    Oversize {
+        /// Which field overflowed (e.g. `record.line`, `env.bytes`).
+        what: &'static str,
+        /// The offending length.
+        len: usize,
+    },
     /// A string field (an event kind/key, a `Value::Str`) was not valid UTF-8.
     #[error("non-UTF-8 string field in trace journal")]
     Utf8,

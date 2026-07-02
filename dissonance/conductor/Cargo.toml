@@ -32,6 +32,9 @@ control-proto = { path = "../control-proto", version = "0.1.0" }
 runtrace = { path = "../runtrace", version = "0.1.0" }
 # Typed recording-session errors (rule-5 whitelist).
 thiserror = "2"
+# Per-row journal digest for the divergence + reload gates (rule-5 whitelist;
+# already in the tree via runtrace's TraceId).
+blake3 = "1"
 vmm-core = { path = "../../consonance/vmm-core", version = "0.1.0" }
 # `mock` is a full (not dev-) dependency: the demo binary's portable mode and
 # the loopback gates both compose the server around a scripted `MockBackend`

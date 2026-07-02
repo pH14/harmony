@@ -16,6 +16,9 @@ pub runtrace::TraceError::Magic
 pub runtrace::TraceError::NonCanonical
 pub runtrace::TraceError::NotFound(runtrace::TraceId)
 pub runtrace::TraceError::NotRetained(runtrace::TraceId)
+pub runtrace::TraceError::Oversize
+pub runtrace::TraceError::Oversize::len: usize
+pub runtrace::TraceError::Oversize::what: &'static str
 pub runtrace::TraceError::Trailing
 pub runtrace::TraceError::Truncated
 pub runtrace::TraceError::Utf8
@@ -48,7 +51,7 @@ pub fn runtrace::TraceStore::record(&self, &explorer::spine::RunTrace, runtrace:
 pub const runtrace::TRACE_FORMAT_VERSION: u16
 pub fn runtrace::decode(&[u8]) -> core::result::Result<explorer::spine::RunTrace, runtrace::TraceError>
 pub fn runtrace::decode_chunks(explorer::spine::StreamId, &[(explorer::spine::Moment, alloc::vec::Vec<u8>)]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Record)>
-pub fn runtrace::encode(&explorer::spine::RunTrace) -> alloc::vec::Vec<u8>
+pub fn runtrace::encode(&explorer::spine::RunTrace) -> core::result::Result<alloc::vec::Vec<u8>, runtrace::TraceError>
 pub fn runtrace::encode_env(&explorer::Environment) -> alloc::vec::Vec<u8>
 pub fn runtrace::ingest_ndjson(&str) -> core::result::Result<alloc::vec::Vec<(explorer::spine::Moment, alloc::vec::Vec<u8>)>, runtrace::TraceError>
 pub fn runtrace::retain_for(runtrace::RetentionPolicy, &explorer::StopReason, bool) -> runtrace::Retain

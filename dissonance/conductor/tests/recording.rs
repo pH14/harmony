@@ -195,7 +195,7 @@ fn update_the_committed_mock_recording_fixture() {
     let report = run_recording(&mut server, &store, &cfg(RetentionPolicy::All)).unwrap();
     // The first run's full journal — a real mock-mode conductor recording.
     let id = report.rows[0].trace_id;
-    let journal = runtrace::encode(&store.load(id).unwrap());
+    let journal = runtrace::encode(&store.load(id).unwrap()).expect("mock trace encodes");
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../runtrace/tests/fixtures/mock_recording.trace"

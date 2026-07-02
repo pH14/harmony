@@ -29,6 +29,7 @@ pub conductor::record::RecordReport::rows: alloc::vec::Vec<conductor::record::Re
 pub conductor::record::RecordReport::snapshot_vtime: u64
 pub struct conductor::record::RecordedRun
 pub conductor::record::RecordedRun::console_head: alloc::vec::Vec<u8>
+pub conductor::record::RecordedRun::journal_digest: [u8; 32]
 pub conductor::record::RecordedRun::journal_len: usize
 pub conductor::record::RecordedRun::journal_matches_first_run: bool
 pub conductor::record::RecordedRun::records_len: usize

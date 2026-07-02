@@ -80,7 +80,7 @@ fn golden_trace() -> RunTrace {
 
 #[test]
 fn golden_journal_is_pinned_byte_for_byte() {
-    let bytes = encode(&golden_trace());
+    let bytes = encode(&golden_trace()).expect("golden encodes");
 
     if std::env::var_os("UPDATE_FIXTURES").is_some() {
         std::fs::write(GOLDEN_PATH, &bytes).expect("write golden fixture");
@@ -104,7 +104,7 @@ fn golden_journal_is_pinned_byte_for_byte() {
 
 #[test]
 fn a_bumped_version_envelope_is_a_loud_version_error() {
-    let mut bytes = encode(&golden_trace());
+    let mut bytes = encode(&golden_trace()).expect("golden encodes");
     // The version field is bytes [4..6] (after the 4-byte magic), little-endian.
     let bumped: u16 = TRACE_FORMAT_VERSION.wrapping_add(0x100);
     bytes[4..6].copy_from_slice(&bumped.to_le_bytes());
@@ -125,17 +125,17 @@ fn malformed_journals_are_loud_not_panics() {
     assert!(matches!(decode(&[1, 2, 3]), Err(TraceError::Truncated)));
 
     // Right length header, wrong magic → Magic.
-    let mut wrong_magic = encode(&golden_trace());
+    let mut wrong_magic = encode(&golden_trace()).expect("golden encodes");
     wrong_magic[0] ^= 0xFF;
     assert!(matches!(decode(&wrong_magic), Err(TraceError::Magic)));
 
     // A valid journal with an extra trailing byte → Trailing (non-canonical).
-    let mut trailing = encode(&golden_trace());
+    let mut trailing = encode(&golden_trace()).expect("golden encodes");
     trailing.push(0);
     assert!(matches!(decode(&trailing), Err(TraceError::Trailing)));
 
     // Truncated payload (drop the last byte of a valid journal) → Truncated.
-    let mut truncated = encode(&golden_trace());
+    let mut truncated = encode(&golden_trace()).expect("golden encodes");
     truncated.pop();
     assert!(matches!(decode(&truncated), Err(TraceError::Truncated)));
 }

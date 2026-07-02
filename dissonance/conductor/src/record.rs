@@ -76,6 +76,11 @@ pub struct RecordedRun {
     pub records_len: usize,
     /// The serialized journal's length in bytes.
     pub journal_len: usize,
+    /// `blake3` of the serialized journal bytes — the compact per-run fingerprint
+    /// the divergence and reload gates compare (the journal covers `terminal` +
+    /// `records` + `env` + `coverage`, so this captures the whole observed run,
+    /// not just the env-derived [`TraceId`]).
+    pub journal_digest: [u8; 32],
     /// Whether the full journal was retained (vs. env-only).
     pub retained: bool,
     /// Whether the record stamps are monotone non-decreasing.
@@ -276,7 +281,11 @@ pub fn run_recording<B: Backend>(
                 events: vec![], // link tier — empty until task 73
                 records,
             };
-            let journal = runtrace::encode(&trace);
+            // Encode once, up front — the source of the journal length, digest,
+            // and (for a Full record) the persisted bytes. Fails loudly on an
+            // unrepresentable (> 4 GiB field) trace rather than persisting garbage.
+            let journal = runtrace::encode(&trace)?;
+            let journal_digest = *blake3::hash(&journal).as_bytes();
             let retain = retain_for(cfg.retain, &stop, false);
             // The loop's ONLY store interaction is this write — the store is
             // write-only to the recording loop (gate 5's "assert no reads":
@@ -300,6 +309,7 @@ pub fn run_recording<B: Backend>(
                 stop,
                 records_len: trace.records.len(),
                 journal_len: journal.len(),
+                journal_digest,
                 retained: retain == Retain::Full,
                 stamps_monotone,
                 journal_matches_first_run,
@@ -386,7 +396,16 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
 /// 1. **Per-seed byte-identity** — every run of a seed shares one `TraceId` and
 ///    byte-identical journal (determinism: same env + same run ⇒ same bytes);
 ///    fewer than two runs cannot demonstrate it.
-/// 2. **Divergence** — at least `min_distinct` distinct `TraceId`s across seeds.
+/// 2. **Divergence** — at least `min_distinct` distinct **journal digests**
+///    across seeds. Deliberately *not* `TraceId`s: `TraceId = blake3(env)` and
+///    the env embeds the seed, so distinct seeds give distinct ids **by
+///    construction** — that check cannot fail. The journal digest covers the
+///    whole serialized run (`terminal` + `records` + `coverage` + `env`), so it
+///    reflects the recorded artifact, not just the seed label. (Guest-*state*
+///    divergence — different seeds reaching different `state_hash` — is the
+///    task-58 sweep's job via `hash()`; the recorded `RunTrace` carries no state
+///    hash, so a workload whose observable output is seed-independent, e.g. the
+///    scripted mock, still diverges here only through its env-bearing journal.)
 /// 3. **Non-empty, monotone records.**
 ///
 /// The lossless-reload / re-derive half of gate 3 is [`verify_store_reload`], a
@@ -435,13 +454,14 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
         }
     }
 
-    let mut distinct: Vec<TraceId> = report.rows.iter().map(|r| r.trace_id).collect();
+    // Divergence over the serialized-run digest, not the env-derived TraceId.
+    let mut distinct: Vec<[u8; 32]> = report.rows.iter().map(|r| r.journal_digest).collect();
     distinct.sort_unstable();
     distinct.dedup();
     if distinct.len() < min_distinct {
         failures.push(format!(
-            "only {} distinct TraceId(s) across {} seeds (need >= {min_distinct}) — envs did not \
-             diverge",
+            "only {} distinct journal digest(s) across {} seeds (need >= {min_distinct}) — runs \
+             did not diverge",
             distinct.len(),
             by_seed.len()
         ));
@@ -458,8 +478,12 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
 /// **fails** rather than vacuously passing. For every recorded row:
 ///
 /// - the env sidecar reloads and is content-addressed to its `TraceId`;
-/// - `retained: true` ⇒ [`load`](TraceStore::load) must succeed and the journal's
-///   env matches the sidecar (`NotRetained`/`NotFound` are failures);
+/// - `retained: true` ⇒ [`load`](TraceStore::load) must succeed **and the reloaded
+///   trace matches the report row** — same `terminal`, same record count, and a
+///   journal that re-encodes byte-for-byte to the recorded digest. Comparing only
+///   the env would let a stale/corrupted `.trace` for the same reproducer (same
+///   env-derived id, different terminal/records) pass. `NotRetained`/`NotFound`
+///   are failures;
 /// - `retained: false` ⇒ no journal is present (a fresh store; env-only never
 ///   writes one, and an env-only re-record removes any prior journal).
 ///
@@ -483,12 +507,42 @@ pub fn verify_store_reload(store: &TraceStore, report: &RecordReport) -> Vec<Str
             ));
         }
         if row.retained {
-            // The gate must actually LOAD the journal — no `has_journal` guard.
+            // The gate must actually LOAD the journal — no `has_journal` guard —
+            // and the reloaded trace must match the report row, not merely share
+            // an env.
             match store.load(id) {
-                Ok(reloaded) if reloaded.env != env => {
-                    failures.push(format!("{where_}: journal env != sidecar env"));
+                Ok(reloaded) => {
+                    if reloaded.env != env {
+                        failures.push(format!("{where_}: journal env != sidecar env"));
+                    }
+                    if reloaded.terminal != row.stop {
+                        failures.push(format!("{where_}: reloaded terminal != recorded stop"));
+                    }
+                    if reloaded.records.len() != row.records_len {
+                        failures.push(format!(
+                            "{where_}: reloaded records {} != recorded {}",
+                            reloaded.records.len(),
+                            row.records_len
+                        ));
+                    }
+                    match runtrace::encode(&reloaded) {
+                        Ok(bytes) => {
+                            if bytes.len() != row.journal_len {
+                                failures.push(format!(
+                                    "{where_}: reloaded journal {} bytes != recorded {}",
+                                    bytes.len(),
+                                    row.journal_len
+                                ));
+                            }
+                            if *blake3::hash(&bytes).as_bytes() != row.journal_digest {
+                                failures.push(format!(
+                                    "{where_}: reloaded journal digest != recorded digest"
+                                ));
+                            }
+                        }
+                        Err(e) => failures.push(format!("{where_}: reloaded trace re-encode: {e}")),
+                    }
                 }
-                Ok(_) => {}
                 Err(e) => {
                     failures.push(format!(
                         "{where_}: retained=true but the journal did not load: {e}"

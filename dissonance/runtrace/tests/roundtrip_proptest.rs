@@ -23,7 +23,7 @@ proptest! {
     /// `decode(encode(t)) == t`.
     #[test]
     fn decode_of_encode_is_identity(t in arb_run_trace()) {
-        let bytes = encode(&t);
+        let bytes = encode(&t).expect("arb trace encodes");
         let back = decode(&bytes).expect("a self-encoded journal decodes");
         prop_assert_eq!(back, t);
     }
@@ -31,8 +31,8 @@ proptest! {
     /// `encode(t)` is canonical and `encode(decode(encode(t))) == encode(t)`.
     #[test]
     fn encode_is_stable_and_canonical(t in arb_run_trace()) {
-        let b1 = encode(&t);
-        let b2 = encode(&decode(&b1).expect("decode"));
+        let b1 = encode(&t).expect("arb trace encodes");
+        let b2 = encode(&decode(&b1).expect("decode")).expect("re-encode");
         prop_assert_eq!(b1, b2);
     }
 
@@ -41,7 +41,7 @@ proptest! {
     #[test]
     fn decode_is_total_and_canonical_over_arbitrary_bytes(bytes in proptest::collection::vec(any::<u8>(), 0..128)) {
         if let Ok(t) = decode(&bytes) {
-            prop_assert_eq!(encode(&t), bytes);
+            prop_assert_eq!(encode(&t).expect("arb trace encodes"), bytes);
         }
     }
 
@@ -50,7 +50,7 @@ proptest! {
     #[test]
     fn sensor_rederives_identically_after_encode_decode(t in arb_run_trace()) {
         let sensor = MarkerSensor::new(b"a");
-        let reloaded = decode(&encode(&t)).expect("decode");
+        let reloaded = decode(&encode(&t).expect("arb trace encodes")).expect("decode");
         prop_assert_eq!(sensor.observe(&reloaded), sensor.observe(&t));
     }
 }

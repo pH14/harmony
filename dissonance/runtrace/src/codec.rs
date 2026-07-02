@@ -51,13 +51,29 @@ const V_BYTES: u8 = 4;
 const ABSENT: u8 = 0;
 const PRESENT: u8 = 1;
 
+// ---- Minimum on-wire size of one collection element, for bounding decode
+// preallocation against the *actual* remaining bytes (never a raw count). A
+// count claims `n` elements, but each element occupies at least this many bytes,
+// so a malformed huge count cannot reserve more than the buffer could hold. ----
+/// Smallest `(Moment, GuestEvent)`: `Moment`(8) + empty-kind len(4) + attr count(4).
+const MIN_EVENT_WIRE_LEN: usize = 16;
+/// Smallest `(Moment, Record)`: `Moment`(8) + `StreamId`(2) + empty-line len(4).
+const MIN_RECORD_WIRE_LEN: usize = 14;
+
 // ============================ public entry points ============================
 
 /// Encode a [`RunTrace`] into a versioned, canonical journal.
 ///
-/// Infallible: a `RunTrace` is always representable (unlike a wire frame there
-/// is no size cap — an on-disk journal is as large as the run's console).
-pub fn encode(t: &RunTrace) -> Vec<u8> {
+/// There is no journal size cap (unlike a wire frame — an on-disk journal is as
+/// large as the run's console), but every variable-length field is `u32`-length
+/// prefixed, so a single field larger than `u32::MAX` (> 4 GiB — e.g. one
+/// gigantic unterminated console line) cannot be represented. Rather than
+/// saturate the prefix and emit a journal that can never decode, encoding
+/// **fails loudly** with [`TraceError::Oversize`] (mirroring `control-proto`'s
+/// `BadLength`). Validation runs *before* any bytes are written, so a caller
+/// that ignores the error is not left with a half-built buffer.
+pub fn encode(t: &RunTrace) -> Result<Vec<u8>, TraceError> {
+    check_encodable(t)?;
     let mut w = Vec::new();
     w.extend_from_slice(&MAGIC.to_le_bytes());
     w.extend_from_slice(&crate::TRACE_FORMAT_VERSION.to_le_bytes());
@@ -70,7 +86,54 @@ pub fn encode(t: &RunTrace) -> Vec<u8> {
     write_opt_coverage(&mut w, &t.coverage);
     write_events(&mut w, &t.events);
     write_records(&mut w, &t.records);
-    w
+    Ok(w)
+}
+
+/// Whether `len` fits the `u32` length prefix the format uses.
+fn fits(len: usize) -> bool {
+    u32::try_from(len).is_ok()
+}
+
+/// Reject a [`RunTrace`] any of whose length-prefixed fields (byte blobs or
+/// collection counts) would overflow the `u32` prefix, **before** [`encode`]
+/// writes anything. This is the one place the format's size limit is enforced;
+/// after it passes, every `put_len`/`put_bytes` below is guaranteed in range.
+fn check_encodable(t: &RunTrace) -> Result<(), TraceError> {
+    let check = |what: &'static str, len: usize| -> Result<(), TraceError> {
+        if fits(len) {
+            Ok(())
+        } else {
+            Err(TraceError::Oversize { what, len })
+        }
+    };
+    check("env.bytes", t.env.bytes.len())?;
+    match &t.terminal {
+        StopReason::Crash { info, .. } => check("terminal.info", info.len())?,
+        StopReason::Decision { ctx, .. } => check("terminal.ctx", ctx.len())?,
+        StopReason::Assertion { data, .. } => check("terminal.data", data.len())?,
+        _ => {}
+    }
+    if let Some(cv) = &t.coverage {
+        check("coverage.map", cv.map.len())?;
+    }
+    check("events.count", t.events.len())?;
+    for (_, ev) in &t.events {
+        check("event.kind", ev.kind.len())?;
+        check("event.attrs.count", ev.attrs.len())?;
+        for (k, v) in &ev.attrs {
+            check("event.attr.key", k.len())?;
+            match v {
+                Value::Str(s) => check("event.attr.value", s.len())?,
+                Value::Bytes(b) => check("event.attr.value", b.len())?,
+                _ => {}
+            }
+        }
+    }
+    check("records.count", t.records.len())?;
+    for (_, r) in &t.records {
+        check("record.line", r.line.len())?;
+    }
+    Ok(())
 }
 
 /// Decode one [`RunTrace`] from a complete journal.
@@ -238,7 +301,10 @@ fn write_events(w: &mut Vec<u8>, events: &[(Moment, GuestEvent)]) {
 
 fn read_events(r: &mut Reader) -> Result<Vec<(Moment, GuestEvent)>, TraceError> {
     let n = r.len_prefix()?;
-    let mut out = Vec::with_capacity(n.min(r.remaining()));
+    // Bound the preallocation by how many elements could *possibly* remain
+    // (bytes / min element size), never the raw count — a malformed 100 MB input
+    // claiming billions of elements must not reserve gigabytes before validation.
+    let mut out = Vec::with_capacity(n.min(r.remaining() / MIN_EVENT_WIRE_LEN));
     for _ in 0..n {
         let at = Moment(r.u64()?);
         let kind = r.string()?;
@@ -277,7 +343,8 @@ fn write_records(w: &mut Vec<u8>, records: &[(Moment, Record)]) {
 
 fn read_records(r: &mut Reader) -> Result<Vec<(Moment, Record)>, TraceError> {
     let n = r.len_prefix()?;
-    let mut out = Vec::with_capacity(n.min(r.remaining()));
+    // Bound the preallocation by bytes / min element size, not the raw count.
+    let mut out = Vec::with_capacity(n.min(r.remaining() / MIN_RECORD_WIRE_LEN));
     for _ in 0..n {
         let at = Moment(r.u64()?);
         let stream = StreamId(r.u16()?);
@@ -341,9 +408,10 @@ fn put_u64(w: &mut Vec<u8>, v: u64) {
     w.extend_from_slice(&v.to_le_bytes());
 }
 
-/// A collection length as `u32`. Journal collections (events/records/attrs) are
-/// bounded by memory long before `u32::MAX`; the saturation is unreachable and
-/// only avoids a panic path.
+/// A collection/blob length as `u32`. [`encode`]'s [`check_encodable`] pre-pass
+/// guarantees every length reaching here fits `u32`, so the fallback is now
+/// genuinely unreachable (kept only so this stays panic-free even if a future
+/// caller bypasses the check).
 fn put_len(w: &mut Vec<u8>, n: usize) {
     put_u32(w, u32::try_from(n).unwrap_or(u32::MAX));
 }
@@ -471,7 +539,7 @@ mod tests {
     #[test]
     fn journal_round_trips_and_carries_the_env_blob_version_in_the_header() {
         let t = sample();
-        let bytes = encode(&t);
+        let bytes = encode(&t).expect("small trace encodes");
         // Header: magic(4) + format_version(2) + env_blob_version(2).
         assert_eq!(&bytes[0..4], b"TRC1");
         assert_eq!(
@@ -538,6 +606,24 @@ mod tests {
         // The canonical order ("a" then "b") decodes, and re-encodes identically.
         let canonical = journal_with_two_attr_keys("a", "b");
         let t = decode(&canonical).expect("canonical journal decodes");
-        assert_eq!(encode(&t), canonical, "accepted bytes are canonical");
+        assert_eq!(
+            encode(&t).expect("encodes"),
+            canonical,
+            "accepted bytes are canonical"
+        );
+    }
+
+    #[test]
+    fn size_gate_boundary_is_the_u32_prefix() {
+        // `encode` rejects any field whose length overflows the `u32` prefix
+        // (`check_encodable` → `fits`). A real > 4 GiB blob cannot be allocated
+        // in a test, so exercise the boundary directly; on our 64-bit targets
+        // `usize` exceeds `u32::MAX`.
+        assert!(fits(u32::MAX as usize), "u32::MAX fits the prefix");
+        #[cfg(target_pointer_width = "64")]
+        assert!(
+            !fits(u32::MAX as usize + 1),
+            "one past u32::MAX must not fit — encode returns TraceError::Oversize"
+        );
     }
 }

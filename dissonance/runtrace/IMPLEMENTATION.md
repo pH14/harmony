@@ -6,6 +6,29 @@ that bundle becomes bytes and back. Dependencies 58 (`ControlServer`) and 64
 (`spine.rs`) are **already merged into `main`**, so this branch builds directly
 on them (the spec was written when they were unmerged).
 
+## Round-3 review response (PR #48)
+
+Four small blocking items from the round-2 cross-model pass:
+
+- **Oversize encode** — `encode` now returns `Result<Vec<u8>, TraceError>` and
+  rejects any field whose length overflows the `u32` prefix (> 4 GiB) with
+  `TraceError::Oversize`, validated *before* any byte is written (mirrors
+  `control-proto`'s `BadLength`). `TraceStore::record` encodes up front so an
+  unrepresentable `Full` trace persists nothing. `encode_env` is exempt (no
+  length prefix).
+- **Decode preallocation bound** — `read_events`/`read_records` now reserve
+  `n.min(remaining / MIN_*_WIRE_LEN)` (16 B / 14 B minimum element), so a
+  malformed huge count can't reserve gigabytes before validation.
+- **Divergence on observed output** — `verify_record` compares distinct **journal
+  digests** (the serialized run: terminal + records + coverage + env), not
+  `TraceId`s (which diverge by construction since the env embeds the seed). Guest-
+  *state* divergence stays the task-58 sweep's job (`state_hash`); the `RunTrace`
+  carries none, so a seed-independent-output workload (the mock) still diverges
+  only via its env-bearing journal — documented at the check.
+- **Reload gate compares the row** — `verify_store_reload` now checks a retained
+  row's reloaded `terminal`/`records.len()`/journal digest against the report row
+  (not just env), so a stale/corrupted `.trace` for the same reproducer fails.
+
 ## Round-2 review response (PR #48)
 
 All three blocking items fixed and all four suggestions actioned:
