@@ -280,6 +280,15 @@ impl RegimeParams {
     /// `π_calm·f_calm + π_storm·f_storm`. Computed in `u128` over a common
     /// denominator, then reduced by `gcd`; [`DEN_CAP`] bounds every operand so
     /// the result always fits `(u64, u64)`.
+    ///
+    /// **Frozen chain.** When both transition numerators are zero (`p == q == 0`,
+    /// which [`new`](Self::new) accepts) the chain is non-ergodic: it never leaves
+    /// its start state, which is always [`Calm`](Regime::Calm) (see
+    /// [`RegimeProcess::new`]). The `p + q` denominator would then be zero, so
+    /// this is special-cased to the **calm** table's probability — the exact
+    /// long-run rate the frozen process actually exhibits — rather than a
+    /// degenerate `0` (which would silently hand the statistical gates a wrong
+    /// baseline).
     pub fn stationary_rate(&self) -> (u64, u64) {
         let p = &self.p_calm_to_storm;
         let q = &self.p_storm_to_calm;
@@ -293,6 +302,11 @@ impl RegimeParams {
         let (cn, cd) = self.calm.probability();
         let (sn, sd) = self.storm.probability();
         let (cn, cd, sn, sd) = (cn as u128, cd as u128, sn as u128, sd as u128);
+
+        if sum == 0 {
+            // Frozen in the Calm start state: the true rate is the calm table's.
+            return reduce(cn, cd);
+        }
 
         // rate = (calm_w·cn/cd + storm_w·sn/sd) / sum
         //      = (calm_w·cn·sd + storm_w·sn·cd) / (sum·cd·sd)
@@ -472,6 +486,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(params.stationary_rate(), (1, 2));
+    }
+
+    /// A frozen chain (both transition numerators zero) never leaves its Calm
+    /// start state, so the rate is the calm table's probability — not a
+    /// degenerate `0`. Pins the `sum == 0` special case.
+    #[test]
+    fn stationary_rate_frozen_chain_is_calm_rate() {
+        let params = RegimeParams::new(
+            (0, 4),
+            (0, 8),
+            StateTable::uniform(3, DEN_CAP).unwrap(),
+            StateTable::uniform(DEN_CAP, DEN_CAP).unwrap(),
+        )
+        .unwrap();
+        // calm = 3/4096, already in lowest terms.
+        assert_eq!(params.stationary_rate(), (3, DEN_CAP));
+        // And a frozen chain that also never faults in Calm reads as exactly 0/1.
+        let zero = RegimeParams::new(
+            (0, 4),
+            (0, 8),
+            StateTable::uniform(0, DEN_CAP).unwrap(),
+            StateTable::uniform(DEN_CAP, DEN_CAP).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(zero.stationary_rate(), (0, 1));
     }
 
     /// Bad parameters are rejected, never panic.

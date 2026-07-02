@@ -1,0 +1,45 @@
+pub mod tactics_regime
+pub enum tactics_regime::Regime
+pub tactics_regime::Regime::Calm
+pub tactics_regime::Regime::Storm
+pub enum tactics_regime::RegimeError
+pub tactics_regime::RegimeError::BadDenominator
+pub tactics_regime::RegimeError::NumeratorTooLarge
+pub tactics_regime::RegimeError::WrongClass
+pub struct tactics_regime::RegimeParams
+impl tactics_regime::RegimeParams
+pub fn tactics_regime::RegimeParams::calm(&self) -> &tactics_regime::StateTable
+pub fn tactics_regime::RegimeParams::from_seed(u64) -> Self
+pub fn tactics_regime::RegimeParams::new((u64, u64), (u64, u64), tactics_regime::StateTable, tactics_regime::StateTable) -> core::result::Result<Self, tactics_regime::RegimeError>
+pub fn tactics_regime::RegimeParams::stationary_rate(&self) -> (u64, u64)
+pub fn tactics_regime::RegimeParams::storm(&self) -> &tactics_regime::StateTable
+pub struct tactics_regime::RegimeProcess
+impl tactics_regime::RegimeProcess
+pub fn tactics_regime::RegimeProcess::from_seed(u64) -> Self
+pub fn tactics_regime::RegimeProcess::new(tactics_regime::RegimeParams) -> Self
+pub fn tactics_regime::RegimeProcess::params(&self) -> &tactics_regime::RegimeParams
+pub fn tactics_regime::RegimeProcess::sample(&self, environment::catalog::DecisionClass, &mut explorer::prng::Prng) -> environment::catalog::Answer
+pub fn tactics_regime::RegimeProcess::state(&self) -> tactics_regime::Regime
+pub fn tactics_regime::RegimeProcess::stationary_rate(&self) -> (u64, u64)
+pub fn tactics_regime::RegimeProcess::step(&mut self, &mut explorer::prng::Prng)
+pub struct tactics_regime::RegimeTactic
+impl tactics_regime::RegimeTactic
+pub fn tactics_regime::RegimeTactic::from_seed(u64) -> Self
+pub fn tactics_regime::RegimeTactic::new(tactics_regime::RegimeParams) -> Self
+pub fn tactics_regime::RegimeTactic::regime(&self) -> &tactics_regime::RegimeProcess
+impl explorer::spine::Tactic for tactics_regime::RegimeTactic
+pub fn tactics_regime::RegimeTactic::decide(&mut self, &explorer::spine::DecisionPoint, &mut explorer::prng::Prng) -> explorer::Answer
+pub struct tactics_regime::SeqMutators
+impl tactics_regime::SeqMutators
+pub fn tactics_regime::SeqMutators::delete(&environment::recorded::EnvSpec, u64) -> environment::recorded::EnvSpec
+pub fn tactics_regime::SeqMutators::insert(&environment::recorded::EnvSpec, u64) -> environment::recorded::EnvSpec
+pub fn tactics_regime::SeqMutators::mutate(&environment::recorded::EnvSpec, u64) -> environment::recorded::EnvSpec
+pub fn tactics_regime::SeqMutators::retarget(&environment::recorded::EnvSpec, u64) -> environment::recorded::EnvSpec
+pub fn tactics_regime::SeqMutators::shift(&environment::recorded::EnvSpec, u64) -> environment::recorded::EnvSpec
+pub struct tactics_regime::StateTable
+impl tactics_regime::StateTable
+pub fn tactics_regime::StateTable::new(u64, u64, &[environment::catalog::Fault], &[environment::catalog::Fault], &[environment::catalog::Fault]) -> core::result::Result<Self, tactics_regime::RegimeError>
+pub fn tactics_regime::StateTable::probability(&self) -> (u64, u64)
+pub fn tactics_regime::StateTable::uniform(u64, u64) -> core::result::Result<Self, tactics_regime::RegimeError>
+pub fn tactics_regime::class_of(&[u8]) -> core::option::Option<environment::catalog::DecisionClass>
+pub fn tactics_regime::class_tag(environment::catalog::DecisionClass) -> u16
