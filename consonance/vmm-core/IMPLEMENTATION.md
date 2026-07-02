@@ -3618,9 +3618,15 @@ waiver of hard rule 1) honored — only `consonance/vmm-core` touched:
   `#![cfg(target_os = "linux")]` + `#[ignore]` (empty binary on macOS). No new deps.
 - `SEAL-RATE-REPORT.md` — the committed report + provisional ruling (**gates 2–3**).
 
-**Status:** gate 1 DONE & GREEN on macOS (`build/nextest/clippy/fmt/deny`). Gates 2–3: the report
-holds the methodology + a calibrated projection; the **measured** numbers + final ruling come from
-running `tests/seal_rate_sweep.rs` on the box — **handed to the foreman** (see the report's Runbook).
+**Status:** gate 1 DONE & GREEN on macOS. **Gate 2 (box measurement): DONE** — `tests/seal_rate_sweep.rs`
+compiled + clippy-clean + run to completion on the determinism box (rc=0; KVM reverted to stock
+1396736, verified). Measured: §1 nominal **64/64 = 100 %**, §2 branch-determinism **26/26
+bit-identical**, §4 parent-rooted **== genesis-rooted** (ratio 1.66 %), **§4b MATCH** (the probe/
+deadline schedule is a *deterministic* part of the trajectory → substrate sound), `sealable()`
+**100 %/100 %**; but addressability is **coarse** (overshoot p90 ≈ 4.76 M ns) and interior/adversarial
+~40–60 % `non-synchronized`. Full numbers in `SEAL-RATE-REPORT.md` §6 + PR #50. **Gate 3 (final
+ruling): escalated to the integrator** (foreman ruling) — the report §9 presents the GO(boundary-keyed)
+vs NO-GO/RESTRICTED fork.
 
 ### The load-bearing substrate finding
 
@@ -3650,18 +3656,35 @@ task-41 gap — and is exactly why the archive addresses by *boundary*, not by a
    one inter-sample gap — the actual demonstration of "cost = suffix ≪ prefix".
 5. **Integer ppm, `BTreeMap`, `splitmix64`** (rules 4). **Two-phase** collect-then-verify because
    only one `perf_event` counter may be open at a time (a fork can't coexist with the live guest).
-6. **Running the box gate myself: deferred to the foreman** — transferring the branch to the box was
-   blocked as crossing this task's `Do not push` boundary; loading patched KVM + the multi-hour run +
-   revert discipline are the foreman's domain (task-58 precedent). Asked the user; proceeded on the
-   precedent-consistent default with no response.
+6. **Ran the box gate myself** (foreman later authorized push + box access): §4b, and a re-tuned
+   sweep. Three landmines cost iterations: (a) snapshotting all 64 targets via a CoW **derive-chain**
+   (`dirty=None`) is O(N²) → switched to **independent `snapshot_base` on a `DET_SUBSET` spread**
+   (materialize O(1)-layer, store-wide dedup); (b) the wall-watchdog used one **global** start →
+   per-guest `watchdog_start()`; (c) computing 2 GiB `state_hash` for **all** targets → only the
+   snapshotted subset. **2 GiB memory ops (`state_hash`/`snapshot_base`/`materialize`/`restore`) are
+   ~30–60 s each on this box** — the dominant cost; keep `DET_SUBSET` modest.
+7. **§4/§4b — the probe-perturbation finding.** The clean parent-rooted and genesis-rooted replays
+   agree exactly (`2c71f9ab…`) but diverge from the probe-laden live `state_hash` (`1c04e4cc…`),
+   because `probe_seal`'s `has_pending_guest_interrupt` re-arbitrates the LAPIC between legs. §4 now
+   asserts **parent == genesis** (ancestor-independence — the real premise); **§4b** (the foreman's
+   distinguishing experiment) restores the parent and replays the legs *with the same schedule* — it
+   **MATCHED** (`1c04e4cc…`), proving the schedule effect is deterministic/reproducible (substrate
+   sound). §2 branch-determinism captures both `live_hash_clean` (pre-probe) and `live_hash_probed`
+   (post-probe) per seal to support this.
 
 ### Known limitations / integrator notes
 
-- **The report is PROVISIONAL** — §6/§9 are a projection; the foreman runs the sweep, transcribes the
-  `[REPORT]` block, and confirms/updates the ruling. Expected **GO**.
-- **The box harness is not compile-checked on Linux** (macOS can't build `boot_linux_selected`);
-  reviewed against confirmed signatures. The foreman's first `cargo test --no-run` on the box is the
-  real compile check.
+- **The report is MEASURED** (`SEAL-RATE-REPORT.md` §6) and the box run reverted KVM to stock. The
+  **final GO/NO-GO ruling is the integrator's** (§9 fork), not made here.
+- **§2 determinism is verified on a `DET_SUBSET` spread**, not every one of the 64 seals (verifying
+  all N is 128× 2 GiB-restore branch runs — impractical; the ~30 spread points across runs, incl. the
+  deepest, all bit-identical, is the evidence the ruling needs). §1 seal rate still covers all 64.
+- **`public-api.txt` needs a box refresh** for the new `pub mod seal_rate` (the public-API gate is
+  box+nightly-only): `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`.
+- **Determinism failure ⇒ escalate, don't patch** — the harness reclassifies a non-branch-deterministic
+  seal as a failure *and* fails loudly; that is a task-41 determinism-core regression to escalate, a
+  task-63 non-goal to fix here.
+- **Busy-window detection is approximate** (interrupt-service via active injection; WAL-fsync /
 - **`public-api.txt` needs a box refresh** for the new `pub mod seal_rate` (the public-API gate is
   box+nightly-only): `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`.
 - **Determinism failure ⇒ escalate, don't patch** — the harness reclassifies a non-branch-deterministic
