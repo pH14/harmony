@@ -18,8 +18,18 @@ review, steer, and merge. The worker model is set by `scripts/agent-spawn.sh --m
 refactors, gnarly determinism bugs, or anything where a spec's ambiguity needs real judgment
 to resolve — and down to **Sonnet 5** (`claude-sonnet-5`) for quick/simple tasks — docs,
 small mechanical fixes, low-risk cleanup with a narrow, unambiguous spec. When spawning
-(§3.7), assess the task's complexity from its spec before picking the model. The
-determinism box (`ssh <det-box>`) is an execution
+(§3.7), assess the task's complexity from its spec before picking the model.
+
+**One-shot delegation lane (integrator directive, 2026-07-02): GLM-5.2 via
+`pi -p --provider synthetic --model "hf:zai-org/GLM-5.2" "<prompt>"`.** By far the cheapest
+model, above Sonnet in capability, but **only ONE active session at a time — serialize calls,
+never run it concurrently with itself.** It is a print-mode one-shot (prompt in, text out), not
+a tmux worker: use it for easy, self-contained *generation* — drafting bug-collection entries
+(`bugs/`), spec skeletons, doc transforms, triage summaries — where a full worker session is
+overkill. The foreman reviews its output and applies/commits it through the normal channels
+(it never touches the repo itself). Repo-mutating agentic work stays with tmux workers.
+
+The determinism box (`ssh <det-box>`) is an execution
 target only: Linux-only gates (task 04 Part B) and future hardware tasks reach it over
 SSH from inside a session; no credentials live there. Each invocation
 of this skill is ONE iteration: rebuild the state picture, advance everything one step,
