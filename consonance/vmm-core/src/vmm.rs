@@ -2011,7 +2011,9 @@ impl<B: Backend> Vmm<B> {
             environment::HostFault::CorruptMemory { gpa, mask } => {
                 self.corrupt_memory(*gpa, mask.0)
             }
-            environment::HostFault::InjectInterrupt { vector } => self.inject_host_interrupt(*vector),
+            environment::HostFault::InjectInterrupt { vector } => {
+                self.inject_host_interrupt(*vector)
+            }
             environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
                 Err(VmmError::ContractViolation(
                     "SkewTime/SetClockRate host faults are out of scope for task 59 (they mutate \
@@ -2042,7 +2044,11 @@ impl<B: Backend> Vmm<B> {
         };
         let start = gpa as usize;
         let end = end as usize;
-        let word = u64::from_le_bytes(ram[start..end].try_into().expect("slice is exactly 8 bytes"));
+        let word = u64::from_le_bytes(
+            ram[start..end]
+                .try_into()
+                .expect("slice is exactly 8 bytes"),
+        );
         ram[start..end].copy_from_slice(&(word ^ mask).to_le_bytes());
         Ok(())
     }
@@ -2062,7 +2068,9 @@ impl<B: Backend> Vmm<B> {
             )));
         };
         lapic.raise(vector).map_err(|e| {
-            VmmError::ContractViolation(format!("InjectInterrupt vector {vector:#x} rejected: {e:?}"))
+            VmmError::ContractViolation(format!(
+                "InjectInterrupt vector {vector:#x} rejected: {e:?}"
+            ))
         })
     }
 

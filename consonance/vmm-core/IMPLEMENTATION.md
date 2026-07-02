@@ -3180,3 +3180,113 @@ via a hostile/oversized `pref_address`/`init_size`. Fixes:
   by capping `initrd_addr_max` inside the page): the predicate's edges; a straddling ramdisk is
   relocated below; a ramdisk that fits above the hole is kept high; one that cannot fit below is
   rejected.
+
+## Task 59 — host-plane enforcement: apply a `HostFault` at a `Moment` (light up `perturb`)
+
+Task 45 delivered the `HostFault` types, `Moment`-keyed `Action` recording, and the `perturb`
+wire verb — all pure logic, with enforcement declared frontier. Task 58 served `perturb` as
+`Unsupported`. This task builds the enforcement in `consonance/vmm-core` (the server + `Vmm`),
+plus one supporting `control-proto` error variant.
+
+### The apply-at-`Moment` seam
+
+- **`Vmm::arm_arrival(moment)` / `clear_arrival()`** — arm a host-fault arrival deadline. It is
+  folded into `step()`'s `run_until` alongside the task-47 LAPIC-timer preemption deadline by the
+  new **`run_until_deadline()`** = `min(preemption_deadline, arrival_deadline)`. This reuses the
+  exact-count-arrival machinery (task 47): the guest is forced out *between instructions* at the
+  seed-deterministic retired-branch count whose V-time is `moment`. **Strictly additive**: when no
+  arrival is armed, `run_until_deadline() == preemption_deadline()` byte-for-byte, so every
+  protected M1/M2/corpus/Linux-boot/`live_*` path (none stages a fault) is unchanged — an empty
+  schedule changes nothing (gate 3).
+- **`Vmm::apply_host_fault(&fault)`** — the imperative apply:
+  - `CorruptMemory { gpa, mask }` — XOR the `BitMask` into the little-endian 8-byte word at `gpa`
+    in the owned `GuestRam` (on the box KVM reads the guest through this same mmap backing, so the
+    upset is live on the next entry). Fails loud on `gpa + 8 > ram` — never clips or wraps.
+  - `InjectInterrupt { vector }` — `lapic.raise(vector)` into the userspace-LAPIC IRR, so the
+    **existing** `service_pending_irqs` arbitration delivers it at the next injectable entry
+    (delivery ordering vs. the V-time timer stays deterministic). Requires the LAPIC wired and a
+    non-reserved vector (`≥ 16`); both fail loud.
+  - `SkewTime` / `SetClockRate` — **rejected loud** (out of scope, below).
+
+### The `Moment` ⇄ work axis
+
+`Moment` is the single deterministic axis (`environment` doc: "V-time is a derived view of this
+same axis"). Enforcement treats a fault's `Moment` as its **effective V-time** (`Vmm::effective_vns`
+reports the same axis). Arrival converts it to the raw retired-branch work deadline via
+`VClock::work_for_vns(moment)` — exactly as `preemption_deadline` does for the timer. Under the
+`det-cfl-v1` contract clock (1 ns / retired branch, `ratio_den == 1`, `vns_base` 0) the three
+coincide numerically (`Moment == work == vns`), which is what makes the portable mock proof exact
+(the mock rewrites a scripted `Exit::Deadline`'s `reached` to the armed work deadline).
+
+### Server: staged schedule + recorded env (`ControlServer`)
+
+- **`schedule: BTreeMap<Moment, Vec<HostFault>>`** — ordered staging; faults at one `Moment` held in
+  stage order (a `Vec`) so multiple faults per `Moment` apply deterministically. Populated by
+  `perturb` and by a `branch` whose env carries host overrides; **drained** by `run` (a re-run
+  rewinds via `branch`/`replay`, which re-stages).
+- **`perturb(fault, at)`** — decode + validate, then stage. Rejects loud, *before* staging:
+  a malformed blob → `MalformedEnvironment`; an out-of-range `CorruptMemory` gpa →
+  `PerturbOutOfRange` (new `control-proto` variant); the out-of-scope clock faults → `Unsupported`.
+- **`run(until)`** = "run to `min(next staged Moment, until)`": before each step, apply every fault
+  the run has reached (`arm_arrival` makes arrival exact), stamping each into the recorded env; then
+  arm the next `Moment`. The `until` deadline stays **opportunistic** (task-58 posture; a hard
+  force-exit at an arbitrary deadline was reverted there) — a fault beyond the deadline is never
+  reached.
+- **`branch`** now **enforces host overrides** (stages them from the env). Guest overrides, standing
+  faults, and a non-`none` fault policy still answer `Unsupported` (task 61 / decide-seam loops).
+- **`recorded_env()`** — the active reproducer: every applied fault is stamped via task-45's
+  `EnvSpec::perturb`, so the emitted env replays to the identical `state_hash` (record → replay
+  closure). Its seed is set by the most recent `branch` (default 0 without a branch — the box
+  closure always branches to a seed first).
+
+### Deviations considered and rejected
+
+- **Threading the fault schedule through `step()` vs. a field + `run_until_deadline()` fold.** Chose
+  the field (`arrival_deadline`) folded by a small helper, so the heavily-invariant-laden `step()`
+  (round-11/12/13 zero-step logic) is untouched except for the one-line deadline source swap.
+  Duplicating `step()` for arrival was rejected as far riskier.
+- **A hard force-exit at the `run` deadline.** Rejected — task 58 reverted exactly that (stale
+  `run_until` arms accumulating across restores → a 16th-run `state_hash` divergence). Arrival is
+  armed only at fault `Moment`s (which we must hit exactly); the run deadline stays opportunistic.
+- **Reusing an existing `ControlError` for out-of-range gpa.** No existing variant fits "out of
+  range". Added `ControlError::PerturbOutOfRange { gpa, ram_len }` (wire discriminant 11) rather
+  than misclassify it, per the spec's "Fail loud (ControlError)".
+- **Injecting `InjectInterrupt` straight into the backend.** Rejected in favor of the LAPIC IRR
+  raise, so delivery arbitrates against the V-time timer deterministically (spec requirement).
+
+### Known limitations / integrator notes
+
+- **`SkewTime` / `SetClockRate` are deferred** (spec-mandated): they mutate the V-time clock itself
+  (epoch/ratio) and interact with the armed-deadline machinery. `apply_host_fault` and `perturb`
+  reject them loud (a follow-on lights them up once the two simple faults have proven the seam).
+- **One action per `Moment` in the recorded env (task-45 contract).** `EnvSpec`'s override map is
+  `BTreeMap<Moment, Action>`, so a schedule with two faults at the *same* `Moment` records only the
+  last (last-write-wins) — the schedule still *applies* both. The record→replay closure is therefore
+  exact for schedules with ≤ 1 fault per `Moment`, which is the shape the box gate proves (a
+  `CorruptMemory` and an `InjectInterrupt` at distinct `Moment`s). The gate-1 proptest is *run-twice*
+  determinism (not env round-trip), so it freely exercises duplicate `Moment`s.
+- **`InjectInterrupt` apply is session-fatal on failure** (reserved vector / unwired LAPIC): a run
+  that cannot deliver a staged interrupt is unvouched, so it tears the session down (`ServeError`)
+  rather than silently skipping (which would desync the recorded env from the run). The gpa/vector
+  validity is caught earlier and recoverably at `perturb` stage time where possible.
+- **Portable proof vs. box gate.** The mock (`deterministic_tsc = true`) makes the apply-at-`Moment`
+  seam, its determinism, the out-of-range rejection, and a `recorded_env` re-apply-to-same-hash
+  closure all laptop-testable (`control.rs` tests + a 384-case proptest). The **end-to-end box gate**
+  (record → replay on real KVM against the Postgres workload; schedule-absent control differs) needs
+  `/dev/kvm` + the PMU `run_until` path and is **handed to the foreman** — standard box pinning +
+  revert discipline; the additive-empty-schedule claim (gate 3, `live_*` byte-identical) is verified
+  by inspection here (`run_until_deadline == preemption_deadline` with no arrival armed).
+
+### Cross-crate touches (beyond `consonance/vmm-core`)
+
+- **`dissonance/control-proto`** — added `ControlError::PerturbOutOfRange { gpa, ram_len }` (error
+  enum + codec discriminant 11 + golden `err_perturb_out_of_range` + `arb_control_error` generator +
+  `public-api.txt`). Backward-additive wire change (new reply-error discriminant; protocol version
+  unchanged).
+- **`dissonance/conductor`** — the `loopback.rs` raw-wire test's `perturb → Unsupported` assertion is
+  now stale; updated to `MalformedEnvironment` (a malformed fault blob). A well-formed host fault
+  now stages (`Reply::Unit`).
+- **`dissonance/explorer`** — no code touched; the `adapter.rs` module-doc line noting the server
+  "rejects any override-carrying branch env with Unsupported" is now stale for the *host* plane
+  (host overrides are enforced; guest overrides still `Unsupported`). Left for the integrator, since
+  explorer does not depend on `vmm-core` and its tests do not exercise the real server.

@@ -105,9 +105,10 @@ pub enum ControlError {
     #[error("malformed or wrong-class resolve answer")]
     MalformedAnswer,
     /// The verb decoded cleanly but this backend does not service it (yet): the
-    /// seed-driven task-58 server answers `perturb` (host-plane enforcement is
-    /// task 59) and the non-`Whole` hash scopes with this, and any verb sent
-    /// before `hello` has negotiated a session. Loud and distinct from a framing
+    /// server answers the non-`Whole` hash scopes, a `branch` env carrying a
+    /// still-unenforceable guest override / standing fault / non-`none` policy, a
+    /// `perturb` of an out-of-scope `SkewTime`/`SetClockRate`, and any verb sent
+    /// before `hello` has negotiated a session with this. Loud and distinct from a framing
     /// [`Protocol`](Self::Protocol) error — the frame was well-formed; the
     /// *capability* is absent.
     #[error("verb not supported by this backend")]
@@ -120,7 +121,9 @@ pub enum ControlError {
     ///
     /// [`CorruptMemory`]: the `environment::HostFault::CorruptMemory` the
     /// `perturb` fault blob decodes to.
-    #[error("perturb CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {ram_len} bytes)")]
+    #[error(
+        "perturb CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {ram_len} bytes)"
+    )]
     PerturbOutOfRange {
         /// The offending guest-physical address.
         gpa: u64,

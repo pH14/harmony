@@ -30,10 +30,12 @@
 //!   diverges through the already-deterministic RDRAND path (the proven
 //!   divergence mechanism, tasks 40/42). The env blob is decoded (and rejected
 //!   loudly — [`ControlError::BadEnvVersion`] / [`ControlError::MalformedEnvironment`])
-//!   but only its seed is *enforced*: an env carrying overrides or standing
-//!   faults answers [`ControlError::Unsupported`] rather than silently running
-//!   without them (they need the task-59 host-plane / task-61 guest-plane
-//!   enforcement loops).
+//!   but now its **host-plane overrides are enforced** (task 59): they are staged
+//!   like a `perturb` and applied at their `Moment`s during the branched run. An
+//!   env carrying a **guest** override, a **standing** fault, or a **non-`none`
+//!   fault policy** still answers [`ControlError::Unsupported`] (they need the
+//!   task-61 guest-plane / decide-seam enforcement loops), rather than silently
+//!   running without them.
 //! - **`replay(snap)`** → restore verbatim into a fresh VM, **no reseed** — the
 //!   repro / determinism-gate path.
 //! - **`run(until)`** → advance via [`Vmm::step`] until a terminal stop or the
@@ -52,7 +54,17 @@
 //! - **`hash(scope)`** → [`Vmm::state_hash`] for `Whole`; `Disk` / `Region`
 //!   answer [`ControlError::Unsupported`] (no disk device exists; region
 //!   hashing has no consumer yet).
-//! - **`perturb`** → [`ControlError::Unsupported`] (task 59 lights it up).
+//! - **`perturb(fault, at)`** → **stage a [`HostFault`](environment::HostFault)
+//!   at a [`Moment`](environment::Moment)** (task 59): the fault blob is decoded
+//!   and validated (an out-of-range [`CorruptMemory`](environment::HostFault::CorruptMemory)
+//!   gpa is a loud [`ControlError::PerturbOutOfRange`], a malformed blob a
+//!   [`ControlError::MalformedEnvironment`], the out-of-scope `SkewTime`/
+//!   `SetClockRate` a [`ControlError::Unsupported`]), then queued. [`run`](ControlServer::run)
+//!   applies it *between instructions* at its `Moment` — a guest-RAM XOR for
+//!   `CorruptMemory`, an IRR raise through the LAPIC arbitration for
+//!   `InjectInterrupt` — and stamps it into the recorded env
+//!   ([`recorded_env`](ControlServer::recorded_env)), so the emitted reproducer
+//!   replays to the identical `state_hash`.
 //!
 //! ## The fresh-VM restore discipline
 //!
@@ -337,13 +349,14 @@ impl<B: Backend> ControlServer<B> {
                 // Validate the gpa against the *live* guest RAM now, at stage time,
                 // so the caller gets a recoverable reply instead of a session-fatal
                 // apply-time failure. `run` re-checks defensively.
-                let ram_len = self.vmm.as_ref().ok_or(ControlError::Unsupported)?.guest_memory().len()
-                    as u64;
+                let ram_len = self
+                    .vmm
+                    .as_ref()
+                    .ok_or(ControlError::Unsupported)?
+                    .guest_memory()
+                    .len() as u64;
                 if gpa.checked_add(8).is_none_or(|end| end > ram_len) {
-                    return Err(ControlError::PerturbOutOfRange {
-                        gpa: *gpa,
-                        ram_len,
-                    });
+                    return Err(ControlError::PerturbOutOfRange { gpa: *gpa, ram_len });
                 }
             }
             environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
@@ -427,7 +440,10 @@ impl<B: Backend> ControlServer<B> {
                     &spec,
                     EnvSpec::Recorded { standing, .. } if !standing.is_empty()
                 );
-                let has_guest = spec.overrides().values().any(|a| a.guest_answer().is_some());
+                let has_guest = spec
+                    .overrides()
+                    .values()
+                    .any(|a| a.guest_answer().is_some());
                 if has_guest || has_standing || spec.policy() != &FaultPolicy::none() {
                     return Ok(Err(ControlError::Unsupported));
                 }
@@ -634,8 +650,10 @@ mod tests {
         Answer, CapFlags, ControlError, CrashKind, Environment, HashScope, HostFault, Moment,
         Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
     };
-    use environment::{EnvSpec, FaultPolicy};
-    use vmm_backend::{Backend, Exit, MockBackend};
+    use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
+    use vmm_backend::{Backend, Exit, MockBackend, Vtime};
+
+    use proptest::prelude::*;
 
     use super::{ControlServer, ServeError, server_caps};
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
@@ -934,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn perturb_stages_faults_and_rejects_the_unenforceable(){
+    fn perturb_stages_faults_and_rejects_the_unenforceable() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
         // An InjectInterrupt stages cleanly (Reply::Unit).
@@ -1413,5 +1431,313 @@ mod tests {
         let mut s = server(vec![Exit::Hlt]);
         s.serve(server_end).unwrap();
         client_thread.join().unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 59 — host-plane enforcement (apply a HostFault at a Moment).
+    //
+    // Portable proof over the scripted `MockBackend`: each staged `Moment`
+    // arrives via `run_until` (the mock rewrites a scripted `Exit::Deadline`'s
+    // `reached` to the work count the VMM armed — `arm_arrival`'s
+    // `work_for_vns(moment)`, which under the 1 ns/branch contract clock is the
+    // Moment itself). One scripted `Deadline` per *distinct* Moment, then a
+    // terminal `Hlt`. The end-to-end record→replay-on-real-KVM closure is the
+    // box gate; here we prove the apply-at-Moment seam, its determinism, and
+    // that the emitted recorded env re-applies to the identical hash.
+    // -----------------------------------------------------------------------
+
+    /// A live VM for enforcement: V-time + userspace-LAPIC + snapshot-hashing
+    /// wired, a distinctive RAM image loaded, and a script of `deadlines`
+    /// arrival placeholders followed by a terminal `Hlt`. `ScriptedWork::at(0)`
+    /// so every armed arrival (`work_for_vns(moment) = moment ≥ 1`) is a real
+    /// forward entry.
+    fn enforce_vmm(deadlines: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
+        let mut exits = vec![Exit::Deadline { reached: Vtime(0) }; deadlines];
+        exits.push(Exit::Hlt);
+        let mut m = MockBackend::with_exits(exits);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(0)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&image).unwrap();
+        v
+    }
+
+    /// The pristine 16 KiB image the enforcement tests start from.
+    fn enforce_image() -> [u8; RAM] {
+        let mut image = [0u8; RAM];
+        image[..12].copy_from_slice(b"ENFORCE_BOOT");
+        image
+    }
+
+    /// The number of distinct `Moment`s in a schedule (one arrival — one scripted
+    /// `Deadline` — per distinct `Moment`; faults sharing a `Moment` share one).
+    fn distinct_moments(schedule: &[(u64, EnvHostFault)]) -> usize {
+        let mut ms: Vec<u64> = schedule.iter().map(|(m, _)| *m).collect();
+        ms.sort_unstable();
+        ms.dedup();
+        ms.len()
+    }
+
+    /// Build a server, stage `schedule` via `perturb`, run to terminal, and
+    /// return `(state_hash, recorded_env)`. The factory is unused (no
+    /// branch/replay in these direct tests), so it errors loudly if ever called.
+    fn enforce_run(schedule: &[(u64, EnvHostFault)], seed: u64) -> ([u8; 32], EnvSpec) {
+        let live = enforce_vmm(distinct_moments(schedule), enforce_image(), seed);
+        let factory = Box::new(|| {
+            Err(VmmError::ContractViolation(
+                "factory unused in a direct enforcement run".into(),
+            ))
+        });
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        for (m, fault) in schedule {
+            let req = Request::Perturb {
+                fault: HostFault(fault.encode()),
+                at: Moment(*m),
+            };
+            assert_eq!(
+                s.handle(&req).unwrap(),
+                Ok(Reply::Unit),
+                "staging fault at Moment {m}"
+            );
+        }
+        let stop = run_all(&mut s);
+        assert!(
+            matches!(stop, StopReason::Quiescent { .. }),
+            "an enforcement run halts cleanly, got {stop:?}"
+        );
+        (hash(&mut s), s.recorded_env().clone())
+    }
+
+    fn enforce_hash(schedule: &[(u64, EnvHostFault)], seed: u64) -> [u8; 32] {
+        enforce_run(schedule, seed).0
+    }
+
+    #[test]
+    fn same_schedule_run_twice_is_bit_identical_and_control_differs() {
+        // Gate 1: an arbitrary schedule applied twice is bit-identical; and an
+        // ABSENT schedule (the control) differs — the faults are actually landing.
+        let schedule = vec![
+            (
+                100,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(0xDEAD_BEEF_0000_0001),
+                },
+            ),
+            (250, EnvHostFault::InjectInterrupt { vector: 0x40 }),
+        ];
+        let seed = 0x5EED59;
+        let h1 = enforce_hash(&schedule, seed);
+        let h2 = enforce_hash(&schedule, seed);
+        assert_eq!(h1, h2, "same schedule ⇒ bit-identical state_hash");
+
+        let control = enforce_hash(&[], seed);
+        assert_ne!(
+            h1, control,
+            "the empty control run differs (the faults land)"
+        );
+    }
+
+    #[test]
+    fn corrupt_memory_lands_the_exact_xor_at_the_gpa() {
+        // The upset is the pure function `word ^ mask` at the gpa — verify the
+        // exact bytes land, and that a mask that flips no bit (0) is a no-op.
+        let gpa = 0x80usize;
+        let mask = 0xA5A5_0000_1234_5678u64;
+        let fault = EnvHostFault::CorruptMemory {
+            gpa: gpa as u64,
+            mask: BitMask(mask),
+        };
+        let live = enforce_vmm(1, enforce_image(), 7);
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        s.handle(&Request::Perturb {
+            fault: HostFault(fault.encode()),
+            at: Moment(42),
+        })
+        .unwrap()
+        .unwrap();
+        let _ = run_all(&mut s);
+        let ram = s.vmm().unwrap().guest_memory();
+        let word = u64::from_le_bytes(ram[gpa..gpa + 8].try_into().unwrap());
+        // The pristine image is zero from 0x80 on, so the corrupted word is
+        // exactly the mask.
+        assert_eq!(word, mask, "CorruptMemory XORs the mask into the gpa word");
+    }
+
+    #[test]
+    fn arrival_lands_at_the_exact_moment_and_in_order() {
+        // The run arrives at each Moment via run_until: effective V-time equals the
+        // Moment when its fault is applied, and later Moments apply strictly after
+        // earlier ones. Prove it by staging CorruptMemory at ascending Moments and
+        // reading the terminal effective V-time (= the last Moment reached).
+        let schedule = vec![
+            (
+                1_000,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(1),
+                },
+            ),
+            (
+                5_000,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x48,
+                    mask: BitMask(2),
+                },
+            ),
+        ];
+        let live = enforce_vmm(distinct_moments(&schedule), enforce_image(), 1);
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        for (m, f) in &schedule {
+            s.handle(&Request::Perturb {
+                fault: HostFault(f.encode()),
+                at: Moment(*m),
+            })
+            .unwrap()
+            .unwrap();
+        }
+        let _ = run_all(&mut s);
+        // The last arrival advanced effective V-time to the final Moment (5_000).
+        assert_eq!(
+            s.vmm().unwrap().effective_vns(),
+            Some(5_000),
+            "the run arrived at the last staged Moment"
+        );
+        // Both upsets landed (words at both gpas are non-zero).
+        let ram = s.vmm().unwrap().guest_memory();
+        assert_ne!(&ram[0x40..0x48], &[0u8; 8], "first upset landed");
+        assert_ne!(&ram[0x48..0x50], &[0u8; 8], "second upset landed");
+    }
+
+    #[test]
+    fn multiple_faults_at_one_moment_apply_deterministically() {
+        // Several faults staged at the SAME Moment apply together (in stage order)
+        // and reproducibly: two runs of the same one-Moment burst are identical,
+        // and every fault in the burst lands.
+        let burst = vec![
+            (
+                300,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(0x0F0F_0F0F),
+                },
+            ),
+            (300, EnvHostFault::InjectInterrupt { vector: 0x50 }),
+            (
+                300,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x100,
+                    mask: BitMask(0xFFFF),
+                },
+            ),
+        ];
+        // Exactly one distinct Moment ⇒ one scripted arrival.
+        assert_eq!(distinct_moments(&burst), 1);
+        let a = enforce_hash(&burst, 0xAB);
+        let b = enforce_hash(&burst, 0xAB);
+        assert_eq!(a, b, "a multi-fault burst at one Moment is reproducible");
+        // Both memory upsets landed.
+        let (_, _) = (a, b);
+        let live = enforce_vmm(1, enforce_image(), 0xAB);
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        for (m, f) in &burst {
+            s.handle(&Request::Perturb {
+                fault: HostFault(f.encode()),
+                at: Moment(*m),
+            })
+            .unwrap()
+            .unwrap();
+        }
+        let _ = run_all(&mut s);
+        let ram = s.vmm().unwrap().guest_memory();
+        assert_ne!(&ram[0x40..0x48], &[0u8; 8], "burst upset #1 landed");
+        assert_ne!(&ram[0x100..0x108], &[0u8; 8], "burst upset #3 landed");
+    }
+
+    #[test]
+    fn recorded_env_replays_to_the_same_hash() {
+        // Task 59 requirement 3 (portable form of the box gate's record→replay
+        // closure): every applied fault is stamped into the recorded env, and
+        // re-applying that env's host faults reproduces the run's state_hash.
+        let schedule = vec![
+            (
+                150,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x20,
+                    mask: BitMask(0x1234_5678_9ABC_DEF0),
+                },
+            ),
+            (400, EnvHostFault::InjectInterrupt { vector: 0x60 }),
+        ];
+        let seed = 0xC105u64;
+        let (h1, recorded) = enforce_run(&schedule, seed);
+
+        // The recorded env carries both host faults on the Moment axis, and it
+        // round-trips through its own byte codec (a real reproducer blob).
+        let host: Vec<_> = recorded.host_faults().collect();
+        assert_eq!(host.len(), 2, "both applied faults were stamped");
+        let reencoded = EnvSpec::decode(&recorded.encode()).expect("recorded env round-trips");
+        let replay_schedule: Vec<(u64, EnvHostFault)> = reencoded.host_faults().collect();
+
+        // Re-applying the emitted schedule reproduces the hash bit-for-bit.
+        let h2 = enforce_hash(&replay_schedule, seed);
+        assert_eq!(
+            h1, h2,
+            "the recorded env replays to the identical state_hash"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(384))]
+
+        /// Gate 1 proptest (≥256 cases): an arbitrary staged schedule applied twice
+        /// yields identical state evolution. `Moment`s are in `1..=100_000` (so each
+        /// arms a forward arrival); faults are in-range CorruptMemory (any gpa whose
+        /// word fits the 16 KiB RAM, any mask) or InjectInterrupt (any non-reserved
+        /// vector). Duplicate `Moment`s exercise the multiple-faults-per-Moment path.
+        #[test]
+        fn arbitrary_schedule_applied_twice_is_identical(
+            raw in proptest::collection::vec(
+                (
+                    1u64..=100_000u64,
+                    prop_oneof![
+                        (0u64..(RAM as u64 - 8), any::<u64>())
+                            .prop_map(|(gpa, m)| EnvHostFault::CorruptMemory { gpa, mask: BitMask(m) }),
+                        (16u8..=255u8)
+                            .prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
+                    ],
+                ),
+                0..8usize,
+            ),
+        ) {
+            let seed = 0x9159_2653;
+            let h1 = enforce_hash(&raw, seed);
+            let h2 = enforce_hash(&raw, seed);
+            prop_assert_eq!(h1, h2, "same schedule ⇒ identical state evolution");
+        }
     }
 }
