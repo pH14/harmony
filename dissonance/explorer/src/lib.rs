@@ -4,7 +4,7 @@
 //! `explorer` is **all of dissonance policy**: the brain that drives a
 //! deterministic guest through many environments to find bugs. Task 12 built the
 //! engine; task 64 decomposed its god-object `Strategy` into the **search-plane
-//! trait spine** ([`mod@spine`]) every later signal/search/oracle task
+//! trait spine** (`spine.rs`) every later signal/search/oracle task
 //! implements, and generalized its AFL-shaped corpus into a cell [`Archive`].
 //! Mutation lives **here**, never in the wire (the AFL lesson): the engine
 //! ferries an opaque, versioned [`Environment`] blob and mutates it only through

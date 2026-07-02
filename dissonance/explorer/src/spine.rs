@@ -7,7 +7,7 @@
 //! search policies (task 70) implement [`Selector`], entropy tactics (tasks
 //! 71/72) implement [`Tactic`], and oracles (task 75) implement [`Oracle`]. The
 //! engine composes them; the behavior-equivalence defaults live in
-//! [`crate::defaults`].
+//! `defaults.rs`.
 //!
 //! ## The organizing split (docs/EXPLORATION.md)
 //!
