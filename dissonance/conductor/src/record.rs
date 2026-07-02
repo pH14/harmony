@@ -428,14 +428,20 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
 ///    `state_hash` (**guest-state** reproducibility, mirroring the task-58 sweep),
 ///    one `TraceId`, and byte-identical journal bytes; fewer than two runs cannot
 ///    demonstrate it.
-/// 2. **Divergence** — at least `min_distinct` distinct **`state_hash`es** across
-///    seeds. This is the strong guest-state property: `--record`'s journal
-///    byte-identity alone proves only console/terminal determinism, not that the
-///    seed reached a distinct *machine state* (an RDRAND-seeding regression would
-///    leave console identical yet is caught here). The `state_hash` is the same
-///    primitive the sweep gates on, captured at the same point; `TraceId`
-///    (`blake3(env)`) and the journal digest both embed the seed and so diverge
-///    *by construction* — they cannot certify this.
+/// 2. **Divergence** — two checks, both required:
+///    - at least `min_distinct` distinct **`state_hash`es** across seeds — the
+///      strong guest-state property: `--record`'s journal byte-identity alone
+///      proves only console/terminal determinism, not that the seed reached a
+///      distinct *machine state* (an RDRAND-seeding regression would leave the
+///      console identical yet is caught here); the same primitive the sweep gates
+///      on, captured at the same point;
+///    - at least `min_distinct` distinct **`TraceId`s** across seeds — the spec's
+///      letter (gate 6: "≥2 distinct TraceIds"). `TraceId = blake3(env)` diverges
+///      *by construction*, so a collapse here means the envs folded across seeds
+///      (a regression that stops embedding the seed, or coincident terminal
+///      vtimes) — the content-addressed store would silently fold N seeds into one
+///      reproducer, losing env-only replay of the rest. A construction sanity
+///      check that must not be dropped.
 /// 3. **Non-empty, monotone records.**
 ///
 /// The lossless-reload / re-derive half of gate 3 is [`verify_store_reload`], a
@@ -491,9 +497,8 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
         }
     }
 
-    // Divergence over the guest-state hash — the strong property (not the
-    // env-derived TraceId, nor the env-bearing journal digest, both of which
-    // diverge by construction).
+    // Divergence over the guest-state hash — the STRONG property (the journal
+    // digest and TraceId both embed the seed and so diverge by construction).
     let mut distinct: Vec<[u8; 32]> = report.rows.iter().map(|r| r.state_hash).collect();
     distinct.sort_unstable();
     distinct.dedup();
@@ -502,6 +507,21 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
             "only {} distinct state_hash(es) across {} seeds (need >= {min_distinct}) — guest \
              states did not diverge",
             distinct.len(),
+            by_seed.len()
+        ));
+    }
+
+    // AND the spec's letter: ≥ min_distinct distinct TraceIds. Diverges by
+    // construction, so a collapse means envs folded across seeds — the store
+    // would silently merge N reproducers into one, losing env-only replay.
+    let mut distinct_ids: Vec<TraceId> = report.rows.iter().map(|r| r.trace_id).collect();
+    distinct_ids.sort_unstable();
+    distinct_ids.dedup();
+    if distinct_ids.len() < min_distinct {
+        failures.push(format!(
+            "only {} distinct TraceId(s) across {} seeds (need >= {min_distinct}) — envs folded \
+             (reproducers collapsed in the content-addressed store)",
+            distinct_ids.len(),
             by_seed.len()
         ));
     }

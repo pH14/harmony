@@ -223,6 +223,52 @@ fn verify_record_flags_non_diverging_guest_state() {
 }
 
 #[test]
+fn verify_record_flags_folded_reproducers() {
+    // Mirror non-vacuity of the TraceId divergence gate (the spec's letter): the
+    // guest states diverge across seeds, but the envs (hence TraceIds) collapsed
+    // to one — the content-addressed store would fold N reproducers into one,
+    // losing env-only replay. Must FAIL the TraceId check even though the
+    // state_hash divergence passes.
+    use conductor::record::{RecordReport, RecordedRun};
+    use explorer::{StopReason, VTime};
+    let row = |seed: u64, run: usize, hash_byte: u8| RecordedRun {
+        seed,
+        run,
+        trace_id: runtrace::TraceId([0x11; 32]), // SAME across every seed — envs folded
+        stop: StopReason::Quiescent { vtime: VTime(1) },
+        state_hash: [hash_byte; 32], // distinct per seed — guest states DO diverge
+        records_len: 1,
+        journal_len: 10,
+        journal_digest: [hash_byte; 32],
+        retained: true,
+        stamps_monotone: true,
+        journal_matches_first_run: true,
+        console_head: vec![],
+    };
+    let report = RecordReport {
+        snapshot_vtime: 0,
+        rows: vec![
+            row(0x1111, 0, 0xA),
+            row(0x1111, 1, 0xA),
+            row(0x2222, 0, 0xB),
+            row(0x2222, 1, 0xB),
+        ],
+    };
+    let failures = verify_record(&report, 2);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("TraceId(s)") && f.contains("folded")),
+        "collapsed TraceIds across seeds must fail divergence, got {failures:?}"
+    );
+    // The failure is specifically the TraceId check — state_hash divergence passes.
+    assert!(
+        !failures.iter().any(|f| f.contains("state_hash(es)")),
+        "state_hash divergence should pass (distinct hashes), got {failures:?}"
+    );
+}
+
+#[test]
 fn verify_store_reload_catches_a_missing_retained_journal() {
     // Non-vacuity: the reload gate must actually LOAD each retained journal, not
     // merely check presence. Delete one behind the loop's back and confirm the
