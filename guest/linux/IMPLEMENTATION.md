@@ -842,3 +842,32 @@ that file's doc comment, and `consonance/vmm-core/IMPLEMENTATION.md` Task 36 not
 - The config is intentionally *larger* than minimal (Kata's full container-host set incl.
   XFS/EROFS/CIFS/netfilter/virtio/mlx5). Per the task this is accepted — minimization is not
   load-bearing for determinism, and the extra drivers are dormant (no device to bind).
+
+## Task 60 — the Postgres-campaign image (planted, fault-triggerable bug)
+
+`build-campaign-image.sh` (Makefile target `campaign-image`) builds
+`initramfs-campaign.cpio.gz`: the task-37 bare-Postgres image **plus** a static supervised process
+`campaign-super` (compiled from `campaign-super.c`) and the `campaign-init.sh` `/init` that runs it.
+Everything else — the pinned PostgreSQL 17 .debs, the determinism overlay, the fixed-UUID ext4, the
+reproducible cpio packing — is `build-postgres-image.sh` verbatim, so the campaign image inherits task
+37's determinism closure. **No kernel change**: the companion bzImage is the unchanged task-36
+container-class kernel (`mmap`/`mlock`/`ioperm`/`DEVPORT` are already available — the foreman verifies
+on the box), so the kernel golden (`MANIFEST.sha256`) is untouched.
+
+**The planted bug** (the campaign's target, task 60). `campaign-super` keeps a small **ledger** (a
+canary + a signed retry budget) in a fixed-address, `mlock`'d guest page — a deterministic guest-
+physical address (nokaslr + `MAP_FIXED` + `MAP_POPULATE`) the campaign's `CorruptMemory` fault can find
+by searching. It prints `CAMPAIGN_READY` (the base-snapshot marker — mid-workload, post the ambient
+Postgres workload), then runs a bounded, deterministic retry loop whose bookkeeping invariant (canary
+intact, `0 ≤ budget < BUDGET_MAX`) holds on every nominal iteration. A **single-event upset** — a host
+`CorruptMemory` that flips the budget's sign bit or the canary at a `Moment` inside the loop — is the
+only way to reach the guarded branch, which the supervisor reports over the serial
+(`CAMPAIGN_BUG: …`) and then terminates through **isa-debug-exit** (`OUT 0x60, 0xF4` →
+`Crash{Panic}`). No upset ⇒ `CAMPAIGN_DONE` + a forced reboot ⇒ `Crash{Shutdown}` (the benign clean
+terminal). The full trigger conditions, the crash-oracle mapping, the search-space tuning, and the box
+runbook are in **`dissonance/conductor/IMPLEMENTATION.md` §"Task 60"**.
+
+Bring-up aid: boot with `CAMPAIGN_DEBUG=1` in the environment and `campaign-super` prints
+`CAMPAIGN_LEDGER_GPA:` (read via `/proc/self/pagemap`, needs root/CAP_SYS_ADMIN), so the operator can
+scope `conductor campaign box --gpa-*` tightly. This is box-built and box-validated by the foreman
+(the C is Linux-only; the shell is shellcheck-clean).

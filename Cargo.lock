@@ -191,6 +191,7 @@ dependencies = [
  "environment",
  "explorer",
  "proptest",
+ "sha2",
  "vmm-backend",
  "vmm-core",
 ]
