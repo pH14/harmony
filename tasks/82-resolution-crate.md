@@ -28,7 +28,8 @@ the socket directly; it is not a `Machine`).
 Pure-logic, macOS + Linux, laptop-gated: all tests run against an **in-crate mock server**
 (in-process loopback speaking the real codec, scripted guest behavior — the task-58 loopback
 pattern, owned here). **Box gate:** one live scenario, handed to the foreman (this is the
-delegable/box split of `docs/harmony-box-only-gates` practice).
+delegable/box split of the frontier-task convention — `tasks/00-CONVENTIONS.md` §Task classes,
+pinned per `docs/BOX-PINNING.md`).
 
 ## What to build
 

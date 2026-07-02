@@ -7,8 +7,10 @@
 > becomes the per-run drill-down beneath it (re-homed, not rebuilt — no console work in this
 > task). Pure logic over serialized campaign artifacts; no VM, no socket.
 >
-> Depends on **task 64** (the `RunTrace`/`Bug` vocabulary + declared-signal catalog it consumes)
-> and **task 60** (a real campaign producing artifacts worth diffing). Sequence after both.
+> Depends on **task 64** (the `RunTrace`/`Bug` vocabulary), **task 66** (the declared-signal
+> catalog + never-fired detection — the property/rarity finding kinds need the matcher stack;
+> the crash-bucket diff degrades gracefully without it), and **task 60** (a real campaign
+> producing artifacts worth diffing). Sequence after all three.
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/RESOLUTION.md` ("The human layer", the sequencing
 table), `docs/EXPLORATION.md` ("RunTrace", the matcher DSL's declared-catalog =

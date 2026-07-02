@@ -206,8 +206,8 @@ familiar surfaces win. The UI is sequenced last.
 
 ## Sequencing
 
-Task numbers 65–75 are reserved by the Wave-5 exploration queue (task 64); resolution takes
-**80–83**. Dependencies are on task 58 (the server) — not on Wave 5 — except where noted.
+Task numbers 63–76 are taken by the Wave-5 exploration queue (`docs/EXPLORATION.md`; 77–79 left
+as a gap); resolution takes **80–83**. Dependencies are on task 58 (the server) — not on Wave 5 — except where noted.
 
 | # | Task | Depends on | Delivers |
 |---|---|---|---|

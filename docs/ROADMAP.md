@@ -61,7 +61,7 @@ dissonance, an outer loop around the explorer (peer only at the socket); an inte
 search-surface iff recorded as an `Environment` `Action`; `exec`-in-fork is an **improvisation**
 (off the record, taint-guarded, exempt from the determinism discipline); instrumentation
 mutation is first-class and epoch-grained; humans steer the LLM, not the VM. Tasks **80–83**
-(numbers 65–75 are reserved by the Wave-5 exploration queue): 80 inspection verbs + the moment
+(numbers 63–76 are the Wave-5 exploration queue; 77–79 left as a gap): 80 inspection verbs + the moment
 address, 81 improvisations, 82 the `dissonance/resolution` client/REPL/transcript, 83 the
 findings diff. 80/81 hang off task 58 only; 83 waits on 60 + 64. Agent harness, rehearsal-mark
 UI, and `donate` are deliberately unspecced until the core lands.

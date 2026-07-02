@@ -9,7 +9,7 @@
 > everything in `docs/RESOLUTION.md`.
 >
 > Depends on **task 58** (the control-transport server + socket `Machine`). Independent of
-> 59/60/61 and of the Wave-5 queue (63–75).
+> 59/60/61 and of the Wave-5 queue (63–76).
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/RESOLUTION.md` ("The moment address", "The
 search-surface criterion"), `docs/DISSONANCE.md` ("The control transport (verbs)"),
