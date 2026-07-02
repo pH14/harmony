@@ -3390,3 +3390,33 @@ sequence continues), so the reproduction net spans the snapshot + error-recovery
 round-3 corners keep dedicated tests, since their triggers (a deadline overshoot to poison, a
 snapshot-while-armed, an in-place restore of an armed VM) are specific setups the random generator
 over one exact-arrival backend does not itself produce.
+
+### PR #51 round 4 — the idle-HLT jump must fold in the arrival (the last exotic seam)
+
+The one remaining hole: the idle-HLT jump (task-52 discrete-event clock) bypassed the arrival fold.
+A wired guest that HLTs (IF=1) *before* the next staged `Moment`, with its LAPIC timer deadline
+*beyond* it, had `idle_action`/`resume_idle` jump V-time straight to the timer — sailing **past** the
+fault's `Moment` — so the fault applied late (and an `InjectInterrupt` landed at the timer tick, not
+the requested `Moment`), violating the exact-arrival contract enforced everywhere on the execution
+path.
+
+**Fix (`idle_action`).** The idle jump now folds the staged arrival in exactly as `run_until_deadline`
+folds it into the run: it jumps to **`min(deliverable timer, arrival)`**, waking at whichever discrete
+event comes first. A new private `Vmm::arrival_vns()` inverts the armed arrival (stored as a work
+count) back to its `Moment`'s V-time via the same clock, so the timer's V-time deadline and the
+arrival are compared on one axis. Either alone also wakes — a host fault staged with no timer is
+itself the wake event (an idle guest whose only future event is the fault reaches it, rather than
+being declared terminal). **Strictly additive:** with no fault staged `arrival_vns()` is `None`, so
+the jump target is the timer exactly as before — every M1/M2/corpus/Linux-boot idle path is
+byte-identical. After the jump `resume_idle` clears the arm (round-3), and the run loop re-arms the
+next `Moment` — so an arrival landed via the idle path is applied by the same server drain as one
+landed via `run_until`.
+
+**Tests.** vmm.rs: `idle_hlt_before_a_staged_arrival_wakes_at_the_arrival_not_the_timer` (timer far
+beyond the arrival → the jump lands at the arrival `Moment`, not the timer) and
+`idle_hlt_with_no_timer_wakes_at_a_staged_arrival` (arrival as sole wake). control.rs:
+`idle_hlt_before_fault_recorded_env_reproduces` — a 160-case proptest mirroring the exact-arrival
+verb-sequence net but over an `IdleBackend` (`run`/`run_until` return a natural `Hlt` with `IF=1`, so
+**every** arrival is reached through the idle jump), asserting `recorded_env()` reproduces the live
+`state_hash` across random `perturb`/`run`/`branch`/`replay` sequences. This interaction is also noted
+as evidence for task 77's idle-wake-vs-IRQ arbitration unification charter.

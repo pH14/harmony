@@ -1997,6 +1997,20 @@ impl<B: Backend> Vmm<B> {
         self.vtime.is_some() && self.backend.capabilities().deterministic_tsc
     }
 
+    /// The armed host-fault arrival as an **effective V-time** (`vns`), or `None`
+    /// when nothing is armed. [`arm_arrival`](Vmm::arm_arrival) stores the arrival
+    /// as a retired-branch **work count** (`work_for_vns(moment)`); this inverts it
+    /// back to the `Moment`'s V-time via the same clock, so the idle planner can
+    /// weigh the arrival against the LAPIC timer's V-time deadline (both on the
+    /// `vns` axis) and jump to whichever comes first — see
+    /// [`idle_action`](Vmm::idle_action). Round-trips exactly under the contract
+    /// clock (`ratio_den == 1`).
+    fn arrival_vns(&self) -> Option<u64> {
+        let d = self.arrival_deadline?;
+        let vt = self.vtime.as_ref()?;
+        Some(vt.clock.snapshot_vns(d.0))
+    }
+
     /// The current **entropy-stream state** of the seeded RNG (the raw xorshift
     /// word), or `None` when V-time / the seeded stream is unwired. Because
     /// [`reseed_entropy`](Vmm::reseed_entropy) seeds via `SeededEntropy::new(seed)`
@@ -2228,14 +2242,30 @@ impl<B: Backend> Vmm<B> {
         if lapic.peek_interrupt().is_some() {
             return Ok(IdleAction::DeliverPending);
         }
-        // (b) No pending wake, but a future deliverable armed timer → jump to it.
-        if let Some(deadline_vns) = lapic.next_timer_deadline()
-            && lapic.armed_timer_deliverable()
-        {
-            return Ok(IdleAction::JumpToDeadline(deadline_vns));
+        // (b) No pending wake, but a future scheduled event → jump to the FIRST one.
+        //     Two competing discrete events wake an idle guest, and V-time must land
+        //     at whichever comes first (PR #51 round-4): the deliverable LAPIC timer
+        //     **and** a staged host-fault arrival ([`arm_arrival`](Vmm::arm_arrival)).
+        //     Jumping straight to the timer (as before) would sail *past* an arrival
+        //     `Moment` between here and the timer — applying the fault late (or
+        //     landing an `InjectInterrupt` at the timer tick, not the requested
+        //     `Moment`), breaking the exact-arrival contract enforced on the
+        //     execution path. So fold them the same way `run_until_deadline` folds
+        //     arrival into the run: jump to `min(timer, arrival)`, waking at the
+        //     arrival to apply. Either alone also wakes (an `InjectInterrupt` staged
+        //     with no timer is itself the wake event).
+        let timer = lapic
+            .next_timer_deadline()
+            .filter(|_| lapic.armed_timer_deliverable());
+        let wake = match (timer, self.arrival_vns()) {
+            (Some(t), Some(a)) => Some(t.min(a)),
+            (only, None) | (None, only) => only,
+        };
+        match wake {
+            Some(vns) => Ok(IdleAction::JumpToDeadline(vns)),
+            // Neither a pending, a timer, nor an arrival wake → terminal.
+            None => Ok(IdleAction::Terminal),
         }
-        // Neither a pending nor a future deliverable wake → terminal.
-        Ok(IdleAction::Terminal)
     }
 
     /// Resume a *resumable idle* `HLT` by **jumping** V-time to the armed timer's
@@ -5223,6 +5253,69 @@ mod tests {
             v.step().unwrap(),
             Step::Terminal(TerminalReason::Hlt)
         ));
+    }
+
+    #[test]
+    fn idle_hlt_before_a_staged_arrival_wakes_at_the_arrival_not_the_timer() {
+        // PR #51 round-4: a guest that idles (HLT, IF=1) with its LAPIC timer armed
+        // BEYOND a staged host-fault arrival must jump to the ARRIVAL `Moment` (so the
+        // fault applies there), NOT sail past it to the timer. The idle jump routes
+        // through the same min-fold as `run_until_deadline`.
+        let mut exits = arm_timer_exits(1_000_000); // a FAR one-shot timer deadline
+        exits.push(Exit::Hlt); // the guest idles before the arrival
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // arm the timer
+        }
+        let timer_vns = v.armed_timer_deadline_vns().expect("timer armed");
+        let m = timer_vns / 2; // an arrival strictly before the timer
+        assert!(
+            m > 0 && m < timer_vns,
+            "arrival is a future point before the timer"
+        );
+        assert!(v.arm_arrival(m), "arms the arrival");
+
+        // The idle HLT jumps to the ARRIVAL, not the (far) timer.
+        assert!(matches!(v.step().unwrap(), Step::Continued), "idle resumes");
+        assert_eq!(
+            v.idle_landings(),
+            &[m],
+            "V-time jumped to the arrival Moment, not the far timer"
+        );
+        assert_eq!(
+            v.effective_vns(),
+            Some(m),
+            "effective V-time is exactly the arrival Moment (the fault can apply here)"
+        );
+    }
+
+    #[test]
+    fn idle_hlt_with_no_timer_wakes_at_a_staged_arrival() {
+        // A staged arrival is a wake event in its own right: a guest that idles
+        // (HLT, IF=1) with NO timer but a staged host fault wakes at the arrival
+        // `Moment` (so e.g. a host-injected interrupt lands there) rather than being
+        // declared terminal.
+        let mut v = lapic_vmm(
+            {
+                let mut m = configured_mock(vec![Exit::Hlt]);
+                m.set_state(if_set_state());
+                m
+            },
+            Box::new(ScriptedWork::at(0)),
+        );
+        assert!(
+            v.armed_timer_deadline_vns().is_none(),
+            "no timer armed in this test"
+        );
+        assert!(v.arm_arrival(4242), "arms the arrival");
+        assert!(
+            matches!(v.step().unwrap(), Step::Continued),
+            "the idle HLT wakes at the arrival instead of terminating"
+        );
+        assert_eq!(v.idle_landings(), &[4242]);
+        assert_eq!(v.effective_vns(), Some(4242));
     }
 
     #[test]

@@ -2323,16 +2323,16 @@ mod tests {
         ControlServer::new(live, Box::new(|| Ok(arrival_vmm(0x59))))
     }
 
-    fn arr_hello(s: &mut ControlServer<ArrivalBackend>) {
+    fn arr_hello<B: Backend>(s: &mut ControlServer<B>) {
         assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
     }
-    fn arr_snap(s: &mut ControlServer<ArrivalBackend>) -> SnapId {
+    fn arr_snap<B: Backend>(s: &mut ControlServer<B>) -> SnapId {
         match s.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::SnapId(id)) => id,
             other => panic!("snapshot: {other:?}"),
         }
     }
-    fn arr_run(s: &mut ControlServer<ArrivalBackend>) -> Result<Reply, ControlError> {
+    fn arr_run<B: Backend>(s: &mut ControlServer<B>) -> Result<Reply, ControlError> {
         s.handle(&Request::Run {
             until: StopConditions {
                 deadline: None,
@@ -2342,7 +2342,7 @@ mod tests {
         })
         .unwrap()
     }
-    fn arr_hash(s: &ControlServer<ArrivalBackend>) -> [u8; 32] {
+    fn arr_hash<B: Backend>(s: &ControlServer<B>) -> [u8; 32] {
         s.vmm().unwrap().state_hash()
     }
 
@@ -2645,6 +2645,202 @@ mod tests {
                 policy: FaultPolicy::none(),
             }
             .encode(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR #51 round-4 — the idle-HLT-before-fault path: a staged arrival must wake
+    // the idle jump (jump to min(timer, arrival)) rather than sail past the Moment.
+    // -----------------------------------------------------------------------
+
+    /// A mock-wrapping backend whose guest is a **resumable idle**: `run`/`run_until`
+    /// always return a natural `Hlt` and the vCPU has `RFLAGS.IF` set, so every
+    /// arrival is reached through the idle-jump path (`on_hlt` → `idle_action` →
+    /// jump to `min(timer, arrival)`) instead of a `run_until` `Deadline`. No timer
+    /// is armed, so the staged host-fault arrival is the sole wake event; with
+    /// `CorruptMemory`-only faults (no IRR raise) the run idles Moment-to-Moment and
+    /// terminates cleanly once the schedule drains. `deterministic_tsc` is `true`.
+    struct IdleBackend(MockBackend);
+    impl Backend for IdleBackend {
+        fn set_cpuid(&mut self, m: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
+            self.0.set_cpuid(m)
+        }
+        fn set_msr_filter(&mut self, f: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
+            self.0.set_msr_filter(f)
+        }
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: forwards to the inner mock, which only records the region.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit> {
+            Ok(Exit::Hlt)
+        }
+        fn run_until(&mut self, _d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+            // The guest idles (a natural HLT) before any deadline — the arrival is
+            // reached through the idle jump, not a run_until Deadline.
+            Ok(Exit::Hlt)
+        }
+        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+            self.0.inject(e)
+        }
+        fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(v)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, v: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(v)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(rax)
+        }
+        fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
+            self.0.complete_cpuid(a, b, c, d)
+        }
+        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.0.save()
+        }
+        fn restore(&mut self, s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.0.restore(s)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities {
+            self.0.capabilities()
+        }
+    }
+
+    fn idle_vmm(seed: u64) -> Vmm<IdleBackend> {
+        let mut m = MockBackend::with_exits(vec![]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        // RFLAGS.IF set → a resumable idle HLT (0x2 is the always-1 reserved bit).
+        m.set_state(vmm_backend::VcpuState {
+            regs: vmm_backend::VcpuRegs {
+                rflags: (1 << 9) | 0x2,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut v = Vmm::new(IdleBackend(m), GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(0)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&enforce_image()).unwrap();
+        v
+    }
+
+    fn idle_server() -> ControlServer<IdleBackend> {
+        ControlServer::new(idle_vmm(0x1D1E), Box::new(|| Ok(idle_vmm(0x1D1E))))
+    }
+
+    fn idle_seeded_env(seed: u64) -> Environment {
+        Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: EnvSpec::Seeded {
+                seed,
+                policy: FaultPolicy::none(),
+            }
+            .encode(),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum IdleOp {
+        Perturb(u64, u64), // gpa, moment-offset
+        Run,
+        Branch(u64),
+        Replay,
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(160))]
+
+        /// HLT-before-fault reproduction net (PR #51 round-4): the same
+        /// recorded-env-reproduces invariant as the exact-arrival proptest, but every
+        /// arrival is reached through the **idle jump** (the guest HLTs before each
+        /// staged `Moment`; `idle_action` wakes at the arrival). `CorruptMemory`-only
+        /// (an idle guest with no timer terminates cleanly once the schedule drains),
+        /// verbs `perturb`/`run`/`branch`/`replay`, all from a fixed base snapshot.
+        #[test]
+        fn idle_hlt_before_fault_recorded_env_reproduces(ops in prop::collection::vec(
+            prop_oneof![
+                (0u64..(RAM as u64 - 8), 1u64..=400).prop_map(|(g, off)| IdleOp::Perturb(g, off)),
+                Just(IdleOp::Run),
+                (1u64..=8).prop_map(IdleOp::Branch),
+                Just(IdleOp::Replay),
+            ],
+            1..12,
+        )) {
+            let mut s = idle_server();
+            arr_hello(&mut s);
+            let base = arr_snap(&mut s);
+            for op in ops {
+                match op {
+                    IdleOp::Perturb(gpa, off) => {
+                        let floor = s.vmm().unwrap().effective_vns().unwrap_or(0);
+                        let at = floor.saturating_add(off);
+                        let _ = s.handle(&Request::Perturb {
+                            fault: HostFault(EnvHostFault::CorruptMemory { gpa, mask: BitMask(0xA5A5_5A5A) }.encode()),
+                            at: Moment(at),
+                        }).unwrap();
+                    }
+                    IdleOp::Run => {
+                        match arr_run(&mut s) {
+                            Ok(Reply::Stop(_)) => {
+                                let e = s.recorded_env().clone();
+                                let h_live = arr_hash(&s);
+                                let mut r = idle_server();
+                                arr_hello(&mut r);
+                                let base_r = arr_snap(&mut r);
+                                r.handle(&Request::Branch {
+                                    snap: base_r,
+                                    env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
+                                }).unwrap().unwrap();
+                                prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+                                prop_assert_eq!(h_live, arr_hash(&r), "idle-path recorded_env() must reproduce the live hash");
+                            }
+                            Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
+                            Err(_) => { /* loud rejection — skip */ }
+                        }
+                    }
+                    IdleOp::Branch(seed) => {
+                        let _ = s.handle(&Request::Branch { snap: base, env: idle_seeded_env(seed) }).unwrap();
+                    }
+                    IdleOp::Replay => {
+                        let _ = s.handle(&Request::Replay(base)).unwrap();
+                    }
+                }
+            }
         }
     }
 }
