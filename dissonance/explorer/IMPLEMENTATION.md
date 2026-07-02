@@ -88,8 +88,9 @@ zero-payload test and a mid-stream round-trip test.
 ## Gates (all green, macOS)
 
 - Standard suite: `cargo build/nextest/clippy(-D warnings, --all-targets)/fmt
-  -p explorer --all-features`, `cargo deny check`. 57 tests (unit +
-  integration), suite ≈ 0.8 s; rustdoc builds warning-free. (Clippy still
+  -p explorer --all-features`, `cargo deny check`. 78 tests (unit +
+  integration, the task-58 adapter suite included), suite ≈ 0.8 s; rustdoc
+  builds warning-free. (Clippy still
   surfaces the three *pre-existing* workspace
   `clippy.toml` meta-diagnostics about `rand::*` paths pulled in by proptest;
   they cite no code here and do not fail `-D warnings`.)
@@ -257,7 +258,7 @@ zero-payload test and a mid-stream round-trip test.
 ## Mutation testing
 
 `cargo mutants --no-shuffle --in-diff <branch diff>` (the CI `mutants` job's
-exact invocation): **91 mutants tested, 0 missed** (74 caught, 17 unviable —
+exact invocation): **97 mutants tested, 0 missed** at the round-1 head (78 caught, 19 unviable —
 `Default::default()` substitutions on types without `Default`, e.g. `Answer`,
 deliberately non-`Default` per the task-12 note). The golden pins
 (xorshift64\* sequence, fingerprint digest, AFL bucket ranges, `IdentityCells`
