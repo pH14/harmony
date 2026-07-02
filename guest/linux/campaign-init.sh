@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # /init of the **Postgres-campaign workload image** (task 60). It is the task-37
 # bare-Postgres init (guest/linux/pg-init.sh) plus the planted-bug supervisor
 # `campaign-super`: bring up the kernel filesystems, run the deterministic

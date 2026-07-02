@@ -241,11 +241,23 @@ impl Machine for ToyPlantedMachine {
                 vtime: VTime(self.vtime),
             });
         }
+        // Where the terminal would land. If a (future) deadline falls *before*
+        // it, the real `Machine` stops at the deadline, not the terminal — so
+        // the toy must too (mock fidelity is what the portable gate certifies).
+        // Advance to the deadline and return `Deadline`, leaving the run
+        // resumable exactly as the real substrate would.
+        let terminal_vtime = self.vtime.saturating_add(self.terminal_offset());
+        if let Some(d) = until.deadline
+            && d.0 < terminal_vtime
+        {
+            self.vtime = d.0;
+            return Ok(StopReason::Deadline { vtime: VTime(d.0) });
+        }
         // Advance to the guest's terminal. The supervised process aborts iff the
         // planted single-event upset is staged (the bug); otherwise the workload
         // reaches its ordinary reboot terminal.
         let bug = self.triggered();
-        self.vtime = self.vtime.saturating_add(self.terminal_offset());
+        self.vtime = terminal_vtime;
         let info = if bug {
             // isa-debug-exit FAIL on the box (Crash{Panic}); the `0x60` marker
             // byte is the task-60 planted-crash tag in the detail.
@@ -417,6 +429,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **Mock fidelity** (the portable gate certifies the toy's `StopConditions`
+    /// semantics): a FUTURE deadline that falls *before* the run's terminal makes
+    /// the toy stop at `Deadline` (V-time = the deadline) exactly as the real
+    /// `Machine` would — it does not overshoot to the terminal. A deadline
+    /// at/after the terminal still reaches the terminal.
+    #[test]
+    fn a_future_deadline_before_the_terminal_stops_there() {
+        let mut m = ToyPlantedMachine::new(trigger());
+        let b = base(&mut m);
+        // A non-triggering env whose terminal advances >= 2 past the base, so an
+        // interior future deadline exists. Deterministic search over fixed seeds
+        // (offset is 1 only when the env hash is a multiple of 4096 — rare).
+        let (env, terminal) = (0u64..64)
+            .find_map(|s| {
+                let e = fault_env(0x2000, 1 << (s % 8), BASE_VTIME + (s % 4));
+                m.branch(b, &e).unwrap();
+                let t = m.run(&StopConditions::default(), None).unwrap().vtime().0;
+                (t >= BASE_VTIME + 2).then_some((e, t))
+            })
+            .expect("an env whose terminal advances >= 2");
+
+        // A deadline strictly inside (base, terminal): stop AT the deadline.
+        let deadline = terminal - 1;
+        let until = StopConditions {
+            deadline: Some(VTime(deadline)),
+            ..StopConditions::default()
+        };
+        m.branch(b, &env).unwrap();
+        assert_eq!(
+            m.run(&until, None).unwrap(),
+            StopReason::Deadline {
+                vtime: VTime(deadline)
+            },
+            "a future deadline before the terminal must stop at the deadline, not overshoot"
+        );
+
+        // A deadline at/after the terminal still reaches the terminal (a Crash).
+        let until_far = StopConditions {
+            deadline: Some(VTime(terminal + 100)),
+            ..StopConditions::default()
+        };
+        m.branch(b, &env).unwrap();
+        assert!(matches!(
+            m.run(&until_far, None).unwrap(),
+            StopReason::Crash { .. }
+        ));
     }
 
     /// Distinct reproducers diverge to distinct `state_hash`es (so the search

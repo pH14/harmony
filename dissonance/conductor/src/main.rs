@@ -68,6 +68,13 @@ enum CampaignMode {
     Box(CampaignBoxArgs),
 }
 
+/// The task-60 milestone replay bar: the emitted reproducer must replay the
+/// identical crash (same `state_hash` at the terminal stop) **25/25** (spec gate
+/// 1). The `--replay-n` flag may only **raise** this bar, never lower it — a
+/// `--replay-n 1` run must not be able to print `GATES PASS` at 1/1 below the
+/// spec, so every campaign path floors `replay_n` at `REPLAY_BAR`.
+const REPLAY_BAR: usize = 25;
+
 /// Shared campaign knobs (both modes).
 #[derive(Parser)]
 struct CampaignArgs {
@@ -75,9 +82,10 @@ struct CampaignArgs {
     /// this many branches (a no-find is a gate failure, never a silent pass).
     #[arg(long, default_value_t = 4096)]
     max_branches: u64,
-    /// Replays of the emitted reproducer to prove bit-identical reproduction —
-    /// the milestone bar is 25.
-    #[arg(long, default_value_t = 25)]
+    /// Replays of the emitted reproducer to prove bit-identical reproduction.
+    /// Floored at the spec's [`REPLAY_BAR`] (25) — the flag may raise the bar,
+    /// never lower it.
+    #[arg(long, default_value_t = REPLAY_BAR)]
     replay_n: usize,
     /// The campaign stream seed. The whole campaign is a pure function of it, so
     /// a rerun explores the identical branch sequence.
@@ -203,7 +211,8 @@ fn main() -> ExitCode {
 fn run_campaign_mock(args: CampaignArgs) -> ExitCode {
     let cfg = CampaignConfig {
         max_branches: args.max_branches,
-        replay_n: args.replay_n.max(1),
+        // Floor at the spec bar (25/25): the flag can raise it, never lower it.
+        replay_n: args.replay_n.max(REPLAY_BAR),
         campaign_seed: args
             .campaign_seed
             .unwrap_or(CampaignConfig::toy().campaign_seed),
@@ -361,7 +370,12 @@ mod boxrun {
     use std::io::Write;
     use std::process::ExitCode;
 
-    use conductor::campaign::{CampaignConfig, run_campaign};
+    // Aliased: the module's own `pub fn run_campaign` (the box entry point)
+    // would otherwise collide with the imported campaign loop (E0255), and the
+    // call below would silently resolve to the 1-arg local fn (E0061). This code
+    // is `cfg(target_os = "linux")`, so the collision is invisible to a Mac
+    // `cargo check` — the Linux-target check in the gate list catches it.
+    use conductor::campaign::{CampaignConfig, run_campaign as run_campaign_loop};
     use conductor::{SweepConfig, run_session, sweep_client};
     use environment::{EnvSpec, FaultPolicy};
     use explorer::SpecEnvCodec;
@@ -609,7 +623,8 @@ mod boxrun {
                 .campaign_seed
                 .unwrap_or(CampaignConfig::toy().campaign_seed),
             max_branches: args.campaign.max_branches,
-            replay_n: args.campaign.replay_n.max(1),
+            // Floor at the spec bar (25/25): the flag can raise it, never lower it.
+            replay_n: args.campaign.replay_n.max(super::REPLAY_BAR),
             deadline_delta: Some(args.deadline_delta),
             gpa_candidates,
             moment_window: (args.window_lo, args.window_hi),
@@ -633,7 +648,7 @@ mod boxrun {
         );
         let (served, client) = run_session(&mut server, move |stream| {
             let mut machine = SocketMachine::connect(stream, initial)?;
-            run_campaign(&mut machine, &SpecEnvCodec, &cfg)
+            run_campaign_loop(&mut machine, &SpecEnvCodec, &cfg)
         });
         let report = match client {
             Ok(r) => r,

@@ -121,7 +121,14 @@ int main(void)
         // it from ever being reclaimed (there is no swap here anyway).
         perror("campaign-super: mlock (non-fatal)");
     }
-    struct ledger *l = (struct ledger *)p;
+    // VOLATILE is load-bearing: the ledger is mutated from OUTSIDE this
+    // translation unit (a host-side `CorruptMemory` fault flips `canary`/`budget`
+    // while the loop runs), so nothing the compiler can see writes them after
+    // init. Without `volatile`, `-O2` may hoist `l->canary != CANARY` to a
+    // constant and keep `budget` in a register — silently deleting the planted
+    // bug's guards (the whole milestone mechanism). `volatile` forces a real
+    // memory load on every access, so the injected flip is observed.
+    volatile struct ledger *l = (volatile struct ledger *)p;
     l->canary = CANARY;
     l->budget = 0;
 
@@ -136,7 +143,9 @@ int main(void)
 
     // The bounded, deterministic retry loop. The two guards below are the
     // planted invariant: true on every nominal iteration, so the guarded
-    // branches are dead code — until a single-event upset makes one fire.
+    // branches are dead code — until a single-event upset makes one fire. Every
+    // `l->` access is a volatile load/store (above), so the guards are never
+    // optimized out and the host's flip is always seen.
     for (long i = 0; i < ITERS; i++) {
         if (l->canary != CANARY) {
             report_bug_and_die("canary");

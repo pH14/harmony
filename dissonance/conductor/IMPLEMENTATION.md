@@ -383,7 +383,7 @@ branches explored: <B>   wall-clock: <…>   branches/hour: <…>   (D5 trigger)
 
 ### Gate 3 — standard suite + existing gates byte-identical: **PASS**
 
-`build` / `nextest` (28 tests: 12 lib, 4 campaign, 6 oracle-proptest, 6 pre-existing task-58 loopback +
+`build` / `nextest` (29 tests: 13 lib, 4 campaign, 6 oracle-proptest, 6 pre-existing task-58 loopback +
 determinism) / `clippy -D warnings` / `fmt --check` / `cargo deny` / public-api snapshot all green on
 `conductor`. **No existing crate touched** (vmm-core/explorer/environment/control-proto unchanged), so
 every other crate's gate is byte-identical; the task-58 loopback + determinism proptests pass unchanged.
@@ -391,6 +391,36 @@ The guest kernel/initramfs golden (`MANIFEST.sha256`) is untouched — the campa
 build target, not part of `run-tests.sh`'s repro/boot gate. `cargo deny` OK (`sha2` — the toy's
 `state_hash` digest — is whitelisted and already in the lock via explorer/vmm-core; `Cargo.lock` gained
 only the dependency edge, no version churn).
+
+**Linux-target compile check is part of the gate.** The box binary lives behind `#[cfg(target_os =
+"linux")]` (the `boxrun` module), which a Mac `cargo check` never compiles — so a Linux-only break is
+invisible to the default gates. The gate list therefore includes, run from the Mac:
+
+```sh
+cargo check  -p conductor --all-features --target x86_64-unknown-linux-gnu
+cargo clippy -p conductor --all-features --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+```
+
+(round-1 review caught an E0255/E0061 in the `boxrun` campaign path that the Mac gates could not see.)
+
+## Round-1 review fixes (PR #55)
+
+- **Linux-target build break (blocking).** In `boxrun`, `use conductor::campaign::run_campaign` collided
+  (E0255) with the module's own `pub fn run_campaign`, and the call then bound to the 1-arg local fn
+  (E0061). Aliased the import to `run_campaign_loop`; added the Linux-target `cargo check`/`clippy` to the
+  gate list (above) so cfg(linux) code is compile-checked from the Mac.
+- **`campaign-super.c` ledger is now `volatile` (blocking).** The ledger is mutated from outside the TU
+  (the host `CorruptMemory` flip); without `volatile` `-O2` could hoist the `canary`/`budget` guards to
+  constants and delete the planted mechanism. `volatile struct ledger *l` forces a real load on every
+  access, so the injected flip is always observed.
+- **Milestone replay bar floored at 25/25 (blocking).** `--replay-n` now floors at `REPLAY_BAR = 25` on
+  both campaign paths — the flag can only *raise* the bar, never lower it, so a `--replay-n 1` run can no
+  longer print `GATES PASS` at 1/1 below the spec gate.
+- **Toy `run` honors a future deadline (blocking, mock fidelity).** A future deadline that falls before
+  the run's terminal now returns `Deadline` at the deadline (not an overshoot to the terminal), matching
+  the real `Machine`'s `StopConditions` semantics — pinned by
+  `planted::tests::a_future_deadline_before_the_terminal_stops_there`.
+- **SPDX header on `campaign-init.sh` (nit).** Added.
 
 ## Deviations considered
 
