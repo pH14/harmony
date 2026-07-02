@@ -167,17 +167,19 @@ is recorded now so that task needs zero spine change.
 
 ## Known limitations / integrator notes
 
-- **⚠ Task-58 conflict (PR #44), for the PR body:** task 58's socket-backed
-  `Machine`/`SpecEnvCodec` bind to this crate's seams. The `Machine`/`EnvCodec`
-  traits and their semantics are **unchanged** here, but (a) `Explorer::new`
-  now takes `(machine, codec, Composition, seed)` and is generic over `M`
-  only, (b) `Strategy`/`SeedStrategy`/`CoverageStrategy`/`Corpus`/`CovScore`
-  no longer exist, (c) `RunOutcome` lost `coverage_novelty`, and (d)
-  `MachineError` gained `UnknownExemplar` (breaking for exhaustive matches).
-  Whichever lands second rebases: a task-58 conductor demo constructs
-  `Explorer::new(machine, codec, Composition::defaults(), seed)` and swaps
-  strategy names for the default composition. Per the foreman's instruction
-  this branch does **not** adapt to unmerged task-58 code.
+- **Task-58 integration (PR #44, merged; rebased onto here):** task 58's
+  socket adapter (`src/adapter.rs`: `SocketMachine`/`SpecEnvCodec`) and its
+  conductor loopback suite bind **only** to the `Machine`/`EnvCodec` seams,
+  which this refactor leaves unchanged — the adapter and
+  `dissonance/conductor` compile and pass their gates against the spine with
+  **zero code changes** (the rebase resolved `lib.rs` docs/re-exports and the
+  `Cargo.toml` dep union, and regenerated `tests/public-api.txt`; four
+  pre-existing broken rustdoc links in `adapter.rs` module docs were fixed in
+  passing). API changes downstream code would notice if it ever constructed
+  the engine: `Explorer::new(machine, codec, Composition, seed)`;
+  `Strategy`/`SeedStrategy`/`CoverageStrategy`/`Corpus`/`CovScore` removed;
+  `RunOutcome` lost `coverage_novelty`; `MachineError` gained
+  `UnknownExemplar` (breaking for exhaustive matches).
 - **`GuestEvent`/`Record` are deliberately minimal** (`kind` + sorted
   `attrs: BTreeMap<String, Value>`, matcher-DSL-shaped). Task 65/73 own their
   real decode; if they need more fields, additions are non-breaking.
