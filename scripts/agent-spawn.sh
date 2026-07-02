@@ -83,7 +83,10 @@ elif [[ "$ENGINE" != claude ]]; then
     echo "unknown engine: $ENGINE" >&2; exit 1
 fi
 
-CMD="${CAFF}claude $PERMFLAGS $MODELFLAG \"\$(cat .agent-prompt.md)\"; echo; echo '[claude exited — pane kept for inspection]'; exec bash"
+# Disable Claude Code's prompt-suggestion ghost text: in a detached tmux pane it
+# renders as dim pre-typed-looking input on the ❯ line, and a stray Tab+Enter
+# would submit the model-invented instruction to the worker. (Debugged 2026-07-02.)
+CMD="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${CAFF}claude $PERMFLAGS $MODELFLAG \"\$(cat .agent-prompt.md)\"; echo; echo '[claude exited — pane kept for inspection]'; exec bash"
 if [[ "$ENGINE" == deepseek ]]; then
     CMD="export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic ANTHROPIC_AUTH_TOKEN=$DEEPSEEK_API_KEY; $CMD"
 fi
