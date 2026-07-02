@@ -1,5 +1,11 @@
 # Task 12 — `dissonance/explorer`: the coverage-guided exploration engine (policy)
 
+> **Historical vocabulary (pre-task-94).** This spec predates the loop rename and keeps its
+> original words on purpose: read **Timeline → Modulation** (inner loop, `timeline()` →
+> `modulation()`) and **Multiverse → Progression** (outer loop, `multiverse_step()` →
+> `progression_step()`). The shipped code, `docs/DISSONANCE.md`, and `docs/EXPLORATION.md` use
+> the new names; see the DISSONANCE.md "two loops" naming-history footnote.
+
 Read `tasks/00-CONVENTIONS.md` first. Touch only `dissonance/explorer/`.
 
 Design basis: `docs/DISSONANCE.md` (the control verbs this drives + the **Timeline** /

@@ -7,7 +7,7 @@ ruling: `docs/DISSONANCE.md`.
 
 - `environment/` — the **guest** control-plane `decide(point) -> Answer` seam + seeded faults, including the per-flow `NetFlow` network-fault seam (tasks 24, 50)
 - `control-proto/` — the out-of-band control-transport wire types + codec (task 25)
-- `explorer/` — the Variation/Theme exploration engine (task 12)
+- `explorer/` — the Modulation/Progression exploration engine (task 12)
 
 > Networking is a **guest-plane decision, enforced in-guest** (task 50): the host *decides* a per-flow
 > policy at the `NetFlow` seam in `environment/`; the guest *enforces* it on the intra-guest CNI. The
