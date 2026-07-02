@@ -3180,3 +3180,72 @@ via a hostile/oversized `pref_address`/`init_size`. Fixes:
   by capping `initrd_addr_max` inside the page): the predicate's edges; a straddling ramdisk is
   relocated below; a ramdisk that fits above the hole is kept high; one that cannot fit below is
   rejected.
+
+## Task 63 — validate arbitrary-V-time seal (the Wave-5 go/no-go)
+
+A **measurement harness**, not a feature. No production behavior changes. Surface list (frontier
+waiver of hard rule 1) honored — only `consonance/vmm-core` touched:
+
+- `src/seal_rate.rs` + `src/seal_rate/mock.rs` + `src/seal_rate/tests.rs` — the pure, portable half
+  (**gate 1**): the V-time sampling schedule (`SamplingSchedule`, uniform + busy-window + adversarial
+  jitter) and the seal-rate / `sealable` bookkeeping (`SealStats`, `Overshoot`,
+  `MaterializationDepth`, `PredicateQuality`, `sealable()`, `rule()`) with a mock snapshot oracle and
+  22 unit/proptest cases (512 cases each). Integer-only (rule 4: ppm rates, no float);
+  determinism-safe (`BTreeMap` into output); no `unsafe` ⇒ no Miri obligation.
+- `src/lib.rs` — one line: `pub mod seal_rate;`.
+- `tests/seal_rate_sweep.rs` — the box-only measurement (**gates 2–3 substrate**),
+  `#![cfg(target_os = "linux")]` + `#[ignore]` (empty binary on macOS). No new deps.
+- `SEAL-RATE-REPORT.md` — the committed report + provisional ruling (**gates 2–3**).
+
+**Status:** gate 1 DONE & GREEN on macOS (`build/nextest/clippy/fmt/deny`). Gates 2–3: the report
+holds the methodology + a calibrated projection; the **measured** numbers + final ruling come from
+running `tests/seal_rate_sweep.rs` on the box — **handed to the foreman** (see the report's Runbook).
+
+### The load-bearing substrate finding
+
+`run(deadline)` lands on a V-time-**synchronized** boundary *by construction* (`effective_vns`
+advances only at synchronized intercepts; the `run` loop stops at the first boundary ≥ deadline), so
+the archive's materialization pattern (`run → seal`) targets sealable points. Task 41 removed the
+in-flight-injection failure class (task 40's 3112 rejects now captured); the only residual limit is
+the non-synchronized *interior* (task 40's 5280 class), which is inherent to V-time exactness — not a
+task-41 gap — and is exactly why the archive addresses by *boundary*, not by an exact interior
+`Moment`. Expected ruling: **GO** (see report §5, §9).
+
+### Deviations considered and rejected
+
+1. **Drive `Vmm` directly, not the task-58 `ControlServer`/`Machine`.** §1 needs the seal *failure
+   reason* and §5 the per-landing features; `ControlServer::snapshot` collapses all rejects to
+   `NotQuiescent`, whereas `Vmm::save_vm_state` distinguishes non-synchronized / rng-mid-exit /
+   unrepresentable, and `has_*` expose injection state. The operations are the same substrate the
+   server wraps (run/snapshot/branch/hash ↔ `control.rs:417/275/390` + `state_hash`); matches the
+   task-41 gate's precedent and avoids a `control-proto` dev-dep.
+2. **`sealable(cpu_snapshot)` keys on the real `save_vm_state` decision inputs** (synchronized /
+   rng-mid-exit / unrepresentable / injection), not §5's sketched raw RIP/IF — no register-peek
+   accessor exists, and adding one is a production change the surface list forbids. Keying on the
+   decision inputs is strictly better than a RIP/IF proxy.
+3. **Adversarial (§3) seals at jittered *boundaries*; the interior grid-probe is separate.** An
+   interior-seal draft conflated the fundamental non-sync limit with §3's robustness question.
+4. **§4 roots the deep child at its *nearest shallower* ancestor** (not shallowest) so the suffix is
+   one inter-sample gap — the actual demonstration of "cost = suffix ≪ prefix".
+5. **Integer ppm, `BTreeMap`, `splitmix64`** (rules 4). **Two-phase** collect-then-verify because
+   only one `perf_event` counter may be open at a time (a fork can't coexist with the live guest).
+6. **Running the box gate myself: deferred to the foreman** — transferring the branch to the box was
+   blocked as crossing this task's `Do not push` boundary; loading patched KVM + the multi-hour run +
+   revert discipline are the foreman's domain (task-58 precedent). Asked the user; proceeded on the
+   precedent-consistent default with no response.
+
+### Known limitations / integrator notes
+
+- **The report is PROVISIONAL** — §6/§9 are a projection; the foreman runs the sweep, transcribes the
+  `[REPORT]` block, and confirms/updates the ruling. Expected **GO**.
+- **The box harness is not compile-checked on Linux** (macOS can't build `boot_linux_selected`);
+  reviewed against confirmed signatures. The foreman's first `cargo test --no-run` on the box is the
+  real compile check.
+- **`public-api.txt` needs a box refresh** for the new `pub mod seal_rate` (the public-API gate is
+  box+nightly-only): `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`.
+- **Determinism failure ⇒ escalate, don't patch** — the harness reclassifies a non-branch-deterministic
+  seal as a failure *and* fails loudly; that is a task-41 determinism-core regression to escalate, a
+  task-63 non-goal to fix here.
+- **Busy-window detection is approximate** (interrupt-service via active injection; WAL-fsync /
+  scheduler-tick covered incidentally by uniform samples or pinned via `BUSY_CENTERS`). **Axis:** all
+  V-time figures are retired-branch ns (`effective_vns`), not the `Moment` (retired-instruction) axis.
