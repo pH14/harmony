@@ -1,59 +1,72 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 6 — corpus GC.
+//! Gate 6 — seal GC.
 //!
-//! `drop_snap` is issued for evicted entries, and no `SnapId` is used after it is
-//! dropped. The toy machine enforces the second half itself: branching or
-//! replaying a dropped handle returns `MachineError::UnknownSnapshot`, so a clean
-//! `explore` under a tiny corpus capacity (which forces eviction) is itself proof
-//! that evicted handles are never reused.
+//! `drop_snap` is issued for every fork seal not admitted, `evict_seals`
+//! releases every live seal, and no `SnapId` is used after it is dropped. The
+//! toy machine enforces the last half itself: branching or replaying a dropped
+//! handle returns `MachineError::UnknownSnapshot`, so a clean `explore` under
+//! aggressive per-step seal eviction (which forces re-materialization) is
+//! itself proof that dropped handles are never reused.
 
 mod common;
 
-use common::{ToyCodec, ToyMachine};
-use explorer::{CoverageStrategy, Explorer, MachineError, StopConditions, StopMask};
+use common::{ToyCodec, ToyMachine, pin_composition};
+use explorer::{Explorer, MachineError, StopConditions, StopMask};
 
+/// Seal accounting: live backend handles are exactly genesis + the admitted
+/// entries' seals; every non-admitted fork seal was dropped; and evicting all
+/// seals leaves only genesis alive.
 #[test]
-fn eviction_drops_snapshots_and_never_reuses_them() {
+fn seal_lifecycle_never_leaks_a_handle() {
     let mut ex = Explorer::new(
         ToyMachine::new(),
-        CoverageStrategy::new(0x5EED),
         Box::new(ToyCodec),
+        pin_composition(),
+        0x5EED,
     )
     .unwrap();
-    // A tiny capacity forces eviction as soon as a third novel base is admitted.
-    let cap = 2;
-    ex.set_corpus_capacity(cap).unwrap();
 
-    // A clean run is the no-reuse proof: had any dropped (evicted or non-admitted)
-    // handle been branched/replayed, the toy would have returned UnknownSnapshot
-    // and `explore` would have aborted with Err here.
-    ex.explore(300).expect("no dropped snapshot is ever reused");
+    ex.explore(120).expect("no dropped snapshot is ever reused");
 
-    let corpus_len = ex.corpus().len();
-    assert!(corpus_len <= cap, "corpus stays within capacity");
-    assert!(corpus_len >= 1, "the corpus did admit bases");
-
-    // Live handles = genesis + the kept corpus bases; every other snapshot the
-    // campaign minted (non-novel and evicted alike) was dropped, nothing leaked.
+    let sealed = ex.sealed_count();
+    assert!(sealed >= 1, "admitted exemplars hold seals");
     let m = ex.machine_mut();
     assert!(
         m.dropped_count() > 0,
-        "evicted/non-admitted snapshots were dropped"
+        "non-admitted fork seals were dropped"
     );
     assert_eq!(
         m.live_snaps(),
-        1 + corpus_len,
-        "live snapshots = genesis + kept bases (no leak)"
+        1 + sealed,
+        "live snapshots = genesis + admitted seals (no leak)"
     );
+
+    // Evicting every seal releases the handles (only genesis remains) and
+    // leaves the frontier intact.
+    let entries = ex.frontier().len();
+    ex.evict_seals().unwrap();
+    assert_eq!(ex.sealed_count(), 0);
+    assert_eq!(ex.frontier().len(), entries, "eviction never drops entries");
+    assert_eq!(
+        ex.machine_mut().live_snaps(),
+        1,
+        "only the genesis snapshot survives seal eviction"
+    );
+
+    // And the campaign continues cleanly across the eviction: exploits
+    // re-materialize rather than touching any dropped handle (the toy would
+    // return UnknownSnapshot and abort explore if one were reused).
+    ex.explore(60)
+        .expect("re-materialization never reuses a dropped handle");
 }
 
-/// A `recorded_env` failure *after* the `SnapshotPoint` snapshot already succeeded
+/// A `recorded_env` failure *after* the `SnapshotPoint` seal already succeeded
 /// must release that handle, not leak it. The timeline aborts with the original
-/// error and the freshly-minted snapshot is dropped (only genesis remains).
+/// error and the freshly-minted seal is dropped (only genesis remains).
 #[test]
-fn snapshot_handle_is_dropped_if_prefix_capture_fails() {
+fn fork_seal_is_dropped_if_prefix_capture_fails() {
     let machine = ToyMachine::new().fail_recorded_env();
-    let mut ex = Explorer::new(machine, CoverageStrategy::new(1), Box::new(ToyCodec)).unwrap();
+    let mut ex = Explorer::new(machine, Box::new(ToyCodec), pin_composition(), 1).unwrap();
     let genesis = ex.genesis();
     let env0 = explorer::EnvCodec::seeded(&ToyCodec, 7);
 
@@ -66,46 +79,43 @@ fn snapshot_handle_is_dropped_if_prefix_capture_fails() {
     let result = ex.timeline(genesis, &env0, &until);
     assert!(matches!(result, Err(MachineError::Transport(_))));
 
-    // The snapshot minted at the fork was dropped — no leaked handle.
+    // The seal minted at the fork was dropped — no leaked handle.
     let m = ex.machine_mut();
     assert_eq!(
         m.live_snaps(),
         1,
-        "only the genesis snapshot remains; the fork snapshot was released"
+        "only the genesis snapshot remains; the fork seal was released"
     );
-    assert!(m.dropped_count() >= 1, "the fork snapshot was drop_snap'd");
+    assert!(m.dropped_count() >= 1, "the fork seal was drop_snap'd");
 }
 
-/// Re-capacitating a **non-empty** corpus must `drop_snap` the entries it discards,
-/// never silently forget their handles.
+/// A direct `timeline` call leaves its forks pending; the next call must
+/// `drop_snap` them (never silently forget), so repeated direct runs cannot
+/// leak backend handles.
 #[test]
-fn set_corpus_capacity_drops_discarded_entries() {
-    let mut ex = Explorer::new(
-        ToyMachine::new(),
-        CoverageStrategy::new(0xA11CE),
-        Box::new(ToyCodec),
-    )
-    .unwrap();
+fn leftover_pending_forks_are_dropped_not_forgotten() {
+    let mut ex =
+        Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 3).unwrap();
+    let genesis = ex.genesis();
+    let until = StopConditions {
+        deadline: None,
+        on: StopMask::ALL,
+    };
 
-    // Grow a corpus first.
-    ex.explore(40).unwrap();
-    let kept = ex.corpus().len();
-    assert!(kept >= 1, "the campaign admitted entries to discard");
-    let dropped_before = ex.machine_mut().dropped_count();
-
-    // Re-capacitating discards every entry; each kept snapshot must be released.
-    ex.set_corpus_capacity(8).unwrap();
-    assert!(ex.corpus().is_empty(), "the corpus was discarded");
-
-    let m = ex.machine_mut();
-    assert_eq!(
-        m.dropped_count(),
-        dropped_before + kept,
-        "every discarded entry's snapshot was drop_snap'd"
+    let env0 = explorer::EnvCodec::seeded(&ToyCodec, 1);
+    ex.timeline(genesis, &env0, &until).unwrap();
+    let live_after_first = ex.machine_mut().live_snaps();
+    assert!(
+        live_after_first > 1,
+        "the direct run left fork seals pending"
     );
-    assert_eq!(
-        m.live_snaps(),
-        1,
-        "only the genesis snapshot remains after discarding the corpus"
+
+    // The second direct run drops the leftovers before running.
+    let env1 = explorer::EnvCodec::seeded(&ToyCodec, 2);
+    ex.timeline(genesis, &env1, &until).unwrap();
+    let dropped = ex.machine_mut().dropped_count();
+    assert!(
+        dropped >= live_after_first - 1,
+        "the prior run's pending fork seals were drop_snap'd"
     );
 }

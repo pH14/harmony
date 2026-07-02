@@ -7,15 +7,15 @@
 
 mod common;
 
-use common::{ToyCodec, ToyMachine};
-use explorer::{CoverageStrategy, Explorer, MachineError, SeedStrategy, StopConditions, StopMask};
+use common::{ToyCodec, ToyMachine, pin_composition, seed_composition};
+use explorer::{Explorer, MachineError, StopConditions, StopMask};
 
 /// A backend fault mid-campaign aborts `explore` with the `MachineError`, not a
 /// bug — the error propagates out of the loop loudly.
 #[test]
 fn backend_fault_aborts_explore_loudly() {
     let machine = ToyMachine::new().fail_after(5);
-    let mut ex = Explorer::new(machine, CoverageStrategy::new(1), Box::new(ToyCodec)).unwrap();
+    let mut ex = Explorer::new(machine, Box::new(ToyCodec), pin_composition(), 1).unwrap();
 
     let result = ex.explore(100);
     match result {
@@ -29,7 +29,7 @@ fn backend_fault_aborts_explore_loudly() {
 #[test]
 fn backend_fault_is_never_a_bug() {
     let machine = ToyMachine::new().fail_after(1);
-    let mut ex = Explorer::new(machine, CoverageStrategy::new(2), Box::new(ToyCodec)).unwrap();
+    let mut ex = Explorer::new(machine, Box::new(ToyCodec), pin_composition(), 2).unwrap();
 
     // The very first run fails; the step returns Err, not a bug.
     assert!(matches!(
@@ -43,7 +43,7 @@ fn backend_fault_is_never_a_bug() {
 #[test]
 fn quiescent_campaign_reports_no_bugs() {
     let mut ex =
-        Explorer::new(ToyMachine::new(), SeedStrategy::new(0), Box::new(ToyCodec)).unwrap();
+        Explorer::new(ToyMachine::new(), Box::new(ToyCodec), seed_composition(), 0).unwrap();
     // No classes surface and no snapshot fork — pure quiescent seed runs.
     ex.set_stop_conditions(StopConditions {
         deadline: Some(explorer::VTime(30)), // stop before any crash/assert index
@@ -59,6 +59,6 @@ fn quiescent_campaign_reports_no_bugs() {
 #[test]
 fn new_errors_when_genesis_snapshot_fails() {
     let machine = ToyMachine::new().fail_snapshot();
-    let r = Explorer::new(machine, CoverageStrategy::new(0), Box::new(ToyCodec));
+    let r = Explorer::new(machine, Box::new(ToyCodec), pin_composition(), 0);
     assert!(matches!(r.err(), Some(MachineError::NotQuiescent)));
 }

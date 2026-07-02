@@ -1,43 +1,53 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Gate 1 — toy machine + determinism.
 //!
-//! Same `(strategy seed, toy machine)` ⇒ identical exploration trace and an
-//! identical set of admitted corpus entries. A `HashMap` reaching the strategy
-//! draw, the corpus index, or the bug fingerprint would make this flaky. Property
-//! test, ≥256 cases.
+//! Same `(campaign seed, toy machine)` ⇒ identical exploration trace: the same
+//! bugs and a byte-identical admitted frontier. A `HashMap` reaching a policy
+//! draw, the frontier index, or the bug fingerprint would make this flaky.
+//! Property test, ≥256 cases.
 
 mod common;
 
-use common::{ToyCodec, ToyMachine, config};
-use explorer::{Bug, CovScore, CoverageStrategy, Environment, Explorer, SnapId};
+use common::{ToyCodec, ToyMachine, config, pin_composition};
+use explorer::{Bug, Explorer};
 use proptest::prelude::*;
 
-/// One admitted corpus entry, materialized for comparison.
-type CorpusEntry = (SnapId, Environment, CovScore);
+/// One admitted frontier entry, materialized for comparison: the exemplar's
+/// (parent-independent) address and payload plus its genesis-complete env and
+/// reward.
+type Entry = (u64, Vec<u8>, Vec<u8>, u64);
 
-/// One full campaign's observable output: the bugs found and the admitted corpus.
-fn campaign(seed: u64, steps: u64) -> (Vec<Bug>, Vec<CorpusEntry>) {
+/// One full campaign's observable output: the bugs found and the admitted
+/// frontier.
+fn campaign(seed: u64, steps: u64) -> (Vec<Bug>, Vec<Entry>) {
     let mut ex = Explorer::new(
         ToyMachine::new(),
-        CoverageStrategy::new(seed),
         Box::new(ToyCodec),
+        pin_composition(),
+        seed,
     )
     .unwrap();
     let bugs = ex.explore(steps).unwrap();
-    let corpus: Vec<CorpusEntry> = (0..ex.corpus().len())
-        .map(|i| {
-            let (snap, env, score) = ex.corpus().entry(i).unwrap();
-            (snap, env.clone(), score)
+    let frontier: Vec<Entry> = ex
+        .frontier()
+        .iter()
+        .map(|(_, e)| {
+            (
+                e.exemplar.at.0,
+                e.exemplar.suffix.bytes.clone(),
+                e.env.bytes.clone(),
+                e.reward.new_cells,
+            )
         })
         .collect();
-    (bugs, corpus)
+    (bugs, frontier)
 }
 
 proptest! {
     #![proptest_config(config(256))]
 
     /// Two campaigns with the same seed produce identical bugs and an identical
-    /// admitted corpus.
+    /// admitted frontier.
     #[test]
     fn same_seed_yields_identical_campaign(seed in any::<u64>(), steps in 1u64..40) {
         let a = campaign(seed, steps);
@@ -54,5 +64,5 @@ fn fixed_seed_long_campaign_is_reproducible() {
     let b = campaign(0xDEADBEEF, 250);
     assert_eq!(a, b);
     assert!(!a.0.is_empty(), "the campaign actually found bugs");
-    assert!(!a.1.is_empty(), "and admitted corpus entries");
+    assert!(!a.1.is_empty(), "and admitted frontier entries");
 }
