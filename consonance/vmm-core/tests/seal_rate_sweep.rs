@@ -682,21 +682,28 @@ fn seal_rate_sweep() {
                 );
             }
             let landed = live.effective_vns().unwrap_or(0);
-            // Capture the clean landing hash BEFORE probe_seal: `has_pending_guest_interrupt`
-            // re-arbitrates the LAPIC (a benign, idempotent-over-a-run mutation that washes out
-            // over forward execution but perturbs the *instantaneous* state_hash), so capturing
-            // after it would make §4's live reference disagree with a clean replay.
-            let live_hash_clean = live.state_hash();
+            let take_snapshot = i % snap_stride == 0 || i == last_idx;
+            // `state_hash` hashes the full 2 GiB guest image — expensive. Only compute it for the
+            // snapshotted subset that actually needs it (§2/§4/§4b), not every target (computing
+            // it for all N was the second run's timeout). Capture the CLEAN hash BEFORE probe_seal:
+            // `has_pending_guest_interrupt` re-arbitrates the LAPIC (a benign mutation that washes
+            // out over a run but perturbs the instantaneous state_hash), so capturing after it would
+            // make §4's live reference disagree with a clean replay.
+            let live_hash_clean = if take_snapshot {
+                live.state_hash()
+            } else {
+                [0u8; 32]
+            };
             let (snapshot, reason, blob) = probe_seal(&mut live);
-            // The probe-laden hash: `state_hash` AFTER probe_seal (has_pending_guest_interrupt's
-            // LAPIC re-arbitration). §4b replays with the same probe schedule to reproduce it.
-            let live_hash_probed = live.state_hash();
             let result = match reason {
                 None => {
-                    // §1 rate: this target sealed. For a spread subset (+ the deepest), also take
-                    // the full 2 GiB snapshot for the §2 determinism check + §4 depth. Independent
+                    // §1 rate: this target sealed. For the spread subset (+ the deepest), also take
+                    // the full 2 GiB snapshot for the §2 determinism check + §4/§4b. Independent
                     // `snapshot_base`s so materialize is O(1)-layer; the store dedups store-wide.
-                    if i % snap_stride == 0 || i == last_idx {
+                    if take_snapshot {
+                        // The probe-laden hash: `state_hash` AFTER probe_seal — §4b replays with the
+                        // same probe schedule to reproduce it.
+                        let live_hash_probed = live.state_hash();
                         let blob = blob.expect("a sealed point always yields an encoded vm_state");
                         let snap = engine
                             .snapshot_base(live.guest_memory(), &blob)
