@@ -744,46 +744,72 @@ fn seal_rate_sweep() {
         sealed.len()
     );
 
-    // --- 3. Adversarial pass: jittered targets + timing perturbation -------
-    eprintln!("\n[sweep] === adversarial pass: jitter + timing perturbation, then seal ===");
+    // --- 3. Adversarial pass (§3) + interior grid-probe (supports §5) -------
+    //
+    // Two distinct questions, one guest run per jittered target:
+    //   (a) ADVERSARIAL (§3): run to the jittered target's boundary and seal. Jitter lands
+    //       the guest at *different, often busier* synchronized boundaries (more likely to
+    //       carry in-flight injection). This tests whether task 41's non-quiescent capture
+    //       is robust — does sealing hold when perturbed into a less "convenient" state, or
+    //       only at incidentally-quiescent points? A drop here is the real §3 finding.
+    //   (b) INTERIOR probe: from that boundary, step a deterministic little way in (a timing
+    //       perturbation) and seal at the *interior*. Interior points are usually
+    //       non-synchronized (exact V-time is known only at intercepts), so these mostly
+    //       fail — that is the fundamental addressability limit, and it supplies the
+    //       negatives that make `sealable()`'s precision/recall (§5) non-trivial and defines
+    //       why the archive keys exemplars to boundaries, not arbitrary interior Moments.
+    eprintln!("\n[sweep] === adversarial (§3) + interior grid-probe (§5 negatives) ===");
     let adv_schedule = schedule.jittered(jitter);
     let mut adversarial: Vec<SealAttempt> = Vec::with_capacity(adv_schedule.len());
+    let mut interior: Vec<SealAttempt> = Vec::with_capacity(adv_schedule.len());
     {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let mut printed = 0usize;
         for &target in adv_schedule.targets() {
             let adv = run_to_vtime(&mut live, target.vtime, &mut printed, start);
             if adv.terminal.is_some() || adv.step_error.is_some() {
-                // Near the tail a jittered target may sit at/after terminal — record the
-                // landing as-is and stop probing further (the guest is done).
+                // Near the tail a jittered target may sit at/after terminal — stop probing.
                 break;
             }
-            // The perturbation: step a deterministic little way in, landing the guest in a
-            // less "convenient" (often non-synchronized interior) state before sealing.
-            let extra = splitmix64(target.vtime) % perturb_max.max(1);
-            let padv = perturb(&mut live, extra, &mut printed);
-            if padv.terminal.is_some() {
-                break;
-            }
+            // (a) Adversarial: seal at the (busier) jittered boundary.
             let landed = live.effective_vns().unwrap_or(0);
             let (snapshot, reason, _blob) = probe_seal(&mut live);
-            let result = match reason {
-                None => SealResult::Sealed,
-                Some(r) => SealResult::Failed(r),
-            };
             adversarial.push(SealAttempt {
                 target,
                 landed_vtime: landed,
                 snapshot,
-                result,
+                result: match reason {
+                    None => SealResult::Sealed,
+                    Some(r) => SealResult::Failed(r),
+                },
+            });
+            // (b) Interior probe: perturb a deterministic little way past the boundary and
+            //     seal at the interior (the guest is now off any V-time intercept).
+            let extra = 1 + splitmix64(target.vtime) % perturb_max.max(1);
+            let padv = perturb(&mut live, extra, &mut printed);
+            if padv.terminal.is_some() {
+                break;
+            }
+            let ilanded = live.effective_vns().unwrap_or(0);
+            let (isnap, ireason, _b) = probe_seal(&mut live);
+            interior.push(SealAttempt {
+                target,
+                landed_vtime: ilanded,
+                snapshot: isnap,
+                result: match ireason {
+                    None => SealResult::Sealed,
+                    Some(r) => SealResult::Failed(r),
+                },
             });
         }
         // Drop the adversarial guest.
     }
     eprintln!(
-        "[sweep] adversarial: {} sealed / {} probed",
+        "[sweep] adversarial (boundary): {} sealed / {} probed | interior: {} sealed / {} probed",
         adversarial.iter().filter(|a| a.result.is_sealed()).count(),
-        adversarial.len()
+        adversarial.len(),
+        interior.iter().filter(|a| a.result.is_sealed()).count(),
+        interior.len(),
     );
 
     // --- 4. Materialization depth (parent-rooted premise) ------------------
@@ -792,11 +818,14 @@ fn seal_rate_sweep() {
     // --- 5. Roll up + emit the report block --------------------------------
     let nominal_stats = SealStats::of(&nominal);
     let adversarial_stats = SealStats::of(&adversarial);
+    let interior_stats = SealStats::of(&interior);
     let overshoot = Overshoot::of(&nominal);
-    // Predicate quality over the union of both passes (the adversarial interior points are
-    // the negatives that give `sealable` something to discriminate).
+    // Predicate quality over all three passes: nominal + adversarial supply the boundary
+    // positives, the interior probe supplies the non-synchronized negatives — so `sealable`
+    // is measured against both classes it must discriminate (§5).
     let mut all_attempts = nominal.clone();
     all_attempts.extend_from_slice(&adversarial);
+    all_attempts.extend_from_slice(&interior);
     let predicate = PredicateQuality::measure(&all_attempts, sealable);
 
     let inputs = RulingInputs {
@@ -811,6 +840,7 @@ fn seal_rate_sweep() {
         &schedule,
         &nominal_stats,
         &adversarial_stats,
+        &interior_stats,
         overshoot,
         &predicate,
         depth,
@@ -837,10 +867,13 @@ fn seal_rate_sweep() {
     );
 }
 
-/// §4: pick the shallowest sealed point as the parent and the deepest as the child, confirm
-/// the child materializes bit-identically by branching from the parent and replaying the
-/// suffix, and (cross-check) from genesis — returning the depth ratio. `None` if fewer than
-/// two distinct-depth seals exist.
+/// §4: take the **deepest** sealed point as the child and its **nearest shallower** sealed
+/// ancestor as the parent (exactly the "nearest retained ancestor" an `Archive` would root a
+/// virtual exemplar at). Confirm the child materializes bit-identically by branching from the
+/// parent and replaying only the suffix, cross-check from genesis, and return the
+/// suffix-vs-genesis depth ratio. Rooting at the *nearest* ancestor (not the shallowest) is
+/// the point — it makes the suffix one inter-sample gap, demonstrating cost = suffix ≪ prefix.
+/// `None` if fewer than two distinct-depth seals exist.
 fn materialization_depth(
     engine: &SnapshotEngine,
     sealed: &[Sealed],
@@ -852,10 +885,18 @@ fn materialization_depth(
         eprintln!("[sweep] §4 materialization depth: <2 seals, skipped");
         return None;
     }
-    let parent = sealed.iter().min_by_key(|s| s.seal_vtime).unwrap();
     let child = sealed.iter().max_by_key(|s| s.seal_vtime).unwrap();
-    if parent.seal_vtime == 0 || parent.seal_vtime >= child.seal_vtime {
+    // The nearest sealed ancestor strictly shallower than the child.
+    let parent = sealed
+        .iter()
+        .filter(|s| s.seal_vtime < child.seal_vtime)
+        .max_by_key(|s| s.seal_vtime);
+    let Some(parent) = parent else {
         eprintln!("[sweep] §4 materialization depth: no distinct-depth pair, skipped");
+        return None;
+    };
+    if parent.seal_vtime == 0 {
+        eprintln!("[sweep] §4 materialization depth: parent at genesis, skipped");
         return None;
     }
     eprintln!(
@@ -899,6 +940,7 @@ fn emit_report(
     schedule: &SamplingSchedule,
     nominal: &SealStats,
     adversarial: &SealStats,
+    interior: &SealStats,
     overshoot: Option<Overshoot>,
     predicate: &PredicateQuality,
     depth: Option<MaterializationDepth>,
@@ -932,6 +974,18 @@ fn emit_report(
     for (reason, count) in &adversarial.by_reason {
         if *count > 0 {
             eprintln!("[REPORT]     adversarial fail [{reason}]: {count}");
+        }
+    }
+    eprintln!(
+        "[REPORT] INTERIOR (grid-probe) seal rate: {}/{} = {} (non-boundary points; low is \
+         expected — defines the addressable grid, not a NO-GO)",
+        interior.sealed,
+        interior.n,
+        ppm_percent(interior.success_rate_ppm)
+    );
+    for (reason, count) in &interior.by_reason {
+        if *count > 0 {
+            eprintln!("[REPORT]     interior fail [{reason}]: {count}");
         }
     }
     eprintln!(
