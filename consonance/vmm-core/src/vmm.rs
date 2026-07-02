@@ -479,6 +479,17 @@ pub struct Vmm<B: Backend> {
     /// in. The chunk is the same bytes a [`Vmm::save_vm_state`] would seal, so two
     /// states whose canonical blob differs hash differently.
     snapshot_hashing: bool,
+    /// The **host-fault arrival deadline** (task 59): an absolute retired-branch
+    /// **work count** at which a staged [`HostFault`](environment::HostFault) is
+    /// to be applied, armed by [`Vmm::arm_arrival`] and folded into
+    /// [`step`](Vmm::step)'s `run_until` alongside the task-47 preemption
+    /// deadline ([`Vmm::run_until_deadline`]). `None` (the default, and every
+    /// protected M1/M2/corpus/Linux-boot path — none stages a fault) keeps
+    /// `run_until` gated exactly as before, so those goldens are byte-for-byte
+    /// unchanged. Like the preemption deadline it is a pure function of the
+    /// (seed-deterministic) work axis, so arrival lands at the same instruction
+    /// across same-seed runs.
+    arrival_deadline: Option<Vtime>,
 }
 
 impl<B: Backend> Vmm<B> {
@@ -504,6 +515,7 @@ impl<B: Backend> Vmm<B> {
             lapic: None,
             legacy: None,
             snapshot_hashing: false,
+            arrival_deadline: None,
         }
     }
 
@@ -855,6 +867,11 @@ impl<B: Backend> Vmm<B> {
         // run only AFTER the sole hard-fallible round-trip, B and A are re-armed together or
         // not at all.
         self.first_entry_done = false;
+        // A restore/rebase resets the timeline, so any host-fault arrival deadline
+        // armed against the PRE-restore V-time is stale — clear it (mirror
+        // `clear_arrival`), else it would bound the first post-restore `step` at a
+        // now-meaningless work count (the #34/#55 stale-arm class; PR #51 round-3).
+        self.arrival_deadline = None;
         Ok(())
     }
 
@@ -1214,6 +1231,11 @@ impl<B: Backend> Vmm<B> {
         // inherits a coexisting VM's branches (a determinism bug on the explorer's
         // N-concurrent-VM path).
         self.first_entry_done = false;
+        // A restore resets the timeline, so any host-fault arrival deadline armed
+        // against the PRE-restore V-time is stale — clear it (mirror `clear_arrival`;
+        // the #34/#55 stale-arm class, PR #51 round-3). `restore_snapshot` and every
+        // in-place restore path funnel through here.
+        self.arrival_deadline = None;
         Ok(())
     }
 
@@ -1325,8 +1347,10 @@ impl<B: Backend> Vmm<B> {
         // On the preemption path, capture the pre-call work so a `Deadline` can be told
         // apart: the `Drive` path single-steps work strictly FORWARD (reached > before),
         // while the no-entry overdue/at-deadline zero-step returns `reached == before` with
-        // NO `KVM_RUN` (round-12). `preemption_deadline()` is `Some` ⇒ V-time is wired.
-        let deadline = self.preemption_deadline();
+        // NO `KVM_RUN` (round-12). `run_until_deadline()` is `Some` ⇒ V-time is wired;
+        // it folds the task-47 LAPIC-timer preemption deadline together with the
+        // task-59 host-fault arrival deadline, taking whichever work count is nearer.
+        let deadline = self.run_until_deadline();
         let work_before = match deadline {
             Some(_) => Some(
                 self.vtime
@@ -1919,6 +1943,191 @@ impl<B: Backend> Vmm<B> {
         Some(Vtime(vt.clock.work_for_vns(deadline_vns)))
     }
 
+    /// The `run_until` work-count deadline for the next [`step`](Vmm::step): the
+    /// **nearer** of the task-47 LAPIC-timer [`preemption_deadline`](Self::preemption_deadline)
+    /// and the task-59 host-fault [`arrival_deadline`](Self::arrival_deadline).
+    /// `None` (neither armed) keeps the plain open-ended `run()`, so every path
+    /// that stages no fault and arms no timer is byte-for-byte unchanged. Taking
+    /// the min is what lets a timer preemption and a fault arrival coexist: the
+    /// guest is forced out at whichever seed-deterministic work count comes first,
+    /// and the loser stays armed for the following step.
+    fn run_until_deadline(&self) -> Option<Vtime> {
+        match (self.preemption_deadline(), self.arrival_deadline) {
+            (Some(p), Some(a)) => Some(Vtime(p.0.min(a.0))),
+            (only, None) | (None, only) => only,
+        }
+    }
+
+    /// Arm a **host-fault arrival deadline** at `moment` (task 59): the next
+    /// [`step`](Vmm::step) runs (via `run_until`) no further than the
+    /// retired-branch work count whose effective V-time is `moment`, so the
+    /// frontier can stop *between instructions* at exactly that count and apply a
+    /// staged fault. `moment` is on the single [`Moment`](environment::Moment)
+    /// axis (a V-time / retired-count; [`effective_vns`](Vmm::effective_vns)
+    /// reports the same axis).
+    ///
+    /// Returns `true` iff the deadline was armed. It arms **only on the
+    /// determinism-complete path** (V-time wired *and* a deterministic
+    /// retired-branch counter), exactly like [`preemption_deadline`](Self::preemption_deadline):
+    /// arrival needs the exact-count `run_until` seam, which stock KVM / M1 / M2
+    /// do not provide. When it returns `false` the caller falls back to running to
+    /// a natural exit and comparing [`effective_vns`](Vmm::effective_vns).
+    pub fn arm_arrival(&mut self, moment: environment::Moment) -> bool {
+        if !self.can_arm_arrival() {
+            self.arrival_deadline = None;
+            return false;
+        }
+        let vt = self
+            .vtime
+            .as_ref()
+            .expect("can_arm_arrival implies V-time wired");
+        self.arrival_deadline = Some(Vtime(vt.clock.work_for_vns(moment)));
+        true
+    }
+
+    /// `true` iff [`arm_arrival`](Vmm::arm_arrival) can arm an **exact-count**
+    /// arrival on this backend — the determinism-complete path (V-time wired *and*
+    /// a deterministic retired-branch counter). The frontier capability-checks this
+    /// **once, up front** before accepting a host-plane perturbation: without the
+    /// exact-arrival seam a staged fault could only be applied at a natural exit
+    /// *past* its `Moment` (stock KVM / M1 / M2), which host-plane enforcement
+    /// forbids — so such a backend rejects `perturb` rather than silently applying
+    /// late (task 59; PR #51 round-2 finding). Pure; does not touch the arm.
+    pub fn can_arm_arrival(&self) -> bool {
+        self.vtime.is_some() && self.backend.capabilities().deterministic_tsc
+    }
+
+    /// The armed host-fault arrival as an **effective V-time** (`vns`), or `None`
+    /// when nothing is armed. [`arm_arrival`](Vmm::arm_arrival) stores the arrival
+    /// as a retired-branch **work count** (`work_for_vns(moment)`); this inverts it
+    /// back to the `Moment`'s V-time via the same clock, so the idle planner can
+    /// weigh the arrival against the LAPIC timer's V-time deadline (both on the
+    /// `vns` axis) and jump to whichever comes first — see
+    /// [`idle_action`](Vmm::idle_action). Round-trips exactly under the contract
+    /// clock (`ratio_den == 1`).
+    fn arrival_vns(&self) -> Option<u64> {
+        let d = self.arrival_deadline?;
+        let vt = self.vtime.as_ref()?;
+        Some(vt.clock.snapshot_vns(d.0))
+    }
+
+    /// The current **entropy-stream state** of the seeded RNG (the raw xorshift
+    /// word), or `None` when V-time / the seeded stream is unwired. Because
+    /// [`reseed_entropy`](Vmm::reseed_entropy) seeds via `SeededEntropy::new(seed)`
+    /// and a non-zero state is a fixed point of that seeding, re-seeding a fresh VM
+    /// with **this** value reproduces the current stream exactly — which is why the
+    /// control server records it as the reproducer's seed after a `replay` (whose
+    /// restored snapshot may sit mid-stream, under a seed unrelated to the prior
+    /// session — PR #51 round-2 finding) as well as after a `branch`.
+    pub fn entropy_state(&self) -> Option<u64> {
+        self.vtime.as_ref().map(|vt| {
+            let bytes = vt.entropy.save_state();
+            let mut buf = [0u8; 8];
+            // `SeededEntropy::save_state` is always the 8-byte LE state word.
+            buf.copy_from_slice(&bytes[..8]);
+            u64::from_le_bytes(buf)
+        })
+    }
+
+    /// Disarm any [`arm_arrival`](Vmm::arm_arrival) deadline, so the next
+    /// [`step`](Vmm::step) is bounded only by the task-47 preemption deadline (or
+    /// runs open-ended if none is armed). Idempotent.
+    pub fn clear_arrival(&mut self) {
+        self.arrival_deadline = None;
+    }
+
+    /// Apply one host-plane [`HostFault`](environment::HostFault) **imperatively,
+    /// between instructions** (task 59) — the enforcement seam task 45 declared
+    /// frontier. Called by the frontier when a run has arrived at the fault's
+    /// [`Moment`](environment::Moment):
+    ///
+    /// - [`CorruptMemory`](environment::HostFault::CorruptMemory): XOR the
+    ///   [`BitMask`](environment::BitMask) into the little-endian 8-byte word at
+    ///   guest-physical `gpa` in the owned [`GuestRam`] (on the box KVM reads the
+    ///   guest through this same backing, so the corruption is live on the next
+    ///   entry). **Fails loud** ([`VmmError::ContractViolation`]) when
+    ///   `gpa + 8 > guest RAM` rather than clip or wrap — a corruption at an
+    ///   unrepresentable address would not replay. (The server rejects the same
+    ///   condition earlier, at stage time, with a recoverable `ControlError`; this
+    ///   is the defensive backstop.)
+    /// - [`InjectInterrupt`](environment::HostFault::InjectInterrupt): raise the
+    ///   `vector` into the userspace-LAPIC IRR so the **existing** IRQ arbitration
+    ///   ([`service_pending_irqs`](Self::service_pending_irqs)) delivers it at the
+    ///   next injectable entry — delivery ordering vs. the V-time timer stays
+    ///   deterministic. Requires the LAPIC wired (the Linux boot path) and a
+    ///   non-reserved `vector` (`≥ 16`); both fail loud otherwise.
+    /// - [`SkewTime`](environment::HostFault::SkewTime) /
+    ///   [`SetClockRate`](environment::HostFault::SetClockRate): **out of scope**
+    ///   for task 59 (they mutate the V-time clock itself; a follow-on lights them
+    ///   up). Rejected loud so a schedule carrying one never silently no-ops.
+    pub fn apply_host_fault(&mut self, fault: &environment::HostFault) -> Result<(), VmmError> {
+        match fault {
+            environment::HostFault::CorruptMemory { gpa, mask } => {
+                self.corrupt_memory(*gpa, mask.0)
+            }
+            environment::HostFault::InjectInterrupt { vector } => {
+                self.inject_host_interrupt(*vector)
+            }
+            environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
+                Err(VmmError::ContractViolation(
+                    "SkewTime/SetClockRate host faults are out of scope for task 59 (they mutate \
+                     the V-time clock itself) — a follow-on lights them up; refusing to silently \
+                     no-op a staged clock fault"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+
+    /// XOR `mask` (as a little-endian 64-bit word) into the 8 guest-physical bytes
+    /// at `gpa`. The single-event-upset apply of [`CorruptMemory`]; a pure
+    /// function of `(gpa, mask)` over the current RAM, so replaying the same fault
+    /// at the same [`Moment`](environment::Moment) reproduces it bit-for-bit.
+    /// Fails loud on `gpa + 8 > ram` (never clips/wraps).
+    ///
+    /// [`CorruptMemory`]: environment::HostFault::CorruptMemory
+    fn corrupt_memory(&mut self, gpa: u64, mask: u64) -> Result<(), VmmError> {
+        let ram = self.ram.as_mut_bytes();
+        let end = gpa.checked_add(8).filter(|&e| e <= ram.len() as u64);
+        let Some(end) = end else {
+            return Err(VmmError::ContractViolation(format!(
+                "CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {} bytes) — refusing \
+                 to clip or wrap the upset",
+                ram.len()
+            )));
+        };
+        let start = gpa as usize;
+        let end = end as usize;
+        let word = u64::from_le_bytes(
+            ram[start..end]
+                .try_into()
+                .expect("slice is exactly 8 bytes"),
+        );
+        ram[start..end].copy_from_slice(&(word ^ mask).to_le_bytes());
+        Ok(())
+    }
+
+    /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ
+    /// arbitration delivers it — the [`InjectInterrupt`] apply. Fails loud if the
+    /// LAPIC is unwired (there is no arbitration path to assert through) or the
+    /// vector is architecturally reserved (`< 16`).
+    ///
+    /// [`InjectInterrupt`]: environment::HostFault::InjectInterrupt
+    fn inject_host_interrupt(&mut self, vector: u8) -> Result<(), VmmError> {
+        let Some(lapic) = self.lapic.as_mut() else {
+            return Err(VmmError::ContractViolation(format!(
+                "InjectInterrupt vector {vector:#x} but the userspace LAPIC is unwired — no IRQ \
+                 arbitration path to assert the vector through (task 59 enforces host interrupts \
+                 through the Linux-boot xAPIC)"
+            )));
+        };
+        lapic.raise(vector).map_err(|e| {
+            VmmError::ContractViolation(format!(
+                "InjectInterrupt vector {vector:#x} rejected: {e:?}"
+            ))
+        })
+    }
+
     /// The next-timer **V-time deadline (ns)** on the determinism-complete path, or
     /// `None` when V-time is unwired, the backend has no deterministic counter, the
     /// LAPIC is unwired, or no timer is armed. The shared gating behind both
@@ -2033,14 +2242,30 @@ impl<B: Backend> Vmm<B> {
         if lapic.peek_interrupt().is_some() {
             return Ok(IdleAction::DeliverPending);
         }
-        // (b) No pending wake, but a future deliverable armed timer → jump to it.
-        if let Some(deadline_vns) = lapic.next_timer_deadline()
-            && lapic.armed_timer_deliverable()
-        {
-            return Ok(IdleAction::JumpToDeadline(deadline_vns));
+        // (b) No pending wake, but a future scheduled event → jump to the FIRST one.
+        //     Two competing discrete events wake an idle guest, and V-time must land
+        //     at whichever comes first (PR #51 round-4): the deliverable LAPIC timer
+        //     **and** a staged host-fault arrival ([`arm_arrival`](Vmm::arm_arrival)).
+        //     Jumping straight to the timer (as before) would sail *past* an arrival
+        //     `Moment` between here and the timer — applying the fault late (or
+        //     landing an `InjectInterrupt` at the timer tick, not the requested
+        //     `Moment`), breaking the exact-arrival contract enforced on the
+        //     execution path. So fold them the same way `run_until_deadline` folds
+        //     arrival into the run: jump to `min(timer, arrival)`, waking at the
+        //     arrival to apply. Either alone also wakes (an `InjectInterrupt` staged
+        //     with no timer is itself the wake event).
+        let timer = lapic
+            .next_timer_deadline()
+            .filter(|_| lapic.armed_timer_deliverable());
+        let wake = match (timer, self.arrival_vns()) {
+            (Some(t), Some(a)) => Some(t.min(a)),
+            (only, None) | (None, only) => only,
+        };
+        match wake {
+            Some(vns) => Ok(IdleAction::JumpToDeadline(vns)),
+            // Neither a pending, a timer, nor an arrival wake → terminal.
+            None => Ok(IdleAction::Terminal),
         }
-        // Neither a pending nor a future deliverable wake → terminal.
-        Ok(IdleAction::Terminal)
     }
 
     /// Resume a *resumable idle* `HLT` by **jumping** V-time to the armed timer's
@@ -4438,6 +4663,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn arrival_deadline_is_cleared_on_restore() {
+        // PR #51 round-3 item 3: a host-fault arrival armed against the PRE-restore
+        // timeline must not survive a restore — else the stale arm bounds the first
+        // post-restore `step` at a now-meaningless work count (the #34/#55 stale-arm
+        // class). Both restore primitives clear it.
+        // A fresh V-time-wired VM is at a synchronized, snapshottable point with no
+        // staged completion — so both `save_vtime` and `save_vm_state` succeed.
+        let mut v = vtime_vmm(vec![Exit::Hlt], Box::new(ScriptedWork::at(100)), 1);
+        let snap = v.save_vtime().unwrap().expect("v-time wired");
+        let vm_state = v.save_vm_state().unwrap();
+
+        // restore_vtime clears the arm (the standalone + idle-rebase path).
+        assert!(v.arm_arrival(500), "deterministic mock arms arrival");
+        assert!(v.arrival_deadline.is_some());
+        v.restore_vtime(&snap).unwrap();
+        assert!(
+            v.arrival_deadline.is_none(),
+            "restore_vtime clears the stale arrival arm"
+        );
+
+        // restore_vm_state clears it too (the snapshot-restore funnel).
+        assert!(v.arm_arrival(500));
+        assert!(v.arrival_deadline.is_some());
+        v.restore_vm_state(&vm_state).unwrap();
+        assert!(
+            v.arrival_deadline.is_none(),
+            "restore_vm_state clears the stale arrival arm"
+        );
+    }
+
     /// P1 round-13 — the comprehensive zero-step invariant: a `run_until` that returns
     /// `Exit::Deadline` WITHOUT entering the guest (the overdue/at-deadline path, no
     /// `KVM_RUN`) must NOT clear any entry-side state. A staged completion is committed only
@@ -4997,6 +5253,69 @@ mod tests {
             v.step().unwrap(),
             Step::Terminal(TerminalReason::Hlt)
         ));
+    }
+
+    #[test]
+    fn idle_hlt_before_a_staged_arrival_wakes_at_the_arrival_not_the_timer() {
+        // PR #51 round-4: a guest that idles (HLT, IF=1) with its LAPIC timer armed
+        // BEYOND a staged host-fault arrival must jump to the ARRIVAL `Moment` (so the
+        // fault applies there), NOT sail past it to the timer. The idle jump routes
+        // through the same min-fold as `run_until_deadline`.
+        let mut exits = arm_timer_exits(1_000_000); // a FAR one-shot timer deadline
+        exits.push(Exit::Hlt); // the guest idles before the arrival
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
+        for _ in 0..3 {
+            assert!(matches!(v.step().unwrap(), Step::Continued)); // arm the timer
+        }
+        let timer_vns = v.armed_timer_deadline_vns().expect("timer armed");
+        let m = timer_vns / 2; // an arrival strictly before the timer
+        assert!(
+            m > 0 && m < timer_vns,
+            "arrival is a future point before the timer"
+        );
+        assert!(v.arm_arrival(m), "arms the arrival");
+
+        // The idle HLT jumps to the ARRIVAL, not the (far) timer.
+        assert!(matches!(v.step().unwrap(), Step::Continued), "idle resumes");
+        assert_eq!(
+            v.idle_landings(),
+            &[m],
+            "V-time jumped to the arrival Moment, not the far timer"
+        );
+        assert_eq!(
+            v.effective_vns(),
+            Some(m),
+            "effective V-time is exactly the arrival Moment (the fault can apply here)"
+        );
+    }
+
+    #[test]
+    fn idle_hlt_with_no_timer_wakes_at_a_staged_arrival() {
+        // A staged arrival is a wake event in its own right: a guest that idles
+        // (HLT, IF=1) with NO timer but a staged host fault wakes at the arrival
+        // `Moment` (so e.g. a host-injected interrupt lands there) rather than being
+        // declared terminal.
+        let mut v = lapic_vmm(
+            {
+                let mut m = configured_mock(vec![Exit::Hlt]);
+                m.set_state(if_set_state());
+                m
+            },
+            Box::new(ScriptedWork::at(0)),
+        );
+        assert!(
+            v.armed_timer_deadline_vns().is_none(),
+            "no timer armed in this test"
+        );
+        assert!(v.arm_arrival(4242), "arms the arrival");
+        assert!(
+            matches!(v.step().unwrap(), Step::Continued),
+            "the idle HLT wakes at the arrival instead of terminating"
+        );
+        assert_eq!(v.idle_landings(), &[4242]);
+        assert_eq!(v.effective_vns(), Some(4242));
     }
 
     #[test]

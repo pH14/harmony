@@ -404,6 +404,64 @@ fn err_simple_unit_variants() {
 }
 
 #[test]
+fn err_perturb_out_of_range() {
+    // RESULT_ERR (0x01), CE_PERTURB_OUT_OF_RANGE (0x0B), gpa (u64 LE), ram_len (u64 LE).
+    check_reply(
+        43,
+        Err(ControlError::PerturbOutOfRange {
+            gpa: 0x1234,
+            ram_len: 0x1000,
+        }),
+        &[
+            0x01, 0x0B, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    );
+}
+
+#[test]
+fn err_perturb_past_moment() {
+    // RESULT_ERR (0x01), CE_PERTURB_PAST_MOMENT (0x0C), at (u64 LE), floor (u64 LE).
+    check_reply(
+        44,
+        Err(ControlError::PerturbPastMoment {
+            at: 0x2C,
+            floor: 0x64,
+        }),
+        &[
+            0x01, 0x0C, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    );
+}
+
+#[test]
+fn err_perturb_moment_taken() {
+    // RESULT_ERR (0x01), CE_PERTURB_MOMENT_TAKEN (0x0D), at (u64 LE).
+    check_reply(
+        45,
+        Err(ControlError::PerturbMomentTaken { at: 0x1F4 }),
+        &[0x01, 0x0D, 0xF4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    );
+}
+
+#[test]
+fn err_schedule_unsatisfiable() {
+    // RESULT_ERR (0x01), CE_SCHEDULE_UNSATISFIABLE (0x0E), moment (u64 LE), vtime (u64 LE).
+    check_reply(
+        46,
+        Err(ControlError::ScheduleUnsatisfiable {
+            moment: 0x64,
+            vtime: 0xC8,
+        }),
+        &[
+            0x01, 0x0E, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC8, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    );
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,
