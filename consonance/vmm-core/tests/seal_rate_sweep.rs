@@ -704,7 +704,13 @@ fn seal_rate_sweep() {
     // --- 2. Prove each successful seal is a real branch point --------------
     eprintln!("\n[sweep] === branch-determinism check: 2 same-seed branches per sealed point ===");
     let mut nondeterministic: Vec<(VTime, String)> = Vec::new();
-    for s in &sealed {
+    for (vi, s) in sealed.iter().enumerate() {
+        eprintln!(
+            "[sweep] branch-verify {}/{} at V-time {} …",
+            vi + 1,
+            sealed.len(),
+            s.seal_vtime
+        );
         let b1 = branch_and_run(&engine, s.snap, &kernel, &initramfs, BRANCH_SEED, horizon);
         let b2 = branch_and_run(&engine, s.snap, &kernel, &initramfs, BRANCH_SEED, horizon);
         let ok = b1.step_error.is_none()
