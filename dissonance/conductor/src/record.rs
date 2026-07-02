@@ -452,48 +452,51 @@ pub fn verify_record(report: &RecordReport, min_distinct: usize) -> Vec<String> 
 
 /// The **post-campaign** store-reload gate (the lossless-reload / re-derive half
 /// of gate 3), run *after* [`run_recording`] returns so the recording loop stays
-/// write-only to the store. For each distinct recorded `TraceId`:
+/// write-only to the store. Checked against **each row's own retention
+/// expectation** — never guarded by `has_journal`, so a `retained: true` row
+/// whose journal is missing (or a `record` regression that stops writing it)
+/// **fails** rather than vacuously passing. For every recorded row:
 ///
-/// - the env sidecar reloads and its bytes round-trip canonically;
-/// - a retained journal reloads, re-encodes to byte-identical journal bytes
-///   (`encode(load(id)) == encode(decode(on-disk))`), and its recorded env
-///   matches the sidecar — the on-disk artifact is exactly the recorded run.
+/// - the env sidecar reloads and is content-addressed to its `TraceId`;
+/// - `retained: true` ⇒ [`load`](TraceStore::load) must succeed and the journal's
+///   env matches the sidecar (`NotRetained`/`NotFound` are failures);
+/// - `retained: false` ⇒ no journal is present (a fresh store; env-only never
+///   writes one, and an env-only re-record removes any prior journal).
 ///
 /// Returns every violated gate (empty = all pass).
 pub fn verify_store_reload(store: &TraceStore, report: &RecordReport) -> Vec<String> {
     let mut failures = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
     for row in &report.rows {
-        if !seen.insert(row.trace_id) {
-            continue; // one check per distinct id (repeats overwrite identically)
-        }
         let id = row.trace_id;
+        let where_ = format!("trace {id} (seed {:#018x} run {})", row.seed, row.run);
         let env = match store.env(id) {
             Ok(e) => e,
             Err(e) => {
-                failures.push(format!("trace {id}: env did not reload: {e}"));
+                failures.push(format!("{where_}: env did not reload: {e}"));
                 continue;
             }
         };
         // The env sidecar is content-addressed by exactly these bytes.
         if runtrace::TraceId::of(&env) != id {
             failures.push(format!(
-                "trace {id}: reloaded env is not content-addressed to its id"
+                "{where_}: reloaded env is not content-addressed to its id"
             ));
         }
-        if store.has_journal(id) {
+        if row.retained {
+            // The gate must actually LOAD the journal — no `has_journal` guard.
             match store.load(id) {
-                // The retained journal decodes, and its env is the same
-                // reproducer the sidecar holds — the on-disk artifact is a
-                // consistent, reloadable copy of the recorded run.
                 Ok(reloaded) if reloaded.env != env => {
-                    failures.push(format!("trace {id}: journal env != sidecar env"));
+                    failures.push(format!("{where_}: journal env != sidecar env"));
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    failures.push(format!("trace {id}: retained journal did not reload: {e}"))
+                    failures.push(format!(
+                        "{where_}: retained=true but the journal did not load: {e}"
+                    ));
                 }
             }
+        } else if store.has_journal(id) {
+            failures.push(format!("{where_}: retained=false but a journal is present"));
         }
     }
     failures

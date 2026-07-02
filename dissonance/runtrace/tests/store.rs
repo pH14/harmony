@@ -231,3 +231,23 @@ fn ingest_ndjson_is_loud_on_a_malformed_line() {
         Err(runtrace::TraceError::Ingest(_))
     ));
 }
+
+#[test]
+fn ingest_ndjson_is_loud_on_a_malformed_console_payload() {
+    // A Console-tagged event whose `text` is missing is malformed console — a
+    // loud error, never a silent chunk drop (unlike a genuinely non-console kind).
+    assert!(matches!(
+        ingest_ndjson(r#"{"seq":1,"work":1,"vns":5,"kind":{"Console":{}}}"#),
+        Err(runtrace::TraceError::Ingest(_))
+    ));
+    // A non-string `text` is likewise loud.
+    assert!(matches!(
+        ingest_ndjson(r#"{"seq":1,"work":1,"vns":5,"kind":{"Console":{"text":42}}}"#),
+        Err(runtrace::TraceError::Ingest(_))
+    ));
+    // A genuinely non-console kind is still (correctly) skipped, not an error.
+    assert_eq!(
+        ingest_ndjson(r#"{"seq":1,"work":1,"vns":5,"kind":{"Tsc":{"value":9}}}"#).unwrap(),
+        Vec::<(Moment, Vec<u8>)>::new()
+    );
+}

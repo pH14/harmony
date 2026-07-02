@@ -45,12 +45,18 @@ pub fn ingest_ndjson(ndjson: &str) -> Result<Vec<(Moment, Vec<u8>)>, TraceError>
         let ev: WireEvent = serde_json::from_str(line)
             .map_err(|e| TraceError::Ingest(format!("{e} in line: {line:?}")))?;
         // Externally-tagged `Console` variant: `{"Console": {"text": "…"}}`.
-        if let Some(text) = ev
-            .kind
-            .get("Console")
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-        {
+        // Non-console kinds are skipped, but a *Console* line whose `text` is
+        // missing or non-string is malformed console — a loud [`TraceError::Ingest`],
+        // never a silent chunk drop (the console stream must not lose bytes).
+        if let Some(console) = ev.kind.get("Console") {
+            let text = console
+                .get("text")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| {
+                    TraceError::Ingest(format!(
+                        "Console event with missing/non-string `text` in line: {line:?}"
+                    ))
+                })?;
             out.push((Moment(ev.vns), text.as_bytes().to_vec()));
         }
     }

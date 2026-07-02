@@ -158,6 +158,30 @@ fn a_recording_campaign_is_deterministic_per_seed_and_divergent_across_seeds() {
 }
 
 #[test]
+fn verify_store_reload_catches_a_missing_retained_journal() {
+    // Non-vacuity: the reload gate must actually LOAD each retained journal, not
+    // merely check presence. Delete one behind the loop's back and confirm the
+    // gate fails (a `record` regression that stops writing journals is caught).
+    let dir = tempfile::tempdir().unwrap();
+    let store = TraceStore::open(dir.path()).unwrap();
+    let mut server = server();
+    let report = run_recording(&mut server, &store, &cfg(RetentionPolicy::All)).unwrap();
+    assert!(
+        verify_store_reload(&store, &report).is_empty(),
+        "a clean store reloads: {:?}",
+        verify_store_reload(&store, &report)
+    );
+
+    let victim = report.rows[0].trace_id;
+    std::fs::remove_file(dir.path().join(format!("{victim}.trace"))).unwrap();
+    let failures = verify_store_reload(&store, &report);
+    assert!(
+        failures.iter().any(|f| f.contains("did not load")),
+        "a deleted retained journal must fail the reload gate, got {failures:?}"
+    );
+}
+
+#[test]
 fn update_the_committed_mock_recording_fixture() {
     // Not a fixture-drift guard (the mock journal is regenerated when the format
     // bumps); it exists so `UPDATE_FIXTURES=1` refreshes the committed artifact
