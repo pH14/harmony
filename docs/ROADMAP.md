@@ -46,11 +46,25 @@ with everything not serving it explicitly deferred.
 | 60 | first campaign: planted bug, crash oracle, `Recorded` env, replay N/N | harmony finds and reproduces its first bug | frontier, not yet started |
 | 61 | net vertical: `net_decide` service + in-guest flow agent + `flow` shell | first true guest-plane path; hypercall stack gets a consumer | frontier, not yet started |
 | 62 | doc-debt sweep + the SMP/single-vCPU + task-90 rulings | docs stop lying to newcomers and to the foreman | this document |
-| 93 | resolve compose-vs-genesis-only | the reproducer model is real, not toy-tested | resolved (genesis-only) ahead of 58, un-deferred by Wave 4 |
+| 93 | resolve compose-vs-genesis-only | the reproducer model is real, not toy-tested | **resolved — keep `compose`, genesis-only rejected** (PR #39; see `docs/DISSONANCE.md` §"Ruling (task 93)") |
 | 94 | rename: Variation→Modulation, Theme→Progression (docs/specs/code) | one vocabulary across the project | queued after 58–61 |
 
 Task 93 (reproducer model) was un-deferred and resolved as part of the Wave-4 push so task 58
 doesn't bake in the wrong seam — see `docs/DISSONANCE.md`'s reproducer section for the ruling.
+
+## Resolution — the epoch loop (design ruled 2026-07-02)
+
+`docs/RESOLUTION.md` rules the third loop above Modulation/Progression: **resolution**, the
+judgment layer of dissonance — an agent (or a human through one) that investigates findings at
+exact `Moment`s and re-instruments the search between campaigns. Key rulings: part of
+dissonance, an outer loop around the explorer (peer only at the socket); an intervention is
+search-surface iff recorded as an `Environment` `Action`; `exec`-in-fork is an **improvisation**
+(off the record, taint-guarded, exempt from the determinism discipline); instrumentation
+mutation is first-class and epoch-grained; humans steer the LLM, not the VM. Tasks **80–83**
+(numbers 65–75 are reserved by the Wave-5 exploration queue): 80 inspection verbs + the moment
+address, 81 improvisations, 82 the `dissonance/resolution` client/REPL/transcript, 83 the
+findings diff. 80/81 hang off task 58 only; 83 waits on 60 + 64. Agent harness, rehearsal-mark
+UI, and `donate` are deliberately unspecced until the core lands.
 
 ## The deferred register (recorded so it isn't re-derived)
 

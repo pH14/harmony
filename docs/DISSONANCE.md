@@ -31,6 +31,10 @@ exactly.
 - **dissonance** — the bug finder built on consonance (this doc). It permutes a guest through its
   control planes, injecting faults, to make real software misbehave — and because the substrate is
   deterministic, every bug reproduces exactly. Crates in `dissonance/`.
+- **resolution** — the **epoch loop of dissonance** (part of dissonance, not a peer system): the
+  judgment layer — an agent, or a human acting through one — that investigates findings and
+  re-instruments the search between campaigns. Design ruling: `docs/RESOLUTION.md`; tasks 80–83.
+  Crates in `dissonance/` (first: `dissonance/resolution`).
 - **unison** — the determinism harness (replay-equivalence / `compare_runs` / `bisect_divergence`).
 
 ## Ruling: single-vCPU is the v1 contract (task 62)
