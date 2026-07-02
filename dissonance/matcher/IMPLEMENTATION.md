@@ -33,6 +33,9 @@ match by its one declared `Role`.
   clean. Sorted-name rank is both permutation-invariant (it ignores declaration
   order) and collision-free (names are unique). `never` signals occupy a rank
   too but emit no feature, so cross-role leakage is impossible by construction.
+  `SignalSet` construction rejects a set larger than `u16::MAX + 1`
+  (`MatchError::TooManySignals`), so a rank can never wrap and silently merge two
+  signals onto one channel (codex P2 #2).
 - **`never` tie-break by name, not declaration order.** `MatchOracle` iterates
   `never` signals in name order (`never_idx`), so when two `never` rules match
   the same record the earliest-verdict pick is permutation-invariant (gate 4)
@@ -53,7 +56,12 @@ match by its one declared `Role`.
   extraction, not a predicate).
 - **JSON, not YAML** (the task ruling): the whitelist stays untouched. Parsing
   is total on untrusted input — every malformed class (`UnknownRole`,
-  `DuplicateName`, bad type via `Parse`, `UnknownDuring`) is a typed error.
+  `DuplicateName`, `TooManySignals`, bad type via `Parse`, `UnknownDuring`) is a
+  typed error. **Fail-closed** (codex P2 #1): the top-level `signals` key is
+  *required* (a config missing it is an error, not a silent empty set — an
+  explicit `"signals": []` stays legal) and `deny_unknown_fields` at every level
+  rejects a misspelled key rather than silently ignoring it (which could vacate
+  the set or broaden a match).
 - **Output ordering.** Both structs process records in a canonical
   `(Moment, index)` order and the sensor sorts its stream by
   `(Moment, channel, id)`, so evaluation is a deterministic, permutation- and
@@ -87,13 +95,25 @@ match by its one declared `Role`.
 
 - `during:` ships exactly one predicate, `no_faults`; the `During` enum is
   `#[non_exhaustive]` so the vocabulary extends without a spine change.
-- More than `u16::MAX` signals in one set wrap channel ranks (documented, not a
-  panic); no real config approaches this.
+- More than `u16::MAX + 1` signals in one set is a hard `TooManySignals` error
+  (no real config approaches this).
+- **Glob complexity** (codex P2 #3): `glob.rs` is the standard two-pointer
+  star-backtracking matcher the spec names. Its guarantee is **no catastrophic /
+  exponential backtracking** (the naive-recursion failure mode); the strict
+  worst case is `O(pattern · text)` — a `*` followed by a literal run that
+  repeatedly partially matches — *not* strict linear time. For the short
+  attribute globs the DSL matches this is negligible; the doc claim was corrected
+  to state this precisely, and `star_then_literal_run_completes_fast` regression-
+  tests a large pathological input completing near-instantly. A true
+  `O(pattern + text)` matcher would need KMP/Z per `*`-delimited segment —
+  disproportionate here and out of scope; flag if genuine linear time is wanted.
 
 ## Gates
 
-All green on macOS (dev) — `build`, `nextest` (29 tests), `clippy -D warnings`,
+All green on macOS (dev) — `build`, `nextest` (32 tests), `clippy -D warnings`,
 `fmt --check`, `cargo deny check`, all `--all-features`. No `unsafe`, so no Miri
 gate applies. Property suites (≥256 cases each): router totality, catalog
 partition, purity/determinism + permutation-invariance, glob-vs-reference (512),
-config round-trip. Total test runtime well under the ~3-minute budget.
+config round-trip. Three added regression tests cover the codex P2 guards
+(missing/unknown key rejected, over-capacity rejected, pathological glob fast).
+Total test runtime well under the ~3-minute budget.

@@ -36,4 +36,12 @@ pub enum MatchError {
     /// must be unique for never-fired detection to be well-defined.
     #[error("duplicate signal name {0:?}")]
     DuplicateName(String),
+
+    /// More signals than the channel space can address. Each signal's channel
+    /// is the rank of its name in `[0, u16::MAX]`, so a set larger than
+    /// `u16::MAX + 1` (65 536) would wrap ranks and collide two signals onto one
+    /// channel — rejected fail-closed at construction rather than silently
+    /// merging their outputs.
+    #[error("too many signals: {0} exceeds the channel capacity of 65536 (u16::MAX + 1)")]
+    TooManySignals(usize),
 }

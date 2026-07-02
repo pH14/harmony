@@ -149,8 +149,9 @@ fn never_fingerprint<R: Matchable>(name: &SignalId, rec: &R, expr: &MatchExpr) -
 
 /// Assign each signal a stable channel: the rank of its name in the sorted set
 /// of all names. Permutation-invariant (task-66 semantics 4) and collision-free
-/// (names are unique). With more than `u16::MAX` signals ranks wrap — a
-/// documented, practically-unreachable ceiling, never a panic.
+/// (names are unique). `SignalSet` construction rejects a set larger than
+/// `u16::MAX + 1` ([`MatchError::TooManySignals`](crate::MatchError::TooManySignals)),
+/// so every rank fits in `u16` and `rank as u16` never truncates.
 fn channels_of(signals: &SignalSet) -> BTreeMap<SignalId, ChannelId> {
     let names: BTreeSet<SignalId> = signals.signals().iter().map(|d| d.name.clone()).collect();
     names

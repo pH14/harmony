@@ -4,12 +4,23 @@
 //! The DSL's string attribute predicates are globs with a single wildcard,
 //! `*`, matching any (possibly empty) run of bytes; every other byte matches
 //! itself. A pattern with no `*` is exact equality; a trailing `*` is the
-//! prefix form. Matching runs the classic **two-pointer** wildcard algorithm —
-//! it advances a pointer into the pattern and one into the text, remembering the
-//! most recent `*` to fall back to, so a run of `*`s never triggers the
-//! exponential backtracking a naive recursive matcher would. Worst case is
-//! `O(pattern · text)`; there is no catastrophic blowup on pathological `*`
-//! runs (the `matches!(..)` proptest pins that against a naive reference).
+//! prefix form. Matching runs the **standard two-pointer star-backtracking**
+//! algorithm the task spec names ("the linear-time two-pointer algorithm"): it
+//! advances a pointer into the pattern and one into the text, remembering the
+//! most recent `*` (and the text position to resume from) to fall back to on a
+//! literal mismatch.
+//!
+//! **Complexity, stated precisely.** The load-bearing guarantee is **no
+//! catastrophic backtracking** — unlike the naive recursive matcher, a `*`
+//! never spawns exponential work; a run of `*`s collapses. The strict worst
+//! case is `O(pattern · text)` (a `*` followed by a literal run that repeatedly
+//! partially matches re-scans that run per text byte), *not* strict linear
+//! time — but with tiny constants, and genuinely linear on the short attribute
+//! patterns the DSL actually matches. A true `O(pattern + text)` matcher would
+//! need KMP/Z per `*`-delimited segment, which is disproportionate here; the
+//! pathological-input regression test proves the `O(pattern · text)` case
+//! completes near-instantly (no blowup), and the proptest pins agreement with a
+//! naive reference on 512+ random and adversarial pairs.
 //!
 //! Matching is over **bytes**, not `char`s: the DSL renders each [`Value`] to a
 //! canonical byte string (see [`crate::value`]) and both pattern and text are
@@ -20,8 +31,9 @@
 const STAR: u8 = b'*';
 
 /// Whether `text` matches the glob `pattern` (`*` = any run of bytes; every
-/// other byte is literal). Linear-pointer, no recursion, no backtracking
-/// blowup — total on every input, including patterns that are all `*`.
+/// other byte is literal). Single left-to-right scan with `*`-backtracking: no
+/// recursion, no exponential blowup — total on every input, including patterns
+/// that are all `*`.
 pub fn matches(pattern: &[u8], text: &[u8]) -> bool {
     // Two cursors plus a remembered `*` fallback: `star` is the pattern index
     // just past the last `*` seen, `resume` is the text index to retry from
@@ -119,6 +131,23 @@ mod tests {
         adversary.extend(std::iter::repeat_n(b'*', 20));
         adversary.push(b'b');
         assert!(!matches(&adversary, &[b'a'; 40]));
+    }
+
+    /// Regression (codex P2): the `*` + literal-run + terminal-byte pattern
+    /// against a long run of the run-byte — the two-pointer's `O(pattern · text)`
+    /// worst case. It must complete near-instantly (bounded polynomial work, no
+    /// blowup); if it were exponential this test would never return.
+    #[test]
+    fn star_then_literal_run_completes_fast() {
+        // `*aaaab` vs `aaaa…a` (50_000 a's, no trailing b): the star repeatedly
+        // rescans the 4-byte `aaaa` run then fails at `b` — ~O(5 · 50_000) work.
+        let pattern = b"*aaaab";
+        let text = vec![b'a'; 50_000];
+        assert!(!matches(pattern, &text));
+        // And the matching variant terminates just as fast.
+        let mut matching = vec![b'a'; 50_000];
+        matching.push(b'b');
+        assert!(matches(pattern, &matching));
     }
 
     #[test]

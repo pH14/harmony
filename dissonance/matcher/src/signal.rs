@@ -115,13 +115,18 @@ pub struct SignalSet {
 // validated into the domain types with typed errors.
 // ---------------------------------------------------------------------------
 
+// `deny_unknown_fields` at every level makes a misspelled key a hard parse
+// error rather than a silently-ignored field (which could vacate a signal set
+// or silently broaden a match). `signals` is **required** — a config missing it
+// is an error, not an empty set — while an explicit `"signals": []` stays legal.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireConfig {
-    #[serde(default)]
     signals: Vec<WireSignal>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireSignal {
     name: String,
     role: String,
@@ -130,6 +135,7 @@ struct WireSignal {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WireExpr {
     kind: String,
     #[serde(default)]
@@ -166,11 +172,7 @@ impl SignalSet {
     pub fn from_json(json: &str) -> Result<SignalSet, MatchError> {
         let wire: WireConfig = serde_json::from_str(json)?;
         let mut signals = Vec::with_capacity(wire.signals.len());
-        let mut seen = BTreeSet::new();
         for w in wire.signals {
-            if !seen.insert(w.name.clone()) {
-                return Err(MatchError::DuplicateName(w.name));
-            }
             let role = parse_role(&w.role)?;
             let during = w.expr.during.as_deref().map(parse_during).transpose()?;
             signals.push(SignalDecl {
@@ -184,7 +186,8 @@ impl SignalSet {
                 },
             });
         }
-        Ok(SignalSet { signals })
+        // Centralized validation (duplicate names + channel capacity).
+        Self::new(signals)
     }
 
     /// Serialize back to the normative JSON shape. Round-trips: parsing the
@@ -194,8 +197,15 @@ impl SignalSet {
     }
 
     /// Build a set directly from validated declarations (the in-memory
-    /// constructor; enforces name uniqueness like [`from_json`](Self::from_json)).
+    /// constructor; enforces name uniqueness and channel capacity like
+    /// [`from_json`](Self::from_json)).
     pub fn new(signals: Vec<SignalDecl>) -> Result<SignalSet, MatchError> {
+        // Channels are assigned as name-ranks in `[0, u16::MAX]`; more signals
+        // than that would wrap and collide. Reject fail-closed (the router then
+        // relies on this invariant, so `rank as u16` never truncates).
+        if signals.len() > u16::MAX as usize + 1 {
+            return Err(MatchError::TooManySignals(signals.len()));
+        }
         let mut seen = BTreeSet::new();
         for d in &signals {
             if !seen.insert(d.name.clone()) {
@@ -301,6 +311,69 @@ mod tests {
         assert!(matches!(
             SignalSet::from_json(json),
             Err(MatchError::UnknownDuring(d)) if d == "eclipse"
+        ));
+    }
+
+    /// Regression (codex P2 #1): a config missing or misspelling the top-level
+    /// `signals` key must be rejected, not silently parsed as an empty set. An
+    /// explicit `"signals": []` stays legal.
+    #[test]
+    fn missing_or_unknown_top_level_key_is_rejected() {
+        // Missing `signals` entirely — must NOT be a silent empty set.
+        assert!(matches!(
+            SignalSet::from_json("{}"),
+            Err(MatchError::Parse(_))
+        ));
+        // Misspelled key — unknown field, rejected.
+        assert!(matches!(
+            SignalSet::from_json(r#"{ "signls": [] }"#),
+            Err(MatchError::Parse(_))
+        ));
+        // Extra top-level key alongside a valid `signals` — rejected.
+        assert!(matches!(
+            SignalSet::from_json(r#"{ "signals": [], "extra": 1 }"#),
+            Err(MatchError::Parse(_))
+        ));
+        // Explicit empty is legal and yields an empty set.
+        let empty = SignalSet::from_json(r#"{ "signals": [] }"#).expect("explicit empty is legal");
+        assert!(empty.is_empty());
+        // The fail-closed guard extends to nested levels: a misspelled `attr`
+        // inside `match` would otherwise silently broaden the match to all
+        // records of that kind.
+        assert!(matches!(
+            SignalSet::from_json(
+                r#"{ "signals": [ { "name": "x", "role": "cell", "match": { "kind": "log", "atttr": {} } } ] }"#
+            ),
+            Err(MatchError::Parse(_))
+        ));
+    }
+
+    /// Regression (codex P2 #2): more signals than the `u16` channel space can
+    /// address is rejected fail-closed, rather than wrapping ranks and merging
+    /// two signals onto one channel. The capacity (`u16::MAX + 1`) is legal; one
+    /// past it is not.
+    #[test]
+    fn too_many_signals_is_rejected() {
+        let mk = |n: usize| -> Vec<SignalDecl> {
+            (0..n)
+                .map(|i| SignalDecl {
+                    name: SignalId(format!("s{i}")),
+                    role: Role::Sometimes,
+                    expr: MatchExpr {
+                        kind: "log".into(),
+                        attr: BTreeMap::new(),
+                        attr_max: None,
+                        during: None,
+                    },
+                })
+                .collect()
+        };
+        // Exactly the channel capacity is allowed (ranks 0..=u16::MAX).
+        assert!(SignalSet::new(mk(u16::MAX as usize + 1)).is_ok());
+        // One past capacity would wrap rank u16::MAX + 1 → 0: rejected.
+        assert!(matches!(
+            SignalSet::new(mk(u16::MAX as usize + 2)),
+            Err(MatchError::TooManySignals(n)) if n == u16::MAX as usize + 2
         ));
     }
 }
