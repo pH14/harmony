@@ -1,16 +1,13 @@
 # SEAL-RATE-REPORT — arbitrary-V-time seal validation (task 63, the Wave-5 go/no-go)
 
-> **Status: PROVISIONAL — measured numbers pending the box run.**
-> Gate 1 (the portable sampling-schedule + seal-rate/`sealable` bookkeeping, with unit +
-> proptest coverage against a mock oracle) is **complete and green** on macOS + Linux.
-> Gates 2–3 require running `tests/seal_rate_sweep.rs` on the determinism box against the
-> LOADED patched KVM + the built Postgres image. Per this task's `Do not push` boundary and
-> the task-58 precedent (box gates run by the foreman), the definitive box measurement is
-> **handed to the foreman** — see [§7 Runbook](#7-runbook-what-the-foreman-runs) and
-> [§8 Handoff](#8-handoff). The numbers in [§6](#6-projected-result-model--analysis-not-a-box-measurement)
-> are a **calibrated projection** from the substrate analysis in [§5](#5-substrate-analysis-the-load-bearing-reasoning),
-> not a measurement; the harness prints exactly these fields, so the foreman transcribes the
-> real values over the projected ones and confirms/updates the ruling in [§9](#9-the-ruling).
+> **Status: MEASURED on the determinism box (2026-07-02).** Gate 1 (portable
+> sampling-schedule + seal-rate/`sealable` bookkeeping) is green on macOS + Linux; the box
+> measurement (`tests/seal_rate_sweep.rs`, patched KVM 1400832, `taskset -c 2`, det-cfl-v1
+> PASS) completed rc=0 and KVM was reverted to stock 1396736 (verified). Measured numbers are
+> in [§6](#6-measured-result-box); the substrate analysis in [§5](#5-substrate-analysis-the-load-bearing-reasoning)
+> is confirmed by them. **The final GO/NO-GO ruling is escalated to the integrator** (foreman
+> ruling, 2026-07-02) — this report presents the measurement and the fork, not the verdict.
+> Full box output is on PR #50 (comment `issuecomment-4867390481`).
 
 ---
 
@@ -124,34 +121,40 @@ The only open questions the box run answers are the **exact** nominal/adversaria
 robustness gap?) and the **grid density** (the overshoot distribution → unrestricted vs
 grid-restricted GO).
 
-## 6. Projected result (model + analysis — NOT a box measurement)
+## 6. Measured result (box)
 
-Calibrated from §5 via the `vmm_core::seal_rate::mock` oracle (dense synchronized grid
-≈ 2 048 ns; in-flight captured, not a failure; unrepresentable ≈ 0; determinism holds), for a
-representative post-readiness span of ~300 M ns of V-time and **N = 64** (61 uniform + 3
-busy). **Replace every value below with the harness output on the box.**
+Determinism box, patched KVM 1400832, `taskset -c 2`, det-cfl-v1 PASS. Post-readiness span
+`[441861206, 463031443)` (≈ 21.17 M ns of V-time), **N = 64** (64 uniform; 0 busy windows
+auto-detected in this workload's post-readiness phase). §2/§4 branch-verified on a spread
+snapshot subset (9 this run + 17 in a prior full run = **26 sealed points branch-verified,
+all bit-identical**). Raw `[REPORT]` on PR #50.
 
-| Metric | Projected | Measured (box) |
-|---|---|---|
-| Nominal seal rate (§1) | **64/64 = 100.0000 %** | _pending_ |
-| — failures | none (rare `rng-mid-exit` is retryable) | _pending_ |
-| Branch-from-seal determinism (§2) | **64/64 bit-identical** (0 nondeterministic) | _pending_ |
-| Adversarial seal rate (§3, jittered boundaries) | **≈ 100 %** (task-41 capture robust to busy boundaries) | _pending_ |
-| Interior grid-probe seal rate (§5 negatives) | **low** (~most `non-synchronized`; expected) | _pending_ |
-| Addressability — overshoot p90 (§ grid) | **~2 000 ns** (dense grid) | _pending_ |
-| Materialization depth ratio (§4) | **≈ 1.59 %** (from_parent ≈ 4.7 M / from_genesis ≈ 295 M ns) | _pending_ |
-| `sealable()` precision / recall (§5) | **100 % / 100 %** | _pending_ |
+| Metric | Measured |
+|---|---|
+| **§1 nominal seal rate** (run→boundary→seal) | **64 / 64 = 100.0000 %** — no failures |
+| **§2 branch-from-seal determinism** | **26/26 bit-identical** (9 + prior 17); 0 nondeterministic |
+| §3 adversarial (jittered boundaries) | 34 / 56 = 60.7143 % (22 `non-synchronized`) |
+| §5 interior grid-probe (non-boundary) | 24 / 55 = 43.6364 % (31 `non-synchronized`) |
+| **§4 materialization premise** | **parent-rooted == genesis-rooted** (`2c71f9ab…`); ratio **1.6561 %** (from_parent 7 667 740 / from_genesis 462 999 204) → **savings 98.34 %** |
+| **§4b schedule-faithful replay** | **MATCH** (`1c04e4cc…` == `1c04e4cc…`) — the probe/deadline schedule is a *deterministic* part of the trajectory |
+| addressability — overshoot (ns) | min 7 · **p50 284 069 · p90 4 764 144** · max 6 748 854 · mean 1 260 128; exact_hits 0/64 |
+| `sealable()` precision / recall | **TP 122 · FP 0 · TN 53 · FN 0 → 100 % / 100 %** |
 
-Notes:
-- **Nominal 100 %** is the archive-relevant number: it is the rate at which `run(deadline) →
-  seal` succeeds, which is exactly how Phase C materializes an exemplar.
-- **Interior low is expected and healthy** — it confirms the addressable grid is quantized to
-  synchronized boundaries. It is *not* a NO-GO input; the ruling is driven by the nominal +
-  adversarial *boundary* rates and the determinism check.
-- **Depth ratio ≈ 1.6 %** confirms the Phase-C premise directly: reconstructing a deep node
-  from its nearest retained ancestor replays one inter-sample gap (~span/N), not the whole
-  prefix from genesis — cost = suffix ≪ prefix. This ratio is the baseline **task 68 must beat
-  live** (task 68 gate 3).
+Reading:
+- **Boundary-addressed sealing is 100 % and 100 %-deterministic**, and **materialization is
+  ancestor-independent** (§4 premise holds; cost = the **1.66 %** suffix, not the prefix — the
+  baseline task 68 must beat live). This is the archive's actual pattern (`run(deadline)→seal`).
+- **§4b MATCH ⇒ the substrate is sound**: the live trajectory reproduces bit-for-bit when
+  replayed with the same probe/deadline schedule. The live-vs-clean-replay divergence
+  (`1c04e4cc` vs `2c71f9ab`) is a *deterministic, reproducible* schedule effect, not
+  non-reproducible perturbation.
+- **But sealing at an *exact arbitrary interior* V-time is not addressable**: interior /
+  adversarial points fail ~40–60 % (`non-synchronized`), and — correcting §5's projection —
+  the boundary grid is **coarse, not dense** (p90 overshoot ≈ 4.76 M ns ≈ 22 % of the span; 0
+  targets hit exactly). You can seal only at the nearest synchronized boundary, which can be
+  millions of ns past the requested `Moment`.
+- The `sealable()` predicate separates boundary (sealable) from interior (non-sealable) points
+  **perfectly (100 % / 100 %)** over the 175-point union — it cleanly keys the Phase-A2 set.
 
 ## 7. Runbook (what the foreman runs)
 
@@ -175,10 +178,14 @@ rmmod kvm_intel kvm; modprobe kvm; modprobe kvm_intel
 #  verify on a FRESH ssh connection:  lsmod | grep '^kvm '   == 1396736
 ```
 
-Knobs: `TARGETS` (N, default 64), `BRANCH_HORIZON_VNS` (default 4_000_000), `ADV_JITTER_VNS`
-(default 50_000), `ADV_PERTURB_STEPS` (default 4096), `WALL_BUDGET_SECS` (default 1800),
-`SPAN_START`/`SPAN_END`/`BUSY_CENTERS` (skip profiling for fast re-runs), `BOOT_CMDLINE`.
-Also refresh the box-only public-API snapshot after this branch's new `seal_rate` module:
+Knobs: `TARGETS` (N, default 64), `DET_SUBSET` (spread seals given the full 2 GiB snapshot +
+§2/§4 branch-verify, default 24), `BRANCH_HORIZON_VNS` (default 4_000_000), `ADV_JITTER_VNS`
+(default 50_000), `ADV_PERTURB_STEPS` (default 32), `WALL_BUDGET_SECS` (per **guest**, default
+1800), `SPAN_START`/`SPAN_END`/`BUSY_CENTERS` (skip profiling for fast re-runs), `BOOT_CMDLINE`.
+This report's run used `SPAN_START=441861206 SPAN_END=463031443 DET_SUBSET=8
+BRANCH_HORIZON_VNS=1000000` (the 2 GiB memory ops — `state_hash`/`snapshot_base`/`materialize`/
+`restore` — are ~30–60 s each on this box, so keep `DET_SUBSET` modest and budget generously).
+Also refresh the box-only public-API snapshot for the new `seal_rate` module:
 `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored` (nightly + tooling on the box).
 
 ## 8. Handoff
@@ -186,35 +193,39 @@ Also refresh the box-only public-API snapshot after this branch's new `seal_rate
 - **Portable gate (gate 1): DONE & GREEN** — `src/seal_rate/` (schedule, bookkeeping,
   `sealable`, ruling, mock) with 22 unit/proptest cases (512 cases each). No `/dev/kvm`, no
   float, no `HashMap`-into-output.
-- **Box harness (gates 2–3 substrate): DONE** — `tests/seal_rate_sweep.rs`, additive, no new
-  deps, `#![cfg(target_os="linux")]` + `#[ignore]` (empty binary on macOS). Needs a **Linux
-  compile-check on the box** (it cannot compile on macOS: `boot_linux_selected` is
-  Linux-gated). Reviewed against confirmed API signatures.
-- **This measurement (gates 2–3 numbers + final ruling): HANDED TO THE FOREMAN** — run the
-  runbook, transcribe the `[REPORT]` block here, and commit. Expected outcome: **GO** (see §9).
-  A partial result (nominal < ~99 % or any nondeterministic seal) flips to **NO-GO /
-  RESTRICTED** and Phase C inherits the `sealable(Moment)` predicate the harness emits.
+- **Box harness (gates 2–3 substrate): DONE & RUN** — `tests/seal_rate_sweep.rs`, additive, no
+  new deps. Compiled + clippy-clean + executed on the box (rc=0); KVM reverted to stock.
+- **Measurement (gate 2 numbers): DONE** — see §6. **Final ruling (gate 3): escalated to the
+  integrator** (foreman ruling 2026-07-02) — §9 presents the fork, not the verdict.
+- Still open: refresh the box-only public-API snapshot for the new `seal_rate` module
+  (`UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`).
 
-## 9. The ruling
+## 9. The fork (ruling escalated to the integrator)
 
-> **PROVISIONAL: GO** — pending the box run confirming nominal ≥ ~99 % and 100 % branch
-> determinism.
+The measurement is **not** the clean GO the projection expected, nor a substrate failure. It
+splits along one axis:
 
-Reasoning: arbitrary-V-time sealing **to the nearest synchronized boundary** holds at the rate
-the archive relies on (§5(a),(b)); task 41's non-quiescent capture makes the previously-fatal
-in-flight class sealable and (by its own gates) deterministic; the only *inherent* limit is
-sealing at an exact non-boundary interior `Moment` (§5(c)), which the archive never needs —
-it materializes via `run(deadline) → seal`, always landing on a boundary.
+**Substrate soundness — PASS.** §1 nominal 100 %, §2 determinism 26/26, §4 premise holds
+(materialization ancestor-independent, cost = 1.66 % suffix), **§4b MATCH** (the live
+trajectory reproduces bit-for-bit under the same probe/deadline schedule). No task-41/63
+determinism-core regression. Task 41 genuinely cleared the "0 of 8392" barrier.
 
-Whether the box confirms **GO (unrestricted)** or **GO (grid-restricted)** depends only on the
-measured overshoot (boundary density): a dense grid (small p90 overshoot) means sealing is
-effectively continuous; a coarse grid means exemplars key to the *nearest synchronized
-boundary* — which `sealable()` accepts — rather than an exact interior `Moment`. **Either way
-Phase C proceeds.** The single condition that would produce a genuine **NO-GO / RESTRICTED** is
-a measured nominal/adversarial rate below the bar or any seal that fails to branch
-deterministically — in which case Phase C inherits the emitted `sealable(cpu_snapshot)`
-predicate (`synchronized ∧ ¬rng_mid_exit ∧ ¬unrepresentable`) with its measured
-precision/recall, and the archive admits exemplars only at predicate-passing points.
+**Addressability — RESTRICTED.** Sealing works at the **nearest synchronized boundary**
+(100 %), but **not at an exact arbitrary interior `Moment`** (interior/adversarial ~40–60 %
+`non-synchronized`), and the boundary grid is **coarse** (p90 overshoot ≈ 4.76 M ns ≈ 22 % of
+the span; 0/64 exact hits). This is the fundamental V-time-exactness limit, not a task-41 gap.
 
-_Hand this ruling to the foreman as the gate on Phase C (task 64 + the frontier
-materialization task 68)._
+So the two admissible readings the integrator chooses between:
+
+- **GO (boundary-keyed)** — Phase C keys exemplars to the *nearest synchronized boundary*
+  (which `run(deadline)→seal` lands on by construction and `sealable()` accepts at 100 %/100 %).
+  Materialization is sound (§4/§4b). The coarse grid means an exemplar's `Moment` snaps to its
+  nearest boundary — acceptable if the archive addresses by boundary, not exact interior V-time.
+- **NO-GO / RESTRICTED** — if Phase C requires exact-interior-`Moment` addressing, it must key
+  exemplars to `sealable(Moment) = synchronized ∧ ¬rng_mid_exit ∧ ¬unrepresentable` (measured
+  precision/recall **100 %/100 %**), refuse admission at non-`sealable` points, and carry the
+  **§4b rider**: to reproduce a probe-laden trajectory, materialize probe-free or replay the
+  exact `run(deadline)`+probe schedule (both deterministic).
+
+The mechanical threshold summary the harness prints is **NO-GO / RESTRICTED** (driven by the
+coarse grid + sub-threshold adversarial rate). **The integrator makes the Phase-C call.**
