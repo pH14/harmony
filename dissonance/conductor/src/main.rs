@@ -25,11 +25,17 @@
 //! taskset -c <core> cargo run -p conductor --release -- box --seeds 8 --runs 2
 //! ```
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use conductor::record::{
+    RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
+};
 use conductor::{SweepConfig, render_table, run_session, sweep_client, verify};
 use environment::{EnvSpec, FaultPolicy};
+use explorer::StreamId;
+use runtrace::{RetentionPolicy, TraceStore};
 
 #[derive(Parser)]
 #[command(
@@ -57,6 +63,17 @@ struct SweepArgs {
     /// Runs per seed (>= 2 proves bit-identical reproduction).
     #[arg(long, default_value_t = 2)]
     runs: usize,
+    /// Record each run's `RunTrace` into this directory (task 65). **Absent** =
+    /// the task-58 socket sweep (no recording). **Present** = the in-process
+    /// recording session, which drives `ControlServer::handle` directly so it can
+    /// drain the guest console between verbs.
+    #[arg(long)]
+    record: Option<PathBuf>,
+    /// Journal retention when `--record` is set: `all` | `interesting` |
+    /// `env-only` (default `interesting`). The tiny env sidecar is *always*
+    /// written; this gates the full journal bytes.
+    #[arg(long, default_value = "interesting")]
+    retain: String,
 }
 
 #[derive(Parser)]
@@ -115,10 +132,96 @@ fn main() -> ExitCode {
     }
 }
 
+/// Parse the `--retain` flag, reporting an unknown value loudly.
+fn parse_retain(s: &str) -> Option<RetentionPolicy> {
+    match RetentionPolicy::parse(s) {
+        Some(p) => Some(p),
+        None => {
+            eprintln!("[conductor] unknown --retain {s:?}: use all | interesting | env-only");
+            None
+        }
+    }
+}
+
+/// Print a recording run table and set the exit code from the task-65 gates.
+fn finish_recording(
+    mode: &str,
+    report: &RecordReport,
+    min_distinct: usize,
+    dir: &Path,
+) -> ExitCode {
+    print!("{}", render_record_table(report));
+    let failures = verify_record(report, min_distinct);
+    if failures.is_empty() {
+        println!(
+            "\n[conductor] {mode} RECORDING GATES PASS: per-seed byte-identical RunTraces, \
+             >= {min_distinct} distinct TraceIds, non-empty monotone records, lossless reload. \
+             Traces under {}",
+            dir.display()
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("\n[conductor] {mode} RECORDING GATES FAILED:");
+        for f in &failures {
+            eprintln!("  - {f}");
+        }
+        ExitCode::FAILURE
+    }
+}
+
+/// The portable recording demo: the mock guest's console is scraped into a
+/// `RunTrace` per run and persisted, then the task-65 gates are checked.
+fn run_mock_recording(args: &SweepArgs, dir: PathBuf, retain: RetentionPolicy) -> ExitCode {
+    let store = match TraceStore::open(&dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[conductor] cannot open trace store {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut server = match conductor::mock::server(conductor::mock::recording_fork_script()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[conductor] failed to compose the mock recording server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = RecordConfig {
+        sweep: SweepConfig {
+            seeds: seeds(args.seeds),
+            runs_per_seed: args.runs.max(2),
+            deadline_delta: None, // run each fork to its clean Hlt terminal
+            ..SweepConfig::default()
+        },
+        retain,
+        stream: StreamId(0),
+    };
+    println!(
+        "[conductor] mock recording: {} seeds x {} runs, retain={}, into {}\n",
+        cfg.sweep.seeds.len(),
+        cfg.sweep.runs_per_seed,
+        retain.as_str(),
+        dir.display()
+    );
+    match run_recording(&mut server, &store, &cfg) {
+        Ok(report) => finish_recording("mock", &report, 2, &dir),
+        Err(e) => {
+            eprintln!("[conductor] mock recording failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The portable demo: scripted mock guest, sweep, table, verdicts.
 fn run_mock(args: SweepArgs) -> ExitCode {
     if !seeds_ok(args.seeds, 2) {
         return ExitCode::FAILURE;
+    }
+    if let Some(dir) = args.record.clone() {
+        let Some(retain) = parse_retain(&args.retain) else {
+            return ExitCode::FAILURE;
+        };
+        return run_mock_recording(&args, dir, retain);
     }
     let cfg = SweepConfig {
         seeds: seeds(args.seeds),
@@ -217,14 +320,17 @@ mod boxrun {
     use std::io::Write;
     use std::process::ExitCode;
 
+    use conductor::record::{RecordConfig, run_recording};
     use conductor::{SweepConfig, run_session, sweep_client};
     use environment::{EnvSpec, FaultPolicy};
+    use explorer::StreamId;
+    use runtrace::TraceStore;
     use vmm_backend::Backend;
     use vmm_core::bringup::{BackendKind, boot_linux_selected};
     use vmm_core::control::{ControlServer, VmmFactory};
     use vmm_core::vmm::{Step, Vmm};
 
-    use super::{BoxArgs, finish, seeds};
+    use super::{BoxArgs, finish, finish_recording, parse_retain, seeds};
 
     /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
     const GUEST_RAM_LEN: usize = 2 << 30;
@@ -389,15 +495,59 @@ mod boxrun {
         });
         let mut server = ControlServer::new(live, factory);
 
+        // Postgres is interrupt-driven; the snapshot search may need many steps
+        // to find a sealable boundary at/after readiness. Generous retry budget
+        // (task 41 made mid-workload points snapshottable).
+        let (snapshot_retry_step, snapshot_max_attempts) = (1_000_000u64, 100_000usize);
+
+        // The task-65 box gate: record each run's RunTrace and check byte-
+        // stability. The readiness banner is already confirmed present above (the
+        // boot drive only returns Ok once the marker is seen), so the recorded
+        // per-run console is the post-snapshot workload.
+        if let Some(dir) = args.sweep.record.clone() {
+            let Some(retain) = parse_retain(&args.sweep.retain) else {
+                return ExitCode::FAILURE;
+            };
+            let store = match TraceStore::open(&dir) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[conductor] cannot open trace store {}: {e}", dir.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            let cfg = RecordConfig {
+                sweep: SweepConfig {
+                    seeds: seeds(args.sweep.seeds),
+                    runs_per_seed: args.sweep.runs.max(2),
+                    deadline_delta: Some(args.deadline_delta),
+                    snapshot_retry_step,
+                    snapshot_max_attempts,
+                },
+                retain,
+                stream: StreamId(0),
+            };
+            println!(
+                "[conductor] box recording: {} seeds x {} runs, retain={}, into {}\n",
+                cfg.sweep.seeds.len(),
+                cfg.sweep.runs_per_seed,
+                retain.as_str(),
+                dir.display()
+            );
+            return match run_recording(&mut server, &store, &cfg) {
+                Ok(report) => finish_recording("box", &report, 2, &dir),
+                Err(e) => {
+                    eprintln!("[conductor] box recording failed: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+
         let cfg = SweepConfig {
             seeds: seeds(args.sweep.seeds),
             runs_per_seed: args.sweep.runs.max(2),
             deadline_delta: Some(args.deadline_delta),
-            // Postgres is interrupt-driven; the snapshot search may need many
-            // steps to find a sealable boundary at/after readiness. Generous
-            // retry budget (task 41 made mid-workload points snapshottable).
-            snapshot_retry_step: 1_000_000,
-            snapshot_max_attempts: 100_000,
+            snapshot_retry_step,
+            snapshot_max_attempts,
         };
         let initial = EnvSpec::Seeded {
             seed: BOOT_SEED,

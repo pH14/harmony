@@ -195,8 +195,8 @@ pub fn explorer::Prng::next_u64(&mut self) -> u64
 impl<'de> serde_core::de::Deserialize<'de> for explorer::Prng
 pub fn explorer::Prng::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct explorer::Record
-pub explorer::Record::attrs: alloc::collections::btree::map::BTreeMap<alloc::string::String, explorer::Value>
-pub explorer::Record::kind: alloc::string::String
+pub explorer::Record::line: alloc::vec::Vec<u8>
+pub explorer::Record::stream: explorer::StreamId
 pub struct explorer::Reward
 pub explorer::Reward::new_cells: u64
 pub struct explorer::RunOutcome
@@ -233,6 +233,7 @@ pub struct explorer::StopMask(pub u32)
 impl explorer::StopMask
 pub const explorer::StopMask::ALL: explorer::StopMask
 pub const explorer::StopMask::NONE: explorer::StopMask
+pub struct explorer::StreamId(pub u16)
 pub struct explorer::TerminalOracle
 impl explorer::TerminalOracle
 pub fn explorer::TerminalOracle::new() -> Self

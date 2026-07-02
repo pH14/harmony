@@ -28,6 +28,10 @@ required-features = ["cli"]
 explorer = { path = "../explorer", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
+# The task-65 replay-plane journal/store the recording session populates.
+runtrace = { path = "../runtrace", version = "0.1.0" }
+# Typed recording-session errors (rule-5 whitelist).
+thiserror = "2"
 vmm-core = { path = "../../consonance/vmm-core", version = "0.1.0" }
 # `mock` is a full (not dev-) dependency: the demo binary's portable mode and
 # the loopback gates both compose the server around a scripted `MockBackend`
@@ -38,3 +42,5 @@ clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
 proptest = "1"
+# The recording gate records into a throwaway store dir per test.
+tempfile = "3"

@@ -82,7 +82,7 @@ pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{
     Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, ExemplarRef, Feature,
     FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent, Matchable, Moment, Oracle,
-    Record, Reward, RunTrace, Selector, Sensor, Tactic, Value, VirtualExemplar,
+    Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value, VirtualExemplar,
 };
 
 use serde::{Deserialize, Serialize};

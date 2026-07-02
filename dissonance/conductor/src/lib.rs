@@ -33,6 +33,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError};
 
 pub mod mock;
+pub mod record;
 
 /// Run one control session: `client` on a spawned thread against `server` on
 /// the calling thread, over a fresh socketpair. Returns the server-loop result

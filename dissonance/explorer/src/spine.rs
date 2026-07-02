@@ -194,15 +194,33 @@ pub struct GuestEvent {
     pub attrs: BTreeMap<String, Value>,
 }
 
-/// A decoded scrape-tier record (log lines, OTel spans, k8s events). The stream
-/// stays **empty until task 65** builds the RunTrace recorder; the slot exists
-/// so [`RunTrace`]'s shape is fixed now.
+/// A stable identifier for a raw byte stream a run emits: which console/log
+/// source a [`Record`] was scraped from — the guest serial console, a
+/// per-container log, an ingested telemetry `Console` recording. Stream
+/// numbering is a campaign convention (mirroring [`ChannelId`]); the recorder
+/// only requires stability, so equal runs stamp equal ids.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
+)]
+pub struct StreamId(pub u16);
+
+/// A decoded scrape-tier record: **raw and structural** — the concrete shape
+/// task 65 pins here (task 64 named the `records` slot in [`RunTrace`] but its
+/// fixed vocabulary left the record's shape unpinned). One record is exactly one
+/// newline-delimited line of a [`StreamId`]'s byte stream. `line` retains its
+/// trailing `\n` when the line was terminated, so a stream's records are a
+/// **lossless partition** of its bytes — every input byte lands in exactly one
+/// record, and a trailing unterminated line simply keeps no terminator. The
+/// bytes are kept **verbatim**: UTF-8-lossy decoding is a display concern, never
+/// applied to what is stored. Structural meaning (log vs. span, parsed fields)
+/// is a channel plugin's codebook (task 67), which *consumes* records — the
+/// recorder never produces anything richer than bytes.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct Record {
-    /// The record kind (a scrape-defined discriminator, e.g. `"log"`, `"span"`).
-    pub kind: String,
-    /// The record attributes, deterministically ordered.
-    pub attrs: BTreeMap<String, Value>,
+    /// Which byte stream this line was scraped from.
+    pub stream: StreamId,
+    /// The exact line bytes, including the terminating `\n` when present.
+    pub line: Vec<u8>,
 }
 
 /// One run, decoded and serializable — the unit the replay plane operates on.
@@ -637,8 +655,8 @@ mod tests {
             records: vec![(
                 Moment(50),
                 Record {
-                    kind: "log".into(),
-                    attrs: [("lsn".into(), Value::UInt(7))].into_iter().collect(),
+                    stream: StreamId(0),
+                    line: b"lsn=7\n".to_vec(),
                 },
             )],
         };
