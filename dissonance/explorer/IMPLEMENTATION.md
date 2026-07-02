@@ -55,8 +55,9 @@ is recorded now so that task needs zero spine change.
 ## Gates (all green, macOS)
 
 - Standard suite: `cargo build/nextest/clippy(-D warnings, --all-targets)/fmt
-  -p explorer --all-features`, `cargo deny check`. 56 tests + 22 unit tests,
-  suite ≈ 0.8 s. (Clippy still surfaces the three *pre-existing* workspace
+  -p explorer --all-features`, `cargo deny check`. 57 tests (unit +
+  integration), suite ≈ 0.8 s; rustdoc builds warning-free. (Clippy still
+  surfaces the three *pre-existing* workspace
   `clippy.toml` meta-diagnostics about `rand::*` paths pulled in by proptest;
   they cite no code here and do not fail `-D warnings`.)
 - **Decomposition proptests** (`tests/spine_invariants.rs`, ≥256 cases each):
@@ -221,8 +222,14 @@ is recorded now so that task needs zero spine change.
 ## Mutation testing
 
 `cargo mutants --no-shuffle --in-diff <branch diff>` (the CI `mutants` job's
-exact invocation): **187 mutants tested, 0 missed** (159 caught, 28 unviable —
-trait-object constructors and `Default` impls with no observable substitute).
-The golden pins (xorshift64\* sequence, fingerprint digest, AFL bucket ranges,
-`IdentityCells` key bytes, selector explore/exploit boundary, coverage-feature
-packing) carry the load.
+exact invocation): **91 mutants tested, 0 missed** (74 caught, 17 unviable —
+`Default::default()` substitutions on types without `Default`, e.g. `Answer`,
+deliberately non-`Default` per the task-12 note). The golden pins
+(xorshift64\* sequence, fingerprint digest, AFL bucket ranges, `IdentityCells`
+key bytes, selector explore/exploit boundary, coverage-feature packing, the
+per-fork seal-pairing pin) carry the load. A first pass missed six mutants;
+they were closed by restructuring rather than silencing: the seal-pairing walk
+lost its compensating rescan (every operator now observable), the coverage
+feature id switched to arithmetic packing (`edge*256+bucket` — the `|` form's
+operands never overlapped, making `|`→`^` equivalent), and `FeatureSet` gained
+negative assertions.
