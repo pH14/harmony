@@ -1,115 +1,170 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The engine: [`Explorer`] and the two loops, plus the [`RunOutcome`] of one
-//! Timeline and the [`Bug`] one Multiverse step can surface.
+//! The engine: [`Explorer`] and the two loops, composed over the spine.
 //!
 //! [`Explorer::timeline`] drives one run to a terminal stop, answering each
-//! surfaced decision through the [`Strategy`] and accumulating the reproducer
-//! [`Environment`]. [`Explorer::multiverse_step`] picks/mutates an environment,
-//! branches, runs one Timeline, scores novelty, admits the snapshot if novel
-//! (issuing `drop_snap` for evictions — corpus GC), and rebases any [`Bug`] to
-//! genesis before reporting. [`Explorer::explore`] runs the Multiverse for a
-//! bounded number of steps.
+//! surfaced decision through the open-loop [`Tactic`] and capturing every
+//! sealable point as parent-rooted exemplar material.
+//! [`Explorer::multiverse_step`] asks the [`Selector`] for the next branch
+//! base, materializes it, mints the next [`Environment`] through the
+//! [`EnvCodec`], runs one Timeline, folds the run into the [`Archive`]
+//! (timeline admission), rewards the selector, and judges the run with the
+//! [`Oracle`]. [`Explorer::explore`] runs the Multiverse for a bounded number
+//! of steps.
+//!
+//! ## Seals: the engine-side materialization cache
+//!
+//! A frontier entry is a *virtual* exemplar — kilobytes, never a resource. The
+//! engine keeps the expensive half separately: a **seal** (a live [`SnapId`])
+//! per materialized exemplar, minted eagerly at each admitted fork and re-minted
+//! on demand. Dropping seals ([`Explorer::evict_seals`]) is **reproducibility-
+//! safe** (spine invariant 4): a later exploit of a seal-less exemplar
+//! re-materializes it from genesis — `branch(genesis, entry.env)` replayed to
+//! `exemplar.at` under [`StopMask::NONE`] (a pinned replay, nothing surfaces) —
+//! and determinism makes the re-materialized state identical. Retention is a
+//! pure performance knob. (Suffix-only materialization from a live `parent` —
+//! the ≪-genesis fast path — is the frontier task's box-gated mechanism, not
+//! wired here.)
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use sha2::{Digest, Sha256};
-
-use crate::corpus::{Corpus, CovScore};
 use crate::error::MachineError;
+use crate::prng::Prng;
 use crate::seam::{EnvCodec, Machine};
-use crate::strategy::Strategy;
-use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason};
+use crate::spine::{
+    Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment,
+    Oracle, RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
+};
+use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason, VTime};
 
-/// The result of one Timeline: where it stopped, the genesis-or-branch-local
-/// reproducer [`Environment`] accumulated over it, and the coverage novelty it
-/// scored against the corpus at that moment.
+/// The result of one Timeline: where it stopped and the **branch-local**
+/// reproducer [`Environment`] accumulated over it
+/// ([`Machine::recorded_env`], keyed since the Timeline's branch origin). The
+/// enclosing Multiverse step rebases it to genesis-complete (via
+/// [`EnvCodec::compose`]) before it reaches a [`RunTrace`] or a [`Bug`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunOutcome {
     /// The terminal [`StopReason`] the Timeline ended at.
     pub stop: StopReason,
-    /// The reproducer accumulated over the run ([`Machine::recorded_env`]).
+    /// The reproducer accumulated over the run, keyed since the branch origin.
     pub env: Environment,
-    /// The coverage novelty scored against the corpus when the run ended.
-    pub coverage_novelty: CovScore,
 }
 
-/// A snapshot captured mid-run at a [`StopReason::SnapshotPoint`], paired with the
-/// **prefix** reproducer and coverage *as of that point* — not the whole run.
-/// Admitting this triple keeps a corpus entry's env the genesis-complete
-/// reproducer that produced *its snapshot* (so a child branched off it, or a
-/// [`Bug`] rebased through it via [`EnvCodec::compose`], keys correctly), and its
-/// score the novelty of the path *to* the snapshot.
-struct PendingSnapshot {
-    snap: SnapId,
-    /// `Machine::recorded_env` captured at the SnapshotPoint — the prefix that
-    /// produced `snap`, keyed from this Timeline's branch origin.
-    env: Environment,
-    /// `Machine::coverage` captured at the SnapshotPoint — the edges hit on the
-    /// path to `snap`.
+/// A sealable point captured mid-run, awaiting admission by the enclosing
+/// Multiverse step: the eagerly-minted seal, the fork moment, the **prefix**
+/// reproducer as of that point (not the whole run — a later branch's overrides
+/// would mis-key against the fork's decision-index origin), and the coverage
+/// view as of that point.
+struct PendingFork {
+    seal: SnapId,
+    at: Moment,
+    suffix: Environment,
     coverage: Vec<u8>,
 }
 
-/// A reproducer for a found bug. `env` is **genesis-complete**: `branch(genesis,
-/// env)` + re-run reproduces `stop` bit-for-bit. A bug found below a non-genesis
-/// corpus snapshot is rebased to genesis on report (the explorer composes the
-/// corpus base env with the branch-local delta), because overrides are keyed by
-/// decision index *since the branch* and a non-genesis base would mis-key them.
-/// The `fingerprint` is a `sha2` digest of the stop reason, used to dedup
-/// repeated discoveries of the same bug.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Bug {
-    /// A stable digest of the stop reason (for dedup).
-    pub fingerprint: [u8; 32],
-    /// The genesis-complete reproducer.
-    pub env: Environment,
-    /// The bug's stop reason (a [`StopReason::Crash`] or
-    /// [`StopReason::Assertion`]).
-    pub stop: StopReason,
+/// The spine composition an [`Explorer`] drives: one implementation per seam.
+/// [`Composition::defaults`] wires the behavior-equivalence defaults; a
+/// campaign swaps parts individually as later tasks ship them.
+pub struct Composition {
+    /// The inner loop's open-loop answering policy.
+    pub tactic: Box<dyn Tactic>,
+    /// The outer loop's branch-base policy.
+    pub selector: Box<dyn Selector>,
+    /// The frontier fold (timeline admission, best-per-cell, eviction).
+    pub archive: Box<dyn Archive>,
+    /// The trace oracle judging each finished run.
+    pub oracle: Box<dyn Oracle>,
+    /// The campaign-defined cell function.
+    pub cells: Box<dyn CellFn>,
+    /// The sensors deriving timeline features from each run's trace.
+    pub sensors: Vec<Box<dyn Sensor>>,
 }
 
-/// The exploration engine: a [`Machine`] driven by a [`Strategy`] over a
-/// [`Corpus`], minting environments through an [`EnvCodec`]. Owns the genesis
-/// snapshot every first-generation Timeline branches from.
-pub struct Explorer<M: Machine, S: Strategy> {
+impl Composition {
+    /// The behavior-equivalence default composition: decline every decision
+    /// ([`DeclineTactic`](crate::DeclineTactic)), explore/exploit the frontier
+    /// ([`ExploreExploitSelector`](crate::ExploreExploitSelector)), admit on
+    /// coverage novelty ([`CoverageArchive`](crate::CoverageArchive) over
+    /// [`IdentityCells`](crate::IdentityCells)), and judge terminal stops
+    /// ([`TerminalOracle`](crate::TerminalOracle)). Composed as the old
+    /// `Strategy` was, this reproduces the pre-refactor campaign
+    /// (`tests/behavior_equiv.rs`).
+    pub fn defaults() -> Self {
+        Self {
+            tactic: Box::new(crate::defaults::DeclineTactic::new()),
+            selector: Box::new(crate::defaults::ExploreExploitSelector::new()),
+            archive: Box::new(crate::defaults::CoverageArchive::new()),
+            oracle: Box::new(crate::defaults::TerminalOracle::new()),
+            cells: Box::new(crate::defaults::IdentityCells::new()),
+            sensors: Vec::new(),
+        }
+    }
+}
+
+/// The exploration engine: a [`Machine`] driven by a spine [`Composition`],
+/// minting environments through an [`EnvCodec`] from a single caller-seeded
+/// campaign stream. Owns the genesis snapshot every first-generation Timeline
+/// branches from, and the seal cache materialized exemplars branch from.
+pub struct Explorer<M: Machine> {
     machine: M,
-    strategy: S,
-    env: Box<dyn EnvCodec>,
-    corpus: Corpus,
+    codec: Box<dyn EnvCodec>,
+    tactic: Box<dyn Tactic>,
+    selector: Box<dyn Selector>,
+    archive: Box<dyn Archive>,
+    oracle: Box<dyn Oracle>,
+    cells: Box<dyn CellFn>,
+    sensors: Vec<Box<dyn Sensor>>,
+    /// The campaign stream: every seed/salt draw and every tactic/selector draw
+    /// comes from here, so a campaign is a pure function of `(seed, machine)`.
+    rng: Prng,
     genesis: SnapId,
     until: StopConditions,
-    /// Snapshots captured mid-run at [`StopReason::SnapshotPoint`]s this Timeline,
-    /// each with its prefix env + coverage, awaiting admission by the enclosing
-    /// [`multiverse_step`](Explorer::multiverse_step). A `Vec` (not a single slot)
-    /// so a Timeline that forks more than once admits/drops *every* snapshot and
-    /// never leaks a backend handle.
-    pending_snapshots: Vec<PendingSnapshot>,
+    /// Sealable points captured this Timeline, awaiting admission by the
+    /// enclosing [`multiverse_step`](Explorer::multiverse_step). A `Vec` (not a
+    /// single slot) so a Timeline that forks more than once admits/drops
+    /// *every* fork and never leaks a backend handle.
+    pending_forks: Vec<PendingFork>,
+    /// The materialization cache: frontier entry index → live seal. Never a
+    /// correctness surface — see [`evict_seals`](Explorer::evict_seals).
+    seals: BTreeMap<usize, SnapId>,
 }
 
-impl<M: Machine, S: Strategy> Explorer<M, S> {
+impl<M: Machine> Explorer<M> {
     /// Snapshot the freshly-spawned machine at its quiescent boot point → the
     /// **genesis [`SnapId`]**, the base every first-generation Timeline branches
-    /// from (the corpus starts empty, so step 1 has no admitted entry to branch
-    /// from). Returns [`Err`] if that initial snapshot fails (e.g. not
-    /// quiescent) — never panics or fabricates a base.
+    /// from (the frontier starts empty, so step 1 has no admitted exemplar to
+    /// branch from). Returns [`Err`] if that initial snapshot fails (e.g. not
+    /// quiescent) — never panics or fabricates a base. `seed` starts the
+    /// campaign stream.
     ///
     /// The default [`StopConditions`] surface every decision class and the
     /// snapshot point ([`StopMask::ALL`], no deadline) — the coverage-guided
     /// default. A pure seed-driven campaign sets [`StopMask::NONE`] via
     /// [`set_stop_conditions`](Explorer::set_stop_conditions).
-    pub fn new(machine: M, strategy: S, env: Box<dyn EnvCodec>) -> Result<Self, MachineError> {
+    pub fn new(
+        machine: M,
+        codec: Box<dyn EnvCodec>,
+        parts: Composition,
+        seed: u64,
+    ) -> Result<Self, MachineError> {
         let mut machine = machine;
         let genesis = machine.snapshot()?;
         Ok(Self {
             machine,
-            strategy,
-            env,
-            corpus: Corpus::new(),
+            codec,
+            tactic: parts.tactic,
+            selector: parts.selector,
+            archive: parts.archive,
+            oracle: parts.oracle,
+            cells: parts.cells,
+            sensors: parts.sensors,
+            rng: Prng::new(seed),
             genesis,
             until: StopConditions {
                 deadline: None,
                 on: StopMask::ALL,
             },
-            pending_snapshots: Vec::new(),
+            pending_forks: Vec::new(),
+            seals: BTreeMap::new(),
         })
     }
 
@@ -118,26 +173,25 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         self.genesis
     }
 
-    /// The corpus, for inspection.
-    pub fn corpus(&self) -> &Corpus {
-        &self.corpus
+    /// The archive's current frontier, for inspection.
+    pub fn frontier(&self) -> &Frontier {
+        self.archive.frontier()
     }
 
-    /// Re-capacitate the corpus — a tuning knob normally applied before
-    /// exploration begins. Any currently-kept entries are discarded, so their
-    /// snapshots are `drop_snap`'d first (never silently forgotten, which would
-    /// leak backend handles). The corpus-GC gate forces eviction at a small
-    /// capacity through this.
-    pub fn set_corpus_capacity(&mut self, capacity: usize) -> Result<(), MachineError> {
-        // Collect snaps first (ends the corpus borrow), then release each.
-        let snaps: Vec<SnapId> = (0..self.corpus.len())
-            .filter_map(|i| self.corpus.entry(i).map(|(snap, _, _)| snap))
-            .collect();
-        for snap in snaps {
-            self.machine.drop_snap(snap)?;
-        }
-        self.corpus = Corpus::with_capacity(capacity);
-        Ok(())
+    /// The archive itself (e.g. to consult its `admissible` predicate).
+    pub fn archive(&self) -> &dyn Archive {
+        self.archive.as_ref()
+    }
+
+    /// The live seal materializing frontier entry `r`, if any — `None` after
+    /// eviction (the entry re-materializes on its next exploit).
+    pub fn seal_of(&self, r: ExemplarRef) -> Option<SnapId> {
+        self.seals.get(&r.0).copied()
+    }
+
+    /// How many frontier entries currently hold a live seal.
+    pub fn sealed_count(&self) -> usize {
+        self.seals.len()
     }
 
     /// The [`StopConditions`] used by [`multiverse_step`](Explorer::multiverse_step)
@@ -158,131 +212,213 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         &mut self.machine
     }
 
+    /// Drop **every** live seal (the aggressive end of the retention knob).
+    /// Reproducibility-safe by construction: frontier entries are untouched,
+    /// and a later exploit re-materializes the state from genesis, identically
+    /// — the eviction-safety gate (`tests/spine_invariants.rs`) proves a
+    /// campaign under this-after-every-step finds byte-identical bugs and
+    /// admissions. A production archive trims seals by expected re-execution
+    /// cost instead (Agamotto economics); the safety property is the same.
+    pub fn evict_seals(&mut self) -> Result<(), MachineError> {
+        for (_, seal) in std::mem::take(&mut self.seals) {
+            self.machine.drop_snap(seal)?;
+        }
+        Ok(())
+    }
+
     /// **Inner loop.** Drive one run from `base` to a terminal stop, answering
-    /// each surfaced [`StopReason::Decision`] via the strategy and snapshotting
-    /// at any [`StopReason::SnapshotPoint`] (stored for the enclosing Multiverse
-    /// step to admit). Returns the terminal stop, the accumulated reproducer, and
-    /// its coverage novelty.
+    /// each surfaced [`StopReason::Decision`] via the open-loop [`Tactic`] and
+    /// sealing at any [`StopReason::SnapshotPoint`] (stored, with the prefix
+    /// env/coverage as of the fork, for the enclosing Multiverse step to
+    /// admit). Returns the terminal stop and the accumulated branch-local
+    /// reproducer.
     pub fn timeline(
         &mut self,
         base: SnapId,
         env: &Environment,
         until: &StopConditions,
     ) -> Result<RunOutcome, MachineError> {
-        // Drop any snapshots left pending by a prior *direct* `timeline` call
+        // Drop any forks left pending by a prior *direct* `timeline` call
         // (only `multiverse_step` admits/drains them) so a repeated or aborted
         // direct run never leaks a backend handle — rather than a bare `clear()`
-        // that would forget the `SnapId` without `drop_snap`.
-        for pending in std::mem::take(&mut self.pending_snapshots) {
-            self.machine.drop_snap(pending.snap)?;
+        // that would forget the seal without `drop_snap`.
+        for pending in std::mem::take(&mut self.pending_forks) {
+            self.machine.drop_snap(pending.seal)?;
         }
         self.machine.branch(base, env)?;
         let mut resolve: Option<Answer> = None;
         loop {
             let stop = self.machine.run(until, resolve.as_ref())?;
             match stop {
-                StopReason::Decision { ref ctx, .. } => {
+                StopReason::Decision { vtime, id, ref ctx } => {
                     // Answer the surfaced decision and feed it back on the next
-                    // `run`. Disjoint field borrows: strategy (mut), machine
-                    // (shared, for the live coverage map).
-                    let answer = self.strategy.choose(ctx, self.machine.coverage());
+                    // `run`. The DecisionPoint is the tactic's WHOLE live input
+                    // surface (open-loop, spine invariant 1): no coverage, no
+                    // archive state.
+                    let pt = DecisionPoint {
+                        at: Moment(vtime.0),
+                        id,
+                        ctx: ctx.clone(),
+                    };
+                    let answer = self.tactic.decide(&pt, &mut self.rng);
                     resolve = Some(answer);
                 }
-                StopReason::SnapshotPoint { .. } => {
-                    // Fork point: capture a branchable base for the corpus and
-                    // continue the run past it. The env/coverage are captured *now*
-                    // (the prefix as of this snapshot), not at the terminal stop —
-                    // admitting the whole-run env would mis-key a later branch's
-                    // overrides against the snapshot's decision-index origin.
-                    let snap = self.machine.snapshot()?;
-                    // If capturing the prefix env fails after the snapshot already
-                    // succeeded, the handle would leak — release it (best effort,
-                    // preserving the original error) before propagating.
-                    let prefix_env = match self.machine.recorded_env() {
+                StopReason::SnapshotPoint { vtime } => {
+                    // Sealable point: seal eagerly (the materialization the
+                    // admitted exemplar will branch from) and continue the run
+                    // past it. The env/coverage are captured *now* (the prefix
+                    // as of this fork), not at the terminal stop — admitting
+                    // the whole-run env would mis-key a later branch's
+                    // overrides against the fork's decision-index origin.
+                    let seal = self.machine.snapshot()?;
+                    // If capturing the prefix env fails after the seal already
+                    // succeeded, the handle would leak — release it (best
+                    // effort, preserving the original error) before propagating.
+                    let suffix = match self.machine.recorded_env() {
                         Ok(env) => env,
                         Err(e) => {
-                            let _ = self.machine.drop_snap(snap);
+                            let _ = self.machine.drop_snap(seal);
                             return Err(e);
                         }
                     };
-                    let prefix_coverage = self.machine.coverage().to_vec();
-                    self.pending_snapshots.push(PendingSnapshot {
-                        snap,
-                        env: prefix_env,
-                        coverage: prefix_coverage,
+                    let coverage = self.machine.coverage().to_vec();
+                    self.pending_forks.push(PendingFork {
+                        seal,
+                        at: Moment(vtime.0),
+                        suffix,
+                        coverage,
                     });
                     resolve = None;
                 }
                 terminal => {
                     let env = self.machine.recorded_env()?;
-                    let coverage_novelty = self.corpus.novelty(self.machine.coverage());
                     return Ok(RunOutcome {
                         stop: terminal,
                         env,
-                        coverage_novelty,
                     });
                 }
             }
         }
     }
 
-    /// **Outer loop.** One Multiverse step: pick/mutate an environment, branch,
-    /// run one Timeline, admit the snapshot if novel (issuing `drop_snap` for
-    /// evictions), and return a rebased-to-genesis [`Bug`] if the run crashed or
-    /// violated an assertion. A [`MachineError`] aborts the step loudly and is
-    /// never reported as a bug.
+    /// **Outer loop.** One Multiverse step: the [`Selector`] picks the branch
+    /// base (a frontier exemplar, or genesis to explore), the engine
+    /// materializes it and mints the next environment through the codec, runs
+    /// one Timeline, admits the run's sealable forks into the [`Archive`]
+    /// (dropping the seals of everything not admitted), rewards the selector,
+    /// and returns the [`Oracle`]'s verdict. A [`MachineError`] aborts the step
+    /// loudly and is never reported as a bug.
     pub fn multiverse_step(&mut self) -> Result<Option<Bug>, MachineError> {
         let until = self.until.clone();
-        // Disjoint field borrows: strategy (mut), corpus (shared), env (shared).
-        let (base_snap, branch_env) =
-            self.strategy
-                .next_env(&self.corpus, self.genesis, self.env.as_ref());
 
+        // 1. Pick the branch base and mint the environment. Draw order (seed on
+        //    explore; pick inside `choose`, then salt, on exploit) mirrors the
+        //    pre-refactor god-object stream exactly — the equivalence gate pins
+        //    it.
+        let choice = self.selector.choose(self.archive.frontier(), &mut self.rng);
+        let (base_snap, base_env, minted, branch_env) = match choice {
+            None => {
+                let seed = self.rng.next_u64();
+                (self.genesis, None, seed, self.codec.seeded(seed))
+            }
+            Some(r) => {
+                let entry_env = match self.archive.frontier().get(r) {
+                    Some(entry) => entry.env.clone(),
+                    // A stale/foreign reference is engine misuse by the
+                    // selector — surfaced loudly, never papered over.
+                    None => return Err(MachineError::UnknownExemplar(r.0 as u64)),
+                };
+                let salt = self.rng.next_u64();
+                let env = self.codec.mutate(&entry_env, salt);
+                let snap = self.materialize(r)?;
+                (snap, Some(entry_env), salt, env)
+            }
+        };
+
+        // 2. One Timeline.
         let outcome = self.timeline(base_snap, &branch_env, &until)?;
 
-        let bug = if outcome.stop.is_bug() {
-            Some(self.report(base_snap, &outcome))
-        } else {
-            None
+        // 3. Rebase the run to genesis-complete (the task-93 compose ruling):
+        //    a genesis-rooted run's reproducer already is; a run branched below
+        //    an exemplar composes through the entry's genesis-complete env.
+        let genesis_env = match &base_env {
+            None => outcome.env.clone(),
+            Some(base) => self.codec.compose(base, &outcome.env),
+        };
+        let trace = RunTrace {
+            terminal: outcome.stop.clone(),
+            env: genesis_env,
+            coverage: Some(CoverageView {
+                map: self.machine.coverage().to_vec(),
+            }),
+            events: Vec::new(),
+            records: Vec::new(),
         };
 
-        // A snapshot forked below a non-genesis base is captured branch-local to
-        // *this* Timeline's `base_snap`; to keep the corpus invariant that every
-        // entry's env is genesis-complete, rebase it through that base's
-        // (genesis-complete) env exactly as `report` rebases a bug. Capture the
-        // base env *before* the admit loop, which may evict it.
-        let base_genesis: Option<Environment> = if base_snap == self.genesis {
-            None
-        } else {
-            self.corpus.base_env(base_snap).cloned()
-        };
-
-        // Every snapshot this run forked is offered to the corpus with the prefix
-        // env/coverage captured at its fork point; a non-novel one is dropped
-        // immediately, and any entry evicted by an admission is dropped after (GC).
-        // Draining the whole `Vec` means no forked handle is ever leaked.
-        for pending in std::mem::take(&mut self.pending_snapshots) {
-            let env = if base_snap == self.genesis {
-                pending.env
-            } else if let Some(base) = &base_genesis {
-                self.env.compose(base, &pending.env)
-            } else {
-                // The base was evicted before we could rebase — we cannot form a
-                // genesis-complete entry, so drop the snapshot rather than admit a
-                // branch-local one (which would break genesis replay downstream).
-                self.machine.drop_snap(pending.snap)?;
-                continue;
+        // 4. Build the fork candidates: parent-rooted exemplars plus their
+        //    genesis-complete envs (the suffix-chain fold, memoized here so the
+        //    schema-blind archive never composes).
+        let pending = std::mem::take(&mut self.pending_forks);
+        let mut forks: Vec<Fork> = Vec::with_capacity(pending.len());
+        let mut fork_seals: Vec<SnapId> = Vec::with_capacity(pending.len());
+        for p in pending {
+            let env = match &base_env {
+                None => p.suffix.clone(),
+                Some(base) => self.codec.compose(base, &p.suffix),
             };
-            let novel = self.corpus.admit(pending.snap, env, &pending.coverage);
-            if !novel {
-                self.machine.drop_snap(pending.snap)?;
+            forks.push(Fork {
+                exemplar: VirtualExemplar {
+                    parent: base_snap,
+                    seed: minted,
+                    suffix: p.suffix,
+                    at: p.at,
+                },
+                env,
+                coverage: Some(CoverageView { map: p.coverage }),
+            });
+            fork_seals.push(p.seal);
+        }
+
+        // 5. Timeline admission. The archive appends admitted exemplars to the
+        //    frontier; pair each new entry back to its fork (admission preserves
+        //    fork order) to keep its seal, and drop every seal not admitted.
+        let before = self.archive.frontier().len();
+        let reward = self
+            .archive
+            .admit(&trace, &forks, self.cells.as_ref(), &self.sensors);
+        let mut keep: BTreeMap<usize, SnapId> = BTreeMap::new();
+        {
+            let frontier = self.archive.frontier();
+            let mut fi = 0usize;
+            for idx in before..frontier.len() {
+                let Some(entry) = frontier.get(ExemplarRef(idx)) else {
+                    break;
+                };
+                while fi < forks.len() && forks[fi].exemplar != entry.exemplar {
+                    fi += 1;
+                }
+                if fi < forks.len() {
+                    keep.insert(fi, fork_seals[fi]);
+                    self.seals.insert(idx, fork_seals[fi]);
+                    fi += 1;
+                }
             }
         }
-        for evicted in self.corpus.drain_evicted() {
-            self.machine.drop_snap(evicted)?;
+        for (i, seal) in fork_seals.iter().enumerate() {
+            if !keep.contains_key(&i) {
+                self.machine.drop_snap(*seal)?;
+            }
         }
 
-        Ok(bug)
+        // 6. Retention policy (reproducibility-safe; a no-op for the default
+        //    archive) and the selector's reward hook.
+        self.archive.evict();
+        if let Some(r) = choice {
+            self.selector.reward(r, reward);
+        }
+
+        // 7. The oracle's verdict over the finished, genesis-complete trace.
+        Ok(self.oracle.judge(&trace))
     }
 
     /// Run the Multiverse for `steps` steps; return the distinct bugs found
@@ -302,122 +438,36 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         Ok(bugs)
     }
 
-    /// Build a [`Bug`] from a terminal bug stop, rebasing its env to genesis.
-    /// A genesis-rooted run's reproducer is already genesis-complete; a run
-    /// branched off a corpus snapshot is composed with that snapshot's
-    /// genesis-complete base env (re-keying the branch-local overrides).
-    fn report(&self, base_snap: SnapId, outcome: &RunOutcome) -> Bug {
-        let env = if base_snap == self.genesis {
-            outcome.env.clone()
-        } else if let Some(base) = self.corpus.base_env(base_snap) {
-            self.env.compose(base, &outcome.env)
-        } else {
-            // The base was evicted before this child reported. Its branch-local
-            // env still reproduces from that snapshot, but not from genesis;
-            // surfaced as-is rather than dropping a real bug. (Tests size the
-            // corpus so live bases are never evicted — see IMPLEMENTATION.md.)
-            outcome.env.clone()
+    /// The seal materializing frontier entry `r`, minting one if needed. A live
+    /// seal is returned as-is (the cheap path — the seal minted eagerly at the
+    /// fork, or by a previous re-materialization). Otherwise the state is
+    /// **re-materialized from genesis**: `branch(genesis, entry.env)` replayed
+    /// to `exemplar.at` under [`StopMask::NONE`] — a pinned replay (recorded
+    /// overrides pin what the run answered; the seed answers the rest; nothing
+    /// surfaces) — then sealed. Determinism makes the result identical to the
+    /// evicted seal, which is why eviction is never a correctness concern.
+    fn materialize(&mut self, r: ExemplarRef) -> Result<SnapId, MachineError> {
+        if let Some(&seal) = self.seals.get(&r.0) {
+            return Ok(seal);
+        }
+        let (env, at) = match self.archive.frontier().get(r) {
+            Some(entry) => (entry.env.clone(), entry.exemplar.at),
+            None => return Err(MachineError::UnknownExemplar(r.0 as u64)),
         };
-        Bug {
-            fingerprint: fingerprint(&outcome.stop),
-            env,
-            stop: outcome.stop.clone(),
-        }
-    }
-}
-
-/// A stable 32-byte digest of a bug stop, so the same crash/assertion dedups
-/// across the many environments that reach it. Domain-separated by a leading tag;
-/// only the bug-bearing variants are expected, but every variant hashes totally.
-fn fingerprint(stop: &StopReason) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"dissonance.explorer.bug.v1");
-    match stop {
-        StopReason::Crash { vtime, info } => {
-            h.update([0xC1]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(info);
-        }
-        StopReason::Assertion { vtime, id, data } => {
-            h.update([0xA1]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(id.to_le_bytes());
-            h.update(data);
-        }
-        // Non-bug stops are never fingerprinted in practice; hash their tag so
-        // the function stays total.
-        StopReason::Deadline { vtime } => {
-            h.update([0xD1]);
-            h.update(vtime.0.to_le_bytes());
-        }
-        StopReason::Quiescent { vtime } => {
-            h.update([0x01]);
-            h.update(vtime.0.to_le_bytes());
-        }
-        StopReason::Decision { vtime, id, ctx } => {
-            h.update([0xDE]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(id.to_le_bytes());
-            h.update(ctx);
-        }
-        StopReason::SnapshotPoint { vtime } => {
-            h.update([0x5A]);
-            h.update(vtime.0.to_le_bytes());
-        }
-    }
-    h.finalize().into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::fingerprint;
-    use crate::{StopReason, VTime};
-
-    /// The bug fingerprint is the pinned `sha2` digest of the stop reason — locks
-    /// the domain tag + field layout and kills the `[0;32]`/`[1;32]` mutants.
-    #[test]
-    fn fingerprint_is_a_pinned_digest() {
-        let crash = StopReason::Crash {
-            vtime: VTime(80),
-            info: vec![2, 4],
+        self.machine.branch(self.genesis, &env)?;
+        let until = StopConditions {
+            deadline: Some(VTime(at.0)),
+            on: StopMask::NONE,
         };
-        let golden: [u8; 32] = [
-            0x87, 0x98, 0x12, 0xff, 0x07, 0x03, 0x95, 0x3f, 0x5d, 0x41, 0x10, 0xd9, 0xb7, 0xc9,
-            0x06, 0xcc, 0xfc, 0xf9, 0xc2, 0xeb, 0x81, 0x71, 0x5e, 0xd6, 0xaf, 0x1b, 0x5c, 0x21,
-            0x5c, 0x23, 0x6e, 0x16,
-        ];
-        assert_eq!(fingerprint(&crash), golden);
-        assert_ne!(fingerprint(&crash), [0u8; 32]);
-        assert_ne!(fingerprint(&crash), [1u8; 32]);
-    }
-
-    /// Two different stops fingerprint differently (so dedup keeps distinct bugs).
-    #[test]
-    fn fingerprint_distinguishes_stops() {
-        let crash = StopReason::Crash {
-            vtime: VTime(80),
-            info: vec![2, 4],
-        };
-        let assertion = StopReason::Assertion {
-            vtime: VTime(80),
-            id: 5,
-            data: vec![3],
-        };
-        // Different kind, different vtime, and different info each shift the digest.
-        assert_ne!(fingerprint(&crash), fingerprint(&assertion));
-        assert_ne!(
-            fingerprint(&crash),
-            fingerprint(&StopReason::Crash {
-                vtime: VTime(81),
-                info: vec![2, 4],
-            })
-        );
-        assert_ne!(
-            fingerprint(&crash),
-            fingerprint(&StopReason::Crash {
-                vtime: VTime(80),
-                info: vec![2, 5],
-            })
-        );
+        // Nothing can surface under StopMask::NONE; loop defensively until the
+        // terminal (Deadline) stop all the same.
+        loop {
+            if self.machine.run(&until, None)?.is_terminal() {
+                break;
+            }
+        }
+        let seal = self.machine.snapshot()?;
+        self.seals.insert(r.0, seal);
+        Ok(seal)
     }
 }

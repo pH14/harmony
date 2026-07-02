@@ -34,4 +34,10 @@ pub enum MachineError {
     /// not parse (bad version or malformed). Carries the declared blob version.
     #[error("backend rejected environment blob (version {0})")]
     BadEnvironment(u16),
+    /// A [`Selector`](crate::Selector) chose an
+    /// [`ExemplarRef`](crate::ExemplarRef) the frontier does not hold — engine
+    /// misuse by the policy, surfaced loudly rather than papered over. Carries
+    /// the offending entry index.
+    #[error("selector chose an unknown frontier exemplar {0}")]
+    UnknownExemplar(u64),
 }
