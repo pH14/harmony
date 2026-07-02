@@ -786,21 +786,26 @@ impl<B: Backend> ControlServer<B> {
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
-                    // A crossed fault (`m < vns`: the guest ran past it) poisons — it
-                    // can never apply at its recorded count. But every remaining
-                    // future/at-terminal fault (`m >= vns`) is now **unreachable**:
-                    // the guest has halted, so it never applies — drop it (round-5
-                    // item 2), else a later `snapshot` is permanently
-                    // `SnapshotWhileArmed`. `recorded` carries only APPLIED faults, so
-                    // the reproducer stays faithful (replay halts at the same point).
-                    if let Some((&m, _)) = self.schedule.range(..vns).next() {
+                    // **Poison loud on ANY staged fault at a terminal (PR #51
+                    // round-6, supersedes round-5 item 2).** A natural terminal exit
+                    // (HLT / debug) is *not* a V-time intercept, so `effective_vns`
+                    // here is only the last-intercept **lower bound** — nothing still
+                    // staged is provably uncrossed (with `deadline < m` the arrival is
+                    // never armed and the guest can run past `m` to the terminal). The
+                    // round-5 silent `clear()` could therefore drop an accepted perturb
+                    // that *was* crossed — breaking exact-arrival-or-loud. The safe
+                    // semantic is LOUD: poison whenever any fault remains staged, and
+                    // let the client rewind (`branch`/`replay` clears the schedule —
+                    // which campaign flows do anyway, so the task-60 crash path stays
+                    // viable and the round-5 `SnapshotWhileArmed` trap stays fixed: a
+                    // named, rewindable error instead of a silent stuck state).
+                    if let Some((&m, _)) = self.schedule.iter().next() {
                         self.schedule_poisoned = Some((m, vns));
                         return Ok(Err(ControlError::ScheduleUnsatisfiable {
                             moment: m,
                             vtime: vns,
                         }));
                     }
-                    self.schedule.clear();
                     return Ok(Ok(Reply::Stop(map_terminal(reason, vns))));
                 }
             }
@@ -2279,38 +2284,39 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_stop_drops_unreachable_future_faults() {
-        // PR #51 round-5 item 2: a run that reaches a terminal stop with a staged
-        // FUTURE fault (m > vns) drops it — the guest halted and it can never apply,
-        // so a later `snapshot` must NOT be permanently `SnapshotWhileArmed`. (Task-60
-        // crash campaigns stage faults into runs that terminate before the Moment.)
+    fn a_terminal_stop_with_a_staged_fault_poisons_loud() {
+        // PR #51 round-6 item 1 (supersedes round-5 item 2): a natural terminal exit
+        // is NOT a V-time intercept, so `effective_vns` is only a lower bound —
+        // nothing staged is provably uncrossed. So a terminal stop with ANY fault
+        // still staged **poisons loud** (a named, rewindable error) rather than
+        // silently dropping a possibly-crossed accepted perturb. The round-5
+        // `SnapshotWhileArmed` trap stays fixed: poison is rewindable, not a stuck
+        // state. Task-60 crash campaigns rewind (`branch`/`replay`) anyway.
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
+        let base = snap(&mut s);
         // The live VM is at V-time 500 and HLTs (terminal) on the next step. Stage a
-        // fault far beyond that terminal point.
+        // fault beyond that terminal point.
         stage_corrupt(&mut s, 100_000);
-        // A snapshot now is refused (a fault is staged).
-        assert_eq!(
-            s.handle(&Request::Snapshot).unwrap(),
-            Err(ControlError::SnapshotWhileArmed)
-        );
-        // Run to the terminal HLT: the unreachable future fault is dropped.
-        assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
-        assert_eq!(
-            s.recorded_env().host_faults().count(),
-            0,
-            "the unreachable future fault never applied"
-        );
-        // A snapshot is **no longer `SnapshotWhileArmed`** — the schedule was cleared
-        // at the terminal, so the client is no longer permanently blocked. (The
-        // terminal HLT is not itself a V-time-synchronized snapshot point, so the
-        // reply is `NotQuiescent` — a different, run-a-little-further condition — but
-        // crucially NOT the armed-schedule block this item is about.)
-        assert_ne!(
-            s.handle(&Request::Snapshot).unwrap(),
-            Err(ControlError::SnapshotWhileArmed),
-            "the future fault was dropped, so the schedule is no longer armed"
-        );
+        // Running to the terminal HLT poisons (the fault is still staged).
+        let poisoned = Err(ControlError::ScheduleUnsatisfiable {
+            moment: 100_000,
+            vtime: 500,
+        });
+        assert_eq!(run_all_res(&mut s), poisoned);
+        // The fault never applied (recorded stays empty).
+        assert_eq!(s.recorded_env().host_faults().count(), 0);
+        // Poisoned: re-run + snapshot both reject with the named, rewindable error
+        // (not a silent stuck `SnapshotWhileArmed`).
+        assert_eq!(run_all_res(&mut s), poisoned);
+        assert_eq!(s.handle(&Request::Snapshot).unwrap(), poisoned);
+        // A rewind (replay of the pristine base) clears the poison — the session runs
+        // and snapshots cleanly again.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(matches!(
+            run_all_res(&mut s),
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
     }
 
     #[test]
@@ -2758,7 +2764,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(160))]
+        #![proptest_config(ProptestConfig::with_cases(256))]
 
         /// The **structural invariant** (PR #51 round 2): after any random sequence
         /// of `perturb`/`run`/`branch`/`replay` on the exact-arrival mock, the
@@ -2971,7 +2977,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(160))]
+        #![proptest_config(ProptestConfig::with_cases(256))]
 
         /// HLT-before-fault reproduction net (PR #51 round-4): the same
         /// recorded-env-reproduces invariant as the exact-arrival proptest, but every

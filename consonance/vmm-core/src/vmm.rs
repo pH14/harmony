@@ -2229,34 +2229,36 @@ impl<B: Backend> Vmm<B> {
         if self.vtime.is_none() || !self.backend.capabilities().deterministic_tsc {
             return Ok(IdleAction::Terminal);
         }
-        let Some(lapic) = self.lapic.as_ref() else {
-            return Ok(IdleAction::Terminal);
-        };
-        // The guest must be able to take an interrupt.
+        // The guest must be resumable (able to take an interrupt / be woken).
         if self.backend.save()?.regs.rflags & RFLAGS_IF == 0 {
             return Ok(IdleAction::Terminal);
         }
-        // (a) A deliverable interrupt already pending in the IRR → re-enter, no clock
-        //     change (peek_interrupt already does the vector-validity + TPR/PPR
-        //     arbitration). Takes precedence over a future deadline.
-        if lapic.peek_interrupt().is_some() {
+        // (a) A deliverable LAPIC interrupt already pending in the IRR → re-enter, no
+        //     clock change (peek_interrupt does the vector-validity + TPR/PPR
+        //     arbitration). LAPIC-only; takes precedence over a future deadline.
+        if let Some(lapic) = self.lapic.as_ref()
+            && lapic.peek_interrupt().is_some()
+        {
             return Ok(IdleAction::DeliverPending);
         }
         // (b) No pending wake, but a future scheduled event → jump to the FIRST one.
         //     Two competing discrete events wake an idle guest, and V-time must land
         //     at whichever comes first (PR #51 round-4): the deliverable LAPIC timer
         //     **and** a staged host-fault arrival ([`arm_arrival`](Vmm::arm_arrival)).
-        //     Jumping straight to the timer (as before) would sail *past* an arrival
-        //     `Moment` between here and the timer — applying the fault late (or
-        //     landing an `InjectInterrupt` at the timer tick, not the requested
-        //     `Moment`), breaking the exact-arrival contract enforced on the
-        //     execution path. So fold them the same way `run_until_deadline` folds
-        //     arrival into the run: jump to `min(timer, arrival)`, waking at the
-        //     arrival to apply. Either alone also wakes (an `InjectInterrupt` staged
-        //     with no timer is itself the wake event).
-        let timer = lapic
-            .next_timer_deadline()
-            .filter(|_| lapic.armed_timer_deliverable());
+        //     Fold them the same way `run_until_deadline` folds arrival into the run:
+        //     jump to `min(timer, arrival)`, waking at the arrival to apply.
+        //
+        //     **The arrival wakes independent of the LAPIC (PR #51 round-6).** A host
+        //     fault is a host-plane event, not a guest interrupt — so a V-time-wired
+        //     guest with **no LAPIC** that idles before a staged `Moment` still wakes
+        //     at the arrival to apply it, rather than going `Terminal` and silently
+        //     never applying an accepted perturb. The timer half stays LAPIC-gated
+        //     (there is no timer without a LAPIC). With neither a LAPIC timer nor a
+        //     staged arrival the guest is terminal — byte-identical to before.
+        let timer = self.lapic.as_ref().and_then(|l| {
+            l.next_timer_deadline()
+                .filter(|_| l.armed_timer_deliverable())
+        });
         let wake = match (timer, self.arrival_vns()) {
             (Some(t), Some(a)) => Some(t.min(a)),
             (only, None) | (None, only) => only,
@@ -5316,6 +5318,31 @@ mod tests {
         );
         assert_eq!(v.idle_landings(), &[4242]);
         assert_eq!(v.effective_vns(), Some(4242));
+    }
+
+    #[test]
+    fn idle_hlt_with_no_lapic_wakes_at_a_staged_arrival() {
+        // PR #51 round-6 item 2: a host-fault arrival is a host-plane event, not a
+        // guest interrupt, so it wakes the idle jump **independent of the LAPIC gate**.
+        // A V-time-wired guest with NO LAPIC that idles (HLT, IF=1) before a staged
+        // `Moment` must still wake at the arrival to apply it — otherwise it goes
+        // Terminal and silently never applies an accepted perturb.
+        let mut mock = configured_mock(vec![Exit::Hlt]);
+        mock.set_state(if_set_state());
+        let mut v = Vmm::new(mock, GuestRam::new(0x1000).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 1).unwrap(),
+        );
+        // NO `wire_lapic` — a deterministic V-time backend without a userspace xAPIC.
+        assert!(!v.lapic_wired(), "no LAPIC in this test");
+        assert!(v.can_arm_arrival(), "V-time + deterministic ⇒ armable");
+        assert!(v.arm_arrival(3333), "arms the arrival");
+        assert!(
+            matches!(v.step().unwrap(), Step::Continued),
+            "the idle HLT wakes at the arrival even with no LAPIC"
+        );
+        assert_eq!(v.idle_landings(), &[3333]);
+        assert_eq!(v.effective_vns(), Some(3333));
     }
 
     #[test]

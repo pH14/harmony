@@ -3462,3 +3462,39 @@ branch), `a_terminal_stop_drops_unreachable_future_faults` (terminal → not `Sn
 `a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned` (`m == vns`, `d < vns` → applies +
 `Deadline`, no poison), `a_branch_env_moment_occupies_the_schedule_for_ruling_b`. No wire/public-api
 changes (all internal; `SnapshotWhileArmed`/`PerturbMomentTaken`/`ScheduleUnsatisfiable` already exist).
+
+### PR #51 round 6 — position-uncertainty at terminals + the no-LAPIC idle gap
+
+Round-5's terminal-drop turned out unsound; two more edges plus a proptest-floor fix.
+
+1. **Terminal-with-a-staged-fault now poisons LOUD (supersedes round-5 item 2).** A natural terminal
+   exit (HLT / debug) is **not** a V-time intercept, so `effective_vns` there is only the last-
+   intercept lower bound — nothing still staged is provably uncrossed (with `deadline < m` the arrival
+   is never armed and the guest can run past `m` to the terminal). Round-5's silent `schedule.clear()`
+   could therefore drop an accepted perturb that *was* crossed, breaking exact-arrival-or-loud. The
+   safe semantic is loud: a terminal stop with **any** fault still staged sets the poison latch and
+   returns `ScheduleUnsatisfiable`. The client rewinds (`branch`/`replay` clears the schedule — which
+   campaign flows do anyway, so the task-60 crash path stays viable), and the round-5
+   `SnapshotWhileArmed` trap stays fixed: a named, rewindable error instead of a silent stuck state.
+2. **The idle arrival-wake is now independent of the LAPIC gate.** `check_fault_admissible` accepts
+   `CorruptMemory` on any V-time-wired deterministic backend including no-LAPIC VMs, but `idle_action`
+   early-returned `Terminal` when `self.lapic` was `None` — so a no-LAPIC guest that idles (HLT, IF=1)
+   before a staged `Moment` went terminal and the accepted fault silently never applied. A host fault
+   is a host-plane event, not a guest interrupt, so it now wakes the idle jump independent of the
+   LAPIC: `idle_action` keeps the V-time + `IF` gates, makes the LAPIC-pending-IRQ and LAPIC-timer
+   checks `Option`-guarded, and jumps to `min(timer, arrival)` with the **arrival alone** waking a
+   no-LAPIC guest. Byte-identical when nothing is staged (arrival `None` ⇒ same terminal/timer
+   result as before).
+3. **Proptest case floors raised 160 → 256** (`tasks/00-CONVENTIONS.md`'s floor) for the
+   verb-sequence and idle-HLT-before-fault reproduction proptests.
+
+**Tests:** `a_terminal_stop_with_a_staged_fault_poisons_loud` (rewrites the round-5 terminal test:
+terminal + staged fault → poison, re-run/snapshot reject, rewind recovers), and (vmm.rs)
+`idle_hlt_with_no_lapic_wakes_at_a_staged_arrival` (a no-LAPIC V-time guest wakes at the arrival).
+No wire/public-api changes.
+
+**Escalated (not changed):** the `Moment` axis contradiction — `environment/src/host.rs` documents
+`Moment` as "retired instructions" while the entire enforcement plane (floors from `effective_vns`,
+the apply ceiling, the `vns == Moment` recording invariant) treats it as the derived V-time axis, so
+`work_for_vns(moment)` is correct under the enforcement-plane reading (they coincide at ratio 1). The
+integrator picks the axis (likely amending the host.rs doc); not this PR's call.
