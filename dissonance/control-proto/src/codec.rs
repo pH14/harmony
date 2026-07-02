@@ -81,6 +81,8 @@ const CE_MALFORMED_ANSWER: u8 = 8;
 const CE_PROTOCOL: u8 = 9;
 const CE_UNSUPPORTED: u8 = 10;
 const CE_PERTURB_OUT_OF_RANGE: u8 = 11;
+const CE_PERTURB_PAST_MOMENT: u8 = 12;
+const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -516,6 +518,15 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             put_u64(w, *gpa);
             put_u64(w, *ram_len);
         }
+        Ce::PerturbPastMoment { at, floor } => {
+            w.push(CE_PERTURB_PAST_MOMENT);
+            put_u64(w, *at);
+            put_u64(w, *floor);
+        }
+        Ce::PerturbMomentTaken { at } => {
+            w.push(CE_PERTURB_MOMENT_TAKEN);
+            put_u64(w, *at);
+        }
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -544,6 +555,11 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
             gpa: r.u64()?,
             ram_len: r.u64()?,
         },
+        CE_PERTURB_PAST_MOMENT => Ce::PerturbPastMoment {
+            at: r.u64()?,
+            floor: r.u64()?,
+        },
+        CE_PERTURB_MOMENT_TAKEN => Ce::PerturbMomentTaken { at: r.u64()? },
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,

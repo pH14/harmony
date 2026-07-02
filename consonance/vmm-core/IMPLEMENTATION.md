@@ -3224,16 +3224,27 @@ coincide numerically (`Moment == work == vns`), which is what makes the portable
   stage order (a `Vec`) so multiple faults per `Moment` apply deterministically. Populated by
   `perturb` and by a `branch` whose env carries host overrides; **drained** by `run` (a re-run
   rewinds via `branch`/`replay`, which re-stages).
-- **`perturb(fault, at)`** — decode + validate, then stage. Rejects loud, *before* staging:
-  a malformed blob → `MalformedEnvironment`; an out-of-range `CorruptMemory` gpa →
-  `PerturbOutOfRange` (new `control-proto` variant); the out-of-scope clock faults → `Unsupported`.
-- **`run(until)`** = "run to `min(next staged Moment, until)`": before each step, apply every fault
-  the run has reached (`arm_arrival` makes arrival exact), stamping each into the recorded env; then
-  arm the next `Moment`. The `until` deadline stays **opportunistic** (task-58 posture; a hard
-  force-exit at an arbitrary deadline was reverted there) — a fault beyond the deadline is never
-  reached.
-- **`branch`** now **enforces host overrides** (stages them from the env). Guest overrides, standing
-  faults, and a non-`none` fault policy still answer `Unsupported` (task 61 / decide-seam loops).
+- **`perturb(fault, at)`** — decode, then run through the **single shared `validate_host_fault`
+  gate** (PR #51 round 1, blocking item 1) that a `branch` env host fault also uses, so both reject
+  identically. Rejects loud, *before* staging: a malformed blob → `MalformedEnvironment`; a **past
+  `Moment`** (`at < effective_vns`) → `PerturbPastMoment` (a fault recorded behind its true apply
+  point would not replay); a **same-`Moment` conflict** → the interim `PerturbMomentTaken`; an
+  out-of-range `CorruptMemory` gpa → `PerturbOutOfRange`; the out-of-scope clock faults →
+  `Unsupported`. (`PerturbPastMoment`/`PerturbMomentTaken` are new `control-proto` variants,
+  discriminants 12/13.)
+- **`run(until)`** = "run to `min(next staged Moment, until)`": before each step, apply the fault the
+  run has reached (`arm_arrival` makes arrival exact), stamping it into the recorded env; then arm the
+  next `Moment`. The drain is **bounded by the deadline** — `min(vns, deadline)` (PR #51 round 1,
+  blocking item 1b): a fault whose `Moment` lies beyond `until.deadline` is never armed, and the
+  deadline-bounded drain means a natural exit that overshoots both never applies it late (which would
+  record it at a `Moment` earlier than its true apply point). The `until` deadline itself stays
+  **opportunistic** (task-58 posture; a hard force-exit at an arbitrary deadline was reverted there).
+- **`branch`** now **enforces host overrides** — staged from the env through the **same
+  `validate_host_fault` gate as `perturb`** (blocking item 1c), with the floor set to the restored
+  snapshot's V-time, so a bad env fault is a recoverable `ControlError` reply at branch time (not a
+  later session-fatal `ServeError::Vmm` at apply time) and the schedule is left empty on rejection.
+  Guest overrides, standing faults, and a non-`none` fault policy still answer `Unsupported`
+  (task 61 / decide-seam loops).
 - **`recorded_env()`** — the active reproducer: every applied fault is stamped via task-45's
   `EnvSpec::perturb`, so the emitted env replays to the identical `state_hash` (record → replay
   closure). Its seed is set by the most recent `branch` (default 0 without a branch — the box
@@ -3259,12 +3270,17 @@ coincide numerically (`Moment == work == vns`), which is what makes the portable
 - **`SkewTime` / `SetClockRate` are deferred** (spec-mandated): they mutate the V-time clock itself
   (epoch/ratio) and interact with the armed-deadline machinery. `apply_host_fault` and `perturb`
   reject them loud (a follow-on lights them up once the two simple faults have proven the seam).
-- **One action per `Moment` in the recorded env (task-45 contract).** `EnvSpec`'s override map is
-  `BTreeMap<Moment, Action>`, so a schedule with two faults at the *same* `Moment` records only the
-  last (last-write-wins) — the schedule still *applies* both. The record→replay closure is therefore
-  exact for schedules with ≤ 1 fault per `Moment`, which is the shape the box gate proves (a
-  `CorruptMemory` and an `InjectInterrupt` at distinct `Moment`s). The gate-1 proptest is *run-twice*
-  determinism (not env round-trip), so it freely exercises duplicate `Moment`s.
+- **One fault per `Moment` — interim loud rejection, ESCALATED (PR #51 round 1, blocking item 2).**
+  Task 59 gate 1 asks for multiple faults per `Moment`, but task 45's `EnvSpec` override map is
+  `BTreeMap<Moment, Action>` (one action per `Moment`), so a second same-`Moment` fault cannot be
+  recorded without losing the first — an *accepted* schedule would emit a non-reproducing reproducer.
+  This is a genuine **task-45-vs-task-59 spec contradiction**, escalated to the integrator (widen the
+  environment-crate override map to carry multiple host faults per `Moment` **vs.** amend gate 1);
+  **not** resolved here (do not restructure the environment crate). **Interim:** the frontier loudly
+  rejects a second same-`Moment` stage with a distinct `ControlError::PerturbMomentTaken`, so every
+  emitted reproducer stays exact and the recorded env never silently drops a fault. Trivial to relax
+  once ruled on. The schedule is consequently `BTreeMap<Moment, HostFault>` (one per `Moment`), and
+  the gate-1 proptest generates **distinct** `Moment`s (a `BTreeMap` key).
 - **`InjectInterrupt` apply is session-fatal on failure** (reserved vector / unwired LAPIC): a run
   that cannot deliver a staged interrupt is unvouched, so it tears the session down (`ServeError`)
   rather than silently skipping (which would desync the recorded env from the run). The gpa/vector
@@ -3279,10 +3295,18 @@ coincide numerically (`Moment == work == vns`), which is what makes the portable
 
 ### Cross-crate touches (beyond `consonance/vmm-core`)
 
-- **`dissonance/control-proto`** — added `ControlError::PerturbOutOfRange { gpa, ram_len }` (error
-  enum + codec discriminant 11 + golden `err_perturb_out_of_range` + `arb_control_error` generator +
-  `public-api.txt`). Backward-additive wire change (new reply-error discriminant; protocol version
-  unchanged).
+- **`dissonance/control-proto`** — added three `ControlError` variants for stage-time perturb
+  rejections: `PerturbOutOfRange { gpa, ram_len }` (disc 11), `PerturbPastMoment { at, floor }`
+  (disc 12), `PerturbMomentTaken { at }` (disc 13) — each with codec + golden + `arb_control_error`
+  generator + regenerated `public-api.txt` (platform-agnostic crate, macOS regen is fine).
+  Backward-additive wire change (new reply-error discriminants; protocol version unchanged).
+- **`consonance/vmm-core/tests/public-api.txt`** — the four new public items (`ControlServer::recorded_env`,
+  `Vmm::{apply_host_fault, arm_arrival, clear_arrival}`) were added by hand at their sorted positions.
+  This file is **Linux-generated** (it carries the `cfg(target_os = "linux")` `work_perf` /
+  `boot_*_selected` items a macOS regen would drop), so it must **not** be regenerated on macOS; the
+  four additions are platform-agnostic method signatures verified byte-identical against a macOS
+  `cargo public-api` run (which agrees apart from the Linux-only lines). The box CI's public-api job
+  is the final confirmation.
 - **`dissonance/conductor`** — the `loopback.rs` raw-wire test's `perturb → Unsupported` assertion is
   now stale; updated to `MalformedEnvironment` (a malformed fault blob). A well-formed host fault
   now stages (`Reply::Unit`).

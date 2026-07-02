@@ -40,6 +40,7 @@ pub struct vmm_core::control::ControlServer<B: vmm_backend::backend::Backend>
 impl<B: vmm_backend::backend::Backend> vmm_core::control::ControlServer<B>
 pub fn vmm_core::control::ControlServer<B>::handle(&mut self, &control_proto::types::Request) -> core::result::Result<core::result::Result<control_proto::types::Reply, control_proto::error::ControlError>, vmm_core::control::ServeError>
 pub fn vmm_core::control::ControlServer<B>::new(vmm_core::vmm::Vmm<B>, vmm_core::control::VmmFactory<B>) -> Self
+pub fn vmm_core::control::ControlServer<B>::recorded_env(&self) -> &environment::recorded::EnvSpec
 pub fn vmm_core::control::ControlServer<B>::serve<S: std::io::Read + std::io::Write>(&mut self, S) -> core::result::Result<(), vmm_core::control::ServeError>
 pub fn vmm_core::control::ControlServer<B>::vmm(&self) -> core::option::Option<&vmm_core::vmm::Vmm<B>>
 pub fn vmm_core::control::server_caps() -> control_proto::types::Caps
@@ -297,6 +298,9 @@ pub vmm_core::vmm::RunResult::reason: vmm_core::vmm::TerminalReason
 pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend>
 impl<B: vmm_backend::backend::Backend> vmm_core::vmm::Vmm<B>
+pub fn vmm_core::vmm::Vmm<B>::apply_host_fault(&mut self, &environment::host::HostFault) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::arm_arrival(&mut self, environment::host::Moment) -> bool
+pub fn vmm_core::vmm::Vmm<B>::clear_arrival(&mut self)
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
 pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]

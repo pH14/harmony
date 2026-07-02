@@ -130,6 +130,33 @@ pub enum ControlError {
         /// The guest RAM size in bytes.
         ram_len: u64,
     },
+    /// A `perturb` (or a `branch` env host fault) names a `Moment` **behind the
+    /// current point** (`at < effective_vns`, or, for a branch env, behind the
+    /// restored snapshot's V-time). Rejected loud at stage time (task 59): the
+    /// fault could only apply *later* than its recorded `Moment`, so the emitted
+    /// reproducer would replay it at the wrong count — a reproducer that does not
+    /// reproduce. `at == effective_vns` is fine (it applies immediately and
+    /// truthfully).
+    #[error("perturb Moment {at} is behind the current V-time {floor}")]
+    PerturbPastMoment {
+        /// The rejected `Moment`.
+        at: u64,
+        /// The current effective V-time (the earliest still-stageable `Moment`).
+        floor: u64,
+    },
+    /// A `perturb` stages a fault at a `Moment` that **already carries one**.
+    /// **Interim, pending an integrator ruling:** task 59 gate 1 asks for multiple
+    /// faults per `Moment`, but task 45's `EnvSpec` override map is
+    /// `BTreeMap<Moment, Action>` — one action per `Moment` — so a second same-
+    /// `Moment` stage cannot be recorded without losing the first. Rather than emit
+    /// a non-reproducing reproducer, the frontier **loudly rejects** the second
+    /// stage until the vocabulary question is ruled on (widen the override map vs.
+    /// amend gate 1). Easy to relax once resolved.
+    #[error("perturb Moment {at} already carries a staged fault (one fault per Moment, interim)")]
+    PerturbMomentTaken {
+        /// The already-occupied `Moment`.
+        at: u64,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

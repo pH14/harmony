@@ -420,6 +420,32 @@ fn err_perturb_out_of_range() {
 }
 
 #[test]
+fn err_perturb_past_moment() {
+    // RESULT_ERR (0x01), CE_PERTURB_PAST_MOMENT (0x0C), at (u64 LE), floor (u64 LE).
+    check_reply(
+        44,
+        Err(ControlError::PerturbPastMoment {
+            at: 0x2C,
+            floor: 0x64,
+        }),
+        &[
+            0x01, 0x0C, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    );
+}
+
+#[test]
+fn err_perturb_moment_taken() {
+    // RESULT_ERR (0x01), CE_PERTURB_MOMENT_TAKEN (0x0D), at (u64 LE).
+    check_reply(
+        45,
+        Err(ControlError::PerturbMomentTaken { at: 0x1F4 }),
+        &[0x01, 0x0D, 0xF4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+    );
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,
