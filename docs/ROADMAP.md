@@ -46,6 +46,7 @@ with everything not serving it explicitly deferred.
 | 60 | first campaign: planted bug, crash oracle, `Recorded` env, replay N/N | harmony finds and reproduces its first bug | frontier, not yet started |
 | 61 | net vertical: `net_decide` service + in-guest flow agent + `flow` shell | first true guest-plane path; hypercall stack gets a consumer | frontier, not yet started |
 | 62 | doc-debt sweep + the SMP/single-vCPU + task-90 rulings | docs stop lying to newcomers and to the foreman | this document |
+| 77 | unify HLT idle-wake arbitration with IRQ service (`vmm-core`) | the wake-source set stops being duplicated with different membership; safe before 61 adds device IRQs | queued (integrator feedback 2026-07-02); land before 61 |
 | 93 | resolve compose-vs-genesis-only | the reproducer model is real, not toy-tested | **resolved — keep `compose`, genesis-only rejected** (PR #39; see `docs/DISSONANCE.md` §"Ruling (task 93)") |
 | 94 | rename: Variation→Modulation, Theme→Progression (docs/specs/code) | one vocabulary across the project | **re-sequenced (foreman, 2026-07-02): right after 58 + 64 merge, before 65+ spawns** — both `docs/EXPLORATION.md` and `docs/RESOLUTION.md` are already post-rename, and 64 refactors the explorer the rename touches (64's spec says coordinate) |
 
