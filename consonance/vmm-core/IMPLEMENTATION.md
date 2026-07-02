@@ -3180,3 +3180,95 @@ via a hostile/oversized `pref_address`/`init_size`. Fixes:
   by capping `initrd_addr_max` inside the page): the predicate's edges; a straddling ramdisk is
   relocated below; a ramdisk that fits above the hole is kept high; one that cannot fit below is
   rejected.
+
+## Task 63 — validate arbitrary-V-time seal (the Wave-5 go/no-go)
+
+A **measurement harness**, not a feature. No production behavior changes. Surface list (frontier
+waiver of hard rule 1) honored — only `consonance/vmm-core` touched:
+
+- `src/seal_rate.rs` + `src/seal_rate/mock.rs` + `src/seal_rate/tests.rs` — the pure, portable half
+  (**gate 1**): the V-time sampling schedule (`SamplingSchedule`, uniform + busy-window + adversarial
+  jitter) and the seal-rate / `sealable` bookkeeping (`SealStats`, `Overshoot`,
+  `MaterializationDepth`, `PredicateQuality`, `sealable()`, `rule()`) with a mock snapshot oracle and
+  22 unit/proptest cases (512 cases each). Integer-only (rule 4: ppm rates, no float);
+  determinism-safe (`BTreeMap` into output); no `unsafe` ⇒ no Miri obligation.
+- `src/lib.rs` — one line: `pub mod seal_rate;`.
+- `tests/seal_rate_sweep.rs` — the box-only measurement (**gates 2–3 substrate**),
+  `#![cfg(target_os = "linux")]` + `#[ignore]` (empty binary on macOS). No new deps.
+- `SEAL-RATE-REPORT.md` — the committed report + provisional ruling (**gates 2–3**).
+
+**Status:** gate 1 DONE & GREEN on macOS. **Gate 2 (box measurement): DONE** — `tests/seal_rate_sweep.rs`
+compiled + clippy-clean + run to completion on the determinism box (rc=0; KVM reverted to stock
+1396736, verified). Measured: §1 nominal **64/64 = 100 %**, §2 branch-determinism **26/26
+bit-identical**, §4 parent-rooted **== genesis-rooted** (ratio 1.66 %), **§4b MATCH** (the probe/
+deadline schedule is a *deterministic* part of the trajectory → substrate sound), `sealable()`
+**100 %/100 %**; but addressability is **coarse** (overshoot p90 ≈ 4.76 M ns) and interior/adversarial
+~40–60 % `non-synchronized`. Full numbers in `SEAL-RATE-REPORT.md` §6 + PR #50. **Gate 3 (final
+ruling): escalated to the integrator** (foreman ruling) — the report §9 presents the GO(boundary-keyed)
+vs NO-GO/RESTRICTED fork.
+
+### The load-bearing substrate finding
+
+`run(deadline)` lands on a V-time-**synchronized** boundary *by construction* (`effective_vns`
+advances only at synchronized intercepts; the `run` loop stops at the first boundary ≥ deadline), so
+the archive's materialization pattern (`run → seal`) targets sealable points. Task 41 removed the
+in-flight-injection failure class (task 40's 3112 rejects now captured); the only residual limit is
+the non-synchronized *interior* (task 40's 5280 class), which is inherent to V-time exactness — not a
+task-41 gap — and is exactly why the archive addresses by *boundary*, not by an exact interior
+`Moment`. Expected ruling: **GO** (see report §5, §9).
+
+### Deviations considered and rejected
+
+1. **Drive `Vmm` directly, not the task-58 `ControlServer`/`Machine`.** §1 needs the seal *failure
+   reason* and §5 the per-landing features; `ControlServer::snapshot` collapses all rejects to
+   `NotQuiescent`, whereas `Vmm::save_vm_state` distinguishes non-synchronized / rng-mid-exit /
+   unrepresentable, and `has_*` expose injection state. The operations are the same substrate the
+   server wraps (run/snapshot/branch/hash ↔ `control.rs:417/275/390` + `state_hash`); matches the
+   task-41 gate's precedent and avoids a `control-proto` dev-dep.
+2. **`sealable(cpu_snapshot)` keys on the real `save_vm_state` decision inputs** (synchronized /
+   rng-mid-exit / unrepresentable / injection), not §5's sketched raw RIP/IF — no register-peek
+   accessor exists, and adding one is a production change the surface list forbids. Keying on the
+   decision inputs is strictly better than a RIP/IF proxy.
+3. **Adversarial (§3) seals at jittered *boundaries*; the interior grid-probe is separate.** An
+   interior-seal draft conflated the fundamental non-sync limit with §3's robustness question.
+4. **§4 roots the deep child at its *nearest shallower* ancestor** (not shallowest) so the suffix is
+   one inter-sample gap — the actual demonstration of "cost = suffix ≪ prefix".
+5. **Integer ppm, `BTreeMap`, `splitmix64`** (rules 4). **Two-phase** collect-then-verify because
+   only one `perf_event` counter may be open at a time (a fork can't coexist with the live guest).
+6. **Ran the box gate myself** (foreman later authorized push + box access): §4b, and a re-tuned
+   sweep. Three landmines cost iterations: (a) snapshotting all 64 targets via a CoW **derive-chain**
+   (`dirty=None`) is O(N²) → switched to **independent `snapshot_base` on a `DET_SUBSET` spread**
+   (materialize O(1)-layer, store-wide dedup); (b) the wall-watchdog used one **global** start →
+   per-guest `watchdog_start()`; (c) computing 2 GiB `state_hash` for **all** targets → only the
+   snapshotted subset. **2 GiB memory ops (`state_hash`/`snapshot_base`/`materialize`/`restore`) are
+   ~30–60 s each on this box** — the dominant cost; keep `DET_SUBSET` modest.
+7. **§4/§4b — the probe-perturbation finding.** The clean parent-rooted and genesis-rooted replays
+   agree exactly (`2c71f9ab…`) but diverge from the probe-laden live `state_hash` (`1c04e4cc…`),
+   because `probe_seal`'s `has_pending_guest_interrupt` re-arbitrates the LAPIC between legs. §4 now
+   asserts **parent == genesis** (ancestor-independence — the real premise); **§4b** (the foreman's
+   distinguishing experiment) restores the parent and replays the legs *with the same schedule* — it
+   **MATCHED** (`1c04e4cc…`), proving the schedule effect is deterministic/reproducible (substrate
+   sound). §2 branch-determinism captures both `live_hash_clean` (pre-probe) and `live_hash_probed`
+   (post-probe) per seal to support this.
+
+### Known limitations / integrator notes
+
+- **The report is MEASURED** (`SEAL-RATE-REPORT.md` §6) and the box run reverted KVM to stock. The
+  **final GO/NO-GO ruling is the integrator's** (§9 fork), not made here.
+- **§2 determinism is verified on a `DET_SUBSET` spread**, not every one of the 64 seals (verifying
+  all N is 128× 2 GiB-restore branch runs — impractical; the ~30 spread points across runs, incl. the
+  deepest, all bit-identical, is the evidence the ruling needs). §1 seal rate still covers all 64.
+- **`public-api.txt` needs a box refresh** for the new `pub mod seal_rate` (the public-API gate is
+  box+nightly-only): `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`.
+- **Determinism failure ⇒ escalate, don't patch** — the harness reclassifies a non-branch-deterministic
+  seal as a failure *and* fails loudly; that is a task-41 determinism-core regression to escalate, a
+  task-63 non-goal to fix here.
+- **Busy-window detection is approximate** (interrupt-service via active injection; WAL-fsync /
+- **`public-api.txt` needs a box refresh** for the new `pub mod seal_rate` (the public-API gate is
+  box+nightly-only): `UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`.
+- **Determinism failure ⇒ escalate, don't patch** — the harness reclassifies a non-branch-deterministic
+  seal as a failure *and* fails loudly; that is a task-41 determinism-core regression to escalate, a
+  task-63 non-goal to fix here.
+- **Busy-window detection is approximate** (interrupt-service via active injection; WAL-fsync /
+  scheduler-tick covered incidentally by uniform samples or pinned via `BUSY_CENTERS`). **Axis:** all
+  V-time figures are retired-branch ns (`effective_vns`), not the `Moment` (retired-instruction) axis.

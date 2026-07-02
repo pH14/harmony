@@ -41,6 +41,11 @@ pub mod entry;
 pub mod hostassert;
 pub mod linux_loader;
 pub mod multiboot;
+// Task 63 — the pure-logic half of the arbitrary-V-time seal-rate measurement (the
+// Wave-5 go/no-go): the V-time sampling schedule and the seal-rate / `sealable`-predicate
+// bookkeeping the box harness (`tests/seal_rate_sweep.rs`) feeds live measurements into.
+// Pure and portable (macOS + Linux); no `/dev/kvm`, no wall clock, no RNG.
+pub mod seal_rate;
 pub mod snapshot;
 pub mod vmm;
 pub mod work;
