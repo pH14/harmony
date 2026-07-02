@@ -718,6 +718,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tactics-regime"
+version = "0.1.0"
+dependencies = [
+ "environment",
+ "explorer",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "telemetry"
 version = "0.1.0"
 dependencies = [
