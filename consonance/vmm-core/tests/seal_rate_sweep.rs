@@ -60,7 +60,9 @@
 //! seals get the full 2 GiB snapshot + §2/§4 branch-verify, default 24), `WALL_BUDGET_SECS`
 //! (per **guest**, default 1800), `SPAN_START`/`SPAN_END` (skip the profiling pass and use
 //! this V-time span directly), `BUSY_CENTERS` (comma-separated V-times to place
-//! interrupt-service windows at when profiling is skipped), `BOOT_CMDLINE`.
+//! interrupt-service windows at when profiling is skipped), `UNPROBED_TAIL_ALLOWANCE` (max §3
+//! jittered targets allowed to be dropped past a terminal break, default 4 — a mid-span step
+//! error always fails), `BOOT_CMDLINE`.
 #![cfg(target_os = "linux")]
 
 use std::io::Write;
@@ -398,6 +400,13 @@ struct BranchOutcome {
     step_error: Option<String>,
     /// Whether a skid / DIAG-SKID49 marker appeared in the error (a determinism violation).
     skid: bool,
+    /// The V-time actually reached — `< seal_vtime + horizon_vns` iff the branch hit terminal
+    /// (the workload ended) before the requested horizon. A same-terminal-hash pair whose
+    /// `reached_vtime` fell short was verified over a **truncated** horizon (weaker evidence),
+    /// so §2 records it rather than silently counting it as full-horizon.
+    reached_vtime: VTime,
+    /// Hit terminal before the requested horizon.
+    early_terminal: bool,
 }
 
 /// Restore `snap` into a fresh VM, `reseed_entropy(seed)` (a branch), run `horizon_vns`
@@ -432,10 +441,13 @@ fn branch_and_run(
         .step_error
         .as_deref()
         .is_some_and(|e| e.contains("skid") || e.contains("DIAG-SKID49"));
+    let reached_vtime = adv.landed_vtime;
     BranchOutcome {
         hash: vmm.state_hash(),
         step_error: adv.step_error,
         skid,
+        reached_vtime,
+        early_terminal: adv.terminal.is_some(),
     }
 }
 
@@ -533,12 +545,16 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
                 break;
             }
             Err(e) => {
-                terminal_vtime = vmm.effective_vns().unwrap_or(0);
-                eprintln!(
-                    "[profile] step error after {steps} steps: {}",
+                // A step error mid-profiling truncates the span silently — every later target
+                // would be measured against a bogus [ready, error) window. Fail loudly instead
+                // (analogous to the §3 honest-denominator gate); a clean `Terminal` is the only
+                // valid span end.
+                panic!(
+                    "[profile] step error after {steps} steps at V-time {} — the post-readiness \
+                     span would be truncated; refusing to profile a bogus span: {}",
+                    vmm.effective_vns().unwrap_or(0),
                     format_err(&e)
                 );
-                break;
             }
         }
         steps += 1;
@@ -739,6 +755,10 @@ fn seal_rate_sweep() {
     // --- 2. Prove each successful seal is a real branch point --------------
     eprintln!("\n[sweep] === branch-determinism check: 2 same-seed branches per sealed point ===");
     let mut nondeterministic: Vec<(VTime, String)> = Vec::new();
+    // Per-pair ACTUAL verified horizon (min of the two branches' reached V-time, minus the seal)
+    // + whether either branch hit terminal early. A same-hash pair verified over a truncated
+    // horizon is weaker evidence — recorded, never silently counted as full-horizon.
+    let mut verified_horizons: Vec<(VTime, VTime, bool)> = Vec::new();
     for (vi, s) in sealed.iter().enumerate() {
         eprintln!(
             "[sweep] branch-verify {}/{} at V-time {} …",
@@ -748,6 +768,19 @@ fn seal_rate_sweep() {
         );
         let b1 = branch_and_run(&engine, s.snap, &kernel, &initramfs, BRANCH_SEED, horizon);
         let b2 = branch_and_run(&engine, s.snap, &kernel, &initramfs, BRANCH_SEED, horizon);
+        let verified_horizon = b1
+            .reached_vtime
+            .min(b2.reached_vtime)
+            .saturating_sub(s.seal_vtime);
+        let early_terminal = b1.early_terminal || b2.early_terminal;
+        verified_horizons.push((s.seal_vtime, verified_horizon, early_terminal));
+        if early_terminal {
+            eprintln!(
+                "[sweep]   (seal at {} verified over a TRUNCATED horizon {verified_horizon} < \
+                 requested {horizon} — hit terminal; same-hash still holds but is weaker evidence)",
+                s.seal_vtime
+            );
+        }
         let ok = b1.step_error.is_none()
             && b2.step_error.is_none()
             && !b1.skid
@@ -778,9 +811,18 @@ fn seal_rate_sweep() {
     // AND at least one checked.
     let det_sealed_total = sealed.len();
     let det_verified = det_sealed_total - nondeterministic.len();
+    let det_early_terminal = verified_horizons.iter().filter(|(_, _, e)| *e).count();
+    let det_full_horizon = verified_horizons.len() - det_early_terminal;
+    let det_min_horizon = verified_horizons
+        .iter()
+        .map(|(_, h, _)| *h)
+        .min()
+        .unwrap_or(0);
     eprintln!(
         "[sweep] branch-determinism: {det_verified}/{det_sealed_total} branch-verified points \
-         bit-identical (a spread subset of {} sealed; the §2 DET_SUBSET deviation)",
+         bit-identical (a spread subset of {} sealed; the §2 DET_SUBSET deviation) — {det_full_horizon} \
+         verified to the full horizon {horizon}, {det_early_terminal} truncated at terminal \
+         (min verified horizon {det_min_horizon})",
         nominal.iter().filter(|a| a.result.is_sealed()).count(),
     );
 
@@ -809,6 +851,11 @@ fn seal_rate_sweep() {
     // contaminate this target's §3 sample. We count + skip them instead; §3/§5 rates are over the
     // non-overshot samples only.
     let mut skipped_overshot = 0usize;
+    // Why the loop stopped early (if it did): a legitimate terminal near the tail vs a mid-span
+    // step error. `unprobed` (targets neither probed nor skipped) is gated on this below — a rate
+    // over a silently-shrunken denominator must not satisfy a threshold the full population wouldn't.
+    let mut adv_terminal_break = false;
+    let mut adv_step_error: Option<String> = None;
     {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let mut printed = 0usize;
@@ -821,8 +868,13 @@ fn seal_rate_sweep() {
                 continue;
             }
             let adv = run_to_vtime(&mut live, target.vtime, &mut printed, start);
-            if adv.terminal.is_some() || adv.step_error.is_some() {
+            if let Some(e) = adv.step_error {
+                adv_step_error = Some(e);
+                break;
+            }
+            if adv.terminal.is_some() {
                 // Near the tail a jittered target may sit at/after terminal — stop probing.
+                adv_terminal_break = true;
                 break;
             }
             // (a) Adversarial: seal at the (busier) jittered boundary.
@@ -841,7 +893,12 @@ fn seal_rate_sweep() {
             //     seal at the interior (the guest is now off any V-time intercept).
             let extra = 1 + splitmix64(target.vtime) % perturb_max.max(1);
             let padv = perturb(&mut live, extra, &mut printed);
+            if let Some(e) = padv.step_error {
+                adv_step_error = Some(e);
+                break;
+            }
             if padv.terminal.is_some() {
+                adv_terminal_break = true;
                 break;
             }
             let ilanded = live.effective_vns().unwrap_or(0);
@@ -858,15 +915,27 @@ fn seal_rate_sweep() {
         }
         // Drop the adversarial guest.
     }
+    // Honest denominators: every jittered target is probed, skipped-overshot, or unprobed (dropped
+    // when the loop broke). A rate over `adversarial.len()` alone hides the unprobed tail.
+    let adv_unprobed = adv_schedule
+        .len()
+        .saturating_sub(adversarial.len())
+        .saturating_sub(skipped_overshot);
     eprintln!(
         "[sweep] adversarial (boundary): {} sealed / {} probed | interior: {} sealed / {} probed \
-         | {} target(s) skipped-overshot (of {})",
+         | {skipped_overshot} skipped-overshot | {adv_unprobed} unprobed (of {}) | break={}",
         adversarial.iter().filter(|a| a.result.is_sealed()).count(),
         adversarial.len(),
         interior.iter().filter(|a| a.result.is_sealed()).count(),
         interior.len(),
-        skipped_overshot,
         adv_schedule.len(),
+        if adv_step_error.is_some() {
+            "step-error"
+        } else if adv_terminal_break {
+            "terminal"
+        } else {
+            "none"
+        },
     );
 
     // --- 4. Materialization depth (parent-rooted premise) ------------------
@@ -907,6 +976,7 @@ fn seal_rate_sweep() {
         &adversarial_stats,
         &interior_stats,
         skipped_overshot,
+        adv_unprobed,
         overshoot,
         &predicate,
         depth,
@@ -932,6 +1002,21 @@ fn seal_rate_sweep() {
          foreman (task 41/63 determinism-core bug, not this harness's to patch): {:?}",
         nondeterministic.len(),
         nondeterministic
+    );
+    // §3 honest-denominator gate: a mid-span step error (not a legitimate terminal near the tail)
+    // truncates the adversarial population — never accept a rate over a silently-shrunken
+    // denominator. A terminal break is legitimate only if the unprobed tail is small.
+    assert!(
+        adv_step_error.is_none(),
+        "§3 adversarial pass hit a mid-span step error (span truncated, NOT a legitimate tail): \
+         {adv_step_error:?}"
+    );
+    let tail_allowance = env_usize("UNPROBED_TAIL_ALLOWANCE", 4);
+    assert!(
+        adv_unprobed <= tail_allowance,
+        "§3 dropped {adv_unprobed} unprobed jittered target(s) (> tail allowance {tail_allowance}) \
+         — the adversarial denominator is silently shrunk beyond the legitimate past-terminal tail \
+         (terminal_break={adv_terminal_break})"
     );
 }
 
@@ -1076,6 +1161,7 @@ fn emit_report(
     adversarial: &SealStats,
     interior: &SealStats,
     skipped_overshot: usize,
+    unprobed: usize,
     overshoot: Option<Overshoot>,
     predicate: &PredicateQuality,
     depth: Option<MaterializationDepth>,
@@ -1103,12 +1189,12 @@ fn emit_report(
         }
     }
     eprintln!(
-        "[REPORT] ADVERSARIAL seal rate: {}/{} = {} ({} jittered target(s) skipped-overshot, \
-         excluded from the rate — no silent contamination)",
+        "[REPORT] ADVERSARIAL seal rate: {}/{} = {} (denominators: {} probed / {skipped_overshot} \
+         skipped-overshot / {unprobed} unprobed — no silent contamination or shrunk denominator)",
         adversarial.sealed,
         adversarial.n,
         ppm_percent(adversarial.success_rate_ppm),
-        skipped_overshot,
+        adversarial.n,
     );
     for (reason, count) in &adversarial.by_reason {
         if *count > 0 {
