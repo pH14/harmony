@@ -198,6 +198,18 @@ pub struct ControlServer<B: Backend> {
     /// set by the most recent [`Request::Branch`] (default `0` before any branch);
     /// reset on each restore so a new future records fresh.
     recorded: EnvSpec,
+    /// **Poison latch** for an unsatisfiable schedule (PR #51 round-3). Set to the
+    /// `(Moment, vtime)` of a fault a [`run`](ControlServer::run) executed *past*
+    /// without applying (a crossed `Moment`). While latched, [`run`](ControlServer::run),
+    /// [`perturb`](ControlServer::perturb), and [`snapshot`](ControlServer::snapshot)
+    /// keep failing loud with [`ControlError::ScheduleUnsatisfiable`] — the crossed
+    /// fault can never be applied at its recorded count, so the session must
+    /// **rewind** (`branch`/`replay`, which clears the latch via
+    /// [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm))
+    /// before it can continue. Without the latch a client that ignored the error and
+    /// re-sent `run` would get the crossed fault applied from the past — the exact
+    /// non-reproducing case the error exists to prevent.
+    schedule_poisoned: Option<(environment::Moment, u64)>,
 }
 
 impl<B: Backend> ControlServer<B> {
@@ -225,6 +237,7 @@ impl<B: Backend> ControlServer<B> {
                 seed,
                 policy: FaultPolicy::none(),
             },
+            schedule_poisoned: None,
         }
     }
 
@@ -338,6 +351,11 @@ impl<B: Backend> ControlServer<B> {
         fault: &control_proto::HostFault,
         at: control_proto::Moment,
     ) -> Result<Reply, ControlError> {
+        // A poisoned schedule must be rewound (branch/replay) before it accepts any
+        // new fault — staging onto an unsatisfiable schedule is itself unsatisfiable.
+        if let Some((moment, vtime)) = self.schedule_poisoned {
+            return Err(ControlError::ScheduleUnsatisfiable { moment, vtime });
+        }
         let decoded = environment::HostFault::decode(&fault.0)
             .map_err(|_| ControlError::MalformedEnvironment)?;
         // Floor = the live VM's current V-time: a `Moment` behind it could only
@@ -420,7 +438,21 @@ impl<B: Backend> ControlServer<B> {
 
     /// `snapshot`: seal the current point into the engine as a base layer
     /// (memory image + canonical `vm_state` blob) and mint a wire handle.
+    ///
+    /// **Rejects loudly while a host-fault schedule is pending** (PR #51 round-3):
+    /// a snapshot seals only VM state, and every restore of it clears the schedule
+    /// — so the sealed state's *future* (the staged fault) would be unreproducible
+    /// from the snapshot. A staged fault is "armed" in exactly the sense
+    /// [`ControlError::SnapshotWhileArmed`] names, so the seal is refused rather
+    /// than silently dropping the future (persisting the schedule inside the
+    /// snapshot is a semantics change that would need its own ruling).
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
+        if let Some((moment, vtime)) = self.schedule_poisoned {
+            return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
+        }
+        if !self.schedule.is_empty() {
+            return Ok(Err(ControlError::SnapshotWhileArmed));
+        }
         let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
@@ -589,6 +621,9 @@ impl<B: Backend> ControlServer<B> {
     /// actually reproduces.
     fn reset_schedule_to_fresh_vm(&mut self) {
         self.schedule.clear();
+        // A rewind is the recovery from a poisoned schedule (round-3): clear the
+        // latch so `run`/`perturb`/`snapshot` work again on the fresh timeline.
+        self.schedule_poisoned = None;
         let seed = self
             .vmm
             .as_ref()
@@ -639,6 +674,12 @@ impl<B: Backend> ControlServer<B> {
         &mut self,
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        // A poisoned schedule keeps rejecting `run` (with the crossed fault's
+        // coordinates) until a `branch`/`replay` rewinds it — never applying the
+        // crossed fault from the past on a re-sent `run` (PR #51 round-3).
+        if let Some((moment, vtime)) = self.schedule_poisoned {
+            return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
+        }
         loop {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             let vns = vmm.effective_vns().unwrap_or(0);
@@ -677,9 +718,12 @@ impl<B: Backend> ControlServer<B> {
                 // never armed because it is beyond the deadline, but the guest ran
                 // past it) can never be applied at its recorded count on any later
                 // `run` — fail loud rather than carry it forward to apply from the
-                // past (PR #51 round-2 finding). Leaving it staged and returning
-                // `Deadline` would let the next `run` drain it with `vns > m`.
+                // past (PR #51 round-2 finding). **Poison** the schedule so a
+                // re-sent `run`/`perturb`/`snapshot` keeps rejecting until a rewind
+                // (round-3): leaving it merely staged would let the next `run` drain
+                // it with `vns > m`.
                 if let Some((&m, _)) = self.schedule.range(..=vns).next() {
+                    self.schedule_poisoned = Some((m, vns));
                     return Ok(Err(ControlError::ScheduleUnsatisfiable {
                         moment: m,
                         vtime: vns,
@@ -719,6 +763,7 @@ impl<B: Backend> ControlServer<B> {
                     // carry it forward. (Not reachable in the exact-arrival path — an
                     // armed `Moment` lands before any terminal — but never silent.)
                     if let Some((&m, _)) = self.schedule.range(..=vns).next() {
+                        self.schedule_poisoned = Some((m, vns));
                         return Ok(Err(ControlError::ScheduleUnsatisfiable {
                             moment: m,
                             vtime: vns,
@@ -872,6 +917,19 @@ mod tests {
             Ok(Reply::Stop(stop)) => stop,
             other => panic!("run reply: {other:?}"),
         }
+    }
+
+    /// A deadline-free `run` returning the raw reply (for the loud-error paths).
+    fn run_all_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
+        server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
     }
 
     fn hash(server: &mut ControlServer<MockBackend>) -> [u8; 32] {
@@ -1875,10 +1933,10 @@ mod tests {
         );
     }
 
-    /// A live VM that takes a single RDTSC to effective V-time `rdtsc_work`, then
-    /// Hlt — used to drive the beyond-deadline / overshoot cases with a chosen
+    /// A V-time-wired VM that takes a single RDTSC to effective V-time `rdtsc_work`,
+    /// then Hlt — used to drive the beyond-deadline / overshoot cases with a chosen
     /// V-time landing (no arrival armed, so `run()` returns the scripted RDTSC).
-    fn rdtsc_then_hlt_server(rdtsc_work: u64) -> ControlServer<MockBackend> {
+    fn rdtsc_then_hlt_vmm(rdtsc_work: u64) -> Vmm<MockBackend> {
         let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         m.set_msr_filter(&vmm_backend::MsrFilter::default())
@@ -1894,8 +1952,16 @@ mod tests {
         );
         v.wire_snapshot_hashing();
         v.restore_guest_memory(&enforce_image()).unwrap();
-        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
-        ControlServer::new(v, factory)
+        v
+    }
+
+    /// A server over [`rdtsc_then_hlt_vmm`] whose factory boots identically-composed
+    /// restore targets, so `branch`/`replay` (the poison recovery) succeed.
+    fn rdtsc_then_hlt_server(rdtsc_work: u64) -> ControlServer<MockBackend> {
+        ControlServer::new(
+            rdtsc_then_hlt_vmm(rdtsc_work),
+            Box::new(move || Ok(rdtsc_then_hlt_vmm(rdtsc_work))),
+        )
     }
 
     fn stage_corrupt(s: &mut ControlServer<MockBackend>, at: u64) {
@@ -1975,6 +2041,67 @@ mod tests {
             &[0u8; 8],
             "the crossed fault must not have applied"
         );
+    }
+
+    #[test]
+    fn schedule_poison_persists_until_a_rewind() {
+        // PR #51 round-3 item 1: after a crossed Moment poisons the schedule, a
+        // re-sent `run` / `perturb` / `snapshot` must KEEP failing loud (never apply
+        // the crossed fault from the past) until a `branch`/`replay` rewinds. Then
+        // the session works again.
+        let mut s = rdtsc_then_hlt_server(2000);
+        hello(&mut s);
+        let base = snap(&mut s);
+        stage_corrupt(&mut s, 1500);
+        let poisoned = Err(ControlError::ScheduleUnsatisfiable {
+            moment: 1500,
+            vtime: 2000,
+        });
+        // The overshooting run poisons.
+        assert_eq!(run_with_deadline(&mut s, 1000), poisoned);
+        // A re-sent run stays poisoned (does NOT apply 1500 from the past).
+        assert_eq!(run_with_deadline(&mut s, 5000), poisoned);
+        assert_eq!(run_all_res(&mut s), poisoned);
+        // Perturb stays poisoned.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(9000),
+            })
+            .unwrap(),
+            poisoned
+        );
+        // Snapshot stays poisoned.
+        assert_eq!(s.handle(&Request::Snapshot).unwrap(), poisoned);
+        // The crossed fault never applied.
+        assert_eq!(&s.vmm().unwrap().guest_memory()[0x40..0x48], &[0u8; 8]);
+        // A rewind (replay of the pristine base) clears the poison — the session runs
+        // cleanly again.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(matches!(run_all_res(&mut s), Ok(Reply::Stop(_))));
+    }
+
+    #[test]
+    fn snapshot_while_a_fault_is_staged_is_rejected() {
+        // PR #51 round-3 item 2: a snapshot seals only VM state; a staged future
+        // fault would be silently dropped by any restore of it — reject loudly with
+        // `SnapshotWhileArmed` while the schedule is non-empty.
+        let mut s = rdtsc_then_hlt_server(2000);
+        hello(&mut s);
+        // A snapshot at a clean (empty-schedule) point is fine.
+        let base = snap(&mut s);
+        // Stage a fault, then a snapshot is refused loudly.
+        stage_corrupt(&mut s, 3000);
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotWhileArmed)
+        );
+        // A rewind clears the schedule; snapshot works again.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(matches!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::SnapId(_))
+        ));
     }
 
     #[test]
@@ -2417,6 +2544,7 @@ mod tests {
         Run,
         Branch(u64),
         Replay,
+        Snapshot,
     }
 
     fn arb_verb_op() -> impl Strategy<Value = VerbOp> {
@@ -2437,6 +2565,7 @@ mod tests {
             Just(VerbOp::Run),
             (1u64..=8).prop_map(VerbOp::Branch),
             Just(VerbOp::Replay),
+            Just(VerbOp::Snapshot),
         ]
     }
 
@@ -2469,21 +2598,26 @@ mod tests {
                         }).unwrap();
                     }
                     VerbOp::Run => {
-                        let reply = arr_run(&mut s);
-                        // Every full (deadline-free) run reaches a terminal stop.
-                        prop_assert!(matches!(reply, Ok(Reply::Stop(_))), "run: {reply:?}");
-                        // Invariant: replay recorded_env() from base reproduces live.
-                        let e = s.recorded_env().clone();
-                        let h_live = arr_hash(&s);
-                        let mut r = arrival_server();
-                        arr_hello(&mut r);
-                        let base_r = arr_snap(&mut r);
-                        r.handle(&Request::Branch {
-                            snap: base_r,
-                            env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
-                        }).unwrap().unwrap();
-                        prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
-                        prop_assert_eq!(h_live, arr_hash(&r), "recorded_env() must reproduce the live hash");
+                        // Continue-after-error: a loud rejection (e.g. a poisoned
+                        // schedule) just skips the invariant check for this op.
+                        match arr_run(&mut s) {
+                            Ok(Reply::Stop(_)) => {
+                                // Invariant: replay recorded_env() from base reproduces live.
+                                let e = s.recorded_env().clone();
+                                let h_live = arr_hash(&s);
+                                let mut r = arrival_server();
+                                arr_hello(&mut r);
+                                let base_r = arr_snap(&mut r);
+                                r.handle(&Request::Branch {
+                                    snap: base_r,
+                                    env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
+                                }).unwrap().unwrap();
+                                prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+                                prop_assert_eq!(h_live, arr_hash(&r), "recorded_env() must reproduce the live hash");
+                            }
+                            Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
+                            Err(_) => { /* loud rejection — the model skips this op */ }
+                        }
                     }
                     VerbOp::Branch(seed) => {
                         // From `base` only (so the recorded reproducer's origin is fixed).
@@ -2491,6 +2625,12 @@ mod tests {
                     }
                     VerbOp::Replay => {
                         let _ = s.handle(&Request::Replay(base)).unwrap();
+                    }
+                    VerbOp::Snapshot => {
+                        // Clean → Ok(SnapId); with a fault staged → SnapshotWhileArmed
+                        // (loud). Either way the session stays consistent; the minted
+                        // handle is unused (branches/replays use `base` only).
+                        let _ = s.handle(&Request::Snapshot).unwrap();
                     }
                 }
             }

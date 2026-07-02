@@ -3360,3 +3360,33 @@ random generator over one armable backend does not by itself produce.
 + golden + generator + regenerated `public-api.txt`); `vmm-core/tests/public-api.txt` hand-added
 `Vmm::{can_arm_arrival, entropy_state}` (same Linux-generated-file discipline as above, verified
 against a macOS `cargo public-api` run).
+
+### PR #51 round 3 — three schedule-lifecycle boundaries
+
+Fresh pass found three lifecycle-boundary holes the round-2 machinery opened. All closed; no new wire
+variants (both errors already exist).
+
+1. **`ScheduleUnsatisfiable` left the crossed fault staged.** A client that re-sent `run` (instead of
+   rewinding) would get the crossed fault applied *from the past* on the next call — the exact case
+   the error exists to prevent. The schedule now carries a **poison latch**
+   (`schedule_poisoned: Option<(Moment, vtime)>`): set when a run crosses a staged `Moment`, it makes
+   `run`/`perturb`/`snapshot` keep returning `ScheduleUnsatisfiable` until a `branch`/`replay` rewind
+   clears it (in `reset_schedule_to_fresh_vm`). Test: `schedule_poison_persists_until_a_rewind`.
+2. **`snapshot` with a pending schedule silently dropped the staged future.** A snapshot seals only VM
+   state; any restore of it clears the schedule, so the sealed state's future (the staged fault) was
+   unreproducible from the snapshot. `snapshot` now rejects loudly with the existing
+   `ControlError::SnapshotWhileArmed` while the schedule is non-empty (or poisoned) — persisting the
+   schedule inside the snapshot would be a semantics change needing its own ruling. Test:
+   `snapshot_while_a_fault_is_staged_is_rejected`.
+3. **`arrival_deadline` leaked across the in-place restore path.** A stale arm from the pre-restore
+   timeline bounded the first post-restore `step` (the #34/#55 stale-arm class). `Vmm::restore_vm_state`
+   and `restore_vtime` now clear `arrival_deadline` (mirroring `clear_arrival`), so `restore_snapshot`
+   and every in-place restore funnel through the clear. Test (vmm.rs): `arrival_deadline_is_cleared_on_restore`.
+
+**Proptest alphabet extended** (the review's ask): `verb_sequence_recorded_env_reproduces_live_hash`
+now includes `Snapshot` in the verb alphabet and is explicitly continue-after-error (a loud rejection
+— poisoned run, snapshot-while-armed, dup/past perturb — skips that op's invariant check and the
+sequence continues), so the reproduction net spans the snapshot + error-recovery lifecycle. The three
+round-3 corners keep dedicated tests, since their triggers (a deadline overshoot to poison, a
+snapshot-while-armed, an in-place restore of an armed VM) are specific setups the random generator
+over one exact-arrival backend does not itself produce.

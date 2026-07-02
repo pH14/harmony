@@ -867,6 +867,11 @@ impl<B: Backend> Vmm<B> {
         // run only AFTER the sole hard-fallible round-trip, B and A are re-armed together or
         // not at all.
         self.first_entry_done = false;
+        // A restore/rebase resets the timeline, so any host-fault arrival deadline
+        // armed against the PRE-restore V-time is stale — clear it (mirror
+        // `clear_arrival`), else it would bound the first post-restore `step` at a
+        // now-meaningless work count (the #34/#55 stale-arm class; PR #51 round-3).
+        self.arrival_deadline = None;
         Ok(())
     }
 
@@ -1226,6 +1231,11 @@ impl<B: Backend> Vmm<B> {
         // inherits a coexisting VM's branches (a determinism bug on the explorer's
         // N-concurrent-VM path).
         self.first_entry_done = false;
+        // A restore resets the timeline, so any host-fault arrival deadline armed
+        // against the PRE-restore V-time is stale — clear it (mirror `clear_arrival`;
+        // the #34/#55 stale-arm class, PR #51 round-3). `restore_snapshot` and every
+        // in-place restore path funnel through here.
+        self.arrival_deadline = None;
         Ok(())
     }
 
@@ -4620,6 +4630,37 @@ mod tests {
             v.preemption_landings(),
             &[reached],
             "on_deadline records each measured preemption landing"
+        );
+    }
+
+    #[test]
+    fn arrival_deadline_is_cleared_on_restore() {
+        // PR #51 round-3 item 3: a host-fault arrival armed against the PRE-restore
+        // timeline must not survive a restore — else the stale arm bounds the first
+        // post-restore `step` at a now-meaningless work count (the #34/#55 stale-arm
+        // class). Both restore primitives clear it.
+        // A fresh V-time-wired VM is at a synchronized, snapshottable point with no
+        // staged completion — so both `save_vtime` and `save_vm_state` succeed.
+        let mut v = vtime_vmm(vec![Exit::Hlt], Box::new(ScriptedWork::at(100)), 1);
+        let snap = v.save_vtime().unwrap().expect("v-time wired");
+        let vm_state = v.save_vm_state().unwrap();
+
+        // restore_vtime clears the arm (the standalone + idle-rebase path).
+        assert!(v.arm_arrival(500), "deterministic mock arms arrival");
+        assert!(v.arrival_deadline.is_some());
+        v.restore_vtime(&snap).unwrap();
+        assert!(
+            v.arrival_deadline.is_none(),
+            "restore_vtime clears the stale arrival arm"
+        );
+
+        // restore_vm_state clears it too (the snapshot-restore funnel).
+        assert!(v.arm_arrival(500));
+        assert!(v.arrival_deadline.is_some());
+        v.restore_vm_state(&vm_state).unwrap();
+        assert!(
+            v.arrival_deadline.is_none(),
+            "restore_vm_state clears the stale arrival arm"
         );
     }
 
