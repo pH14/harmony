@@ -404,6 +404,22 @@ fn err_simple_unit_variants() {
 }
 
 #[test]
+fn err_perturb_out_of_range() {
+    // RESULT_ERR (0x01), CE_PERTURB_OUT_OF_RANGE (0x0B), gpa (u64 LE), ram_len (u64 LE).
+    check_reply(
+        43,
+        Err(ControlError::PerturbOutOfRange {
+            gpa: 0x1234,
+            ram_len: 0x1000,
+        }),
+        &[
+            0x01, 0x0B, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    );
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,

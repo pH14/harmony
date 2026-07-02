@@ -112,6 +112,21 @@ pub enum ControlError {
     /// *capability* is absent.
     #[error("verb not supported by this backend")]
     Unsupported,
+    /// A `perturb`-staged [`CorruptMemory`] host fault names a guest-physical
+    /// address whose 8-byte word falls outside guest RAM (`gpa + 8 > ram_len`).
+    /// The frontier (task 59) rejects it **loudly at stage time** rather than
+    /// silently clipping or wrapping the write — a corruption at an
+    /// unrepresentable address would mint a reproducer that does not reproduce.
+    ///
+    /// [`CorruptMemory`]: the `environment::HostFault::CorruptMemory` the
+    /// `perturb` fault blob decodes to.
+    #[error("perturb CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {ram_len} bytes)")]
+    PerturbOutOfRange {
+        /// The offending guest-physical address.
+        gpa: u64,
+        /// The guest RAM size in bytes.
+        ram_len: u64,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),
