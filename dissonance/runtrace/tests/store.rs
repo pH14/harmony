@@ -122,6 +122,46 @@ fn a_renamed_store_file_fails_content_address_verification() {
 }
 
 #[test]
+fn load_of_a_renamed_env_only_sidecar_is_idmismatch_not_notretained() {
+    // `load`'s "no journal" branch must not trust the `<id>.env` *filename*: an
+    // env-only run whose sidecar is renamed under a forged id must surface as
+    // IdMismatch (the sidecar hashes to a different id), never NotRetained.
+    let dir = tempfile::tempdir().unwrap();
+    let store = TraceStore::open(dir.path()).unwrap();
+    let t = trace(b"envonly", quiescent());
+    let real = store.record(&t, Retain::EnvOnly).unwrap();
+    assert!(!store.has_journal(real), "env-only: no journal on disk");
+
+    // Forge an env-only sidecar under a different id (no `.trace`).
+    let forged = TraceId([0xCD; 32]);
+    assert_ne!(forged, real);
+    let p = dir.path();
+    std::fs::copy(
+        p.join(format!("{real}.env")),
+        p.join(format!("{forged}.env")),
+    )
+    .unwrap();
+
+    // No `<forged>.trace` exists, so load hits the no-journal branch — which now
+    // decodes + verifies the sidecar: it hashes to `real`, not `forged`.
+    assert!(matches!(
+        store.load(forged),
+        Err(runtrace::TraceError::IdMismatch { requested, found })
+            if requested == forged && found == real
+    ));
+    // The authentic env-only id still reports NotRetained (regenerate by replay).
+    assert!(matches!(
+        store.load(real),
+        Err(runtrace::TraceError::NotRetained(_))
+    ));
+    // A truly-absent id is NotFound.
+    assert!(matches!(
+        store.load(TraceId([0x00; 32])),
+        Err(runtrace::TraceError::NotFound(_))
+    ));
+}
+
+#[test]
 fn ids_are_listed_in_deterministic_sorted_order() {
     let dir = tempfile::tempdir().unwrap();
     let store = TraceStore::open(dir.path()).unwrap();
