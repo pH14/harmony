@@ -104,6 +104,14 @@ pub enum ControlError {
     /// decision.
     #[error("malformed or wrong-class resolve answer")]
     MalformedAnswer,
+    /// The verb decoded cleanly but this backend does not service it (yet): the
+    /// seed-driven task-58 server answers `perturb` (host-plane enforcement is
+    /// task 59) and the non-`Whole` hash scopes with this, and any verb sent
+    /// before `hello` has negotiated a session. Loud and distinct from a framing
+    /// [`Protocol`](Self::Protocol) error — the frame was well-formed; the
+    /// *capability* is absent.
+    #[error("verb not supported by this backend")]
+    Unsupported,
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

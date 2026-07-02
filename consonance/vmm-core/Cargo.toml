@@ -76,6 +76,16 @@ zerocopy = { version = "0.8", features = ["derive"] }
 # snapshot-store, the byte layout in vm-state.
 snapshot-store = { path = "../snapshot-store", version = "0.1.0" }
 vm-state = { path = "../vm-state", version = "0.1.0" }
+# Task-58 frontier exceptions (the spec's surface list names vmm-core as the home
+# of the control-transport server): `control-proto` is dissonance's R2 wire
+# protocol (the versioned length-delimited codec + verb/reply types the server
+# speaks over a unix socket); `environment` owns the opaque `EnvSpec` reproducer
+# blob a `Branch` carries — the server decodes it only to validate it and pull
+# the branch seed (`reseed_entropy`). Both are first-party workspace crates;
+# pinned `version` alongside `path` for `cargo deny`'s wildcard ban (as for the
+# other siblings).
+control-proto = { path = "../../dissonance/control-proto", version = "0.1.0" }
+environment = { path = "../../dissonance/environment", version = "0.1.0" }
 
 # Linux-only: the box `perf_event` work counter (`work_perf::PerfWorkCounter`,
 # rule-5 whitelist `libc`). A macOS `cargo build -p vmm-core` never compiles it

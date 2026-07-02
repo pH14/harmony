@@ -1,0 +1,42 @@
+pub mod conductor
+pub mod conductor::mock
+pub struct conductor::mock::TickingWork
+impl conductor::mock::TickingWork
+pub fn conductor::mock::TickingWork::new(u64) -> Self
+impl vmm_core::work::WorkSource for conductor::mock::TickingWork
+pub fn conductor::mock::TickingWork::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn conductor::mock::TickingWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+pub const conductor::mock::BOOT_SEED: u64
+pub const conductor::mock::RAM: usize
+pub const conductor::mock::WORK_STEP: u64
+pub fn conductor::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
+pub fn conductor::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
+pub fn conductor::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
+pub struct conductor::RunRow
+pub conductor::RunRow::hash: [u8; 32]
+pub conductor::RunRow::stop: explorer::StopReason
+pub struct conductor::SeedRow
+pub conductor::SeedRow::runs: alloc::vec::Vec<conductor::RunRow>
+pub conductor::SeedRow::seed: u64
+pub struct conductor::SweepConfig
+pub conductor::SweepConfig::deadline_delta: core::option::Option<u64>
+pub conductor::SweepConfig::runs_per_seed: usize
+pub conductor::SweepConfig::seeds: alloc::vec::Vec<u64>
+pub conductor::SweepConfig::snapshot_max_attempts: usize
+pub conductor::SweepConfig::snapshot_retry_step: u64
+impl core::default::Default for conductor::SweepConfig
+pub fn conductor::SweepConfig::default() -> Self
+pub struct conductor::SweepReport
+pub conductor::SweepReport::base_hash: [u8; 32]
+pub conductor::SweepReport::replay_hash: [u8; 32]
+pub conductor::SweepReport::rows: alloc::vec::Vec<conductor::SeedRow>
+pub conductor::SweepReport::snapshot_attempts: usize
+pub conductor::SweepReport::snapshot_vtime: u64
+pub fn conductor::fmt_stop(&explorer::StopReason) -> alloc::string::String
+pub fn conductor::hex(&[u8; 32]) -> alloc::string::String
+pub fn conductor::probe_vtime<M: explorer::seam::Machine>(&mut M) -> core::result::Result<u64, explorer::error::MachineError>
+pub fn conductor::render_table(&conductor::SweepReport) -> alloc::string::String
+pub fn conductor::run_session<B, T>(&mut vmm_core::control::ControlServer<B>, impl core::ops::function::FnOnce(std::os::unix::net::stream::UnixStream) -> T + core::marker::Send + 'static) -> (core::result::Result<(), vmm_core::control::ServeError>, T) where B: vmm_backend::backend::Backend, T: core::marker::Send + 'static
+pub fn conductor::run_sweep<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::SweepConfig) -> core::result::Result<conductor::SweepReport, explorer::error::MachineError>
+pub fn conductor::sweep_client(std::os::unix::net::stream::UnixStream, environment::recorded::EnvSpec, conductor::SweepConfig) -> core::result::Result<conductor::SweepReport, explorer::error::MachineError>
+pub fn conductor::verify(&conductor::SweepReport, usize) -> alloc::vec::Vec<alloc::string::String>
