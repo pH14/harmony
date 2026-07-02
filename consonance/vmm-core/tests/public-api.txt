@@ -323,6 +323,7 @@ pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> alloc::vec::Vec<u8>
 pub fn vmm_core::vmm::Vmm<B>::state_components(&self) -> alloc::vec::Vec<(&'static str, [u8; 32])>
 pub fn vmm_core::vmm::Vmm<B>::state_hash(&self) -> [u8; 32]
 pub fn vmm_core::vmm::Vmm<B>::step(&mut self) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::step_until(&mut self, u64) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::terminal_reason(&self) -> core::option::Option<vmm_core::vmm::TerminalReason>
 pub fn vmm_core::vmm::Vmm<B>::vtime_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_lapic(&mut self, lapic::device::Lapic) -> &mut Self

@@ -356,15 +356,26 @@ impl<B: Backend> ControlServer<B> {
         //    failure is fatal: the session has no VM anymore.
         self.vmm = None;
         let mut fresh = (self.factory)()?;
-        // 3. Restore. `restore_vm_state` validates before mutating, so on a
-        //    rejected blob the fresh VM is intact at its boot point — keep it
-        //    (the session stays usable) and answer RestoreFailed.
-        if fresh
-            .restore_snapshot(mapping.as_slice(), &vm_state)
-            .is_err()
-        {
-            self.vmm = Some(fresh);
-            return Ok(Err(ControlError::RestoreFailed));
+        // 3. Restore, splitting the two result categories (mirrors `snapshot`).
+        //    `restore_vm_state` validates the untrusted blob **before** mutating
+        //    any live state, so a *validation-class* rejection leaves the fresh
+        //    VM intact at its boot point — keep it (the session stays usable) and
+        //    answer the recoverable `RestoreFailed`. A failure *after* validation
+        //    (a `Backend::restore` fault, a work-counter reset failure) is
+        //    substrate breakage: the fresh VM's state can no longer be vouched
+        //    for, so the VM is dropped (stays `None` → poisoned) and the session
+        //    is torn down (`ServeError`) rather than let a client run from
+        //    unvouched state.
+        match fresh.restore_snapshot(mapping.as_slice(), &vm_state) {
+            Ok(()) => {}
+            // Pre-commit rejection (a bad/foreign blob, mismatched wiring, or an
+            // invalid clock config) — the fresh VM never mutated, so keep it.
+            Err(VmmError::ContractViolation(_) | VmmError::Snapshot(_) | VmmError::Vtime(_)) => {
+                self.vmm = Some(fresh);
+                return Ok(Err(ControlError::RestoreFailed));
+            }
+            // Post-validation substrate breakage — the VM is unvouched; tear down.
+            Err(e) => return Err(e.into()),
         }
         // 4. Branch ⇒ fork the entropy stream from the env's seed. On this
         //    substrate `reseed_entropy` fails only if V-time is unwired — a
@@ -377,11 +388,16 @@ impl<B: Backend> ControlServer<B> {
     }
 
     /// `run(until)`: step the event loop to a terminal stop or the V-time
-    /// deadline. The deadline is checked against [`Vmm::effective_vns`]
-    /// **before** each step, so a run already at-or-past its deadline stops
-    /// immediately (without entering the guest) and the stop point is the first
-    /// V-time-intercept boundary at-or-after the deadline — deterministic
-    /// across same-seed runs, because effective V-time is.
+    /// deadline. When a deadline is set the run advances via
+    /// [`Vmm::step_until`](crate::vmm::Vmm::step_until), which **arms the
+    /// force-exit at the deadline** (the task-47/55 path): a compute-bound guest
+    /// with no natural VM-exit is preempted *at* the deadline instead of
+    /// overshooting it unboundedly — so the deadline is a hard bound on the run,
+    /// not merely checked at natural exits. The pre-step
+    /// [`effective_vns`](Vmm::effective_vns) check makes an already-met deadline
+    /// return immediately without entering the guest; the stop V-time is the
+    /// first work count whose V-time reaches the deadline (the documented
+    /// at-or-after-intercept semantic), deterministic across same-seed runs.
     fn run(
         &mut self,
         until: &control_proto::StopConditions,
@@ -394,7 +410,13 @@ impl<B: Backend> ControlServer<B> {
             {
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: VTime(vns) })));
             }
-            match vmm.step()? {
+            // Arm the force-exit at the deadline (bounded advance); an open run
+            // otherwise (a terminal-only run, no deadline to arm).
+            let step = match until.deadline {
+                Some(deadline) => vmm.step_until(deadline.0)?,
+                None => vmm.step()?,
+            };
+            match step {
                 Step::Continued => {}
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
@@ -795,6 +817,54 @@ mod tests {
     }
 
     #[test]
+    fn run_bounds_a_no_exit_guest_at_the_deadline_not_the_next_natural_exit() {
+        // The P1 bound (round 4): a guest with a **no-natural-exit** segment
+        // (a scripted `Exit::Deadline`, which the mock rewrites to the armed
+        // `run_until` work count) BEFORE a `Hlt` it would eventually reach. A
+        // `run` with a V-time deadline shorter than that `Hlt` must stop AT the
+        // deadline — force-exited via `step_until` — not overshoot to the Hlt.
+        // (The live VM is at V-time 500; the deadline 5000 lands inside the
+        // no-exit segment.)
+        let live = vmm_at_sync(
+            vec![
+                Exit::Deadline {
+                    reached: vmm_backend::Vtime(0),
+                },
+                Exit::Hlt,
+            ],
+            500,
+            0x1234,
+        );
+        let mut s = ControlServer::new(
+            live,
+            Box::new(|| {
+                Err(VmmError::ContractViolation(
+                    "factory unused in this test".into(),
+                ))
+            }),
+        );
+        hello(&mut s);
+        let req = Request::Run {
+            until: StopConditions {
+                deadline: Some(VTime(5000)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        match s.handle(&req).unwrap() {
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(
+                vtime,
+                VTime(5000),
+                "the run is bounded exactly at the armed deadline"
+            ),
+            other => panic!(
+                "expected a bounded Deadline{{5000}}, got {other:?} (a Quiescent would \
+                             mean the run overshot to the natural Hlt)"
+            ),
+        }
+    }
+
+    #[test]
     fn branch_reseeds_and_replay_does_not() {
         // Fork VMs take one RDTSC (to a synchronized point) then halt.
         let mut s = server(vec![Exit::Rdtsc, Exit::Hlt]);
@@ -924,6 +994,161 @@ mod tests {
             ServeError::Poisoned
         ));
         let _ = base; // silence: the first server was only used for setup
+    }
+
+    #[test]
+    fn restore_validation_rejection_is_recoverable_and_keeps_the_fresh_vm() {
+        // The recoverable half of restore's error split (round 4): a
+        // **validation-class** rejection — here a V-time wiring mismatch (the
+        // live VM is V-time-wired, so the snapshot carries a V-time block, but
+        // the factory boots forks WITHOUT V-time) — is caught *before* the fresh
+        // VM mutates, so it answers the recoverable `RestoreFailed` and KEEPS the
+        // intact fresh VM (the session stays usable).
+        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E); // V-time wired
+        let factory = Box::new(|| {
+            // A fork with NO V-time wired → restoring a V-time-bearing blob into
+            // it is a ContractViolation (wiring must match the snapshot source).
+            let mut m = MockBackend::with_exits(vec![Exit::Hlt]);
+            m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            m.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            Ok(Vmm::new(m, GuestRam::new(RAM).unwrap()))
+        });
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: seeded_env(1)
+            })
+            .unwrap(),
+            Err(ControlError::RestoreFailed),
+            "a validation-class restore rejection is the recoverable RestoreFailed"
+        );
+        // The session is NOT poisoned: the intact fresh fork VM is still there.
+        assert!(
+            s.vmm().is_some(),
+            "the fresh VM was kept after the rejection"
+        );
+        let _ = hash(&mut s); // still usable
+    }
+
+    /// A backend that forwards to an inner mock but **fails `restore`** — to
+    /// exercise restore's *fatal* (post-validation substrate-breakage) split.
+    struct RestoreFailBackend(MockBackend);
+    impl Backend for RestoreFailBackend {
+        fn set_cpuid(&mut self, m: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
+            self.0.set_cpuid(m)
+        }
+        fn set_msr_filter(&mut self, f: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
+            self.0.set_msr_filter(f)
+        }
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: forwards to the inner mock, which only records the region
+            // (no dereference) — no obligation beyond the trait contract.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit> {
+            self.0.run()
+        }
+        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+            self.0.run_until(d)
+        }
+        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+            self.0.inject(e)
+        }
+        fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(v)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, v: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(v)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(rax)
+        }
+        fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
+            self.0.complete_cpuid(a, b, c, d)
+        }
+        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.0.save()
+        }
+        fn restore(&mut self, _s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            Err(vmm_backend::BackendError::Memory("induced restore failure"))
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities {
+            self.0.capabilities()
+        }
+    }
+
+    #[test]
+    fn restore_substrate_failure_is_session_fatal_and_poisons_the_server() {
+        // The fatal half of restore's error split (round 4): a failure AFTER
+        // validation — here `Backend::restore` itself faults — is substrate
+        // breakage (the fresh VM's state can no longer be vouched for), so it
+        // tears the session down (ServeError) rather than answering the
+        // recoverable RestoreFailed and letting a client run from unvouched state.
+        let build = || -> Vmm<RestoreFailBackend> {
+            let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+            m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            m.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            let mut v = Vmm::new(RestoreFailBackend(m), GuestRam::new(RAM).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(500)), 1)
+                    .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            v.restore_guest_memory(&vec![0u8; RAM]).unwrap();
+            v
+        };
+        let mut live = build();
+        live.step().unwrap(); // Rdtsc → synchronized (snapshottable)
+        let mut s = ControlServer::new(live, Box::new(move || Ok(build())));
+        // hello + snapshot inline (the typed `hello`/`snap` helpers are
+        // MockBackend-only; this server is over RestoreFailBackend).
+        assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+        let base = match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(id)) => id,
+            other => panic!("snapshot: {other:?}"),
+        };
+        // branch restores into a fresh fork whose Backend::restore faults AFTER
+        // validation → fatal ServeError, not a RestoreFailed reply.
+        let err = s
+            .handle(&Request::Branch {
+                snap: base,
+                env: seeded_env(1),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, ServeError::Vmm(_)),
+            "a post-validation restore fault is session-fatal, got {err:?}"
+        );
+        // Poisoned: the unvouched VM was dropped, not kept.
+        assert!(s.vmm().is_none(), "the unvouched VM was dropped");
+        assert!(matches!(
+            s.handle(&Request::Snapshot).unwrap_err(),
+            ServeError::Poisoned
+        ));
     }
 
     #[test]

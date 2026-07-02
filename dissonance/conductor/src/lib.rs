@@ -303,6 +303,9 @@ pub fn render_table(report: &SweepReport) -> String {
 ///    **both** the terminal `state_hash` and the [`StopReason`] (a run that
 ///    reproduces the hash but stops for a different reason is still a
 ///    determinism failure — e.g. `Deadline` vs `Quiescent` at the same point).
+///    A seed with **fewer than two runs cannot demonstrate reproducibility at
+///    all**, so it is a failure — `verify` is a sound oracle regardless of how
+///    the sweep was configured (the milestone runs each seed twice).
 /// 2. **Divergence** — at least `min_distinct` distinct terminal hashes across
 ///    seeds (the box gate asks ≥ 2).
 /// 3. **Replay** — `replay(base)` hashes identically to the original capture.
@@ -316,6 +319,13 @@ pub fn verify(report: &SweepReport, min_distinct: usize) -> Vec<String> {
             failures.push(format!("seed {:#018x}: no runs recorded", row.seed));
             continue;
         };
+        if row.runs.len() < 2 {
+            failures.push(format!(
+                "seed {:#018x}: only {} run — reproducibility needs at least 2 runs to compare",
+                row.seed,
+                row.runs.len()
+            ));
+        }
         for (i, run) in row.runs.iter().enumerate() {
             if run.hash != first.hash {
                 failures.push(format!(
@@ -396,5 +406,66 @@ pub fn raw_call<S: Read + Write>(
         let n = stream.read(&mut chunk).expect("read reply");
         assert_ne!(n, 0, "server closed mid-reply");
         inbuf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a report with the given per-seed run counts, all runs of a seed
+    /// identical (so only the run-count check can fail). Distinct seeds get
+    /// distinct hashes (divergence satisfied).
+    fn report(run_counts: &[usize]) -> SweepReport {
+        let rows = run_counts
+            .iter()
+            .enumerate()
+            .map(|(s, &n)| SeedRow {
+                seed: s as u64,
+                runs: (0..n)
+                    .map(|_| RunRow {
+                        stop: StopReason::Quiescent { vtime: VTime(100) },
+                        hash: [s as u8; 32],
+                    })
+                    .collect(),
+            })
+            .collect();
+        SweepReport {
+            snapshot_vtime: 10,
+            snapshot_attempts: 1,
+            base_hash: [0xAA; 32],
+            rows,
+            replay_hash: [0xAA; 32],
+        }
+    }
+
+    #[test]
+    fn verify_rejects_a_single_run_row_as_not_reproducible() {
+        // Two seeds, but the first has only ONE run — it cannot demonstrate
+        // reproducibility, so verify must flag it even though every run "matches
+        // itself" and the two seeds diverge.
+        let failures = verify(&report(&[1, 2]), 2);
+        assert!(
+            failures.iter().any(|f| f.contains("only 1 run")),
+            "a single-run row is a reproducibility failure, got {failures:?}"
+        );
+    }
+
+    #[test]
+    fn verify_passes_a_well_formed_two_run_report() {
+        assert_eq!(
+            verify(&report(&[2, 2]), 2),
+            Vec::<String>::new(),
+            "two seeds, two identical runs each, two distinct futures, replay == capture"
+        );
+    }
+
+    #[test]
+    fn verify_flags_an_empty_row_and_a_replay_mismatch() {
+        let mut r = report(&[2, 0]);
+        r.replay_hash = [0xBB; 32]; // != base_hash
+        let failures = verify(&r, 2);
+        assert!(failures.iter().any(|f| f.contains("no runs recorded")));
+        assert!(failures.iter().any(|f| f.contains("replay")));
     }
 }
