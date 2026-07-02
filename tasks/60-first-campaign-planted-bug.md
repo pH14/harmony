@@ -4,7 +4,7 @@
 > faults) in place, run the first real campaign: a workload with a **planted, fault-triggerable
 > bug**, a crash oracle, the seed-driven outer loop searching, and the emitted `Recorded`
 > environment replaying the find bit-identically, N/N. This validates the whole
-> Modulation/Progression mechanism (Variation/Theme, pre-task-94 naming) on real software —
+> Modulation/Progression mechanism on real software —
 > and it is the deliberate first step of the fuzzer-validation discipline: **prove the finder
 > against seeded bugs before investing in search cleverness** (see
 > `docs/REVIEW-2026-07.md` §"Wave 4" and the deferred SDK/coverage epoch).

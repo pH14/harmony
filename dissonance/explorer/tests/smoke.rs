@@ -62,6 +62,6 @@ fn seed_campaign_is_pure_dst_no_frontier() {
     assert_eq!(
         ex.frontier().len(),
         0,
-        "seed campaign admits nothing (Multiverse alone)"
+        "seed campaign admits nothing (Progression alone)"
     );
 }

@@ -257,7 +257,7 @@ pub struct ToyMachine {
     snaps: BTreeMap<u64, Snap>,
     next_snap: u64,
     dropped: BTreeSet<u64>,
-    // Current Timeline state.
+    // Current Modulation state.
     branch_start: u64,
     seed: u64,
     overrides_abs: BTreeMap<u64, u8>,

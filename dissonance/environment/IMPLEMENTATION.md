@@ -365,7 +365,7 @@ The old per-decision `DecisionId` key is **removed** — superseded by `Moment`
 
 ### `EnvCodec` — the proposal seam (task 93's one-axis `compose`)
 
-`EnvCodec::{seeded, mutate, compose}` is the vocabulary-aware seam the Theme calls
+`EnvCodec::{seeded, mutate, compose}` is the vocabulary-aware seam the Progression calls
 (it "cannot invent a legal `HostFault`/`Answer`, so it asks the codec").
 
 `compose(base, tail, at) -> Result<EnvSpec, EnvError>` is the **task-45 acceptance
@@ -427,18 +427,18 @@ re-key (the `m < at` prefix filter and the `checked_add` overflow guard) and its
 Ok/reject set are covered by `tests/envcodec.rs`. `cargo mutants --in-diff` over
 the PR diff reports **0 missed**.
 
-### The D4 invariant (no Theme/explorer change to consume `HostFault`)
+### The D4 invariant (no Progression/explorer change to consume `HostFault`)
 
-Verified by inspection (the explorer/Theme, task 12, is not in this worktree).
-The Theme is agnostic across three opaque seams — navigation (the opaque `EnvSpec`
+Verified by inspection (the explorer/Progression, task 12, is not in this worktree).
+The Progression is agnostic across three opaque seams — navigation (the opaque `EnvSpec`
 blob), scoring (coverage/oracle), and **proposal** (`EnvCodec` + the catalog).
 `HostFault` enters *only* through those seams: it is an `Action` variant inside the
-opaque `BTreeMap<Moment, Action>` the Theme never destructures, and it is produced
-by `EnvCodec::{mutate, compose}` / recorded by `perturb`. The Theme orders and
+opaque `BTreeMap<Moment, Action>` the Progression never destructures, and it is produced
+by `EnvCodec::{mutate, compose}` / recorded by `perturb`. The Progression orders and
 manipulates overrides as `(Moment, opaque Action)` — the single `Moment` axis is
 exactly what lets it do so without learning a plane. Nothing in this crate's
 public surface forces a `match` on `Action::Host` vs `Action::Guest` in search
-policy. So adding the host plane grew the catalog + codec and touched the Theme
+policy. So adding the host plane grew the catalog + codec and touched the Progression
 contract not at all — the invariant holds.
 
 ### Deviations considered and rejected (task 45)

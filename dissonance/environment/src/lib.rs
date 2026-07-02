@@ -18,13 +18,13 @@
 //! Both planes record into one artifact. [`Action`] is the merged vocabulary
 //! ([`Host`](Action::Host) ∪ [`Guest`](Action::Guest)); the reproducer
 //! [`EnvSpec`] keys its overrides by [`Moment`] (a retired-instruction count),
-//! so host and guest overrides share one ordered timeline and the Theme
+//! so host and guest overrides share one ordered timeline and the Progression
 //! manipulates them uniformly — `(Moment, opaque Action)` — without ever
 //! learning an override's plane. This crate provides the versioned **catalog**
 //! ([`DecisionClass`], [`DecisionPoint`], [`Answer`], [`Fault`], [`HostFault`]),
 //! the **seam** ([`Environment::decide`] → [`Outcome`]), the **seeded backings**
 //! ([`SeededEnv`] and [`RecordedEnv`] materialized from [`EnvSpec`]), and the
-//! vocabulary-aware [`EnvCodec`] (`seeded`/`mutate`/`compose`) the Theme calls to
+//! vocabulary-aware [`EnvCodec`] (`seeded`/`mutate`/`compose`) the Progression calls to
 //! propose environments. Determinism is the entire point: the same backing over
 //! the same inputs yields the same answers, bit for bit, so every bug replays
 //! exactly. Nothing here observes wall-clock time, host entropy,

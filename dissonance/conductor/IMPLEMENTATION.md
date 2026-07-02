@@ -24,7 +24,7 @@ The ruling (`docs/DISSONANCE.md` §"Ruling (task 93)": keep `EnvCodec::compose`)
 adapter on four points. All four are implemented in `dissonance/explorer/src/adapter.rs`:
 
 - **Tail-completeness.** `SocketMachine::run` stamps every resolved decision at its stop `Moment`
-  into the current Timeline's recording, and `recorded_env` emits the branch-local delta — always
+  into the current Modulation's recording, and `recorded_env` emits the branch-local delta — always
   the `EnvSpec::Recorded` variant (a `Seeded` base is promoted to `Recorded` with no overrides), so
   the production `compose`'s variant check can never fire on an adapter-minted artifact. Seed-driven
   runs surface no decisions, so the delta is trivially tail-complete.

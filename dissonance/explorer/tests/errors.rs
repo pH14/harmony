@@ -24,7 +24,7 @@ fn backend_fault_aborts_explore_loudly() {
     }
 }
 
-/// The same fault inside `multiverse_step` surfaces as `Err`, never `Ok(Some(bug))`
+/// The same fault inside `progression_step` surfaces as `Err`, never `Ok(Some(bug))`
 /// — a transport failure is categorically not a bug.
 #[test]
 fn backend_fault_is_never_a_bug() {
@@ -33,7 +33,7 @@ fn backend_fault_is_never_a_bug() {
 
     // The very first run fails; the step returns Err, not a bug.
     assert!(matches!(
-        ex.multiverse_step(),
+        ex.progression_step(),
         Err(MachineError::Transport(_))
     ));
 }

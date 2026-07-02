@@ -1,6 +1,6 @@
 # explorer — implementation notes
 
-Task 12 (the Timeline/Multiverse engine) plus **task 64: the search-plane trait
+Task 12 (the Modulation/Progression engine) plus **task 64: the search-plane trait
 spine + Progression refactor** — the Wave-5 keystone contract. Pure logic: no
 `/dev/kvm`, no guest, no socket, no wall-clock, no host entropy, no
 sibling-crate dependencies. Builds and passes every gate on macOS and Linux. No
@@ -29,7 +29,7 @@ sibling-crate dependencies. Builds and passes every gate on macOS and Linux. No
   `Composition { tactic, selector, archive, oracle, cells, sensors }` and one
   campaign `Prng`. The Selector picks a frontier exemplar (or `None` =
   genesis); the engine materializes it, mints the next env through `EnvCodec`,
-  runs one Timeline (the Tactic answering open-loop), rebases the run to
+  runs one Modulation (the Tactic answering open-loop), rebases the run to
   genesis-complete (task-93 `compose`), folds it into the Archive (timeline
   admission over the run's `Fork`s), rewards the selector, and returns the
   Oracle's verdict. `Strategy`/`SeedStrategy`/`CoverageStrategy`/`Corpus`/
@@ -69,7 +69,7 @@ across a 12-step compacting campaign) plus the
 serde round-trip preserves the id counter).
 
 **Seal cleanup is error-safe (round-2 review, P2).** Every cleanup path —
-`evict_seals`, `sweep_dead_seals`, the timeline's leftover-pending drain, and
+`evict_seals`, `sweep_dead_seals`, the modulation's leftover-pending drain, and
 the post-admission transfer/drop walk — removes a handle from engine ownership
 only **after** its `drop_snap` succeeds (or after it is cached under its
 entry's id), so a mid-way backend failure forgets nothing and the next call
@@ -116,7 +116,7 @@ zero-payload test and a mid-stream round-trip test.
   minting, nested forks, compose rebasing). Draw-for-draw stream equality —
   the defaults are composed on one campaign `Prng` exactly as the old
   `Strategy` owned one.
-- The task-12 gates carry over re-stated: determinism (≥256), Timeline replay +
+- The task-12 gates carry over re-stated: determinism (≥256), Modulation replay +
   the task-93 `compose_rebase_replays_from_genesis` property (≥256), novelty
   order-stability (≥256), two error categories, seal GC/no-leak, nested-fork
   genesis-completeness pins, artifact equivalence across tactics.
@@ -226,9 +226,11 @@ zero-payload test and a mid-stream round-trip test.
 - **`Explorer::materialize` is public**: the frontier task's live
   materialization engine replaces its genesis-replay body with the
   `branch(parent)`+suffix fast path behind the same signature.
-- **Naming**: engine loop names (`timeline`/`multiverse_step`) are task-12's;
-  spine/docs use the post-rename Progression/Modulation framing. Task 94 does
-  the tree-wide rename — deliberately not done here.
+- **Naming**: the engine loop methods are `modulation`/`progression_step`
+  (inner/outer), matching the Modulation/Progression framing in the spine and
+  docs. Task 94 applied this tree-wide rename (was `timeline`/`multiverse_step`,
+  Timeline/Multiverse, in task-12's code); the term of art *timeline admission*
+  is the run's `Moment` axis, a distinct concept, and is intentionally unchanged.
 - **CI wiring left to the integrator (root files are off-limits, rule 1):**
   `explorer` is already in the `public-api` job's `-p` list; the
   `tests/public-api.txt` snapshot is regenerated on the pinned nightly

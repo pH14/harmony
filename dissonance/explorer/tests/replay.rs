@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Gate 2 — Timeline replay (the OQ10 gate).
+//! Gate 2 — Modulation replay (the OQ10 gate).
 //!
-//! A `timeline` run accumulates `env₁` (= `Machine::recorded_env` at the terminal
+//! A `modulation` run accumulates `env₁` (= `Machine::recorded_env` at the terminal
 //! stop); `branch(base, env₁)` + re-run to the same deadline yields the **same
 //! `hash`** — the recorded `Environment` reproduces the run bit-for-bit. And a
 //! reported `Bug` replays from **genesis**: a run branched below a non-genesis
@@ -44,7 +44,7 @@ fn recorded_env_replays_to_the_same_hash() {
     let genesis = ex.genesis();
 
     let env0 = ToyCodec.seeded(42);
-    let outcome = ex.timeline(genesis, &env0, &all()).unwrap();
+    let outcome = ex.modulation(genesis, &env0, &all()).unwrap();
     let h1 = ex.machine_mut().hash().unwrap();
 
     // branch(base, env₁) + re-run: the recorded overrides pin every decision, so
@@ -68,7 +68,7 @@ fn recorded_env_replays_to_the_same_deadline() {
     };
 
     let env0 = ToyCodec.seeded(99);
-    let outcome = ex.timeline(genesis, &env0, &until).unwrap();
+    let outcome = ex.modulation(genesis, &env0, &until).unwrap();
     let h1 = ex.machine_mut().hash().unwrap();
 
     ex.machine_mut().branch(genesis, &outcome.env).unwrap();
@@ -91,8 +91,8 @@ fn compose_rebases_a_non_genesis_run_to_genesis() {
     let mut ex = explorer(5);
     let genesis = ex.genesis();
 
-    // One Multiverse step populates the frontier with a non-genesis exemplar.
-    ex.multiverse_step().unwrap();
+    // One Progression step populates the frontier with a non-genesis exemplar.
+    ex.progression_step().unwrap();
     assert!(
         !ex.frontier().is_empty(),
         "genesis run admits a frontier exemplar"
@@ -105,9 +105,9 @@ fn compose_rebases_a_non_genesis_run_to_genesis() {
         "the exemplar's seal is a mid-run, non-genesis snapshot"
     );
 
-    // Branch off that seal with a branch-local mutation and run a Timeline.
+    // Branch off that seal with a branch-local mutation and run a Modulation.
     let branch_local_in = codec.mutate(&base_env, 0xABCD);
-    let outcome = ex.timeline(snap, &branch_local_in, &all()).unwrap();
+    let outcome = ex.modulation(snap, &branch_local_in, &all()).unwrap();
     let mid_hash = ex.machine_mut().hash().unwrap();
     let mid_stop = outcome.stop.clone();
 
@@ -158,7 +158,7 @@ fn bug_below_a_continued_snapshot_replays_from_genesis() {
 
     // A genesis run forks a SnapshotPoint at SNAP_AT and then runs on to the
     // terminal stop, so its terminal env carries overrides past the fork.
-    ex.multiverse_step().unwrap();
+    ex.progression_step().unwrap();
     let r = ExemplarRef(0);
     let entry_env = ex.frontier().get(r).unwrap().env.clone();
     let snap = ex.seal_of(r).expect("the exemplar keeps its fork seal");
@@ -185,12 +185,12 @@ fn bug_below_a_continued_snapshot_replays_from_genesis() {
         seed: decoded.seed,
         overrides,
     });
-    let outcome = ex.timeline(snap, &branch_local_in, &all()).unwrap();
+    let outcome = ex.modulation(snap, &branch_local_in, &all()).unwrap();
     let mid_hash = ex.machine_mut().hash().unwrap();
     let mid_stop = outcome.stop.clone();
     assert!(mid_stop.is_bug(), "the forced suffix override yields a bug");
 
-    // Rebase to genesis exactly as `multiverse_step` reports a bug, and replay.
+    // Rebase to genesis exactly as `progression_step` reports a bug, and replay.
     let bug_env = codec.compose(&entry_env, &outcome.env);
     ex.machine_mut().branch(genesis, &bug_env).unwrap();
     let g_stop = drive_to_terminal(ex.machine_mut(), &all(), None).unwrap();
@@ -216,7 +216,7 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
     let genesis = ex.genesis();
 
     // 1. A genesis run admits the first-generation exemplar at SNAP_AT.
-    ex.multiverse_step().unwrap();
+    ex.progression_step().unwrap();
     let r = ExemplarRef(0);
     let e_outer = ex.frontier().get(r).unwrap().env.clone();
     let s_outer = ex.seal_of(r).expect("first-generation seal");
@@ -232,7 +232,7 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
     ex.machine_mut().branch(s_outer, &into_outer).unwrap();
     let (s_nested, prefix_nested) = common::drive_to_snapshot(ex.machine_mut(), &all());
 
-    // 3. Rebase the nested prefix to genesis-complete exactly as multiverse_step
+    // 3. Rebase the nested prefix to genesis-complete exactly as progression_step
     //    does for a fork below a non-genesis exemplar.
     let e_nested = codec.compose(&e_outer, &prefix_nested);
     let de = decode(&e_nested).unwrap();
@@ -253,7 +253,7 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
         seed: de.seed,
         overrides,
     });
-    let outcome = ex.timeline(s_nested, &into_nested, &all()).unwrap();
+    let outcome = ex.modulation(s_nested, &into_nested, &all()).unwrap();
     let mid_hash = ex.machine_mut().hash().unwrap();
     let mid_stop = outcome.stop.clone();
     assert!(
@@ -302,7 +302,7 @@ proptest! {
 
         // Warm the frontier so there are non-genesis exemplars to branch below.
         for _ in 0..warmup_steps {
-            ex.multiverse_step().unwrap();
+            ex.progression_step().unwrap();
         }
         prop_assume!(!ex.frontier().is_empty());
         let r = ex.frontier().nth(entry_pick as u64).unwrap();
@@ -314,7 +314,7 @@ proptest! {
 
         // A run branched below the non-genesis exemplar produces the delta.
         let branch_local_in = codec.mutate(&base_env, salt);
-        let outcome = ex.timeline(snap, &branch_local_in, &all).unwrap();
+        let outcome = ex.modulation(snap, &branch_local_in, &all).unwrap();
         let mid_hash = ex.machine_mut().hash().unwrap();
         let mid_stop = outcome.stop.clone();
 

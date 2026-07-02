@@ -126,7 +126,7 @@ later; nothing depends on naming it yet.)*
   `assert_sometimes` / `assert_reachable`, `random()`, lifecycle): the **app itself** contributes
   fault points, assertions, and coverage. `assert_sometimes` hands the explorer part of its
   *objective* (drive the run until it fires); `assert_always` hands it a *bug oracle*. App logic
-  enters through the same opaque seams the explorer already consumes (see "Theme is
+  enters through the same opaque seams the explorer already consumes (see "Progression is
   agnostic-by-interface"), so it enriches the vocabulary without growing the search policy. SDK
   surfaces **stack per layer** along with the catalog.
 
@@ -152,7 +152,7 @@ struct Environment { seed: u64, overrides: BTreeMap<Moment, Action> }
 ```
 
 A single `Moment` axis (retired-instruction count) is **load-bearing**: it puts host- and
-guest-plane overrides on one ordered timeline, so the Theme can manipulate them uniformly
+guest-plane overrides on one ordered timeline, so the Progression can manipulate them uniformly
 (`(Moment, opaque Action)`) without knowing which plane an override belongs to. Guest decisions are
 stamped with the instruction count at which they surface; host perturbations are placed at a chosen
 count.
@@ -233,7 +233,7 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   `StandingFault` in a branch-local delta, and a corpus entry whose env carries standing faults is
   never branched below. Under that rule every standing-fault bug is found in a genesis-rooted run,
   whose `recorded_env` is already genesis-complete and carries the standing set verbatim — no
-  composition needed. Enforcement cannot live in the explorer — the Theme and its strategies are
+  composition needed. Enforcement cannot live in the explorer — the Progression and its strategies are
   schema-blind and cannot detect a standing-fault-carrying blob — so it lives in two places:
   (a) **vacuously, in the v1 vocabulary** — the v1 frontier fault catalog has *no* standing faults
   at all (task 59 is point faults at a `Moment`), so the confinement rule holds by construction
@@ -244,7 +244,7 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   becomes the loud abort of the fallibility bullet above, never a mis-keyed reproducer.
   **Sequencing guard:** standing faults must not enter the frontier fault vocabulary *before*
   either the `Moment → VTime` map exists (making them composable — the confinement rule
-  dissolves) or a schema-visible corpus-base eligibility hook is added to the Theme's selection
+  dissolves) or a schema-visible corpus-base eligibility hook is added to the Progression's selection
   path. On the codec seam alone, "never branched below" is enforceable only as the loud abort —
   by the time `mutate` sees the blob the strategy has already selected the `SnapId`, and `mutate`
   returns an `Environment`; it cannot redirect the branch. Whichever task introduces standing
@@ -253,9 +253,20 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
 The invariant is unchanged and not up for revisiting: the reproducer is **genesis-complete and
 portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.
 
-## The two loops: Variation and Theme
+## The two loops: Modulation and Progression
 
-| | **Variation** (inner) | **Theme** (outer) |
+> **Naming history (task 94).** These two loops were renamed once, to collapse three
+> competing vocabularies into one. **Modulation** (inner) was *Variation* in this doc and
+> *Timeline* in the explorer code and `tasks/12-explorer.md` (`Explorer::timeline`);
+> **Progression** (outer) was *Theme* here and *Multiverse* in the code
+> (`Explorer::multiverse_step`). The mapping — *Variation/Timeline → Modulation*,
+> *Theme/Multiverse → Progression* — is all you need to decode an old PR discussion or a
+> historical task spec (12/24/25/45/93 keep their original words on purpose; history is a
+> record, not a lie to maintain). The lowercase term of art *timeline admission* (admitting
+> exemplars along a run's `Moment` axis) is a distinct concept and is **not** part of this
+> rename.
+
+| | **Modulation** (inner) | **Progression** (outer) |
 |---|---|---|
 | **Unit** | one *decision/perturbation* | one *run* (an `Environment`) |
 | **Owns** | the *vocabulary* — `Action` (host ∪ guest planes) | the *search* over opaque `Environment`s |
@@ -263,47 +274,47 @@ portable**; `SnapId`s are ephemeral pool handles and never part of the artifact.
 | **Produces** | a finished run + its recorded `Environment` | corpus growth; the next environment |
 | **Grows when a fault is added?** | yes (+ catalog + codec) | **never** |
 
-A **Variation** drives one run to a terminal stop, answering each surfaced guest decision and
+A **Modulation** drives one run to a terminal stop, answering each surfaced guest decision and
 applying any host perturbation at its `Moment`; the actions accumulate into the `Environment` that
-reproduces it. The **Theme** picks or mutates an environment, branches, runs one Variation, scores
-coverage novelty and assertions, and chooses what to try next. **One Theme step = one Variation.**
-In seeded mode the Variation has zero stops (the seed answers everything), so a pure seed-driven
-campaign is the Theme alone.
+reproduces it. The **Progression** picks or mutates an environment, branches, runs one Modulation, scores
+coverage novelty and assertions, and chooses what to try next. **One Progression step = one Modulation.**
+In seeded mode the Modulation has zero stops (the seed answers everything), so a pure seed-driven
+campaign is the Progression alone.
 
-`snapshot` / `branch` are **Theme navigation, not perturbations** — they are not recorded into a
+`snapshot` / `branch` are **Progression navigation, not perturbations** — they are not recorded into a
 run's `Environment`. A `snapshot` at **any V-time point** (task 41 lifted the original
 quiescent-only limit by capturing in-flight CPU event/interrupt state — see `tasks/41-non-
 quiescent-snapshot.md`; a never-halting interrupt-driven guest like Postgres is now snapshottable
-mid-workload, not just at boot) becomes a base the Theme forks two ways —
+mid-workload, not just at boot) becomes a base the Progression forks two ways —
 `branch(s, env_drop)` + `branch(s, env_deliver)`, two
 `Environment`s that answer the interesting decision differently; each replays from the base to that
 `Moment` and diverges there. This is the one place the loops interlock, growing a tree of
-variations from a single moment — without ever snapshotting while a decision is armed.
+modulations from a single moment — without ever snapshotting while a decision is armed.
 
 **The invariant (the boundary's litmus test):** *adding a fault type — a new `HostFault`, a new
-guest decision class, a whole new `harmony-<env>` layer — grows **Variation + catalog + codec** and
-touches **Theme** never.* If it forces a Theme change, the abstraction has leaked.
+guest decision class, a whole new `harmony-<env>` layer — grows **Modulation + catalog + codec** and
+touches **Progression** never.* If it forces a Progression change, the abstraction has leaked.
 
-## Theme is agnostic-by-interface
+## Progression is agnostic-by-interface
 
-The Theme is generic across exactly three opaque seams — it is structurally blind to fault
+The Progression is generic across exactly three opaque seams — it is structurally blind to fault
 semantics but depends on these channels:
 
 - **Navigation** — the opaque `Environment` blob + `SnapId` (`branch`/`replay`/`drop`).
 - **Scoring** — an opaque coverage vector + oracle/`StopReason` events; `hello(caps)` negotiates
-  coverage geometry. The Theme maximizes novelty over bits whose *meaning* is guest-defined.
+  coverage geometry. The Progression maximizes novelty over bits whose *meaning* is guest-defined.
 - **Proposal** — delegated to the vocabulary-aware codec (`EnvCodec::seeded`/`mutate`/`compose`) +
-  the published catalog; the Theme cannot *invent* a legal `HostFault`/`Answer`, so it asks the
-  codec. Theme *policy* (select / score / branch-vs-restart / frontier GC) stays generic.
+  the published catalog; the Progression cannot *invent* a legal `HostFault`/`Answer`, so it asks the
+  codec. Progression *policy* (select / score / branch-vs-restart / frontier GC) stays generic.
 
 This is the precise sense of "agnostic": the search engine hardcodes no fault types; vocabulary
 knowledge lives in the seams it calls. Composition (new layers) and the SDK (app-specific logic)
-both enter through these seams — which is why they never touch the Theme.
+both enter through these seams — which is why they never touch the Progression.
 
 ## The control transport (verbs)
 
 A small, explicit verb set over a versioned, length-delimited request/response socket — the
-out-of-band channel the Theme uses to drive consonance (the host plane rides here; guest decisions
+out-of-band channel the Progression uses to drive consonance (the host plane rides here; guest decisions
 surface in-band and are *answered* via `run(resolve)`):
 
 | Verb | Returns | Meaning |
@@ -409,7 +420,7 @@ snapshot/branch at a `Moment`).
 |---|---|---|
 | `dissonance/environment` | the **guest control-plane** `decide` seam, the catalog (incl. the per-flow `NetFlow` network seam), `SeededEnv`, the recorded-replay format | `tasks/24-environment.md`, `tasks/50-net-fault-boundary.md` |
 | `dissonance/control-proto` | the control-transport wire types + versioned codec | `tasks/25-control-proto.md` |
-| `dissonance/explorer` | the Variation/Theme engine, corpus, scoring, strategy | `tasks/12-explorer.md` |
+| `dissonance/explorer` | the Modulation/Progression engine, corpus, scoring, strategy | `tasks/12-explorer.md` |
 | `dissonance/flow` | the pure-logic L4 flow-fault proxy core behind task 50's `net_decide` seam: `FlowEvent`s in, a deterministic V-time-scheduled stream of `FlowAction`s out, via a `FlowEngine` trait (`ToxiproxyEngine` + `PassthroughEngine`) | `tasks/51-flow.md` |
 | *(host plane)* | `HostFault` + `perturb` + uniform `Moment` stamping in consonance | `tasks/45-host-control-plane.md`, enforcement lands in `tasks/59-host-plane-enforcement.md` |
 
