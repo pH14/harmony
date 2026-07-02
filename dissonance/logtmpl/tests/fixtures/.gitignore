@@ -1,0 +1,4 @@
+# The committed console-log fixtures are required test inputs (task 67), but the
+# repo-root .gitignore excludes `*.log`. Re-include them here — this negation is
+# scoped to this crate's fixtures directory (conventions rule 1: own dir only).
+!*.log

@@ -1,0 +1,700 @@
+postgres LOG database system was shut down at 2026-07-02 14:22:58 UTC
+postgres LOG starting PostgreSQL 16.3 on x86_64-pc-linux-gnu compiled by gcc 13.2
+postgres LOG listening on IPv4 address 0.0.0.0 port 5432
+postgres LOG database system is ready to accept connections
+postgres disconnection disconnection session_time=11.858s user=app host=10.42.82.194
+postgres connection connection received host=10.42.79.232 port=60381
+postgres redo redo starts at lsn=8/BF0170
+postgres autovacuum autovacuum launcher started worker pid=34804 db=metrics
+postgres deadlock deadlock detected pid=35009 victim=2178 relation=public.accounts
+postgres restartpoint restartpoint complete wrote=99785 buffers lsn=6/A29045
+postgres vacuum vacuum progress table=public.sessions scanned=50% dead_tuples=3016
+postgres automatic automatic analyze of table public.events elapsed=52.338s
+postgres statement statement cancelled pid=10426 after=3259ms reason=lock_timeout
+postgres checkpoint checkpoint starting reason=time buffers=77890
+postgres WAL WAL segment recycled name=00000006 lsn=9/35BFED
+postgres parameter parameter changed name=work_mem value=229MB
+postgres duration duration=5462ms statement=SELECT pk FROM orders WHERE id=70027
+postgres replication replication standby=node-2 sent_lsn=2/2DE77F flush_lsn=3/30E9E1
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp28901.0 size=1760kB
+postgres checkpointer checkpointer wrote=80891 buffers avg_write=6915ms
+postgres automatic automatic vacuum of table public.orders index_scans=8 tuples_removed=52685
+postgres connection connection authorized user=app database=app application=svclb-traefik-3b098
+postgres bgwriter bgwriter buffers_clean=86936 maxwritten=579
+postgres checkpoint checkpoint complete wrote=82669 buffers sync=18.731s total=33.873s
+postgres WAL WAL segment recycled name=00000005 lsn=9/4E34CE
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=16881
+postgres replication replication standby=node-2 sent_lsn=6/B5CFA9 flush_lsn=8/619D58
+postgres parameter parameter changed name=work_mem value=58MB
+postgres restartpoint restartpoint complete wrote=30210 buffers lsn=6/ED8926
+postgres replication replication standby=node-3 sent_lsn=9/517E89 flush_lsn=9/16FCB0
+postgres statement statement cancelled pid=1614 after=8665ms reason=lock_timeout
+postgres parameter parameter changed name=work_mem value=96MB
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp38446.0 size=2420kB
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=49030
+postgres checkpoint checkpoint starting reason=time buffers=40558
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp56831.0 size=2608kB
+postgres bgwriter bgwriter buffers_clean=11458 maxwritten=472
+postgres automatic automatic analyze of table public.events elapsed=11.507s
+postgres deadlock deadlock detected pid=45877 victim=13776 relation=public.accounts
+postgres restartpoint restartpoint complete wrote=10264 buffers lsn=7/9BD5E
+postgres checkpointer checkpointer wrote=86397 buffers avg_write=6963ms
+postgres statement statement cancelled pid=20095 after=4438ms reason=lock_timeout
+postgres replication replication standby=node-5 sent_lsn=2/62B420 flush_lsn=3/20E4D3
+postgres statement statement cancelled pid=23634 after=3446ms reason=lock_timeout
+postgres deadlock deadlock detected pid=33074 victim=24467 relation=public.accounts
+postgres autovacuum autovacuum launcher started worker pid=14745 db=app
+postgres connection connection received host=10.42.214.154 port=58902
+postgres duration duration=3027ms statement=SELECT pk FROM orders WHERE id=88149
+postgres bgwriter bgwriter buffers_clean=77162 maxwritten=938
+postgres bgwriter bgwriter buffers_clean=22204 maxwritten=809
+postgres restartpoint restartpoint complete wrote=4458 buffers lsn=5/FC0716
+postgres bgwriter bgwriter buffers_clean=92743 maxwritten=184
+postgres duration duration=8269ms statement=SELECT pk FROM orders WHERE id=90040
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=90801
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp20855.0 size=2332kB
+postgres bgwriter bgwriter buffers_clean=58688 maxwritten=896
+postgres redo redo starts at lsn=3/6785BF
+postgres vacuum vacuum progress table=public.sessions scanned=92% dead_tuples=91593
+postgres redo redo starts at lsn=6/4F25AD
+postgres connection connection authorized user=app database=app application=postgres-37194
+postgres deadlock deadlock detected pid=44417 victim=33555 relation=public.accounts
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp5641.0 size=1282kB
+postgres disconnection disconnection session_time=52.333s user=app host=10.42.218.251
+postgres autovacuum autovacuum launcher started worker pid=2959 db=postgres
+postgres autovacuum autovacuum launcher started worker pid=2493 db=metrics
+postgres vacuum vacuum progress table=public.sessions scanned=10% dead_tuples=65520
+postgres connection connection received host=10.42.132.51 port=39381
+postgres connection connection received host=10.42.210.87 port=31176
+postgres checkpointer checkpointer wrote=3520 buffers avg_write=8690ms
+postgres duration duration=3416ms statement=SELECT pk FROM orders WHERE id=56694
+postgres restartpoint restartpoint complete wrote=77238 buffers lsn=2/2067E6
+postgres checkpoint checkpoint starting reason=time buffers=75447
+postgres replication replication standby=node-2 sent_lsn=8/B2365A flush_lsn=4/E40D4F
+postgres automatic automatic analyze of table public.events elapsed=45.942s
+postgres duration duration=2177ms statement=SELECT pk FROM orders WHERE id=35821
+postgres checkpoint checkpoint complete wrote=32765 buffers sync=14.546s total=56.524s
+postgres checkpointer checkpointer wrote=40742 buffers avg_write=9764ms
+postgres connection connection authorized user=app database=app application=local-path-provisioner-a8142
+postgres parameter parameter changed name=work_mem value=165MB
+postgres disconnection disconnection session_time=38.122s user=app host=10.42.37.166
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp43663.0 size=2707kB
+postgres bgwriter bgwriter buffers_clean=39579 maxwritten=569
+postgres deadlock deadlock detected pid=52180 victim=58113 relation=public.accounts
+postgres bgwriter bgwriter buffers_clean=76263 maxwritten=634
+postgres parameter parameter changed name=work_mem value=62MB
+postgres parameter parameter changed name=work_mem value=40MB
+postgres automatic automatic analyze of table public.events elapsed=38.629s
+postgres bgwriter bgwriter buffers_clean=67980 maxwritten=310
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp11242.0 size=3005kB
+postgres redo redo starts at lsn=4/94044B
+postgres checkpointer checkpointer wrote=69577 buffers avg_write=6460ms
+postgres automatic automatic analyze of table public.events elapsed=47.989s
+postgres autovacuum autovacuum launcher started worker pid=58780 db=app
+postgres restartpoint restartpoint complete wrote=77640 buffers lsn=2/457166
+postgres disconnection disconnection session_time=19.587s user=app host=10.42.116.38
+postgres checkpointer checkpointer wrote=77356 buffers avg_write=4046ms
+postgres bgwriter bgwriter buffers_clean=75158 maxwritten=45
+postgres autovacuum autovacuum launcher started worker pid=49754 db=postgres
+postgres parameter parameter changed name=work_mem value=213MB
+postgres checkpointer checkpointer wrote=95457 buffers avg_write=4784ms
+postgres checkpoint checkpoint starting reason=time buffers=95039
+postgres deadlock deadlock detected pid=28523 victim=26165 relation=public.accounts
+postgres duration duration=4236ms statement=SELECT pk FROM orders WHERE id=36588
+postgres deadlock deadlock detected pid=44754 victim=22214 relation=public.accounts
+postgres restartpoint restartpoint complete wrote=55662 buffers lsn=2/B9DDD6
+postgres checkpointer checkpointer wrote=91418 buffers avg_write=5336ms
+postgres disconnection disconnection session_time=25.846s user=app host=10.42.211.165
+postgres autovacuum autovacuum launcher started worker pid=288 db=postgres
+postgres vacuum vacuum progress table=public.sessions scanned=52% dead_tuples=53894
+postgres connection connection authorized user=app database=app application=nginx-fc67d
+postgres bgwriter bgwriter buffers_clean=51208 maxwritten=154
+postgres statement statement cancelled pid=58866 after=8672ms reason=lock_timeout
+postgres deadlock deadlock detected pid=24869 victim=2845 relation=public.accounts
+postgres replication replication standby=node-2 sent_lsn=7/36937F flush_lsn=2/A8991D
+postgres redo redo starts at lsn=0/660C83
+postgres vacuum vacuum progress table=public.sessions scanned=57% dead_tuples=75499
+postgres bgwriter bgwriter buffers_clean=6525 maxwritten=688
+postgres statement statement cancelled pid=55455 after=1787ms reason=lock_timeout
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=22987
+postgres vacuum vacuum progress table=public.sessions scanned=62% dead_tuples=43423
+postgres bgwriter bgwriter buffers_clean=40188 maxwritten=868
+postgres checkpoint checkpoint complete wrote=11850 buffers sync=46.834s total=57.576s
+postgres autovacuum autovacuum launcher started worker pid=50815 db=postgres
+postgres disconnection disconnection session_time=15.205s user=app host=10.42.248.93
+postgres connection connection received host=10.42.192.4 port=56041
+postgres automatic automatic analyze of table public.events elapsed=8.866s
+postgres connection connection authorized user=app database=app application=local-path-provisioner-6b94b
+postgres statement statement cancelled pid=2152 after=4185ms reason=lock_timeout
+postgres checkpointer checkpointer wrote=78507 buffers avg_write=1256ms
+postgres disconnection disconnection session_time=57.929s user=app host=10.42.20.66
+postgres checkpoint checkpoint complete wrote=45798 buffers sync=43.157s total=37.550s
+postgres duration duration=3042ms statement=SELECT pk FROM orders WHERE id=68636
+postgres autovacuum autovacuum launcher started worker pid=56927 db=postgres
+postgres connection connection received host=10.42.185.194 port=40401
+postgres WAL WAL segment recycled name=00000003 lsn=0/78642F
+postgres automatic automatic analyze of table public.events elapsed=10.734s
+postgres WAL WAL segment recycled name=00000007 lsn=0/85925B
+postgres restartpoint restartpoint complete wrote=99791 buffers lsn=5/5EFB24
+postgres connection connection authorized user=app database=app application=nginx-b4696
+postgres checkpoint checkpoint starting reason=time buffers=34411
+postgres autovacuum autovacuum launcher started worker pid=47272 db=postgres
+postgres parameter parameter changed name=work_mem value=126MB
+postgres automatic automatic analyze of table public.events elapsed=20.517s
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp36065.0 size=14kB
+postgres parameter parameter changed name=work_mem value=239MB
+postgres checkpoint checkpoint starting reason=time buffers=89797
+postgres bgwriter bgwriter buffers_clean=23383 maxwritten=15
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp47135.0 size=2344kB
+postgres connection connection authorized user=app database=app application=nginx-d1261
+postgres replication replication standby=node-3 sent_lsn=4/4F153 flush_lsn=8/442824
+postgres duration duration=8466ms statement=SELECT pk FROM orders WHERE id=63647
+postgres replication replication standby=node-5 sent_lsn=5/D97CAD flush_lsn=8/C31532
+postgres checkpoint checkpoint complete wrote=20628 buffers sync=17.787s total=28.757s
+postgres connection connection authorized user=app database=app application=traefik-fc75a
+postgres autovacuum autovacuum launcher started worker pid=9484 db=postgres
+postgres checkpointer checkpointer wrote=34369 buffers avg_write=3192ms
+postgres replication replication standby=node-2 sent_lsn=7/5029A flush_lsn=5/1B40F7
+postgres parameter parameter changed name=work_mem value=37MB
+postgres vacuum vacuum progress table=public.sessions scanned=25% dead_tuples=78277
+postgres checkpoint checkpoint complete wrote=71701 buffers sync=55.499s total=26.301s
+postgres parameter parameter changed name=work_mem value=214MB
+postgres replication replication standby=node-4 sent_lsn=6/EF9CB flush_lsn=4/B1E094
+postgres checkpoint checkpoint complete wrote=4778 buffers sync=15.218s total=9.874s
+postgres deadlock deadlock detected pid=29304 victim=34837 relation=public.accounts
+postgres checkpoint checkpoint complete wrote=56023 buffers sync=18.274s total=35.912s
+postgres checkpoint checkpoint complete wrote=52926 buffers sync=13.233s total=7.950s
+postgres checkpoint checkpoint complete wrote=54130 buffers sync=28.388s total=51.974s
+postgres restartpoint restartpoint complete wrote=24033 buffers lsn=4/8B8991
+postgres bgwriter bgwriter buffers_clean=66862 maxwritten=821
+postgres automatic automatic vacuum of table public.orders index_scans=8 tuples_removed=34793
+postgres deadlock deadlock detected pid=6073 victim=20099 relation=public.accounts
+postgres duration duration=3142ms statement=SELECT pk FROM orders WHERE id=52606
+postgres connection connection received host=10.42.125.12 port=4146
+postgres checkpoint checkpoint complete wrote=18723 buffers sync=15.381s total=25.752s
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp46038.0 size=1369kB
+postgres automatic automatic vacuum of table public.orders index_scans=7 tuples_removed=49406
+postgres checkpoint checkpoint starting reason=time buffers=64163
+postgres checkpoint checkpoint complete wrote=34044 buffers sync=43.580s total=8.598s
+postgres connection connection received host=10.42.189.220 port=46877
+postgres connection connection received host=10.42.26.198 port=58112
+postgres disconnection disconnection session_time=34.955s user=app host=10.42.225.112
+postgres connection connection received host=10.42.110.191 port=57155
+postgres automatic automatic vacuum of table public.orders index_scans=9 tuples_removed=74996
+postgres replication replication standby=node-1 sent_lsn=2/3978B4 flush_lsn=4/580647
+postgres restartpoint restartpoint complete wrote=9456 buffers lsn=4/3A7392
+postgres replication replication standby=node-1 sent_lsn=3/8EC6E flush_lsn=6/719381
+postgres connection connection authorized user=app database=app application=nginx-5a6b3
+postgres autovacuum autovacuum launcher started worker pid=51398 db=postgres
+postgres disconnection disconnection session_time=58.397s user=app host=10.42.153.193
+postgres statement statement cancelled pid=57131 after=9812ms reason=lock_timeout
+postgres bgwriter bgwriter buffers_clean=56193 maxwritten=432
+postgres deadlock deadlock detected pid=45242 victim=37763 relation=public.accounts
+postgres checkpoint checkpoint starting reason=time buffers=75161
+postgres parameter parameter changed name=work_mem value=157MB
+postgres WAL WAL segment recycled name=00000003 lsn=9/FBAEBD
+postgres disconnection disconnection session_time=22.797s user=app host=10.42.222.225
+postgres automatic automatic vacuum of table public.orders index_scans=0 tuples_removed=33911
+postgres checkpointer checkpointer wrote=95694 buffers avg_write=9162ms
+postgres checkpoint checkpoint starting reason=time buffers=68518
+postgres connection connection authorized user=app database=app application=local-path-provisioner-cdb08
+postgres autovacuum autovacuum launcher started worker pid=56075 db=postgres
+postgres restartpoint restartpoint complete wrote=49006 buffers lsn=2/926318
+postgres bgwriter bgwriter buffers_clean=41072 maxwritten=15
+postgres replication replication standby=node-6 sent_lsn=9/9B4F97 flush_lsn=1/6622F
+postgres disconnection disconnection session_time=46.391s user=app host=10.42.94.99
+postgres redo redo starts at lsn=8/ED5792
+postgres restartpoint restartpoint complete wrote=20542 buffers lsn=5/C66F15
+postgres replication replication standby=node-6 sent_lsn=9/92F5B5 flush_lsn=8/4A75A6
+postgres bgwriter bgwriter buffers_clean=95735 maxwritten=444
+postgres disconnection disconnection session_time=6.514s user=app host=10.42.165.137
+postgres checkpoint checkpoint starting reason=time buffers=55460
+postgres automatic automatic analyze of table public.events elapsed=37.671s
+postgres deadlock deadlock detected pid=28617 victim=38667 relation=public.accounts
+postgres checkpoint checkpoint complete wrote=44849 buffers sync=52.305s total=18.521s
+postgres autovacuum autovacuum launcher started worker pid=62954 db=postgres
+postgres replication replication standby=node-6 sent_lsn=7/A5670F flush_lsn=0/D90902
+postgres bgwriter bgwriter buffers_clean=4911 maxwritten=847
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp64341.0 size=718kB
+postgres restartpoint restartpoint complete wrote=20993 buffers lsn=8/D30652
+postgres connection connection received host=10.42.56.173 port=23479
+postgres connection connection authorized user=app database=app application=coredns-310d7
+postgres connection connection received host=10.42.188.91 port=29418
+postgres automatic automatic analyze of table public.events elapsed=14.994s
+postgres checkpoint checkpoint starting reason=time buffers=54078
+postgres replication replication standby=node-1 sent_lsn=4/61561B flush_lsn=9/BBCE59
+postgres connection connection received host=10.42.222.10 port=31075
+postgres checkpoint checkpoint starting reason=time buffers=87225
+postgres checkpoint checkpoint complete wrote=71735 buffers sync=0.124s total=4.154s
+postgres automatic automatic analyze of table public.events elapsed=41.246s
+postgres connection connection authorized user=app database=app application=metrics-server-fbb76
+postgres automatic automatic vacuum of table public.orders index_scans=7 tuples_removed=13769
+postgres redo redo starts at lsn=5/A63FA4
+postgres parameter parameter changed name=work_mem value=181MB
+postgres statement statement cancelled pid=8204 after=4608ms reason=lock_timeout
+postgres parameter parameter changed name=work_mem value=148MB
+postgres checkpoint checkpoint starting reason=time buffers=26633
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp43341.0 size=2198kB
+postgres autovacuum autovacuum launcher started worker pid=29663 db=postgres
+postgres restartpoint restartpoint complete wrote=69985 buffers lsn=3/BF8902
+postgres restartpoint restartpoint complete wrote=58707 buffers lsn=6/88DF13
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp13766.0 size=3127kB
+postgres disconnection disconnection session_time=27.356s user=app host=10.42.178.175
+postgres duration duration=182ms statement=SELECT pk FROM orders WHERE id=28701
+postgres restartpoint restartpoint complete wrote=95026 buffers lsn=3/E51E02
+postgres redo redo starts at lsn=0/8840B5
+postgres restartpoint restartpoint complete wrote=84770 buffers lsn=3/D131B4
+postgres bgwriter bgwriter buffers_clean=83757 maxwritten=133
+postgres automatic automatic vacuum of table public.orders index_scans=2 tuples_removed=4090
+postgres statement statement cancelled pid=5447 after=3630ms reason=lock_timeout
+postgres autovacuum autovacuum launcher started worker pid=59739 db=app
+postgres redo redo starts at lsn=6/8D1CF5
+postgres deadlock deadlock detected pid=32358 victim=64229 relation=public.accounts
+postgres duration duration=9324ms statement=SELECT pk FROM orders WHERE id=30612
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp57336.0 size=2140kB
+postgres duration duration=8695ms statement=SELECT pk FROM orders WHERE id=39053
+postgres automatic automatic analyze of table public.events elapsed=51.363s
+postgres redo redo starts at lsn=7/5780C6
+postgres deadlock deadlock detected pid=48530 victim=40348 relation=public.accounts
+postgres connection connection authorized user=app database=app application=redis-5c3cf
+postgres bgwriter bgwriter buffers_clean=96307 maxwritten=949
+postgres restartpoint restartpoint complete wrote=71704 buffers lsn=8/CA285C
+postgres connection connection authorized user=app database=app application=metrics-server-70251
+postgres connection connection received host=10.42.215.126 port=46031
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp13647.0 size=1761kB
+postgres redo redo starts at lsn=9/3EA1D8
+postgres WAL WAL segment recycled name=00000009 lsn=5/D3CD94
+postgres bgwriter bgwriter buffers_clean=29238 maxwritten=257
+postgres redo redo starts at lsn=5/529697
+postgres checkpointer checkpointer wrote=23536 buffers avg_write=1246ms
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=52880
+postgres checkpointer checkpointer wrote=30832 buffers avg_write=8838ms
+postgres automatic automatic analyze of table public.events elapsed=13.940s
+postgres connection connection authorized user=app database=app application=redis-d4349
+postgres checkpoint checkpoint starting reason=time buffers=2976
+postgres vacuum vacuum progress table=public.sessions scanned=98% dead_tuples=73697
+postgres connection connection received host=10.42.157.66 port=19155
+postgres automatic automatic analyze of table public.events elapsed=52.974s
+postgres redo redo starts at lsn=1/AF51B6
+postgres checkpoint checkpoint complete wrote=21503 buffers sync=10.366s total=7.427s
+postgres disconnection disconnection session_time=25.839s user=app host=10.42.95.59
+postgres checkpointer checkpointer wrote=2833 buffers avg_write=1824ms
+postgres bgwriter bgwriter buffers_clean=22136 maxwritten=439
+postgres automatic automatic analyze of table public.events elapsed=48.575s
+postgres bgwriter bgwriter buffers_clean=84668 maxwritten=729
+postgres WAL WAL segment recycled name=00000006 lsn=5/38979A
+postgres bgwriter bgwriter buffers_clean=16357 maxwritten=987
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp28852.0 size=1300kB
+postgres WAL WAL segment recycled name=00000003 lsn=7/32FD27
+postgres autovacuum autovacuum launcher started worker pid=62450 db=app
+postgres checkpoint checkpoint starting reason=time buffers=58769
+postgres connection connection received host=10.42.12.251 port=22157
+postgres autovacuum autovacuum launcher started worker pid=51257 db=app
+postgres deadlock deadlock detected pid=29136 victim=26362 relation=public.accounts
+postgres duration duration=6630ms statement=SELECT pk FROM orders WHERE id=14788
+postgres checkpoint checkpoint complete wrote=15742 buffers sync=50.317s total=17.982s
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=78140
+postgres checkpointer checkpointer wrote=94843 buffers avg_write=4037ms
+postgres replication replication standby=node-4 sent_lsn=9/11E557 flush_lsn=8/577F89
+postgres parameter parameter changed name=work_mem value=197MB
+postgres checkpoint checkpoint complete wrote=65326 buffers sync=12.281s total=3.166s
+postgres replication replication standby=node-3 sent_lsn=2/7A9238 flush_lsn=7/D990D0
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp58893.0 size=2715kB
+postgres statement statement cancelled pid=22965 after=6145ms reason=lock_timeout
+postgres automatic automatic analyze of table public.events elapsed=9.948s
+postgres automatic automatic analyze of table public.events elapsed=18.872s
+postgres parameter parameter changed name=work_mem value=155MB
+postgres automatic automatic analyze of table public.events elapsed=52.212s
+postgres vacuum vacuum progress table=public.sessions scanned=35% dead_tuples=48193
+postgres checkpoint checkpoint starting reason=time buffers=14642
+postgres connection connection received host=10.42.177.7 port=46271
+postgres disconnection disconnection session_time=29.858s user=app host=10.42.73.172
+postgres automatic automatic analyze of table public.events elapsed=34.677s
+postgres checkpoint checkpoint complete wrote=58909 buffers sync=0.948s total=32.691s
+postgres restartpoint restartpoint complete wrote=33193 buffers lsn=9/A368A7
+postgres vacuum vacuum progress table=public.sessions scanned=44% dead_tuples=79062
+postgres redo redo starts at lsn=7/83EFAB
+postgres connection connection authorized user=app database=app application=svclb-traefik-41584
+postgres autovacuum autovacuum launcher started worker pid=37138 db=app
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp46956.0 size=3300kB
+postgres duration duration=8295ms statement=SELECT pk FROM orders WHERE id=18047
+postgres statement statement cancelled pid=38152 after=8007ms reason=lock_timeout
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp29574.0 size=3202kB
+postgres connection connection received host=10.42.117.171 port=56213
+postgres statement statement cancelled pid=45724 after=13ms reason=lock_timeout
+postgres statement statement cancelled pid=49442 after=4870ms reason=lock_timeout
+postgres restartpoint restartpoint complete wrote=69460 buffers lsn=1/95073D
+postgres automatic automatic analyze of table public.events elapsed=52.439s
+postgres duration duration=6555ms statement=SELECT pk FROM orders WHERE id=2803
+postgres checkpoint checkpoint starting reason=time buffers=85600
+postgres replication replication standby=node-3 sent_lsn=7/B1086D flush_lsn=8/52BBF7
+postgres duration duration=3973ms statement=SELECT pk FROM orders WHERE id=98400
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp4215.0 size=1828kB
+postgres redo redo starts at lsn=0/1050B0
+postgres checkpoint checkpoint starting reason=time buffers=73165
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=99056
+postgres automatic automatic vacuum of table public.orders index_scans=3 tuples_removed=14233
+postgres WAL WAL segment recycled name=00000004 lsn=7/2E232A
+postgres connection connection authorized user=app database=app application=metrics-server-a79e3
+postgres connection connection received host=10.42.244.46 port=35819
+postgres deadlock deadlock detected pid=41814 victim=19451 relation=public.accounts
+postgres checkpoint checkpoint starting reason=time buffers=29662
+postgres checkpointer checkpointer wrote=31979 buffers avg_write=6792ms
+postgres statement statement cancelled pid=53463 after=4593ms reason=lock_timeout
+postgres restartpoint restartpoint complete wrote=85433 buffers lsn=3/DE2864
+postgres disconnection disconnection session_time=39.324s user=app host=10.42.71.149
+postgres replication replication standby=node-3 sent_lsn=0/7F902F flush_lsn=9/1512E0
+postgres restartpoint restartpoint complete wrote=30562 buffers lsn=2/E7676F
+postgres statement statement cancelled pid=35575 after=8935ms reason=lock_timeout
+postgres automatic automatic analyze of table public.events elapsed=10.261s
+postgres automatic automatic vacuum of table public.orders index_scans=8 tuples_removed=14076
+postgres connection connection received host=10.42.106.3 port=12822
+postgres connection connection authorized user=app database=app application=traefik-1c8d9
+postgres checkpoint checkpoint starting reason=time buffers=80010
+postgres checkpointer checkpointer wrote=443 buffers avg_write=6759ms
+postgres autovacuum autovacuum launcher started worker pid=41349 db=metrics
+postgres statement statement cancelled pid=61343 after=2988ms reason=lock_timeout
+postgres parameter parameter changed name=work_mem value=109MB
+postgres disconnection disconnection session_time=30.168s user=app host=10.42.180.231
+postgres checkpoint checkpoint complete wrote=37980 buffers sync=31.859s total=55.100s
+postgres connection connection received host=10.42.243.57 port=4789
+postgres restartpoint restartpoint complete wrote=92484 buffers lsn=2/BCA5F5
+postgres checkpointer checkpointer wrote=41309 buffers avg_write=2338ms
+postgres connection connection authorized user=app database=app application=svclb-traefik-f5cf8
+postgres connection connection authorized user=app database=app application=metrics-server-70bdf
+postgres bgwriter bgwriter buffers_clean=9586 maxwritten=145
+postgres vacuum vacuum progress table=public.sessions scanned=69% dead_tuples=4109
+postgres vacuum vacuum progress table=public.sessions scanned=83% dead_tuples=19368
+postgres automatic automatic vacuum of table public.orders index_scans=6 tuples_removed=4105
+postgres replication replication standby=node-3 sent_lsn=3/95646 flush_lsn=1/DE0786
+postgres checkpointer checkpointer wrote=41035 buffers avg_write=9970ms
+postgres checkpointer checkpointer wrote=58511 buffers avg_write=2000ms
+postgres disconnection disconnection session_time=57.870s user=app host=10.42.104.183
+postgres vacuum vacuum progress table=public.sessions scanned=9% dead_tuples=94223
+postgres checkpointer checkpointer wrote=72406 buffers avg_write=4767ms
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=37395
+postgres statement statement cancelled pid=436 after=8411ms reason=lock_timeout
+postgres autovacuum autovacuum launcher started worker pid=21972 db=app
+postgres connection connection authorized user=app database=app application=metrics-server-5514b
+postgres statement statement cancelled pid=56005 after=8772ms reason=lock_timeout
+postgres connection connection authorized user=app database=app application=local-path-provisioner-c10d6
+postgres automatic automatic analyze of table public.events elapsed=17.689s
+postgres disconnection disconnection session_time=0.713s user=app host=10.42.180.125
+postgres parameter parameter changed name=work_mem value=181MB
+postgres vacuum vacuum progress table=public.sessions scanned=32% dead_tuples=38935
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp62569.0 size=3316kB
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp6489.0 size=2345kB
+postgres disconnection disconnection session_time=59.650s user=app host=10.42.109.106
+postgres automatic automatic vacuum of table public.orders index_scans=4 tuples_removed=89746
+postgres vacuum vacuum progress table=public.sessions scanned=14% dead_tuples=3971
+postgres checkpointer checkpointer wrote=52669 buffers avg_write=2053ms
+postgres automatic automatic analyze of table public.events elapsed=1.306s
+postgres restartpoint restartpoint complete wrote=75802 buffers lsn=7/1B1D02
+postgres redo redo starts at lsn=6/44AA4D
+postgres restartpoint restartpoint complete wrote=87121 buffers lsn=2/BB3270
+postgres checkpoint checkpoint complete wrote=31215 buffers sync=23.615s total=16.758s
+postgres parameter parameter changed name=work_mem value=36MB
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp10466.0 size=1826kB
+postgres disconnection disconnection session_time=14.442s user=app host=10.42.195.11
+postgres automatic automatic vacuum of table public.orders index_scans=7 tuples_removed=61016
+postgres checkpoint checkpoint starting reason=time buffers=97577
+postgres redo redo starts at lsn=1/E7926E
+postgres connection connection authorized user=app database=app application=metrics-server-7f2fb
+postgres replication replication standby=node-6 sent_lsn=6/53D38E flush_lsn=2/CC78F7
+postgres replication replication standby=node-6 sent_lsn=0/9643E4 flush_lsn=3/22D08E
+postgres checkpoint checkpoint starting reason=time buffers=59535
+postgres duration duration=7608ms statement=SELECT pk FROM orders WHERE id=6446
+postgres bgwriter bgwriter buffers_clean=89993 maxwritten=866
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp7796.0 size=3922kB
+postgres bgwriter bgwriter buffers_clean=37337 maxwritten=685
+postgres automatic automatic vacuum of table public.orders index_scans=8 tuples_removed=24424
+postgres checkpoint checkpoint starting reason=time buffers=38051
+postgres bgwriter bgwriter buffers_clean=46260 maxwritten=177
+postgres automatic automatic vacuum of table public.orders index_scans=0 tuples_removed=1436
+postgres redo redo starts at lsn=9/891955
+postgres automatic automatic analyze of table public.events elapsed=5.377s
+postgres deadlock deadlock detected pid=5529 victim=52176 relation=public.accounts
+postgres vacuum vacuum progress table=public.sessions scanned=70% dead_tuples=67270
+postgres bgwriter bgwriter buffers_clean=36076 maxwritten=638
+postgres checkpoint checkpoint complete wrote=23911 buffers sync=33.935s total=0.333s
+postgres duration duration=7999ms statement=SELECT pk FROM orders WHERE id=56258
+postgres duration duration=5868ms statement=SELECT pk FROM orders WHERE id=9930
+postgres checkpoint checkpoint starting reason=time buffers=90923
+postgres checkpoint checkpoint complete wrote=6752 buffers sync=15.947s total=47.710s
+postgres vacuum vacuum progress table=public.sessions scanned=35% dead_tuples=1760
+postgres deadlock deadlock detected pid=53400 victim=2553 relation=public.accounts
+postgres replication replication standby=node-2 sent_lsn=6/3674E2 flush_lsn=7/27C7EC
+postgres duration duration=5996ms statement=SELECT pk FROM orders WHERE id=24515
+postgres disconnection disconnection session_time=41.227s user=app host=10.42.183.234
+postgres disconnection disconnection session_time=40.269s user=app host=10.42.12.124
+postgres deadlock deadlock detected pid=3303 victim=53252 relation=public.accounts
+postgres checkpoint checkpoint starting reason=time buffers=54536
+postgres disconnection disconnection session_time=52.149s user=app host=10.42.14.216
+postgres deadlock deadlock detected pid=64894 victim=49645 relation=public.accounts
+postgres redo redo starts at lsn=5/70B695
+postgres WAL WAL segment recycled name=00000005 lsn=0/63D02F
+postgres connection connection received host=10.42.113.193 port=58775
+postgres statement statement cancelled pid=15711 after=5098ms reason=lock_timeout
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp48888.0 size=3880kB
+postgres automatic automatic analyze of table public.events elapsed=57.720s
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=52380
+postgres redo redo starts at lsn=3/D99D17
+postgres vacuum vacuum progress table=public.sessions scanned=95% dead_tuples=44350
+postgres statement statement cancelled pid=17585 after=7124ms reason=lock_timeout
+postgres disconnection disconnection session_time=47.979s user=app host=10.42.72.61
+postgres connection connection received host=10.42.73.150 port=34425
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=76731
+postgres checkpoint checkpoint starting reason=time buffers=90878
+postgres replication replication standby=node-6 sent_lsn=9/30237E flush_lsn=2/9FAB45
+postgres automatic automatic analyze of table public.events elapsed=25.434s
+postgres WAL WAL segment recycled name=00000003 lsn=5/D19CC3
+postgres checkpointer checkpointer wrote=64318 buffers avg_write=4315ms
+postgres parameter parameter changed name=work_mem value=152MB
+postgres bgwriter bgwriter buffers_clean=82244 maxwritten=84
+postgres parameter parameter changed name=work_mem value=91MB
+postgres disconnection disconnection session_time=4.425s user=app host=10.42.129.8
+postgres connection connection received host=10.42.130.193 port=61049
+postgres connection connection received host=10.42.250.170 port=59631
+postgres vacuum vacuum progress table=public.sessions scanned=16% dead_tuples=36405
+postgres connection connection received host=10.42.212.108 port=18824
+postgres parameter parameter changed name=work_mem value=215MB
+postgres connection connection received host=10.42.48.33 port=27951
+postgres checkpoint checkpoint starting reason=time buffers=4129
+postgres checkpoint checkpoint complete wrote=51440 buffers sync=49.261s total=21.433s
+postgres disconnection disconnection session_time=3.828s user=app host=10.42.12.12
+postgres parameter parameter changed name=work_mem value=4MB
+postgres WAL WAL segment recycled name=00000004 lsn=6/55676D
+postgres connection connection authorized user=app database=app application=coredns-db189
+postgres duration duration=8330ms statement=SELECT pk FROM orders WHERE id=69108
+postgres vacuum vacuum progress table=public.sessions scanned=92% dead_tuples=50287
+postgres deadlock deadlock detected pid=14855 victim=63846 relation=public.accounts
+postgres bgwriter bgwriter buffers_clean=30193 maxwritten=49
+postgres disconnection disconnection session_time=8.212s user=app host=10.42.189.33
+postgres duration duration=9753ms statement=SELECT pk FROM orders WHERE id=44714
+postgres restartpoint restartpoint complete wrote=10830 buffers lsn=5/539C3
+postgres automatic automatic vacuum of table public.orders index_scans=4 tuples_removed=89238
+postgres WAL WAL segment recycled name=00000006 lsn=3/7BD402
+postgres autovacuum autovacuum launcher started worker pid=36028 db=app
+postgres duration duration=468ms statement=SELECT pk FROM orders WHERE id=91406
+postgres disconnection disconnection session_time=47.791s user=app host=10.42.113.130
+postgres redo redo starts at lsn=9/33D13C
+postgres automatic automatic analyze of table public.events elapsed=10.820s
+postgres statement statement cancelled pid=55602 after=5181ms reason=lock_timeout
+postgres autovacuum autovacuum launcher started worker pid=46011 db=postgres
+postgres checkpoint checkpoint starting reason=time buffers=66972
+postgres deadlock deadlock detected pid=10174 victim=42521 relation=public.accounts
+postgres duration duration=165ms statement=SELECT pk FROM orders WHERE id=83199
+postgres autovacuum autovacuum launcher started worker pid=21127 db=metrics
+postgres restartpoint restartpoint complete wrote=81769 buffers lsn=5/D8B017
+postgres connection connection authorized user=app database=app application=metrics-server-20b8a
+postgres connection connection received host=10.42.178.155 port=43271
+postgres duration duration=7874ms statement=SELECT pk FROM orders WHERE id=86292
+postgres connection connection received host=10.42.90.150 port=46516
+postgres automatic automatic vacuum of table public.orders index_scans=2 tuples_removed=45271
+postgres disconnection disconnection session_time=59.821s user=app host=10.42.23.183
+postgres restartpoint restartpoint complete wrote=30269 buffers lsn=4/C41E01
+postgres duration duration=332ms statement=SELECT pk FROM orders WHERE id=95754
+postgres replication replication standby=node-1 sent_lsn=6/B2DCC2 flush_lsn=2/E66B1B
+postgres connection connection authorized user=app database=app application=svclb-traefik-faf9d
+postgres statement statement cancelled pid=14748 after=7362ms reason=lock_timeout
+postgres disconnection disconnection session_time=23.508s user=app host=10.42.243.133
+postgres disconnection disconnection session_time=15.953s user=app host=10.42.238.235
+postgres automatic automatic analyze of table public.events elapsed=29.772s
+postgres connection connection authorized user=app database=app application=local-path-provisioner-9de80
+postgres connection connection authorized user=app database=app application=nginx-ac16c
+postgres automatic automatic analyze of table public.events elapsed=36.626s
+postgres vacuum vacuum progress table=public.sessions scanned=53% dead_tuples=8917
+postgres WAL WAL segment recycled name=00000008 lsn=9/660E79
+postgres automatic automatic analyze of table public.events elapsed=17.970s
+postgres statement statement cancelled pid=24215 after=9908ms reason=lock_timeout
+postgres connection connection authorized user=app database=app application=nginx-2d0e9
+postgres WAL WAL segment recycled name=00000006 lsn=0/F71B2C
+postgres automatic automatic vacuum of table public.orders index_scans=6 tuples_removed=20428
+postgres automatic automatic analyze of table public.events elapsed=35.625s
+postgres checkpointer checkpointer wrote=93291 buffers avg_write=2539ms
+postgres restartpoint restartpoint complete wrote=31397 buffers lsn=8/810653
+postgres statement statement cancelled pid=54202 after=8287ms reason=lock_timeout
+postgres disconnection disconnection session_time=3.190s user=app host=10.42.172.112
+postgres connection connection authorized user=app database=app application=postgres-afb19
+postgres checkpoint checkpoint complete wrote=69187 buffers sync=35.281s total=58.743s
+postgres restartpoint restartpoint complete wrote=8291 buffers lsn=6/E6487E
+postgres connection connection authorized user=app database=app application=svclb-traefik-e2e66
+postgres connection connection received host=10.42.173.84 port=21179
+postgres autovacuum autovacuum launcher started worker pid=63235 db=app
+postgres restartpoint restartpoint complete wrote=686 buffers lsn=6/A7831E
+postgres disconnection disconnection session_time=22.418s user=app host=10.42.33.106
+postgres automatic automatic analyze of table public.events elapsed=7.922s
+postgres checkpoint checkpoint starting reason=time buffers=84412
+postgres checkpoint checkpoint starting reason=time buffers=26223
+postgres replication replication standby=node-2 sent_lsn=9/BD9604 flush_lsn=6/93470E
+postgres restartpoint restartpoint complete wrote=78896 buffers lsn=9/66043D
+postgres checkpointer checkpointer wrote=65621 buffers avg_write=9712ms
+postgres redo redo starts at lsn=9/5E239A
+postgres replication replication standby=node-6 sent_lsn=7/64D2B2 flush_lsn=0/C8D185
+postgres replication replication standby=node-2 sent_lsn=1/724EE9 flush_lsn=8/23DE23
+postgres replication replication standby=node-2 sent_lsn=8/B76397 flush_lsn=1/28765
+postgres statement statement cancelled pid=64816 after=2192ms reason=lock_timeout
+postgres duration duration=189ms statement=SELECT pk FROM orders WHERE id=63497
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=4455
+postgres checkpoint checkpoint starting reason=time buffers=17965
+postgres connection connection received host=10.42.169.171 port=28074
+postgres deadlock deadlock detected pid=39693 victim=4317 relation=public.accounts
+postgres duration duration=5457ms statement=SELECT pk FROM orders WHERE id=85283
+postgres WAL WAL segment recycled name=00000006 lsn=9/3E71E7
+postgres autovacuum autovacuum launcher started worker pid=56723 db=app
+postgres restartpoint restartpoint complete wrote=35057 buffers lsn=3/505021
+postgres WAL WAL segment recycled name=00000002 lsn=7/B2E1DA
+postgres vacuum vacuum progress table=public.sessions scanned=96% dead_tuples=39698
+postgres statement statement cancelled pid=20108 after=5005ms reason=lock_timeout
+postgres deadlock deadlock detected pid=11976 victim=33174 relation=public.accounts
+postgres connection connection received host=10.42.203.31 port=44111
+postgres connection connection authorized user=app database=app application=svclb-traefik-d4a03
+postgres autovacuum autovacuum launcher started worker pid=22692 db=app
+postgres restartpoint restartpoint complete wrote=50963 buffers lsn=8/A4895D
+postgres automatic automatic analyze of table public.events elapsed=19.586s
+postgres checkpoint checkpoint starting reason=time buffers=7857
+postgres automatic automatic vacuum of table public.orders index_scans=0 tuples_removed=82984
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp24560.0 size=1954kB
+postgres vacuum vacuum progress table=public.sessions scanned=6% dead_tuples=24505
+postgres replication replication standby=node-6 sent_lsn=0/CD23E6 flush_lsn=2/571260
+postgres bgwriter bgwriter buffers_clean=41913 maxwritten=240
+postgres WAL WAL segment recycled name=00000009 lsn=8/EC00AF
+postgres checkpoint checkpoint starting reason=time buffers=34327
+postgres replication replication standby=node-6 sent_lsn=4/D9B01B flush_lsn=7/B3DC3E
+postgres checkpointer checkpointer wrote=51411 buffers avg_write=4417ms
+postgres restartpoint restartpoint complete wrote=49904 buffers lsn=9/E12AEB
+postgres WAL WAL segment recycled name=00000003 lsn=7/B88682
+postgres checkpointer checkpointer wrote=63792 buffers avg_write=7441ms
+postgres replication replication standby=node-5 sent_lsn=8/D32C8B flush_lsn=6/6A8C53
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp31794.0 size=2118kB
+postgres autovacuum autovacuum launcher started worker pid=5826 db=metrics
+postgres bgwriter bgwriter buffers_clean=53103 maxwritten=738
+postgres connection connection received host=10.42.124.118 port=63214
+postgres vacuum vacuum progress table=public.sessions scanned=97% dead_tuples=74341
+postgres connection connection received host=10.42.115.153 port=14248
+postgres WAL WAL segment recycled name=00000005 lsn=2/32F71B
+postgres parameter parameter changed name=work_mem value=62MB
+postgres connection connection received host=10.42.63.36 port=38088
+postgres disconnection disconnection session_time=36.223s user=app host=10.42.79.205
+postgres parameter parameter changed name=work_mem value=168MB
+postgres vacuum vacuum progress table=public.sessions scanned=11% dead_tuples=64921
+postgres disconnection disconnection session_time=30.395s user=app host=10.42.125.244
+postgres connection connection received host=10.42.201.202 port=18868
+postgres autovacuum autovacuum launcher started worker pid=1773 db=app
+postgres restartpoint restartpoint complete wrote=72565 buffers lsn=8/E5F9E5
+postgres WAL WAL segment recycled name=00000003 lsn=3/FA47BF
+postgres automatic automatic vacuum of table public.orders index_scans=7 tuples_removed=44342
+postgres redo redo starts at lsn=5/C508AB
+postgres automatic automatic vacuum of table public.orders index_scans=0 tuples_removed=34379
+postgres restartpoint restartpoint complete wrote=57810 buffers lsn=0/A8B58D
+postgres checkpointer checkpointer wrote=68098 buffers avg_write=4708ms
+postgres automatic automatic analyze of table public.events elapsed=5.983s
+postgres disconnection disconnection session_time=31.460s user=app host=10.42.119.98
+postgres statement statement cancelled pid=37817 after=8293ms reason=lock_timeout
+postgres WAL WAL segment recycled name=00000004 lsn=2/12CF94
+postgres vacuum vacuum progress table=public.sessions scanned=48% dead_tuples=6100
+postgres autovacuum autovacuum launcher started worker pid=553 db=metrics
+postgres WAL WAL segment recycled name=00000001 lsn=1/F4730C
+postgres redo redo starts at lsn=9/F28787
+postgres connection connection authorized user=app database=app application=traefik-a6c00
+postgres deadlock deadlock detected pid=59104 victim=35127 relation=public.accounts
+postgres replication replication standby=node-1 sent_lsn=9/FC0BD9 flush_lsn=7/D10440
+postgres replication replication standby=node-6 sent_lsn=5/F3CF09 flush_lsn=7/18D4C
+postgres redo redo starts at lsn=6/2D54A
+postgres checkpoint checkpoint starting reason=time buffers=17027
+postgres checkpoint checkpoint complete wrote=46694 buffers sync=6.465s total=11.242s
+postgres checkpoint checkpoint complete wrote=43666 buffers sync=11.145s total=19.622s
+postgres checkpointer checkpointer wrote=64120 buffers avg_write=2294ms
+postgres WAL WAL segment recycled name=00000007 lsn=0/2817CB
+postgres automatic automatic vacuum of table public.orders index_scans=2 tuples_removed=88982
+postgres connection connection received host=10.42.32.173 port=24807
+postgres vacuum vacuum progress table=public.sessions scanned=42% dead_tuples=98537
+postgres checkpoint checkpoint complete wrote=74741 buffers sync=59.252s total=58.525s
+postgres disconnection disconnection session_time=29.548s user=app host=10.42.201.223
+postgres restartpoint restartpoint complete wrote=84800 buffers lsn=9/50C8A1
+postgres statement statement cancelled pid=44069 after=1027ms reason=lock_timeout
+postgres duration duration=7995ms statement=SELECT pk FROM orders WHERE id=3422
+postgres parameter parameter changed name=work_mem value=127MB
+postgres disconnection disconnection session_time=47.799s user=app host=10.42.129.240
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=13255
+postgres replication replication standby=node-4 sent_lsn=5/D59A0E flush_lsn=7/5476F5
+postgres checkpoint checkpoint complete wrote=39139 buffers sync=48.802s total=20.473s
+postgres checkpointer checkpointer wrote=33784 buffers avg_write=1875ms
+postgres parameter parameter changed name=work_mem value=31MB
+postgres duration duration=6745ms statement=SELECT pk FROM orders WHERE id=49702
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp25354.0 size=1351kB
+postgres disconnection disconnection session_time=11.759s user=app host=10.42.186.89
+postgres automatic automatic analyze of table public.events elapsed=24.705s
+postgres restartpoint restartpoint complete wrote=25523 buffers lsn=3/7759D
+postgres bgwriter bgwriter buffers_clean=74213 maxwritten=117
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=79937
+postgres WAL WAL segment recycled name=00000005 lsn=0/DF64F8
+postgres WAL WAL segment recycled name=00000005 lsn=1/D01A3B
+postgres deadlock deadlock detected pid=15725 victim=14075 relation=public.accounts
+postgres disconnection disconnection session_time=46.985s user=app host=10.42.246.106
+postgres autovacuum autovacuum launcher started worker pid=31477 db=postgres
+postgres bgwriter bgwriter buffers_clean=42899 maxwritten=949
+postgres connection connection authorized user=app database=app application=traefik-fd85d
+postgres checkpoint checkpoint starting reason=time buffers=19644
+postgres vacuum vacuum progress table=public.sessions scanned=69% dead_tuples=99254
+postgres parameter parameter changed name=work_mem value=37MB
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp11191.0 size=1000kB
+postgres checkpointer checkpointer wrote=43513 buffers avg_write=4055ms
+postgres restartpoint restartpoint complete wrote=25182 buffers lsn=8/A97FB7
+postgres duration duration=7405ms statement=SELECT pk FROM orders WHERE id=82041
+postgres checkpoint checkpoint complete wrote=98896 buffers sync=7.332s total=51.791s
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp41453.0 size=1625kB
+postgres WAL WAL segment recycled name=00000005 lsn=0/56597E
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp45545.0 size=1278kB
+postgres connection connection authorized user=app database=app application=redis-878f8
+postgres deadlock deadlock detected pid=5582 victim=50803 relation=public.accounts
+postgres disconnection disconnection session_time=51.602s user=app host=10.42.77.216
+postgres deadlock deadlock detected pid=8015 victim=25762 relation=public.accounts
+postgres WAL WAL segment recycled name=00000006 lsn=2/74756A
+postgres statement statement cancelled pid=32562 after=2223ms reason=lock_timeout
+postgres vacuum vacuum progress table=public.sessions scanned=43% dead_tuples=84430
+postgres connection connection authorized user=app database=app application=svclb-traefik-55f29
+postgres replication replication standby=node-1 sent_lsn=1/627943 flush_lsn=6/B83B37
+postgres automatic automatic vacuum of table public.orders index_scans=3 tuples_removed=7098
+postgres checkpointer checkpointer wrote=26348 buffers avg_write=101ms
+postgres connection connection authorized user=app database=app application=local-path-provisioner-66528
+postgres statement statement cancelled pid=36372 after=1439ms reason=lock_timeout
+postgres WAL WAL segment recycled name=00000003 lsn=0/83C6B0
+postgres checkpointer checkpointer wrote=2522 buffers avg_write=7583ms
+postgres parameter parameter changed name=work_mem value=160MB
+postgres WAL WAL segment recycled name=00000001 lsn=3/CAEB71
+postgres connection connection authorized user=app database=app application=nginx-8b838
+postgres WAL WAL segment recycled name=00000005 lsn=5/204EEB
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp7405.0 size=2551kB
+postgres WAL WAL segment recycled name=00000001 lsn=1/9D6A0C
+postgres autovacuum autovacuum launcher started worker pid=21635 db=metrics
+postgres disconnection disconnection session_time=47.324s user=app host=10.42.178.196
+postgres statement statement cancelled pid=7152 after=610ms reason=lock_timeout
+postgres redo redo starts at lsn=4/7D2DBD
+postgres deadlock deadlock detected pid=37036 victim=12258 relation=public.accounts
+postgres vacuum vacuum progress table=public.sessions scanned=82% dead_tuples=74144
+postgres duration duration=3137ms statement=SELECT pk FROM orders WHERE id=54675
+postgres redo redo starts at lsn=9/DD8249
+postgres checkpoint checkpoint starting reason=time buffers=36307
+postgres redo redo starts at lsn=7/5EC9B1
+postgres duration duration=9979ms statement=SELECT pk FROM orders WHERE id=65049
+postgres WAL WAL segment recycled name=00000002 lsn=7/D39350
+postgres replication replication standby=node-4 sent_lsn=4/64F5C7 flush_lsn=1/A3AE05
+postgres checkpoint checkpoint complete wrote=14143 buffers sync=30.882s total=46.241s
+postgres replication replication standby=node-6 sent_lsn=0/92CAFE flush_lsn=1/5F4990
+postgres automatic automatic vacuum of table public.orders index_scans=1 tuples_removed=10333
+postgres autovacuum autovacuum launcher started worker pid=25230 db=metrics
+postgres replication replication standby=node-4 sent_lsn=4/3859A4 flush_lsn=2/7C7757
+postgres automatic automatic vacuum of table public.orders index_scans=9 tuples_removed=26370
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp7636.0 size=1948kB
+postgres temporary temporary file path=base/pgsql_tmp/pgsql_tmp23322.0 size=368kB
+postgres bgwriter bgwriter buffers_clean=78879 maxwritten=762
+postgres deadlock deadlock detected pid=54757 victim=11733 relation=public.accounts
+postgres automatic automatic vacuum of table public.orders index_scans=5 tuples_removed=88061
+postgres disconnection disconnection session_time=7.356s user=app host=10.42.130.214
+postgres checkpoint checkpoint starting reason=time buffers=10970
+postgres restartpoint restartpoint complete wrote=79127 buffers lsn=8/C1CFF9
+postgres statement statement cancelled pid=9845 after=4097ms reason=lock_timeout
+postgres vacuum vacuum progress table=public.sessions scanned=0% dead_tuples=68098
+postgres checkpointer checkpointer wrote=41036 buffers avg_write=2685ms
+postgres redo redo starts at lsn=0/711786
