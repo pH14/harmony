@@ -22,17 +22,23 @@
 
 use std::collections::BTreeMap;
 
-use explorer::{Matchable, Moment, Record, RunTrace, Value};
+use explorer::{Matchable, Moment, RunTrace, Value};
 
 use crate::{ChannelSource, ContextSource};
 
-/// A minimal [`Matchable`] record: kind, attributes, and the moment observed.
+/// A minimal [`Matchable`] record: a kind, an attribute map, and the moment
+/// observed. Task 65 made the spine's scrape-tier [`Record`](explorer::Record)
+/// **raw and structural** (`{stream, line}` bytes); a `Matchable` needs the
+/// *structured* `kind`/`attrs` a channel codebook (task 67) derives from those
+/// bytes, so this stub carries them itself rather than wrapping the raw record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordRec {
     /// The moment the record was observed.
     pub moment: Moment,
-    /// The spine record (kind + attributes).
-    pub record: Record,
+    /// The record kind discriminator (e.g. `"log"`, `"span"`).
+    pub kind: String,
+    /// The record attributes, deterministically ordered.
+    pub attrs: BTreeMap<String, Value>,
 }
 
 impl RecordRec {
@@ -44,21 +50,19 @@ impl RecordRec {
     ) -> Self {
         Self {
             moment,
-            record: Record {
-                kind: kind.to_string(),
-                attrs: attrs.into_iter().collect::<BTreeMap<_, _>>(),
-            },
+            kind: kind.to_string(),
+            attrs: attrs.into_iter().collect::<BTreeMap<_, _>>(),
         }
     }
 }
 
 impl Matchable for RecordRec {
     fn kind(&self) -> &str {
-        &self.record.kind
+        &self.kind
     }
 
     fn attr(&self, k: &str) -> Option<Value> {
-        self.record.attrs.get(k).cloned()
+        self.attrs.get(k).cloned()
     }
 
     fn moment(&self) -> Moment {
@@ -79,7 +83,19 @@ impl ChannelSource for TraceRecords {
             .iter()
             .map(|(moment, record)| RecordRec {
                 moment: *moment,
-                record: record.clone(),
+                // Stub structuring of a raw scrape line: task 67's codebook does
+                // the real work (log templates, field extraction); here every
+                // line is a `"log"` record exposing its raw bytes and stream.
+                kind: "log".to_string(),
+                attrs: [
+                    ("line".to_string(), Value::Bytes(record.line.clone())),
+                    (
+                        "stream".to_string(),
+                        Value::UInt(u64::from(record.stream.0)),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
             })
             .collect()
     }
@@ -113,7 +129,7 @@ impl ContextSource for FaultMoments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{Environment, StopReason, VTime};
+    use explorer::{Environment, Record, StopReason, StreamId, VTime};
 
     #[test]
     fn trace_records_adapts_the_scrape_stream() {
@@ -128,18 +144,18 @@ mod tests {
             records: vec![(
                 Moment(7),
                 Record {
-                    kind: "log".into(),
-                    attrs: [("msg".to_string(), Value::Str("hi".into()))]
-                        .into_iter()
-                        .collect(),
+                    stream: StreamId(0),
+                    line: b"hi\n".to_vec(),
                 },
             )],
         };
         let recs = TraceRecords.records(&t);
         assert_eq!(recs.len(), 1);
+        // The stub structures each raw line as a "log" record exposing its bytes.
         assert_eq!(recs[0].kind(), "log");
         assert_eq!(recs[0].moment(), Moment(7));
-        assert_eq!(recs[0].attr("msg"), Some(Value::Str("hi".into())));
+        assert_eq!(recs[0].attr("line"), Some(Value::Bytes(b"hi\n".to_vec())));
+        assert_eq!(recs[0].attr("stream"), Some(Value::UInt(0)));
         assert_eq!(recs[0].attr("absent"), None);
     }
 

@@ -493,7 +493,7 @@ impl<S: ChannelSource, C: ContextSource> Oracle for MatchOracle<S, C> {
 mod tests {
     use super::*;
     use crate::stub::{FaultMoments, OwnedRecords, RecordRec};
-    use explorer::{COVERAGE_CHANNEL, Environment, Record, StopReason, VTime, Value};
+    use explorer::{COVERAGE_CHANNEL, Environment, StopReason, VTime, Value};
 
     /// A minimal valid channel base for tests (channel 0 is coverage's).
     const BASE: ChannelId = ChannelId(1);
@@ -514,13 +514,11 @@ mod tests {
     fn rec(moment: u64, kind: &str, attrs: &[(&str, Value)]) -> RecordRec {
         RecordRec {
             moment: Moment(moment),
-            record: Record {
-                kind: kind.into(),
-                attrs: attrs
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.clone()))
-                    .collect(),
-            },
+            kind: kind.into(),
+            attrs: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
         }
     }
 
