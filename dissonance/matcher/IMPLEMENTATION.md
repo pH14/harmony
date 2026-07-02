@@ -25,17 +25,26 @@ match by its one declared `Role`.
 
 ## Design decisions (considered → chosen)
 
-- **Per-signal channel = rank of the name in the sorted name set.** The router
-  table says "channel = the signal", and gate 4 requires that permuting a
-  signal's declaration position never change another signal's output. A
-  *declaration-index* channel fails that (moving one signal renumbers the
-  others); a *name-hash-into-u16* channel collides too often to keep totality
+- **Per-signal channel = `channel_base + rank`, rank = position in the sorted
+  name set.** The router table says "channel = the signal", and gate 4 requires
+  that permuting a signal's declaration position never change another signal's
+  output. A *declaration-index* channel fails that (moving one signal renumbers
+  the others); a *name-hash-into-u16* channel collides too often to keep totality
   clean. Sorted-name rank is both permutation-invariant (it ignores declaration
   order) and collision-free (names are unique). `never` signals occupy a rank
   too but emit no feature, so cross-role leakage is impossible by construction.
-  `SignalSet` construction rejects a set larger than `u16::MAX + 1`
-  (`MatchError::TooManySignals`), so a rank can never wrap and silently merge two
-  signals onto one channel (codex P2 #2).
+- **Channel allocation is the campaign's, not hardcoded (round-2 P1 + foreman
+  ruling).** `MatchSensor::new` takes an explicit `channel_base: ChannelId`.
+  **Channel 0 is coverage's** by convention (spine `COVERAGE_CHANNEL`); a matcher
+  `Feature{channel:0, id:1}` would otherwise be indistinguishable from a coverage
+  edge and the archive would dedup them. So the base is validated `>= 1`
+  (`ReservedChannelBase`) and `base + signal_count <= u16::MAX`
+  (`ChannelSpaceExhausted` — the round-1 capacity guard folded in here, where the
+  base is known). The sensor occupies `[base, base + count)`; `channel_base()` /
+  `next_free_channel()` expose the range so a later plugin (task 74 OTel) bases
+  above it. The capacity check therefore lives at the sensor (which assigns
+  channels), *not* at `SignalSet` (whose oracle-only `never` roles have no
+  channel and no such limit).
 - **`never` tie-break by name, not declaration order.** `MatchOracle` iterates
   `never` signals in name order (`never_idx`), so when two `never` rules match
   the same record the earliest-verdict pick is permutation-invariant (gate 4)
@@ -51,17 +60,20 @@ match by its one declared `Role`.
 - **`state_max` bucket = bit length of the running max** (`64 −
   leading_zeros`), emitted only when the bucket strictly increases — the IJON
   `IJON_MAX` register moved from source to config. A non-integer / absent /
-  negative `attr_max` value is a **counted decode miss** (`decode_misses()`),
-  never a panic and never a feature; it does not fail the match (`attr_max` is an
-  extraction, not a predicate).
+  negative `attr_max` value on a matched record is a **counted decode miss**
+  (`decode_misses()`), never a panic and never a feature; it does not fail the
+  match (`attr_max` is an extraction, not a predicate). A `state_max` role that
+  declares **no `attr_max` at all** is a different thing — a vacuous config that
+  matches, emits nothing, yet reports fired — and is **rejected at validation**
+  (`StateMaxWithoutAttrMax`, round-2 P2 #3).
 - **JSON, not YAML** (the task ruling): the whitelist stays untouched. Parsing
   is total on untrusted input — every malformed class (`UnknownRole`,
-  `DuplicateName`, `TooManySignals`, bad type via `Parse`, `UnknownDuring`) is a
-  typed error. **Fail-closed** (codex P2 #1): the top-level `signals` key is
-  *required* (a config missing it is an error, not a silent empty set — an
-  explicit `"signals": []` stays legal) and `deny_unknown_fields` at every level
-  rejects a misspelled key rather than silently ignoring it (which could vacate
-  the set or broaden a match).
+  `DuplicateName`, `StateMaxWithoutAttrMax`, bad type via `Parse`,
+  `UnknownDuring`) is a typed error. **Fail-closed** (round-1 P2 #1): the
+  top-level `signals` key is *required* (a config missing it is an error, not a
+  silent empty set — an explicit `"signals": []` stays legal) and
+  `deny_unknown_fields` at every level rejects a misspelled key rather than
+  silently ignoring it (which could vacate the set or broaden a match).
 - **Output ordering.** Both structs process records in a canonical
   `(Moment, index)` order and the sensor sorts its stream by
   `(Moment, channel, id)`, so evaluation is a deterministic, permutation- and
@@ -80,40 +92,42 @@ match by its one declared `Role`.
   `sensor.fired(t)` (the `sometimes`/`cell`/`state_max` matches) with
   `oracle.fired(t)` (the `never` matches) and passes the union to
   `Catalog::report(&fired)`. The two fired sets are disjoint by role.
-- **Channel numbering is local to one `SignalSet`.** Channels are ranks within
-  the set's name space; a campaign composing this crate's features with another
-  plugin's should treat `ChannelId`s as a per-plugin namespace (the spine already
-  models channels as a campaign convention). Adding a signal renumbers ranks —
-  that is a config change, not an in-run event.
+- **Channel allocation is the caller's.** Pass `MatchSensor::new` a
+  `channel_base >= 1` (0 is coverage's); the sensor occupies `[base, base +
+  signal_count)`. When composing with another channel plugin, base it at
+  `sensor.next_free_channel()` so the `Feature` spaces never overlap. Adding a
+  signal renumbers ranks within the range — a config change, not an in-run event.
 - **Stubs only.** `ChannelSource`/`ContextSource` are the seams; the concrete
   adapters (log records task 67, SDK/link events task 73, OTel spans task 74) and
   the production schema-aware fault index (task 69) are later tasks. `stub.rs`
   ships example/test implementations — `OwnedRecords` demonstrates the
   "records reassembled outside the trace verbatim" case the seam exists for.
 
+- **Glob is genuinely linear** (round-2 P2 #2). Record bytes are guest-emitted
+  (adversary-influenced in a fuzzer), so the round-1 two-pointer's
+  `O(pattern · text)` worst case was a real replay-plane DoS. `glob.rs` is now
+  **segment matching**: split at `*`, anchor head/tail literally, locate interior
+  segments greedily with a hand-rolled **KMP** substring search (`find`) —
+  `O(pattern + text)`, no adversarial blowup, and total on non-UTF-8 bytes (KMP
+  over `[u8]` rather than `str::find`, which needs UTF-8). Verified against the
+  naive recursive reference on 512+ proptest pairs;
+  `segment_matching_stays_linear_on_pathological_input` runs megabyte inputs that
+  would grind a quadratic matcher.
+
 ## Known limitations
 
 - `during:` ships exactly one predicate, `no_faults`; the `During` enum is
   `#[non_exhaustive]` so the vocabulary extends without a spine change.
-- More than `u16::MAX + 1` signals in one set is a hard `TooManySignals` error
-  (no real config approaches this).
-- **Glob complexity** (codex P2 #3): `glob.rs` is the standard two-pointer
-  star-backtracking matcher the spec names. Its guarantee is **no catastrophic /
-  exponential backtracking** (the naive-recursion failure mode); the strict
-  worst case is `O(pattern · text)` — a `*` followed by a literal run that
-  repeatedly partially matches — *not* strict linear time. For the short
-  attribute globs the DSL matches this is negligible; the doc claim was corrected
-  to state this precisely, and `star_then_literal_run_completes_fast` regression-
-  tests a large pathological input completing near-instantly. A true
-  `O(pattern + text)` matcher would need KMP/Z per `*`-delimited segment —
-  disproportionate here and out of scope; flag if genuine linear time is wanted.
+- A `MatchSensor` cannot address more than `u16::MAX - base + 1` signals
+  (`ChannelSpaceExhausted`); the oracle-only `never` roles have no such limit.
 
 ## Gates
 
-All green on macOS (dev) — `build`, `nextest` (32 tests), `clippy -D warnings`,
+All green on macOS (dev) — `build`, `nextest` (35 tests), `clippy -D warnings`,
 `fmt --check`, `cargo deny check`, all `--all-features`. No `unsafe`, so no Miri
 gate applies. Property suites (≥256 cases each): router totality, catalog
 partition, purity/determinism + permutation-invariance, glob-vs-reference (512),
-config round-trip. Three added regression tests cover the codex P2 guards
-(missing/unknown key rejected, over-capacity rejected, pathological glob fast).
-Total test runtime well under the ~3-minute budget.
+config round-trip. Regression tests cover every review finding: missing/unknown
+key rejected, channel-base/coverage-collision + space-exhaustion rejected,
+`state_max`-without-`attr_max` rejected, and megabyte pathological globs staying
+linear. Total test runtime well under the ~3-minute budget.

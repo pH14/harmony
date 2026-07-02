@@ -4,82 +4,148 @@
 //! The DSL's string attribute predicates are globs with a single wildcard,
 //! `*`, matching any (possibly empty) run of bytes; every other byte matches
 //! itself. A pattern with no `*` is exact equality; a trailing `*` is the
-//! prefix form. Matching runs the **standard two-pointer star-backtracking**
-//! algorithm the task spec names ("the linear-time two-pointer algorithm"): it
-//! advances a pointer into the pattern and one into the text, remembering the
-//! most recent `*` (and the text position to resume from) to fall back to on a
-//! literal mismatch.
+//! prefix form.
 //!
-//! **Complexity, stated precisely.** The load-bearing guarantee is **no
-//! catastrophic backtracking** — unlike the naive recursive matcher, a `*`
-//! never spawns exponential work; a run of `*`s collapses. The strict worst
-//! case is `O(pattern · text)` (a `*` followed by a literal run that repeatedly
-//! partially matches re-scans that run per text byte), *not* strict linear
-//! time — but with tiny constants, and genuinely linear on the short attribute
-//! patterns the DSL actually matches. A true `O(pattern + text)` matcher would
-//! need KMP/Z per `*`-delimited segment, which is disproportionate here; the
-//! pathological-input regression test proves the `O(pattern · text)` case
-//! completes near-instantly (no blowup), and the proptest pins agreement with a
-//! naive reference on 512+ random and adversarial pairs.
+//! **Segment matching — genuinely linear, `O(pattern + text)`.** The record
+//! bytes are guest-emitted, i.e. adversary-influenced in a fuzzer, so a matcher
+//! with an `O(pattern · text)` worst case (the greedy two-pointer's failure
+//! mode on a `*` followed by a partially-matching literal run) is a real CPU
+//! DoS on the replay plane. Instead we split the pattern at `*` into literal
+//! **segments**, anchor the head segment as a prefix (unless the pattern starts
+//! with `*`) and the tail segment as a suffix (unless it ends with `*`), then
+//! locate the interior segments greedily left-to-right with a **Knuth–Morris–Pratt**
+//! substring search ([`find`]) — linear per segment, so linear overall with no
+//! adversarial blowup. Greedy-leftmost placement is optimal for ordered
+//! substring containment, so it never yields a false negative.
 //!
 //! Matching is over **bytes**, not `char`s: the DSL renders each [`Value`] to a
 //! canonical byte string (see [`crate::value`]) and both pattern and text are
-//! compared byte-for-byte. `*` therefore matches any byte sequence, which is the
-//! intended "any substring" semantics and stays total on non-UTF-8 bytes.
+//! compared byte-for-byte, so it stays total on non-UTF-8 guest bytes (a reason
+//! to hand-roll KMP over `[u8]` rather than lean on `str::find`, which needs
+//! UTF-8). `*` matches any byte sequence — the intended "any substring"
+//! semantics.
 
 /// The wildcard byte: matches any (possibly empty) run of bytes.
 const STAR: u8 = b'*';
 
 /// Whether `text` matches the glob `pattern` (`*` = any run of bytes; every
-/// other byte is literal). Single left-to-right scan with `*`-backtracking: no
-/// recursion, no exponential blowup — total on every input, including patterns
-/// that are all `*`.
+/// other byte is literal). Linear `O(pattern + text)` via prefix/suffix
+/// anchoring plus KMP interior search — total on every input, including
+/// patterns that are all `*` and non-UTF-8 text.
 pub fn matches(pattern: &[u8], text: &[u8]) -> bool {
-    // Two cursors plus a remembered `*` fallback: `star` is the pattern index
-    // just past the last `*` seen, `resume` is the text index to retry from
-    // after that `*` consumes one more byte. `None` means "no `*` to fall back
-    // to yet", so a literal mismatch is fatal.
-    let mut p = 0usize;
-    let mut t = 0usize;
-    let mut star: Option<usize> = None;
-    let mut resume = 0usize;
+    // No wildcard ⇒ exact equality (also handles the empty pattern: it matches
+    // only the empty text). This is the one case both ends of the pattern are
+    // the same single segment, so anchoring it once here avoids double-anchoring.
+    if !pattern.contains(&STAR) {
+        return pattern == text;
+    }
 
-    while t < text.len() {
-        if p < pattern.len() && pattern[p] == text[t] && pattern[p] != STAR {
-            // A literal byte matched: advance both cursors.
-            p += 1;
-            t += 1;
-        } else if p < pattern.len() && pattern[p] == STAR {
-            // A `*`: let it match the empty run for now, but remember where to
-            // fall back so it can extend one byte at a time on later mismatch.
-            star = Some(p + 1);
-            resume = t;
-            p += 1;
-        } else if let Some(after_star) = star {
-            // Mismatch under an open `*`: extend the `*` by one text byte.
-            p = after_star;
-            resume += 1;
-            t = resume;
-        } else {
-            // Mismatch with no `*` to absorb it.
+    // The pattern has ≥1 `*` and is non-empty. Split into maximal non-empty
+    // literal runs; consecutive/edge `*`s just drop empty pieces.
+    let leading_star = pattern[0] == STAR;
+    let trailing_star = pattern.last() == Some(&STAR);
+    let segments: Vec<&[u8]> = pattern
+        .split(|&b| b == STAR)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // All `*` (no literal runs) ⇒ matches anything.
+    if segments.is_empty() {
+        return true;
+    }
+
+    let n = segments.len();
+    let mut lo = 0usize; // first text index still available to interior segments
+    let mut hi = text.len(); // exclusive upper bound (before any anchored tail)
+
+    // Anchor the head as a prefix unless the pattern opens with `*`.
+    let first_interior = if leading_star {
+        0
+    } else {
+        let head = segments[0];
+        if text.len() < head.len() || &text[..head.len()] != head {
             return false;
         }
-    }
+        lo = head.len();
+        1
+    };
 
-    // Text exhausted: the remaining pattern must be all `*` to match.
-    while p < pattern.len() && pattern[p] == STAR {
-        p += 1;
+    // Anchor the tail as a suffix unless the pattern ends with `*`. The guard
+    // `hi < lo + tail.len()` rejects a tail that would overlap the anchored head
+    // (e.g. `aa*aa` vs `aaa`).
+    let last_interior = if trailing_star {
+        n
+    } else {
+        let tail = segments[n - 1];
+        if hi < lo + tail.len() || &text[hi - tail.len()..] != tail {
+            return false;
+        }
+        hi -= tail.len();
+        n - 1
+    };
+
+    // Locate each interior segment greedily in the shrinking window `[lo, hi)`.
+    // `.get(..)` yields an empty slice when the range is degenerate (it never is
+    // for a valid pattern, but this stays panic-free regardless).
+    for seg in segments.get(first_interior..last_interior).unwrap_or(&[]) {
+        match find(&text[lo..hi], seg) {
+            Some(i) => lo += i + seg.len(),
+            None => return false,
+        }
     }
-    p == pattern.len()
+    true
+}
+
+/// The leftmost index of `needle` in `haystack`, or `None` — Knuth–Morris–Pratt,
+/// `O(haystack + needle)` with no quadratic blowup on adversarial repeats (the
+/// property the segment matcher needs to stay linear on guest bytes).
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    // Failure function: `lps[i]` = length of the longest proper prefix of
+    // `needle[..=i]` that is also a suffix of it.
+    let mut lps = vec![0usize; needle.len()];
+    let mut len = 0usize;
+    let mut i = 1usize;
+    while i < needle.len() {
+        if needle[i] == needle[len] {
+            len += 1;
+            lps[i] = len;
+            i += 1;
+        } else if len > 0 {
+            len = lps[len - 1];
+        } else {
+            lps[i] = 0;
+            i += 1;
+        }
+    }
+    // Scan the haystack, never re-examining a matched byte.
+    let mut q = 0usize;
+    for (h, &c) in haystack.iter().enumerate() {
+        while q > 0 && c != needle[q] {
+            q = lps[q - 1];
+        }
+        if c == needle[q] {
+            q += 1;
+        }
+        if q == needle.len() {
+            return Some(h + 1 - needle.len());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{STAR, matches};
+    use super::{STAR, find, matches};
     use proptest::prelude::*;
 
-    /// A naive recursive reference the two-pointer matcher must agree with; it
-    /// is intentionally simple (and exponential) so it is obviously correct.
+    /// A naive recursive reference the segment matcher must agree with; it is
+    /// intentionally simple (and exponential) so it is obviously correct.
     fn reference(pattern: &[u8], text: &[u8]) -> bool {
         match pattern.first() {
             None => text.is_empty(),
@@ -133,21 +199,41 @@ mod tests {
         assert!(!matches(&adversary, &[b'a'; 40]));
     }
 
-    /// Regression (codex P2): the `*` + literal-run + terminal-byte pattern
-    /// against a long run of the run-byte — the two-pointer's `O(pattern · text)`
-    /// worst case. It must complete near-instantly (bounded polynomial work, no
-    /// blowup); if it were exponential this test would never return.
+    /// KMP `find` agrees with a naive scan and terminates on adversarial repeats.
     #[test]
-    fn star_then_literal_run_completes_fast() {
-        // `*aaaab` vs `aaaa…a` (50_000 a's, no trailing b): the star repeatedly
-        // rescans the 4-byte `aaaa` run then fails at `b` — ~O(5 · 50_000) work.
-        let pattern = b"*aaaab";
-        let text = vec![b'a'; 50_000];
-        assert!(!matches(pattern, &text));
-        // And the matching variant terminates just as fast.
-        let mut matching = vec![b'a'; 50_000];
-        matching.push(b'b');
-        assert!(matches(pattern, &matching));
+    fn kmp_find_locates_leftmost() {
+        assert_eq!(find(b"abcabcd", b"abcd"), Some(3));
+        assert_eq!(find(b"aaaaa", b"aab"), None);
+        assert_eq!(find(b"aaab", b"aaab"), Some(0));
+        assert_eq!(find(b"xyz", b""), Some(0)); // empty needle
+        assert_eq!(find(b"ab", b"abc"), None); // needle longer than haystack
+        assert_eq!(find(b"abababc", b"ababc"), Some(2)); // KMP failure-fn path
+    }
+
+    /// Regression (codex round-2 P2 #2): guest-emitted (adversary-influenced)
+    /// text must not trigger a CPU DoS. With segment matching + KMP the work is
+    /// `O(pattern + text)`, so these large pathological inputs complete
+    /// near-instantly; the old `O(pattern · text)` two-pointer would grind (a
+    /// naive interior scan of the 4 KiB needle across the run would be ~10^9+
+    /// byte-compares). Completion *is* the tightened bound.
+    #[test]
+    fn segment_matching_stays_linear_on_pathological_input() {
+        let text = vec![b'a'; 1_000_000];
+        // Tail-anchored: `*aaaab` fails at the suffix literal in O(1).
+        assert!(!matches(b"*aaaab", &text));
+        // Interior segment (both ends starred) → the KMP path. A 4 KiB run of
+        // `a` then `b`, searched in a megabyte of `a`, finds no `b`: linear scan,
+        // no match. A quadratic matcher would not return in time.
+        let mut interior = vec![b'*'];
+        interior.extend(std::iter::repeat_n(b'a', 4096));
+        interior.push(b'b');
+        interior.push(b'*');
+        assert!(!matches(&interior, &text));
+        // The matching variants terminate just as fast.
+        let mut hay = vec![b'a'; 1_000_000];
+        hay.push(b'b');
+        assert!(matches(b"*aaaab", &hay));
+        assert!(matches(&interior, &hay));
     }
 
     #[test]
@@ -198,11 +284,11 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
-        /// Gate 5: the two-pointer matcher agrees with the naive reference on
-        /// random pattern/text pairs, and never panics — including on patterns
-        /// that are dense runs of `*`.
+        /// Gate 5: the segment matcher agrees with the naive reference on random
+        /// pattern/text pairs, and never panics — including on patterns that are
+        /// dense runs of `*` (the anchoring / interior-search edge cases).
         #[test]
-        fn two_pointer_agrees_with_reference(pat in glob_bytes(), text in text_bytes()) {
+        fn segment_matcher_agrees_with_reference(pat in glob_bytes(), text in text_bytes()) {
             prop_assert_eq!(matches(&pat, &text), reference(&pat, &text));
         }
 

@@ -197,19 +197,23 @@ impl SignalSet {
     }
 
     /// Build a set directly from validated declarations (the in-memory
-    /// constructor; enforces name uniqueness and channel capacity like
-    /// [`from_json`](Self::from_json)).
+    /// constructor; enforces the same invariants as [`from_json`](Self::from_json):
+    /// unique names, and every `state_max` signal carries an `attr_max`).
+    ///
+    /// Channel-space capacity is **not** checked here — it depends on the
+    /// campaign's channel base and is validated at [`MatchSensor`](crate::MatchSensor)
+    /// construction. The oracle-only `never` roles have no channel, so a set
+    /// larger than the channel space is still a valid oracle input.
     pub fn new(signals: Vec<SignalDecl>) -> Result<SignalSet, MatchError> {
-        // Channels are assigned as name-ranks in `[0, u16::MAX]`; more signals
-        // than that would wrap and collide. Reject fail-closed (the router then
-        // relies on this invariant, so `rank as u16` never truncates).
-        if signals.len() > u16::MAX as usize + 1 {
-            return Err(MatchError::TooManySignals(signals.len()));
-        }
         let mut seen = BTreeSet::new();
         for d in &signals {
             if !seen.insert(d.name.clone()) {
                 return Err(MatchError::DuplicateName(d.name.0.clone()));
+            }
+            // A `state_max` register with no attr to fold is vacuous — it would
+            // match, emit nothing, and still report fired. Reject it.
+            if d.role == Role::StateMax && d.expr.attr_max.is_none() {
+                return Err(MatchError::StateMaxWithoutAttrMax(d.name.0.clone()));
             }
         }
         Ok(SignalSet { signals })
@@ -348,32 +352,38 @@ mod tests {
         ));
     }
 
-    /// Regression (codex P2 #2): more signals than the `u16` channel space can
-    /// address is rejected fail-closed, rather than wrapping ranks and merging
-    /// two signals onto one channel. The capacity (`u16::MAX + 1`) is legal; one
-    /// past it is not.
+    /// Regression (codex round-2 P2 #3): a `state_max` role with no `attr_max`
+    /// is vacuous (matches, emits nothing, still reports fired) and is rejected
+    /// at validation — via both `from_json` and `new`.
     #[test]
-    fn too_many_signals_is_rejected() {
-        let mk = |n: usize| -> Vec<SignalDecl> {
-            (0..n)
-                .map(|i| SignalDecl {
-                    name: SignalId(format!("s{i}")),
-                    role: Role::Sometimes,
-                    expr: MatchExpr {
-                        kind: "log".into(),
-                        attr: BTreeMap::new(),
-                        attr_max: None,
-                        during: None,
-                    },
-                })
-                .collect()
-        };
-        // Exactly the channel capacity is allowed (ranks 0..=u16::MAX).
-        assert!(SignalSet::new(mk(u16::MAX as usize + 1)).is_ok());
-        // One past capacity would wrap rank u16::MAX + 1 → 0: rejected.
+    fn state_max_without_attr_max_is_rejected() {
         assert!(matches!(
-            SignalSet::new(mk(u16::MAX as usize + 2)),
-            Err(MatchError::TooManySignals(n)) if n == u16::MAX as usize + 2
+            SignalSet::from_json(
+                r#"{ "signals": [ { "name": "reg", "role": "state_max", "match": { "kind": "span" } } ] }"#
+            ),
+            Err(MatchError::StateMaxWithoutAttrMax(n)) if n == "reg"
         ));
+        // Same via the in-memory constructor.
+        let decls = vec![SignalDecl {
+            name: SignalId("reg".into()),
+            role: Role::StateMax,
+            expr: MatchExpr {
+                kind: "span".into(),
+                attr: BTreeMap::new(),
+                attr_max: None,
+                during: None,
+            },
+        }];
+        assert!(matches!(
+            SignalSet::new(decls),
+            Err(MatchError::StateMaxWithoutAttrMax(_))
+        ));
+        // A `state_max` *with* an `attr_max` is fine.
+        assert!(
+            SignalSet::from_json(
+                r#"{ "signals": [ { "name": "reg", "role": "state_max", "match": { "kind": "span", "attr_max": "lsn" } } ] }"#
+            )
+            .is_ok()
+        );
     }
 }

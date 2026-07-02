@@ -15,12 +15,20 @@
 //! | `state_max` | [`MatchSensor`] | a `Feature` whose id is the log2 bucket of the running max, emitted each `Moment` the bucket increases |
 //! | `never` | [`MatchOracle`] | `Some(Bug)` with `fingerprint = sha2(name ‖ kind ‖ matched attr bytes)` |
 //!
-//! A signal's **channel** is the rank of its name in the sorted name set — a
-//! stable, per-signal identity that is invariant under permuting the
-//! declaration order (task-66 semantics 4), so no signal's output depends on
-//! where another signal sits in the list. `never` signals occupy a rank too but
-//! emit no `Feature`, so a feature never lands on a `never` signal's channel:
-//! cross-role leakage is impossible by construction.
+//! A signal's **channel** is `channel_base + rank`, where `rank` is the
+//! position of its name in the sorted name set — a stable, per-signal identity
+//! invariant under permuting the declaration order (task-66 semantics 4), so no
+//! signal's output depends on where another signal sits in the list. `never`
+//! signals occupy a rank too but emit no `Feature`, so a feature never lands on
+//! a `never` signal's channel: cross-role leakage is impossible by construction.
+//!
+//! **Channel allocation is the campaign's, not the router's.** The base is a
+//! [`MatchSensor::new`] parameter; by convention channel 0 is coverage's
+//! (`explorer::COVERAGE_CHANNEL`), so the base must be `>= 1` — otherwise a
+//! matcher `Feature{channel:0, id:1}` would be indistinguishable from a coverage
+//! edge and the archive would dedup them together (the round-2 P1 fix). The
+//! sensor occupies `[base, base + signal_count)`; a later channel plugin (task
+//! 74's OTel spans) bases above that (see [`MatchSensor::next_free_channel`]).
 //!
 //! ## Purity + determinism
 //!
@@ -35,6 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use explorer::{Bug, ChannelId, Feature, FeatureId, Matchable, Moment, Oracle, RunTrace, Sensor};
 use sha2::{Digest, Sha256};
 
+use crate::error::MatchError;
 use crate::signal::{During, MatchExpr, Role, SignalId, SignalSet};
 use crate::{glob, value};
 
@@ -147,17 +156,17 @@ fn never_fingerprint<R: Matchable>(name: &SignalId, rec: &R, expr: &MatchExpr) -
     h.finalize().into()
 }
 
-/// Assign each signal a stable channel: the rank of its name in the sorted set
-/// of all names. Permutation-invariant (task-66 semantics 4) and collision-free
-/// (names are unique). `SignalSet` construction rejects a set larger than
-/// `u16::MAX + 1` ([`MatchError::TooManySignals`](crate::MatchError::TooManySignals)),
-/// so every rank fits in `u16` and `rank as u16` never truncates.
-fn channels_of(signals: &SignalSet) -> BTreeMap<SignalId, ChannelId> {
+/// Assign each signal a stable channel: `base + rank`, where `rank` is the
+/// position of its name in the sorted set of all names. Permutation-invariant
+/// (task-66 semantics 4) and collision-free (names are unique). The caller has
+/// validated `base >= 1` and `base + count <= u16::MAX`, so `base + rank` never
+/// wraps and never lands on channel 0 (coverage's).
+fn channels_of(signals: &SignalSet, base: u16) -> BTreeMap<SignalId, ChannelId> {
     let names: BTreeSet<SignalId> = signals.signals().iter().map(|d| d.name.clone()).collect();
     names
         .into_iter()
         .enumerate()
-        .map(|(rank, name)| (name, ChannelId(rank as u16)))
+        .map(|(rank, name)| (name, ChannelId(base + rank as u16)))
         .collect()
 }
 
@@ -169,6 +178,7 @@ pub struct MatchSensor<S: ChannelSource, C: ContextSource> {
     source: S,
     context: C,
     channels: BTreeMap<SignalId, ChannelId>,
+    base: ChannelId,
 }
 
 impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
@@ -176,21 +186,62 @@ impl<S: ChannelSource, C: ContextSource> MatchSensor<S, C> {
     /// identity is carried by the channel, so the id is a constant marker.
     pub const FIRED_FEATURE: FeatureId = FeatureId(0);
 
-    /// Build a sensor over a signal set, a channel source, and a context source.
-    pub fn new(signals: SignalSet, source: S, context: C) -> Self {
-        let channels = channels_of(&signals);
-        Self {
+    /// Build a sensor over a signal set, a channel source, a context source, and
+    /// the campaign's **channel base**.
+    ///
+    /// Channel allocation is the campaign's to decide, not the router's: the
+    /// matcher's signals occupy `[base, base + signal_count)` in the spine
+    /// `Feature` channel space. By convention **channel 0 is coverage's**
+    /// (`explorer::COVERAGE_CHANNEL`), so `base` must be `>= 1` — otherwise a
+    /// matcher feature would be indistinguishable from a coverage edge and the
+    /// archive would dedup them together. A later channel plugin (task 74's OTel
+    /// spans) allocates its own base above this range (see
+    /// [`next_free_channel`](Self::next_free_channel)).
+    ///
+    /// Returns [`MatchError::ReservedChannelBase`] if `base == 0`, or
+    /// [`MatchError::ChannelSpaceExhausted`] if `base + signal_count` overflows
+    /// `u16::MAX` (folding the channel-capacity guard into base validation).
+    pub fn new(
+        signals: SignalSet,
+        source: S,
+        context: C,
+        channel_base: ChannelId,
+    ) -> Result<Self, MatchError> {
+        let base = channel_base.0;
+        if base == 0 {
+            return Err(MatchError::ReservedChannelBase);
+        }
+        let count = signals.len();
+        if base as usize + count > u16::MAX as usize {
+            return Err(MatchError::ChannelSpaceExhausted { base, count });
+        }
+        let channels = channels_of(&signals, base);
+        Ok(Self {
             signals,
             source,
             context,
             channels,
-        }
+            base: channel_base,
+        })
     }
 
     /// The channel a signal's features are filed under, if the signal is in the
     /// set. (Every signal gets a channel; only non-`never` ones emit features.)
     pub fn channel_of(&self, name: &SignalId) -> Option<ChannelId> {
         self.channels.get(name).copied()
+    }
+
+    /// The channel base this sensor was constructed with — the low end of its
+    /// occupied range `[base, base + signal_count)`.
+    pub fn channel_base(&self) -> ChannelId {
+        self.base
+    }
+
+    /// The first channel **above** this sensor's occupied range — where a
+    /// composing campaign should base the next channel plugin so their `Feature`
+    /// spaces never overlap.
+    pub fn next_free_channel(&self) -> ChannelId {
+        ChannelId(self.base.0 + self.signals.len() as u16)
     }
 
     /// The routed feature stream, sorted by `(Moment, channel, id)` — a
@@ -428,7 +479,10 @@ impl<S: ChannelSource, C: ContextSource> Oracle for MatchOracle<S, C> {
 mod tests {
     use super::*;
     use crate::stub::{FaultMoments, OwnedRecords, RecordRec};
-    use explorer::{Environment, Record, StopReason, VTime, Value};
+    use explorer::{COVERAGE_CHANNEL, Environment, Record, StopReason, VTime, Value};
+
+    /// A minimal valid channel base for tests (channel 0 is coverage's).
+    const BASE: ChannelId = ChannelId(1);
 
     fn trace() -> RunTrace {
         RunTrace {
@@ -503,7 +557,8 @@ mod tests {
                 &[("name", Value::Str("wal".into())), ("lsn", Value::UInt(5))],
             ),
         ];
-        let sensor = MatchSensor::new(signals, OwnedRecords(recs), FaultMoments(vec![]));
+        let sensor =
+            MatchSensor::new(signals, OwnedRecords(recs), FaultMoments(vec![]), BASE).unwrap();
         let feats = sensor.features(&trace());
         let ids: Vec<(u64, u64)> = feats.iter().map(|(m, f)| (m.0, f.id.0)).collect();
         assert_eq!(ids, vec![(1, 1), (2, 2), (4, 4)]);
@@ -521,7 +576,8 @@ mod tests {
             rec(2, "span", &[]), // absent attr_max
             rec(3, "span", &[("lsn", Value::UInt(4))]),
         ];
-        let sensor = MatchSensor::new(signals, OwnedRecords(recs), FaultMoments(vec![]));
+        let sensor =
+            MatchSensor::new(signals, OwnedRecords(recs), FaultMoments(vec![]), BASE).unwrap();
         // No panic; two misses; one feature (bucket 3 at moment 3).
         assert_eq!(sensor.decode_misses(&trace()), 2);
         let feats = sensor.features(&trace());
@@ -563,7 +619,9 @@ mod tests {
             signals.clone(),
             OwnedRecords(recs.clone()),
             FaultMoments(vec![]),
-        );
+            BASE,
+        )
+        .unwrap();
         let never_channel = sensor.channel_of(&SignalId("b.never".into())).unwrap();
         // The never signal's channel never carries a feature.
         assert!(
@@ -575,5 +633,69 @@ mod tests {
         );
         // And the never signal is not in the sensor's fired set.
         assert!(!sensor.fired(&trace()).contains(&SignalId("b.never".into())));
+    }
+
+    /// Regression (codex round-2 P1): matcher features must never collide with
+    /// the coverage channel (spine `COVERAGE_CHANNEL` = channel 0), and base
+    /// validation is enforced.
+    #[test]
+    fn channel_base_reserves_coverage_and_is_validated() {
+        let signals = SignalSet::from_json(
+            r#"{ "signals": [ { "name": "a.some", "role": "sometimes", "match": { "kind": "log", "attr": { "x": "1" } } } ] }"#,
+        )
+        .unwrap();
+        let recs = vec![rec(1, "log", &[("x", Value::Str("1".into()))])];
+
+        // Base 0 is coverage's — rejected.
+        assert!(matches!(
+            MatchSensor::new(
+                signals.clone(),
+                OwnedRecords(recs.clone()),
+                FaultMoments(vec![]),
+                COVERAGE_CHANNEL,
+            ),
+            Err(MatchError::ReservedChannelBase)
+        ));
+
+        // A valid base: the first signal's feature is on channel `base`, which
+        // differs from coverage's channel 0. So a coverage Feature{0, id:1} and
+        // the first matcher feature can never be confused in the archive.
+        let sensor =
+            MatchSensor::new(signals, OwnedRecords(recs), FaultMoments(vec![]), BASE).unwrap();
+        let feats = sensor.features(&trace());
+        assert_eq!(feats.len(), 1);
+        let coverage_feature = Feature {
+            channel: COVERAGE_CHANNEL,
+            id: FeatureId(1),
+        };
+        assert_ne!(feats[0].1, coverage_feature);
+        assert!(feats.iter().all(|(_, f)| f.channel != COVERAGE_CHANNEL));
+        // The base and next-free accessors bound the occupied range.
+        assert_eq!(sensor.channel_base(), BASE);
+        assert_eq!(sensor.next_free_channel(), ChannelId(2));
+    }
+
+    /// Base + signal_count overflowing `u16::MAX` is rejected (the folded
+    /// capacity guard).
+    #[test]
+    fn channel_space_exhaustion_is_rejected() {
+        // A tiny set, but a base so high that base + count > u16::MAX.
+        let signals = SignalSet::from_json(
+            r#"{ "signals": [
+                { "name": "s0", "role": "cell", "match": { "kind": "log" } },
+                { "name": "s1", "role": "cell", "match": { "kind": "log" } }
+            ] }"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            MatchSensor::new(
+                signals,
+                OwnedRecords(vec![]),
+                FaultMoments(vec![]),
+                ChannelId(u16::MAX), // u16::MAX + 2 > u16::MAX
+            ),
+            Err(MatchError::ChannelSpaceExhausted { base, count })
+                if base == u16::MAX && count == 2
+        ));
     }
 }

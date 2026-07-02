@@ -68,19 +68,25 @@ fn arb_expr() -> impl Strategy<Value = MatchExpr> {
 }
 
 /// An arbitrary signal set with **unique** names (`s0`, `s1`, …), so it is
-/// always constructible.
+/// always constructible. A `state_max` role is given an `attr_max` (the DSL
+/// rejects a register with nothing to fold), matching the validation rule.
 pub fn arb_signal_set() -> impl Strategy<Value = SignalSet> {
     prop::collection::vec((arb_role(), arb_expr()), 0..=6).prop_map(|items| {
         let decls: Vec<SignalDecl> = items
             .into_iter()
             .enumerate()
-            .map(|(i, (role, expr))| SignalDecl {
-                name: SignalId(format!("s{i}")),
-                role,
-                expr,
+            .map(|(i, (role, mut expr))| {
+                if role == Role::StateMax && expr.attr_max.is_none() {
+                    expr.attr_max = Some(MAX_KEY.to_string());
+                }
+                SignalDecl {
+                    name: SignalId(format!("s{i}")),
+                    role,
+                    expr,
+                }
             })
             .collect();
-        SignalSet::new(decls).expect("names are unique by construction")
+        SignalSet::new(decls).expect("names unique, state_max carries attr_max")
     })
 }
 

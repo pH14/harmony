@@ -12,7 +12,13 @@
 ///   expected, truncated JSON, …);
 /// - **unknown role** → [`MatchError::UnknownRole`];
 /// - **duplicate name** → [`MatchError::DuplicateName`];
-/// - **unknown `during` predicate** → [`MatchError::UnknownDuring`].
+/// - **unknown `during` predicate** → [`MatchError::UnknownDuring`];
+/// - **`state_max` without `attr_max`** → [`MatchError::StateMaxWithoutAttrMax`].
+///
+/// Channel-space errors ([`ReservedChannelBase`](MatchError::ReservedChannelBase),
+/// [`ChannelSpaceExhausted`](MatchError::ChannelSpaceExhausted)) surface at
+/// [`MatchSensor`](crate::MatchSensor) construction, where the campaign's
+/// channel base is known.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum MatchError {
@@ -37,11 +43,30 @@ pub enum MatchError {
     #[error("duplicate signal name {0:?}")]
     DuplicateName(String),
 
-    /// More signals than the channel space can address. Each signal's channel
-    /// is the rank of its name in `[0, u16::MAX]`, so a set larger than
-    /// `u16::MAX + 1` (65 536) would wrap ranks and collide two signals onto one
-    /// channel — rejected fail-closed at construction rather than silently
-    /// merging their outputs.
-    #[error("too many signals: {0} exceeds the channel capacity of 65536 (u16::MAX + 1)")]
-    TooManySignals(usize),
+    /// A `state_max` signal declared no `attr_max`. Such a signal matches
+    /// records, emits no feature (there is no register to fold), yet reports
+    /// fired — a vacuous config. Rejected at validation: the `state_max` role
+    /// requires an `attr_max`.
+    #[error("state_max signal {0:?} declares no attr_max (the register to fold)")]
+    StateMaxWithoutAttrMax(String),
+
+    /// A [`MatchSensor`](crate::MatchSensor) was constructed with channel base
+    /// `0`, which is reserved for the coverage channel (spine
+    /// `COVERAGE_CHANNEL`). A matcher must allocate its channels at base ≥ 1 so
+    /// its features never collide with coverage's in the archive's `Feature`
+    /// space.
+    #[error("channel base 0 is reserved for coverage; use a base >= 1")]
+    ReservedChannelBase,
+
+    /// A [`MatchSensor`](crate::MatchSensor)'s signal set does not fit the
+    /// channel space above `base`: `base + count` exceeds `u16::MAX` (channels
+    /// are `base + name-rank`). Rejected fail-closed rather than wrapping a rank
+    /// and merging two signals onto one channel.
+    #[error("channel space exhausted: base {base} + {count} signals exceeds u16::MAX")]
+    ChannelSpaceExhausted {
+        /// The channel base the sensor was given.
+        base: u16,
+        /// The number of signals in the set.
+        count: usize,
+    },
 }

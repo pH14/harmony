@@ -7,7 +7,7 @@
 mod common;
 
 use common::{arb_faults, arb_records, arb_signal_set, trace};
-use explorer::Oracle;
+use explorer::{ChannelId, Oracle};
 use matcher::stub::{FaultMoments, OwnedRecords};
 use matcher::{MatchOracle, MatchSensor, SignalSet};
 use proptest::prelude::*;
@@ -25,7 +25,9 @@ proptest! {
             set.clone(),
             OwnedRecords(recs.clone()),
             FaultMoments(faults.clone()),
-        );
+            ChannelId(1),
+        )
+        .unwrap();
         let oracle = MatchOracle::new(
             set.clone(),
             OwnedRecords(recs.clone()),
@@ -56,7 +58,9 @@ proptest! {
             permuted.clone(),
             OwnedRecords(recs.clone()),
             FaultMoments(faults.clone()),
-        );
+            ChannelId(1),
+        )
+        .unwrap();
         let oracle_p = MatchOracle::new(
             permuted,
             OwnedRecords(recs.clone()),

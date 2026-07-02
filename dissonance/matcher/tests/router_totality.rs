@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{arb_faults, arb_records, arb_signal_set, matching_moments, ref_match, trace};
-use explorer::{Oracle, Sensor};
+use explorer::{ChannelId, Oracle, Sensor};
 use matcher::stub::{FaultMoments, OwnedRecords};
 use matcher::{MatchOracle, MatchSensor, Role};
 use proptest::prelude::*;
@@ -28,7 +28,9 @@ proptest! {
             set.clone(),
             OwnedRecords(recs.clone()),
             FaultMoments(faults.clone()),
-        );
+            ChannelId(1),
+        )
+        .unwrap();
         let oracle = MatchOracle::new(
             set.clone(),
             OwnedRecords(recs.clone()),
