@@ -53,14 +53,30 @@ cumulative slice, CellFn v1 folds the deterministic max-id representative — st
 bounded and deterministic, just not time-latest. This is documented on
 `cell.rs`'s "point-in-time slice contract".
 
-### Sensor purity vs. the stateful codebook
+### The codebook is a campaign fold over the run *sequence*
 
-`Sensor::observe` must be pure per run. It folds a **fresh** `Codebook` each call
-— which is also exactly gate 2's "two independent derivations (fresh codebook
-each)". The stateful `Codebook` (with serialize/reload) is the **campaign**
-primitive that keeps ids stable across the run *sequence* (gate 3); the sensor
-uses it internally per run. `LogSensor::adapt` shares the same fold, so the ids
-the matcher sees and the ids `observe` emits are identical by construction.
+The spec is explicit: the codebook is "a stateful fold over the run sequence, not
+just one run", and template ids are minted in first-seen order so the same
+species keeps the same `FeatureId` across runs (a `Feature` carries only
+`(channel, id)` — reminting per run would conflate distinct species downstream).
+`LogSensor` therefore holds its `Codebook` as **campaign state** and
+`observe`/`adapt` fold each trace into it. Because `Sensor::observe(&self, …)` is
+immutable but the fold must persist, the codebook lives behind a `RefCell`;
+`Box<dyn Sensor>` carries no `Send`/`Sync` bound, so this is sound (the campaign
+drives one sensor sequentially). Re-folding a trace the codebook already absorbed
+is idempotent (every line re-matches its existing template), so the spine's "same
+trace, same stream" purity contract still holds, while genuinely new traces
+extend the codebook. `adapt` shares the same codebook, so matcher ids and sensor
+ids always agree. Persistence ("serialize → reload → continue is
+indistinguishable") is `LogSensor::codebook()` (snapshot) + `with_codebook()`
+(resume) on top of `Codebook::to_json`/`from_json`; the two-trace stability test
+(`ids_are_stable_across_the_run_sequence`) and `snapshot_and_resume_continue_the_fold`
+pin both. (Gate 2's "fresh codebook each derivation" tests the `Codebook`
+primitive directly, which is the right unit for that determinism claim.)
+
+**Deviation considered and rejected (round 2):** the original submission folded a
+`Codebook::new()` per `observe`, so ids were stable only *within* one run — a
+spec violation the reviewer flagged. The fix threads campaign state as above.
 
 ### Codebook internality (the EXPLORATION ruling)
 
@@ -127,8 +143,11 @@ ends.
 
 ## Gate status (all green, macOS; portable to Linux)
 
-1. Standard suite — build / nextest (46 tests) / clippy `-D warnings` / fmt / deny,
-   all-features. No `unsafe` ⇒ no Miri gate and no `quality.yml` edit needed.
+1. Standard suite — build / nextest (53 tests) / clippy `-D warnings` / fmt / deny,
+   all-features. No `unsafe` ⇒ no Miri gate. A frozen public-API snapshot guard
+   (`tests/public_api.rs` + `tests/public-api.txt`, the repo's standard
+   `cargo public-api` pattern) is added and the crate is registered in the
+   `public-api` CI job's package list (`.github/workflows/quality.yml`).
 2. Stable species set — identical species, ids, and byte-identical codebooks over
    both fixtures (`gate2_*`).
 3. Codebook reload — mid-fixture serialize→reload→finish matches the uninterrupted
