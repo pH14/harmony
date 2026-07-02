@@ -305,7 +305,7 @@ proptest! {
             ex.multiverse_step().unwrap();
         }
         prop_assume!(!ex.frontier().is_empty());
-        let r = ExemplarRef(entry_pick % ex.frontier().len());
+        let r = ex.frontier().nth(entry_pick as u64).unwrap();
         let base_env = ex.frontier().get(r).unwrap().env.clone();
         // Materialize covers both the still-sealed and (after eviction
         // elsewhere) re-materialized cases; here the eager seal is live.

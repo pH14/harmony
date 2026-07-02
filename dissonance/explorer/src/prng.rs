@@ -14,7 +14,7 @@
 //! state for record/replay (the open-loop proptest snapshots the stream at each
 //! decision and replays it standalone).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// xorshift64\* multiplier (the `hypercall-proto` constant).
 const MUL: u64 = 0x2545_F491_4F6C_DD1D;
@@ -24,9 +24,29 @@ const FALLBACK: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// A deterministic xorshift64\* stream. Each [`next_u64`](Prng::next_u64) both
 /// advances the state and returns the scrambled output word.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+///
+/// `Deserialize` is hand-written (not derived): xorshift64\* has one absorbing
+/// state — zero, from which every draw is zero forever — and [`Prng::new`]
+/// makes it unreachable. A derived impl would let an untrusted `{"state":0}`
+/// blob restore exactly the state serialization can never produce (the
+/// restore-path rule), so deserialization funnels through `new`, which remaps
+/// zero to the fallback just as seeding does.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct Prng {
     state: u64,
+}
+
+impl<'de> Deserialize<'de> for Prng {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        /// The derived wire shape, so serialize/deserialize stay symmetric.
+        #[derive(Deserialize)]
+        struct Raw {
+            state: u64,
+        }
+        // Funnel through `new`: the zero state is unrepresentable, exactly as
+        // it is for a freshly-seeded stream.
+        Ok(Prng::new(Raw::deserialize(d)?.state))
+    }
 }
 
 impl Prng {
@@ -84,5 +104,29 @@ mod tests {
         p.next_u64();
         let mut q = p.clone();
         assert_eq!(p.next_u64(), q.next_u64());
+    }
+
+    /// A mid-stream serde round-trip preserves the continuation exactly.
+    #[test]
+    fn serde_round_trip_preserves_the_stream() {
+        let mut p = Prng::new(42);
+        p.next_u64();
+        let json = serde_json::to_string(&p).expect("serialize");
+        let mut q: Prng = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, q);
+        assert_eq!(p.next_u64(), q.next_u64());
+    }
+
+    /// The zero payload — a state serialization can never produce (xorshift's
+    /// absorbing state, unreachable via `new`) — deserializes to the same
+    /// stream as `Prng::new(0)`, never to the all-zero stream.
+    #[test]
+    fn zero_payload_cannot_restore_the_absorbing_state() {
+        let mut z: Prng = serde_json::from_str(r#"{"state":0}"#).expect("deserialize");
+        let mut seeded_zero = Prng::new(0);
+        let first = z.next_u64();
+        assert_ne!(first, 0, "the absorbing all-zero stream is unreachable");
+        assert_eq!(first, seeded_zero.next_u64(), "remapped exactly as new(0)");
+        assert_eq!(z.next_u64(), seeded_zero.next_u64());
     }
 }

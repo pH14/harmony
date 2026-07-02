@@ -315,11 +315,16 @@ pub struct DecisionPoint {
 // The frontier
 // ---------------------------------------------------------------------------
 
-/// A stable reference to a frontier entry (its admission-order index). Opaque
+/// A **stable identity** for a frontier entry: a monotonic id minted at
+/// admission, **never reused and never renumbered** — it survives any
+/// [`Archive::evict`] compaction, so engine-side bookkeeping keyed by it (the
+/// seal cache) can never be desynced onto a different exemplar by eviction.
+/// A ref whose entry has been evicted simply stops resolving
+/// ([`Frontier::get`] returns `None`); it never aliases a survivor. Opaque
 /// enough for a [`Selector`] — it carries no cell meaning — while staying
 /// `Copy`/`Ord` for deterministic bookkeeping.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
-pub struct ExemplarRef(pub usize);
+pub struct ExemplarRef(pub u64);
 
 /// One admitted frontier entry: the exemplar, its genesis-complete environment
 /// (memoized suffix-chain fold), and the reward its admission earned.
@@ -334,15 +339,23 @@ pub struct FrontierEntry {
     pub reward: Reward,
 }
 
-/// The Go-Explore/MAP-Elites frontier: admitted exemplars in admission order,
-/// plus the cell index mapping each occupied [`CellKey`] to its (best)
-/// occupant. Deterministic by construction — a `Vec` and a `BTreeMap`, no
-/// iteration-order surface. Dumb indexed storage: *which* exemplar occupies a
-/// cell (domination) is the [`Archive`]'s policy, *which* to branch from next
-/// is the [`Selector`]'s.
+/// The Go-Explore/MAP-Elites frontier: live exemplars in admission order under
+/// **stable ids** ([`ExemplarRef`]), plus the cell index mapping each occupied
+/// [`CellKey`] to its (best) occupant. Deterministic by construction — a `Vec`
+/// and a `BTreeMap`, no iteration-order surface. Dumb indexed storage: *which*
+/// exemplar occupies a cell (domination) and *what* to [`remove`](Frontier::remove)
+/// (eviction) is the [`Archive`]'s policy, *which* to branch from next is the
+/// [`Selector`]'s.
+///
+/// A cell claim **outlives its occupant**: removing an entry does not clear the
+/// cells it claimed (novelty must not reset — an evicted behaviour is still a
+/// *seen* behaviour), so [`occupant`](Frontier::occupant) may name a ref that
+/// no longer [`get`](Frontier::get)s. Dead refs never alias a live entry.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct Frontier {
-    entries: Vec<FrontierEntry>,
+    /// Live entries in admission order, each under its stable id (ascending —
+    /// ids are minted monotonically and removal preserves order).
+    entries: Vec<(ExemplarRef, FrontierEntry)>,
     // Serialized as a pair sequence: a byte-vector map key is fine for the
     // BTree but not for string-keyed formats like JSON.
     #[serde(
@@ -350,6 +363,8 @@ pub struct Frontier {
         deserialize_with = "deserialize_cells"
     )]
     cells: BTreeMap<CellKey, ExemplarRef>,
+    /// The next id to mint; never decremented, so ids are never reused.
+    next: u64,
 }
 
 /// Serialize the cell index as an ordered pair sequence (JSON-compatible).
@@ -391,40 +406,57 @@ impl Frontier {
         self.cells.len()
     }
 
-    /// The entry behind `r`, if it exists.
+    /// The **live** entry behind `r`: `None` once `r` has been
+    /// [`remove`](Frontier::remove)d (a dead ref never aliases a survivor).
+    /// Binary search over the ascending id order.
     pub fn get(&self, r: ExemplarRef) -> Option<&FrontierEntry> {
-        self.entries.get(r.0)
+        self.entries
+            .binary_search_by_key(&r, |(id, _)| *id)
+            .ok()
+            .map(|i| &self.entries[i].1)
     }
 
-    /// The `i % len`-th entry in admission order — the deterministic pick a
-    /// salt-indexed selector uses. `None` on an empty frontier.
+    /// The `i % len`-th **live** entry in admission order — the deterministic
+    /// pick a salt-indexed selector uses. `None` on an empty frontier.
     pub fn nth(&self, i: u64) -> Option<ExemplarRef> {
         if self.entries.is_empty() {
             return None;
         }
-        Some(ExemplarRef((i % self.entries.len() as u64) as usize))
+        Some(self.entries[(i % self.entries.len() as u64) as usize].0)
     }
 
-    /// Every entry with its reference, in admission order.
+    /// Every live entry with its stable ref, in admission order.
     pub fn iter(&self) -> impl Iterator<Item = (ExemplarRef, &FrontierEntry)> {
-        self.entries
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (ExemplarRef(i), e))
+        self.entries.iter().map(|(id, e)| (*id, e))
     }
 
-    /// The current occupant of `cell`, if any.
+    /// The current occupant of `cell`, if any — possibly a ref whose entry has
+    /// since been evicted (the claim outlives the occupant; see the type docs).
     pub fn occupant(&self, cell: &CellKey) -> Option<ExemplarRef> {
         self.cells.get(cell).copied()
     }
 
-    /// Append an entry (admission order) and return its reference. An archive
-    /// pairs this with [`claim`](Frontier::claim) / [`occupy`](Frontier::occupy)
-    /// per its domination policy.
+    /// Append an entry (admission order) under a **freshly minted stable id**
+    /// and return it. An archive pairs this with [`claim`](Frontier::claim) /
+    /// [`occupy`](Frontier::occupy) per its domination policy.
     pub fn insert(&mut self, entry: FrontierEntry) -> ExemplarRef {
-        let r = ExemplarRef(self.entries.len());
-        self.entries.push(entry);
+        let r = ExemplarRef(self.next);
+        self.next += 1;
+        self.entries.push((r, entry));
         r
+    }
+
+    /// Remove `r`'s entry — the **eviction primitive** ([`Archive::evict`]
+    /// implementations call this). Returns the removed entry, or `None` if `r`
+    /// was not live. Cell claims held by `r` are deliberately **not** cleared
+    /// (novelty never resets); surviving entries keep their ids, so references
+    /// held elsewhere (e.g. the engine's seal cache) stay exact — a dead ref
+    /// stops resolving rather than silently renaming another entry.
+    pub fn remove(&mut self, r: ExemplarRef) -> Option<FrontierEntry> {
+        match self.entries.binary_search_by_key(&r, |(id, _)| *id) {
+            Ok(i) => Some(self.entries.remove(i).1),
+            Err(_) => None,
+        }
     }
 
     /// Claim `cell` for `r` **iff unoccupied** (first-wins); returns whether the
@@ -692,6 +724,62 @@ mod tests {
         // domination history, never through admission (the archive claims at
         // least one fresh cell per admitted entry).
         assert_eq!(f.occupied_cells(), 1);
+    }
+
+    /// Stable identity across eviction: `remove` never renumbers survivors,
+    /// never reuses ids, leaves dead refs unresolvable, and keeps cell claims
+    /// (novelty never resets). The round-1 review's blocking finding pins here.
+    #[test]
+    fn frontier_removal_keeps_identities_stable() {
+        let mut f = Frontier::new();
+        let e = |seed: u64| FrontierEntry {
+            exemplar: VirtualExemplar {
+                parent: SnapId(1),
+                seed,
+                suffix: env(vec![]),
+                at: Moment(40),
+            },
+            env: env(vec![]),
+            reward: Reward { new_cells: 1 },
+        };
+        let r0 = f.insert(e(0));
+        let r1 = f.insert(e(1));
+        let r2 = f.insert(e(2));
+        f.claim(vec![0], r0);
+        f.claim(vec![1], r1);
+        f.claim(vec![2], r2);
+
+        // Evict the middle entry.
+        let removed = f.remove(r1).expect("r1 was live");
+        assert_eq!(removed.exemplar.seed, 1);
+        assert_eq!(f.remove(r1), None, "a dead ref removes nothing twice");
+        assert_eq!(f.len(), 2);
+
+        // Survivors keep their ORIGINAL refs — no renumbering.
+        assert_eq!(f.get(r0).expect("r0 live").exemplar.seed, 0);
+        assert_eq!(f.get(r2).expect("r2 live").exemplar.seed, 2);
+        assert_eq!(f.get(r1), None, "the dead ref stops resolving");
+
+        // Admission-order pick walks the LIVE entries: position 1 is now r2 —
+        // as a live ref, never as r1's recycled slot.
+        assert_eq!(f.nth(0), Some(r0));
+        assert_eq!(f.nth(1), Some(r2));
+
+        // A fresh insert mints a NEW id — r1 is never reused.
+        let r3 = f.insert(e(3));
+        assert_eq!(r3, ExemplarRef(3));
+        assert_ne!(r3, r1);
+
+        // The dead entry's cell claim survives (an evicted behaviour is still
+        // a seen behaviour), naming the historical occupant.
+        assert_eq!(f.occupant(&vec![1]), Some(r1));
+
+        // And the whole shape round-trips through serde (ids + next counter),
+        // so a restored frontier cannot re-mint a dead id either.
+        let json = serde_json::to_string(&f).expect("ser");
+        let mut back: Frontier = serde_json::from_str(&json).expect("de");
+        assert_eq!(f, back);
+        assert_eq!(back.insert(e(4)), ExemplarRef(4), "next id survives serde");
     }
 
     /// `FeatureSet` is canonically ordered and deduplicated.

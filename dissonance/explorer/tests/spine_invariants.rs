@@ -25,8 +25,9 @@ use std::rc::Rc;
 
 use common::{COVERAGE_LEN, ToyCodec, ToyMachine, config, fnv, pin_composition};
 use explorer::{
-    Answer, Composition, CoverageArchive, DecisionPoint, ExemplarRef, ExploreExploitSelector,
-    Explorer, IdentityCells, Machine, Prng, Tactic, TerminalOracle,
+    Answer, Archive, Composition, CoverageArchive, DecisionPoint, ExemplarRef,
+    ExploreExploitSelector, Explorer, Frontier, IdentityCells, Machine, Prng, StopConditions,
+    StopMask, Tactic, TerminalOracle,
 };
 use proptest::prelude::*;
 
@@ -281,4 +282,164 @@ fn rematerialized_state_hashes_identically_to_its_seal() {
 
     // And the cheap path: materializing again returns the cached seal.
     assert_eq!(ex.materialize(r).unwrap(), reseal);
+}
+
+// ---------------------------------------------------------------------------
+// Invariant 4b — the seal cache survives a COMPACTING Archive::evict
+// (the round-1 review's blocking finding: positional keying desyncs here)
+// ---------------------------------------------------------------------------
+
+/// A compacting archive: admits every sealable fork (each into its own fresh
+/// synthetic cell — one per admission, so the cell-bound invariant holds), and
+/// whose `evict` trims the frontier to its **single most-recent** entry. This
+/// is the frontier-renumbering shape tasks 68/70 will actually have, and the
+/// exact scenario under which a positionally-keyed seal cache would hand
+/// `materialize` a different exemplar's snapshot.
+struct CompactingArchive {
+    frontier: Frontier,
+    next_cell: u64,
+}
+
+impl CompactingArchive {
+    fn new() -> Self {
+        Self {
+            frontier: Frontier::new(),
+            next_cell: 0,
+        }
+    }
+}
+
+impl Archive for CompactingArchive {
+    fn admit(
+        &mut self,
+        _t: &explorer::RunTrace,
+        forks: &[explorer::Fork],
+        _cells: &dyn explorer::CellFn,
+        _sensors: &[Box<dyn explorer::Sensor>],
+    ) -> explorer::Reward {
+        let mut total = 0u64;
+        for fork in forks {
+            let cell = self.next_cell.to_le_bytes().to_vec();
+            self.next_cell += 1;
+            let r = self.frontier.insert(explorer::FrontierEntry {
+                exemplar: fork.exemplar.clone(),
+                env: fork.env.clone(),
+                reward: explorer::Reward { new_cells: 1 },
+            });
+            self.frontier.claim(cell, r);
+            total += 1;
+        }
+        explorer::Reward { new_cells: total }
+    }
+
+    fn admissible(&self, _at: explorer::Moment) -> bool {
+        true
+    }
+
+    /// Trim to the most-recent live entry — every older entry is evicted.
+    fn evict(&mut self) {
+        let refs: Vec<ExemplarRef> = self.frontier.iter().map(|(r, _)| r).collect();
+        for r in refs.iter().take(refs.len().saturating_sub(1)) {
+            self.frontier.remove(*r);
+        }
+    }
+
+    fn frontier(&self) -> &Frontier {
+        &self.frontier
+    }
+}
+
+/// A selector that always exploits the frontier's first live entry.
+struct FirstEntrySelector;
+
+impl explorer::Selector for FirstEntrySelector {
+    fn choose(&mut self, frontier: &Frontier, _rng: &mut Prng) -> Option<ExemplarRef> {
+        frontier.nth(0)
+    }
+    fn reward(&mut self, _chosen: ExemplarRef, _r: explorer::Reward) {}
+}
+
+/// Under a compacting `Archive::evict`, exemplar identity is stable: the
+/// survivor keeps its original ref (never renumbered onto an evicted slot),
+/// dead refs fail loudly (`UnknownExemplar`, never a wrong snapshot), evicted
+/// entries' seals are swept (no handle leak), and materializing the survivor
+/// yields exactly its own state — proven by hash against a from-genesis
+/// re-drive. A positionally-keyed seal cache fails the hash check here.
+#[test]
+fn compacting_eviction_never_desyncs_the_seal_cache() {
+    let parts = Composition {
+        tactic: Box::new(explorer::DeclineTactic::new()),
+        selector: Box::new(FirstEntrySelector),
+        archive: Box::new(CompactingArchive::new()),
+        oracle: Box::new(TerminalOracle::new()),
+        cells: Box::new(IdentityCells::new()),
+        sensors: Vec::new(),
+    };
+    let mut ex = Explorer::new(ToyMachine::new(), Box::new(ToyCodec), parts, 42).unwrap();
+    let genesis = ex.genesis();
+
+    // Step 1: the genesis run admits two entries (ids 0, 1); the compacting
+    // evict then trims to the most recent (id 1) and the engine sweeps id 0's
+    // orphaned seal.
+    ex.multiverse_step().unwrap();
+    assert_eq!(ex.frontier().len(), 1, "compaction trimmed to one entry");
+    let survivor = ex.frontier().iter().next().expect("one live entry").0;
+    assert_eq!(
+        survivor,
+        ExemplarRef(1),
+        "the survivor keeps its ORIGINAL stable id — eviction never renumbers"
+    );
+    assert_eq!(
+        ex.seal_of(ExemplarRef(0)),
+        None,
+        "the evicted entry's seal was swept, not left to alias"
+    );
+    // A dead ref fails loudly — never resolves to another entry's snapshot.
+    assert!(matches!(
+        ex.materialize(ExemplarRef(0)),
+        Err(explorer::MachineError::UnknownExemplar(0))
+    ));
+
+    // The survivor's materialization is provably ITS state: the seal's hash
+    // equals a from-genesis re-drive of the survivor's own env to its own
+    // moment. (Under positional keying, `materialize(survivor-at-position-0)`
+    // would have returned the evicted id-0 seal and this hash check fails.)
+    let (env, at) = {
+        let e = ex.frontier().get(survivor).expect("survivor entry");
+        (e.env.clone(), e.exemplar.at.0)
+    };
+    let seal = ex.materialize(survivor).unwrap();
+    ex.machine_mut().replay(seal).unwrap();
+    let sealed_hash = ex.machine_mut().hash().unwrap();
+    let until = StopConditions {
+        deadline: Some(explorer::VTime(at)),
+        on: StopMask::NONE,
+    };
+    ex.machine_mut().branch(genesis, &env).unwrap();
+    common::drive_to_terminal(ex.machine_mut(), &until, None).unwrap();
+    let genesis_hash = ex.machine_mut().hash().unwrap();
+    assert_eq!(
+        sealed_hash, genesis_hash,
+        "the survivor's seal is the survivor's state — never the evicted entry's"
+    );
+
+    // Handle accounting stays exact across the whole compacting campaign, and
+    // exploits keep working (a reused dropped handle would abort explore with
+    // UnknownSnapshot in the toy).
+    for _ in 0..12 {
+        ex.multiverse_step().unwrap();
+        let sealed = ex.sealed_count();
+        assert_eq!(
+            ex.machine_mut().live_snaps(),
+            1 + sealed,
+            "live snapshots = genesis + live seals (no leak, no dangle)"
+        );
+        // Every cached seal belongs to a LIVE entry.
+        let live: Vec<ExemplarRef> = ex.frontier().iter().map(|(r, _)| r).collect();
+        for r in live {
+            if let Some(s) = ex.seal_of(r) {
+                ex.machine_mut().replay(s).expect("live seals resolve");
+            }
+        }
+    }
 }

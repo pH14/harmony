@@ -107,7 +107,7 @@ pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut
 pub struct explorer::Environment
 pub explorer::Environment::blob_version: u16
 pub explorer::Environment::bytes: alloc::vec::Vec<u8>
-pub struct explorer::ExemplarRef(pub usize)
+pub struct explorer::ExemplarRef(pub u64)
 pub struct explorer::ExploreExploitSelector
 impl explorer::ExploreExploitSelector
 pub fn explorer::ExploreExploitSelector::new() -> Self
@@ -132,6 +132,7 @@ pub fn explorer::Explorer<M>::seal_of(&self, explorer::ExemplarRef) -> core::opt
 pub fn explorer::Explorer<M>::sealed_count(&self) -> usize
 pub fn explorer::Explorer<M>::set_stop_conditions(&mut self, explorer::StopConditions)
 pub fn explorer::Explorer<M>::stop_conditions(&self) -> &explorer::StopConditions
+pub fn explorer::Explorer<M>::sweep_dead_seals(&mut self) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Explorer<M>::timeline(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
 pub struct explorer::Feature
 pub explorer::Feature::channel: explorer::ChannelId
@@ -167,6 +168,7 @@ pub fn explorer::Frontier::nth(&self, u64) -> core::option::Option<explorer::Exe
 pub fn explorer::Frontier::occupant(&self, &explorer::CellKey) -> core::option::Option<explorer::ExemplarRef>
 pub fn explorer::Frontier::occupied_cells(&self) -> usize
 pub fn explorer::Frontier::occupy(&mut self, explorer::CellKey, explorer::ExemplarRef) -> core::option::Option<explorer::ExemplarRef>
+pub fn explorer::Frontier::remove(&mut self, explorer::ExemplarRef) -> core::option::Option<explorer::FrontierEntry>
 pub struct explorer::FrontierEntry
 pub explorer::FrontierEntry::env: explorer::Environment
 pub explorer::FrontierEntry::exemplar: explorer::VirtualExemplar
@@ -190,6 +192,8 @@ pub struct explorer::Prng
 impl explorer::Prng
 pub fn explorer::Prng::new(u64) -> Self
 pub fn explorer::Prng::next_u64(&mut self) -> u64
+impl<'de> serde_core::de::Deserialize<'de> for explorer::Prng
+pub fn explorer::Prng::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub struct explorer::Record
 pub explorer::Record::attrs: alloc::collections::btree::map::BTreeMap<alloc::string::String, explorer::Value>
 pub explorer::Record::kind: alloc::string::String

@@ -52,6 +52,29 @@ suffix-only fast path (`branch(parent)` + replay ≪ genesis) is the frontier
 task's box-gated mechanism (acceptance gate 4, explicitly deferred); `parent`
 is recorded now so that task needs zero spine change.
 
+**Exemplar identity is stable across eviction (round-1 review, blocking #1).**
+`ExemplarRef` is a monotonic id minted by `Frontier::insert`, never reused and
+never renumbered; `Frontier::remove` is the eviction primitive (cell claims
+deliberately outlive their occupant — novelty never resets). The seal cache is
+keyed by that id, so a compacting `Archive::evict` (the tasks-68/70 shape) can
+never re-point a seal at a different exemplar: a dead ref stops resolving
+(`materialize` fails loudly with `UnknownExemplar`, never a wrong snapshot) and
+the engine sweeps orphaned seals after every `evict`
+(`Explorer::sweep_dead_seals`). Gated by
+`spine_invariants::compacting_eviction_never_desyncs_the_seal_cache` (a
+compacting mock archive: survivor keeps its original id, dead refs error, the
+survivor's seal hash-matches a from-genesis re-drive, handle accounting exact
+across a 12-step compacting campaign) plus the
+`frontier_removal_keeps_identities_stable` unit pin (ids stable, never reused,
+serde round-trip preserves the id counter).
+
+**`Prng` deserialization funnels through `new` (round-1 review, blocking #2).**
+xorshift64\* has one absorbing state — zero — which `Prng::new` makes
+unreachable; a derived `Deserialize` would let an untrusted `{"state":0}` blob
+restore it (every draw 0 forever). The hand-written deserializer normalizes
+through `new` (zero remaps to the fallback exactly as seeding does), gated by a
+zero-payload test and a mid-stream round-trip test.
+
 ## Gates (all green, macOS)
 
 - Standard suite: `cargo build/nextest/clippy(-D warnings, --all-targets)/fmt

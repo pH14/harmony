@@ -123,9 +123,13 @@ pub struct Explorer<M: Machine> {
     /// single slot) so a Timeline that forks more than once admits/drops
     /// *every* fork and never leaks a backend handle.
     pending_forks: Vec<PendingFork>,
-    /// The materialization cache: frontier entry index → live seal. Never a
+    /// The materialization cache: **stable** frontier id ([`ExemplarRef`]) →
+    /// live seal. Keyed by identity, not position, so an [`Archive::evict`]
+    /// that compacts the frontier can never re-point a seal at a different
+    /// exemplar — a dead id's seal is merely orphaned, and
+    /// [`sweep_dead_seals`](Explorer::sweep_dead_seals) releases it. Never a
     /// correctness surface — see [`evict_seals`](Explorer::evict_seals).
-    seals: BTreeMap<usize, SnapId>,
+    seals: BTreeMap<u64, SnapId>,
 }
 
 impl<M: Machine> Explorer<M> {
@@ -324,9 +328,9 @@ impl<M: Machine> Explorer<M> {
             Some(r) => {
                 let entry_env = match self.archive.frontier().get(r) {
                     Some(entry) => entry.env.clone(),
-                    // A stale/foreign reference is engine misuse by the
+                    // A dead/foreign reference is policy misuse by the
                     // selector — surfaced loudly, never papered over.
-                    None => return Err(MachineError::UnknownExemplar(r.0 as u64)),
+                    None => return Err(MachineError::UnknownExemplar(r.0)),
                 };
                 let salt = self.rng.next_u64();
                 let env = self.codec.mutate(&entry_env, salt);
@@ -382,32 +386,42 @@ impl<M: Machine> Explorer<M> {
         // 5. Timeline admission. The archive appends the forks it admits to the
         //    frontier in fork order (a subsequence); walk the forks against the
         //    new entries in lockstep — a fork matching the next unclaimed entry
-        //    keeps its seal there, any other fork's seal is dropped. An archive
-        //    that appended something that is *not* the next fork (a foreign
-        //    entry) simply gets no seal and re-materializes on first exploit —
-        //    robust, never a leak, never a mis-assignment.
+        //    keeps its seal under that entry's **stable id**, any other fork's
+        //    seal is dropped. An archive that appended something that is *not*
+        //    the next fork (a foreign entry) simply gets no seal and
+        //    re-materializes on first exploit — robust, never a leak, never a
+        //    mis-assignment.
         let before = self.archive.frontier().len();
         let reward = self
             .archive
             .admit(&trace, &forks, self.cells.as_ref(), &self.sensors);
-        let mut idx = before;
+        let new_entries: Vec<(ExemplarRef, VirtualExemplar)> = self
+            .archive
+            .frontier()
+            .iter()
+            .skip(before)
+            .map(|(r, e)| (r, e.exemplar.clone()))
+            .collect();
+        let mut ni = 0usize;
         for (fork, seal) in forks.iter().zip(fork_seals) {
-            let admitted = self
-                .archive
-                .frontier()
-                .get(ExemplarRef(idx))
-                .is_some_and(|entry| entry.exemplar == fork.exemplar);
+            let admitted = new_entries
+                .get(ni)
+                .is_some_and(|(_, exemplar)| *exemplar == fork.exemplar);
             if admitted {
-                self.seals.insert(idx, seal);
-                idx += 1;
+                self.seals.insert(new_entries[ni].0.0, seal);
+                ni += 1;
             } else {
                 self.machine.drop_snap(seal)?;
             }
         }
 
         // 6. Retention policy (reproducibility-safe; a no-op for the default
-        //    archive) and the selector's reward hook.
+        //    archive), then sweep the seals of anything it evicted — a stable
+        //    id can never be re-minted, so a dead ref's seal is provably
+        //    orphaned and its handle is released here rather than leaked. The
+        //    selector's reward hook runs last.
         self.archive.evict();
+        self.sweep_dead_seals()?;
         if let Some(r) = choice {
             self.selector.reward(r, reward);
         }
@@ -433,22 +447,28 @@ impl<M: Machine> Explorer<M> {
         Ok(bugs)
     }
 
-    /// The seal materializing frontier entry `r`, minting one if needed. A live
-    /// seal is returned as-is (the cheap path — the seal minted eagerly at the
-    /// fork, or by a previous re-materialization). Otherwise the state is
-    /// **re-materialized from genesis**: `branch(genesis, entry.env)` replayed
-    /// to `exemplar.at` under [`StopMask::NONE`] — a pinned replay (recorded
-    /// overrides pin what the run answered; the seed answers the rest; nothing
-    /// surfaces) — then sealed. Determinism makes the result identical to the
-    /// evicted seal, which is why eviction is never a correctness concern.
+    /// The seal materializing frontier entry `r`, minting one if needed. `r`
+    /// must be **live** — a dead (evicted) or foreign ref fails loudly with
+    /// [`MachineError::UnknownExemplar`], never a wrong snapshot (stable ids
+    /// make aliasing impossible; see [`ExemplarRef`]). A live seal is returned
+    /// as-is (the cheap path — the seal minted eagerly at the fork, or by a
+    /// previous re-materialization). Otherwise the state is **re-materialized
+    /// from genesis**: `branch(genesis, entry.env)` replayed to `exemplar.at`
+    /// under [`StopMask::NONE`] — a pinned replay (recorded overrides pin what
+    /// the run answered; the seed answers the rest; nothing surfaces) — then
+    /// sealed. Determinism makes the result identical to the evicted seal,
+    /// which is why eviction is never a correctness concern.
     pub fn materialize(&mut self, r: ExemplarRef) -> Result<SnapId, MachineError> {
+        // Resolve the entry FIRST: a dead ref must error even if a stale seal
+        // lingers (it cannot linger past the post-evict sweep, but the order
+        // makes the guarantee locally evident).
+        let (env, at) = match self.archive.frontier().get(r) {
+            Some(entry) => (entry.env.clone(), entry.exemplar.at),
+            None => return Err(MachineError::UnknownExemplar(r.0)),
+        };
         if let Some(&seal) = self.seals.get(&r.0) {
             return Ok(seal);
         }
-        let (env, at) = match self.archive.frontier().get(r) {
-            Some(entry) => (entry.env.clone(), entry.exemplar.at),
-            None => return Err(MachineError::UnknownExemplar(r.0 as u64)),
-        };
         self.machine.branch(self.genesis, &env)?;
         let until = StopConditions {
             deadline: Some(VTime(at.0)),
@@ -464,5 +484,25 @@ impl<M: Machine> Explorer<M> {
         let seal = self.machine.snapshot()?;
         self.seals.insert(r.0, seal);
         Ok(seal)
+    }
+
+    /// Release the seal of every frontier id that is no longer live (its entry
+    /// was evicted by the archive). Ids are never reused, so an unresolvable
+    /// id's seal is provably orphaned; dropping it is pure GC. Called after
+    /// every [`Archive::evict`]; public so a custom driver interleaving its
+    /// own eviction can GC at the same point.
+    pub fn sweep_dead_seals(&mut self) -> Result<(), MachineError> {
+        let dead: Vec<u64> = self
+            .seals
+            .keys()
+            .copied()
+            .filter(|&id| self.archive.frontier().get(ExemplarRef(id)).is_none())
+            .collect();
+        for id in dead {
+            if let Some(seal) = self.seals.remove(&id) {
+                self.machine.drop_snap(seal)?;
+            }
+        }
+        Ok(())
     }
 }
