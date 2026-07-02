@@ -226,39 +226,56 @@ policies — the store is write-only to the loop.
   run into a directly-replayable genesis artifact.
 - Stamps are stop-granular until the `telemetry::Observer` per-exit wiring lands.
 
-## Box gate (gate 6) — handed to the foreman
+## Box gate (gate 6) — PASSED on the determinism box (2026-07-02)
 
-I could not run the box from this worktree. The box path is **wired and
-type-checks for Linux** (`cargo check -p conductor --target
-x86_64-unknown-linux-gnu` — Finished), and its portable analog (the mock
-recording gate) is green. To run the one box gate:
+Ran on `hypervizor` (det-cfl-v1 host, patched KVM), head `44d3f14`, CPU-pinned to
+the coordinator-leased **core 2** via `scripts/box-window.sh`:
 
 ```sh
-# On the determinism box, per docs/BOX-PINNING.md (assigned core, patched KVM):
 taskset -c 2 cargo run -p conductor --release -- box \
-    --seeds 8 --runs 2 --record /tmp/runtrace-box --retain interesting
+    --seeds 8 --runs 2 --record /root/runtrace-box --retain interesting
 ```
 
-Expected (the binary asserts these and prints `box RECORDING GATES PASS`):
-per-seed byte-identical serialized RunTraces (same `TraceId`, identical journal
-bytes); ≥2 distinct `TraceId`s across seeds; `records` non-empty and stamps
-monotone; every trace reloads losslessly. The **readiness banner** is confirmed
-present by the boot drive (`drive_to_marker` only returns Ok once
-`database system is ready to accept connections` is seen) *before* recording
-starts.
+**Verdict:** `box RECORDING GATES PASS` (rc=0). Postgres booted to the readiness
+banner (`database system is ready to accept connections`, step 98985); the base
+snapshot sealed mid-workload at V-time 442905523; 8 seeds × 2 runs recorded.
 
-**To finish the gate**, commit a trimmed real-guest slice as the portable
-fixture: `cp` one `.trace` from `/tmp/runtrace-box` to
-`dissonance/runtrace/tests/fixtures/real_guest_slice.trace` (trim if large); the
-already-committed `runtrace::fixtures_mod::real_guest_slice_decodes_and_rederives_when_present`
-test will then decode + re-derive over it (it skips loudly until then). Paste the
-`render_record_table` output into the "Box run table" section below.
+- **Per-seed determinism (guest state):** each seed's two runs share one
+  `state_hash` **and** one `TraceId` **and** byte-identical 3116-byte journal.
+- **Cross-seed divergence (strong):** all **8** `state_hash`es distinct — real
+  guest-state divergence, not just env labels (the round-6 fix; `state_hash` is
+  the same primitive the task-58 sweep gates on).
+- `records` = 34 per run (non-empty), stamps monotone, every trace reloads
+  losslessly (`verify_store_reload` clean), readiness banner present.
 
-**Box-safety (CRITICAL, per the spec):** stock KVM = **1396736**. After *any*
-patched run: `pkill -9 -f conductor` → wait `lsmod | grep '^kvm_intel'` users=0
-→ `rmmod kvm_intel kvm; modprobe kvm; modprobe kvm_intel` → verify size 1396736
-on a **fresh** ssh connection. SSH exit-255 on pkill/rmmod is normal — reconnect
-and verify.
+**Box-safety:** the window coordinator reverted to stock on release
+(`REVERT OK`), and KVM was independently confirmed stock **1396736** (kvm_intel
+users=0, no leases) on a **fresh** ssh connection after the run.
+
+### Box run table
+
+```
+base snapshot sealed at V-time 442905523
+seed                 run  stop                  recs journal retain state_hash    trace_id
+0x9e1fb946911491d5   0    Crash@463031443[65B]   34   3116   full   643789026c6c  ff0c5b2d4235
+0x9e1fb946911491d5   1    Crash@463031443[65B]   34   3116   full   643789026c6c  ff0c5b2d4235
+0x3c46338d10ca15ea   0    Crash@463031443[65B]   34   3116   full   bb3e5b4d3853  c80631024ec5
+0x3c46338d10ca15ea   1    Crash@463031443[65B]   34   3116   full   bb3e5b4d3853  c80631024ec5
+0xda8eadd3938199ff   0/1  Crash@463031443[65B]   34   3116   full   b90384b46c10  130687b93852
+0x78f5261a13771d94   0/1  Crash@463031443[65B]   34   3116   full   ccae2fdf2899  61e7465528a5
+0x173da060922a81a9   0/1  Crash@463031443[65B]   34   3116   full   5dc1d1459983  04cd2bd897c8
+0xb5641aa715e005be   0/1  Crash@463031443[65B]   34   3116   full   711adf8a69ff  6d16ecdea7b5
+0x53ac94ed95578953   0/1  Crash@463031443[65B]   34   3116   full   a337632b74d2  cc841f4a1efc
+0xf1930d34140d0d68   0/1  Crash@463031443[65B]   34   3116   full   2cbf688c615f  f4b3baa2e225
+```
+
+(The Postgres image terminates by convention via `reboot -f`, which the
+workload-blind server maps to `Crash{Shutdown}` — interpreting that convention is
+the caller's job, per `control.rs`.) One trimmed 3116-byte journal from this run
+is committed as `tests/fixtures/real_guest_slice.trace`; the
+`real_guest_slice_decodes_and_rederives` test decodes it, re-encodes canonically,
+and re-derives ≥1 feature (marker `database system is shut down`, present in the
+post-snapshot console — the readiness banner is pre-snapshot).
 
 ### Mock run table (portable analog, laptop — `conductor mock --record`)
 
@@ -267,13 +284,8 @@ base snapshot sealed at V-time 100
 seed                 run  stop            recs journal  retain   trace_id (head)
 0x9e1fb946911491d5   0    Quiescent@400    1     146    env      1c5964040f27080d…
 0x9e1fb946911491d5   1    Quiescent@400    1     146    env      1c5964040f27080d…   (== run 0)
-0x3c46338d10ca15ea   0    Quiescent@400    1     146    env      382a287f0cbc3bbd…
-…4 seeds × 2 runs → 4 distinct TraceIds, per-seed byte-identical, records non-empty.
+…4 seeds × 2 runs → 4 distinct state_hashes, per-seed byte-identical, records non-empty.
 ```
-
-### Box run table (fill in from the box run)
-
-_(pending the foreman's box run)_
 
 ## Regeneration procedures
 
@@ -295,4 +307,4 @@ _(pending the foreman's box run)_
 | 3. Roundtrip proptests + re-derive sensor stability (encode/decode + store) | ✅ (512 cases) |
 | 4. Version-bump: byte-pinned golden + loud `TraceError::Version` | ✅ |
 | 5. Store discipline (env-only ⇒ 0 journals, all listable/loadable; knob never changes the report) | ✅ |
-| 6. Box gate (live population + byte-stability) | ⏳ wired + Linux-checked; handed to the foreman |
+| 6. Box gate (live population + byte-stability + guest-state determinism) | ✅ PASSED on `hypervizor` (patched KVM, det-cfl-v1), head `44d3f14`, core 2; reverted to stock + verified |

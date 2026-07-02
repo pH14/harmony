@@ -58,13 +58,12 @@ fn mock_recording_decodes_reencodes_and_rederives() {
 }
 
 #[test]
-fn real_guest_slice_decodes_and_rederives_when_present() {
-    let Ok(bytes) = std::fs::read(REAL) else {
-        eprintln!(
-            "SKIP: real_guest_slice.trace absent — committed by the box gate (task 65 gate 6)"
-        );
-        return;
-    };
+fn real_guest_slice_decodes_and_rederives() {
+    // A real Postgres `RunTrace` recorded by the task-65 **box gate** (gate 6) on
+    // the determinism box (patched KVM, det-cfl-v1 host) — committed now, so this
+    // is no longer skippable (the round-2 deferral is closed).
+    let bytes =
+        std::fs::read(REAL).expect("real_guest_slice.trace — committed by the box gate (gate 6)");
     let trace = decode(&bytes).expect("real-guest slice decodes");
     assert_eq!(
         encode(&trace).expect("fixture trace encodes"),
@@ -75,8 +74,18 @@ fn real_guest_slice_decodes_and_rederives_when_present() {
         !trace.records.is_empty(),
         "the real-guest slice has console records"
     );
-    // Re-derive with the readiness-banner marker (present in a Postgres console).
-    let sensor = MarkerSensor::new(b"database system is ready to accept connections");
+
+    // Re-derive must be **non-vacuous**: the marker is a Postgres lifecycle line
+    // actually present in the recorded (post-snapshot) console. The readiness
+    // banner itself is *pre*-snapshot (confirmed present by the box gate's boot
+    // drive), so a branched run's console is the workload + shutdown sequence.
+    let sensor = MarkerSensor::new(b"database system is shut down");
+    let features = sensor.observe(&trace);
+    assert!(
+        !features.is_empty(),
+        "the marker sensor must find >= 1 feature (non-vacuous re-derive)"
+    );
+    // And re-derivation is stable across a decode round-trip.
     let reloaded = decode(&encode(&trace).expect("fixture trace encodes")).unwrap();
-    assert_eq!(sensor.observe(&reloaded), sensor.observe(&trace));
+    assert_eq!(sensor.observe(&reloaded), features);
 }

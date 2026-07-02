@@ -159,9 +159,9 @@ fn finish_recording(
     failures.extend(verify_store_reload(store, report));
     if failures.is_empty() {
         println!(
-            "\n[conductor] {mode} RECORDING GATES PASS: per-seed byte-identical RunTraces, \
-             >= {min_distinct} distinct TraceIds, non-empty monotone records, lossless reload. \
-             Traces under {}",
+            "\n[conductor] {mode} RECORDING GATES PASS: per-seed determinism (state_hash + \
+             byte-identical journal), >= {min_distinct} distinct guest state_hashes, non-empty \
+             monotone records, lossless reload. Traces under {}",
             dir.display()
         );
         ExitCode::SUCCESS
