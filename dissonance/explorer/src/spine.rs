@@ -710,7 +710,15 @@ mod tests {
         assert!(s.insert(f2));
         assert!(!s.insert(f1), "duplicates are refused");
         assert_eq!(s.len(), 2);
+        assert!(!s.is_empty(), "a filled slice is not empty");
         assert!(s.contains(&f1));
+        assert!(
+            !s.contains(&Feature {
+                channel: ChannelId(9),
+                id: FeatureId(9),
+            }),
+            "absent features are not contained"
+        );
         let order: Vec<u64> = s.iter().map(|f| f.id.0).collect();
         assert_eq!(order, vec![1, 9], "iteration is sorted, not insertion");
         assert_eq!(FeatureSet::singleton(f1).len(), 1);

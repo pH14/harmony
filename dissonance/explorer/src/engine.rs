@@ -379,34 +379,29 @@ impl<M: Machine> Explorer<M> {
             fork_seals.push(p.seal);
         }
 
-        // 5. Timeline admission. The archive appends admitted exemplars to the
-        //    frontier; pair each new entry back to its fork (admission preserves
-        //    fork order) to keep its seal, and drop every seal not admitted.
+        // 5. Timeline admission. The archive appends the forks it admits to the
+        //    frontier in fork order (a subsequence); walk the forks against the
+        //    new entries in lockstep — a fork matching the next unclaimed entry
+        //    keeps its seal there, any other fork's seal is dropped. An archive
+        //    that appended something that is *not* the next fork (a foreign
+        //    entry) simply gets no seal and re-materializes on first exploit —
+        //    robust, never a leak, never a mis-assignment.
         let before = self.archive.frontier().len();
         let reward = self
             .archive
             .admit(&trace, &forks, self.cells.as_ref(), &self.sensors);
-        let mut keep: BTreeMap<usize, SnapId> = BTreeMap::new();
-        {
-            let frontier = self.archive.frontier();
-            let mut fi = 0usize;
-            for idx in before..frontier.len() {
-                let Some(entry) = frontier.get(ExemplarRef(idx)) else {
-                    break;
-                };
-                while fi < forks.len() && forks[fi].exemplar != entry.exemplar {
-                    fi += 1;
-                }
-                if fi < forks.len() {
-                    keep.insert(fi, fork_seals[fi]);
-                    self.seals.insert(idx, fork_seals[fi]);
-                    fi += 1;
-                }
-            }
-        }
-        for (i, seal) in fork_seals.iter().enumerate() {
-            if !keep.contains_key(&i) {
-                self.machine.drop_snap(*seal)?;
+        let mut idx = before;
+        for (fork, seal) in forks.iter().zip(fork_seals) {
+            let admitted = self
+                .archive
+                .frontier()
+                .get(ExemplarRef(idx))
+                .is_some_and(|entry| entry.exemplar == fork.exemplar);
+            if admitted {
+                self.seals.insert(idx, seal);
+                idx += 1;
+            } else {
+                self.machine.drop_snap(seal)?;
             }
         }
 

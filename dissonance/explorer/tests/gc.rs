@@ -11,7 +11,7 @@
 mod common;
 
 use common::{ToyCodec, ToyMachine, pin_composition};
-use explorer::{Explorer, MachineError, StopConditions, StopMask};
+use explorer::{Explorer, Machine, MachineError, StopConditions, StopMask};
 
 /// Seal accounting: live backend handles are exactly genesis + the admitted
 /// entries' seals; every non-admitted fork seal was dropped; and evicting all
@@ -58,6 +58,40 @@ fn seal_lifecycle_never_leaks_a_handle() {
     // return UnknownSnapshot and abort explore if one were reused).
     ex.explore(60)
         .expect("re-materialization never reuses a dropped handle");
+}
+
+/// Seal pairing is positional and exact: the first step admits an exemplar at
+/// each of the two fork moments, and each entry holds its **own** fork's seal
+/// (distinct, live handles) — pins the admit-pairing walk (a stuck or skewed
+/// index would leave the second entry sealless or share one seal).
+#[test]
+fn each_admitted_entry_keeps_its_own_fork_seal() {
+    let mut ex =
+        Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 7).unwrap();
+    ex.multiverse_step().unwrap();
+    assert_eq!(ex.frontier().len(), 2, "one genesis run admits both forks");
+
+    let s0 = ex
+        .seal_of(explorer::ExemplarRef(0))
+        .expect("entry 0 keeps its fork seal");
+    let s1 = ex
+        .seal_of(explorer::ExemplarRef(1))
+        .expect("entry 1 keeps its fork seal");
+    assert_ne!(s0, s1, "each entry holds its own seal");
+    assert_eq!(ex.sealed_count(), 2);
+
+    // And they are the right states: each seal replays to its exemplar's `at`.
+    for (r, seal) in [
+        (explorer::ExemplarRef(0), s0),
+        (explorer::ExemplarRef(1), s1),
+    ] {
+        let at = ex.frontier().get(r).unwrap().exemplar.at.0;
+        ex.machine_mut().replay(seal).unwrap();
+        // The toy's answer-log length is its V-time / VTIME_STEP; hash equality
+        // with a genesis re-drive is gated in replay.rs — here the cheap pin:
+        // replaying a live seal succeeds (it was not dropped or swapped).
+        assert!(at > 0);
+    }
 }
 
 /// A `recorded_env` failure *after* the `SnapshotPoint` seal already succeeded

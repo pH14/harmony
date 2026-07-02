@@ -1,219 +1,228 @@
 # explorer — implementation notes
 
-The Timeline/Multiverse coverage-guided exploration engine (task 12) — **all of
-dissonance policy**: the corpus, novelty scoring, per-run decision policy, and the
-mutation/scheduling strategy. Pure logic: no `/dev/kvm`, no guest, no socket, no
-wall-clock, no host entropy, no sibling-crate dependencies. Builds and passes every
-gate on macOS and Linux. No `unsafe`, so no Miri obligation.
+Task 12 (the Timeline/Multiverse engine) plus **task 64: the search-plane trait
+spine + Progression refactor** — the Wave-5 keystone contract. Pure logic: no
+`/dev/kvm`, no guest, no socket, no wall-clock, no host entropy, no
+sibling-crate dependencies. Builds and passes every gate on macOS and Linux. No
+`unsafe`, so no Miri obligation.
 
-## What was built
+## What task 64 built
 
-- The public API exactly as the spec lists it: the data types (`SnapId`, `VTime`,
-  `Environment`, `Answer`, `StopConditions`, `StopMask`, `StopReason`, `CovScore`,
-  `RunOutcome`, `Bug`), the locally-defined driver/minting seams (`Machine`,
-  `MachineFactory`, `EnvCodec`), the policy seam (`Strategy` + `SeedStrategy`,
-  `CoverageStrategy`), the `Corpus`, the `Explorer` engine (`new`/`timeline`/
-  `multiverse_step`/`explore`), and `MachineError`.
-- The two loops. **Timeline** (`Explorer::timeline`) drives one run `run` ⇄
-  `run(resolve)`, answering each surfaced `Decision` via `Strategy::choose` and
-  accumulating the reproducer `Environment` (`Machine::recorded_env`); at each
-  `SnapshotPoint` it captures the snapshot **with the prefix env + coverage as of
-  that fork** (not the whole-run env — see the design note below). **Multiverse**
-  (`multiverse_step`) picks/mutates an environment, branches, runs one Timeline,
-  scores novelty, admits every forked snapshot if novel (issuing `drop_snap` for
-  the non-novel and the evicted), and rebases any `Bug` to genesis before
-  reporting.
-- The in-crate deterministic **toy machine** + **toy codec** (`tests/common`), the
-  stand-in for the production R2-socket adapter + `environment` codec. Because the
-  engine only ever sees the `Machine`/`EnvCodec` seams (conventions rule 2), every
-  property the gates prove is a property of the engine, not of the toy.
+- **`src/spine.rs` — the contract** (crate-root re-exports, conventions rule 2:
+  interfaces live in the consumer). The serializable vocabulary — `RunTrace`,
+  `Feature`/`FeatureSet`/`ChannelId`/`FeatureId`, `CellKey`, `VirtualExemplar`,
+  `Bug`, `Fork`, `CoverageView`, `GuestEvent`/`Record`/`Value`, `Moment`,
+  `Reward`, `Frontier`/`FrontierEntry`/`ExemplarRef`, `DecisionPoint` — and the
+  traits: `Sensor`/`CellFn`/`Oracle` (replay plane, pure per run),
+  `Archive`/`Selector` (replay plane, stateful folds), `Tactic` (live plane,
+  open-loop), `Matchable` (task 66's record adapter). Everything a later
+  signal/search/oracle task implements is defined here.
+- **`src/defaults.rs` — the behavior-equivalence defaults**, the pre-refactor
+  god-object decomposed: `DeclineTactic` + `GenesisSelector` (`SeedStrategy`'s
+  two halves), `ExploreExploitSelector` (`CoverageStrategy::next_env`,
+  draw-for-draw), `CoverageArchive` over `IdentityCells` (the `Corpus`'s AFL
+  fresh-pair rule generalized to first-wins cells, with the injected
+  `sealable(Moment)` predicate defaulting always-true until task 63 rules),
+  `TerminalOracle` (`is_bug` as a plugin; same golden `sha2` fingerprint). No
+  new search cleverness (task-64 non-goal).
+- **`src/engine.rs` — the refactored engine.** `Explorer<M>` over a
+  `Composition { tactic, selector, archive, oracle, cells, sensors }` and one
+  campaign `Prng`. The Selector picks a frontier exemplar (or `None` =
+  genesis); the engine materializes it, mints the next env through `EnvCodec`,
+  runs one Timeline (the Tactic answering open-loop), rebases the run to
+  genesis-complete (task-93 `compose`), folds it into the Archive (timeline
+  admission over the run's `Fork`s), rewards the selector, and returns the
+  Oracle's verdict. `Strategy`/`SeedStrategy`/`CoverageStrategy`/`Corpus`/
+  `CovScore` are deleted; `Prng` is public (it is in `Tactic`'s signature).
 
-### Module layout
+### The exemplar/seal split (how `Corpus` became `Archive`)
 
-`error.rs` (the `MachineError` enum) · `seam.rs` (the `Machine`/`MachineFactory`/
-`EnvCodec` traits) · `strategy.rs` (`Strategy` + the two strategies, driven by a
-local xorshift64\* PRNG) · `corpus.rs` (the `Corpus` + the `BTreeSet` novelty
-index + eviction) · `engine.rs` (the `Explorer`, `RunOutcome`, `Bug`, and the
-`sha2` bug fingerprint) · `prng.rs` (the xorshift64\* generator).
+A frontier entry is now a **parent-rooted `VirtualExemplar`** `(parent SnapId,
+seed, suffix, at)` plus its memoized genesis-complete env (the suffix-chain
+fold, computed by the engine at admission — the schema-blind archive never
+composes). The expensive half — a live snapshot — is a separate, engine-side
+**seal** cache: minted eagerly at each fork (exactly where task 12 snapshotted,
+which is what keeps the refactor behavior-preserving), re-minted on demand.
+`Explorer::evict_seals` drops every seal; frontier entries survive, and a later
+exploit **re-materializes from genesis** (`branch(genesis, entry.env)` replayed
+to `exemplar.at` under `StopMask::NONE` — a pinned replay, nothing surfaces).
+Determinism makes the re-materialized state hash-identical to the evicted seal
+(gated), so retention is a pure performance knob — spine invariant 4. The
+suffix-only fast path (`branch(parent)` + replay ≪ genesis) is the frontier
+task's box-gated mechanism (acceptance gate 4, explicitly deferred); `parent`
+is recorded now so that task needs zero spine change.
 
-## Key design decisions
+## Gates (all green, macOS)
 
-- **The explorer is schema-blind; mutation lives here, never in the wire.** The
-  engine ferries an opaque `Environment { blob_version, bytes }` and only ever
-  mints/mutates/composes it through the `EnvCodec` seam. Task 24 owns the blob
-  structure; the engine never parses it. This is the AFL lesson and what lets the
-  control plane stay fixed independently of the fault catalog.
+- Standard suite: `cargo build/nextest/clippy(-D warnings, --all-targets)/fmt
+  -p explorer --all-features`, `cargo deny check`. 56 tests + 22 unit tests,
+  suite ≈ 0.8 s. (Clippy still surfaces the three *pre-existing* workspace
+  `clippy.toml` meta-diagnostics about `rand::*` paths pulled in by proptest;
+  they cite no code here and do not fail `-D warnings`.)
+- **Decomposition proptests** (`tests/spine_invariants.rs`, ≥256 cases each):
+  - *Open-loop Tactic* — a recording tactic logs `(point, stream-state,
+    answer)` inside a live campaign; replaying the log through a fresh
+    instance, with a **different** campaign running between decisions,
+    reproduces every answer. Structurally the engine hands a tactic nothing
+    else — `decide(state, point, rng)` has no coverage/archive parameter.
+  - *Timeline admission bounds the archive by cells* — entries ≤ occupied
+    cells ≤ the toy's cell space, at 1× and 4× the run count; plus the
+    one-run-many-exemplars witness (a single step admits at both fork
+    moments).
+  - *Eviction is reproducibility-safe* — a campaign evicting every seal after
+    every step yields byte-identical bugs and admissions to one that never
+    evicts; plus the direct witness (seal hash == re-materialized hash).
+- **Behavior-equivalence gate** (`tests/behavior_equiv.rs`): 50 campaigns ×
+  the *unchanged* toy machine against the **vendored pre-refactor engine**
+  (`tests/reference/mod.rs`, the task-12 code frozen verbatim) — byte-identical
+  bug fingerprints, bug reproducers, and admission decisions (envs + scores),
+  across seed campaigns (`StopMask::ALL`, declined decisions) and full
+  explore/exploit campaigns (`SNAP_BIT` only: salt-picked exploits, mutation
+  minting, nested forks, compose rebasing). Draw-for-draw stream equality —
+  the defaults are composed on one campaign `Prng` exactly as the old
+  `Strategy` owned one.
+- The task-12 gates carry over re-stated: determinism (≥256), Timeline replay +
+  the task-93 `compose_rebase_replays_from_genesis` property (≥256), novelty
+  order-stability (≥256), two error categories, seal GC/no-leak, nested-fork
+  genesis-completeness pins, artifact equivalence across tactics.
+- **Contract-only, deferred (box):** acceptance gate 4 — deep-exemplar
+  materialization replaying only the suffix and surviving ancestor eviction —
+  belongs to the frontier materialization task (68) per the spec's Environment
+  section; nothing here runs on the box.
+- Mutation testing: `cargo mutants --in-diff` over this branch's diff —
+  see the bottom of this file.
 
-- **Genesis-complete vs branch-local reproducers, and why `compose` exists.**
-  `Machine::recorded_env` returns a *branch-local* env: overrides keyed by
-  decision index *since the last branch*. A run branched off a non-genesis corpus
-  snapshot therefore yields an env that is ambiguous on its own (a different base
-  would mis-key the overrides). On report, the explorer rebases it to genesis with
-  `EnvCodec::compose(corpus_base_env, branch_local)`, re-indexing the delta onto
-  the end of the genesis-complete base. The corpus stores only genesis-complete
-  base envs (they are admitted only from genesis runs), so the compose base is
-  always genesis-complete — verified by `tests/replay.rs`.
+## Deviations from the spec's sketch (all documented in-code)
 
-- **The toy proves the recompose end-to-end.** The toy's seed answer is a pure
-  function of the *absolute* decision index, so a decision is answered identically
-  whether it is reached from genesis or resumed from a mid-run branch. That is the
-  exact property a real backing needs for a branch-local reproducer to recompose
-  to a genesis-replayable one, and it is what makes the toy a faithful stand-in
-  rather than a rigged one. The production `RecordedEnv` (task 24) already has this
-  shape (a seed plus sparse overrides). The toy codec also keeps the base seed
-  when mutating a corpus entry (only an override changes), so the single genesis
-  seed reproduces both the frozen prefix and the new suffix consistently.
-
-- **A snapshot is paired with its *prefix* reproducer, not the whole run.** A
-  `SnapshotPoint` fork is captured together with `recorded_env`/`coverage` taken
-  *at that point* (the prefix that produced the snapshot), and that triple is what
-  the corpus admits. Admitting the terminal env instead would store overrides for
-  decisions taken *after* the fork, which a later `branch(snap, …)` or a `Bug`
-  rebased via `compose(base, branch_local)` would mis-key against the snapshot's
-  decision-index origin — breaking genesis replay. Pending snapshots are held in a
-  `Vec` and *all* admitted/dropped, so a Timeline that forks more than once never
-  leaks a backend handle. (`tests/replay.rs::bug_below_a_continued_snapshot_…`
-  guards both; it fails if the terminal env is admitted.)
-
-- **Every corpus entry is genesis-complete by induction.** A snapshot forked below
-  a *non-genesis* corpus base is captured branch-local to *that* base; before
-  admitting it `multiverse_step` rebases it through the base's own
-  genesis-complete env (`compose(base_env, prefix)`), exactly as `report` rebases a
-  bug — so a nested snapshot's corpus entry is genesis-complete just like a
-  first-generation one, and a child mutation or bug found below it keys from the
-  right origin. The base env is captured *before* the admit loop, which may evict
-  it. (`tests/replay.rs::bug_below_a_nested_snapshot_…` and
-  `every_corpus_entry_replays_its_snapshot_from_genesis` guard this; the latter
-  drives a real campaign and fails — `base_offset != 0` — if a nested entry is
-  admitted branch-local. The toy forks a deeper `SNAP_AT2` point so nested
-  snapshots actually occur.)
-
-- **`timeline` drops, never forgets, pending handles.** A direct `timeline` call
-  (the engine's public inner loop) that surfaces a `SnapshotPoint` leaves the
-  handle in `pending_snapshots`; the next `timeline`/`multiverse_step`
-  `drop_snap`s each leftover before reusing the slot, rather than a bare `clear()`
-  that would leak the backend handle across repeated or aborted direct runs.
-
-- **No snapshot handle leaks on a partial fork.** At a `SnapshotPoint`, if
-  `recorded_env` fails *after* `snapshot` already minted the handle, that handle is
-  `drop_snap`'d (best effort, preserving the original error) before the error
-  propagates. And `set_corpus_capacity` — which discards the current corpus —
-  `drop_snap`s every kept entry's snapshot first (so it is fallible now,
-  `Result<(), MachineError>`), never silently forgetting a handle. Both are gated in
-  `tests/gc.rs` (each verified to fail without its fix).
-
-- **Two result categories, fail-loud.** A guest-observable outcome is a
-  `StopReason`; a transport/backend failure is a `MachineError`. `multiverse_step`
-  propagates a `MachineError` (aborting the campaign) and never turns it into a
-  `Bug`; only `Crash`/`Assertion` become bugs. `Explorer::new` returns `Err` (never
-  panics) if the initial genesis snapshot fails.
-
-- **Determinism by construction.** The novelty index is a `BTreeSet<(edge,
-  bucket)>`; eviction breaks ties by `(score, SnapId)`; every strategy draw comes
-  from a caller-seeded xorshift64\* PRNG; the bug fingerprint is a `sha2` digest.
-  No `HashMap`/`HashSet` reaches an output, no floats, no wall-clock, no unseeded
-  RNG. Same `(strategy seed, machine)` ⇒ identical bugs **and** identical admitted
-  corpus — gated at ≥256 proptest cases.
-
-- **Library never panics on untrusted input.** `decode` paths in the (test) codec
-  are bounds-checked and total; the engine has no `.unwrap()`/`.expect()` outside
-  tests. A hostile/mutated blob surfaces as `MachineError::BadEnvironment`.
-
-### Additions beyond the spec's signatures (conventions rule 3)
-
-All are private-helper-equivalent conveniences; none removes/renames/changes a
-specified item. `StopReason::{vtime, is_terminal, is_bug}`; `StopMask::{NONE,
-ALL}`; `Corpus::{with_capacity, is_empty, novelty, select, base_env, entry,
-drain_evicted}` + `Default`; `Explorer::{genesis, corpus, stop_conditions,
-set_stop_conditions, set_corpus_capacity, machine_mut}`;
-`CoverageStrategy::with_explore_period`; `SeedStrategy::new`/`CoverageStrategy::new`
-(the spec showed the strategy structs with private bodies — a constructor is
-required to build them). The frozen surface is in `tests/public-api.txt`.
-
-### Dependencies
-
-`thiserror` (errors) and `sha2` (bug fingerprint; the toy also hashes state with
-it) — both on the conventions rule-5 whitelist, so no ask-by-comment needed. No
-sibling-crate dependency (rule 2).
+1. **`Archive::admit` takes a `forks: &[Fork]` parameter** beyond
+   `(t, cells, sensors)` (the spec allows: "parameter lists may vary where the
+   semantics hold"). The replay plane cannot reconstruct sealable-point
+   material from a `RunTrace` alone: the suffix-at-a-moment is emitted by the
+   machine *at the fork* (`recorded_env`), and slicing `t.env` after the fact
+   would be schema-aware — `EnvCodec` territory the schema-blind archive must
+   not touch (task 12 already rejected a codec `slice` verb). `Fork` bundles
+   the exemplar, its pre-folded genesis-complete env, and the signal view as
+   of that point. When task 65 enriches `RunTrace`, sensors supply timeline
+   features through the same `admit` walk — zero spine change.
+2. **`Selector::choose` takes `rng: &mut Prng`**, mirroring `Tactic::decide`:
+   a stochastic outer policy draws from the caller-seeded campaign stream
+   (the old god-object owned exactly one stream; the equivalence gate pins the
+   shared-stream draw order). `Selector::reward` is as specced.
+3. **The one dropped behavior: `CoverageStrategy::choose`'s live-coverage
+   fold.** The old inner-loop answer folded `checksum(machine.coverage())` —
+   intra-run, closed-loop feedback, which is precisely what the load-bearing
+   open-loop invariant (spec semantics 1; EXPLORATION.md invariant 1) outlaws,
+   and what `Tactic::decide`'s shape now makes unexpressible. The equivalence
+   suite therefore drives the pre-refactor engine in the configurations whose
+   behavior survives the ruling (declined decisions / masked decisions) and
+   proves byte-equality there; the fold itself has no legal post-refactor
+   counterpart. Anyone needing coverage-*adaptive* answering does it the
+   ruled way: between runs, via checkpoint-and-refuzz.
+4. **`VirtualExemplar.seed` is the campaign draw** (the explore seed or the
+   exploit mutation salt) that minted the run's environment — provenance. The
+   engine is schema-blind and cannot extract the env-internal seed; the
+   authoritative reproducer is `suffix`/`env` anyway.
+5. **`Moment` is stamped one-for-one from machine V-times** (`Moment(vtime.0)`)
+   in this crate. The spine keys on `Moment` as the spec fixes; which physical
+   counter backs the axis at integration is the `Moment`-vs-`VTime` unit ruling
+   EXPLORATION.md escalates to the foreman with task 65 — nothing here depends
+   on the choice.
+6. **`CoverageArchive` consumes coverage per sealable point** (the toy exposes
+   its map live) — the faithful port of task-12's fork-time admission, which
+   the equivalence gate requires. EXPLORATION.md notes production shmem
+   coverage is terminal-only; when that lands, coverage feeds terminal
+   admission and the along-timeline features come from sensors — an archive
+   implementation detail, not a spine change.
+7. **Best-per-cell is first-wins in the default** (never replaced) — the
+   degenerate domination key, because replacement would change pre-refactor
+   outcomes. The `Frontier` ships the domination primitive (`occupy`,
+   returning the displaced ref) for task-70+ quality keys.
+8. **`Bug` field order is the spec's** (`env`, `stop`, `fingerprint`) — the
+   pre-refactor struct had `fingerprint` first; same fields, same fingerprint
+   function (golden-pinned unchanged).
 
 ## Deviations considered and rejected
 
-- **A 4th `EnvCodec` method to slice a genesis env into a branch-local delta.**
-  Rejected: it would widen the public seam the spec fixes at three methods. The
-  slice is instead an internal detail of `EnvCodec::mutate` (a corpus pick already
-  produces a branch-local mutation), so the engine never slices and the production
-  codec is free to implement `mutate` however task 24's structure dictates.
-
-- **Adding `StopMask` decision-class bit constants to the library.** Rejected: the
-  `StopMask` is interpreted by the `Machine`, not the engine — the engine carries
-  it through unparsed. The toy defines its own class bits + `SNAP_BIT` in tests;
-  the integrator binds `StopMask` to the real control-proto / `DecisionClass`
-  layout. Only `NONE`/`ALL` (campaign-level conveniences) live in the library.
-
-- **Making the toy machine a public module.** Rejected: it is a test fixture, not
-  part of the contract. Keeping it in `tests/common` (as pv-net does for its
-  oracles) keeps the frozen public surface to exactly the engine.
+- **Keeping `Strategy` as a compatibility shim over the new parts.** Rejected:
+  the spec's point is decomposing the god-object; a live conflated trait
+  invites new code onto the wrong seam. The vendored copy in `tests/reference`
+  keeps the pre-refactor semantics executable for the equivalence gate without
+  shipping them.
+- **Golden files for the equivalence gate** (dump pre-refactor outcomes,
+  compare post-refactor). Rejected: goldens rot and cannot be re-derived
+  without git archaeology; the vendored reference engine is reviewable,
+  regenerates the baseline on every run, and pins *both* sides to the same toy.
+- **Putting seals (SnapIds) in `FrontierEntry`.** Rejected: the archive is
+  replay-plane — it must never hold live backend resources (the old `Corpus`
+  holding `SnapId`s is part of what this refactor retires). Seals live in the
+  engine; `VirtualExemplar.parent` is provenance, not a held handle.
+- **A `CoverageSensor` implementation.** Rejected: with `events`/`records`
+  empty until tasks 65/73 and coverage consumed by the default archive at
+  forks, a sensor impl would be dead code shipped only to look complete —
+  and new `Sensor` impls are an explicit non-goal. The trait is exercised in
+  tests (a sensed feature admits a coverage-less fork at its moment).
+- **Floats anywhere in scoring.** Never considered seriously: `Reward` is
+  integer-only (`new_cells: u64`), per the Wave-5 integer/rational ruling.
 
 ## Known limitations / integrator notes
 
-- **Frontier (vmm-core), not here (task non-goals):** the R2 socket client that
-  implements `Machine` over `control-proto`; the real coverage producer (SDK-event
-  hashing / breakpoint coverage — a later coverage task); and the `Environment`
-  internal structure + codec (task 24, bound to `EnvCodec`). The toy machine and
-  codec exist only to gate-test the engine.
+- **⚠ Task-58 conflict (PR #44), for the PR body:** task 58's socket-backed
+  `Machine`/`SpecEnvCodec` bind to this crate's seams. The `Machine`/`EnvCodec`
+  traits and their semantics are **unchanged** here, but (a) `Explorer::new`
+  now takes `(machine, codec, Composition, seed)` and is generic over `M`
+  only, (b) `Strategy`/`SeedStrategy`/`CoverageStrategy`/`Corpus`/`CovScore`
+  no longer exist, (c) `RunOutcome` lost `coverage_novelty`, and (d)
+  `MachineError` gained `UnknownExemplar` (breaking for exhaustive matches).
+  Whichever lands second rebases: a task-58 conductor demo constructs
+  `Explorer::new(machine, codec, Composition::defaults(), seed)` and swaps
+  strategy names for the default composition. Per the foreman's instruction
+  this branch does **not** adapt to unmerged task-58 code.
+- **`GuestEvent`/`Record` are deliberately minimal** (`kind` + sorted
+  `attrs: BTreeMap<String, Value>`, matcher-DSL-shaped). Task 65/73 own their
+  real decode; if they need more fields, additions are non-breaking.
+- **`Reward` may grow fields** (e.g. a quality magnitude for domination keys)
+  — additive, anticipated by the handoff notes.
+- **Terminal-coverage admission is deliberately absent** in the default
+  archive: task 12 never admitted terminal states (they are not branchable
+  fork points in the toy), and adding it would break equivalence. The
+  `RunTrace.coverage` field carries the terminal view for future archives.
+- **`Explorer::materialize` is public**: the frontier task's live
+  materialization engine replaces its genesis-replay body with the
+  `branch(parent)`+suffix fast path behind the same signature.
+- **Naming**: engine loop names (`timeline`/`multiverse_step`) are task-12's;
+  spine/docs use the post-rename Progression/Modulation framing. Task 94 does
+  the tree-wide rename — deliberately not done here.
+- **CI wiring left to the integrator (root files are off-limits, rule 1):**
+  `explorer` is already in the `public-api` job's `-p` list; the
+  `tests/public-api.txt` snapshot is regenerated on the pinned nightly
+  (`nightly-2026-06-16`) and verified. No `miri` entry is needed (no
+  `unsafe`). `Cargo.lock` is regenerated by the integrator (this branch adds
+  the whitelisted `serde`/`serde_json` to this crate only).
 
-- **Corpus base eviction vs in-flight children.** `multiverse_step` rebases a bug
-  found below a corpus snapshot by composing with that snapshot's base env. If the
-  base were evicted *before* its child reported, the genesis recompose base is
-  gone; the explorer then surfaces the branch-local env as-is (the bug is real and
-  still reproduces from that snapshot, just not from genesis). In this single-
-  threaded engine a child reports within the same step it branches, so a live base
-  is never evicted mid-flight, and the gate sizes the corpus so it never happens.
-  A concurrent production driver should pin a base while children are in flight (or
-  keep the genesis env keyed independently of corpus capacity).
+## Still-true task-12 notes (unchanged by the refactor)
 
-- **`StopMask` semantics are the backend's.** The engine treats `StopMask`
-  opaquely; the toy's interpretation (class bit = `index % NUM_CLASSES`, `SNAP_BIT`
-  = `1 << 31`) is a test convention. Bind it to the decision-class taxonomy at
-  integration (`docs/DISSONANCE.md`, "keep them in sync").
-
-- **CI wiring left to the integrator (root files are off-limits, rule 1):** add
-  `explorer` to the `public-api` job's `-p` list in
-  `.github/workflows/quality.yml`. The `tests/public_api.rs` guard +
-  `tests/public-api.txt` snapshot are in place and pass on the pinned nightly
-  (`nightly-2026-06-16`); the test skips cleanly when the tooling is absent. No
-  `miri` entry is needed (no `unsafe`). `Cargo.lock` is regenerated by the
-  integrator (this branch touches only `dissonance/explorer/`, matching the task-24
-  branch).
+- **Schema-blind engine; mutation lives here, never in the wire.** The engine
+  ferries opaque `Environment` blobs and mints/mutates/composes only through
+  `EnvCodec`.
+- **Genesis-complete vs branch-local reproducers.** `Machine::recorded_env` is
+  branch-local; every admitted frontier env and every reported `Bug.env` is
+  rebased genesis-complete through the entry's own genesis-complete env (now
+  also the `RunTrace.env` invariant, per the spec). The prefix-env-at-the-fork
+  pairing (not the whole-run env) is preserved and gated.
+- **The toy machine is a faithful stand-in** (absolute-index seed answers make
+  branch-local deltas recompose; the toy is the counter-mode alternative the
+  task-93 ruling names, so tail-completeness is not needed *for the toy* —
+  the production adapter's tail-complete contract is unchanged and binds
+  task 58/68).
+- **Two result categories, fail-loud**; library never panics on untrusted
+  input; determinism by construction (BTree everywhere order can reach an
+  output, one seeded xorshift64\*, `sha2` fingerprints).
 
 ## Mutation testing
 
-`cargo mutants --in-diff` (the `mutants` CI gate) is clean: **96 mutants, 0
-missed** (82 caught, 14 unviable). The value types and pure functions are pinned by
-golden-value unit tests next to the code — the `xorshift64*` golden sequence
-(`prng.rs`), the FNV checksum and the exact `CoverageStrategy::choose` byte
-(`strategy.rs`), the AFL `bucket` per range + exact `novelty` counts + eviction
-victim with a score tie (`corpus.rs`), `StopReason::vtime`/`is_terminal`/`is_bug`
-per variant (`lib.rs`), and the golden `sha2` bug `fingerprint` (`engine.rs`). The
-`base_snap == genesis` admit-rebase and `stop_conditions` are pinned via the toy in
-`tests/engine_pins.rs`. The 14 unviable mutants are pre-existing equivalents plus the
-two `choose -> Default::default()` mutants made structurally unviable by **not**
-deriving `Default` on `Answer` (an "empty answer" `Answer(Vec::new())` would be
-indistinguishable from a derived default — a blind spot, so the derive is omitted).
-`evict_over_capacity` compares scores only (ties by admission order) so the `<`/`-`
-operators are killable rather than equivalent.
-
-## Gates
-
-`cargo build/nextest/clippy(-D warnings)/fmt -p explorer --all-features`,
-`cargo deny check`, and `cargo mutants --in-diff` all pass; 46 tests (incl. a
-≥256-case determinism proptest and the per-function mutation pins) + the ignored,
-nightly-only public-api guard. Suite runtime ≈ 0.3 s. Task-specific gates:
-toy-machine determinism (`tests/determinism.rs`), Timeline replay / OQ10 + genesis
-rebase (`tests/replay.rs`), seed-vs-coverage artifact equivalence
-(`tests/strategy_equiv.rs`), novelty scoring (`tests/novelty.rs` + `corpus.rs`
-unit tests), two error categories (`tests/errors.rs`), corpus GC (`tests/gc.rs`).
-The clippy run also surfaces the three *pre-existing* workspace-`clippy.toml`
-meta-diagnostics (the `rand::*` disallowed-method paths are unresolvable once
-proptest pulls `rand` into the dev dep graph); they cite no code here and do not
-fail `-D warnings`.
+`cargo mutants --no-shuffle --in-diff <branch diff>` (the CI `mutants` job's
+exact invocation): **187 mutants tested, 0 missed** (159 caught, 28 unviable —
+trait-object constructors and `Default` impls with no observable substitute).
+The golden pins (xorshift64\* sequence, fingerprint digest, AFL bucket ranges,
+`IdentityCells` key bytes, selector explore/exploit boundary, coverage-feature
+packing) carry the load.

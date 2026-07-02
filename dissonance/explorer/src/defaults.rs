@@ -193,7 +193,7 @@ fn bucket(count: u8) -> u8 {
 
 /// The `(edge, bucket)` features present in a coverage view, ascending by edge
 /// (deterministic). Filed under [`COVERAGE_CHANNEL`]; the id packs
-/// `edge << 8 | bucket`.
+/// `edge * 256 + bucket` (bucket < 256, so the packing is injective).
 fn coverage_features(view: &CoverageView) -> Vec<Feature> {
     let mut out = Vec::new();
     for (edge, &count) in view.map.iter().enumerate() {
@@ -201,7 +201,7 @@ fn coverage_features(view: &CoverageView) -> Vec<Feature> {
         if b != 0 {
             out.push(Feature {
                 channel: COVERAGE_CHANNEL,
-                id: FeatureId(((edge as u64) << 8) | b as u64),
+                id: FeatureId((edge as u64) * 256 + b as u64),
             });
         }
     }
