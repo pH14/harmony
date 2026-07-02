@@ -113,6 +113,20 @@ fn jitter_zero_is_identity() {
     assert_eq!(s.jittered(0), s);
 }
 
+#[test]
+fn jitter_u64_max_does_not_overflow() {
+    // `2 * jitter + 1` must not panic (debug) / wrap (release) at the extreme — the internal
+    // span is computed in u128. Every target still lands within the span and stays sorted.
+    let s = SamplingSchedule::build(1_000, 1_000_000, 64, &[]).unwrap();
+    let j = s.jittered(u64::MAX);
+    assert_eq!(j.len(), 64);
+    let ts = j.targets();
+    assert!(ts.iter().all(|t| t.vtime >= 1_000 && t.vtime < 1_000_000));
+    for w in ts.windows(2) {
+        assert!(w[0].vtime <= w[1].vtime);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -420,7 +434,8 @@ fn ruling_go_dense() {
     let inputs = RulingInputs {
         nominal: stats(64, 64),
         adversarial: stats(64, 64),
-        determinism_verified: true,
+        det_verified: 8,
+        det_sealed_total: 8,
         overshoot: Some(overshoot_with_p90(2_048)),
     };
     assert_eq!(rule(&inputs, RulingThresholds::default()), Ruling::Go);
@@ -431,7 +446,8 @@ fn ruling_grid_when_coarse() {
     let inputs = RulingInputs {
         nominal: stats(64, 64),
         adversarial: stats(63, 64),
-        determinism_verified: true,
+        det_verified: 8,
+        det_sealed_total: 8,
         overshoot: Some(overshoot_with_p90(5_000_000)), // coarse grid
     };
     assert_eq!(
@@ -445,7 +461,8 @@ fn ruling_nogo_on_low_rate() {
     let inputs = RulingInputs {
         nominal: stats(30, 64), // ~47%
         adversarial: stats(30, 64),
-        determinism_verified: true,
+        det_verified: 8,
+        det_sealed_total: 8,
         overshoot: Some(overshoot_with_p90(1_000)),
     };
     assert_eq!(
@@ -456,16 +473,52 @@ fn ruling_nogo_on_low_rate() {
 
 #[test]
 fn ruling_nogo_on_determinism_gap() {
+    // A checked seal diverged (7 of 8 bit-identical) ⇒ determinism gap ⇒ NO-GO.
     let inputs = RulingInputs {
         nominal: stats(64, 64),
         adversarial: stats(64, 64),
-        determinism_verified: false, // a seal failed to branch deterministically
+        det_verified: 7,
+        det_sealed_total: 8,
         overshoot: Some(overshoot_with_p90(1)),
     };
+    assert!(!inputs.determinism_ok());
     assert_eq!(
         rule(&inputs, RulingThresholds::default()),
         Ruling::NoGoRestricted
     );
+}
+
+#[test]
+fn ruling_nogo_on_zero_determinism_checks() {
+    // No seal was branch-verified — a vacuous pass must NOT read as GO.
+    let inputs = RulingInputs {
+        nominal: stats(64, 64),
+        adversarial: stats(64, 64),
+        det_verified: 0,
+        det_sealed_total: 0,
+        overshoot: Some(overshoot_with_p90(1)),
+    };
+    assert!(!inputs.determinism_ok());
+    assert_eq!(
+        rule(&inputs, RulingThresholds::default()),
+        Ruling::NoGoRestricted
+    );
+}
+
+#[test]
+fn determinism_summary_is_honest_about_the_subset() {
+    let inputs = RulingInputs {
+        nominal: stats(64, 64),
+        adversarial: stats(56, 56),
+        det_verified: 9,
+        det_sealed_total: 9,
+        overshoot: Some(overshoot_with_p90(1)),
+    };
+    assert_eq!(
+        inputs.determinism_summary(),
+        "9/9 of a spread subset of 64 sealed"
+    );
+    assert!(inputs.determinism_ok());
 }
 
 proptest! {
@@ -480,7 +533,8 @@ proptest! {
         let mk = |sealed| RulingInputs {
             nominal: stats(sealed, 64),
             adversarial: stats(sealed, 64),
-            determinism_verified: true,
+            det_verified: 8,
+            det_sealed_total: 8,
             overshoot: dense,
         };
         let rank = |r: Ruling| match r {

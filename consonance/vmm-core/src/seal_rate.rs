@@ -299,8 +299,10 @@ impl SamplingSchedule {
                     t.vtime
                 } else {
                     let r = splitmix64(i as u64 ^ t.vtime);
-                    let span = 2 * jitter + 1;
-                    let delta = (r % span) as i128 - jitter as i128;
+                    // u128 so `2*jitter+1` never overflows even at `jitter == u64::MAX`
+                    // (`jittered` is pub and the harness feeds it `ADV_JITTER_VNS`).
+                    let span = 2u128 * jitter as u128 + 1;
+                    let delta = (r as u128 % span) as i128 - jitter as i128;
                     (t.vtime as i128 + delta).clamp(lo, hi) as VTime
                 };
                 Target {
@@ -761,24 +763,49 @@ pub struct RulingInputs {
     pub nominal: SealStats,
     /// Adversarial-pass seal stats.
     pub adversarial: SealStats,
-    /// Whether **every** successful seal branched bit-identically (task 63 §2 — a hard
-    /// prerequisite: if any sealed point failed to branch deterministically it was already
-    /// reclassified into `nominal`/`adversarial` as a failure, and this stays `true`; this
-    /// flag additionally guards against a sweep that recorded *zero* determinism checks).
-    pub determinism_verified: bool,
+    /// How many branch-determinism-checked sealed points came back **bit-identical** (task 63
+    /// §2). A checked point that diverged is *not* counted here — and is separately reclassified
+    /// a failure in the pass stats and hard-failed by the harness.
+    pub det_verified: usize,
+    /// How many sealed points were **subjected to** the branch-determinism check. In a run that
+    /// verifies a spread subset (the §2 deviation) this is the subset size, **not** all of
+    /// `nominal.sealed` — so `det_verified / det_sealed_total` reads honestly as "N/M of a
+    /// subset", never overclaimed as global. `rule()` requires `det_verified == det_sealed_total
+    /// > 0`.
+    pub det_sealed_total: usize,
     /// The nominal-pass overshoot distribution (addressability), if any attempts ran.
     pub overshoot: Option<Overshoot>,
 }
 
+impl RulingInputs {
+    /// The determinism gate: at least one seal was checked, and **every** checked seal branched
+    /// bit-identically. False if any diverged or none were checked (a vacuous pass).
+    #[must_use]
+    pub fn determinism_ok(&self) -> bool {
+        self.det_sealed_total > 0 && self.det_verified == self.det_sealed_total
+    }
+
+    /// Human render of the determinism evidence, honest about the subset:
+    /// `"9/9 of a spread subset of 64 sealed"`.
+    #[must_use]
+    pub fn determinism_summary(&self) -> String {
+        format!(
+            "{}/{} of a spread subset of {} sealed",
+            self.det_verified, self.det_sealed_total, self.nominal.sealed
+        )
+    }
+}
+
 /// Reduce a sweep to its [`Ruling`] under the given thresholds. Pure and total.
 ///
-/// - Any determinism gap, or a nominal/adversarial rate below the bar → **NO-GO**.
+/// - Any determinism gap (a checked seal diverged, or **none were checked**), or a
+///   nominal/adversarial rate below the bar → **NO-GO**.
 /// - At/above the bar with a **dense** grid (small p90 overshoot) → **GO** (unrestricted).
 /// - At/above the bar but a **coarse** grid → **GO (grid-restricted)**: dependable at the
 ///   synchronized boundaries, but not at an arbitrary interior V-time.
 #[must_use]
 pub fn rule(inputs: &RulingInputs, th: RulingThresholds) -> Ruling {
-    if !inputs.determinism_verified {
+    if !inputs.determinism_ok() {
         return Ruling::NoGoRestricted;
     }
     let rate_ok = inputs.nominal.success_rate_ppm >= th.min_nominal_ppm

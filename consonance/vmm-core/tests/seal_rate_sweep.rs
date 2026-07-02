@@ -29,11 +29,11 @@
 //! 4. **Materialization depth**: seal a shallow parent and a deep child; materialize the child
 //!    by `branch(parent) → run the suffix` and confirm it reproduces the **genesis-rooted**
 //!    materialization bit-for-bit (ancestor-independence) — recording the suffix-vs-genesis
-//!    replay-depth ratio.
-//! 4b. **Schedule-faithful replay** (distinguishing experiment): the clean replays agree with
-//!    each other but diverge from the probe-laden live run. Restore the parent and re-run the
-//!    live legs *with the same `run(deadline)`+`probe_seal` schedule* — match ⇒ the schedule is
-//!    a deterministic part of the trajectory (substrate sound); mismatch ⇒ escalate.
+//!    replay-depth ratio. Then the **schedule-faithful replay** (distinguishing experiment,
+//!    "§4b"): the clean replays agree with each other but diverge from the probe-laden live run,
+//!    so restore the parent and re-run the live legs *with the same `run(deadline)`+`probe_seal`
+//!    schedule* — match ⇒ the schedule is a deterministic part of the trajectory (substrate
+//!    sound); mismatch ⇒ escalate.
 //! 5. All of it rolls up through the **same** [`vmm_core::seal_rate`] bookkeeping the
 //!    portable suite tests; the final GO/NO-GO ruling is the integrator's.
 //!
@@ -773,11 +773,15 @@ fn seal_rate_sweep() {
                 SealResult::Failed(FailureReason::BranchNondeterministic);
         }
     }
-    let determinism_verified = !sealed.is_empty() && nondeterministic.is_empty();
+    // Honest subset counts (not a global bool): how many of the branch-verified spread subset
+    // were bit-identical, out of how many were checked. `rule()` requires all-checked-passed
+    // AND at least one checked.
+    let det_sealed_total = sealed.len();
+    let det_verified = det_sealed_total - nondeterministic.len();
     eprintln!(
-        "[sweep] branch-determinism: {}/{} sealed points bit-identical across 2 same-seed branches",
-        sealed.len() - nondeterministic.len(),
-        sealed.len()
+        "[sweep] branch-determinism: {det_verified}/{det_sealed_total} branch-verified points \
+         bit-identical (a spread subset of {} sealed; the §2 DET_SUBSET deviation)",
+        nominal.iter().filter(|a| a.result.is_sealed()).count(),
     );
 
     // --- 3. Adversarial pass (§3) + interior grid-probe (supports §5) -------
@@ -798,11 +802,24 @@ fn seal_rate_sweep() {
     let adv_schedule = schedule.jittered(jitter);
     let mut adversarial: Vec<SealAttempt> = Vec::with_capacity(adv_schedule.len());
     let mut interior: Vec<SealAttempt> = Vec::with_capacity(adv_schedule.len());
+    // How many jittered targets the guest had **already overshot** when the loop reached them —
+    // a prior boundary landing (overshoot can be millions of ns; p90 ≈ 4.76 M ≫ target spacing)
+    // or the interior perturbation advanced `effective_vns` past the target. Without this guard,
+    // `run_to_vtime` would return immediately at that prior point and its seal would silently
+    // contaminate this target's §3 sample. We count + skip them instead; §3/§5 rates are over the
+    // non-overshot samples only.
+    let mut skipped_overshot = 0usize;
     {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let mut printed = 0usize;
         let start = watchdog_start();
         for &target in adv_schedule.targets() {
+            // Overshoot guard (the loop head): the guest only runs forward, so once it is at/past
+            // a target there is no way to re-address it without contaminating the sample.
+            if live.effective_vns().unwrap_or(0) >= target.vtime {
+                skipped_overshot += 1;
+                continue;
+            }
             let adv = run_to_vtime(&mut live, target.vtime, &mut printed, start);
             if adv.terminal.is_some() || adv.step_error.is_some() {
                 // Near the tail a jittered target may sit at/after terminal — stop probing.
@@ -842,11 +859,14 @@ fn seal_rate_sweep() {
         // Drop the adversarial guest.
     }
     eprintln!(
-        "[sweep] adversarial (boundary): {} sealed / {} probed | interior: {} sealed / {} probed",
+        "[sweep] adversarial (boundary): {} sealed / {} probed | interior: {} sealed / {} probed \
+         | {} target(s) skipped-overshot (of {})",
         adversarial.iter().filter(|a| a.result.is_sealed()).count(),
         adversarial.len(),
         interior.iter().filter(|a| a.result.is_sealed()).count(),
         interior.len(),
+        skipped_overshot,
+        adv_schedule.len(),
     );
 
     // --- 4. Materialization depth (parent-rooted premise) ------------------
@@ -871,21 +891,28 @@ fn seal_rate_sweep() {
     let inputs = RulingInputs {
         nominal: nominal_stats.clone(),
         adversarial: adversarial_stats.clone(),
-        determinism_verified,
+        det_verified,
+        det_sealed_total,
         overshoot,
     };
     let ruling = vmm_core::seal_rate::rule(&inputs, RulingThresholds::default());
+    eprintln!(
+        "[sweep] determinism evidence: {}",
+        inputs.determinism_summary()
+    );
 
     emit_report(
         &schedule,
         &nominal_stats,
         &adversarial_stats,
         &interior_stats,
+        skipped_overshot,
         overshoot,
         &predicate,
         depth,
         schedule_faithful,
         &nondeterministic,
+        &inputs.determinism_summary(),
         ruling,
     );
 
@@ -1048,11 +1075,13 @@ fn emit_report(
     nominal: &SealStats,
     adversarial: &SealStats,
     interior: &SealStats,
+    skipped_overshot: usize,
     overshoot: Option<Overshoot>,
     predicate: &PredicateQuality,
     depth: Option<MaterializationDepth>,
     schedule_faithful: Option<bool>,
     nondeterministic: &[(VTime, String)],
+    det_summary: &str,
     ruling: Ruling,
 ) {
     eprintln!("\n[REPORT] ======================= SEAL-RATE MEASUREMENT =======================");
@@ -1074,10 +1103,12 @@ fn emit_report(
         }
     }
     eprintln!(
-        "[REPORT] ADVERSARIAL seal rate: {}/{} = {}",
+        "[REPORT] ADVERSARIAL seal rate: {}/{} = {} ({} jittered target(s) skipped-overshot, \
+         excluded from the rate — no silent contamination)",
         adversarial.sealed,
         adversarial.n,
-        ppm_percent(adversarial.success_rate_ppm)
+        ppm_percent(adversarial.success_rate_ppm),
+        skipped_overshot,
     );
     for (reason, count) in &adversarial.by_reason {
         if *count > 0 {
@@ -1097,7 +1128,7 @@ fn emit_report(
         }
     }
     eprintln!(
-        "[REPORT] branch-determinism: {} nondeterministic sealed point(s) (must be 0)",
+        "[REPORT] branch-determinism: {det_summary} bit-identical; {} nondeterministic (must be 0)",
         nondeterministic.len()
     );
     if let Some(o) = overshoot {
