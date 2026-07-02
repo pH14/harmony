@@ -436,6 +436,7 @@ fn ruling_go_dense() {
         adversarial: stats(64, 64),
         det_verified: 8,
         det_sealed_total: 8,
+        adversarial_scheduled: 64,
         overshoot: Some(overshoot_with_p90(2_048)),
     };
     assert_eq!(rule(&inputs, RulingThresholds::default()), Ruling::Go);
@@ -448,6 +449,7 @@ fn ruling_grid_when_coarse() {
         adversarial: stats(63, 64),
         det_verified: 8,
         det_sealed_total: 8,
+        adversarial_scheduled: 64,
         overshoot: Some(overshoot_with_p90(5_000_000)), // coarse grid
     };
     assert_eq!(
@@ -463,6 +465,7 @@ fn ruling_nogo_on_low_rate() {
         adversarial: stats(30, 64),
         det_verified: 8,
         det_sealed_total: 8,
+        adversarial_scheduled: 64,
         overshoot: Some(overshoot_with_p90(1_000)),
     };
     assert_eq!(
@@ -479,6 +482,7 @@ fn ruling_nogo_on_determinism_gap() {
         adversarial: stats(64, 64),
         det_verified: 7,
         det_sealed_total: 8,
+        adversarial_scheduled: 64,
         overshoot: Some(overshoot_with_p90(1)),
     };
     assert!(!inputs.determinism_ok());
@@ -496,6 +500,7 @@ fn ruling_nogo_on_zero_determinism_checks() {
         adversarial: stats(64, 64),
         det_verified: 0,
         det_sealed_total: 0,
+        adversarial_scheduled: 64,
         overshoot: Some(overshoot_with_p90(1)),
     };
     assert!(!inputs.determinism_ok());
@@ -506,12 +511,41 @@ fn ruling_nogo_on_zero_determinism_checks() {
 }
 
 #[test]
+fn ruling_nogo_on_insufficient_adversarial_coverage() {
+    // A perfect adversarial rate but over only 2 of 64 scheduled jittered targets (3% < 10%
+    // floor) is not evidence — rule() refuses it even though every other bar is met.
+    let inputs = RulingInputs {
+        nominal: stats(64, 64),
+        adversarial: stats(2, 2), // 100% — but a tiny probed denominator
+        det_verified: 8,
+        det_sealed_total: 8,
+        adversarial_scheduled: 64,
+        overshoot: Some(overshoot_with_p90(2_048)),
+    };
+    assert!(!inputs.adversarial_coverage_ok(RulingThresholds::default()));
+    assert_eq!(
+        rule(&inputs, RulingThresholds::default()),
+        Ruling::NoGoRestricted
+    );
+
+    // The same rate over adequate coverage (16 of 64 = 25% ≥ 10%) is trusted → GO.
+    let ok = RulingInputs {
+        adversarial: stats(16, 16),
+        adversarial_scheduled: 64,
+        ..inputs
+    };
+    assert!(ok.adversarial_coverage_ok(RulingThresholds::default()));
+    assert_eq!(rule(&ok, RulingThresholds::default()), Ruling::Go);
+}
+
+#[test]
 fn determinism_summary_is_honest_about_the_subset() {
     let inputs = RulingInputs {
         nominal: stats(64, 64),
         adversarial: stats(56, 56),
         det_verified: 9,
         det_sealed_total: 9,
+        adversarial_scheduled: 64,
         overshoot: Some(overshoot_with_p90(1)),
     };
     assert_eq!(
@@ -535,6 +569,7 @@ proptest! {
             adversarial: stats(sealed, 64),
             det_verified: 8,
             det_sealed_total: 8,
+            adversarial_scheduled: 64,
             overshoot: dense,
         };
         let rank = |r: Ruling| match r {

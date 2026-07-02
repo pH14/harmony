@@ -737,19 +737,26 @@ pub struct RulingThresholds {
     pub min_nominal_ppm: u32,
     /// Minimum adversarial seal-success rate (ppm) for a GO.
     pub min_adversarial_ppm: u32,
+    /// Minimum fraction (ppm) of the **scheduled** jittered targets that must actually be
+    /// *probed* for the adversarial rate to be trusted. The overshoot guard legitimately skips
+    /// targets a prior landing overshot, but a §3 rate computed over a *tiny* probed denominator
+    /// is not representative — below this floor `rule()` refuses to trust §3 (NO-GO), rather than
+    /// letting a 2-of-64 sample satisfy the bar.
+    pub min_adversarial_coverage_ppm: u32,
     /// Overshoot (V-time ns) at/below which the grid is "dense" — sealing is effectively
     /// continuous, so a high rate is an *unrestricted* GO rather than a grid-restricted one.
     pub dense_grid_overshoot: VTime,
 }
 
 impl Default for RulingThresholds {
-    /// The task-63 defaults: ≥ 99 % nominal, ≥ 95 % adversarial, and a grid is "dense" when
-    /// the p90 overshoot is under ~one scheduler tick worth of V-time (100 000 ns ≈ 100 µs
-    /// of retired-branch V-time — well under a 250 Hz tick period).
+    /// The task-63 defaults: ≥ 99 % nominal, ≥ 95 % adversarial, ≥ 10 % of the jittered targets
+    /// actually probed, and a grid is "dense" when the p90 overshoot is under ~one scheduler tick
+    /// worth of V-time (100 000 ns ≈ 100 µs of retired-branch V-time — well under a 250 Hz tick).
     fn default() -> Self {
         RulingThresholds {
             min_nominal_ppm: 990_000,
             min_adversarial_ppm: 950_000,
+            min_adversarial_coverage_ppm: 100_000,
             dense_grid_overshoot: 100_000,
         }
     }
@@ -773,6 +780,11 @@ pub struct RulingInputs {
     /// subset", never overclaimed as global. `rule()` requires `det_verified == det_sealed_total
     /// > 0`.
     pub det_sealed_total: usize,
+    /// How many jittered targets the adversarial pass **scheduled** (before the overshoot guard
+    /// skipped any). `adversarial.n` is how many were actually probed; `adversarial_scheduled`
+    /// is the denominator the §3 coverage floor is measured against. `0` when there is no
+    /// adversarial pass (the coverage gate is then vacuously skipped).
+    pub adversarial_scheduled: usize,
     /// The nominal-pass overshoot distribution (addressability), if any attempts ran.
     pub overshoot: Option<Overshoot>,
 }
@@ -783,6 +795,16 @@ impl RulingInputs {
     #[must_use]
     pub fn determinism_ok(&self) -> bool {
         self.det_sealed_total > 0 && self.det_verified == self.det_sealed_total
+    }
+
+    /// The §3 coverage gate: enough of the scheduled jittered targets were actually probed for
+    /// the adversarial rate to be representative. Vacuously true when no adversarial targets were
+    /// scheduled (`adversarial_scheduled == 0`).
+    #[must_use]
+    pub fn adversarial_coverage_ok(&self, th: RulingThresholds) -> bool {
+        self.adversarial_scheduled == 0
+            || rate_ppm(self.adversarial.n, self.adversarial_scheduled)
+                >= th.min_adversarial_coverage_ppm
     }
 
     /// Human render of the determinism evidence, honest about the subset:
@@ -798,14 +820,19 @@ impl RulingInputs {
 
 /// Reduce a sweep to its [`Ruling`] under the given thresholds. Pure and total.
 ///
-/// - Any determinism gap (a checked seal diverged, or **none were checked**), or a
-///   nominal/adversarial rate below the bar → **NO-GO**.
+/// - Any determinism gap (a checked seal diverged, or **none were checked**), a
+///   nominal/adversarial rate below the bar, or **insufficient §3 coverage** (too few of the
+///   scheduled jittered targets probed to trust the adversarial rate) → **NO-GO**.
 /// - At/above the bar with a **dense** grid (small p90 overshoot) → **GO** (unrestricted).
 /// - At/above the bar but a **coarse** grid → **GO (grid-restricted)**: dependable at the
 ///   synchronized boundaries, but not at an arbitrary interior V-time.
 #[must_use]
 pub fn rule(inputs: &RulingInputs, th: RulingThresholds) -> Ruling {
     if !inputs.determinism_ok() {
+        return Ruling::NoGoRestricted;
+    }
+    // A §3 rate over a tiny probed denominator is not evidence — refuse it.
+    if !inputs.adversarial_coverage_ok(th) {
         return Ruling::NoGoRestricted;
     }
     let rate_ok = inputs.nominal.success_rate_ppm >= th.min_nominal_ppm

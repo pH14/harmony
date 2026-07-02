@@ -575,9 +575,17 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
             busy_centers.push(v);
         }
         if steps.is_multiple_of(8192) && start.elapsed() > wall_budget() {
-            terminal_vtime = vmm.effective_vns().unwrap_or(0);
-            eprintln!("[profile] wall budget hit after {steps} steps at V-time {terminal_vtime}");
-            break;
+            // A wall-budget timeout during profiling means we never reached a clean terminal —
+            // recording the timeout point as `span_end` would present a truncated `[ready,
+            // timeout)` prefix as a clean span, and every later measurement would run over it.
+            // Hard-fail (the profile is INCOMPLETE); a clean `Step::Terminal` is the only valid
+            // span end. Raise `WALL_BUDGET_SECS`, or pin `SPAN_START`/`SPAN_END` from a good run.
+            panic!(
+                "[profile] WALL_BUDGET_SECS hit after {steps} steps at V-time {} (ready={ready}) \
+                 BEFORE a clean terminal — the post-readiness span would be truncated; refusing to \
+                 measure over an INCOMPLETE profile",
+                vmm.effective_vns().unwrap_or(0)
+            );
         }
     }
     assert!(
@@ -677,7 +685,10 @@ fn seal_rate_sweep() {
     let mut sealed: Vec<Sealed> = Vec::new();
     let last_idx = schedule.len().saturating_sub(1);
     // Snapshot a successful seal every `snap_stride` targets (+ always the deepest, for §4).
-    let snap_stride = (schedule.len() / n_det).max(1);
+    // Ceil the stride so `DET_SUBSET` snapshots ≈ the requested count, not more (floor
+    // `64/24 = 2` would snapshot ~33; ceil `= 3` snapshots ~22). `DET_SUBSET >= TARGETS`
+    // yields stride 1 (snapshot every sealed target).
+    let snap_stride = schedule.len().div_ceil(n_det).max(1);
     {
         let mut live = boot_pg(&kernel, &initramfs, BASE_SEED);
         let mut printed = 0usize;
@@ -962,6 +973,7 @@ fn seal_rate_sweep() {
         adversarial: adversarial_stats.clone(),
         det_verified,
         det_sealed_total,
+        adversarial_scheduled: adv_schedule.len(),
         overshoot,
     };
     let ruling = vmm_core::seal_rate::rule(&inputs, RulingThresholds::default());
