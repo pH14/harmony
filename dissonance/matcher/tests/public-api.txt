@@ -1,0 +1,100 @@
+pub mod matcher
+pub mod matcher::stub
+pub struct matcher::stub::FaultMoments(pub alloc::vec::Vec<explorer::spine::Moment>)
+impl matcher::ContextSource for matcher::stub::FaultMoments
+pub fn matcher::stub::FaultMoments::fault_moments(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<explorer::spine::Moment>
+pub struct matcher::stub::OwnedRecords(pub alloc::vec::Vec<matcher::stub::RecordRec>)
+impl matcher::ChannelSource for matcher::stub::OwnedRecords
+pub type matcher::stub::OwnedRecords::Rec = matcher::stub::RecordRec
+pub fn matcher::stub::OwnedRecords::records(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<matcher::stub::RecordRec>
+pub struct matcher::stub::RecordRec
+pub matcher::stub::RecordRec::moment: explorer::spine::Moment
+pub matcher::stub::RecordRec::record: explorer::spine::Record
+impl matcher::stub::RecordRec
+pub fn matcher::stub::RecordRec::new(explorer::spine::Moment, &str, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, explorer::spine::Value)>) -> Self
+impl explorer::spine::Matchable for matcher::stub::RecordRec
+pub fn matcher::stub::RecordRec::attr(&self, &str) -> core::option::Option<explorer::spine::Value>
+pub fn matcher::stub::RecordRec::kind(&self) -> &str
+pub fn matcher::stub::RecordRec::moment(&self) -> explorer::spine::Moment
+pub struct matcher::stub::TraceRecords
+impl matcher::ChannelSource for matcher::stub::TraceRecords
+pub type matcher::stub::TraceRecords::Rec = matcher::stub::RecordRec
+pub fn matcher::stub::TraceRecords::records(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<matcher::stub::RecordRec>
+#[non_exhaustive] pub enum matcher::During
+pub matcher::During::NoFaults
+#[non_exhaustive] pub enum matcher::MatchError
+pub matcher::MatchError::ChannelSpaceExhausted
+pub matcher::MatchError::ChannelSpaceExhausted::base: u16
+pub matcher::MatchError::ChannelSpaceExhausted::count: usize
+pub matcher::MatchError::DuplicateName(alloc::string::String)
+pub matcher::MatchError::Parse(serde_json::error::Error)
+pub matcher::MatchError::ReservedChannelBase
+pub matcher::MatchError::StateMaxWithoutAttrMax(alloc::string::String)
+pub matcher::MatchError::UnknownDuring(alloc::string::String)
+pub matcher::MatchError::UnknownRole(alloc::string::String)
+#[non_exhaustive] pub enum matcher::Role
+pub matcher::Role::Cell
+pub matcher::Role::Never
+pub matcher::Role::Sometimes
+pub matcher::Role::StateMax
+pub struct matcher::Catalog
+impl matcher::Catalog
+pub fn matcher::Catalog::declare(&mut self, matcher::SignalId, matcher::Role)
+pub fn matcher::Catalog::declared(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&matcher::SignalId, &matcher::Role)>
+pub fn matcher::Catalog::from_signals(&matcher::SignalSet) -> matcher::Catalog
+pub fn matcher::Catalog::is_empty(&self) -> bool
+pub fn matcher::Catalog::len(&self) -> usize
+pub fn matcher::Catalog::report(&self, &alloc::collections::btree::set::BTreeSet<matcher::SignalId>) -> matcher::CatalogReport
+pub struct matcher::CatalogReport
+pub matcher::CatalogReport::fired: alloc::collections::btree::set::BTreeSet<matcher::SignalId>
+pub matcher::CatalogReport::never_fired: alloc::collections::btree::set::BTreeSet<matcher::SignalId>
+pub struct matcher::MatchExpr
+pub matcher::MatchExpr::attr: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub matcher::MatchExpr::attr_max: core::option::Option<alloc::string::String>
+pub matcher::MatchExpr::during: core::option::Option<matcher::During>
+pub matcher::MatchExpr::kind: alloc::string::String
+pub struct matcher::MatchOracle<S: matcher::ChannelSource, C: matcher::ContextSource>
+impl<S: matcher::ChannelSource, C: matcher::ContextSource> matcher::MatchOracle<S, C>
+pub fn matcher::MatchOracle<S, C>::fired(&self, &explorer::spine::RunTrace) -> alloc::collections::btree::set::BTreeSet<matcher::SignalId>
+pub fn matcher::MatchOracle<S, C>::new(matcher::SignalSet, S, C) -> Self
+pub fn matcher::MatchOracle<S, C>::verdicts(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<explorer::spine::Bug>
+impl<S: matcher::ChannelSource, C: matcher::ContextSource> explorer::spine::Oracle for matcher::MatchOracle<S, C>
+pub fn matcher::MatchOracle<S, C>::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
+pub struct matcher::MatchSensor<S: matcher::ChannelSource, C: matcher::ContextSource>
+impl<S: matcher::ChannelSource, C: matcher::ContextSource> matcher::MatchSensor<S, C>
+pub const matcher::MatchSensor<S, C>::FIRED_FEATURE: explorer::spine::FeatureId
+pub fn matcher::MatchSensor<S, C>::channel_base(&self) -> explorer::spine::ChannelId
+pub fn matcher::MatchSensor<S, C>::channel_of(&self, &matcher::SignalId) -> core::option::Option<explorer::spine::ChannelId>
+pub fn matcher::MatchSensor<S, C>::decode_misses(&self, &explorer::spine::RunTrace) -> u64
+pub fn matcher::MatchSensor<S, C>::features(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub fn matcher::MatchSensor<S, C>::fired(&self, &explorer::spine::RunTrace) -> alloc::collections::btree::set::BTreeSet<matcher::SignalId>
+pub fn matcher::MatchSensor<S, C>::new(matcher::SignalSet, S, C, explorer::spine::ChannelId) -> core::result::Result<Self, matcher::MatchError>
+pub fn matcher::MatchSensor<S, C>::next_free_channel(&self) -> explorer::spine::ChannelId
+impl<S: matcher::ChannelSource, C: matcher::ContextSource> explorer::spine::Sensor for matcher::MatchSensor<S, C>
+pub fn matcher::MatchSensor<S, C>::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub struct matcher::SignalDecl
+pub matcher::SignalDecl::expr: matcher::MatchExpr
+pub matcher::SignalDecl::name: matcher::SignalId
+pub matcher::SignalDecl::role: matcher::Role
+pub struct matcher::SignalId(pub alloc::string::String)
+pub struct matcher::SignalSet
+impl matcher::SignalSet
+pub fn matcher::SignalSet::from_json(&str) -> core::result::Result<matcher::SignalSet, matcher::MatchError>
+pub fn matcher::SignalSet::is_empty(&self) -> bool
+pub fn matcher::SignalSet::len(&self) -> usize
+pub fn matcher::SignalSet::new(alloc::vec::Vec<matcher::SignalDecl>) -> core::result::Result<matcher::SignalSet, matcher::MatchError>
+pub fn matcher::SignalSet::signals(&self) -> &[matcher::SignalDecl]
+pub fn matcher::SignalSet::to_json(&self) -> core::result::Result<alloc::string::String, matcher::MatchError>
+pub trait matcher::ChannelSource
+pub type matcher::ChannelSource::Rec: explorer::spine::Matchable
+pub fn matcher::ChannelSource::records(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<Self::Rec>
+impl matcher::ChannelSource for matcher::stub::OwnedRecords
+pub type matcher::stub::OwnedRecords::Rec = matcher::stub::RecordRec
+pub fn matcher::stub::OwnedRecords::records(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<matcher::stub::RecordRec>
+impl matcher::ChannelSource for matcher::stub::TraceRecords
+pub type matcher::stub::TraceRecords::Rec = matcher::stub::RecordRec
+pub fn matcher::stub::TraceRecords::records(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<matcher::stub::RecordRec>
+pub trait matcher::ContextSource
+pub fn matcher::ContextSource::fault_moments(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<explorer::spine::Moment>
+impl matcher::ContextSource for matcher::stub::FaultMoments
+pub fn matcher::stub::FaultMoments::fault_moments(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<explorer::spine::Moment>

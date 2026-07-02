@@ -1,0 +1,24 @@
+[package]
+name = "matcher"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The declarative signal DSL + role router (task 66) — a generic MatchSensor/MatchOracle that evaluates config-authored match expressions over any spine `Matchable` and routes every match by its declared role, entirely behind the Scoring seam."
+
+[lints]
+workspace = true
+
+[dependencies]
+# The one sanctioned sibling (task 66 Environment): the search-plane spine —
+# `Matchable`, `Sensor`, `Oracle`, `RunTrace`, `Feature`, `Bug`, `Moment`,
+# `Environment`, `Value` — all live in `explorer` (conventions rule 2 is
+# satisfied by construction: the interfaces are defined in the consumer). Pinned
+# `version` alongside `path` for `cargo deny`'s wildcard ban.
+explorer = { path = "../explorer", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
