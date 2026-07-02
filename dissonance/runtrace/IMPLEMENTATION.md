@@ -6,6 +6,38 @@ that bundle becomes bytes and back. Dependencies 58 (`ControlServer`) and 64
 (`spine.rs`) are **already merged into `main`**, so this branch builds directly
 on them (the spec was written when they were unmerged).
 
+## Round-2 review response (PR #48)
+
+All three blocking items fixed and all four suggestions actioned:
+
+- **[B1] Stale conductor `public-api.txt`** — regenerated on the pinned nightly;
+  `pub mod record`'s surface is now snapshotted.
+- **[B2] Codec canonicality** — `read_events` now rejects non-canonical journals:
+  an event's `attrs` keys must be **strictly increasing** (a `BTreeMap` would
+  otherwise silently re-sort/last-wins-dedup, so `encode(decode(b)) != b` for
+  accepted bytes). New typed `TraceError::NonCanonical` + an adversarial inline
+  test (out-of-order and duplicate keys → rejected; canonical order re-encodes
+  byte-identically).
+- **[B3] runtrace public-API snapshot** — added `tests/public_api.rs` +
+  committed `tests/public-api.txt` (matching every sibling dissonance crate).
+  Also made `mod codec` private (its four fns are re-exported at the crate root),
+  so the surface no longer double-lists `runtrace::codec::*`.
+- **[S1] "store is write-only to the loop"** — moved the reload readback *out* of
+  the recording loop. `run_recording` now touches the store only via
+  `store.record` (a true pure sink); the lossless-reload / re-derive half of
+  gate 3 is the new post-campaign `verify_store_reload(store, report)`, called by
+  `finish_recording` and the tests.
+- **[S2] Store semantics** — (1) writes are now **atomic** (temp file + rename);
+  (2) a re-record under a *weaker* retention (`EnvOnly` after `Full`) **removes**
+  the prior journal, so `has_journal`/`load` reflect the last policy rather than
+  serving a stale (content-identical) journal; new test covers it.
+- **[S3] AdapterEnv genesis-completeness** — documented the regeneration path
+  (genesis under `spec` → `run(deadline = base_offset)` → seal reaches the base
+  state under substrate determinism) at the env construction and in decision 2,
+  so it is not re-litigated.
+- **Moment-vs-VTime** — the foreman **ratified** the one-for-one `stamp` identity
+  as the v1 contract; no code change, doc note kept (see decision 3).
+
 ## What shipped
 
 - **`dissonance/runtrace`** (new crate)
@@ -73,23 +105,29 @@ AdapterEnv { base_offset: snapshot_vtime, pos: terminal_vtime, spec: seeded(seed
 For a v1 seed-driven run (no surfaced decisions) this is *exactly* what
 `SocketMachine::recorded_env` emits — the branch env re-wrapped with the
 snapshot/terminal `Moment`s. Same seed ⇒ identical env bytes ⇒ identical
-`TraceId`; distinct seeds ⇒ distinct. It is not "genesis-complete" in the strong
-sense (the mid-workload base is an ephemeral `SnapId`, not a composable env
-prefix — a task-58-substrate limitation, task-68 territory); neither is
-`recorded_env` (it is snapshot-rooted, `base_offset = snapshot_vtime`). This is
-the honest reproducer the substrate can express today.
+`TraceId`; distinct seeds ⇒ distinct.
 
-### 3. Exactly one stamp axis — and the unit ruling escalated
+**This env IS genesis-complete** despite the ephemeral base `SnapId`: the
+snapshot regenerates by deterministic replay — boot genesis under `spec`,
+`run(deadline = base_offset)`, seal — reaches the identical base state (substrate
+determinism, the premise task 63 validates), so `{base_offset, pos, spec}` fully
+reproduces the run from genesis. This is the load-bearing premise of env-only
+retention (the Nyx take: the artifact is what the restore path cannot regenerate;
+here only the env is). Flagged in round 1 by two readers and by the GPT-5.5 pass;
+the foreman rejected the "not genesis-complete" reading — documented at the env
+construction so it is not re-litigated.
+
+### 3. Exactly one stamp axis — unit ruling **ratified**
 
 `record::stamp(vtime) -> Moment` is the **single** V-time→`Moment` mapping
 (`Moment(vtime.0)`, one-for-one, mirroring the spine's toy machine and
 `control-proto`). Stamps are stop-granular in v1: a run's whole console is
 drained under one stop `Moment` (per-exit stamps wait on the `telemetry::Observer`
-wiring — a non-goal). **Escalated to the foreman, not decided locally:** whether
-`Moment` is the retired-instruction count or the retired-branch V-time it is
-derived from. Nothing in these crates bakes in more than the one-for-one
-identity the spine already documents, so the ruling can land with zero code
-change here.
+wiring — a non-goal). The foreman **ratified** this one-for-one identity as the
+v1 contract: on the v1 substrate `Moment` values are V-time units
+(retired-branch-derived); a distinct instruction-count reading, if it ever
+arrives, lives in the adapter's stamp function (the single seam isolated here)
+with no spine or trace-format change. Zero code change required.
 
 ### 4. Retention
 
@@ -129,8 +167,10 @@ policies — the store is write-only to the loop.
 - `events` is serialized but always empty (task 73); `coverage` is always `None`
   under task 58's zero-width negotiated geometry. Both are day-one format slots,
   not future bumps.
-- Genesis-completeness of `RunTrace.env` is bounded by the task-58 substrate (see
-  decision 2); a fully genesis-rooted reproducer needs task-68 chain composition.
+- `RunTrace.env` is genesis-complete via deterministic replay (decision 2), but
+  is **snapshot-rooted** (`base_offset = snapshot_vtime`), not a folded
+  suffix-chain; task-68 chain composition is what turns a below-a-corpus-snapshot
+  run into a directly-replayable genesis artifact.
 - Stamps are stop-granular until the `telemetry::Observer` per-exit wiring lands.
 
 ## Box gate (gate 6) — handed to the foreman

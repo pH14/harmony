@@ -31,6 +31,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use conductor::record::{
     RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
+    verify_store_reload,
 };
 use conductor::{SweepConfig, render_table, run_session, sweep_client, verify};
 use environment::{EnvSpec, FaultPolicy};
@@ -143,15 +144,19 @@ fn parse_retain(s: &str) -> Option<RetentionPolicy> {
     }
 }
 
-/// Print a recording run table and set the exit code from the task-65 gates.
+/// Print a recording run table and set the exit code from the task-65 gates: the
+/// pure report checks plus the post-campaign store-reload check (kept out of the
+/// recording loop, which stays write-only to the store).
 fn finish_recording(
     mode: &str,
     report: &RecordReport,
     min_distinct: usize,
+    store: &TraceStore,
     dir: &Path,
 ) -> ExitCode {
     print!("{}", render_record_table(report));
-    let failures = verify_record(report, min_distinct);
+    let mut failures = verify_record(report, min_distinct);
+    failures.extend(verify_store_reload(store, report));
     if failures.is_empty() {
         println!(
             "\n[conductor] {mode} RECORDING GATES PASS: per-seed byte-identical RunTraces, \
@@ -204,7 +209,7 @@ fn run_mock_recording(args: &SweepArgs, dir: PathBuf, retain: RetentionPolicy) -
         dir.display()
     );
     match run_recording(&mut server, &store, &cfg) {
-        Ok(report) => finish_recording("mock", &report, 2, &dir),
+        Ok(report) => finish_recording("mock", &report, 2, &store, &dir),
         Err(e) => {
             eprintln!("[conductor] mock recording failed: {e}");
             ExitCode::FAILURE
@@ -534,7 +539,7 @@ mod boxrun {
                 dir.display()
             );
             return match run_recording(&mut server, &store, &cfg) {
-                Ok(report) => finish_recording("box", &report, 2, &dir),
+                Ok(report) => finish_recording("box", &report, 2, &store, &dir),
                 Err(e) => {
                     eprintln!("[conductor] box recording failed: {e}");
                     ExitCode::FAILURE

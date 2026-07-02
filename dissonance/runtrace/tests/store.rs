@@ -121,6 +121,28 @@ fn recording_the_same_run_twice_is_idempotent() {
 }
 
 #[test]
+fn env_only_re_record_removes_a_prior_journal() {
+    // A reused store: a run first recorded Full, then re-recorded EnvOnly. The
+    // stale (content-identical) journal is removed, so has_journal/load reflect
+    // the last-recorded, weaker policy.
+    let dir = tempfile::tempdir().unwrap();
+    let store = TraceStore::open(dir.path()).unwrap();
+    let t = trace(b"reused", crash());
+
+    let id = store.record(&t, Retain::Full).unwrap();
+    assert!(store.has_journal(id), "Full wrote the journal");
+
+    let id2 = store.record(&t, Retain::EnvOnly).unwrap();
+    assert_eq!(id, id2, "same env ⇒ same TraceId");
+    assert!(!store.has_journal(id), "the stale journal was removed");
+    assert!(matches!(
+        store.load(id),
+        Err(runtrace::TraceError::NotRetained(_))
+    ));
+    assert!(store.env(id).is_ok(), "the env sidecar still loads");
+}
+
+#[test]
 fn retain_for_maps_the_policy() {
     // `all` → always Full.
     assert_eq!(

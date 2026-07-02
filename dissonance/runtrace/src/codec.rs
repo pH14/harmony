@@ -244,9 +244,21 @@ fn read_events(r: &mut Reader) -> Result<Vec<(Moment, GuestEvent)>, TraceError> 
         let kind = r.string()?;
         let attr_n = r.len_prefix()?;
         let mut attrs = std::collections::BTreeMap::new();
+        // `attrs` is a `BTreeMap`, so its canonical byte form has keys in
+        // strictly-increasing order (the encoder walks that order). Enforce it on
+        // decode: a journal with unsorted or duplicate keys would otherwise
+        // decode successfully but re-encode to *different* bytes (BTreeMap sorts
+        // and last-wins-dedups), falsifying `encode(decode(b)) == b`. Reject it.
+        let mut prev: Option<String> = None;
         for _ in 0..attr_n {
             let k = r.string()?;
+            if let Some(p) = &prev
+                && k <= *p
+            {
+                return Err(TraceError::NonCanonical);
+            }
             let v = read_value(r)?;
+            prev = Some(k.clone());
             attrs.insert(k, v);
         }
         out.push((at, GuestEvent { kind, attrs }));
@@ -482,5 +494,50 @@ mod tests {
             crate::TraceId::of(&env),
             crate::TraceId(*blake3::hash(&encode_env(&env)).as_bytes())
         );
+    }
+
+    /// Hand-assemble a journal whose single event carries two attr keys, so a
+    /// test can feed canonical and non-canonical key orders. Uses the crate's own
+    /// private byte helpers, so it stays in lockstep with the real encoder.
+    fn journal_with_two_attr_keys(k1: &str, k2: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&MAGIC.to_le_bytes());
+        buf.extend_from_slice(&crate::TRACE_FORMAT_VERSION.to_le_bytes());
+        buf.extend_from_slice(&3u16.to_le_bytes()); // env blob version
+        buf.push(SR_QUIESCENT);
+        put_u64(&mut buf, 1); // terminal
+        put_bytes(&mut buf, &[]); // env bytes
+        buf.push(ABSENT); // coverage
+        put_len(&mut buf, 1); // one event
+        put_u64(&mut buf, 10); // Moment
+        put_str(&mut buf, "k"); // kind
+        put_len(&mut buf, 2); // two attrs
+        put_str(&mut buf, k1);
+        buf.push(V_BOOL);
+        buf.push(1);
+        put_str(&mut buf, k2);
+        buf.push(V_BOOL);
+        buf.push(1);
+        put_len(&mut buf, 0); // no records
+        buf
+    }
+
+    #[test]
+    fn read_events_rejects_noncanonical_attr_keys() {
+        // Out-of-order keys ("b" then "a") are rejected loudly.
+        assert!(matches!(
+            decode(&journal_with_two_attr_keys("b", "a")),
+            Err(TraceError::NonCanonical)
+        ));
+        // Duplicate keys ("a" then "a") are rejected too (BTreeMap would dedup
+        // last-wins, breaking `encode(decode(b)) == b`).
+        assert!(matches!(
+            decode(&journal_with_two_attr_keys("a", "a")),
+            Err(TraceError::NonCanonical)
+        ));
+        // The canonical order ("a" then "b") decodes, and re-encodes identically.
+        let canonical = journal_with_two_attr_keys("a", "b");
+        let t = decode(&canonical).expect("canonical journal decodes");
+        assert_eq!(encode(&t), canonical, "accepted bytes are canonical");
     }
 }

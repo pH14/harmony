@@ -42,7 +42,7 @@
 //! `blake3` of canonical bytes. Library code never panics on untrusted input —
 //! a malformed journal is a typed [`TraceError`], not a crash.
 
-pub mod codec;
+mod codec;
 mod error;
 mod ingest;
 mod scrape;

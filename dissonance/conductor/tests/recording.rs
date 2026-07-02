@@ -14,7 +14,7 @@
 
 use conductor::SweepConfig;
 use conductor::mock;
-use conductor::record::{RecordConfig, run_recording, verify_record};
+use conductor::record::{RecordConfig, run_recording, verify_record, verify_store_reload};
 use explorer::StreamId;
 use runtrace::{RetentionPolicy, TraceStore};
 
@@ -48,6 +48,13 @@ fn env_only_persists_no_journals_yet_lists_and_loads_every_env() {
         verify_record(&report, 2).is_empty(),
         "{:?}",
         verify_record(&report, 2)
+    );
+    // The post-campaign store-reload gate passes too (env sidecars reload and
+    // are content-addressed; no journals to reload under env-only).
+    assert!(
+        verify_store_reload(&store, &report).is_empty(),
+        "{:?}",
+        verify_store_reload(&store, &report)
     );
 
     // Zero journals on disk, but every TraceId is listable and its env loads.
@@ -120,35 +127,34 @@ fn the_retention_knob_never_changes_the_campaigns_report() {
 fn a_recording_campaign_is_deterministic_per_seed_and_divergent_across_seeds() {
     let d1 = tempfile::tempdir().unwrap();
     let d2 = tempfile::tempdir().unwrap();
+    let store_a = TraceStore::open(d1.path()).unwrap();
+    let store_b = TraceStore::open(d2.path()).unwrap();
     let mut s1 = server();
     let mut s2 = server();
-    let a = run_recording(
-        &mut s1,
-        &TraceStore::open(d1.path()).unwrap(),
-        &cfg(RetentionPolicy::All),
-    )
-    .unwrap();
-    let b = run_recording(
-        &mut s2,
-        &TraceStore::open(d2.path()).unwrap(),
-        &cfg(RetentionPolicy::All),
-    )
-    .unwrap();
+    let a = run_recording(&mut s1, &store_a, &cfg(RetentionPolicy::All)).unwrap();
+    let b = run_recording(&mut s2, &store_b, &cfg(RetentionPolicy::All)).unwrap();
 
     // Two whole campaigns produce identical TraceIds in identical order.
     let ids =
         |r: &conductor::record::RecordReport| r.rows.iter().map(|x| x.trace_id).collect::<Vec<_>>();
     assert_eq!(ids(&a), ids(&b), "the campaign is bit-reproducible");
 
-    // Gate checks pass: per-seed identical, >=2 distinct, records non-empty & monotone, reloads OK.
+    // Gate checks pass: per-seed identical, >=2 distinct, records non-empty & monotone.
     assert!(
         verify_record(&a, 2).is_empty(),
         "{:?}",
         verify_record(&a, 2)
     );
+    // And the post-campaign store-reload gate (retained journals reload; envs
+    // are content-addressed) passes.
+    assert!(
+        verify_store_reload(&store_a, &a).is_empty(),
+        "{:?}",
+        verify_store_reload(&store_a, &a)
+    );
     assert_eq!(a.rows.len(), 8, "4 seeds x 2 runs");
     assert!(a.rows.iter().all(|r| r.journal_matches_first_run));
-    assert!(a.rows.iter().all(|r| r.stamps_monotone && r.reload_ok));
+    assert!(a.rows.iter().all(|r| r.stamps_monotone));
 }
 
 #[test]

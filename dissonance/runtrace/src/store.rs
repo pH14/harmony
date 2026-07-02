@@ -113,11 +113,19 @@ impl TraceStore {
     /// the same run again (same [`TraceId`]) overwrites with byte-identical
     /// content — deterministic, so the box gate's repeated runs converge rather
     /// than duplicate.
+    ///
+    /// Writes are **atomic** (temp file + rename), so a crash mid-write leaves
+    /// the old artifact or nothing, never a torn file. A re-record under a
+    /// *weaker* retention (`EnvOnly` after an earlier `Full`) **removes** the
+    /// prior journal, so [`has_journal`](Self::has_journal)/[`load`](Self::load)
+    /// always reflect the last-recorded policy rather than serving a stale
+    /// (though content-identical) journal under an env-only policy.
     pub fn record(&self, t: &RunTrace, retain: Retain) -> Result<TraceId, TraceError> {
         let id = TraceId::of(&t.env);
-        std::fs::write(self.path(id, "env"), codec::encode_env(&t.env))?;
-        if retain == Retain::Full {
-            std::fs::write(self.path(id, "trace"), codec::encode(t))?;
+        write_atomic(&self.path(id, "env"), &codec::encode_env(&t.env))?;
+        match retain {
+            Retain::Full => write_atomic(&self.path(id, "trace"), &codec::encode(t))?,
+            Retain::EnvOnly => remove_if_present(&self.path(id, "trace"))?,
         }
         Ok(id)
     }
@@ -172,5 +180,28 @@ impl TraceStore {
         out.sort_unstable();
         out.dedup();
         Ok(out)
+    }
+}
+
+/// Write `bytes` to `path` atomically: a sibling `<name>.tmp` written then
+/// renamed over `path` (an atomic replace on macOS/Linux). A crash mid-write
+/// leaves the previous file or nothing — never a torn one. The temp name is a
+/// deterministic per-target sibling (distinct for `.env` vs `.trace`); a leftover
+/// `*.tmp` is ignored by [`TraceStore::ids`] (it does not end in `.env`).
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), TraceError> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Remove `path` if it exists; a missing file is not an error.
+fn remove_if_present(path: &Path) -> Result<(), TraceError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(TraceError::Io(e)),
     }
 }

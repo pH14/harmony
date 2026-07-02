@@ -95,6 +95,12 @@ pub enum TraceError {
     /// non-canonical encoding, rejected to keep `encode(decode(b)) == b`.
     #[error("trailing bytes after a complete trace journal")]
     Trailing,
+    /// A map-shaped field was not in canonical form — a `BTreeMap`-backed
+    /// collection (an event's `attrs`) whose keys are not **strictly
+    /// increasing**. Rejected loudly rather than silently re-sorted/deduped,
+    /// which would break `encode(decode(b)) == b` for the accepted bytes.
+    #[error("non-canonical trace journal (map keys not strictly increasing)")]
+    NonCanonical,
     /// A string field (an event kind/key, a `Value::Str`) was not valid UTF-8.
     #[error("non-UTF-8 string field in trace journal")]
     Utf8,
