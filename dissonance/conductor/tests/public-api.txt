@@ -14,12 +14,9 @@ pub conductor::campaign::CampaignConfig::snapshot_retry_step: u64
 impl conductor::campaign::CampaignConfig
 pub fn conductor::campaign::CampaignConfig::toy() -> Self
 pub struct conductor::campaign::CampaignOracle
-pub conductor::campaign::CampaignOracle::benign_crash_kind: u8
 impl conductor::campaign::CampaignOracle
 pub fn conductor::campaign::CampaignOracle::is_planted_bug(&self, &explorer::StopReason) -> bool
-pub fn conductor::campaign::CampaignOracle::new(u8) -> Self
-impl core::default::Default for conductor::campaign::CampaignOracle
-pub fn conductor::campaign::CampaignOracle::default() -> Self
+pub fn conductor::campaign::CampaignOracle::new() -> Self
 impl explorer::spine::Oracle for conductor::campaign::CampaignOracle
 pub fn conductor::campaign::CampaignOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
 pub struct conductor::campaign::CampaignReport

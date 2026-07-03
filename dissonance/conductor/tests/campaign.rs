@@ -11,9 +11,7 @@
 //! replays the identical crash (same terminal `StopReason`, same `state_hash`)
 //! 25/25; a nominal-seed control run does not crash.
 
-use conductor::campaign::{
-    CRASH_KIND_PANIC, CampaignConfig, render_campaign_table, run_campaign, verify_campaign,
-};
+use conductor::campaign::{CampaignConfig, render_campaign_table, run_campaign, verify_campaign};
 use conductor::planted::{ToyPlantedMachine, Trigger};
 use explorer::{SpecEnvCodec, StopReason};
 
@@ -32,12 +30,18 @@ fn campaign_finds_planted_bug_and_reproduces_25_of_25() {
     );
 
     let found = report.found.as_ref().expect("a bug was found");
-    // The distinctive planted-bug terminal is a Panic-kind crash (not the benign
-    // Shutdown reboot terminal a nominal run reaches).
-    match &found.stop {
-        StopReason::Crash { info, .. } => assert_eq!(info[0], CRASH_KIND_PANIC),
-        other => panic!("expected a Panic crash, got {other:?}"),
-    }
+    // The bug terminal is a Crash (the guest rebooted); the clean control halts
+    // (Quiescent), which is what makes it distinguishable.
+    assert!(
+        matches!(found.stop, StopReason::Crash { .. }),
+        "expected a Crash, got {:?}",
+        found.stop
+    );
+    assert!(
+        matches!(report.nominal.stop, StopReason::Quiescent { .. }),
+        "nominal control should halt (Quiescent), got {:?}",
+        report.nominal.stop
+    );
     // Found within the naive-search order the spec asks for (~10²–10³ branches).
     assert!(
         found.branch_index < 2_000,

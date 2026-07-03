@@ -34,19 +34,32 @@
 //! terminal convention (below) and the search space's rough scope — everything
 //! else is workload-blind.
 //!
-//! ## The crash oracle mapping (workload-aware, `map_terminal` convention)
+//! ## The crash oracle mapping (workload-aware terminal convention)
 //!
 //! vmm-core maps guest terminals blind: `Hlt`/`DebugExit{0}` → `Quiescent`, a
 //! non-zero `DebugExit{code}` → `Crash{Panic}`, a backend `Shutdown` (triple
-//! fault / guest reboot) → `Crash{Shutdown}`. The Postgres image's *clean*
-//! terminal is a forced reboot, so a **nominal run already reads as a
-//! `Crash{Shutdown}`**. The planted bug therefore signals through a **different**
-//! crash class — an isa-debug-exit `FAIL` → `Crash{Panic}`. The oracle keys on
-//! exactly the crash-kind byte the adapter prepends to `info`
-//! ([`CRASH_KIND_PANIC`] vs [`CRASH_KIND_SHUTDOWN`]): a non-benign crash (or an
-//! SDK assertion) is the bug; the benign reboot terminal is not. Interpreting
-//! this convention is the workload-aware caller's job (task-58 IMPLEMENTATION.md),
-//! which is why the mapping lives here and not in the substrate.
+//! fault / guest reboot) → `Crash{Shutdown}`. **A guest process cannot reach the
+//! isa-debug-exit port** on the kata-derived container kernel (no
+//! `CONFIG_X86_IOPL_IOPERM` / `CONFIG_DEVPORT` — proven on the box by the
+//! supervisor's crash-channel self-test), so the planted bug cannot signal a
+//! distinct `Crash{Panic}`. Instead the workload's `/init` maps the outcome to
+//! **two distinct guest terminals the kernel itself produces**
+//! (`guest/linux/campaign-init.sh`): the bug reboots (`reboot -f` →
+//! `Crash{Shutdown}`) while a clean run halts (`halt -f` → `Quiescent`). So the
+//! oracle keys on the terminal **class**: **any [`Crash`](StopReason::Crash) or
+//! [`Assertion`](StopReason::Assertion) is the bug; a [`Quiescent`](StopReason::Quiescent)
+//! (or `Deadline`) terminal is the clean run.** This is the standard
+//! [`TerminalOracle`] rule — the workload arranges its terminals so it applies.
+//! The [`Bug`]'s fingerprint is the explorer's canonical one, so a campaign bug
+//! dedups identically to any other.
+//!
+//! Because the oracle sees only the terminal (not the serial), it cannot tell
+//! the *planted-invariant* crash from an *incidental* one (a fault that corrupts
+//! kernel memory and panics). The campaign relies on the **pinned ledger gpa**
+//! (the bring-up reads it from `/proc/self/pagemap`) so that a targeted fault
+//! only ever corrupts the supervisor's bookkeeping — making any resulting crash
+//! *the* planted bug. The distinctive `CAMPAIGN_BUG:` serial marker the
+//! supervisor prints is the human-visible confirmation.
 
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
@@ -56,76 +69,51 @@ use explorer::{
 
 use crate::{RunRow, probe_vtime};
 
-/// The crash-kind byte the R2 adapter prepends to a `Crash`'s `info` for an
-/// isa-debug-exit panic (`control_proto::CrashKind::Panic`). On the box the
-/// planted bug's supervised process writes a non-zero code to isa-debug-exit
-/// `0xF4`, which vmm-core maps to `Crash{Panic}`; this is the campaign's
-/// **planted-bug** signal.
+/// The crash-kind byte the R2 adapter prepends to a `Crash`'s `info`, mirroring
+/// `control_proto::CrashKind`: `Panic` (a non-zero isa-debug-exit). The oracle
+/// no longer keys on the kind (a guest process cannot reach isa-debug-exit here —
+/// see the module doc); kept as the faithful mirror the toy machine stamps.
 pub const CRASH_KIND_PANIC: u8 = 0;
 /// The crash-kind byte for a triple fault (`control_proto::CrashKind::TripleFault`).
-/// Also treated as a bug by the default oracle (it is not the benign terminal).
 pub const CRASH_KIND_TRIPLE_FAULT: u8 = 1;
 /// The crash-kind byte for a backend `Shutdown` (`control_proto::CrashKind::Shutdown`)
-/// — a guest-initiated shutdown / forced reboot. On the Postgres workload this is
-/// the **clean** terminal, so the default oracle treats it as **benign**, not a
-/// bug.
+/// — a guest-initiated shutdown / forced reboot. On this workload the planted
+/// bug's terminal (`reboot -f`), so it is the **bug** signal; the clean run halts
+/// (`Quiescent`) instead.
 pub const CRASH_KIND_SHUTDOWN: u8 = 2;
 
-/// The workload-aware **crash oracle**: judges a finished run's terminal into an
-/// optional [`Bug`], keyed on the crash-kind convention above. A
-/// [`Crash`](StopReason::Crash) whose leading `info` byte is **not** the benign
-/// reboot terminal — or an [`Assertion`](StopReason::Assertion) — is a bug;
-/// everything else (the benign reboot, a `Quiescent`/`Deadline` stop, a
-/// mid-run non-terminal) is not.
-///
-/// The [`Bug`]'s fingerprint is the explorer's canonical one (delegated to
-/// [`TerminalOracle`]), so a campaign bug dedups identically to any other.
-#[derive(Clone, Copy, Debug)]
-pub struct CampaignOracle {
-    /// The crash-kind byte that is the workload's **clean** terminal (not a
-    /// bug). Defaults to [`CRASH_KIND_SHUTDOWN`] (the Postgres reboot terminal).
-    pub benign_crash_kind: u8,
-}
-
-impl Default for CampaignOracle {
-    fn default() -> Self {
-        Self {
-            benign_crash_kind: CRASH_KIND_SHUTDOWN,
-        }
-    }
-}
+/// The workload-aware **crash oracle**: a finished run is the planted bug iff it
+/// ended in a [`Crash`](StopReason::Crash) or [`Assertion`](StopReason::Assertion)
+/// — the standard [`TerminalOracle`] rule. On this campaign workload `/init`
+/// arranges the terminals so it applies: the bug reboots (`Crash{Shutdown}`)
+/// while a clean run halts ([`Quiescent`](StopReason::Quiescent)), so a `Crash`
+/// unambiguously means the injected upset tripped the supervisor's invariant (the
+/// gpa is pinned to the ledger — see the module doc). The [`Bug`]'s fingerprint is
+/// the explorer's canonical one, so a campaign bug dedups identically to any other.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CampaignOracle;
 
 impl CampaignOracle {
-    /// An oracle whose `benign_crash_kind` is the workload's clean terminal.
-    pub fn new(benign_crash_kind: u8) -> Self {
-        Self { benign_crash_kind }
+    /// The campaign crash oracle (stateless).
+    pub fn new() -> Self {
+        Self
     }
 
-    /// Whether `stop` is the planted bug: an [`Assertion`](StopReason::Assertion),
-    /// or a [`Crash`](StopReason::Crash) whose kind byte is not the benign
-    /// terminal. Pure and total — the proptested classification.
+    /// Whether `stop` is the planted bug: a [`Crash`](StopReason::Crash) or
+    /// [`Assertion`](StopReason::Assertion) (the guest rebooted / asserted). A
+    /// [`Quiescent`](StopReason::Quiescent) / `Deadline` / non-terminal stop is
+    /// the clean run. Pure and total — the proptested classification.
     pub fn is_planted_bug(&self, stop: &StopReason) -> bool {
-        match stop {
-            StopReason::Assertion { .. } => true,
-            StopReason::Crash { info, .. } => info.first().copied() != Some(self.benign_crash_kind),
-            _ => false,
-        }
+        stop.is_bug()
     }
 }
 
 impl Oracle for CampaignOracle {
-    /// `Some` exactly on a planted-bug terminal, with the explorer's canonical
-    /// fingerprint. A benign reboot terminal (or any non-bug stop) is `None`,
-    /// even though it *is* a `Crash` — the workload convention gates it out.
+    /// `Some` exactly on a bug-bearing terminal (`Crash`/`Assertion`), with the
+    /// explorer's canonical fingerprint; `None` on the clean `Quiescent` halt (or
+    /// any other non-bug stop).
     fn judge(&self, t: &RunTrace) -> Option<Bug> {
-        if self.is_planted_bug(&t.terminal) {
-            // A planted-bug stop is always a `Crash`/`Assertion`, i.e.
-            // `is_bug()`, so `TerminalOracle::judge` is always `Some` here —
-            // reusing the canonical (fingerprint-stable) `Bug` construction.
-            TerminalOracle::new().judge(t)
-        } else {
-            None
-        }
+        TerminalOracle::new().judge(t)
     }
 }
 
@@ -298,7 +286,7 @@ pub fn run_campaign<M: Machine>(
     codec: &dyn EnvCodec,
     cfg: &CampaignConfig,
 ) -> Result<CampaignReport, MachineError> {
-    let oracle = CampaignOracle::default();
+    let oracle = CampaignOracle::new();
 
     // 1. Where are we, and seal the base mid-workload (retrying past
     //    non-snapshottable boundaries — task 41).
@@ -566,20 +554,28 @@ mod tests {
         }
     }
 
-    /// The oracle keys on the crash-kind byte: Panic/TripleFault are bugs, the
-    /// benign Shutdown reboot terminal is not, and non-crash stops are not.
+    /// The oracle judges the terminal CLASS: any crash (whatever its kind byte —
+    /// the bug reboots to `Crash{Shutdown}` here) or an assertion is the bug; the
+    /// clean `Quiescent` halt and other non-terminal stops are not.
     #[test]
-    fn oracle_keys_on_crash_kind() {
-        let o = CampaignOracle::default();
+    fn oracle_judges_crash_as_bug_quiescent_as_clean() {
+        let o = CampaignOracle::new();
+        assert!(
+            o.judge(&crash_trace(CRASH_KIND_SHUTDOWN)).is_some(),
+            "reboot crash is the bug"
+        );
         assert!(o.judge(&crash_trace(CRASH_KIND_PANIC)).is_some());
         assert!(o.judge(&crash_trace(CRASH_KIND_TRIPLE_FAULT)).is_some());
-        assert!(o.judge(&crash_trace(CRASH_KIND_SHUTDOWN)).is_none());
 
-        let mut quiescent = crash_trace(CRASH_KIND_PANIC);
+        let mut quiescent = crash_trace(CRASH_KIND_SHUTDOWN);
         quiescent.terminal = StopReason::Quiescent { vtime: VTime(50) };
-        assert!(o.judge(&quiescent).is_none());
+        assert!(o.judge(&quiescent).is_none(), "the clean halt is not a bug");
 
-        let mut assertion = crash_trace(CRASH_KIND_PANIC);
+        let mut deadline = crash_trace(CRASH_KIND_SHUTDOWN);
+        deadline.terminal = StopReason::Deadline { vtime: VTime(50) };
+        assert!(o.judge(&deadline).is_none());
+
+        let mut assertion = crash_trace(CRASH_KIND_SHUTDOWN);
         assertion.terminal = StopReason::Assertion {
             vtime: VTime(50),
             id: 3,
@@ -592,9 +588,9 @@ mod tests {
     /// canonical fingerprint (so it dedups like any other bug).
     #[test]
     fn oracle_emits_canonical_bug() {
-        let o = CampaignOracle::default();
-        let t = crash_trace(CRASH_KIND_PANIC);
-        let bug = o.judge(&t).expect("a panic crash is a bug");
+        let o = CampaignOracle::new();
+        let t = crash_trace(CRASH_KIND_SHUTDOWN);
+        let bug = o.judge(&t).expect("a crash is a bug");
         assert_eq!(bug.env, t.env);
         assert_eq!(bug.stop, t.terminal);
         // Same fingerprint as the explorer's canonical terminal oracle, so a
@@ -637,17 +633,18 @@ mod tests {
     /// nominal-crash trigger; and passes a clean report.
     #[test]
     fn verify_flags_each_gate() {
+        // The bug reboots (Crash{Shutdown}); the clean control halts (Quiescent).
         let found = FoundBug {
             branch_index: 5,
             seed: 1,
             env: SpecEnvCodec.seeded(1),
             stop: StopReason::Crash {
                 vtime: VTime(100),
-                info: vec![CRASH_KIND_PANIC, 0x60],
+                info: vec![CRASH_KIND_SHUTDOWN],
             },
             hash: [0xAB; 32],
             bug: TerminalOracle::new()
-                .judge(&crash_trace(CRASH_KIND_PANIC))
+                .judge(&crash_trace(CRASH_KIND_SHUTDOWN))
                 .unwrap(),
         };
         let ok_replays: Vec<RunRow> = (0..3)
@@ -664,10 +661,7 @@ mod tests {
             found: Some(found.clone()),
             replays: ok_replays.clone(),
             nominal: NominalRow {
-                stop: StopReason::Crash {
-                    vtime: VTime(50),
-                    info: vec![CRASH_KIND_SHUTDOWN],
-                },
+                stop: StopReason::Quiescent { vtime: VTime(50) },
                 hash: [1; 32],
                 is_bug: false,
             },

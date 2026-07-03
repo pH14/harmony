@@ -61,18 +61,31 @@ $BB setuidgid postgres pg_ctl -D "$PGDATA" -m fast -W stop
 wait "$PGPID" 2>/dev/null
 $BB umount /pgmnt 2>/dev/null
 
-# The planted-bug supervisor, run as root (ioperm for the isa-debug-exit crash
-# channel needs CAP_SYS_RAWIO; the CAMPAIGN_DEBUG pagemap aid needs CAP_SYS_ADMIN).
-# It prints CAMPAIGN_READY (the base-snapshot marker), runs the loop, and either
-# aborts via isa-debug-exit (the bug) or prints CAMPAIGN_DONE.
+# The planted-bug supervisor, run as root (CAP_SYS_ADMIN for the CAMPAIGN_DEBUG
+# pagemap aid). It prints CAMPAIGN_READY (the base-snapshot marker), runs the
+# loop, and exits 0 on a clean run or non-zero when the injected upset trips the
+# invariant. CAMPAIGN_DEBUG makes it print the ledger gpa + crash-channel
+# self-test to the boot serial (a deterministic, pre-base-seal diagnostic).
 echo "PGCAMPAIGN: starting the supervised process"
+export CAMPAIGN_DEBUG=1
 /campaign-super
 rc=$?
 
-# If campaign-super returned (no upset, or the ioperm fallback fired), force the
-# reboot. A nonzero rc from the ioperm fallback is surfaced first so the operator
-# still sees the bug on the serial even where isa-debug-exit was unavailable.
+# The distinctive terminal is the TERMINAL PATH itself, not a userspace port
+# write: this kata-derived container kernel has no CONFIG_X86_IOPL_IOPERM /
+# CONFIG_DEVPORT, so a guest process cannot reach the isa-debug-exit port (the
+# self-test proves all three routes fail). So init maps the outcome to two
+# *distinct guest terminals* the kernel can produce:
+#   * bug  (rc != 0) -> `reboot -f` -> triple-fault -> KVM_EXIT_SHUTDOWN ->
+#     StopReason::Crash{Shutdown}  (the reportable bug),
+#   * clean (rc == 0) -> `halt -f`  -> the boot CPU HLTs -> StopReason::Quiescent
+#     (the benign terminal the oracle ignores).
+# Both use the `-f` (force) path that skips device_shutdown (which strands once
+# block I/O has been used — see pg-init.sh). The campaign oracle keys on
+# "a Crash is the bug; Quiescent is clean".
 if [ "$rc" != "0" ]; then
-    echo "CAMPAIGN_BUG_FALLBACK: campaign-super exited $rc (isa-debug-exit unavailable?)"
+    echo "CAMPAIGN_BUG_TERMINAL: reboot (campaign-super exited $rc)"
+    exec $BB reboot -f
 fi
-exec $BB reboot -f
+echo "CAMPAIGN_CLEAN_TERMINAL: halt"
+exec $BB halt -f

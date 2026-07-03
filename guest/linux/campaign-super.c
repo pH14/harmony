@@ -31,6 +31,8 @@
 // Build: static (`cc -static -O2`), like the image's busybox — no shared-lib
 // closure to manage, and `ioperm`/`outb` work from a static glibc.
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,6 +66,33 @@ struct ledger {
     int64_t budget;
 };
 
+// Emit the distinctive terminal: a byte OUT of a nonzero code to the isa-debug-exit
+// port (`DebugExit{FAIL_CODE}` → Crash{Panic}). A successful write TERMINATES the
+// guest (the VMM exits on the port write), so a channel that reaches the port does
+// not return. Tries every host-visible route in turn — the kernel may configure
+// any one of them — so the crash channel does not silently depend on a single
+// `CONFIG_*`. Returns nonzero only if **no** channel reached the port.
+static int emit_debug_exit(void)
+{
+    // 1. ioperm + outb (CONFIG_X86_IOPL_IOPERM + CAP_SYS_RAWIO).
+    if (ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0) {
+        outb(FAIL_CODE, ISA_DEBUG_EXIT_PORT);
+    }
+    // 2. iopl(3) + outb (the older all-ports route).
+    if (iopl(3) == 0) {
+        outb(FAIL_CODE, ISA_DEBUG_EXIT_PORT);
+    }
+    // 3. /dev/port write at the port offset (CONFIG_DEVPORT) — no ioperm needed.
+    int fd = open("/dev/port", O_WRONLY);
+    if (fd >= 0) {
+        unsigned char b = FAIL_CODE;
+        ssize_t n = pwrite(fd, &b, 1, ISA_DEBUG_EXIT_PORT);
+        close(fd);
+        (void)n;
+    }
+    return 1; // none of the channels terminated the guest
+}
+
 // Report the planted bug on the serial (the SDK-less "assertion rides the serial
 // text") and terminate the guest through isa-debug-exit → Crash{Panic}. Never
 // returns.
@@ -71,15 +100,11 @@ static void report_bug_and_die(const char *which)
 {
     printf("CAMPAIGN_BUG: retry-budget invariant violated (%s)\n", which);
     fflush(stdout);
-    // The distinctive, non-benign terminal: a byte OUT of a nonzero code to the
-    // isa-debug-exit port. Requires I/O-port permission for this one byte.
-    if (ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0) {
-        outb(FAIL_CODE, ISA_DEBUG_EXIT_PORT);
-    }
-    // Fallback if `ioperm` is unavailable on the box kernel: a nonzero _exit,
-    // which /init turns into an early forced reboot the operator can still see on
-    // the serial (the crash channel then needs the /dev/port path — see the init
-    // script). Loud, never silent.
+    emit_debug_exit();
+    // Fallback only if NO channel reached the port: a nonzero _exit, which /init
+    // turns into an early forced reboot the operator still sees on the serial
+    // (the CAMPAIGN_IOPERM/CAMPAIGN_DEVPORT self-test below says which channels
+    // exist). Loud, never silent.
     _exit(FAIL_CODE);
 }
 
@@ -134,6 +159,19 @@ int main(void)
 
     if (getenv("CAMPAIGN_DEBUG")) {
         print_ledger_gpa(p);
+        // Crash-channel self-test (does not write FAIL — only probes availability),
+        // so the boot serial says which route emit_debug_exit will use. Granting
+        // ioperm here also arms the branched runs (the permission is captured in
+        // the base snapshot).
+        printf("CAMPAIGN_IOPERM: %s\n",
+               ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0 ? "ok" : "FAILED");
+        printf("CAMPAIGN_IOPL: %s\n", iopl(3) == 0 ? "ok" : "FAILED");
+        int probe = open("/dev/port", O_WRONLY);
+        printf("CAMPAIGN_DEVPORT: %s\n", probe >= 0 ? "ok" : "FAILED");
+        if (probe >= 0) {
+            close(probe);
+        }
+        fflush(stdout);
     }
 
     // The base snapshot is sealed at this marker — mid-workload, post-readiness,

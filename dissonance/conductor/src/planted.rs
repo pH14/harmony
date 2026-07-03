@@ -23,20 +23,20 @@
 //! `guest/linux/campaign-init.sh`): the campaign never learns the trigger — it
 //! searches `(gpa, mask, Moment)` schedules until one crashes.
 //!
-//! ## Terminal convention (mirrors the box, `map_terminal`)
+//! ## Terminal convention (mirrors the box, `guest/linux/campaign-init.sh`)
 //!
-//! On this substrate the Postgres image's *clean* terminal is a forced reboot →
-//! backend `Shutdown` → `Crash{Shutdown}` under vmm-core's workload-blind
-//! terminal mapping. So a nominal run already reads as a `Crash`, and the
-//! planted bug must terminate through a **different** crash class to be
-//! distinguishable. The toy reproduces that: a nominal run yields a
-//! `Crash` whose leading info byte is [`CRASH_KIND_SHUTDOWN`]
-//! (the benign reboot terminal), and the planted bug yields a `Crash` whose
-//! leading info byte is [`CRASH_KIND_PANIC`]
-//! (an isa-debug-exit `FAIL`, on the box). The campaign's
-//! [`CampaignOracle`](crate::campaign::CampaignOracle) keys on exactly that
-//! leading byte, so the *identical* oracle mapping runs against the toy and the
-//! real guest.
+//! A guest process cannot reach the isa-debug-exit port on the kata-derived
+//! container kernel (no `CONFIG_X86_IOPL_IOPERM` / `CONFIG_DEVPORT`), so the
+//! planted bug cannot signal a distinct `Crash{Panic}`. Instead the workload's
+//! `/init` maps the outcome to two distinct guest terminals the kernel produces:
+//! the bug **reboots** (`reboot -f` → backend `Shutdown` → `Crash{Shutdown}`)
+//! and a clean run **halts** (`halt -f` → HLT → `Quiescent`). The toy reproduces
+//! exactly that: a triggered run yields a [`Crash`](StopReason::Crash) (leading
+//! info byte [`CRASH_KIND_SHUTDOWN`], the reboot), and a clean run yields
+//! [`Quiescent`](StopReason::Quiescent). The campaign's
+//! [`CampaignOracle`](crate::campaign::CampaignOracle) keys on the terminal
+//! **class** (any `Crash` is the bug), so the *identical* oracle runs against the
+//! toy and the real guest.
 //!
 //! ## Determinism
 //!
@@ -57,7 +57,7 @@ use explorer::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::campaign::{CRASH_KIND_PANIC, CRASH_KIND_SHUTDOWN};
+use crate::campaign::CRASH_KIND_SHUTDOWN;
 
 /// The V-time (retired-branch count) the toy guest is quiescent at when first
 /// snapshotted — an arbitrary non-zero anchor so a met-deadline `run` (the
@@ -253,22 +253,24 @@ impl Machine for ToyPlantedMachine {
             self.vtime = d.0;
             return Ok(StopReason::Deadline { vtime: VTime(d.0) });
         }
-        // Advance to the guest's terminal. The supervised process aborts iff the
-        // planted single-event upset is staged (the bug); otherwise the workload
-        // reaches its ordinary reboot terminal.
+        // Advance to the guest's terminal, mirroring the box terminal convention
+        // (`guest/linux/campaign-init.sh`): the supervised process aborts iff the
+        // planted single-event upset is staged → `/init` reboots → `Crash{Shutdown}`
+        // (the bug); otherwise the loop completes → `/init` halts → `Quiescent`
+        // (the clean terminal). The campaign oracle keys on this class.
         let bug = self.triggered();
         self.vtime = terminal_vtime;
-        let info = if bug {
-            // isa-debug-exit FAIL on the box (Crash{Panic}); the `0x60` marker
-            // byte is the task-60 planted-crash tag in the detail.
-            vec![CRASH_KIND_PANIC, 0x60]
+        Ok(if bug {
+            StopReason::Crash {
+                // The box maps the bug's reboot to Crash{Shutdown}; the `0x60`
+                // byte after the kind tags the task-60 planted crash.
+                vtime: VTime(self.vtime),
+                info: vec![CRASH_KIND_SHUTDOWN, 0x60],
+            }
         } else {
-            // Forced-reboot terminal on the box (Crash{Shutdown}).
-            vec![CRASH_KIND_SHUTDOWN, b'r', b'b', b't']
-        };
-        Ok(StopReason::Crash {
-            vtime: VTime(self.vtime),
-            info,
+            StopReason::Quiescent {
+                vtime: VTime(self.vtime),
+            }
         })
     }
 
@@ -355,55 +357,52 @@ mod tests {
         m.snapshot().expect("boot is quiescent")
     }
 
-    /// The exact planted upset crashes as a bug (Panic kind); nominal does not.
+    /// The exact planted upset crashes (reboot → Crash{Shutdown}); a clean run
+    /// halts (Quiescent). The oracle keys on that class distinction.
     #[test]
-    fn planted_upset_crashes_nominal_does_not() {
+    fn planted_upset_crashes_nominal_halts() {
         let mut m = ToyPlantedMachine::new(trigger());
         let b = base(&mut m);
         let until = StopConditions::default();
 
-        // The exact trigger → Crash{Panic}.
+        // The exact trigger → Crash (the bug's reboot).
         m.branch(b, &fault_env(0x3000, 1 << 31, BASE_VTIME + 3))
             .unwrap();
-        let stop = m.run(&until, None).unwrap();
-        match stop {
-            StopReason::Crash { info, .. } => assert_eq!(info[0], CRASH_KIND_PANIC),
-            other => panic!("expected a Panic crash, got {other:?}"),
-        }
-
-        // No faults at all → the benign reboot terminal (Crash{Shutdown}).
-        m.branch(b, &SpecEnvCodec.seeded(9)).unwrap();
         match m.run(&until, None).unwrap() {
             StopReason::Crash { info, .. } => assert_eq!(info[0], CRASH_KIND_SHUTDOWN),
-            other => panic!("expected a Shutdown crash, got {other:?}"),
+            other => panic!("expected a Crash, got {other:?}"),
+        }
+
+        // No faults at all → the clean halt (Quiescent).
+        m.branch(b, &SpecEnvCodec.seeded(9)).unwrap();
+        match m.run(&until, None).unwrap() {
+            StopReason::Quiescent { .. } => {}
+            other => panic!("expected a Quiescent halt, got {other:?}"),
         }
     }
 
     /// Each near-miss on the trigger is inert (wrong gpa, wrong mask bit, or
-    /// outside the sensitive Moment window) — the bug is precisely gated.
+    /// outside the sensitive Moment window) — it halts (Quiescent), no crash.
     #[test]
     fn near_misses_do_not_fire() {
         let mut m = ToyPlantedMachine::new(trigger());
         let b = base(&mut m);
         let until = StopConditions::default();
-        let is_panic = |m: &mut ToyPlantedMachine, env: &Environment| {
+        let crashes = |m: &mut ToyPlantedMachine, env: &Environment| {
             m.branch(b, env).unwrap();
-            matches!(m.run(&until, None).unwrap(), StopReason::Crash { info, .. } if info[0] == CRASH_KIND_PANIC)
+            matches!(m.run(&until, None).unwrap(), StopReason::Crash { .. })
         };
-        assert!(is_panic(
-            &mut m,
-            &fault_env(0x3000, 1 << 31, BASE_VTIME + 3)
-        ));
+        assert!(crashes(&mut m, &fault_env(0x3000, 1 << 31, BASE_VTIME + 3)));
         assert!(
-            !is_panic(&mut m, &fault_env(0x2000, 1 << 31, BASE_VTIME + 3)),
+            !crashes(&mut m, &fault_env(0x2000, 1 << 31, BASE_VTIME + 3)),
             "wrong gpa"
         );
         assert!(
-            !is_panic(&mut m, &fault_env(0x3000, 1 << 30, BASE_VTIME + 3)),
+            !crashes(&mut m, &fault_env(0x3000, 1 << 30, BASE_VTIME + 3)),
             "wrong bit"
         );
         assert!(
-            !is_panic(&mut m, &fault_env(0x3000, 1 << 31, BASE_VTIME + 9)),
+            !crashes(&mut m, &fault_env(0x3000, 1 << 31, BASE_VTIME + 9)),
             "outside window"
         );
     }
@@ -467,7 +466,8 @@ mod tests {
             "a future deadline before the terminal must stop at the deadline, not overshoot"
         );
 
-        // A deadline at/after the terminal still reaches the terminal (a Crash).
+        // A deadline at/after the terminal still reaches the terminal (a clean
+        // Quiescent halt — the env is non-triggering).
         let until_far = StopConditions {
             deadline: Some(VTime(terminal + 100)),
             ..StopConditions::default()
@@ -475,7 +475,7 @@ mod tests {
         m.branch(b, &env).unwrap();
         assert!(matches!(
             m.run(&until_far, None).unwrap(),
-            StopReason::Crash { .. }
+            StopReason::Quiescent { .. }
         ));
     }
 
