@@ -62,6 +62,27 @@ enum Mode {
     /// reproduce it N/N.
     #[command(subcommand)]
     Campaign(CampaignMode),
+    /// Task-68 lazy-materialization chain demo over the mock guest (portable;
+    /// the box-side gates run via `cargo test -p conductor --test
+    /// live_materialization -- --ignored` on the determinism box).
+    Materialize(MatArgs),
+}
+
+#[derive(Parser)]
+struct MatArgs {
+    /// Chain seals below the base (>= 3: gate (b) needs a retained ancestor
+    /// above the evicted parent).
+    #[arg(long, default_value_t = 3)]
+    hops: usize,
+    /// Requested V-time per hop (the landed boundary keys the exemplar).
+    #[arg(long, default_value_t = 250)]
+    hop_delta: u64,
+    /// The reproducer leg's requested run past the deepest seal.
+    #[arg(long, default_value_t = 250)]
+    tail_delta: u64,
+    /// The chain seed (all hops branch with it — chains are same-seed).
+    #[arg(long, default_value_t = 0x1234_5678_9ABC_DEF0)]
+    seed: u64,
 }
 
 /// The two campaign paths (task 60): the portable toy planted-bug machine, and
@@ -246,6 +267,7 @@ fn main() -> ExitCode {
         Mode::Box(args) => run_box(args),
         Mode::Campaign(CampaignMode::Mock(args)) => run_campaign_mock(args),
         Mode::Campaign(CampaignMode::Box(args)) => run_campaign_box(args),
+        Mode::Materialize(args) => run_mock_materialize(args),
     }
 }
 
@@ -305,6 +327,78 @@ fn finish_campaign(mode: &str, report: &CampaignReport, n: usize) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         eprintln!("\n[conductor] campaign {mode} GATES FAILED:");
+        for f in &failures {
+            eprintln!("  - {f}");
+        }
+        ExitCode::FAILURE
+    }
+}
+
+/// The portable task-68 demo: the chain protocol (build a seal chain, then
+/// the three materialization gates) against the scripted mock guest, over the
+/// real wire path.
+fn run_mock_materialize(args: MatArgs) -> ExitCode {
+    use conductor::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
+    if args.hops < 3 {
+        eprintln!("[conductor] --hops must be >= 3 (gate (b) needs a retained grandparent)");
+        return ExitCode::FAILURE;
+    }
+    // Script capacity: the longest single replay is the from-genesis worst
+    // case + the reproducer tail; each mock intercept is 100 ns of V-time.
+    let intercepts = ((args.hops as u64 + 2) * (args.hop_delta + 200) + args.tail_delta) / 100 + 8;
+    let mut server = match conductor::mock::server(conductor::mock::chain_fork_script(
+        intercepts as usize,
+        false,
+    )) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[conductor] failed to compose the mock server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = MaterializeConfig {
+        seed: args.seed,
+        hops: args.hops,
+        hop_delta: args.hop_delta,
+        tail_delta: args.tail_delta,
+        snapshot_retry_step: 100,
+        snapshot_max_attempts: 64,
+    };
+    let initial = EnvSpec::Seeded {
+        seed: conductor::mock::BOOT_SEED,
+        policy: FaultPolicy::none(),
+    };
+    println!(
+        "[conductor] materialize (mock): {}-hop chain, hop_delta {}, tail {}\n",
+        cfg.hops, cfg.hop_delta, cfg.tail_delta
+    );
+    let (served, report) = run_session(&mut server, move |stream| {
+        conductor::materialize_client(stream, initial, cfg)
+    });
+    let report = match report {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[conductor] materialize: the chain protocol failed: {e}");
+            if let Err(se) = served {
+                eprintln!("[conductor] server session ended with: {se}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(se) = served {
+        eprintln!("[conductor] server session ended with a fatal error: {se}");
+        return ExitCode::FAILURE;
+    }
+    print!("{}", render_materialize_table(&report));
+    let failures = verify_materialize(&report, None);
+    if failures.is_empty() {
+        println!(
+            "\n[conductor] materialize GATES PASS: parent-rooted hot path, bit-identical \
+             eviction round-trip (folded + worst case), composed reproducer replays."
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("\n[conductor] materialize GATES FAILED:");
         for f in &failures {
             eprintln!("  - {f}");
         }

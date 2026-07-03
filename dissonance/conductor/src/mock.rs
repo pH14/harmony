@@ -120,6 +120,31 @@ pub fn recording_fork_script() -> Vec<Exit> {
     script
 }
 
+/// The fork script for the **task-68 chain protocol**: a long run of V-time
+/// intercepts (each RDTSC advances V-time by [`WORK_STEP`] and lands on a
+/// sealable synchronized boundary), so a chain of `branch → run(deadline) →
+/// seal` hops — and the single long from-genesis fold replay — always finds
+/// its boundaries before the clean `Hlt` terminal.
+///
+/// With `draws`, every other intercept is an RDRAND from the VMM's seeded
+/// stream: the script that pins the **sequential-entropy-splice limit** (a
+/// compose-fold collapses the per-hop reseed points, so a leg spanning two
+/// hops draws a different count/sequence than the hop-by-hop chain did — the
+/// round-trip hashes must diverge, documenting the substrate contract
+/// boundary escalated by task 68).
+pub fn chain_fork_script(intercepts: usize, draws: bool) -> Vec<Exit> {
+    let mut script = Vec::with_capacity(intercepts + 1);
+    for i in 0..intercepts {
+        if draws && !i.is_multiple_of(2) {
+            script.push(Exit::Rdrand { width: 8 });
+        } else {
+            script.push(Exit::Rdtsc);
+        }
+    }
+    script.push(Exit::Hlt);
+    script
+}
+
 /// Compose the mock control server: a live VM advanced to a synchronized
 /// (post-RDTSC) boundary — so the session's first `snapshot` seals first-try —
 /// and a factory that boots fork VMs with `fork_script`. Every fork VM is

@@ -11,30 +11,35 @@
 //! [`Oracle`]. [`Explorer::explore`] runs the Progression for a bounded number
 //! of steps.
 //!
-//! ## Seals: the engine-side materialization cache
+//! ## Seals: the engine-side materialization cache (task 68)
 //!
 //! A frontier entry is a *virtual* exemplar — kilobytes, never a resource. The
-//! engine keeps the expensive half separately: a **seal** (a live [`SnapId`])
-//! per materialized exemplar, minted eagerly at each admitted fork and re-minted
-//! on demand. Dropping seals ([`Explorer::evict_seals`]) is **reproducibility-
-//! safe** (spine invariant 4): a later exploit of a seal-less exemplar
-//! re-materializes it from genesis — `branch(genesis, entry.env)` replayed to
-//! `exemplar.at` under [`StopMask::NONE`] (a pinned replay, nothing surfaces) —
-//! and determinism makes the re-materialized state identical. Retention is a
-//! pure performance knob. (Suffix-only materialization from a live `parent` —
-//! the ≪-genesis fast path — is the frontier task's box-gated mechanism, not
-//! wired here.)
+//! engine keeps the expensive half separately, in its embedded
+//! [`Materializer`]: a **seal** (a live [`SnapId`]) per materialized exemplar,
+//! minted eagerly at each admitted fork and re-minted on demand, plus the
+//! **lineage table** and the **spanning-ancestor retention pool** (task 68).
+//! Materialization is **parent-rooted**: `branch(parent, suffix)` + replay
+//! only the suffix + seal; when the parent's seal was evicted, the suffix
+//! chain from the nearest *retained* ancestor is folded via
+//! [`EnvCodec::compose`] — one branch + one run. Genesis
+//! (`branch(genesis, entry.env)` under [`StopMask::NONE`], a pinned replay) is
+//! reached only when no ancestor is retained — the graceful worst case, and
+//! why dropping seals ([`Explorer::evict_seals`], the budgeted
+//! [`Explorer::enforce_seal_budget`]) is **reproducibility-safe** (spine
+//! invariant 4): determinism makes any re-materialized state identical.
+//! Retention is a pure performance knob.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::error::MachineError;
+use crate::materialize::{Materialization, Materializer, SealBudget};
 use crate::prng::Prng;
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{
     Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment, Oracle,
     RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
 };
-use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason, VTime};
+use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason};
 
 /// The result of one Modulation: where it stopped and the **branch-local**
 /// reproducer [`Environment`] accumulated over it
@@ -123,13 +128,12 @@ pub struct Explorer<M: Machine> {
     /// single slot) so a Modulation that forks more than once admits/drops
     /// *every* fork and never leaks a backend handle.
     pending_forks: Vec<PendingFork>,
-    /// The materialization cache: **stable** frontier id ([`ExemplarRef`]) →
-    /// live seal. Keyed by identity, not position, so an [`Archive::evict`]
-    /// that compacts the frontier can never re-point a seal at a different
-    /// exemplar — a dead id's seal is merely orphaned, and
-    /// [`sweep_dead_seals`](Explorer::sweep_dead_seals) releases it. Never a
-    /// correctness surface — see [`evict_seals`](Explorer::evict_seals).
-    seals: BTreeMap<u64, SnapId>,
+    /// The task-68 materialization engine: the seal cache (**stable** frontier
+    /// id → live seal, so an [`Archive::evict`] that compacts the frontier can
+    /// never re-point a seal at a different exemplar), the lineage table, and
+    /// the retention pool. Never a correctness surface — see
+    /// [`evict_seals`](Explorer::evict_seals).
+    mat: Materializer,
 }
 
 impl<M: Machine> Explorer<M> {
@@ -168,7 +172,10 @@ impl<M: Machine> Explorer<M> {
                 on: StopMask::ALL,
             },
             pending_forks: Vec::new(),
-            seals: BTreeMap::new(),
+            // Genesis moment defaults to 0 (exact for the toy; a live driver
+            // that probed the true origin records it via
+            // `set_genesis_moment`). Policy-only — see `Materializer`.
+            mat: Materializer::new(genesis, Moment(0)),
         })
     }
 
@@ -190,12 +197,68 @@ impl<M: Machine> Explorer<M> {
     /// The live seal materializing frontier entry `r`, if any — `None` after
     /// eviction (the entry re-materializes on its next exploit).
     pub fn seal_of(&self, r: ExemplarRef) -> Option<SnapId> {
-        self.seals.get(&r.0).copied()
+        self.mat.seal_of(r)
     }
 
     /// How many frontier entries currently hold a live seal.
     pub fn sealed_count(&self) -> usize {
-        self.seals.len()
+        self.mat.sealed_count()
+    }
+
+    /// The embedded task-68 materialization engine (lineage table + retention
+    /// pool), read-only — for inspection and diagnostics.
+    pub fn materializer(&self) -> &Materializer {
+        &self.mat
+    }
+
+    /// Record the genesis snapshot's true moment (e.g. a live origin probed
+    /// before [`Explorer::new`]). Default `Moment(0)`. Policy-only: it scales
+    /// the retention model's genesis bound, never correctness.
+    pub fn set_genesis_moment(&mut self, at: Moment) {
+        self.mat.set_genesis_at(at);
+    }
+
+    /// Inject the task-63 `sealable(Moment)` predicate (default always-true —
+    /// the GO arm). Gates every seal the engine takes: the eager fork seals in
+    /// [`modulation`](Explorer::modulation) (an inadmissible [`StopReason::SnapshotPoint`]
+    /// is stepped past, never sealed) and every
+    /// [`materialize`](Explorer::materialize) target (refused loudly with
+    /// [`MachineError::NotSealable`]). Compose with
+    /// [`CoverageArchive::with_sealable`](crate::CoverageArchive::with_sealable)
+    /// so admission agrees with the engine.
+    pub fn set_sealable(&mut self, sealable: Box<dyn Fn(Moment) -> bool>) {
+        self.mat.set_sealable(sealable);
+    }
+
+    /// Set the retention pool's budget (default [`SealBudget::Unbounded`],
+    /// preserving the eager seal-per-admission behavior).
+    /// [`progression_step`](Explorer::progression_step) enforces it after every
+    /// admission; [`enforce_seal_budget`](Explorer::enforce_seal_budget) runs it
+    /// on demand.
+    pub fn set_seal_budget(&mut self, budget: SealBudget) {
+        self.mat.set_budget(budget);
+    }
+
+    /// The modeled materialization cost of entry `r` in `Moment` units (`0`
+    /// when its own seal is live, else the replay depth from the nearest
+    /// retained ancestor, up to the genesis bound); `None` for a dead ref.
+    pub fn modeled_cost(&self, r: ExemplarRef) -> Option<u64> {
+        self.mat.modeled_cost(self.archive.frontier(), r)
+    }
+
+    /// Drop entry `r`'s seal, if it holds one (the selective retention knob;
+    /// always reproducibility-safe). Returns the dropped handle.
+    pub fn evict_seal(&mut self, r: ExemplarRef) -> Result<Option<SnapId>, MachineError> {
+        self.mat.evict_seal(&mut self.machine, r)
+    }
+
+    /// Enforce the retention budget now: evict minimum-benefit seals until the
+    /// pool fits [`SealBudget::of`] the live frontier (deterministic tie-break
+    /// by [`SnapId`]). Returns the evicted handles. Called automatically at
+    /// the end of every [`progression_step`](Explorer::progression_step).
+    pub fn enforce_seal_budget(&mut self) -> Result<Vec<SnapId>, MachineError> {
+        self.mat
+            .enforce_budget(&mut self.machine, self.archive.frontier())
     }
 
     /// The [`StopConditions`] used by [`progression_step`](Explorer::progression_step)
@@ -229,11 +292,7 @@ impl<M: Machine> Explorer<M> {
     /// undropped handle (the failed one included) stays cached and the call is
     /// retryable.
     pub fn evict_seals(&mut self) -> Result<(), MachineError> {
-        while let Some((&id, &seal)) = self.seals.first_key_value() {
-            self.machine.drop_snap(seal)?;
-            self.seals.remove(&id);
-        }
-        Ok(())
+        self.mat.evict_all(&mut self.machine)
     }
 
     /// **Inner loop.** Drive one run from `base` to a terminal stop, answering
@@ -276,6 +335,15 @@ impl<M: Machine> Explorer<M> {
                     resolve = Some(answer);
                 }
                 StopReason::SnapshotPoint { vtime } => {
+                    // The task-63 sealable seam: a point the injected
+                    // predicate rejects is stepped past, never sealed — the
+                    // engine must not even *attempt* a seal at an inadmissible
+                    // moment (the archive's own predicate would refuse the
+                    // admission anyway; compose the two so they agree).
+                    if !self.mat.sealable_at(Moment(vtime.0)) {
+                        resolve = None;
+                        continue;
+                    }
                     // Sealable point: seal eagerly (the materialization the
                     // admitted exemplar will branch from) and continue the run
                     // past it. The env/coverage are captured *now* (the prefix
@@ -420,7 +488,19 @@ impl<M: Machine> Explorer<M> {
                 .is_some_and(|(_, exemplar)| *exemplar == fork.exemplar);
             if admitted {
                 let p = self.pending_forks.remove(0);
-                self.seals.insert(new_entries[ni].0.0, p.seal);
+                // Cache the eager seal under the entry's stable id AND record
+                // its lineage (task 68): parent = this Modulation's branch
+                // base, suffix = the branch-local prefix env as of the fork.
+                // The chain is what a later materialization walks once seals
+                // start being evicted. A displaced seal is impossible under
+                // stable ids (fresh entries never carry one), but a handle
+                // must never leak — release it defensively if it exists.
+                if let Some(old) =
+                    self.mat
+                        .register(new_entries[ni].0, p.seal, base_snap, p.suffix, p.at)
+                {
+                    self.machine.drop_snap(old)?;
+                }
                 ni += 1;
             } else {
                 self.machine.drop_snap(self.pending_forks[0].seal)?;
@@ -428,13 +508,16 @@ impl<M: Machine> Explorer<M> {
             }
         }
 
-        // 6. Retention policy (reproducibility-safe; a no-op for the default
-        //    archive), then sweep the seals of anything it evicted — a stable
-        //    id can never be re-minted, so a dead ref's seal is provably
-        //    orphaned and its handle is released here rather than leaked. The
+        // 6. Retention policy: the archive's own trim (reproducibility-safe; a
+        //    no-op for the default archive), then sweep the seals of anything
+        //    it evicted — a stable id can never be re-minted, so a dead ref's
+        //    seal is provably orphaned and its handle is released here rather
+        //    than leaked — then the task-68 pool budget (min-benefit seal
+        //    eviction; a no-op under the default Unbounded budget). The
         //    selector's reward hook runs last.
         self.archive.evict();
         self.sweep_dead_seals()?;
+        self.enforce_seal_budget()?;
         if let Some(r) = choice {
             self.selector.reward(r, reward);
         }
@@ -465,38 +548,35 @@ impl<M: Machine> Explorer<M> {
     /// [`MachineError::UnknownExemplar`], never a wrong snapshot (stable ids
     /// make aliasing impossible; see [`ExemplarRef`]). A live seal is returned
     /// as-is (the cheap path — the seal minted eagerly at the fork, or by a
-    /// previous re-materialization). Otherwise the state is **re-materialized
-    /// from genesis**: `branch(genesis, entry.env)` replayed to `exemplar.at`
-    /// under [`StopMask::NONE`] — a pinned replay (recorded overrides pin what
-    /// the run answered; the seed answers the rest; nothing surfaces) — then
-    /// sealed. Determinism makes the result identical to the evicted seal,
-    /// which is why eviction is never a correctness concern.
+    /// previous re-materialization). Otherwise the state is re-materialized
+    /// **parent-rooted** (task 68): `branch` from the nearest **retained**
+    /// ancestor with the suffix chain folded via [`EnvCodec::compose`], replay
+    /// only that suffix to `exemplar.at` under [`StopMask::NONE`] (a pinned
+    /// replay — recorded overrides pin what the run answered; the seed answers
+    /// the rest; nothing surfaces), then seal. Genesis
+    /// (`branch(genesis, entry.env)`) is reached only when no ancestor on the
+    /// chain is retained — the graceful worst case. Determinism makes the
+    /// result identical to the evicted seal, which is why eviction is never a
+    /// correctness concern.
     pub fn materialize(&mut self, r: ExemplarRef) -> Result<SnapId, MachineError> {
-        // Resolve the entry FIRST: a dead ref must error even if a stale seal
-        // lingers (it cannot linger past the post-evict sweep, but the order
-        // makes the guarantee locally evident).
-        let (env, at) = match self.archive.frontier().get(r) {
-            Some(entry) => (entry.env.clone(), entry.exemplar.at),
-            None => return Err(MachineError::UnknownExemplar(r.0)),
-        };
-        if let Some(&seal) = self.seals.get(&r.0) {
-            return Ok(seal);
-        }
-        self.machine.branch(self.genesis, &env)?;
-        let until = StopConditions {
-            deadline: Some(VTime(at.0)),
-            on: StopMask::NONE,
-        };
-        // Nothing can surface under StopMask::NONE; loop defensively until the
-        // terminal (Deadline) stop all the same.
-        loop {
-            if self.machine.run(&until, None)?.is_terminal() {
-                break;
-            }
-        }
-        let seal = self.machine.snapshot()?;
-        self.seals.insert(r.0, seal);
-        Ok(seal)
+        self.materialize_report(r).map(|(seal, _)| seal)
+    }
+
+    /// [`materialize`](Explorer::materialize), also returning the replay's
+    /// depth accounting — `None` on a seal-cache hit (nothing was replayed).
+    /// The report is what the box gates and the hot-path property measure:
+    /// [`Materialization::depth`] is the issued replay depth, and
+    /// [`Materialization::from_genesis`] marks the graceful worst case.
+    pub fn materialize_report(
+        &mut self,
+        r: ExemplarRef,
+    ) -> Result<(SnapId, Option<Materialization>), MachineError> {
+        self.mat.materialize(
+            &mut self.machine,
+            self.codec.as_ref(),
+            self.archive.frontier(),
+            r,
+        )
     }
 
     /// Release the seal of every frontier id that is no longer live (its entry
@@ -507,18 +587,7 @@ impl<M: Machine> Explorer<M> {
     /// only **after** its `drop_snap` succeeds, so a mid-way failure forgets
     /// nothing and the next sweep retries the leftovers.
     pub fn sweep_dead_seals(&mut self) -> Result<(), MachineError> {
-        let dead: Vec<u64> = self
-            .seals
-            .keys()
-            .copied()
-            .filter(|&id| self.archive.frontier().get(ExemplarRef(id)).is_none())
-            .collect();
-        for id in dead {
-            if let Some(&seal) = self.seals.get(&id) {
-                self.machine.drop_snap(seal)?;
-                self.seals.remove(&id);
-            }
-        }
-        Ok(())
+        self.mat
+            .sweep_dead(&mut self.machine, self.archive.frontier())
     }
 }

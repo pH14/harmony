@@ -44,6 +44,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError};
 
 pub mod campaign;
+pub mod materialize;
 pub mod mock;
 pub mod planted;
 pub mod record;
@@ -391,6 +392,18 @@ pub fn sweep_client(
 ) -> Result<SweepReport, MachineError> {
     let mut machine = SocketMachine::connect(stream, initial)?;
     run_sweep(&mut machine, &explorer::SpecEnvCodec, &cfg)
+}
+
+/// Connect the socket adapter over `stream` and run the task-68 chain
+/// protocol ([`materialize::run_materialize`]) against the production codec.
+/// The standard client body for the materialization gates.
+pub fn materialize_client(
+    stream: UnixStream,
+    initial: EnvSpec,
+    cfg: materialize::MaterializeConfig,
+) -> Result<materialize::MaterializeReport, MachineError> {
+    let mut machine = SocketMachine::connect(stream, initial)?;
+    materialize::run_materialize(&mut machine, &explorer::SpecEnvCodec, &cfg)
 }
 
 #[cfg(test)]

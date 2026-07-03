@@ -46,6 +46,40 @@ pub fn conductor::campaign::mint_fault_env(u64, u64, &conductor::campaign::Campa
 pub fn conductor::campaign::render_campaign_table(&conductor::campaign::CampaignReport, usize) -> alloc::string::String
 pub fn conductor::campaign::run_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::campaign::CampaignConfig) -> core::result::Result<conductor::campaign::CampaignReport, explorer::error::MachineError>
 pub fn conductor::campaign::verify_campaign(&conductor::campaign::CampaignReport, usize) -> alloc::vec::Vec<alloc::string::String>
+pub mod conductor::materialize
+pub struct conductor::materialize::HopRow
+pub conductor::materialize::HopRow::at: u64
+pub conductor::materialize::HopRow::attempts: usize
+pub conductor::materialize::HopRow::requested: u64
+pub struct conductor::materialize::MaterializeConfig
+pub conductor::materialize::MaterializeConfig::hop_delta: u64
+pub conductor::materialize::MaterializeConfig::hops: usize
+pub conductor::materialize::MaterializeConfig::seed: u64
+pub conductor::materialize::MaterializeConfig::snapshot_max_attempts: usize
+pub conductor::materialize::MaterializeConfig::snapshot_retry_step: u64
+pub conductor::materialize::MaterializeConfig::tail_delta: u64
+impl core::default::Default for conductor::materialize::MaterializeConfig
+pub fn conductor::materialize::MaterializeConfig::default() -> Self
+pub struct conductor::materialize::MaterializeReport
+pub conductor::materialize::MaterializeReport::bug_env: explorer::Environment
+pub conductor::materialize::MaterializeReport::folded: explorer::materialize::Materialization
+pub conductor::materialize::MaterializeReport::folded_hash: [u8; 32]
+pub conductor::materialize::MaterializeReport::genesis_at: u64
+pub conductor::materialize::MaterializeReport::genesis_attempts: usize
+pub conductor::materialize::MaterializeReport::hops: alloc::vec::Vec<conductor::materialize::HopRow>
+pub conductor::materialize::MaterializeReport::hot: explorer::materialize::Materialization
+pub conductor::materialize::MaterializeReport::hot_hash: [u8; 32]
+pub conductor::materialize::MaterializeReport::leg_hash: [u8; 32]
+pub conductor::materialize::MaterializeReport::leg_stop: explorer::StopReason
+pub conductor::materialize::MaterializeReport::replay_hash: [u8; 32]
+pub conductor::materialize::MaterializeReport::replay_stop: explorer::StopReason
+pub conductor::materialize::MaterializeReport::worst: explorer::materialize::Materialization
+pub conductor::materialize::MaterializeReport::worst_hash: [u8; 32]
+pub const conductor::materialize::TASK63_BASELINE_PPM: u64
+pub fn conductor::materialize::depth_ratio_ppm(&explorer::materialize::Materialization) -> u64
+pub fn conductor::materialize::render_materialize_table(&conductor::materialize::MaterializeReport) -> alloc::string::String
+pub fn conductor::materialize::run_materialize<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::materialize::MaterializeConfig) -> core::result::Result<conductor::materialize::MaterializeReport, explorer::error::MachineError>
+pub fn conductor::materialize::verify_materialize(&conductor::materialize::MaterializeReport, core::option::Option<u64>) -> alloc::vec::Vec<alloc::string::String>
 pub mod conductor::mock
 pub struct conductor::mock::TickingWork
 impl conductor::mock::TickingWork
@@ -56,6 +90,7 @@ pub fn conductor::mock::TickingWork::work(&self) -> core::result::Result<u64, vm
 pub const conductor::mock::BOOT_SEED: u64
 pub const conductor::mock::RAM: usize
 pub const conductor::mock::WORK_STEP: u64
+pub fn conductor::mock::chain_fork_script(usize, bool) -> alloc::vec::Vec<vmm_backend::exit::Exit>
 pub fn conductor::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
 pub fn conductor::mock::recording_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
 pub fn conductor::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
@@ -134,6 +169,7 @@ pub conductor::SweepReport::snapshot_attempts: usize
 pub conductor::SweepReport::snapshot_vtime: u64
 pub fn conductor::fmt_stop(&explorer::StopReason) -> alloc::string::String
 pub fn conductor::hex(&[u8; 32]) -> alloc::string::String
+pub fn conductor::materialize_client(std::os::unix::net::stream::UnixStream, environment::recorded::EnvSpec, conductor::materialize::MaterializeConfig) -> core::result::Result<conductor::materialize::MaterializeReport, explorer::error::MachineError>
 pub fn conductor::probe_vtime<M: explorer::seam::Machine>(&mut M) -> core::result::Result<u64, explorer::error::MachineError>
 pub fn conductor::render_table(&conductor::SweepReport) -> alloc::string::String
 pub fn conductor::run_session<B, T>(&mut vmm_core::control::ControlServer<B>, impl core::ops::function::FnOnce(std::os::unix::net::stream::UnixStream) -> T + core::marker::Send + 'static) -> (core::result::Result<(), vmm_core::control::ServeError>, T) where B: vmm_backend::backend::Backend, T: core::marker::Send + 'static
