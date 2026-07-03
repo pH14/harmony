@@ -448,6 +448,7 @@ pub struct vmm_core::vmm::RunResult
 pub vmm_core::vmm::RunResult::exit_counts: vmm_backend::exit::ExitCounts
 pub vmm_core::vmm::RunResult::reason: vmm_core::vmm::TerminalReason
 pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
+pub struct vmm_core::vmm::SdkSnapshot
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend>
 impl<B: vmm_backend::backend::Backend> vmm_core::vmm::Vmm<B>
 pub fn vmm_core::vmm::Vmm<B>::apply_host_fault(&mut self, &environment::host::HostFault) -> core::result::Result<(), vmm_core::vmm::VmmError>
@@ -479,6 +480,9 @@ pub fn vmm_core::vmm::Vmm<B>::save_vm_state(&self) -> core::result::Result<vm_st
 pub fn vmm_core::vmm::Vmm<B>::save_vtime(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::VtimeSnapshot>, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::sdk_buggify(&self) -> &[(u64, environment::catalog::Answer)]
 pub fn vmm_core::vmm::Vmm<B>::sdk_events(&self) -> &[(u64, u32, alloc::vec::Vec<u8>)]
+pub fn vmm_core::vmm::Vmm<B>::sdk_restore(&mut self, &vmm_core::vmm::SdkSnapshot)
+pub fn vmm_core::vmm::Vmm<B>::sdk_restore_events(&mut self, &vmm_core::vmm::SdkSnapshot)
+pub fn vmm_core::vmm::Vmm<B>::sdk_snapshot(&self) -> core::option::Option<vmm_core::vmm::SdkSnapshot>
 pub fn vmm_core::vmm::Vmm<B>::serial(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::snapshot_hashing_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> alloc::vec::Vec<u8>
