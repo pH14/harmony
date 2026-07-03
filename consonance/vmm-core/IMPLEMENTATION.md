@@ -3180,3 +3180,424 @@ via a hostile/oversized `pref_address`/`init_size`. Fixes:
   by capping `initrd_addr_max` inside the page): the predicate's edges; a straddling ramdisk is
   relocated below; a ramdisk that fits above the hole is kept high; one that cannot fit below is
   rejected.
+
+## Task 59 — host-plane enforcement: apply a `HostFault` at a `Moment` (light up `perturb`)
+
+Task 45 delivered the `HostFault` types, `Moment`-keyed `Action` recording, and the `perturb`
+wire verb — all pure logic, with enforcement declared frontier. Task 58 served `perturb` as
+`Unsupported`. This task builds the enforcement in `consonance/vmm-core` (the server + `Vmm`),
+plus one supporting `control-proto` error variant.
+
+### The apply-at-`Moment` seam
+
+- **`Vmm::arm_arrival(moment)` / `clear_arrival()`** — arm a host-fault arrival deadline. It is
+  folded into `step()`'s `run_until` alongside the task-47 LAPIC-timer preemption deadline by the
+  new **`run_until_deadline()`** = `min(preemption_deadline, arrival_deadline)`. This reuses the
+  exact-count-arrival machinery (task 47): the guest is forced out *between instructions* at the
+  seed-deterministic retired-branch count whose V-time is `moment`. **Strictly additive**: when no
+  arrival is armed, `run_until_deadline() == preemption_deadline()` byte-for-byte, so every
+  protected M1/M2/corpus/Linux-boot/`live_*` path (none stages a fault) is unchanged — an empty
+  schedule changes nothing (gate 3).
+- **`Vmm::apply_host_fault(&fault)`** — the imperative apply:
+  - `CorruptMemory { gpa, mask }` — XOR the `BitMask` into the little-endian 8-byte word at `gpa`
+    in the owned `GuestRam` (on the box KVM reads the guest through this same mmap backing, so the
+    upset is live on the next entry). Fails loud on `gpa + 8 > ram` — never clips or wraps.
+  - `InjectInterrupt { vector }` — `lapic.raise(vector)` into the userspace-LAPIC IRR, so the
+    **existing** `service_pending_irqs` arbitration delivers it at the next injectable entry
+    (delivery ordering vs. the V-time timer stays deterministic). Requires the LAPIC wired and a
+    non-reserved vector (`≥ 16`); both fail loud.
+  - `SkewTime` / `SetClockRate` — **rejected loud** (out of scope, below).
+
+### The `Moment` ⇄ work axis
+
+`Moment` is the single deterministic axis (`environment` doc: "V-time is a derived view of this
+same axis"). Enforcement treats a fault's `Moment` as its **effective V-time** (`Vmm::effective_vns`
+reports the same axis). Arrival converts it to the raw retired-branch work deadline via
+`VClock::work_for_vns(moment)` — exactly as `preemption_deadline` does for the timer. Under the
+`det-cfl-v1` contract clock (1 ns / retired branch, `ratio_den == 1`, `vns_base` 0) the three
+coincide numerically (`Moment == work == vns`), which is what makes the portable mock proof exact
+(the mock rewrites a scripted `Exit::Deadline`'s `reached` to the armed work deadline).
+
+### Server: staged schedule + recorded env (`ControlServer`)
+
+- **`schedule: BTreeMap<Moment, Vec<HostFault>>`** — ordered staging; faults at one `Moment` held in
+  stage order (a `Vec`) so multiple faults per `Moment` apply deterministically. Populated by
+  `perturb` and by a `branch` whose env carries host overrides; **drained** by `run` (a re-run
+  rewinds via `branch`/`replay`, which re-stages).
+- **`perturb(fault, at)`** — decode, then run through the **single shared `validate_host_fault`
+  gate** (PR #51 round 1, blocking item 1) that a `branch` env host fault also uses, so both reject
+  identically. Rejects loud, *before* staging: a malformed blob → `MalformedEnvironment`; a **past
+  `Moment`** (`at < effective_vns`) → `PerturbPastMoment` (a fault recorded behind its true apply
+  point would not replay); a **same-`Moment` conflict** → `PerturbMomentTaken`; an
+  out-of-range `CorruptMemory` gpa → `PerturbOutOfRange`; the out-of-scope clock faults →
+  `Unsupported`. (`PerturbPastMoment`/`PerturbMomentTaken` are new `control-proto` variants,
+  discriminants 12/13.)
+- **`run(until)`** = "run to `min(next staged Moment, until)`": before each step, apply the fault the
+  run has reached (`arm_arrival` makes arrival exact), stamping it into the recorded env; then arm the
+  next `Moment`. The drain is **bounded by the deadline** — `min(vns, deadline)` (PR #51 round 1,
+  blocking item 1b): a fault whose `Moment` lies beyond `until.deadline` is never armed, and the
+  deadline-bounded drain means a natural exit that overshoots both never applies it late (which would
+  record it at a `Moment` earlier than its true apply point). The `until` deadline itself stays
+  **opportunistic** (task-58 posture; a hard force-exit at an arbitrary deadline was reverted there).
+- **`branch`** now **enforces host overrides** — staged from the env through the **same
+  `validate_host_fault` gate as `perturb`** (blocking item 1c), with the floor set to the restored
+  snapshot's V-time, so a bad env fault is a recoverable `ControlError` reply at branch time (not a
+  later session-fatal `ServeError::Vmm` at apply time) and the schedule is left empty on rejection.
+  Guest overrides, standing faults, and a non-`none` fault policy still answer `Unsupported`
+  (task 61 / decide-seam loops).
+- **`recorded_env()`** — the active reproducer: every applied fault is stamped via task-45's
+  `EnvSpec::perturb`, so the emitted env replays to the identical `state_hash` (record → replay
+  closure). Its seed is set by the most recent `branch` (default 0 without a branch — the box
+  closure always branches to a seed first).
+
+### Deviations considered and rejected
+
+- **Threading the fault schedule through `step()` vs. a field + `run_until_deadline()` fold.** Chose
+  the field (`arrival_deadline`) folded by a small helper, so the heavily-invariant-laden `step()`
+  (round-11/12/13 zero-step logic) is untouched except for the one-line deadline source swap.
+  Duplicating `step()` for arrival was rejected as far riskier.
+- **A hard force-exit at the `run` deadline.** Rejected — task 58 reverted exactly that (stale
+  `run_until` arms accumulating across restores → a 16th-run `state_hash` divergence). Arrival is
+  armed only at fault `Moment`s (which we must hit exactly); the run deadline stays opportunistic.
+- **Reusing an existing `ControlError` for out-of-range gpa.** No existing variant fits "out of
+  range". Added `ControlError::PerturbOutOfRange { gpa, ram_len }` (wire discriminant 11) rather
+  than misclassify it, per the spec's "Fail loud (ControlError)".
+- **Injecting `InjectInterrupt` straight into the backend.** Rejected in favor of the LAPIC IRR
+  raise, so delivery arbitrates against the V-time timer deterministically (spec requirement).
+
+### Known limitations / integrator notes
+
+- **`SkewTime` / `SetClockRate` are deferred** (spec-mandated): they mutate the V-time clock itself
+  (epoch/ratio) and interact with the armed-deadline machinery. `apply_host_fault` and `perturb`
+  reject them loud (a follow-on lights them up once the two simple faults have proven the seam).
+- **One fault per `Moment` (integrator ruling, spec amendment PR #54).** Task 45's `EnvSpec` override
+  map is `BTreeMap<Moment, Action>` (one action per `Moment`), so a second same-`Moment` fault cannot
+  be recorded without losing the first — an *accepted* schedule would emit a non-reproducing
+  reproducer. The task-45-vs-task-59 question (widen the override map to carry multiple host faults
+  per `Moment` **vs.** keep one-per-`Moment`) was escalated during PR #51 round 1 and **ruled: keep
+  one fault per `Moment`.** The frontier loudly rejects a second same-`Moment` stage with a distinct
+  `ControlError::PerturbMomentTaken`, so every emitted reproducer stays exact and the recorded env
+  never silently drops a fault. The schedule is consequently `BTreeMap<Moment, HostFault>` (one per
+  `Moment`), and the gate-1 proptest generates **distinct** `Moment`s (a `BTreeMap` key).
+- **`InjectInterrupt` apply is session-fatal on failure** (reserved vector / unwired LAPIC): a run
+  that cannot deliver a staged interrupt is unvouched, so it tears the session down (`ServeError`)
+  rather than silently skipping (which would desync the recorded env from the run). The gpa/vector
+  validity is caught earlier and recoverably at `perturb` stage time where possible.
+- **Portable proof vs. box gate.** The mock (`deterministic_tsc = true`) makes the apply-at-`Moment`
+  seam, its determinism, the out-of-range rejection, and a `recorded_env` re-apply-to-same-hash
+  closure all laptop-testable (`control.rs` tests + a 384-case proptest). The **end-to-end box gate**
+  (record → replay on real KVM against the Postgres workload; schedule-absent control differs) needs
+  `/dev/kvm` + the PMU `run_until` path and is **handed to the foreman** — standard box pinning +
+  revert discipline; the additive-empty-schedule claim (gate 3, `live_*` byte-identical) is verified
+  by inspection here (`run_until_deadline == preemption_deadline` with no arrival armed).
+
+### Cross-crate touches (beyond `consonance/vmm-core`)
+
+- **`dissonance/control-proto`** — added three `ControlError` variants for stage-time perturb
+  rejections: `PerturbOutOfRange { gpa, ram_len }` (disc 11), `PerturbPastMoment { at, floor }`
+  (disc 12), `PerturbMomentTaken { at }` (disc 13) — each with codec + golden + `arb_control_error`
+  generator + regenerated `public-api.txt` (platform-agnostic crate, macOS regen is fine).
+  Backward-additive wire change (new reply-error discriminants; protocol version unchanged).
+- **`consonance/vmm-core/tests/public-api.txt`** — the four new public items (`ControlServer::recorded_env`,
+  `Vmm::{apply_host_fault, arm_arrival, clear_arrival}`) were added by hand at their sorted positions.
+  This file is **Linux-generated** (it carries the `cfg(target_os = "linux")` `work_perf` /
+  `boot_*_selected` items a macOS regen would drop), so it must **not** be regenerated on macOS; the
+  four additions are platform-agnostic method signatures verified byte-identical against a macOS
+  `cargo public-api` run (which agrees apart from the Linux-only lines). The box CI's public-api job
+  is the final confirmation.
+- **`dissonance/conductor`** — the `loopback.rs` raw-wire test's `perturb → Unsupported` assertion is
+  now stale; updated to `MalformedEnvironment` (a malformed fault blob). A well-formed host fault
+  now stages (`Reply::Unit`).
+- **`dissonance/explorer`** — no code touched; the `adapter.rs` module-doc line noting the server
+  "rejects any override-carrying branch env with Unsupported" is now stale for the *host* plane
+  (host overrides are enforced; guest overrides still `Unsupported`). Left for the integrator, since
+  explorer does not depend on `vmm-core` and its tests do not exercise the real server.
+
+### PR #51 round 2 — five corners of "recorded apply point == actual apply point, or fail loud"
+
+A fresh cross-model pass found five more instances of the same invariant breaking at edges of the
+verb space. All fixed behind the existing validate/run/restore seams, plus a structural proptest.
+
+1. **Crossed-`Moment` survival across `run` calls.** A fault beyond a run's deadline that the guest
+   *executed past* (`deadline < m <= vns` after a natural-exit overshoot) was left staged and would be
+   drained by a later `run` with `vns > m` — applied from the past, recorded at `m`. On the deadline
+   return (and defensively on terminal) the run now detects any staged `Moment <= vns` and fails loud
+   with the new `ControlError::ScheduleUnsatisfiable { moment, vtime }` (disc 14). The caller must
+   rewind (`branch`/`replay`, which clears the schedule).
+2. **Re-`perturb` at an already-**applied** `Moment`.** `validate_host_fault`'s conflict check
+   consulted only the still-staged schedule; once a fault applied it was gone from the schedule but
+   present in `recorded`, and a second `perturb(at=m)` (when `vtime == m`, clearing the floor check)
+   would overwrite it via `EnvSpec::perturb` — an applied fault vanishing from `recorded_env()`. The
+   check now also rejects `Moment`s present in `recorded.overrides()`.
+3. **`arm_arrival == false` ignored on unarmable backends.** A stock-KVM server (`deterministic_tsc =
+   false`) or a V-time-unwired VM accepted a perturb, ran to a natural exit past `m`, and applied
+   late. New `Vmm::can_arm_arrival()` is capability-checked **up front** in `validate_host_fault`, so
+   `perturb` (and `branch` host overrides) answer `Unsupported` at stage time on such a backend. The
+   mock reports `deterministic_tsc = true`, so the enforcement tests stay armable.
+4a. **Stale schedule on a recoverable restore failure.** The schedule/recorded reset happened only on
+   restore *success*; a recoverable `RestoreFailed` (fresh VM kept) left the old timeline's staged
+   faults attached to the fresh boot. Factored into `reset_schedule_to_fresh_vm`, now called on
+   **every** path that replaces the VM.
+4b. **`replay` carried the recorded seed from the wrong stream.** `replay` reused the prior session's
+   recorded seed, but the restored snapshot may sit under a different entropy seed — `recorded_env()`
+   then stamped the wrong stream and could not reproduce. The recorded seed is now derived from the
+   restored VM's **actual entropy stream** (`Vmm::entropy_state()`, the raw xorshift word — a fixed
+   point of `SeededEntropy::new`, so re-seeding a fresh VM with it reproduces the stream) for both
+   `branch` and `replay`, and `ControlServer::new` seeds `recorded` from the live VM too (so a session
+   that runs before its first `branch`/`replay` still reproduces).
+
+**Structural test (the net the review asked for).** `verb_sequence_recorded_env_reproduces_live_hash`
+is a proptest that drives a random sequence of `perturb`/`run`/`branch`/`replay` against an
+exact-arrival mock (`ArrivalBackend`: `run_until` lands at the deadline, `run` is terminal — so a
+random sequence needs no pre-scripted exits) and, after every completed run, asserts that branching
+`recorded_env()` from the starting snapshot on a fresh server and running reproduces the live
+`state_hash`. It covers the whole verb space (would have caught round-1's three and round-2's five);
+findings 1/2/3/4a additionally have dedicated corner tests, since their triggers (deadline overshoot,
+`vtime == applied Moment`, an unarmable backend, a failing factory) are specific harness setups the
+random generator over one armable backend does not by itself produce.
+
+**Round-2 cross-crate:** `control-proto` gained `ControlError::ScheduleUnsatisfiable` (disc 14, codec
++ golden + generator + regenerated `public-api.txt`); `vmm-core/tests/public-api.txt` hand-added
+`Vmm::{can_arm_arrival, entropy_state}` (same Linux-generated-file discipline as above, verified
+against a macOS `cargo public-api` run).
+
+### PR #51 round 3 — three schedule-lifecycle boundaries
+
+Fresh pass found three lifecycle-boundary holes the round-2 machinery opened. All closed; no new wire
+variants (both errors already exist).
+
+1. **`ScheduleUnsatisfiable` left the crossed fault staged.** A client that re-sent `run` (instead of
+   rewinding) would get the crossed fault applied *from the past* on the next call — the exact case
+   the error exists to prevent. The schedule now carries a **poison latch**
+   (`schedule_poisoned: Option<(Moment, vtime)>`): set when a run crosses a staged `Moment`, it makes
+   `run`/`perturb`/`snapshot` keep returning `ScheduleUnsatisfiable` until a `branch`/`replay` rewind
+   clears it (in `reset_schedule_to_fresh_vm`). Test: `schedule_poison_persists_until_a_rewind`.
+2. **`snapshot` with a pending schedule silently dropped the staged future.** A snapshot seals only VM
+   state; any restore of it clears the schedule, so the sealed state's future (the staged fault) was
+   unreproducible from the snapshot. `snapshot` now rejects loudly with the existing
+   `ControlError::SnapshotWhileArmed` while the schedule is non-empty (or poisoned) — persisting the
+   schedule inside the snapshot would be a semantics change needing its own ruling. Test:
+   `snapshot_while_a_fault_is_staged_is_rejected`.
+3. **`arrival_deadline` leaked across the in-place restore path.** A stale arm from the pre-restore
+   timeline bounded the first post-restore `step` (the #34/#55 stale-arm class). `Vmm::restore_vm_state`
+   and `restore_vtime` now clear `arrival_deadline` (mirroring `clear_arrival`), so `restore_snapshot`
+   and every in-place restore funnel through the clear. Test (vmm.rs): `arrival_deadline_is_cleared_on_restore`.
+
+**Proptest alphabet extended** (the review's ask): `verb_sequence_recorded_env_reproduces_live_hash`
+now includes `Snapshot` in the verb alphabet and is explicitly continue-after-error (a loud rejection
+— poisoned run, snapshot-while-armed, dup/past perturb — skips that op's invariant check and the
+sequence continues), so the reproduction net spans the snapshot + error-recovery lifecycle. The three
+round-3 corners keep dedicated tests, since their triggers (a deadline overshoot to poison, a
+snapshot-while-armed, an in-place restore of an armed VM) are specific setups the random generator
+over one exact-arrival backend does not itself produce.
+
+### PR #51 round 4 — the idle-HLT jump must fold in the arrival (the last exotic seam)
+
+The one remaining hole: the idle-HLT jump (task-52 discrete-event clock) bypassed the arrival fold.
+A wired guest that HLTs (IF=1) *before* the next staged `Moment`, with its LAPIC timer deadline
+*beyond* it, had `idle_action`/`resume_idle` jump V-time straight to the timer — sailing **past** the
+fault's `Moment` — so the fault applied late (and an `InjectInterrupt` landed at the timer tick, not
+the requested `Moment`), violating the exact-arrival contract enforced everywhere on the execution
+path.
+
+**Fix (`idle_action`).** The idle jump now folds the staged arrival in exactly as `run_until_deadline`
+folds it into the run: it jumps to **`min(deliverable timer, arrival)`**, waking at whichever discrete
+event comes first. A new private `Vmm::arrival_vns()` inverts the armed arrival (stored as a work
+count) back to its `Moment`'s V-time via the same clock, so the timer's V-time deadline and the
+arrival are compared on one axis. Either alone also wakes — a host fault staged with no timer is
+itself the wake event (an idle guest whose only future event is the fault reaches it, rather than
+being declared terminal). **Strictly additive:** with no fault staged `arrival_vns()` is `None`, so
+the jump target is the timer exactly as before — every M1/M2/corpus/Linux-boot idle path is
+byte-identical. After the jump `resume_idle` clears the arm (round-3), and the run loop re-arms the
+next `Moment` — so an arrival landed via the idle path is applied by the same server drain as one
+landed via `run_until`.
+
+**Tests.** vmm.rs: `idle_hlt_before_a_staged_arrival_wakes_at_the_arrival_not_the_timer` (timer far
+beyond the arrival → the jump lands at the arrival `Moment`, not the timer) and
+`idle_hlt_with_no_timer_wakes_at_a_staged_arrival` (arrival as sole wake). control.rs:
+`idle_hlt_before_fault_recorded_env_reproduces` — a 160-case proptest mirroring the exact-arrival
+verb-sequence net but over an `IdleBackend` (`run`/`run_until` return a natural `Hlt` with `IF=1`, so
+**every** arrival is reached through the idle jump), asserting `recorded_env()` reproduces the live
+`state_hash` across random `perturb`/`run`/`branch`/`replay` sequences. This interaction is also noted
+as evidence for task 77's idle-wake-vs-IRQ arbitration unification charter.
+
+### PR #51 round 5 — three host-fault error-path edges (recoverable errors leaving unpredictable state)
+
+All Mac-portable; no box re-run. The theme: a recoverable-error path that left the session in a state
+the client couldn't predict.
+
+1. **Branch-env fault validation ran AFTER the VM swap.** A rejected branch env fault returned a
+   recoverable `ControlError` from a session that had already dropped the old VM, restored+reseeded
+   the snapshot, and reset `recorded` — the client couldn't tell the branch had effectively happened.
+   Fix: validate the whole host schedule **before any swap** (blocking item 1). Extracted the
+   occupancy-free checks into `check_fault_admissible`; `restore` now runs them against the
+   **still-live** VM (its capability + RAM size, which the factory mirrors) with the `floor` derived
+   from the snapshot's own V-time (`vm_state.vtime.snapshot_vns` — no restore needed), plus a
+   `BTreeSet` intra-env duplicate-`Moment` guard. A rejected branch is now **side-effect-free** (the
+   old VM is byte-identical). The one remaining mutating-error path — `RestoreFailed` — genuinely
+   can't be pre-validated (only discovered by attempting the restore) and is documented as such.
+2. **Terminal stop kept unreachable future faults staged.** A run that reached a terminal stop with a
+   staged future fault (`m > vns`) left `self.schedule` populated, so every later `snapshot` was
+   permanently `SnapshotWhileArmed` — and task-60 crash campaigns stage faults into runs that
+   terminate before the `Moment` (a mainline path). Fix: at a terminal stop, **drop** the unreachable
+   `m ≥ vns` faults (keeping the crossed-`Moment` `m < vns` poison exactly as is). `recorded` carries
+   only APPLIED faults, so the reproducer stays faithful (replay halts at the same point).
+3. **A fault at `m == vns` was wrongly poisoned under an expired deadline.** The old
+   `ceiling = min(vns, deadline)` drain excluded a fault at exactly the current V-time when the
+   deadline was already expired (`d < vns`), so the crossed-guard then poisoned a perfectly
+   satisfiable schedule. Applying at `m == vns` is **exact arrival, not late** — only `m < vns` is
+   "ran past". Fix: the drain now classifies per fault — `m == vns` → apply (regardless of deadline);
+   `m < vns` → poison; `m > vns` → future. The deadline only gates arming and the stop. This removed
+   the `ceiling` entirely and unified the two round-2 crossed-checks into the single drain
+   classification; every round-2/3/4 test still passes.
+
+**Ruling-B pin (suggestion).** `a_branch_env_moment_occupies_the_schedule_for_ruling_b` — a
+branch-staged `Moment` occupies the schedule, so a later `perturb` at it is `PerturbMomentTaken`.
+(An `EnvSpec`'s `BTreeMap<Moment, Action>` cannot itself carry two faults at one `Moment`, so the
+`BTreeSet` guard in step 1b is future-proofing against a batch-validate refactor; the cross-verb
+boundary is what a portable test can pin.)
+
+**Tests:** `a_rejected_branch_env_fault_is_side_effect_free` (old VM byte-identical after a rejected
+branch), `a_terminal_stop_drops_unreachable_future_faults` (terminal → not `SnapshotWhileArmed`),
+`a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned` (`m == vns`, `d < vns` → applies +
+`Deadline`, no poison), `a_branch_env_moment_occupies_the_schedule_for_ruling_b`. No wire/public-api
+changes (all internal; `SnapshotWhileArmed`/`PerturbMomentTaken`/`ScheduleUnsatisfiable` already exist).
+
+### PR #51 round 6 — position-uncertainty at terminals + the no-LAPIC idle gap
+
+Round-5's terminal-drop turned out unsound; two more edges plus a proptest-floor fix.
+
+1. **Terminal-with-a-staged-fault now poisons LOUD (supersedes round-5 item 2).** A natural terminal
+   exit (HLT / debug) is **not** a V-time intercept, so `effective_vns` there is only the last-
+   intercept lower bound — nothing still staged is provably uncrossed (with `deadline < m` the arrival
+   is never armed and the guest can run past `m` to the terminal). Round-5's silent `schedule.clear()`
+   could therefore drop an accepted perturb that *was* crossed, breaking exact-arrival-or-loud. The
+   safe semantic is loud: a terminal stop with **any** fault still staged sets the poison latch and
+   returns `ScheduleUnsatisfiable`. The client rewinds (`branch`/`replay` clears the schedule — which
+   campaign flows do anyway, so the task-60 crash path stays viable), and the round-5
+   `SnapshotWhileArmed` trap stays fixed: a named, rewindable error instead of a silent stuck state.
+2. **The idle arrival-wake is now independent of the LAPIC gate.** `check_fault_admissible` accepts
+   `CorruptMemory` on any V-time-wired deterministic backend including no-LAPIC VMs, but `idle_action`
+   early-returned `Terminal` when `self.lapic` was `None` — so a no-LAPIC guest that idles (HLT, IF=1)
+   before a staged `Moment` went terminal and the accepted fault silently never applied. A host fault
+   is a host-plane event, not a guest interrupt, so it now wakes the idle jump independent of the
+   LAPIC: `idle_action` keeps the V-time + `IF` gates, makes the LAPIC-pending-IRQ and LAPIC-timer
+   checks `Option`-guarded, and jumps to `min(timer, arrival)` with the **arrival alone** waking a
+   no-LAPIC guest. Byte-identical when nothing is staged (arrival `None` ⇒ same terminal/timer
+   result as before).
+3. **Proptest case floors raised 160 → 256** (`tasks/00-CONVENTIONS.md`'s floor) for the
+   verb-sequence and idle-HLT-before-fault reproduction proptests.
+
+**Tests:** `a_terminal_stop_with_a_staged_fault_poisons_loud` (rewrites the round-5 terminal test:
+terminal + staged fault → poison, re-run/snapshot reject, rewind recovers), and (vmm.rs)
+`idle_hlt_with_no_lapic_wakes_at_a_staged_arrival` (a no-LAPIC V-time guest wakes at the arrival).
+No wire/public-api changes.
+
+**Escalated (not changed):** the `Moment` axis contradiction — `environment/src/host.rs` documents
+`Moment` as "retired instructions" while the entire enforcement plane (floors from `effective_vns`,
+the apply ceiling, the `vns == Moment` recording invariant) treats it as the derived V-time axis, so
+`work_for_vns(moment)` is correct under the enforcement-plane reading (they coincide at ratio 1). The
+integrator picks the axis (likely amending the host.rs doc); not this PR's call.
+
+### PR #51 round 7 — the exact-`effective_vns` family fix
+
+Three findings across rounds 6–7 shared one root cause: **the control plane trusted `effective_vns()`
+as an exact position where it is only the last-intercept lower bound** (round-6 terminal clear;
+round-5's `m == vns` immediate drain, mandated without a sync guard). Closed as a family rather than
+another point patch.
+
+**The synchronization predicate.** `Vmm::is_synchronized()` exposes the existing `vtime_synchronized`
+flag — `true` iff `effective_vns` is exact (the VM is at a V-time intercept: RDTSC/RDTSCP/RDRAND/RDSEED
+/ a TSC MSR / an exact-count `run_until` `Deadline`, or fresh / just-restored), `false` at any
+non-intercept stop (terminal HLT / debug / shutdown, or a serial/MMIO exit) where the guest may have
+retired branches past the anchor. `ControlServer::synchronized()` is the session-level predicate over
+it — `true` after a deadline stop that landed on an arrival, a `restore`/`branch` (anchored at the
+snapshot's intercept), a seal, or a fresh boot; `false` after a terminal or a non-intercept exit.
+
+**The two exact-`effective_vns` consumers, both gated:**
+- **`perturb`** rejects with the new wire-additive `ControlError::NotSynchronized` (disc 15) when
+  `!synchronized` — so a fault is never staged against a lower-bound floor (the round-6/7 failure:
+  `perturb` after a terminal, then a run applies + records it as an exact arrival while the guest is
+  already past that count). The client rewinds (branch/replay lands on an intercept) first.
+- **The `run` `m == vns` drain** applies only at a synchronized point; `m < vns` (crossed) or `m == vns`
+  at an unsynchronized point (lower-bound vns) both **poison** (the recorded apply point can't be
+  trusted). The `perturb` gate already prevents staging at an unsynchronized point, so this is the
+  in-run belt-and-suspenders.
+
+**Audit of every `effective_vns()` consumer in control.rs** (per the review): the `perturb` floor and
+the drain — now gated. Everything else uses it only as a **monotone lower bound** (the opportunistic
+deadline check; the informational `Deadline`/terminal-stop `vtime`) or **not at all** for exactness:
+the `branch` floor is the snapshot's `vm_state.vtime.snapshot_vns` (round 5), and `recorded` is always
+stamped at the staged `Moment`, never at `effective_vns`.
+
+**Tests:** `perturb_after_a_terminal_stop_is_rejected_not_synchronized` (terminal → `NotSynchronized`;
+rewind → accepted) and `perturb_after_a_synchronized_deadline_stop_reproduces` (a perturb after a
+synchronized arrival-deadline stop is accepted, and the multi-run recorded env replays to the identical
+`state_hash`). `control-proto`: `NotSynchronized` (disc 15) + golden + generator + regenerated
+`public-api.txt`; `vmm-core/tests/public-api.txt` hand-adds `Vmm::is_synchronized`.
+
+### PR #51 round 8 — stage-time InjectInterrupt validation + the negotiated-version bump
+
+Both are the same principle this PR has enforced throughout, applied to two adjacent spots:
+recoverable-at-stage vs. fatal-at-apply, and loud-at-negotiation vs. broken-mid-session.
+
+1. **`InjectInterrupt` stage-time completeness.** A reserved vector (`0..=15`, which the LAPIC cannot
+   raise) or an interrupt on a **LAPIC-less** VM previously passed `validate_host_fault` and only
+   exploded at `apply_host_fault` as a session-fatal `ServeError::Vmm`. Both are stage-time-decidable
+   properties of the request/backend, so `check_fault_admissible` now rejects them as recoverable
+   replies (mirroring the `CorruptMemory` bounds check): a reserved vector →
+   `ControlError::PerturbReservedVector { vector }` (new tag; a request error the client can fix), no
+   LAPIC → `ControlError::Unsupported` (a permanent backend limitation — unlike `CorruptMemory`, which
+   a no-LAPIC guest still takes via the round-6 idle arrival-wake). Tests:
+   `perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time`,
+   `perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported`. (The shared test `server()` now wires a
+   LAPIC so its `InjectInterrupt`-using tests stay valid; IF stays 0 so a HLT is still terminal, and
+   every hash eq/ne relationship the tests assert still holds.)
+2. **Negotiated application-protocol version bump (1 → 2).** Ruling B's "wire-additive" describes the
+   change *shape*; the documented control-proto procedure still requires bumping the *negotiated*
+   version so an incompatible peer rejects **at `hello`** rather than passing it and then hitting a
+   mid-session `ProtocolError::ShortFrame` on the first unknown reply tag. Introduced a single source
+   of truth — `control_proto::APP_PROTOCOL_VERSION` (distinct from the framing `PROTO_VERSION`, with
+   the bump procedure documented on it) — bumped to `2` for the six task-59 reply tags, and pointed
+   every consumer at it: `server_caps` (vmm-core), `client_caps` + the compatibility check (explorer),
+   and the negotiation fixtures (control-proto). Golden + roundtrip fixtures and `public-api.txt`
+   updated per the procedure.
+
+**Cross-crate (beyond vmm-core + control-proto):** `dissonance/explorer` — `client_caps` and the Hello
+compatibility check now pin `control_proto::APP_PROTOCOL_VERSION` (so the in-repo client stays
+compatible with the bumped server); `dissonance/conductor` — its loopback `conductor_server_caps`
+mirror is `explorer::client_caps`, so it tracks the bump automatically. Both are mechanical
+consequences of this PR's wire change (same posture as the round-1 conductor loopback fix).
+
+### Box gate (gate 2) — PASSED on the determinism box
+
+The spec's end-to-end box gate ran GREEN on the determinism box (i9-9900K, patched KVM `1400832`,
+core-2-pinned via `box-window.sh`, real Postgres workload on `#[cfg(target_os = "linux")]` patched
+`KvmBackend`), then reverted to stock `1396736` and re-verified. Harness:
+`consonance/vmm-core/tests/live_host_plane.rs` — a `#[ignore]`d box-only gate that drives the
+`ControlServer` verbs **in-process** (`perturb` is not expressible via the explorer `Machine`
+adapter): boot Postgres → seal a base snapshot → stage a `CorruptMemory` (guest-RAM XOR at
+`gpa 0x1000000`, `Moment` 500000) and an `InjectInterrupt` (vector `0x60`, `Moment` 1500000) → run.
+
+```
+[REPORT] task59-host-plane box gate
+  snapshot_vtime=0 attempts=1
+  schedule: CorruptMemory{gpa=0x1000000}@500000, InjectInterrupt{vector=0x60}@1500000, deadline=5000000
+  (a) run#1 83de8d25…1040 Quiescent@1500000
+      run#2 83de8d25…1040 Quiescent@1500000   => IDENTICAL: true
+  (b) replay 83de8d25…1040 Quiescent@1500000   => MATCHES run#1: true
+  (c) control 439aa62b…2ab9 Deadline@74058347  => DIFFERS: true
+  RESULT: PASS  rc=0   (finished in 37.25s)
+```
+
+- **(a)** the same schedule run twice is bit-identical (both `83de8d25…`) — the two faults land at
+  their exact `Moment`s (the PMU `run_until` exact-count arrival) and derail early boot into a
+  deterministic HLT at V-time 1500000.
+- **(b)** replaying the emitted `Recorded` env reproduces that hash — the record → replay closure.
+- **(c)** the schedule-absent control differs (`439aa62b…`, runs on to `Deadline@74058347` instead of
+  halting) — the faults are demonstrably what changed the run.
+
+**Box discipline:** leased core 2 via `box-window.sh acquire`, `taskset -c 2 timeout 1800`, released →
+reverted to stock `1396736` + verified (`REVERT OK`; a fresh `lsmod` confirms). Gate 3 (existing
+`live_*` byte-identical) holds by construction — enforcement is additive (arrival deadline / schedule
+empty on every no-fault path). **All acceptance gates for task 59 are green.**

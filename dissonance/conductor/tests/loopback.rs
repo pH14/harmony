@@ -121,7 +121,10 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
             raw_call(&mut stream, 2, &Request::Hello(caps)),
             Ok(Reply::Hello(conductor_server_caps()))
         );
-        // perturb → Unsupported (task 59 lights it up).
+        // perturb is now served (task 59 host-plane enforcement): a malformed
+        // fault blob is a loud MalformedEnvironment (an unknown tag byte), not the
+        // pre-task-59 blanket Unsupported. A well-formed host fault would stage
+        // (Reply::Unit); the malformed case is what this raw-wire test pins.
         assert_eq!(
             raw_call(
                 &mut stream,
@@ -131,7 +134,7 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
                     at: Moment(1000),
                 }
             ),
-            Err(ControlError::Unsupported)
+            Err(ControlError::MalformedEnvironment)
         );
         // Non-Whole hash scopes → Unsupported.
         assert_eq!(

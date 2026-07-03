@@ -105,13 +105,91 @@ pub enum ControlError {
     #[error("malformed or wrong-class resolve answer")]
     MalformedAnswer,
     /// The verb decoded cleanly but this backend does not service it (yet): the
-    /// seed-driven task-58 server answers `perturb` (host-plane enforcement is
-    /// task 59) and the non-`Whole` hash scopes with this, and any verb sent
-    /// before `hello` has negotiated a session. Loud and distinct from a framing
+    /// server answers the non-`Whole` hash scopes, a `branch` env carrying a
+    /// still-unenforceable guest override / standing fault / non-`none` policy, a
+    /// `perturb` of an out-of-scope `SkewTime`/`SetClockRate`, and any verb sent
+    /// before `hello` has negotiated a session with this. Loud and distinct from a framing
     /// [`Protocol`](Self::Protocol) error — the frame was well-formed; the
     /// *capability* is absent.
     #[error("verb not supported by this backend")]
     Unsupported,
+    /// A `perturb`-staged [`CorruptMemory`] host fault names a guest-physical
+    /// address whose 8-byte word falls outside guest RAM (`gpa + 8 > ram_len`).
+    /// The frontier (task 59) rejects it **loudly at stage time** rather than
+    /// silently clipping or wrapping the write — a corruption at an
+    /// unrepresentable address would mint a reproducer that does not reproduce.
+    ///
+    /// [`CorruptMemory`]: the `environment::HostFault::CorruptMemory` the
+    /// `perturb` fault blob decodes to.
+    #[error(
+        "perturb CorruptMemory gpa {gpa:#x} + 8 is out of range (guest RAM is {ram_len} bytes)"
+    )]
+    PerturbOutOfRange {
+        /// The offending guest-physical address.
+        gpa: u64,
+        /// The guest RAM size in bytes.
+        ram_len: u64,
+    },
+    /// A `perturb` (or a `branch` env host fault) names a `Moment` **behind the
+    /// current point** (`at < effective_vns`, or, for a branch env, behind the
+    /// restored snapshot's V-time). Rejected loud at stage time (task 59): the
+    /// fault could only apply *later* than its recorded `Moment`, so the emitted
+    /// reproducer would replay it at the wrong count — a reproducer that does not
+    /// reproduce. `at == effective_vns` is fine (it applies immediately and
+    /// truthfully).
+    #[error("perturb Moment {at} is behind the current V-time {floor}")]
+    PerturbPastMoment {
+        /// The rejected `Moment`.
+        at: u64,
+        /// The current effective V-time (the earliest still-stageable `Moment`).
+        floor: u64,
+    },
+    /// A `perturb` stages a fault at a `Moment` that **already carries one**.
+    /// Task 45's `EnvSpec` override map is `BTreeMap<Moment, Action>` — **one
+    /// action per `Moment`** — so a second same-`Moment` stage cannot be recorded
+    /// without losing the first; rather than emit a non-reproducing reproducer, the
+    /// frontier **loudly rejects** it. (The one-fault-per-`Moment` rule is the
+    /// integrator's final ruling — spec amendment PR #54.)
+    #[error("perturb Moment {at} already carries a staged fault (one fault per Moment)")]
+    PerturbMomentTaken {
+        /// The already-occupied `Moment`.
+        at: u64,
+    },
+    /// A `run` reached its V-time deadline having **overshot a staged `Moment`**
+    /// without applying it (`moment <= vtime`, but the deadline was below it so it
+    /// was never armed). The guest has now executed past that `Moment`, so the
+    /// fault can never be applied at its recorded count — the schedule is
+    /// unsatisfiable. Failed loud (task 59) rather than let a later `run` apply it
+    /// from the past while recording the earlier `Moment` (a reproducer that does
+    /// not reproduce). The caller must rewind (`branch`/`replay`, which clears the
+    /// schedule) before continuing.
+    #[error("run overshot staged Moment {moment} (now at V-time {vtime}); schedule unsatisfiable")]
+    ScheduleUnsatisfiable {
+        /// The staged `Moment` the run executed past without applying.
+        moment: u64,
+        /// The effective V-time the run reached (already beyond `moment`).
+        vtime: u64,
+    },
+    /// A `perturb` arrived at a **non-V-time-synchronized point** — the VM's last
+    /// stop was a terminal (HLT / shutdown / debug) or another non-intercept exit,
+    /// so its effective V-time is only a *lower bound* on the true retired count,
+    /// not the exact position. Staging a fault against a lower-bound floor could
+    /// record it at a `Moment` the guest has already executed past — a reproducer
+    /// that does not reproduce. The client must first reach a synchronized point
+    /// (rewind via `branch`/`replay`, which restores onto a V-time intercept) before
+    /// staging (task 59; PR #51 round-7 — the exact-`effective_vns` family).
+    #[error("perturb at a non-synchronized point (effective V-time is a lower bound)")]
+    NotSynchronized,
+    /// A `perturb` (or a `branch` env host fault) stages an `InjectInterrupt` with an
+    /// **architecturally reserved vector** (`0..=15`), which the LAPIC cannot raise.
+    /// A stage-time-decidable property of the request, rejected loudly here (like
+    /// [`PerturbOutOfRange`](Self::PerturbOutOfRange) for a gpa) rather than exploding
+    /// as a session-fatal apply-time failure (task 59; PR #51 round-8).
+    #[error("perturb InjectInterrupt vector {vector} is architecturally reserved (< 16)")]
+    PerturbReservedVector {
+        /// The reserved vector.
+        vector: u8,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

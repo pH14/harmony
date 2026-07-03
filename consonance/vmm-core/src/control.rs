@@ -30,10 +30,12 @@
 //!   diverges through the already-deterministic RDRAND path (the proven
 //!   divergence mechanism, tasks 40/42). The env blob is decoded (and rejected
 //!   loudly — [`ControlError::BadEnvVersion`] / [`ControlError::MalformedEnvironment`])
-//!   but only its seed is *enforced*: an env carrying overrides or standing
-//!   faults answers [`ControlError::Unsupported`] rather than silently running
-//!   without them (they need the task-59 host-plane / task-61 guest-plane
-//!   enforcement loops).
+//!   but now its **host-plane overrides are enforced** (task 59): they are staged
+//!   like a `perturb` and applied at their `Moment`s during the branched run. An
+//!   env carrying a **guest** override, a **standing** fault, or a **non-`none`
+//!   fault policy** still answers [`ControlError::Unsupported`] (they need the
+//!   task-61 guest-plane / decide-seam enforcement loops), rather than silently
+//!   running without them.
 //! - **`replay(snap)`** → restore verbatim into a fresh VM, **no reseed** — the
 //!   repro / determinism-gate path.
 //! - **`run(until)`** → advance via [`Vmm::step`] until a terminal stop or the
@@ -52,7 +54,17 @@
 //! - **`hash(scope)`** → [`Vmm::state_hash`] for `Whole`; `Disk` / `Region`
 //!   answer [`ControlError::Unsupported`] (no disk device exists; region
 //!   hashing has no consumer yet).
-//! - **`perturb`** → [`ControlError::Unsupported`] (task 59 lights it up).
+//! - **`perturb(fault, at)`** → **stage a [`HostFault`](environment::HostFault)
+//!   at a [`Moment`](environment::Moment)** (task 59): the fault blob is decoded
+//!   and validated (an out-of-range [`CorruptMemory`](environment::HostFault::CorruptMemory)
+//!   gpa is a loud [`ControlError::PerturbOutOfRange`], a malformed blob a
+//!   [`ControlError::MalformedEnvironment`], the out-of-scope `SkewTime`/
+//!   `SetClockRate` a [`ControlError::Unsupported`]), then queued. [`run`](ControlServer::run)
+//!   applies it *between instructions* at its `Moment` — a guest-RAM XOR for
+//!   `CorruptMemory`, an IRR raise through the LAPIC arbitration for
+//!   `InjectInterrupt` — and stamps it into the recorded env
+//!   ([`recorded_env`](ControlServer::recorded_env)), so the emitted reproducer
+//!   replays to the identical `state_hash`.
 //!
 //! ## The fresh-VM restore discipline
 //!
@@ -129,14 +141,16 @@ pub enum ServeError {
     Poisoned,
 }
 
-/// The [`Caps`] this server negotiates: application protocol 1, `Environment`
-/// blobs exactly at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry**
-/// (no coverage producer exists — task 58 is seed-driven), and no flags
-/// (`GUEST_HAS_SDK` off). Exposed so the client side can pin its compatibility
-/// check against the same constant.
+/// The [`Caps`] this server negotiates: the current negotiated application
+/// protocol ([`control_proto::APP_PROTOCOL_VERSION`]), `Environment` blobs exactly
+/// at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry** (no coverage
+/// producer exists — task 58 is seed-driven), and no flags (`GUEST_HAS_SDK` off).
+/// Exposed so the client side can pin its compatibility check against the same
+/// constant — a peer that negotiated an older version rejects **at `hello`** rather
+/// than breaking mid-session on a reply tag it does not know (PR #51 round-8).
 pub fn server_caps() -> Caps {
     Caps {
-        protocol_version: 1,
+        protocol_version: control_proto::APP_PROTOCOL_VERSION,
         env_version_min: EnvSpec::BLOB_VERSION,
         env_version_max: EnvSpec::BLOB_VERSION,
         coverage: CoverageGeometry {
@@ -163,6 +177,41 @@ pub struct ControlServer<B: Backend> {
     snaps: BTreeMap<u64, SnapshotId>,
     next_snap: u64,
     hello_done: bool,
+    /// The **staged host-fault schedule** (task 59): **one fault per [`Moment`]**,
+    /// ordered. Populated by [`Request::Perturb`] and by a [`Request::Branch`]
+    /// whose env carries host overrides; **drained** by [`ControlServer::run`] as
+    /// each `Moment` is reached (a re-run rewinds via `branch`/`replay`, which
+    /// re-stages).
+    ///
+    /// **One fault per `Moment`.** Task 45's [`EnvSpec`] override map is
+    /// `BTreeMap<Moment, Action>` — one action per `Moment` — so a second
+    /// same-`Moment` fault cannot be recorded without losing the first
+    /// (a non-reproducing reproducer). The frontier therefore **loudly rejects** a
+    /// second same-`Moment` stage ([`ControlError::PerturbMomentTaken`]), keeping
+    /// every emitted reproducer exact. (The one-fault-per-`Moment` rule is the
+    /// integrator's final ruling — spec amendment PR #54.) A `BTreeMap` so no
+    /// insertion order can reach the apply sequence.
+    schedule: BTreeMap<environment::Moment, environment::HostFault>,
+    /// The **active recorded reproducer** (task 59 requirement 3): every applied
+    /// host fault is stamped here via task-45's [`EnvSpec::perturb`], so the env
+    /// [`recorded_env`](ControlServer::recorded_env) returns replays to the
+    /// identical `state_hash` (the record → replay closure). With one fault per
+    /// `Moment` (above) the stamping is exact — no fault is ever lost. Its seed is
+    /// set by the most recent [`Request::Branch`] (default `0` before any branch);
+    /// reset on each restore so a new future records fresh.
+    recorded: EnvSpec,
+    /// **Poison latch** for an unsatisfiable schedule (PR #51 round-3). Set to the
+    /// `(Moment, vtime)` of a fault a [`run`](ControlServer::run) executed *past*
+    /// without applying (a crossed `Moment`). While latched, [`run`](ControlServer::run),
+    /// [`perturb`](ControlServer::perturb), and [`snapshot`](ControlServer::snapshot)
+    /// keep failing loud with [`ControlError::ScheduleUnsatisfiable`] — the crossed
+    /// fault can never be applied at its recorded count, so the session must
+    /// **rewind** (`branch`/`replay`, which clears the latch via
+    /// [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm))
+    /// before it can continue. Without the latch a client that ignored the error and
+    /// re-sent `run` would get the crossed fault applied from the past — the exact
+    /// non-reproducing case the error exists to prevent.
+    schedule_poisoned: Option<(environment::Moment, u64)>,
 }
 
 impl<B: Backend> ControlServer<B> {
@@ -173,6 +222,11 @@ impl<B: Backend> ControlServer<B> {
     /// by [`Vmm::restore_vm_state`] at the first restore).
     pub fn new(vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
         let engine = SnapshotEngine::new(vmm.guest_memory().len());
+        // Seed the recorded reproducer from the **live VM's actual entropy stream**
+        // (not a bare `0`), so `recorded_env()` reproduces even for a session that
+        // runs before its first `branch`/`replay` — a reproducer branched from the
+        // starting snapshot then reseeds to this same stream.
+        let seed = vmm.entropy_state().unwrap_or(0);
         ControlServer {
             vmm: Some(vmm),
             factory,
@@ -180,7 +234,22 @@ impl<B: Backend> ControlServer<B> {
             snaps: BTreeMap::new(),
             next_snap: 1,
             hello_done: false,
+            schedule: BTreeMap::new(),
+            recorded: EnvSpec::Seeded {
+                seed,
+                policy: FaultPolicy::none(),
+            },
+            schedule_poisoned: None,
         }
+    }
+
+    /// The **active recorded reproducer** (task 59): the [`EnvSpec`] every applied
+    /// host fault has been stamped into, in `Moment` order. Replaying/branching
+    /// this env re-applies the identical schedule at the identical counts, so it
+    /// reproduces the run's `state_hash` bit-for-bit (the record → replay
+    /// closure). Empty (a bare `Seeded`) until a fault is applied.
+    pub fn recorded_env(&self) -> &EnvSpec {
+        &self.recorded
     }
 
     /// Read-only access to the live VM (e.g. for a composition root that wants
@@ -264,15 +333,199 @@ impl<B: Backend> ControlServer<B> {
                 // unsupported is loud and distinct from a malformed frame.
                 HashScope::Disk | HashScope::Region { .. } => Ok(Err(ControlError::Unsupported)),
             },
-            // Host-plane enforcement is task 59; staging a fault we cannot
-            // apply would silently break replay.
-            Request::Perturb { .. } => Ok(Err(ControlError::Unsupported)),
+            // Host-plane enforcement (task 59): decode + validate the fault,
+            // stage it at its `Moment`. `run` applies it there and stamps it into
+            // the recorded env.
+            Request::Perturb { fault, at } => Ok(self.perturb(fault, *at)),
         }
+    }
+
+    /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
+    /// iff the live VM's [`effective_vns`](Vmm::effective_vns) is **exact** (at a
+    /// V-time intercept — [`Vmm::is_synchronized`]) rather than a stale lower bound.
+    /// It is `true` after a deadline stop that landed on an arrival, a `restore` /
+    /// `branch` (both anchor at the snapshot's intercept), a successful seal, or a
+    /// fresh boot — and `false` after a terminal stop or any non-intercept exit,
+    /// where the guest may have retired branches past the last-intercept anchor.
+    ///
+    /// The control plane trusts `effective_vns` as an exact position in exactly two
+    /// places, both gated on this: the [`perturb`](ControlServer::perturb) floor and
+    /// the `m == vns` exact-arrival drain in [`run`](ControlServer::run). Every other
+    /// `effective_vns` consumer uses it only as a monotone lower bound (the deadline
+    /// check, the informational `Deadline`/terminal `vtime`) or does not use it at
+    /// all (the `branch` floor is the snapshot's `vm_state.vtime.snapshot_vns`, and
+    /// `recorded` is stamped at the staged `Moment`, never at `effective_vns`).
+    fn synchronized(&self) -> bool {
+        self.vmm.as_ref().is_some_and(|v| v.is_synchronized())
+    }
+
+    /// `perturb(fault, at)`: decode the opaque host-fault blob and **stage** it at
+    /// `Moment` `at` for [`ControlServer::run`] to apply — going through the same
+    /// [`validate_host_fault`](ControlServer::validate_host_fault) gate a
+    /// [`Request::Branch`] env host fault does, so the two paths reject identically
+    /// (nothing that would mint a reproducer that does not reproduce is ever
+    /// staged). A malformed blob is [`ControlError::MalformedEnvironment`]; the
+    /// remaining rejections (unsynchronized point, past `Moment`, out-of-range gpa,
+    /// out-of-scope clock fault, and the same-`Moment` conflict) are below / the
+    /// shared gate's.
+    fn perturb(
+        &mut self,
+        fault: &control_proto::HostFault,
+        at: control_proto::Moment,
+    ) -> Result<Reply, ControlError> {
+        // A poisoned schedule must be rewound (branch/replay) before it accepts any
+        // new fault — staging onto an unsatisfiable schedule is itself unsatisfiable.
+        if let Some((moment, vtime)) = self.schedule_poisoned {
+            return Err(ControlError::ScheduleUnsatisfiable { moment, vtime });
+        }
+        let decoded = environment::HostFault::decode(&fault.0)
+            .map_err(|_| ControlError::MalformedEnvironment)?;
+        // Capability first (an unarmable backend can't enforce host faults at all —
+        // Unsupported, not the run-a-little-further NotSynchronized).
+        if !self.vmm.as_ref().is_some_and(|v| v.can_arm_arrival()) {
+            return Err(ControlError::Unsupported);
+        }
+        // **Synchronization gate (PR #51 round-7, family root cause).** The floor
+        // below is `effective_vns`; at a non-intercept stop (a terminal HLT / debug /
+        // shutdown, or a non-intercept exit) that value is only a lower bound, so a
+        // fault staged at `at == floor` could be recorded at a `Moment` the guest has
+        // already executed past — a reproducer that does not reproduce. Reject; the
+        // client rewinds (branch/replay lands on an intercept) first.
+        if !self.synchronized() {
+            return Err(ControlError::NotSynchronized);
+        }
+        // Floor = the live VM's current (now exact) V-time: a `Moment` behind it could
+        // only apply *later* than recorded.
+        let floor = self
+            .vmm
+            .as_ref()
+            .and_then(|v| v.effective_vns())
+            .unwrap_or(0);
+        self.validate_host_fault(&decoded, at.0, floor)?;
+        self.schedule.insert(at.0, decoded);
+        Ok(Reply::Unit)
+    }
+
+    /// The **single validate-and-stage gate** for a host fault, shared by
+    /// [`perturb`](ControlServer::perturb) and by a [`Request::Branch`] env's host
+    /// overrides so both reject identically (PR #51 review, blocking item 1). It
+    /// checks, in order, and never mutates on failure:
+    ///
+    /// - **Past `Moment`** (`at < floor`) → [`ControlError::PerturbPastMoment`].
+    ///   `floor` is the current effective V-time (perturb) or the restored
+    ///   snapshot's V-time (branch); `at == floor` is fine (applies immediately and
+    ///   truthfully).
+    /// - **Same-`Moment` conflict** (`at` already staged) →
+    ///   [`ControlError::PerturbMomentTaken`] (one fault per `Moment` — see the
+    ///   [`schedule`](ControlServer::schedule) doc).
+    /// - **Out-of-range [`CorruptMemory`](environment::HostFault::CorruptMemory)**
+    ///   (`gpa + 8 > guest RAM`) → [`ControlError::PerturbOutOfRange`] (never
+    ///   clipped/wrapped).
+    /// - **Out-of-scope [`SkewTime`](environment::HostFault::SkewTime) /
+    ///   [`SetClockRate`](environment::HostFault::SetClockRate)** →
+    ///   [`ControlError::Unsupported`] (a follow-on lights these up).
+    ///
+    /// An [`InjectInterrupt`](environment::HostFault::InjectInterrupt) is rejected
+    /// here (not at apply time) when its vector is architecturally reserved
+    /// (`< 16`) → [`ControlError::PerturbReservedVector`], or the VM has no
+    /// userspace LAPIC to raise it into → [`ControlError::Unsupported`] (PR #51
+    /// round-8) — both stage-time-decidable, so a recoverable reply instead of a
+    /// session-fatal apply-time failure.
+    fn validate_host_fault(
+        &self,
+        fault: &environment::HostFault,
+        at: environment::Moment,
+        floor: environment::Moment,
+    ) -> Result<(), ControlError> {
+        // One fault per `Moment` — reject a duplicate against **both** the still-
+        // staged schedule **and** the already-applied faults recorded in the
+        // reproducer (PR #51 round-2 finding): once a fault at `at` has applied it is
+        // gone from the schedule but present in `recorded`, and re-staging it would
+        // overwrite it in `recorded_env()` (an applied fault silently vanishing). The
+        // remaining, occupancy-free checks are shared with the branch-env path.
+        if self.schedule.contains_key(&at) || self.recorded.overrides().contains_key(&at) {
+            return Err(ControlError::PerturbMomentTaken { at });
+        }
+        self.check_fault_admissible(fault, at, floor)
+    }
+
+    /// The **occupancy-free** admissibility checks for a host fault, shared by
+    /// [`perturb`](ControlServer::perturb)'s [`validate_host_fault`](ControlServer::validate_host_fault)
+    /// and by the branch-env pre-swap validation (PR #51 round-5): the backend can
+    /// arm the exact-count seam, the `Moment` is not behind the `floor`, the gpa is
+    /// in range, and the fault class is in scope. It reads only the **current**
+    /// `vmm` (its capability + RAM size) and the given `floor`, so the branch path
+    /// can call it against the *live* VM using the snapshot's V-time as the floor —
+    /// **before** swapping in the restored VM (making a rejected branch
+    /// side-effect-free).
+    fn check_fault_admissible(
+        &self,
+        fault: &environment::HostFault,
+        at: environment::Moment,
+        floor: environment::Moment,
+    ) -> Result<(), ControlError> {
+        let vmm = self.vmm.as_ref().ok_or(ControlError::Unsupported)?;
+        // **Capability check, up front (PR #51 round-2 finding).** Host-plane
+        // enforcement needs the exact-count arrival seam ([`Vmm::arm_arrival`]); on a
+        // backend that cannot arm it (stock KVM / M1 / M2 — no deterministic
+        // retired-branch counter) a staged fault could only be applied at a natural
+        // exit *past* its `Moment`, recording a count the run never truly stopped at.
+        // Reject rather than silently apply late.
+        if !vmm.can_arm_arrival() {
+            return Err(ControlError::Unsupported);
+        }
+        if at < floor {
+            return Err(ControlError::PerturbPastMoment { at, floor });
+        }
+        match fault {
+            environment::HostFault::CorruptMemory { gpa, .. } => {
+                let ram_len = vmm.guest_memory().len() as u64;
+                if gpa.checked_add(8).is_none_or(|end| end > ram_len) {
+                    return Err(ControlError::PerturbOutOfRange { gpa: *gpa, ram_len });
+                }
+            }
+            environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
+                return Err(ControlError::Unsupported);
+            }
+            environment::HostFault::InjectInterrupt { vector } => {
+                // Both `InjectInterrupt` failure modes are stage-time-decidable
+                // properties of the request/backend (PR #51 round-8) — reject them
+                // here as recoverable replies, mirroring the `CorruptMemory` bounds
+                // check, rather than letting them explode as a session-fatal
+                // `ServeError::Vmm` at `apply_host_fault`:
+                // - no userspace LAPIC to raise the vector into → `Unsupported`
+                //   (a permanent backend limitation — unlike `CorruptMemory`, which a
+                //   no-LAPIC guest can still take via the idle arrival-wake);
+                if !vmm.lapic_wired() {
+                    return Err(ControlError::Unsupported);
+                }
+                // - an architecturally reserved vector (`< 16`) the LAPIC cannot raise
+                //   → `PerturbReservedVector` (a request error the client can fix).
+                if *vector < 16 {
+                    return Err(ControlError::PerturbReservedVector { vector: *vector });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `snapshot`: seal the current point into the engine as a base layer
     /// (memory image + canonical `vm_state` blob) and mint a wire handle.
+    ///
+    /// **Rejects loudly while a host-fault schedule is pending** (PR #51 round-3):
+    /// a snapshot seals only VM state, and every restore of it clears the schedule
+    /// — so the sealed state's *future* (the staged fault) would be unreproducible
+    /// from the snapshot. A staged fault is "armed" in exactly the sense
+    /// [`ControlError::SnapshotWhileArmed`] names, so the seal is refused rather
+    /// than silently dropping the future (persisting the schedule inside the
+    /// snapshot is a semantics change that would need its own ruling).
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
+        if let Some((moment, vtime)) = self.schedule_poisoned {
+            return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
+        }
+        if !self.schedule.is_empty() {
+            return Ok(Err(ControlError::SnapshotWhileArmed));
+        }
         let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
@@ -316,6 +569,9 @@ impl<B: Backend> ControlServer<B> {
         env: Option<&control_proto::Environment>,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         // 1. Validate everything non-destructively first: the env blob …
+        //    `seed` is the branch seed (`None` for a verbatim replay); `host` is
+        //    the env's host-plane schedule to stage after a successful restore.
+        let mut host: Vec<(environment::Moment, environment::HostFault)> = Vec::new();
         let seed = match env {
             None => None,
             Some(env) => {
@@ -327,24 +583,26 @@ impl<B: Backend> ControlServer<B> {
                     Err(EnvError::BadVersion(v)) => return Ok(Err(ControlError::BadEnvVersion(v))),
                     Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                 };
-                // Seed-driven scope: only the seed is enforceable. An env
-                // carrying overrides, standing faults, or a **non-nominal fault
-                // policy** must be REJECTED, not silently run without them — a
-                // silent no-op would mint reproducers that do not reproduce. A
-                // non-`none` `FaultPolicy` makes the seeded stream answer some
-                // decisions with faults, which the seed-driven server has no
-                // service wired to enforce (same class as the overrides
-                // rejection). Tasks 59/61 light these up.
+                // Task 59 lights up the **host** plane: an env's host overrides are
+                // now enforced — staged for `run` to apply at their `Moment`s (the
+                // record → replay closure). The still-unenforceable halves must be
+                // REJECTED rather than silently run without them (a silent no-op
+                // mints reproducers that do not reproduce): a **guest** override
+                // needs the task-61 `decide`-seam loop; a **standing** fault needs
+                // the guest-utility enforcement; a **non-`none` fault policy** makes
+                // the seeded stream answer decisions with faults no service enforces.
                 let has_standing = matches!(
                     &spec,
                     EnvSpec::Recorded { standing, .. } if !standing.is_empty()
                 );
-                if !spec.overrides().is_empty()
-                    || has_standing
-                    || spec.policy() != &FaultPolicy::none()
-                {
+                let has_guest = spec
+                    .overrides()
+                    .values()
+                    .any(|a| a.guest_answer().is_some());
+                if has_guest || has_standing || spec.policy() != &FaultPolicy::none() {
                     return Ok(Err(ControlError::Unsupported));
                 }
+                host = spec.host_faults().collect();
                 Some(spec.seed())
             }
         };
@@ -358,6 +616,27 @@ impl<B: Backend> ControlServer<B> {
         let Ok(vm_state) = self.engine.vm_state(store_id) else {
             return Ok(Err(ControlError::RestoreFailed));
         };
+        // 1b. **Validate the branch env's host schedule BEFORE any swap (PR #51
+        //     round-5, blocking item 1).** A rejected branch must be side-effect-free
+        //     — so validate against the STILL-LIVE VM (its capability + RAM size,
+        //     which the factory mirrors) with the `floor` derived from the snapshot's
+        //     own V-time (`vm_state.vtime.snapshot_vns`) — no restore needed. If any
+        //     fault is inadmissible (unarmable backend, out-of-range gpa, out-of-scope
+        //     clock fault, a `Moment` behind the snapshot, or an intra-env duplicate
+        //     `Moment` — ruling B), reply the recoverable `ControlError` with the old
+        //     VM untouched. (The `RestoreFailed` path below still mutates — a genuine
+        //     restore failure cannot be pre-validated — and is documented there.)
+        let restored_floor = vm_state.vtime.snapshot_vns;
+        let mut seen: std::collections::BTreeSet<environment::Moment> =
+            std::collections::BTreeSet::new();
+        for (m, fault) in &host {
+            if let Err(e) = self.check_fault_admissible(fault, *m, restored_floor) {
+                return Ok(Err(e));
+            }
+            if !seen.insert(*m) {
+                return Ok(Err(ControlError::PerturbMomentTaken { at: *m }));
+            }
+        }
         // 2. Drop the live VM (frees its work counter — the box allows one
         //    open at a time), then boot the fresh restore target. A factory
         //    failure is fatal: the session has no VM anymore.
@@ -379,6 +658,17 @@ impl<B: Backend> ControlServer<B> {
             // invalid clock config) — the fresh VM never mutated, so keep it.
             Err(VmmError::ContractViolation(_) | VmmError::Snapshot(_) | VmmError::Vtime(_)) => {
                 self.vmm = Some(fresh);
+                // The VM was still REPLACED (a fresh boot), so the old timeline's
+                // staged faults + recorded reproducer must not survive attached to
+                // it (PR #51 round-2 finding): reset on every path that swaps the VM,
+                // not just success. **This is the one branch/replay path that mutates
+                // on a recoverable error** (PR #51 round-5): a genuine restore failure
+                // cannot be pre-validated (it is only discovered by attempting the
+                // restore into the fresh VM), so — unlike the host-fault rejection
+                // above, which is now side-effect-free — a `RestoreFailed` leaves the
+                // session on the reset fresh boot. Callers treat `RestoreFailed` as
+                // "the session VM was replaced; re-establish your point."
+                self.reset_schedule_to_fresh_vm();
                 return Ok(Err(ControlError::RestoreFailed));
             }
             // Post-validation substrate breakage — the VM is unvouched; tear down.
@@ -391,7 +681,44 @@ impl<B: Backend> ControlServer<B> {
             fresh.reseed_entropy(seed)?;
         }
         self.vmm = Some(fresh);
+        // 5. A restore rewinds the VM, so **re-arm the host-plane schedule** from
+        //    scratch (task 59): drop any stale staged faults and reset the recorded
+        //    reproducer to a bare `Seeded` at the **restored stream's** seed
+        //    ([`reset_schedule_to_fresh_vm`]), then stage the branch env's own host
+        //    overrides. The overrides were already validated (admissible, in-`Moment`
+        //    order, no duplicates) at step 1b against the live VM — side-effect-free —
+        //    so this only stages them; `run` applies + records them.
+        self.reset_schedule_to_fresh_vm();
+        for (m, fault) in host {
+            self.schedule.insert(m, fault);
+        }
         Ok(Ok(Reply::Unit))
+    }
+
+    /// Reset the host-plane schedule + recorded reproducer for the VM currently in
+    /// `self.vmm` — called on **every** path that replaces the live VM (a
+    /// successful `branch`/`replay`, and a recoverable `RestoreFailed` that keeps
+    /// the fresh boot). Clears the schedule and reseeds the recorded reproducer
+    /// from the restored VM's **actual entropy stream** ([`Vmm::entropy_state`]),
+    /// not the prior session's seed (PR #51 round-2 finding): a `replay` restores a
+    /// snapshot whose stream may sit mid-flight under a seed unrelated to the old
+    /// session, and a `branch` has just reseeded — reading the live stream captures
+    /// the right value for both, so `recorded_env()` stamps a reproducer that
+    /// actually reproduces.
+    fn reset_schedule_to_fresh_vm(&mut self) {
+        self.schedule.clear();
+        // A rewind is the recovery from a poisoned schedule (round-3): clear the
+        // latch so `run`/`perturb`/`snapshot` work again on the fresh timeline.
+        self.schedule_poisoned = None;
+        let seed = self
+            .vmm
+            .as_ref()
+            .and_then(|v| v.entropy_state())
+            .unwrap_or(0);
+        self.recorded = EnvSpec::Seeded {
+            seed,
+            policy: FaultPolicy::none(),
+        };
     }
 
     /// `run(until)`: step the event loop to a terminal stop or the V-time
@@ -414,22 +741,129 @@ impl<B: Backend> ControlServer<B> {
     /// run (PR #44 pass 5; the `#34`/`#55` stale-arm class). Making the deadline a
     /// hard bound needs the backend to reset the `run_until` arm across runs — a
     /// `patched_kvm`/`pmu_sys` change **outside task-58's surface**, deferred.
+    ///
+    /// `run(until)` becomes **"run to `min(next staged Moment, until)`"** (task
+    /// 59): before each step, apply the host fault the run has reached (arrival is
+    /// exact — [`Vmm::arm_arrival`] makes `step`'s `run_until` stop *between
+    /// instructions* at the next staged `Moment`), stamping it into the recorded
+    /// env ([`ControlServer::recorded_env`]). With no faults staged this is
+    /// byte-for-byte the task-58 loop (arrival is never armed).
+    ///
+    /// **Exact vs. late vs. future (PR #51 round-2/5).** At each V-time `vns` the
+    /// drain classifies a staged `Moment m`:
+    /// - `m == vns` → **exact arrival**: apply now (the arrival landed here, or the
+    ///   guest is exactly at the current point). This holds **regardless of the
+    ///   deadline** — applying at `m == vns` is never "late" (round-5 item 3).
+    /// - `m < vns` → **late/crossed**: the guest executed *past* `m` (only possible
+    ///   on an overshoot), so it can never be applied at its recorded count — the
+    ///   schedule is **poisoned** (round-3) and every later `run`/`perturb`/`snapshot`
+    ///   rejects until a `branch`/`replay` rewinds.
+    /// - `m > vns` → **future**: not yet reached; left staged (or dropped at a
+    ///   terminal, round-5 item 2).
+    ///
+    /// The deadline only gates **arming** (arm only `m ≤ deadline`, matching task-58's
+    /// no-hard-force-exit posture) and the **stop** (`vns ≥ deadline` → `Deadline`).
     fn run(
         &mut self,
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
-        let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+        // A poisoned schedule keeps rejecting `run` (with the crossed fault's
+        // coordinates) until a `branch`/`replay` rewinds it — never applying the
+        // crossed fault from the past on a re-sent `run` (PR #51 round-3).
+        if let Some((moment, vtime)) = self.schedule_poisoned {
+            return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
+        }
         loop {
+            let (vns, synchronized) = {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                (vmm.effective_vns().unwrap_or(0), vmm.is_synchronized())
+            };
+
+            // 1. Drain: apply an **exact arrival** — `m == vns` at a **synchronized**
+            //    point (`effective_vns` is exact there). A `Moment` at-or-below a vns
+            //    that is *not* provably exact must NOT be applied as an exact arrival:
+            //    `m < vns` is crossed (the guest is past `m`), and `m == vns` at an
+            //    *unsynchronized* point rests on a lower-bound vns so the guest may
+            //    have run past `m` too — either way poison (the recorded apply point
+            //    can't be trusted). This is the drain half of the round-7 family fix;
+            //    the `perturb` gate ensures nothing is *staged* at an unsynchronized
+            //    point in the first place, so this is the in-run belt-and-suspenders.
+            while let Some((&m, _)) = self.schedule.range(..=vns).next() {
+                if m < vns || !synchronized {
+                    self.schedule_poisoned = Some((m, vns));
+                    return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                        moment: m,
+                        vtime: vns,
+                    }));
+                }
+                let fault = self.schedule.remove(&m).expect("range key exists");
+                // An apply failure (out-of-range gpa — pre-validated at stage time;
+                // a reserved vector; an unwired LAPIC) is substrate-level breakage
+                // of a vouched run: fail loud (session-fatal), never a silent skip
+                // that would desync the recorded env from the run.
+                let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+                vmm.apply_host_fault(&fault).map_err(ServeError::Vmm)?;
+                self.recorded.perturb(fault, m);
+            }
+
+            // 2. Opportunistic V-time deadline (task-58 semantics, unchanged): stop
+            //    at the first boundary at-or-past the deadline. The drain above has
+            //    already applied every `m == vns` and poisoned any `m < vns`, so the
+            //    schedule now carries only future faults (`m > vns`) — left staged
+            //    for a later `run`.
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             let vns = vmm.effective_vns().unwrap_or(0);
             if let Some(deadline) = until.deadline
                 && vns >= deadline.0
             {
+                vmm.clear_arrival();
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: VTime(vns) })));
             }
+
+            // 3. Arm exact-count arrival at the next staged `Moment` that is at-or-
+            //    before the deadline (a fault beyond the deadline is never reached —
+            //    the opportunistic stop above catches the deadline first, matching
+            //    the task-58 no-hard-force-exit posture). No such `Moment` ⇒ no
+            //    arrival armed (plain open-ended step / task-47 timer preemption).
+            let next = self
+                .schedule
+                .keys()
+                .next()
+                .copied()
+                .filter(|&m| until.deadline.is_none_or(|d| m <= d.0));
+            match next {
+                Some(m) => {
+                    vmm.arm_arrival(m);
+                }
+                None => vmm.clear_arrival(),
+            }
+
+            // 4. Step. A terminal stop ends the run.
             match vmm.step()? {
                 Step::Continued => {}
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
+                    vmm.clear_arrival();
+                    // **Poison loud on ANY staged fault at a terminal (PR #51
+                    // round-6, supersedes round-5 item 2).** A natural terminal exit
+                    // (HLT / debug) is *not* a V-time intercept, so `effective_vns`
+                    // here is only the last-intercept **lower bound** — nothing still
+                    // staged is provably uncrossed (with `deadline < m` the arrival is
+                    // never armed and the guest can run past `m` to the terminal). The
+                    // round-5 silent `clear()` could therefore drop an accepted perturb
+                    // that *was* crossed — breaking exact-arrival-or-loud. The safe
+                    // semantic is LOUD: poison whenever any fault remains staged, and
+                    // let the client rewind (`branch`/`replay` clears the schedule —
+                    // which campaign flows do anyway, so the task-60 crash path stays
+                    // viable and the round-5 `SnapshotWhileArmed` trap stays fixed: a
+                    // named, rewindable error instead of a silent stuck state).
+                    if let Some((&m, _)) = self.schedule.iter().next() {
+                        self.schedule_poisoned = Some((m, vns));
+                        return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                            moment: m,
+                            vtime: vns,
+                        }));
+                    }
                     return Ok(Ok(Reply::Stop(map_terminal(reason, vns))));
                 }
             }
@@ -480,8 +914,10 @@ mod tests {
         Answer, CapFlags, ControlError, CrashKind, Environment, HashScope, HostFault, Moment,
         Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
     };
-    use environment::{EnvSpec, FaultPolicy};
-    use vmm_backend::{Backend, Exit, MockBackend};
+    use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
+    use vmm_backend::{Backend, Exit, MockBackend, Vtime};
+
+    use proptest::prelude::*;
 
     use super::{ControlServer, ServeError, server_caps};
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
@@ -509,6 +945,17 @@ mod tests {
             .unwrap(),
         );
         v.wire_snapshot_hashing();
+        // Wire the userspace xAPIC so `InjectInterrupt` host faults are enforceable
+        // on this generic test server (round-8 rejects a LAPIC-less InjectInterrupt).
+        // IF stays 0, so a HLT is still terminal (no idle-resume) — the base hash
+        // gains a LAPC chunk but every eq/ne relationship the tests assert holds.
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
         let mut image = vec![0u8; RAM];
         image[..12].copy_from_slice(b"SERVER_BOOT\n");
         v.restore_guest_memory(&image).unwrap();
@@ -536,6 +983,15 @@ mod tests {
                 .unwrap(),
             );
             v.wire_snapshot_hashing();
+            // Mirror the live VM's LAPIC wiring so a `branch`/`replay` restore
+            // matches (and InjectInterrupt is enforceable on the fork too).
+            v.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
             Ok(v)
         });
         ControlServer::new(live, factory)
@@ -578,6 +1034,19 @@ mod tests {
         }
     }
 
+    /// A deadline-free `run` returning the raw reply (for the loud-error paths).
+    fn run_all_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
+        server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+    }
+
     fn hash(server: &mut ControlServer<MockBackend>) -> [u8; 32] {
         let req = Request::Hash {
             scope: HashScope::Whole,
@@ -593,7 +1062,11 @@ mod tests {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
         let caps = server_caps();
-        assert_eq!(caps.protocol_version, 1);
+        assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
+        assert_eq!(
+            caps.protocol_version, 2,
+            "bumped for the round-8 reply tags"
+        );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.coverage.map_bytes, 0, "no coverage producer exists");
@@ -678,12 +1151,12 @@ mod tests {
     }
 
     #[test]
-    fn branch_rejects_an_env_with_overrides_or_standing_faults() {
+    fn branch_accepts_host_overrides_but_rejects_guest_or_standing_or_policy() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
         let base = snap(&mut s);
-        // An override-carrying env: the seed-driven server cannot enforce it,
-        // and running without it would mint reproducers that do not reproduce.
+        // A HOST override-carrying env is now ENFORCED (task 59): branch accepts it
+        // and stages the fault for `run` to apply — no longer Unsupported.
         let mut spec = EnvSpec::Seeded {
             seed: 7,
             policy: FaultPolicy::none(),
@@ -698,8 +1171,28 @@ mod tests {
         };
         assert_eq!(
             s.handle(&Request::Branch { snap: base, env }).unwrap(),
+            Ok(Reply::Unit),
+            "a host override is enforced (task 59), so branch accepts it"
+        );
+
+        // A GUEST override still needs the task-61 decide-seam loop → Unsupported.
+        let mut guest_spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        guest_spec.record(99, environment::Action::Guest(environment::Answer::Nominal));
+        let guest_env = Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: guest_spec.encode(),
+        };
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: guest_env
+            })
+            .unwrap(),
             Err(ControlError::Unsupported),
-            "overrides need the task-59/61 enforcement loops"
+            "a guest override needs the task-61 enforcement loop"
         );
 
         // A non-nominal FaultPolicy (same class): the seeded stream would answer
@@ -760,14 +1253,102 @@ mod tests {
     }
 
     #[test]
-    fn perturb_is_unsupported_until_task_59() {
+    fn perturb_stages_faults_and_rejects_the_unenforceable() {
+        // The `server()` live VM is advanced past its RDTSC to effective V-time 500
+        // (`vmm_at_sync(..., 500, ...)`), so the stage-time floor is 500.
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
-        let req = Request::Perturb {
-            fault: HostFault(environment::HostFault::InjectInterrupt { vector: 32 }.encode()),
-            at: Moment(1000),
+        let perturb = |fault: environment::HostFault, at: u64| Request::Perturb {
+            fault: HostFault(fault.encode()),
+            at: Moment(at),
         };
-        assert_eq!(s.handle(&req).unwrap(), Err(ControlError::Unsupported));
+        // An InjectInterrupt at a future Moment stages cleanly (Reply::Unit).
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::InjectInterrupt { vector: 32 },
+                1000
+            ))
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        // A second fault at the SAME Moment is a loud rejection (task-45
+        // one-action-per-Moment; the recorded env never silently drops a fault).
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::InjectInterrupt { vector: 33 },
+                1000
+            ))
+            .unwrap(),
+            Err(ControlError::PerturbMomentTaken { at: 1000 })
+        );
+        // A Moment BEHIND the current V-time (500) is rejected loud — it could only
+        // apply later than recorded.
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::InjectInterrupt { vector: 34 },
+                100
+            ))
+            .unwrap(),
+            Err(ControlError::PerturbPastMoment {
+                at: 100,
+                floor: 500
+            })
+        );
+        // `at == floor` is fine (applies immediately and truthfully).
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::InjectInterrupt { vector: 35 },
+                500
+            ))
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        // A CorruptMemory whose word falls outside the 16 KiB guest RAM is rejected
+        // loudly at stage time (never clipped/wrapped).
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::CorruptMemory {
+                    gpa: RAM as u64 - 4, // gpa + 8 > ram
+                    mask: environment::BitMask(0xFF),
+                },
+                2000
+            ))
+            .unwrap(),
+            Err(ControlError::PerturbOutOfRange {
+                gpa: RAM as u64 - 4,
+                ram_len: RAM as u64,
+            })
+        );
+        // An in-range CorruptMemory stages cleanly.
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::CorruptMemory {
+                    gpa: 0,
+                    mask: environment::BitMask(0xFF),
+                },
+                3000
+            ))
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        // The out-of-scope clock faults are Unsupported (a follow-on lights them up).
+        assert_eq!(
+            s.handle(&perturb(
+                environment::HostFault::SkewTime(environment::VTime(5)),
+                4000
+            ))
+            .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        // A malformed fault blob is a loud MalformedEnvironment.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(vec![0xFF; 3]),
+                at: Moment(5000),
+            })
+            .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
     }
 
     #[test]
@@ -1192,5 +1773,1509 @@ mod tests {
         let mut s = server(vec![Exit::Hlt]);
         s.serve(server_end).unwrap();
         client_thread.join().unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 59 — host-plane enforcement (apply a HostFault at a Moment).
+    //
+    // Portable proof over the scripted `MockBackend`: each staged `Moment`
+    // arrives via `run_until` (the mock rewrites a scripted `Exit::Deadline`'s
+    // `reached` to the work count the VMM armed — `arm_arrival`'s
+    // `work_for_vns(moment)`, which under the 1 ns/branch contract clock is the
+    // Moment itself). One scripted `Deadline` per *distinct* Moment, then a
+    // terminal `Hlt`. The end-to-end record→replay-on-real-KVM closure is the
+    // box gate; here we prove the apply-at-Moment seam, its determinism, and
+    // that the emitted recorded env re-applies to the identical hash.
+    // -----------------------------------------------------------------------
+
+    /// A live VM for enforcement: V-time + userspace-LAPIC + snapshot-hashing
+    /// wired, a distinctive RAM image loaded, and a script of `deadlines`
+    /// arrival placeholders followed by a terminal `Hlt`. `ScriptedWork::at(0)`
+    /// so every armed arrival (`work_for_vns(moment) = moment ≥ 1`) is a real
+    /// forward entry.
+    fn enforce_vmm(deadlines: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
+        let mut exits = vec![Exit::Deadline { reached: Vtime(0) }; deadlines];
+        exits.push(Exit::Hlt);
+        let mut m = MockBackend::with_exits(exits);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(0)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&image).unwrap();
+        v
+    }
+
+    /// The pristine 16 KiB image the enforcement tests start from.
+    fn enforce_image() -> [u8; RAM] {
+        let mut image = [0u8; RAM];
+        image[..12].copy_from_slice(b"ENFORCE_BOOT");
+        image
+    }
+
+    /// The number of distinct `Moment`s in a schedule (one arrival — one scripted
+    /// `Deadline` — per distinct `Moment`; faults sharing a `Moment` share one).
+    fn distinct_moments(schedule: &[(u64, EnvHostFault)]) -> usize {
+        let mut ms: Vec<u64> = schedule.iter().map(|(m, _)| *m).collect();
+        ms.sort_unstable();
+        ms.dedup();
+        ms.len()
+    }
+
+    /// Build a server, stage `schedule` via `perturb`, run to terminal, and
+    /// return `(state_hash, recorded_env)`. The factory is unused (no
+    /// branch/replay in these direct tests), so it errors loudly if ever called.
+    fn enforce_run(schedule: &[(u64, EnvHostFault)], seed: u64) -> ([u8; 32], EnvSpec) {
+        let live = enforce_vmm(distinct_moments(schedule), enforce_image(), seed);
+        let factory = Box::new(|| {
+            Err(VmmError::ContractViolation(
+                "factory unused in a direct enforcement run".into(),
+            ))
+        });
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        for (m, fault) in schedule {
+            let req = Request::Perturb {
+                fault: HostFault(fault.encode()),
+                at: Moment(*m),
+            };
+            assert_eq!(
+                s.handle(&req).unwrap(),
+                Ok(Reply::Unit),
+                "staging fault at Moment {m}"
+            );
+        }
+        let stop = run_all(&mut s);
+        assert!(
+            matches!(stop, StopReason::Quiescent { .. }),
+            "an enforcement run halts cleanly, got {stop:?}"
+        );
+        (hash(&mut s), s.recorded_env().clone())
+    }
+
+    fn enforce_hash(schedule: &[(u64, EnvHostFault)], seed: u64) -> [u8; 32] {
+        enforce_run(schedule, seed).0
+    }
+
+    #[test]
+    fn same_schedule_run_twice_is_bit_identical_and_control_differs() {
+        // Gate 1: an arbitrary schedule applied twice is bit-identical; and an
+        // ABSENT schedule (the control) differs — the faults are actually landing.
+        let schedule = vec![
+            (
+                100,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(0xDEAD_BEEF_0000_0001),
+                },
+            ),
+            (250, EnvHostFault::InjectInterrupt { vector: 0x40 }),
+        ];
+        let seed = 0x5EED59;
+        let h1 = enforce_hash(&schedule, seed);
+        let h2 = enforce_hash(&schedule, seed);
+        assert_eq!(h1, h2, "same schedule ⇒ bit-identical state_hash");
+
+        let control = enforce_hash(&[], seed);
+        assert_ne!(
+            h1, control,
+            "the empty control run differs (the faults land)"
+        );
+    }
+
+    #[test]
+    fn corrupt_memory_lands_the_exact_xor_at_the_gpa() {
+        // The upset is the pure function `word ^ mask` at the gpa — verify the
+        // exact bytes land, and that a mask that flips no bit (0) is a no-op.
+        let gpa = 0x80usize;
+        let mask = 0xA5A5_0000_1234_5678u64;
+        let fault = EnvHostFault::CorruptMemory {
+            gpa: gpa as u64,
+            mask: BitMask(mask),
+        };
+        let live = enforce_vmm(1, enforce_image(), 7);
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        s.handle(&Request::Perturb {
+            fault: HostFault(fault.encode()),
+            at: Moment(42),
+        })
+        .unwrap()
+        .unwrap();
+        let _ = run_all(&mut s);
+        let ram = s.vmm().unwrap().guest_memory();
+        let word = u64::from_le_bytes(ram[gpa..gpa + 8].try_into().unwrap());
+        // The pristine image is zero from 0x80 on, so the corrupted word is
+        // exactly the mask.
+        assert_eq!(word, mask, "CorruptMemory XORs the mask into the gpa word");
+    }
+
+    #[test]
+    fn arrival_lands_at_the_exact_moment_and_in_order() {
+        // The run arrives at each Moment via run_until: effective V-time equals the
+        // Moment when its fault is applied, and later Moments apply strictly after
+        // earlier ones. Prove it by staging CorruptMemory at ascending Moments and
+        // reading the terminal effective V-time (= the last Moment reached).
+        let schedule = vec![
+            (
+                1_000,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(1),
+                },
+            ),
+            (
+                5_000,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x48,
+                    mask: BitMask(2),
+                },
+            ),
+        ];
+        let live = enforce_vmm(distinct_moments(&schedule), enforce_image(), 1);
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        for (m, f) in &schedule {
+            s.handle(&Request::Perturb {
+                fault: HostFault(f.encode()),
+                at: Moment(*m),
+            })
+            .unwrap()
+            .unwrap();
+        }
+        let _ = run_all(&mut s);
+        // The last arrival advanced effective V-time to the final Moment (5_000).
+        assert_eq!(
+            s.vmm().unwrap().effective_vns(),
+            Some(5_000),
+            "the run arrived at the last staged Moment"
+        );
+        // Both upsets landed (words at both gpas are non-zero).
+        let ram = s.vmm().unwrap().guest_memory();
+        assert_ne!(&ram[0x40..0x48], &[0u8; 8], "first upset landed");
+        assert_ne!(&ram[0x48..0x50], &[0u8; 8], "second upset landed");
+    }
+
+    #[test]
+    fn second_fault_at_one_moment_is_loudly_rejected() {
+        // Task 45 is one-action-per-Moment (integrator ruling, spec amendment PR
+        // #54): a second stage at an occupied Moment is loudly rejected, so
+        // `recorded_env()` never silently drops a fault. The first stage stands and
+        // still applies.
+        let live = enforce_vmm(1, enforce_image(), 0xAB);
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+        let stage = |f: EnvHostFault, m: u64| Request::Perturb {
+            fault: HostFault(f.encode()),
+            at: Moment(m),
+        };
+        assert_eq!(
+            s.handle(&stage(
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(0x0F0F_0F0F),
+                },
+                300,
+            ))
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            s.handle(&stage(EnvHostFault::InjectInterrupt { vector: 0x50 }, 300))
+                .unwrap(),
+            Err(ControlError::PerturbMomentTaken { at: 300 }),
+            "a second fault at Moment 300 is rejected (not silently dropped)"
+        );
+        // The first (accepted) fault still applies, and the recorded env carries
+        // exactly it.
+        let _ = run_all(&mut s);
+        assert_ne!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the one accepted upset landed"
+        );
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            1,
+            "exactly the accepted fault is recorded"
+        );
+    }
+
+    #[test]
+    fn recorded_env_replays_to_the_same_hash() {
+        // Task 59 requirement 3 (portable form of the box gate's record→replay
+        // closure): every applied fault is stamped into the recorded env, and
+        // re-applying that env's host faults reproduces the run's state_hash.
+        let schedule = vec![
+            (
+                150,
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x20,
+                    mask: BitMask(0x1234_5678_9ABC_DEF0),
+                },
+            ),
+            (400, EnvHostFault::InjectInterrupt { vector: 0x60 }),
+        ];
+        let seed = 0xC105u64;
+        let (h1, recorded) = enforce_run(&schedule, seed);
+
+        // The recorded env carries both host faults on the Moment axis, and it
+        // round-trips through its own byte codec (a real reproducer blob).
+        let host: Vec<_> = recorded.host_faults().collect();
+        assert_eq!(host.len(), 2, "both applied faults were stamped");
+        let reencoded = EnvSpec::decode(&recorded.encode()).expect("recorded env round-trips");
+        let replay_schedule: Vec<(u64, EnvHostFault)> = reencoded.host_faults().collect();
+
+        // Re-applying the emitted schedule reproduces the hash bit-for-bit.
+        let h2 = enforce_hash(&replay_schedule, seed);
+        assert_eq!(
+            h1, h2,
+            "the recorded env replays to the identical state_hash"
+        );
+    }
+
+    /// A V-time-wired VM that takes a single RDTSC to effective V-time `rdtsc_work`,
+    /// then Hlt — used to drive the beyond-deadline / overshoot cases with a chosen
+    /// V-time landing (no arrival armed, so `run()` returns the scripted RDTSC).
+    fn rdtsc_then_hlt_vmm(rdtsc_work: u64) -> Vmm<MockBackend> {
+        let mut m = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(rdtsc_work)),
+                1,
+            )
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&enforce_image()).unwrap();
+        v
+    }
+
+    /// A server over [`rdtsc_then_hlt_vmm`] whose factory boots identically-composed
+    /// restore targets, so `branch`/`replay` (the poison recovery) succeed.
+    fn rdtsc_then_hlt_server(rdtsc_work: u64) -> ControlServer<MockBackend> {
+        ControlServer::new(
+            rdtsc_then_hlt_vmm(rdtsc_work),
+            Box::new(move || Ok(rdtsc_then_hlt_vmm(rdtsc_work))),
+        )
+    }
+
+    fn stage_corrupt(s: &mut ControlServer<MockBackend>, at: u64) {
+        s.handle(&Request::Perturb {
+            fault: HostFault(
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(0xFFFF_FFFF),
+                }
+                .encode(),
+            ),
+            at: Moment(at),
+        })
+        .unwrap()
+        .unwrap();
+    }
+
+    fn run_with_deadline(
+        s: &mut ControlServer<MockBackend>,
+        deadline: u64,
+    ) -> Result<Reply, ControlError> {
+        s.handle(&Request::Run {
+            until: StopConditions {
+                deadline: Some(VTime(deadline)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_beyond_deadline_fault_not_yet_crossed_stays_staged() {
+        // A fault beyond `until.deadline` that the run does NOT execute past stays
+        // staged (satisfiable by a later run): RDTSC lands at exactly the deadline
+        // 1000, the fault is at 1500 > 1000, so it is neither applied nor crossed.
+        let mut s = rdtsc_then_hlt_server(1000);
+        hello(&mut s);
+        stage_corrupt(&mut s, 1500);
+        match run_with_deadline(&mut s, 1000) {
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, VTime(1000)),
+            other => panic!("expected Deadline, got {other:?}"),
+        }
+        assert_eq!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the beyond-deadline fault did not apply"
+        );
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            0,
+            "nothing recorded — the fault is still staged for a later run"
+        );
+    }
+
+    #[test]
+    fn overshooting_a_staged_moment_fails_loud() {
+        // PR #51 round-2 finding 1: a fault beyond the deadline that the run
+        // EXECUTES PAST (RDTSC lands at 2000, deadline 1000, fault at 1500) can never
+        // be applied at its recorded count — the run fails loud with
+        // `ScheduleUnsatisfiable` rather than carry the crossed Moment forward for a
+        // later run to apply from the past.
+        let mut s = rdtsc_then_hlt_server(2000);
+        hello(&mut s);
+        stage_corrupt(&mut s, 1500);
+        assert_eq!(
+            run_with_deadline(&mut s, 1000),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment: 1500,
+                vtime: 2000,
+            }),
+        );
+        // The fault did NOT apply (recorded-apply-point integrity: never applied at
+        // the wrong count).
+        assert_eq!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the crossed fault must not have applied"
+        );
+    }
+
+    #[test]
+    fn schedule_poison_persists_until_a_rewind() {
+        // PR #51 round-3 item 1: after a crossed Moment poisons the schedule, a
+        // re-sent `run` / `perturb` / `snapshot` must KEEP failing loud (never apply
+        // the crossed fault from the past) until a `branch`/`replay` rewinds. Then
+        // the session works again.
+        let mut s = rdtsc_then_hlt_server(2000);
+        hello(&mut s);
+        let base = snap(&mut s);
+        stage_corrupt(&mut s, 1500);
+        let poisoned = Err(ControlError::ScheduleUnsatisfiable {
+            moment: 1500,
+            vtime: 2000,
+        });
+        // The overshooting run poisons.
+        assert_eq!(run_with_deadline(&mut s, 1000), poisoned);
+        // A re-sent run stays poisoned (does NOT apply 1500 from the past).
+        assert_eq!(run_with_deadline(&mut s, 5000), poisoned);
+        assert_eq!(run_all_res(&mut s), poisoned);
+        // Perturb stays poisoned.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(9000),
+            })
+            .unwrap(),
+            poisoned
+        );
+        // Snapshot stays poisoned.
+        assert_eq!(s.handle(&Request::Snapshot).unwrap(), poisoned);
+        // The crossed fault never applied.
+        assert_eq!(&s.vmm().unwrap().guest_memory()[0x40..0x48], &[0u8; 8]);
+        // A rewind (replay of the pristine base) clears the poison — the session runs
+        // cleanly again.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(matches!(run_all_res(&mut s), Ok(Reply::Stop(_))));
+    }
+
+    #[test]
+    fn snapshot_while_a_fault_is_staged_is_rejected() {
+        // PR #51 round-3 item 2: a snapshot seals only VM state; a staged future
+        // fault would be silently dropped by any restore of it — reject loudly with
+        // `SnapshotWhileArmed` while the schedule is non-empty.
+        let mut s = rdtsc_then_hlt_server(2000);
+        hello(&mut s);
+        // A snapshot at a clean (empty-schedule) point is fine.
+        let base = snap(&mut s);
+        // Stage a fault, then a snapshot is refused loudly.
+        stage_corrupt(&mut s, 3000);
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotWhileArmed)
+        );
+        // A rewind clears the schedule; snapshot works again.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(matches!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::SnapId(_))
+        ));
+    }
+
+    #[test]
+    fn branch_env_host_faults_go_through_the_same_validation_as_perturb() {
+        // Blocking item 1c: an env host fault that is out-of-range / out-of-scope /
+        // behind the snapshot is a recoverable ControlError at branch time (the same
+        // reply `perturb` gives), NOT a later session-fatal ServeError at apply time.
+        // The `server()` live VM is at effective V-time 500, so the snapshot — and
+        // the restored floor — is 500.
+        let host_env = |m: u64, fault: EnvHostFault| {
+            let mut spec = EnvSpec::Seeded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+            };
+            spec.record(m, environment::Action::Host(fault));
+            Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            }
+        };
+
+        // (i) out-of-range gpa → recoverable PerturbOutOfRange (was a fatal
+        // ServeError::Vmm before this fix).
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(
+                    1000,
+                    EnvHostFault::CorruptMemory {
+                        gpa: RAM as u64 - 4,
+                        mask: BitMask(0xFF),
+                    },
+                ),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbOutOfRange {
+                gpa: RAM as u64 - 4,
+                ram_len: RAM as u64,
+            })
+        );
+        // The session stays usable (fresh VM kept) and nothing was staged.
+        assert!(s.vmm().is_some());
+
+        // (ii) a Moment behind the restored snapshot's V-time (500) → PerturbPastMoment.
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(100, EnvHostFault::InjectInterrupt { vector: 40 }),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbPastMoment {
+                at: 100,
+                floor: 500
+            })
+        );
+
+        // (iii) an out-of-scope SkewTime → Unsupported.
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(1000, EnvHostFault::SkewTime(environment::VTime(5))),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+
+        // (iv) a valid future host fault is accepted and staged (Reply::Unit).
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(1000, EnvHostFault::InjectInterrupt { vector: 40 }),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    /// Build a branch env carrying a single host fault at `m`.
+    fn host_env(m: u64, fault: EnvHostFault) -> Environment {
+        let mut spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        spec.record(m, environment::Action::Host(fault));
+        Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        }
+    }
+
+    #[test]
+    fn a_rejected_branch_env_fault_is_side_effect_free() {
+        // PR #51 round-5 item 1: a branch whose env carries an inadmissible host
+        // fault must reject WITHOUT swapping the VM — the old timeline is untouched,
+        // so the client's state is exactly what it was before the (failed) branch.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        let before = s.vmm().unwrap().state_hash();
+
+        // An out-of-range gpa is rejected — validated against the LIVE VM before any
+        // drop/restore/reseed.
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(
+                    1000,
+                    EnvHostFault::CorruptMemory {
+                        gpa: RAM as u64 - 4,
+                        mask: BitMask(0xFF),
+                    },
+                ),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbOutOfRange {
+                gpa: RAM as u64 - 4,
+                ram_len: RAM as u64,
+            })
+        );
+        // The live VM is BYTE-IDENTICAL to before: not dropped, not restored, not
+        // reseeded — the rejected branch had no side effect.
+        assert_eq!(
+            s.vmm().unwrap().state_hash(),
+            before,
+            "a rejected branch env fault must leave the old VM untouched"
+        );
+        // And the session is fully usable: it can still snapshot + branch cleanly.
+        let base2 = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base2,
+                env: seeded_env(9),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
+    fn a_terminal_stop_with_a_staged_fault_poisons_loud() {
+        // PR #51 round-6 item 1 (supersedes round-5 item 2): a natural terminal exit
+        // is NOT a V-time intercept, so `effective_vns` is only a lower bound —
+        // nothing staged is provably uncrossed. So a terminal stop with ANY fault
+        // still staged **poisons loud** (a named, rewindable error) rather than
+        // silently dropping a possibly-crossed accepted perturb. The round-5
+        // `SnapshotWhileArmed` trap stays fixed: poison is rewindable, not a stuck
+        // state. Task-60 crash campaigns rewind (`branch`/`replay`) anyway.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        // The live VM is at V-time 500 and HLTs (terminal) on the next step. Stage a
+        // fault beyond that terminal point.
+        stage_corrupt(&mut s, 100_000);
+        // Running to the terminal HLT poisons (the fault is still staged).
+        let poisoned = Err(ControlError::ScheduleUnsatisfiable {
+            moment: 100_000,
+            vtime: 500,
+        });
+        assert_eq!(run_all_res(&mut s), poisoned);
+        // The fault never applied (recorded stays empty).
+        assert_eq!(s.recorded_env().host_faults().count(), 0);
+        // Poisoned: re-run + snapshot both reject with the named, rewindable error
+        // (not a silent stuck `SnapshotWhileArmed`).
+        assert_eq!(run_all_res(&mut s), poisoned);
+        assert_eq!(s.handle(&Request::Snapshot).unwrap(), poisoned);
+        // A rewind (replay of the pristine base) clears the poison — the session runs
+        // and snapshots cleanly again.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(matches!(
+            run_all_res(&mut s),
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
+    }
+
+    #[test]
+    fn perturb_after_a_terminal_stop_is_rejected_not_synchronized() {
+        // PR #51 round-7 (family root cause): after a natural terminal stop the VM is
+        // NOT at a V-time intercept, so `effective_vns` is only a lower bound —
+        // staging a fault against it could record it at a `Moment` the guest already
+        // executed past. `perturb` must reject with `NotSynchronized`; the client
+        // rewinds (branch/replay lands on an intercept) and can then stage.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s); // synchronized (post-RDTSC, V-time 500)
+        // Run to the terminal HLT → unsynchronized.
+        assert!(matches!(run_all(&mut s), StopReason::Quiescent { .. }));
+        let inject = |vector: u8| Request::Perturb {
+            fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
+            at: Moment(1000),
+        };
+        assert_eq!(
+            s.handle(&inject(40)).unwrap(),
+            Err(ControlError::NotSynchronized),
+            "a perturb at an unsynchronized (terminal) point is rejected"
+        );
+        // A rewind restores onto a V-time intercept → synchronized → perturb accepted.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert_eq!(s.handle(&inject(40)).unwrap(), Ok(Reply::Unit));
+    }
+
+    #[test]
+    fn perturb_after_a_synchronized_deadline_stop_reproduces() {
+        // The positive half of the sync gate + a recorded-env replay-equivalence
+        // check: a `perturb` after a **deadline stop that landed on an arrival**
+        // (synchronized) is accepted, and the recorded env — branched from base and
+        // re-run — reproduces the live `state_hash` across the multi-run session.
+        let run_to = |s: &mut ControlServer<ArrivalBackend>, d: u64| {
+            s.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(VTime(d)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+        };
+        let perturb = |s: &mut ControlServer<ArrivalBackend>, gpa: u64, at: u64| {
+            s.handle(&Request::Perturb {
+                fault: HostFault(
+                    EnvHostFault::CorruptMemory {
+                        gpa,
+                        mask: BitMask(0xDEAD_0000_BEEF),
+                    }
+                    .encode(),
+                ),
+                at: Moment(at),
+            })
+            .unwrap()
+        };
+
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let base = arr_snap(&mut s);
+        // Stage + apply the first fault at Moment 100, stopping AT it (a synchronized
+        // arrival deadline stop).
+        assert_eq!(perturb(&mut s, 0x40, 100), Ok(Reply::Unit));
+        assert!(matches!(
+            run_to(&mut s, 100),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        // The deadline stop landed on the arrival → synchronized → a second perturb is
+        // accepted (NOT NotSynchronized).
+        assert_eq!(perturb(&mut s, 0x80, 300), Ok(Reply::Unit));
+        assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
+        let h_live = arr_hash(&s);
+        let recorded = s.recorded_env().clone();
+        assert_eq!(recorded.host_faults().count(), 2, "both faults recorded");
+
+        // Replay-equivalence: branch the recorded env from base and re-run → the same
+        // live hash.
+        let mut r = arrival_server();
+        arr_hello(&mut r);
+        let base_r = arr_snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: recorded.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+        assert_eq!(
+            h_live,
+            arr_hash(&r),
+            "recorded env reproduces the multi-run hash"
+        );
+        let _ = base;
+    }
+
+    #[test]
+    fn a_fault_at_current_vtime_with_an_expired_deadline_is_not_poisoned() {
+        // PR #51 round-5 item 3: a fault at exactly the current V-time (m == vns) is
+        // EXACT arrival, not late — even when the run's deadline is already expired
+        // (d < vns). It must apply and stop with `Deadline`, never poison. Live VM
+        // RDTSCs to V-time 500; the fault is staged at 500; the deadline is 300.
+        let mut s = rdtsc_then_hlt_server(500);
+        hello(&mut s);
+        stage_corrupt(&mut s, 500);
+        match run_with_deadline(&mut s, 300) {
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, VTime(500)),
+            other => panic!("expected Deadline{{500}}, got {other:?}"),
+        }
+        // The exact-arrival fault APPLIED (recorded), and the schedule is NOT poisoned
+        // — a later run works.
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            1,
+            "the m==vns fault applied"
+        );
+        assert_ne!(
+            &s.vmm().unwrap().guest_memory()[0x40..0x48],
+            &[0u8; 8],
+            "the exact-arrival upset landed"
+        );
+        assert!(
+            matches!(run_all_res(&mut s), Ok(Reply::Stop(_))),
+            "not poisoned"
+        );
+    }
+
+    #[test]
+    fn a_branch_env_moment_occupies_the_schedule_for_ruling_b() {
+        // Ruling B across the branch→perturb boundary (PR #51 round-5 suggestion): a
+        // branch env stages a fault at Moment M; a later `perturb` at M is then the
+        // loud `PerturbMomentTaken` (one fault per Moment holds after a branch, not
+        // just within a fresh session). Pins the invariant so a future batch-validate
+        // refactor can't silently regress it.
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: host_env(1000, EnvHostFault::InjectInterrupt { vector: 40 }),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 41 }.encode()),
+                at: Moment(1000),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbMomentTaken { at: 1000 }),
+            "a branch-staged Moment occupies the schedule for ruling B"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(384))]
+
+        /// Gate 1 proptest (≥256 cases): an arbitrary staged schedule applied twice
+        /// yields identical state evolution. `Moment`s are **distinct** (a
+        /// `BTreeMap` key — the one-fault-per-Moment rule rejects duplicates, so the
+        /// schedule under test never carries them) in `1..=100_000` (each arms
+        /// a forward arrival); faults are in-range CorruptMemory (any gpa whose word
+        /// fits the 16 KiB RAM, any mask) or InjectInterrupt (any non-reserved vector).
+        #[test]
+        fn arbitrary_schedule_applied_twice_is_identical(
+            schedule in proptest::collection::btree_map(
+                1u64..=100_000u64,
+                prop_oneof![
+                    (0u64..(RAM as u64 - 8), any::<u64>())
+                        .prop_map(|(gpa, m)| EnvHostFault::CorruptMemory { gpa, mask: BitMask(m) }),
+                    (16u8..=255u8)
+                        .prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
+                ],
+                0..8usize,
+            ),
+        ) {
+            let sched: Vec<(u64, EnvHostFault)> = schedule.into_iter().collect();
+            let seed = 0x9159_2653;
+            let h1 = enforce_hash(&sched, seed);
+            let h2 = enforce_hash(&sched, seed);
+            prop_assert_eq!(h1, h2, "same schedule ⇒ identical state evolution");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR #51 round-2 — the recorded-env-reproduces invariant across the full verb
+    // space, plus the four corners the fresh cross-model pass found.
+    // -----------------------------------------------------------------------
+
+    /// A mock-wrapping backend that makes arrival **exact without a scripted
+    /// `Deadline`**: `run_until(d)` always lands at `d` (a `Deadline`), and `run()`
+    /// (no arrival armed) is always a terminal `Hlt`. This lets a *random* verb
+    /// sequence drive any number of arrivals + runs without pre-scripting exits.
+    /// `deterministic_tsc` (forwarded from the inner mock) is `true`, so the server
+    /// treats it as an armable host-plane backend.
+    struct ArrivalBackend(MockBackend);
+    impl Backend for ArrivalBackend {
+        fn set_cpuid(&mut self, m: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
+            self.0.set_cpuid(m)
+        }
+        fn set_msr_filter(&mut self, f: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
+            self.0.set_msr_filter(f)
+        }
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: forwards to the inner mock, which only records the region.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit> {
+            Ok(Exit::Hlt)
+        }
+        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+            Ok(Exit::Deadline { reached: d })
+        }
+        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+            self.0.inject(e)
+        }
+        fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(v)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, v: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(v)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(rax)
+        }
+        fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
+            self.0.complete_cpuid(a, b, c, d)
+        }
+        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.0.save()
+        }
+        fn restore(&mut self, s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.0.restore(s)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities {
+            self.0.capabilities()
+        }
+    }
+
+    fn arrival_vmm(seed: u64) -> Vmm<ArrivalBackend> {
+        let mut m = MockBackend::with_exits(vec![]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut v = Vmm::new(ArrivalBackend(m), GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(0)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&enforce_image()).unwrap();
+        v
+    }
+
+    /// A server over the exact-arrival mock, whose factory boots identically-composed
+    /// restore targets (so `branch`/`replay` succeed). Seed `0x59` for the live VM
+    /// and every fork.
+    fn arrival_server() -> ControlServer<ArrivalBackend> {
+        let live = arrival_vmm(0x59);
+        ControlServer::new(live, Box::new(|| Ok(arrival_vmm(0x59))))
+    }
+
+    fn arr_hello<B: Backend>(s: &mut ControlServer<B>) {
+        assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+    }
+    fn arr_snap<B: Backend>(s: &mut ControlServer<B>) -> SnapId {
+        match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(id)) => id,
+            other => panic!("snapshot: {other:?}"),
+        }
+    }
+    fn arr_run<B: Backend>(s: &mut ControlServer<B>) -> Result<Reply, ControlError> {
+        s.handle(&Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        })
+        .unwrap()
+    }
+    fn arr_hash<B: Backend>(s: &ControlServer<B>) -> [u8; 32] {
+        s.vmm().unwrap().state_hash()
+    }
+
+    #[test]
+    fn reperturb_at_an_applied_moment_is_rejected() {
+        // Finding 2: once a fault at `m` has APPLIED it is gone from the schedule
+        // but present in `recorded`; a second perturb at `m` must still be rejected
+        // (else `EnvSpec::perturb` overwrites the first and it vanishes from
+        // `recorded_env()`). Run to a deadline of exactly `m` so the live V-time is
+        // `m` (== floor), the one case that passes the past-Moment check.
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        // Stage + apply a fault at Moment 100 by running to deadline 100.
+        s.handle(&Request::Perturb {
+            fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+            at: Moment(100),
+        })
+        .unwrap()
+        .unwrap();
+        // Run with deadline 100: arrival lands at 100, applies, then the deadline
+        // stops the run at V-time 100.
+        let stop = s
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(VTime(100)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap();
+        assert!(matches!(stop, Ok(Reply::Stop(StopReason::Deadline { .. }))));
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            1,
+            "the fault applied"
+        );
+        assert_eq!(s.vmm().unwrap().effective_vns(), Some(100));
+        // A second perturb at the already-APPLIED Moment 100 (== floor, so it clears
+        // the past-Moment check) is rejected — it does not overwrite the recorded fault.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x41 }.encode()),
+                at: Moment(100),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbMomentTaken { at: 100 })
+        );
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            1,
+            "the applied fault is still recorded (not overwritten)"
+        );
+    }
+
+    #[test]
+    fn perturb_on_an_unarmable_backend_is_unsupported() {
+        // Finding 3: a backend that cannot arm the exact-arrival seam (V-time
+        // unwired, or deterministic_tsc=false) would apply a staged fault late.
+        // Reject perturb up front with Unsupported. Here: a mock with NO V-time wired.
+        let mut m = MockBackend::with_exits(vec![Exit::Hlt]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let v = Vmm::new(m, GuestRam::new(RAM).unwrap()); // V-time NOT wired
+        let mut s = ControlServer::new(
+            v,
+            Box::new(|| Err(VmmError::ContractViolation("unused".into()))),
+        );
+        assert!(s.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(10),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported),
+            "an unarmable backend cannot enforce host faults exactly"
+        );
+    }
+
+    #[test]
+    fn perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time() {
+        // PR #51 round-8 item 1: an InjectInterrupt with an architecturally reserved
+        // vector (0..=15) is a stage-time-decidable request error — a recoverable
+        // `PerturbReservedVector`, not a session-fatal apply-time `ServeError`.
+        let mut s = arrival_server(); // LAPIC wired, synchronized
+        arr_hello(&mut s);
+        for vector in [0u8, 1, 15] {
+            assert_eq!(
+                s.handle(&Request::Perturb {
+                    fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
+                    at: Moment(100),
+                })
+                .unwrap(),
+                Err(ControlError::PerturbReservedVector { vector })
+            );
+        }
+        // A non-reserved vector still stages cleanly.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 16 }.encode()),
+                at: Moment(100),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
+    fn perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported() {
+        // PR #51 round-8 item 1: an InjectInterrupt on a VM with no userspace LAPIC
+        // has no interrupt controller to raise into — reject at stage time with the
+        // recoverable `Unsupported`, not a session-fatal apply-time failure. (The VM
+        // is V-time-wired + deterministic, so `CorruptMemory` would still be armable.)
+        let mut s = rdtsc_then_hlt_server(500); // V-time wired, NO LAPIC
+        hello(&mut s);
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(1000),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported),
+            "no LAPIC ⇒ InjectInterrupt cannot be delivered — rejected at stage time"
+        );
+        // CorruptMemory on the same no-LAPIC VM is still accepted (round-6 idle wake).
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(
+                    EnvHostFault::CorruptMemory {
+                        gpa: 0x40,
+                        mask: BitMask(0xFF),
+                    }
+                    .encode(),
+                ),
+                at: Moment(1000),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
+    fn recoverable_restore_failure_clears_the_stale_schedule() {
+        // Finding 4a: a recoverable RestoreFailed still REPLACES the VM with a fresh
+        // boot, so the old timeline's staged faults must not survive attached to it.
+        // The live VM is V-time-wired; the factory boots forks WITHOUT V-time, so the
+        // restore is a validation-class rejection (RestoreFailed, fresh VM kept).
+        let live = arrival_vmm(0x59);
+        let factory = Box::new(|| {
+            // A fork with NO V-time → restoring a V-time blob is a ContractViolation.
+            let mut m = MockBackend::with_exits(vec![]);
+            m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            m.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            Ok(Vmm::new(ArrivalBackend(m), GuestRam::new(RAM).unwrap()))
+        });
+        let mut s = ControlServer::new(live, factory);
+        arr_hello(&mut s);
+        let base = arr_snap(&mut s);
+        // Stage a fault on the current (soon-to-be-replaced) timeline.
+        s.handle(&Request::Perturb {
+            fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+            at: Moment(50),
+        })
+        .unwrap()
+        .unwrap();
+        // Branch fails recoverably (RestoreFailed), keeping the fresh (unwired) VM.
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: Environment {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: EnvSpec::Seeded {
+                        seed: 7,
+                        policy: FaultPolicy::none()
+                    }
+                    .encode(),
+                },
+            })
+            .unwrap(),
+            Err(ControlError::RestoreFailed)
+        );
+        // The stale fault is gone: recorded reset, schedule cleared. A run applies
+        // nothing (and the unwired fork can't even enforce — but the point is the
+        // schedule did not carry forward).
+        assert_eq!(
+            s.recorded_env().host_faults().count(),
+            0,
+            "the stale schedule/recorded was cleared on the recoverable failure"
+        );
+    }
+
+    #[test]
+    fn replay_derives_recorded_seed_from_the_restored_stream() {
+        // Finding 4b: `replay` must derive the recorded seed from the RESTORED
+        // stream, not the prior session. Drive the recorded seed to a wrong value
+        // via a branch, then replay the pristine base and confirm the recorded env —
+        // re-applied from base — reproduces the live post-replay+perturb+run hash.
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let base = arr_snap(&mut s);
+        // Poison the session seed: branch to a distinct seed 0xDEAD (recorded.seed
+        // becomes that stream). If replay carried this forward, reproduction breaks.
+        s.handle(&Request::Branch {
+            snap: base,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: EnvSpec::Seeded {
+                    seed: 0xDEAD,
+                    policy: FaultPolicy::none(),
+                }
+                .encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        // Now replay the pristine base (its stream is seed 0x59, not 0xDEAD).
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        // Perturb + run on the replayed timeline.
+        s.handle(&Request::Perturb {
+            fault: HostFault(
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x80,
+                    mask: BitMask(0x1234_5678),
+                }
+                .encode(),
+            ),
+            at: Moment(42),
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
+        let h_live = arr_hash(&s);
+        let e = s.recorded_env().clone();
+
+        // Re-apply the recorded env from base on a fresh server → must reproduce.
+        let mut r = arrival_server();
+        arr_hello(&mut r);
+        let base_r = arr_snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: e.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+        assert_eq!(
+            h_live,
+            arr_hash(&r),
+            "recorded_env() after a replay reproduces the live hash (right stream)"
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    enum VerbOp {
+        Perturb(EnvHostFault, u64),
+        Run,
+        Branch(u64),
+        Replay,
+        Snapshot,
+    }
+
+    fn arb_verb_op() -> impl Strategy<Value = VerbOp> {
+        prop_oneof![
+            (
+                prop_oneof![
+                    (0u64..(RAM as u64 - 8), any::<u64>()).prop_map(|(gpa, m)| {
+                        EnvHostFault::CorruptMemory {
+                            gpa,
+                            mask: BitMask(m),
+                        }
+                    }),
+                    (16u8..=255u8).prop_map(|vector| EnvHostFault::InjectInterrupt { vector }),
+                ],
+                1u64..=400,
+            )
+                .prop_map(|(f, off)| VerbOp::Perturb(f, off)),
+            Just(VerbOp::Run),
+            (1u64..=8).prop_map(VerbOp::Branch),
+            Just(VerbOp::Replay),
+            Just(VerbOp::Snapshot),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// The **structural invariant** (PR #51 round 2): after any random sequence
+        /// of `perturb`/`run`/`branch`/`replay` on the exact-arrival mock, the
+        /// `recorded_env()` — re-applied by branching it from the starting snapshot
+        /// on a fresh server and running — reproduces the live `state_hash` after
+        /// every completed run. This is the net that covers the whole verb space:
+        /// the recorded apply point must equal the actual apply point, or the op
+        /// must have failed loudly (rejected ops are simply skipped by the model).
+        #[test]
+        fn verb_sequence_recorded_env_reproduces_live_hash(ops in prop::collection::vec(arb_verb_op(), 1..12)) {
+            let mut s = arrival_server();
+            arr_hello(&mut s);
+            let base = arr_snap(&mut s);
+
+            for op in ops {
+                match op {
+                    VerbOp::Perturb(fault, off) => {
+                        let floor = s.vmm().unwrap().effective_vns().unwrap_or(0);
+                        // Absolute Moment strictly in the future of the current point.
+                        let at = floor.saturating_add(off);
+                        // A rejection (dup / past / etc.) is a loud, expected outcome — ignore.
+                        let _ = s.handle(&Request::Perturb {
+                            fault: HostFault(fault.encode()),
+                            at: Moment(at),
+                        }).unwrap();
+                    }
+                    VerbOp::Run => {
+                        // Continue-after-error: a loud rejection (e.g. a poisoned
+                        // schedule) just skips the invariant check for this op.
+                        match arr_run(&mut s) {
+                            Ok(Reply::Stop(_)) => {
+                                // Invariant: replay recorded_env() from base reproduces live.
+                                let e = s.recorded_env().clone();
+                                let h_live = arr_hash(&s);
+                                let mut r = arrival_server();
+                                arr_hello(&mut r);
+                                let base_r = arr_snap(&mut r);
+                                r.handle(&Request::Branch {
+                                    snap: base_r,
+                                    env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
+                                }).unwrap().unwrap();
+                                prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+                                prop_assert_eq!(h_live, arr_hash(&r), "recorded_env() must reproduce the live hash");
+                            }
+                            Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
+                            Err(_) => { /* loud rejection — the model skips this op */ }
+                        }
+                    }
+                    VerbOp::Branch(seed) => {
+                        // From `base` only (so the recorded reproducer's origin is fixed).
+                        let _ = s.handle(&Request::Branch { snap: base, env: seeded_env_arr(seed) }).unwrap();
+                    }
+                    VerbOp::Replay => {
+                        let _ = s.handle(&Request::Replay(base)).unwrap();
+                    }
+                    VerbOp::Snapshot => {
+                        // Clean → Ok(SnapId); with a fault staged → SnapshotWhileArmed
+                        // (loud). Either way the session stays consistent; the minted
+                        // handle is unused (branches/replays use `base` only).
+                        let _ = s.handle(&Request::Snapshot).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    fn seeded_env_arr(seed: u64) -> Environment {
+        Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: EnvSpec::Seeded {
+                seed,
+                policy: FaultPolicy::none(),
+            }
+            .encode(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR #51 round-4 — the idle-HLT-before-fault path: a staged arrival must wake
+    // the idle jump (jump to min(timer, arrival)) rather than sail past the Moment.
+    // -----------------------------------------------------------------------
+
+    /// A mock-wrapping backend whose guest is a **resumable idle**: `run`/`run_until`
+    /// always return a natural `Hlt` and the vCPU has `RFLAGS.IF` set, so every
+    /// arrival is reached through the idle-jump path (`on_hlt` → `idle_action` →
+    /// jump to `min(timer, arrival)`) instead of a `run_until` `Deadline`. No timer
+    /// is armed, so the staged host-fault arrival is the sole wake event; with
+    /// `CorruptMemory`-only faults (no IRR raise) the run idles Moment-to-Moment and
+    /// terminates cleanly once the schedule drains. `deterministic_tsc` is `true`.
+    struct IdleBackend(MockBackend);
+    impl Backend for IdleBackend {
+        fn set_cpuid(&mut self, m: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
+            self.0.set_cpuid(m)
+        }
+        fn set_msr_filter(&mut self, f: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
+            self.0.set_msr_filter(f)
+        }
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: forwards to the inner mock, which only records the region.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit> {
+            Ok(Exit::Hlt)
+        }
+        fn run_until(&mut self, _d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+            // The guest idles (a natural HLT) before any deadline — the arrival is
+            // reached through the idle jump, not a run_until Deadline.
+            Ok(Exit::Hlt)
+        }
+        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+            self.0.inject(e)
+        }
+        fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(v)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, v: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(v)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(rax)
+        }
+        fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
+            self.0.complete_cpuid(a, b, c, d)
+        }
+        fn save(&self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.0.save()
+        }
+        fn restore(&mut self, s: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.0.restore(s)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities {
+            self.0.capabilities()
+        }
+    }
+
+    fn idle_vmm(seed: u64) -> Vmm<IdleBackend> {
+        let mut m = MockBackend::with_exits(vec![]);
+        m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        m.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        // RFLAGS.IF set → a resumable idle HLT (0x2 is the always-1 reserved bit).
+        m.set_state(vmm_backend::VcpuState {
+            regs: vmm_backend::VcpuRegs {
+                rflags: (1 << 9) | 0x2,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut v = Vmm::new(IdleBackend(m), GuestRam::new(RAM).unwrap());
+        v.wire_vtime(
+            VtimeWiring::new(
+                contract_vclock_config(),
+                Box::new(ScriptedWork::at(0)),
+                seed,
+            )
+            .unwrap(),
+        );
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        v.wire_snapshot_hashing();
+        v.restore_guest_memory(&enforce_image()).unwrap();
+        v
+    }
+
+    fn idle_server() -> ControlServer<IdleBackend> {
+        ControlServer::new(idle_vmm(0x1D1E), Box::new(|| Ok(idle_vmm(0x1D1E))))
+    }
+
+    fn idle_seeded_env(seed: u64) -> Environment {
+        Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: EnvSpec::Seeded {
+                seed,
+                policy: FaultPolicy::none(),
+            }
+            .encode(),
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum IdleOp {
+        Perturb(u64, u64), // gpa, moment-offset
+        Run,
+        Branch(u64),
+        Replay,
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// HLT-before-fault reproduction net (PR #51 round-4): the same
+        /// recorded-env-reproduces invariant as the exact-arrival proptest, but every
+        /// arrival is reached through the **idle jump** (the guest HLTs before each
+        /// staged `Moment`; `idle_action` wakes at the arrival). `CorruptMemory`-only
+        /// (an idle guest with no timer terminates cleanly once the schedule drains),
+        /// verbs `perturb`/`run`/`branch`/`replay`, all from a fixed base snapshot.
+        #[test]
+        fn idle_hlt_before_fault_recorded_env_reproduces(ops in prop::collection::vec(
+            prop_oneof![
+                (0u64..(RAM as u64 - 8), 1u64..=400).prop_map(|(g, off)| IdleOp::Perturb(g, off)),
+                Just(IdleOp::Run),
+                (1u64..=8).prop_map(IdleOp::Branch),
+                Just(IdleOp::Replay),
+            ],
+            1..12,
+        )) {
+            let mut s = idle_server();
+            arr_hello(&mut s);
+            let base = arr_snap(&mut s);
+            for op in ops {
+                match op {
+                    IdleOp::Perturb(gpa, off) => {
+                        let floor = s.vmm().unwrap().effective_vns().unwrap_or(0);
+                        let at = floor.saturating_add(off);
+                        let _ = s.handle(&Request::Perturb {
+                            fault: HostFault(EnvHostFault::CorruptMemory { gpa, mask: BitMask(0xA5A5_5A5A) }.encode()),
+                            at: Moment(at),
+                        }).unwrap();
+                    }
+                    IdleOp::Run => {
+                        match arr_run(&mut s) {
+                            Ok(Reply::Stop(_)) => {
+                                let e = s.recorded_env().clone();
+                                let h_live = arr_hash(&s);
+                                let mut r = idle_server();
+                                arr_hello(&mut r);
+                                let base_r = arr_snap(&mut r);
+                                r.handle(&Request::Branch {
+                                    snap: base_r,
+                                    env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
+                                }).unwrap().unwrap();
+                                prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+                                prop_assert_eq!(h_live, arr_hash(&r), "idle-path recorded_env() must reproduce the live hash");
+                            }
+                            Ok(other) => prop_assert!(false, "unexpected run reply: {other:?}"),
+                            Err(_) => { /* loud rejection — skip */ }
+                        }
+                    }
+                    IdleOp::Branch(seed) => {
+                        let _ = s.handle(&Request::Branch { snap: base, env: idle_seeded_env(seed) }).unwrap();
+                    }
+                    IdleOp::Replay => {
+                        let _ = s.handle(&Request::Replay(base)).unwrap();
+                    }
+                }
+            }
+        }
     }
 }

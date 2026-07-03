@@ -138,6 +138,15 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
         Just(ControlError::ResolveWithoutDecision),
         Just(ControlError::MalformedAnswer),
         Just(ControlError::Unsupported),
+        (any::<u64>(), any::<u64>())
+            .prop_map(|(gpa, ram_len)| ControlError::PerturbOutOfRange { gpa, ram_len }),
+        (any::<u64>(), any::<u64>())
+            .prop_map(|(at, floor)| ControlError::PerturbPastMoment { at, floor }),
+        any::<u64>().prop_map(|at| ControlError::PerturbMomentTaken { at }),
+        (any::<u64>(), any::<u64>())
+            .prop_map(|(moment, vtime)| ControlError::ScheduleUnsatisfiable { moment, vtime }),
+        Just(ControlError::NotSynchronized),
+        any::<u8>().prop_map(|vector| ControlError::PerturbReservedVector { vector }),
         arb_protocol_error().prop_map(ControlError::Protocol),
     ]
 }
