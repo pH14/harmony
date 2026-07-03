@@ -155,10 +155,15 @@ impl TraceStore {
                 Ok(trace)
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                if self.path(id, "env").exists() {
-                    Err(TraceError::NotRetained(id))
-                } else {
-                    Err(TraceError::NotFound(id))
+                // No journal on disk. Distinguish env-only (a valid,
+                // content-addressed sidecar exists → NotRetained) from unknown or
+                // forged — via `env()`, which decodes and re-verifies the content
+                // address rather than trusting the `<id>.env` *filename*: a
+                // renamed/forged sidecar surfaces as `IdMismatch`, an absent one
+                // as `NotFound`.
+                match self.env(id) {
+                    Ok(_) => Err(TraceError::NotRetained(id)),
+                    Err(e) => Err(e),
                 }
             }
             Err(e) => Err(TraceError::Io(e)),
