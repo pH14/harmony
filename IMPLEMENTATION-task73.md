@@ -56,6 +56,21 @@ seam (61 reuses it).
    env supply stream (snapshotted with the channel), so `entropy_fill` works.
    (nit) SPDX headers on `sdk-demo`.
 
+## Round-2 review (follow-on P1 + P2 + P3 — all fixed, portable, no box re-run)
+
+1. **Replay wiped the buggify policy → all-Nominal (P1).** `reset_schedule_to_fresh_vm`
+   resets `recorded` to `none()` on restore, and only branch re-set the policy, so a
+   replay materialized the SDK env with `none()`. Fix: `SdkSnap` captures the active
+   `FaultPolicy` with each snapshot; restore is `env_policy.or_else(snapshot policy)`
+   (branch → branch policy; replay → snapshot policy) before `enable_sdk`. Test:
+   `replay_restores_the_buggify_policy`.
+2. **SDK-stop arm now poisons a staged crossed fault (P2).** An SDK stop is at a
+   skid-tainted doorbell OUT (`effective_vns` a lower bound), so it applies task 59's
+   terminal crossed-fault rule (poison loud) instead of returning past a crossed fault.
+3. **Catalog redeclare drops the stale coordinate (P3).** `coord_of_name` map; `declare`
+   removes the name's old `by_coord` entry on a move. Test:
+   `redeclare_removes_the_stale_coordinate`. All three private (no public-API change).
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
