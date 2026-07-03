@@ -93,6 +93,42 @@ fn dirty_write_cycle_is_caught_with_its_witness() {
     assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
 }
 
+/// Round-2 P1 (the register false-clean): two committed transactions wrote two
+/// **register** keys in conflicting orders — a provable ww cycle — but the
+/// conflicting versions (`a=4`, `b=2`) are never read back. Register order is
+/// recovered from write **moments** (not just observed values), so both writes
+/// are placed and the cycle is caught, not judged clean.
+///
+/// Codex's counterexample: T21 writes b then a; T22 writes a then b, interleaved
+/// so `a`'s order is [4(T22), 1(T21)] and `b`'s is [2(T21), 3(T22)] — T22→T21 on
+/// a, T21→T22 on b: a cycle.
+#[test]
+fn register_conflicting_write_order_is_a_dirty_write() {
+    let t = trace(
+        vec![
+            write(1, 1, 21, "b", 2), // T21: b<-2 (early)
+            write(2, 2, 22, "a", 4), // T22: a<-4 (early)
+            write(3, 2, 22, "b", 3), // T22: b<-3 (late → b order [2,3])
+            write(4, 1, 21, "a", 1), // T21: a<-1 (late → a order [4,1])
+            commit(5, 21),
+            commit(6, 22),
+            // Final reads pin the last version of each (a=1, b=3); the conflict
+            // is already provable from the write moments regardless.
+            read(7, 3, 23, "a", &[1]),
+            read(8, 3, 23, "b", &[3]),
+            commit(9, 23),
+        ],
+        0,
+    );
+    let a = oracle(IsolationLevel::ReadUncommitted)
+        .analyze(&t)
+        .expect("decodes")
+        .expect("the register dirty-write cycle (not a false clean)");
+    assert_eq!(a.kind, AnomalyKind::DirtyWrite);
+    assert_eq!(a.txns, vec![21, 22], "both writers are on the cycle");
+    assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
+}
+
 /// G1a aborted read: a committed transaction read a value an aborted transaction
 /// wrote. Caught at Read Committed and above; not at Read Uncommitted.
 #[test]

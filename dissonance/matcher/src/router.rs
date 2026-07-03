@@ -44,7 +44,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use explorer::{Bug, ChannelId, Feature, FeatureId, Matchable, Moment, Oracle, RunTrace, Sensor};
+use explorer::{
+    Bug, ChannelId, FaultCoord, Feature, FeatureId, Matchable, Moment, Oracle, RunTrace, Sensor,
+    TerminalSig, VTimeCoord, mint_fingerprint,
+};
 use sha2::{Digest, Sha256};
 
 use crate::error::MatchError;
@@ -128,28 +131,48 @@ fn cell_id<R: Matchable>(rec: &R, expr: &MatchExpr) -> FeatureId {
     FeatureId(u64::from_le_bytes(low))
 }
 
-/// The `never` role's provisional [`Bug`] fingerprint:
-/// `sha2(name ‖ kind ‖ matched attr bytes)`. Deterministic and stable across
-/// re-derivation (stable coordinates, never learned cells). **Provisional** —
-/// task 75 pins the authoritative stable-coordinate schema and supersedes this
-/// minting site.
-fn never_fingerprint<R: Matchable>(name: &SignalId, rec: &R, expr: &MatchExpr) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"dissonance.matcher.never.v1");
-    h.update((name.0.len() as u64).to_le_bytes());
-    h.update(name.0.as_bytes());
-    let kind = rec.kind().as_bytes();
-    h.update((kind.len() as u64).to_le_bytes());
-    h.update(kind);
+/// The `never` role's [`Bug`] fingerprint, minted through the **canonical
+/// task-75 schema** ([`mint_fingerprint`](explorer::mint_fingerprint)) — task 75
+/// supersedes this minting site (the old `dissonance.matcher.never.v1` SHA), so
+/// matcher bugs share the stable-coordinate space with every other oracle and
+/// dedup/triage agree cross-oracle. Coordinate 1 (terminal signature) is oracle
+/// id `"matcher"`, the never role's class, the matched content
+/// (`name ‖ kind ‖ matched attr bytes`, each length-prefixed) as the detail, and
+/// the run's terminal `stop`; coordinate 2 is empty (a declarative matcher is
+/// schema-blind over the opaque `Environment`); coordinate 3 is the matching
+/// record's quantized V-time.
+fn never_fingerprint<R: Matchable>(
+    name: &SignalId,
+    rec: &R,
+    expr: &MatchExpr,
+    stop: u8,
+) -> [u8; 32] {
+    // The matched-content detail, canonically length-prefixed so no
+    // (name, kind, attrs) split can alias another.
+    let mut detail = Vec::new();
+    let mut push = |bytes: &[u8]| {
+        detail.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        detail.extend_from_slice(bytes);
+    };
+    push(name.0.as_bytes());
+    push(rec.kind().as_bytes());
     for key in expr.attr.keys() {
-        h.update((key.len() as u64).to_le_bytes());
-        h.update(key.as_bytes());
+        push(key.as_bytes());
         if let Some(v) = rec.attr(key) {
-            h.update(value::canonical(&v));
+            push(&value::canonical(&v));
         }
     }
-    h.finalize().into()
+    let sig = TerminalSig::new("matcher", NEVER_CLASS, stop).with_detail(detail);
+    mint_fingerprint(
+        &sig,
+        &FaultCoord::none(),
+        VTimeCoord::quantize(rec.moment()),
+    )
 }
+
+/// The anomaly-class code the `never` role assigns (coordinate 1). The matcher
+/// has one bug-bearing role, so a single stable class suffices.
+const NEVER_CLASS: u32 = 0;
 
 /// Assign each signal a stable channel: `base + rank`, where `rank` is the
 /// position of its name in the sorted set of all names. Permutation-invariant
@@ -419,6 +442,9 @@ impl<S: ChannelSource, C: ContextSource> MatchOracle<S, C> {
     fn never_hits(&self, t: &RunTrace) -> Vec<(Moment, [u8; 32])> {
         let recs = self.source.records(t);
         let earliest_fault = self.context.fault_moments(t).into_iter().min();
+        // The run's terminal stop is coordinate 1's discriminant — identical for
+        // every hit of this run (the Bug's stop is the run's).
+        let stop = t.terminal.discriminant();
         let mut hits = Vec::new();
         for decl in self.signals.signals() {
             if decl.role != Role::Never {
@@ -426,7 +452,10 @@ impl<S: ChannelSource, C: ContextSource> MatchOracle<S, C> {
             }
             for rec in &recs {
                 if record_matches(rec, &decl.expr, earliest_fault) {
-                    hits.push((rec.moment(), never_fingerprint(&decl.name, rec, &decl.expr)));
+                    hits.push((
+                        rec.moment(),
+                        never_fingerprint(&decl.name, rec, &decl.expr, stop),
+                    ));
                 }
             }
         }
@@ -520,6 +549,55 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect(),
         }
+    }
+
+    /// Cross-oracle fingerprint shape (task 75): the `never` role mints through
+    /// the shared canonical [`mint_fingerprint`](explorer::mint_fingerprint)
+    /// schema — the same one oracle-elle uses — not the old
+    /// `dissonance.matcher.never.v1` SHA. So matcher bugs live in the same
+    /// stable-coordinate space (dedup/triage agree cross-oracle), distinguished
+    /// only by the oracle-id field.
+    #[test]
+    fn never_fingerprint_uses_the_canonical_schema() {
+        let signals = SignalSet::from_json(
+            r#"{ "signals": [ { "name": "boom", "role": "never",
+                 "match": { "kind": "log", "attr": { "level": "panic" } } } ] }"#,
+        )
+        .unwrap();
+        let decl = &signals.signals()[0];
+        let r = rec(7, "log", &[("level", Value::Str("panic".into()))]);
+        let stop = StopReason::Quiescent { vtime: VTime(9) }.discriminant();
+        let got = never_fingerprint(&decl.name, &r, &decl.expr, stop);
+
+        // Reconstruct the canonical coordinates and mint them via the SHARED fn.
+        let mut detail = Vec::new();
+        let mut push = |b: &[u8]| {
+            detail.extend_from_slice(&(b.len() as u64).to_le_bytes());
+            detail.extend_from_slice(b);
+        };
+        push(decl.name.0.as_bytes());
+        push(r.kind().as_bytes());
+        for key in decl.expr.attr.keys() {
+            push(key.as_bytes());
+            if let Some(v) = r.attr(key) {
+                push(&value::canonical(&v));
+            }
+        }
+        let sig = TerminalSig::new("matcher", NEVER_CLASS, stop).with_detail(detail);
+        let expected =
+            mint_fingerprint(&sig, &FaultCoord::none(), VTimeCoord::quantize(r.moment()));
+        assert_eq!(
+            got, expected,
+            "matcher mints through the shared task-75 schema"
+        );
+
+        // Same coordinates, a different oracle id (as oracle-elle would use):
+        // a different digest. Matcher and elle share the space, never collide,
+        // and are never in separate schemes.
+        let elle = TerminalSig::new("elle", NEVER_CLASS, stop);
+        let elle_fp =
+            mint_fingerprint(&elle, &FaultCoord::none(), VTimeCoord::quantize(r.moment()));
+        assert_ne!(got, elle_fp, "the oracle id is part of the signature");
     }
 
     #[test]

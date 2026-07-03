@@ -265,6 +265,43 @@ fn conflicting_lifecycle_fails_loud() {
     }
 }
 
+/// Round-2 P2: a record with a **duplicate field** (`t=1 t=2`) is a loud
+/// `Malformed`, never a silent last-wins that re-targets the op.
+#[test]
+fn duplicate_record_field_fails_loud() {
+    for line in [
+        "elle op s=1 t=1 t=2 k=k W=1", // duplicate t
+        "elle op s=1 t=1 k=a k=b W=1", // duplicate k
+        "elle op s=1 t=1 k=k W=1 W=2", // duplicate W
+    ] {
+        let t = record_trace(&[(1, line), (2, "elle commit t=1")]);
+        match RecordDecoder::new().decode(&t) {
+            Err(DecodeError::Malformed(msg)) if msg.contains("duplicate") => {}
+            other => panic!("expected a duplicate-field Malformed for {line:?}, got {other:?}"),
+        }
+    }
+}
+
+/// Round-2 P2: an op observed **after** its transaction's commit marker is
+/// post-termination activity — a loud `OpAfterTermination`, never silently
+/// folded into the graph.
+#[test]
+fn op_after_termination_fails_loud() {
+    let t = record_trace(&[
+        (1, "elle op s=1 t=1 k=k W=1"),
+        (2, "elle commit t=1"),
+        (3, "elle op s=1 t=1 k=k R=1"), // after the commit at moment 2
+    ]);
+    match RecordDecoder::new().decode(&t) {
+        Err(DecodeError::OpAfterTermination {
+            txn: 1,
+            op_at: 3,
+            marker_at: 2,
+        }) => {}
+        other => panic!("expected OpAfterTermination, got {other:?}"),
+    }
+}
+
 /// Item 3 corollary: an *idempotent* repeat of the same marker is harmless (only
 /// contradictory markers fail).
 #[test]

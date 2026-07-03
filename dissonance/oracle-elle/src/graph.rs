@@ -54,9 +54,11 @@ impl DepGraph {
         // 1. Attribute every written value to its (unique) writer AND the key it
         //    was written to. A repeat value is a non-unique write; the write-key
         //    map lets step 2 reject a value observed under the *wrong* key. Also
-        //    tally each key's committed append values, so step 2 can prove the
-        //    recovered order observed them all (no missing final read).
+        //    tally, per key, the committed writes with their moments (for the
+        //    register version order) and the committed append values (for the
+        //    append completeness check).
         let mut write_key: BTreeMap<Elem, Key> = BTreeMap::new();
+        let mut committed_writes: BTreeMap<Key, Vec<(Moment, Elem)>> = BTreeMap::new();
         let mut committed_appends: BTreeMap<Key, BTreeSet<Elem>> = BTreeMap::new();
         for t in h.iter() {
             if t.committed() {
@@ -73,30 +75,39 @@ impl DepGraph {
                     }
                     g.writer.insert(v, t.id);
                     write_key.insert(v, op.key.clone());
-                    if t.committed() && matches!(op.kind, OpKind::Append(_)) {
-                        committed_appends
+                    if t.committed() {
+                        committed_writes
                             .entry(op.key.clone())
                             .or_default()
-                            .insert(v);
+                            .push((op.at, v));
+                        if matches!(op.kind, OpKind::Append(_)) {
+                            committed_appends
+                                .entry(op.key.clone())
+                                .or_default()
+                                .insert(v);
+                        }
                     }
                 }
             }
         }
 
-        // 2. Recover each key's version order. The recovery is **model-aware**,
-        //    because reads observe different things in the two workload models:
+        // 2. Recover each key's version order. The recovery is **model-aware**:
         //
         //    - **append keys** (any `Append` targets them): each read observes a
         //      *prefix* of the true append list, so the order is the longest
         //      observed list and every read must be one of its prefixes (a fork
-        //      is unrecoverable → `InconsistentOrder`);
-        //    - **register keys** (writes only): each read observes the *current*
-        //      single value, so the order is the distinct observed values in
-        //      first-observation time order — reads at different times seeing
-        //      different values are expected, not a conflict.
+        //      is unrecoverable → `InconsistentOrder`); completeness is checked
+        //      below (every committed append must be observed).
+        //    - **register keys** (writes only): the order is the committed writes
+        //      in **write-moment** order. The deterministic timeline places every
+        //      committed write, so the order is complete — an unobserved committed
+        //      write can never silently drop a ww edge and hide a G0 cycle (the
+        //      round-2 false-clean). Reads do **not** define register order (a
+        //      read seeing a non-current version is an *anomaly*, not a
+        //      reordering); they only validate value/key attribution here and
+        //      feed wr/rw/lost-update elsewhere.
         //
-        //    Every observed value must have a writer either way (else it appeared
-        //    from nowhere).
+        //    Every observed value must have a writer, under the right key.
         let mut append_keys: BTreeSet<Key> = BTreeSet::new();
         for t in h.iter() {
             for op in &t.ops {
@@ -105,10 +116,7 @@ impl DepGraph {
                 }
             }
         }
-        // Per key: the append-model observed lists, and the register-model
-        // (value, earliest-moment) observations.
         let mut lists_by_key: BTreeMap<Key, Vec<Vec<Elem>>> = BTreeMap::new();
-        let mut reg_first_seen: BTreeMap<Key, BTreeMap<Elem, Moment>> = BTreeMap::new();
         for t in h.iter() {
             for op in &t.ops {
                 if let OpKind::Read(vs) = &op.kind {
@@ -137,23 +145,12 @@ impl DepGraph {
                             .entry(op.key.clone())
                             .or_default()
                             .push(vs.clone());
-                    } else if let Some(&tip) = vs.last() {
-                        // Register: keep the earliest moment each value was read.
-                        let e = reg_first_seen.entry(op.key.clone()).or_default();
-                        e.entry(tip)
-                            .and_modify(|m| {
-                                if op.at < *m {
-                                    *m = op.at;
-                                }
-                            })
-                            .or_insert(op.at);
                     }
                 }
             }
         }
+        // Append keys: longest observed list, every read a prefix of it.
         for (key, lists) in &lists_by_key {
-            // The longest observed list is the candidate order; ties broken
-            // deterministically by content. Every read must be a prefix of it.
             let candidate = lists
                 .iter()
                 .max_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
@@ -166,13 +163,15 @@ impl DepGraph {
             }
             g.version_order.insert(key.clone(), candidate);
         }
-        for (key, first_seen) in &reg_first_seen {
-            // Distinct values in (first-observation moment, value) order.
-            let mut ordered: Vec<(Moment, Elem)> =
-                first_seen.iter().map(|(&v, &m)| (m, v)).collect();
-            ordered.sort_unstable();
+        // Register keys: committed writes in write-moment order (complete).
+        for (key, writes) in &committed_writes {
+            if append_keys.contains(key) {
+                continue;
+            }
+            let mut ws = writes.clone();
+            ws.sort_unstable(); // by (moment, value) — a deterministic total order
             g.version_order
-                .insert(key.clone(), ordered.into_iter().map(|(_, v)| v).collect());
+                .insert(key.clone(), ws.into_iter().map(|(_, v)| v).collect());
         }
 
         // The recoverability contract for **append** keys: final reads at quiesce
@@ -454,8 +453,9 @@ mod tests {
         assert_eq!(g.ww_keys_among(&set), vec![b"a".to_vec(), b"b".to_vec()]);
     }
 
-    /// Register reads observing different single values recover a version order
-    /// by time — not a false `InconsistentOrder`.
+    /// A register's version order is the committed writes in **write-moment**
+    /// order — reads observing different single values are fine (not a false
+    /// `InconsistentOrder`), and every committed write is placed.
     #[test]
     fn register_version_order_is_recovered_by_time() {
         let h = history(vec![
@@ -479,9 +479,35 @@ mod tests {
             ),
         ]);
         let g = DepGraph::build(&h).expect("recoverable");
-        // Distinct observed values in first-seen order: 10 then 20.
+        // Committed writes in write-moment order: 10 (@1) then 20 (@3).
         assert_eq!(g.version_order(&b"k".to_vec()), Some(&[10, 20][..]));
         assert!(g.ww_cycle().is_none());
+    }
+
+    /// A committed register write that no read observes is still placed by its
+    /// write moment (the round-2 false-clean fix): here `a=4` is never read, but
+    /// it is ordered before the final `a=1`, so the ww edge exists.
+    #[test]
+    fn unobserved_register_write_is_still_ordered() {
+        let h = history(vec![
+            tx(
+                1,
+                TxnOutcome::Committed,
+                vec![op(3, 1, "a", OpKind::Write(1))], // later moment → final
+            ),
+            tx(
+                2,
+                TxnOutcome::Committed,
+                vec![op(1, 2, "a", OpKind::Write(4))], // earlier moment, never read
+            ),
+        ]);
+        let g = DepGraph::build(&h).expect("recoverable");
+        assert_eq!(
+            g.version_order(&b"a".to_vec()),
+            Some(&[4, 1][..]),
+            "4 before 1 by moment"
+        );
+        assert!(g.ww_edges()[&2].contains(&1), "T2 (a=4) →ww T1 (a=1)");
     }
 
     /// An aborted writer stays out of the committed set (so its writes are

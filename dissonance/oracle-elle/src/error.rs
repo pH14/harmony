@@ -93,6 +93,21 @@ pub enum DecodeError {
         read_key: Key,
     },
 
+    /// An operation was observed **at or after** its transaction's commit/abort
+    /// marker, so it is post-termination activity — a completed transaction
+    /// cannot issue more ops. Accepting it would silently mutate the graph.
+    #[error(
+        "transaction {txn}: op at moment {op_at} is not before its terminal marker at {marker_at}"
+    )]
+    OpAfterTermination {
+        /// The transaction the stray op belongs to.
+        txn: TxnId,
+        /// The op's moment.
+        op_at: u64,
+        /// The commit/abort marker's moment.
+        marker_at: u64,
+    },
+
     /// A **committed append** value never appeared in any read of its key, so the
     /// key's recovered version order is incomplete (a final read at quiesce is
     /// missing). Proceeding would drop the missing write's dependency edges and

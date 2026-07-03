@@ -85,11 +85,20 @@ impl Builder {
 
     fn finish(self) -> Result<History, DecodeError> {
         let mut txns: BTreeMap<TxnId, Transaction> = BTreeMap::new();
-        // Every transaction that issued ops must have a terminal marker.
+        // Every transaction that issued ops must have a terminal marker, and no
+        // op may occur *after* that marker (post-termination activity would
+        // silently mutate the graph).
         for (&id, ops) in &self.ops {
             let Some(&(outcome, at)) = self.outcomes.get(&id) else {
                 return Err(DecodeError::UnterminatedTxn(id));
             };
+            if let Some(stray) = ops.iter().find(|op| op.at > at) {
+                return Err(DecodeError::OpAfterTermination {
+                    txn: id,
+                    op_at: stray.at.0,
+                    marker_at: at.0,
+                });
+            }
             let mut ops = ops.clone();
             ops.sort_by(|a, b| a.at.cmp(&b.at).then(a.kind.cmp(&b.kind)));
             txns.insert(
@@ -207,6 +216,9 @@ impl RecordDecoder {
             .next()
             .ok_or_else(|| DecodeError::Malformed(format!("empty elle line {:?}", show())))?;
         // Collect the `k=v` tokens deterministically (values kept as raw bytes).
+        // Records are the untrusted op source: a duplicate field (`t=1 t=2`)
+        // must be a loud error, never a silent last-wins that could re-target an
+        // op onto a different txn/key/value.
         let mut kv: BTreeMap<&[u8], &[u8]> = BTreeMap::new();
         for tok in fields {
             let eq = tok.iter().position(|&b| b == b'=').ok_or_else(|| {
@@ -216,7 +228,13 @@ impl RecordDecoder {
                     show()
                 ))
             })?;
-            kv.insert(&tok[..eq], &tok[eq + 1..]);
+            if kv.insert(&tok[..eq], &tok[eq + 1..]).is_some() {
+                return Err(DecodeError::Malformed(format!(
+                    "duplicate field {:?}= in {:?}",
+                    String::from_utf8_lossy(&tok[..eq]),
+                    show()
+                )));
+            }
         }
         let get_u64 = |k: &[u8]| -> Result<u64, DecodeError> {
             let raw = kv.get(k).ok_or_else(|| {

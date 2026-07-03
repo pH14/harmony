@@ -57,6 +57,10 @@ pub oracle_elle::error::DecodeError::MisattributedValue
 pub oracle_elle::error::DecodeError::MisattributedValue::read_key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::MisattributedValue::value: oracle_elle::op::Elem
 pub oracle_elle::error::DecodeError::MisattributedValue::wrote_key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::OpAfterTermination
+pub oracle_elle::error::DecodeError::OpAfterTermination::marker_at: u64
+pub oracle_elle::error::DecodeError::OpAfterTermination::op_at: u64
+pub oracle_elle::error::DecodeError::OpAfterTermination::txn: oracle_elle::op::TxnId
 pub oracle_elle::error::DecodeError::UnknownValue
 pub oracle_elle::error::DecodeError::UnknownValue::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::UnknownValue::value: oracle_elle::op::Elem
@@ -149,6 +153,10 @@ pub oracle_elle::DecodeError::MisattributedValue
 pub oracle_elle::DecodeError::MisattributedValue::read_key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::MisattributedValue::value: oracle_elle::op::Elem
 pub oracle_elle::DecodeError::MisattributedValue::wrote_key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::OpAfterTermination
+pub oracle_elle::DecodeError::OpAfterTermination::marker_at: u64
+pub oracle_elle::DecodeError::OpAfterTermination::op_at: u64
+pub oracle_elle::DecodeError::OpAfterTermination::txn: oracle_elle::op::TxnId
 pub oracle_elle::DecodeError::UnknownValue
 pub oracle_elle::DecodeError::UnknownValue::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::UnknownValue::value: oracle_elle::op::Elem
