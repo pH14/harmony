@@ -187,6 +187,19 @@ which vmm-core serializes and must contain at least:
   `rem = 0` reproduces integer-ratio behavior bit-exactly — plus one vm_state blob field;
   cheap while snapshots remain ephemeral (snapshot-store has no cross-restart persistence).
 
+## 6b. The `Moment` axis (integrator ruling, 2026-07-02)
+
+`Moment` is on the **derived V-time axis** (effective virtual nanoseconds, `vns`) — the same
+axis as `run(deadline)`, snapshot addressing, and `state_hash` points — NOT a raw
+retired-instruction/work count. The whole enforcement plane (task 59's `ControlServer`
+schedule/floors, `arm_arrival`'s `work_for_vns(moment)` conversion, the `vns == Moment`
+recording invariant) and task 60's window minting are written against this reading; they only
+coincide with a work-count reading at clock ratio 1. `dissonance/environment/src/host.rs`'s
+doc comment ("a count of retired instructions") predates this ruling and is to be amended to
+"the deterministic V-time axis (`vns`); retired-instruction work counts are the *derivation*
+of this axis, not its unit" — a doc-only crate change carried by a worker PR. Task 71's
+`EnvCodec` re-keying is unaffected (plain integer arithmetic on the same axis).
+
 ## 7. Guest-visible CPU/MSR contract (author before vmm-core code)
 
 Trapping RDTSC is necessary but nowhere near sufficient — Linux/KVM exposes time and other

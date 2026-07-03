@@ -44,7 +44,12 @@ eventual portfolio (tasks 70/72), never a replacement for the `quiet`/IID baseli
 ### 1. `RegimeProcess` — Markov calm/storm modulation
 
 A small-N-state (v1: two-state `Calm`/`Storm`) Markov chain with integer-rational transition
-probabilities (`num/den`, the `FaultPolicy` idiom), advanced one step per surfaced decision. Each
+probabilities (`num/den`, the `FaultPolicy` idiom), advanced one step per surfaced
+**fault-class** decision. *(Integrator ruling, 2026-07-02: originally "per surfaced decision"
+— PR #52 implements per-fault-draw advancement (supply-class decisions decline without
+stepping), which makes the stationary-rate gates exact in fault-draw space; the stationary
+distribution observed at fault draws is identical either way, only burst fragmentation
+differs. Ruled: adopt the implemented semantics.)* Each
 state carries a per-class fault table (`FaultPolicy`-shaped: probability + eligible faults) —
 storms are dwell periods of elevated, clustered fault probability; geometric dwell times give the
 autocorrelation. Expose the exact stationary mean fault rate as a rational
@@ -56,9 +61,10 @@ optional knob, not required.
 
 ### 2. `RegimeTactic` — the spine `Tactic`
 
-Implements task 64's `Tactic`: `decide(&mut self, pt, rng)` advances the regime one step, then
-samples the active state's table for `pt`'s class (supply classes answer nominally — the regime
-governs the fault classes only). Open-loop by construction: its answer is a function of
+Implements task 64's `Tactic`: for a **fault-class** `pt`, `decide(&mut self, pt, rng)`
+advances the regime one step then samples the active state's table; supply classes answer
+nominally **without advancing** (the regime governs the fault classes only — the 2026-07-02
+ruling above). Open-loop by construction: its answer is a function of
 `(own state, pt, rng)` and nothing else; no `Sensor`/`Archive`/`RunTrace` type may appear anywhere
 in this crate's dependency graph.
 
