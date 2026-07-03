@@ -42,6 +42,10 @@ vmm-core = { path = "../../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../../consonance/vmm-backend", version = "0.1.0", features = ["mock"] }
 # CLI for the `conductor` bin only (whitelist: clap is bins-only).
 clap = { version = "4", features = ["derive"], optional = true }
+# The toy planted-bug machine's `state_hash` digest (task 60, portable gate).
+# Whitelisted; the campaign loop + oracle themselves reuse the explorer's
+# canonical bug fingerprint, so `sha2` is only the toy backend's state hash.
+sha2 = "0.10"
 
 [dev-dependencies]
 proptest = "1"

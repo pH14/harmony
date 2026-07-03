@@ -842,3 +842,48 @@ that file's doc comment, and `consonance/vmm-core/IMPLEMENTATION.md` Task 36 not
 - The config is intentionally *larger* than minimal (Kata's full container-host set incl.
   XFS/EROFS/CIFS/netfilter/virtio/mlx5). Per the task this is accepted — minimization is not
   load-bearing for determinism, and the extra drivers are dormant (no device to bind).
+
+## Task 60 — the Postgres-campaign image (planted, fault-triggerable bug)
+
+`build-campaign-image.sh` (Makefile target `campaign-image`) builds
+`initramfs-campaign.cpio.gz`: the task-37 bare-Postgres image **plus** a static supervised process
+`campaign-super` (compiled from `campaign-super.c`) and the `campaign-init.sh` `/init` that runs it.
+Everything else — the pinned PostgreSQL 17 .debs, the determinism overlay, the fixed-UUID ext4, the
+reproducible cpio packing — is `build-postgres-image.sh` verbatim, so the campaign image inherits task
+37's determinism closure. **No kernel change**: the companion bzImage is the unchanged task-36
+container-class kernel (`mmap`/`mlock` are available; **`ioperm`/`iopl`/`/dev/port` are NOT** — this
+kata-derived kernel has no `CONFIG_X86_IOPL_IOPERM` / `CONFIG_DEVPORT`, which the box proved and shaped
+the terminal mapping below), so the kernel golden (`MANIFEST.sha256`) is untouched.
+
+**The planted bug** (the campaign's target, task 60). `campaign-super` keeps a small **ledger** (a
+canary + a signed retry budget) in a fixed-address, `mlock`'d, `volatile` guest page — a deterministic
+guest-physical address (nokaslr + `MAP_FIXED` + `MAP_POPULATE`) the campaign's `CorruptMemory` fault can
+find by searching. It prints `CAMPAIGN_READY` (the base-snapshot marker — mid-workload, post the ambient
+Postgres workload), then runs a **long** (`ITERS = 2×10⁸`), bounded, deterministic retry loop whose
+bookkeeping invariant (canary intact, `0 ≤ budget < BUDGET_MAX`) holds on every nominal iteration. The
+loop is long so the mid-workload base snapshot seals **inside** it (a short loop the seal overshoots
+leaves the fault target unreachable — the box proved this). A **single-event upset** — a host
+`CorruptMemory` that flips the canary (or the budget's sign bit) at a `Moment` inside the loop — is the
+only way to reach the guarded branch; the supervisor detects the impossible state, prints `CAMPAIGN_BUG:`
+to the serial, and exits non-zero.
+
+**Terminal mapping (as shipped in `campaign-init.sh`).** A guest *process* cannot reach an I/O port on
+this kernel, so the bug does **not** signal `Crash{Panic}` via isa-debug-exit (`campaign-super`'s boot
+self-test reports `CAMPAIGN_IOPERM`/`IOPL`/`DEVPORT` all FAILED). Instead `/init` maps the outcome to two
+distinct guest terminals the *kernel* produces:
+
+- **bug** (`campaign-super` exits non-zero) → `reboot -f` → triple-fault → `KVM_EXIT_SHUTDOWN` →
+  **`StopReason::Crash{Shutdown}`** — the reportable bug;
+- **clean** (exits 0, `CAMPAIGN_DONE`) → `halt -f` → the boot CPU HLTs → **`StopReason::Quiescent`** —
+  the benign terminal.
+
+Both use `-f` (force), skipping `device_shutdown` (which strands once block I/O is used — the pg-init
+lesson). So the campaign oracle is the standard **"any `Crash`/`Assertion` is the bug; `Quiescent` is
+clean."** The full trigger conditions, the oracle, the window/`ScheduleUnsatisfiable` bound, the
+search-space tuning, and the box runbook + PASS result are in
+**`dissonance/conductor/IMPLEMENTATION.md` §"Task 60"**.
+
+Bring-up aid: boot with `CAMPAIGN_DEBUG=1` in the environment and `campaign-super` prints
+`CAMPAIGN_LEDGER_GPA:` (read via `/proc/self/pagemap`, needs root/CAP_SYS_ADMIN), so the operator can
+scope `conductor campaign box --gpa-*` tightly. This is box-built and box-validated by the foreman
+(the C is Linux-only; the shell is shellcheck-clean).
