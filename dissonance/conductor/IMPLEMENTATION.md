@@ -618,17 +618,42 @@ modprobe kvm_intel`, verify size on a FRESH connection.
   exactly what `Explorer`'s exploit path produces (`mutate` preserves the
   base seed).
 
-## Box-gate status (handoff)
+## Box-gate status: PASSED (2026-07-03, determinism box)
 
-Portable gates: **all green** (explorer 91 + conductor 18, clippy `-D
-warnings`, fmt, deny; Linux cross-check of the box-only harnesses compiles).
-Box gates (a)/(b)/(c): **handed to the foreman** — the box was reachable at
-handoff time (2026-07-03, `ssh hetzner`, stock KVM verified 1396736 loaded)
-but mid CI-storm (a cargo-mutants sweep, Kani/CBMC proofs, and KVM-using
-determinism tests across many cores; load ~16). Loading the patched module
-requires `rmmod kvm_intel` with users=0 — impossible and disruptive under
-running CI VMs — and frontier gates serialize on the standing core map
-(`docs/BOX-PINNING.md`; task-60's campaign gate may also hold a core). Run
-the runbook above in a quiet window; the harness prints a self-contained
-`[REPORT]` block to transcribe here, and `verify_materialize` already
-adjudicates every gate including the task-63 baseline quote.
+Portable gates: **all green** (explorer 91 + conductor 18 + the full
+workspace's 1105, clippy `-D warnings`, fmt, deny; Linux cross-check of the
+box-only harnesses). Box gates (a)/(b)/(c): **PASSED** — run via
+`scripts/box-window.sh` (leased core 2, patched KVM 1400832, det-cfl-v1
+host, release build; gate wall time 54.6 s), window released and **stock KVM
+1396736 re-verified** after. The transcribed `[REPORT]`:
+
+```
+[REPORT] task-68 live_materialization (box)
+base: sealed at V-time 442905523 (2 attempts)
+hop         requested     landed(at)  overshoot  attempts
+0           444905523      445147970     242447         1
+1           447147970      447148315        345         1
+2           449148315      449165676      17361         1
+hot     base_at      447148315 -> at      449165676  depth      2017361  ratio   4491 ppm  folds 0  from_genesis false  state_hash c4ad3e0108510603dc116959e907ee49afa7bb7f79aec43efb232d868694c4a6
+folded  base_at      445147970 -> at      449165676  depth      4017706  ratio   8944 ppm  folds 1  from_genesis false  state_hash c4ad3e0108510603dc116959e907ee49afa7bb7f79aec43efb232d868694c4a6
+worst   base_at      442905523 -> at      449165676  depth      6260153  ratio  13937 ppm  folds 0  from_genesis true   state_hash c4ad3e0108510603dc116959e907ee49afa7bb7f79aec43efb232d868694c4a6
+round-trip: folded == hot, worst == hot
+reproducer: leg    Deadline@450224167       state_hash b1990e89370f4db934c68baa21c036fce92e527007fc58234746d309fd632cd0
+reproducer: replay Deadline@450224167       state_hash b1990e89370f4db934c68baa21c036fce92e527007fc58234746d309fd632cd0 (== leg; bug_env 91 bytes, genesis-complete)
+baseline: task-63 s4 = 15463 ppm (1.5463%); measured hot = 4491 ppm
+[REPORT] GATES PASS: (a) parent-rooted depth beats the task-63 baseline; (b) eviction round-trip bit-identical (folded + from-genesis worst case); (c) composed reproducer replays with identical stop + state_hash.
+```
+
+Reading: **(a)** the deep exemplar materialized from its direct parent at
+**4,491 ppm** (0.449 %) of a full from-scratch re-execution — beating the
+task-63 §4 baseline (15,463 ppm / 1.5463 %) by ~3.4×. **(b)** the folded
+(one collapsed hop, 2× depth) and from-genesis worst-case (3.1× depth)
+re-materializations hash **bit-identically** to the hot seal — and, load-
+bearing for the escalated finding: the real post-readiness Postgres spans
+were **draw-free**, so the sequential-entropy splice did not materialize
+live (exactly as predicted; the portable pin remains the documentation of
+the boundary). **(c)** the 91-byte genesis-complete `bug_env` replayed below
+the 3-deep chain to an identical stop + `state_hash` — the task-93
+end-to-end gate on the production codec and real `recorded_env`. The grid
+restriction is visible live (overshoots 242,447 / 345 / 17,361 ns; every
+exemplar keyed by its landed boundary).
