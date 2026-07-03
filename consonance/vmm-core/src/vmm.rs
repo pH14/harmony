@@ -366,6 +366,15 @@ impl VtimeWiring {
         Ok(u64::from_le_bytes(buf))
     }
 
+    /// Draw the SDK `entropy_fill` bytes from the **same** `SeededEntropy` stream
+    /// RDRAND uses (round-5 P2), so a guest's RDRAND and its hypercall RNG cannot
+    /// diverge or duplicate words. `req` is the `Entropy`-service request payload
+    /// (a `u32` LE count), forwarded verbatim — the stream validates it and fills
+    /// `resp`, returning `(status, bytes written)`.
+    fn draw_entropy(&mut self, req: &[u8], resp: &mut [u8]) -> (Status, usize) {
+        self.entropy.handle(1, req, resp)
+    }
+
     /// The **guest-visible** TSC at work `work`: the base V-time TSC
     /// `VClock::tsc(work)` plus [`IA32_TSC_ADJUST`](Self::tsc_adjust), wrapping mod
     /// 2⁶⁴ as the architectural 64-bit counter does. RDTSC, RDTSCP, and
@@ -2150,49 +2159,21 @@ impl<B: Backend> Vmm<B> {
             .unwrap_or(0);
             return (n, None);
         }
-        // The Entropy service (id 2, op 1): the SDK's `entropy_fill` source. The
-        // spec names the seeded Entropy hypercall as the single guest-random
-        // primitive; answer it from the env's **supply** stream (a
-        // `DecisionPoint::Entropy`), which is snapshotted with the channel — so a
-        // fork resumes the exact entropy stream, the same way buggify does.
+        // The Entropy service (id 2, op 1): the SDK's `entropy_fill` source. Route
+        // it through the VMM's `SeededEntropy` stream — the **same** one RDRAND
+        // draws from (round-5 P2) — so a guest's RDRAND and its hypercall RNG never
+        // duplicate words, and a fork resumes the single stream via the VM snapshot
+        // (`save_vm_state`), not a second SDK-channel stream. The stream validates
+        // the request (a `u32` count, `1..=MAX_PAYLOAD`) and fills the buffer; fail
+        // closed with a `BadRequest` if V-time — hence the stream — is unwired.
         if header.service == ServiceId::Entropy as u16 && header.opcode == 1 {
-            let n = match *payload {
-                [a, b, c, d] => u32::from_le_bytes([a, b, c, d]),
-                _ => {
-                    let m = encode_response(
-                        ServiceId::Entropy,
-                        1,
-                        header.seq,
-                        Status::BadRequest,
-                        &[],
-                        resp,
-                    )
-                    .unwrap_or(0);
-                    return (m, None);
-                }
+            let mut buf = [0_u8; MAX_PAYLOAD];
+            let (status, got) = match self.vtime.as_mut() {
+                Some(vt) => vt.draw_entropy(payload, &mut buf),
+                None => (Status::BadRequest, 0),
             };
-            if n < 1 || n as usize > MAX_PAYLOAD {
-                let m = encode_response(
-                    ServiceId::Entropy,
-                    1,
-                    header.seq,
-                    Status::BadRequest,
-                    &[],
-                    resp,
-                )
+            let m = encode_response(ServiceId::Entropy, 1, header.seq, status, &buf[..got], resp)
                 .unwrap_or(0);
-                return (m, None);
-            }
-            let bytes = self.sdk_supply(n);
-            let (status, body): (Status, &[u8]) = if bytes.len() == n as usize {
-                (Status::Ok, &bytes)
-            } else {
-                // The env clamps `bytes` to `MAX_SUPPLY_LEN` (>> a page), so this
-                // never trips for a page-bounded `n`; fail closed if it ever does.
-                (Status::Internal, &[])
-            };
-            let m =
-                encode_response(ServiceId::Entropy, 1, header.seq, status, body, resp).unwrap_or(0);
             return (m, None);
         }
         // Any other service/opcode: the SDK demo rings Event / Sdk / Entropy, so
@@ -2295,22 +2276,6 @@ impl<B: Backend> Vmm<B> {
         let fire = matches!(ans, Answer::Fault(Fault::BuggifyFire));
         sdk.buggify.push((moment, ans));
         fire
-    }
-
-    /// Supply `n` deterministic entropy bytes from the SDK channel's env supply
-    /// stream (task 73's Entropy-service route). Deterministic and snapshotted
-    /// (the supply stream rides the channel's stream state), so a fork resumes
-    /// the exact entropy. Returns `< n` bytes only on a defensively-clamped
-    /// oversize request (never for a page-bounded `n`).
-    fn sdk_supply(&mut self, n: u32) -> Vec<u8> {
-        use environment::{Answer, DecisionPoint, Environment, Outcome};
-        let Some(sdk) = self.sdk.as_mut() else {
-            return Vec::new();
-        };
-        match sdk.env.decide(&DecisionPoint::Entropy { bytes: n }) {
-            Outcome::Resolved(Answer::Supply(bytes)) => bytes,
-            _ => Vec::new(),
-        }
     }
 
     fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
@@ -3790,13 +3755,106 @@ mod tests {
         );
     }
 
-    /// The doorbell routes the **Entropy** service (finding-4 fix): `entropy_fill`
-    /// gets `n` deterministic bytes from the env supply stream, not `HostRejected`.
+    /// `entropy_fill` and RDRAND draw from **one** `SeededEntropy` stream (round-5
+    /// P2): interleaving an `entropy_fill(8)` with a guest `RDRAND` yields the SAME
+    /// two words as two plain `RDRAND`s from the same seed — i.e. `entropy_fill`
+    /// takes stream word 1 and `RDRAND` takes word 2, never a duplicate word 1 from
+    /// a second stream.
+    #[test]
+    fn entropy_fill_and_rdrand_share_one_stream() {
+        use environment::{EnvSpec, FaultPolicy};
+        // A V-time-wired VM with RAM large enough for the doorbell pages (0xE000).
+        let mk = |script: Vec<Exit>| {
+            let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(0x2_0000).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(1)),
+                    0x777,
+                )
+                .unwrap(),
+            );
+            vmm.enable_sdk(
+                EnvSpec::Seeded {
+                    seed: 0x777,
+                    policy: FaultPolicy::none(),
+                }
+                .materialize(),
+            );
+            vmm
+        };
+        // One `entropy_fill(8)` via the doorbell → 8 bytes (one stream word).
+        let entropy_fill = |vmm: &mut Vmm<MockBackend>| -> Vec<u8> {
+            let mut buf = [0u8; HC_PAGE];
+            let len = hypercall_proto::encode_request(
+                ServiceId::Entropy,
+                1,
+                1,
+                &8u32.to_le_bytes(),
+                &mut buf,
+            )
+            .unwrap();
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + len].copy_from_slice(&buf[..len]);
+            vmm.dispatch_out(DOORBELL_PORT, 4, len as u32).unwrap();
+            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+            let (hdr, pl) = decode(&page).expect("a valid response frame");
+            assert_eq!(
+                hdr.status,
+                Status::Ok as u16,
+                "entropy is routed via the stream"
+            );
+            pl.to_vec()
+        };
+        let reads = |vmm: &Vmm<MockBackend>| -> Vec<u64> {
+            vmm.backend
+                .completions()
+                .iter()
+                .map(|c| match c {
+                    Completion::Read(v) => *v,
+                    other => panic!("expected a Read completion, got {other:?}"),
+                })
+                .collect()
+        };
+
+        // A: entropy_fill (stream word 1), then a guest RDRAND (word 2).
+        let mut a = mk(vec![Exit::Rdrand { width: 8 }, Exit::Hlt]);
+        let word1 = u64::from_le_bytes(entropy_fill(&mut a).try_into().unwrap());
+        a.run().unwrap();
+        let a_stream = vec![word1, reads(&a)[0]];
+
+        // B (same seed): two plain RDRANDs — the pure stream, words 1 then 2.
+        let mut b = mk(vec![
+            Exit::Rdrand { width: 8 },
+            Exit::Rdrand { width: 8 },
+            Exit::Hlt,
+        ]);
+        b.run().unwrap();
+
+        assert_eq!(
+            a_stream,
+            reads(&b),
+            "entropy_fill + RDRAND is ONE stream (word 1 then word 2)"
+        );
+        assert_ne!(
+            a_stream[0], a_stream[1],
+            "consecutive words differ — not two streams from one seed minting a duplicate"
+        );
+    }
+
+    /// The doorbell routes the **Entropy** service deterministically for a given
+    /// seed (finding-4 + round-5 P2): equal seeds ⇒ equal entropy.
     #[test]
     fn doorbell_routes_entropy_deterministically() {
         use environment::{EnvSpec, FaultPolicy};
         let mk = || {
-            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut vmm = Vmm::new(
+                configured_mock(vec![Exit::Hlt]),
+                GuestRam::new(0x2_0000).unwrap(),
+            );
+            vmm.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(1)), 99)
+                    .unwrap(),
+            );
             vmm.enable_sdk(
                 EnvSpec::Seeded {
                     seed: 99,
@@ -3834,10 +3892,12 @@ mod tests {
         );
     }
 
-    /// The SDK channel snapshot/restore continues the seeded streams from the
-    /// captured position (finding-1 fix): a fork resumed at a snapshot produces
-    /// the identical buggify + entropy continuation, while a fresh channel (the
-    /// old reset-on-restore bug) diverges.
+    /// The SDK channel snapshot/restore continues the seeded **buggify (fault)**
+    /// stream from the captured position (finding-1 fix): a fork resumed at a
+    /// snapshot produces the identical buggify continuation, while a fresh channel
+    /// (the old reset-on-restore bug) diverges. (Entropy no longer rides the SDK
+    /// channel — round-5 P2 routes `entropy_fill` through the VMM `SeededEntropy`
+    /// stream, captured by the VM snapshot, not `SdkSnapshot`.)
     #[test]
     fn sdk_snapshot_restore_resumes_the_seeded_streams() {
         use environment::{EnvSpec, FaultPolicy};
@@ -3849,19 +3909,12 @@ mod tests {
         base.enable_sdk(spec.materialize());
         for i in 0..5 {
             let _ = base.decide_buggify(i, 1);
-            let _ = base.sdk_supply(8);
         }
         let snap = base.sdk_snapshot().expect("a wired channel snapshots");
 
-        // The continuation from the snapshot position.
-        let cont = |vmm: &mut Vmm<MockBackend>| -> (Vec<bool>, Vec<u8>) {
-            let mut fires = Vec::new();
-            let mut ent = Vec::new();
-            for i in 5..10 {
-                fires.push(vmm.decide_buggify(i, 1));
-                ent.extend(vmm.sdk_supply(4));
-            }
-            (fires, ent)
+        // The buggify continuation from the snapshot position.
+        let cont = |vmm: &mut Vmm<MockBackend>| -> Vec<bool> {
+            (5..10).map(|i| vmm.decide_buggify(i, 1)).collect()
         };
         let expected = cont(&mut base);
 
@@ -3869,7 +3922,11 @@ mod tests {
         let mut fork = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
         fork.enable_sdk(spec.materialize());
         fork.sdk_restore(&snap);
-        assert_eq!(cont(&mut fork), expected, "restored streams resume exactly");
+        assert_eq!(
+            cont(&mut fork),
+            expected,
+            "restored fault stream resumes exactly"
+        );
 
         // A fresh channel WITHOUT restore (the old bug) diverges.
         let mut broken = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());

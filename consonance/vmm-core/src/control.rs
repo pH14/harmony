@@ -376,10 +376,16 @@ impl<B: Backend> ControlServer<B> {
             // Task 73: surface the link-tier SDK event capture over the wire, so a
             // remote `SocketMachine` client can fill `RunTrace.events` (a socket
             // client cannot see the server-side `Vmm::sdk_events` capture directly).
-            // Empty for a guest with no SDK.
-            Request::SdkEvents => {
+            // **Paged** (round-5 P4): a page starts at `offset` and is bounded to the
+            // control frame limit, so an arbitrarily long capture never overflows a
+            // single reply — the client pages until an empty reply. Empty for a guest
+            // with no SDK, or once `offset` reaches the end.
+            Request::SdkEvents { offset } => {
                 let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
-                Ok(Ok(Reply::SdkEvents(vmm.sdk_events().to_vec())))
+                Ok(Ok(Reply::SdkEvents(page_sdk_events(
+                    vmm.sdk_events(),
+                    *offset as usize,
+                ))))
             }
         }
     }
@@ -931,6 +937,25 @@ impl<B: Backend> ControlServer<B> {
                 self.recorded.perturb(fault, m);
             }
 
+            // 1b. Surface a DEFERRED `setup_complete` snapshot point (task 73 P1) —
+            //     but only HERE, **after the drain** (round-5 P1). The drain above
+            //     just applied every fault at-or-below this exact synchronized vns
+            //     and poisoned any crossed one, so the schedule now carries only
+            //     future faults: a fault landing exactly at the deferred boundary is
+            //     applied *before* the seal, and `clear_arrival` disarms the next
+            //     arrival — so the explorer's eager `snapshot()` here is never
+            //     `SnapshotWhileArmed` / does not seal past an unapplied fault.
+            //     (`take_synchronized_snapshot_point` is a no-op unless the VM is at
+            //     a synchronized, sealable boundary.)
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+            if vmm.take_synchronized_snapshot_point() {
+                let vns = vmm.effective_vns().unwrap_or(0);
+                vmm.clear_arrival();
+                return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
+                    vtime: VTime(vns),
+                })));
+            }
+
             // 2. Opportunistic V-time deadline (task-58 semantics, unchanged): stop
             //    at the first boundary at-or-past the deadline. The drain above has
             //    already applied every `m == vns` and poisoned any `m < vns`, so the
@@ -966,22 +991,9 @@ impl<B: Backend> ControlServer<B> {
             // 4. Step. A terminal stop ends the run; a cooperating-SDK stop
             //    (task 73) surfaces the assertion / snapshot point.
             match vmm.step()? {
-                Step::Continued => {
-                    // Task 73 (P1): a deferred `setup_complete` snapshot point
-                    // surfaces HERE — at the first V-time-synchronized boundary
-                    // after setup_complete — where a seal succeeds (unlike the
-                    // skid-tainted doorbell OUT it was requested at, which would
-                    // fail `NotQuiescent`). The drain at the top of this loop
-                    // already applied every fault at-or-below this exact vns, so
-                    // the point is clean — no crossed-fault poison needed.
-                    if vmm.take_synchronized_snapshot_point() {
-                        let vns = vmm.effective_vns().unwrap_or(0);
-                        vmm.clear_arrival();
-                        return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
-                            vtime: VTime(vns),
-                        })));
-                    }
-                }
+                // A deferred `setup_complete` snapshot point is surfaced at the top
+                // of the NEXT iteration, after the drain (round-5 P1) — not here.
+                Step::Continued => {}
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
@@ -1053,6 +1065,28 @@ impl<B: Backend> ControlServer<B> {
 /// Map a task-73 [`SdkStop`] to the wire [`StopReason`], stamped with the
 /// effective V-time. An assertion violation carries its point id + detail as the
 /// [`EventRef`]; a `setup_complete` is a snapshot fork.
+/// A page of the SDK event capture starting at `offset`, bounded to the control
+/// frame limit (round-5 P4): the cumulative encoded reply body stays under
+/// [`control_proto::MAX_FRAME_LEN`], but always includes at least one event when
+/// any remain — a single event's bytes are `<= MAX_PAYLOAD`, far under the frame
+/// limit — so paging strictly progresses (the client fetches until an empty page).
+fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32, Vec<u8>)> {
+    // result tag + reply tag + u32 count; each event: moment(8) + id(4) + len(4) + bytes.
+    const REPLY_OVERHEAD: usize = 6;
+    let start = offset.min(all.len());
+    let mut page = Vec::new();
+    let mut body = REPLY_OVERHEAD;
+    for ev in &all[start..] {
+        let ev_size = 8 + 4 + 4 + ev.2.len();
+        if !page.is_empty() && body + ev_size > control_proto::MAX_FRAME_LEN {
+            break;
+        }
+        body += ev_size;
+        page.push(ev.clone());
+    }
+    page
+}
+
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
     let vtime = VTime(vns);
     match stop {
@@ -1106,7 +1140,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::{ControlServer, ServeError, server_caps};
+    use super::{ControlServer, ServeError, page_sdk_events, server_caps};
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
     use crate::work::ScriptedWork;
 
@@ -1272,12 +1306,46 @@ mod tests {
     fn sdk_events_verb_is_routed_to_the_capture() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
-        match s.handle(&Request::SdkEvents).unwrap() {
+        match s.handle(&Request::SdkEvents { offset: 0 }).unwrap() {
             Ok(Reply::SdkEvents(events)) => {
                 assert!(events.is_empty(), "the mock guest emits no doorbell events")
             }
-            other => panic!("SdkEvents verb answered unexpectedly: {other:?}"),
+            other => panic!("SdkEvents verb answered unexpectedly (paged): {other:?}"),
         }
+    }
+
+    #[test]
+    fn sdk_events_pages_bound_to_the_frame_limit() {
+        // Round-5 P4: a capture larger than one control frame is fetched by paging
+        // (`page_sdk_events` at ascending offsets) — each page's encoded body stays
+        // under MAX_FRAME_LEN, it splits into >1 page, and the pages reassemble to
+        // the full capture with no overlap or gap.
+        let per_event = 4_000usize; // bytes per event
+        let count = control_proto::MAX_FRAME_LEN / (16 + per_event) + 5; // just over one frame
+        let all: Vec<(u64, u32, Vec<u8>)> = (0..count)
+            .map(|i| (i as u64, i as u32, vec![0xAB_u8; per_event]))
+            .collect();
+
+        let mut fetched: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+        let mut pages = 0;
+        loop {
+            let page = page_sdk_events(&all, fetched.len());
+            if page.is_empty() {
+                break;
+            }
+            pages += 1;
+            let body: usize = 6 + page.iter().map(|e| 16 + e.2.len()).sum::<usize>();
+            assert!(
+                body <= control_proto::MAX_FRAME_LEN,
+                "page {pages} body {body} exceeds the frame limit"
+            );
+            fetched.extend(page);
+        }
+        assert!(
+            pages >= 2,
+            "a capture over one frame splits into multiple pages, got {pages}"
+        );
+        assert_eq!(fetched, all, "paging reassembles the full capture exactly");
     }
 
     #[test]
@@ -2180,6 +2248,92 @@ mod tests {
         // The pristine image is zero from 0x80 on, so the corrupted word is
         // exactly the mask.
         assert_eq!(word, mask, "CorruptMemory XORs the mask into the gpa word");
+    }
+
+    #[test]
+    fn a_fault_at_the_deferred_snapshot_boundary_drains_before_the_seal() {
+        // Round-5 P1: a host fault scheduled EXACTLY at the deferred `setup_complete`
+        // boundary must be drained (applied + removed from the schedule) BEFORE the
+        // snapshot point surfaces — else the explorer's eager seal there hits
+        // `SnapshotWhileArmed` (a non-empty schedule). A guest rings `setup_complete`
+        // (unsealable OUT) then lands an arrival at Moment M; a `CorruptMemory` is
+        // staged at M; the run surfaces `SnapshotPoint` with the schedule drained, so
+        // a `snapshot()` there SUCCEEDS.
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000; // holds the doorbell pages at 0xE000/0xF000
+        let m: u64 = 4_000;
+
+        // A `setup_complete` Event frame staged at REQ_GPA.
+        let setup_id: u32 = 4 << 24;
+        let mut frame = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            1,
+            &setup_id.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+
+        // Live guest: ring the doorbell, then land an arrival (rewritten to M).
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Deadline { reached: Vtime(0) },
+            Exit::Hlt,
+        ]);
+        mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9).unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+
+        // Stage a CorruptMemory fault EXACTLY at the deferred boundary Moment M.
+        let fault = EnvHostFault::CorruptMemory {
+            gpa: 0x1000,
+            mask: BitMask(0xDEAD_BEEF),
+        };
+        s.handle(&Request::Perturb {
+            fault: HostFault(fault.encode()),
+            at: Moment(m),
+        })
+        .unwrap()
+        .unwrap();
+
+        // The run surfaces the deferred snapshot point at M, the fault drained first.
+        let stop = run_all(&mut s);
+        assert!(
+            matches!(stop, StopReason::SnapshotPoint { .. }),
+            "the deferred point surfaced, got {stop:?}"
+        );
+
+        // The schedule was drained, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
+        match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(_)) => {}
+            other => {
+                panic!("seal at the deferred boundary failed (SnapshotWhileArmed?): {other:?}")
+            }
+        }
+        // And the boundary fault DID land — the drain applied it before the seal.
+        let ram = s.vmm().unwrap().guest_memory();
+        let word = u64::from_le_bytes(ram[0x1000..0x1008].try_into().unwrap());
+        assert_eq!(
+            word, 0xDEAD_BEEF,
+            "the boundary fault was applied before the seal"
+        );
     }
 
     #[test]

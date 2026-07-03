@@ -245,7 +245,10 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             put_bytes(w, bytes);
             put_u64(w, *at);
         }
-        Request::SdkEvents => w.push(REQ_SDK_EVENTS),
+        Request::SdkEvents { offset } => {
+            w.push(REQ_SDK_EVENTS);
+            put_u32(w, *offset);
+        }
     }
 }
 
@@ -270,7 +273,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             fault: HostFault(r.bytes()?.to_vec()),
             at: Moment(r.u64()?),
         },
-        REQ_SDK_EVENTS => Request::SdkEvents,
+        REQ_SDK_EVENTS => Request::SdkEvents { offset: r.u32()? },
         _ => return Err(ProtocolError::ShortFrame),
     })
 }

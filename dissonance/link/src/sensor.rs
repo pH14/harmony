@@ -12,9 +12,11 @@
 //! channels — the sensor only *produces* the features; the archive decides
 //! novelty.
 
+use std::collections::BTreeMap;
+
 use explorer::{ChannelId, Feature, FeatureId, Moment, RunTrace, Sensor};
 
-use crate::decode::{KIND_ASSERT_HIT, KIND_STATE, attr_u64};
+use crate::decode::{KIND_ASSERT_HIT, KIND_STATE, attr_str, attr_u64};
 
 /// The channel link **assertion hits** are filed under. `0` is coverage, `1` the
 /// scrape base; the link tier takes a clearly-separated pair (16/17).
@@ -36,6 +38,10 @@ impl LinkSensor {
 impl Sensor for LinkSensor {
     fn observe(&self, t: &RunTrace) -> Vec<(Moment, Feature)> {
         let mut out = Vec::new();
+        // Per-register running maximum, so a `state_max` mints novelty only on a
+        // genuine INCREASE (round-5 P3). Local to this call — the sensor stays pure
+        // (same trace → same stream); `observe` walks the events in order.
+        let mut running_max: BTreeMap<u64, u64> = BTreeMap::new();
         for (at, ev) in &t.events {
             match ev.kind.as_str() {
                 // An assertion hit: one feature per distinct point (a point that
@@ -52,16 +58,31 @@ impl Sensor for LinkSensor {
                     }
                 }
                 // A state-register report: the feature encodes the (reg, value)
-                // pair so a new value is a new cell (IJON max-novelty).
+                // pair so a new value is a new cell. A `max` register mints only on
+                // a per-register INCREASE — a repeated or *decreased* maximum is not
+                // new (round-5 P3, else a decrease mints false novelty). A plain
+                // `set` keeps every-distinct-value novelty (the archive dedups
+                // repeats). An unknown/absent `op` is treated as `set` (total).
                 KIND_STATE => {
                     if let (Some(reg), Some(value)) = (attr_u64(ev, "reg"), attr_u64(ev, "value")) {
-                        out.push((
-                            *at,
-                            Feature {
-                                channel: LINK_STATE_CHANNEL,
-                                id: FeatureId(pack_state(reg, value)),
-                            },
-                        ));
+                        let emit = if attr_str(ev, "op") == Some("max") {
+                            let increases = running_max.get(&reg).is_none_or(|&prev| value > prev);
+                            if increases {
+                                running_max.insert(reg, value);
+                            }
+                            increases
+                        } else {
+                            true
+                        };
+                        if emit {
+                            out.push((
+                                *at,
+                                Feature {
+                                    channel: LINK_STATE_CHANNEL,
+                                    id: FeatureId(pack_state(reg, value)),
+                                },
+                            ));
+                        }
                     }
                 }
                 _ => {}

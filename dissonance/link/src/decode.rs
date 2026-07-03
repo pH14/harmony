@@ -178,6 +178,15 @@ pub(crate) fn attr_u64(ev: &GuestEvent, key: &str) -> Option<u64> {
     }
 }
 
+/// Read a `&str` out of a decoded event's `Str` attribute (e.g. the state
+/// register's `op` — `"set"`/`"max"`). `None` if the key is absent or not a string.
+pub(crate) fn attr_str<'a>(ev: &'a GuestEvent, key: &str) -> Option<&'a str> {
+    match ev.attrs.get(key)? {
+        Value::Str(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
 /// Build a [`GuestEvent`] from a kind and a fixed set of attributes.
 fn event<const N: usize>(kind: &str, attrs: [(&str, Value); N]) -> GuestEvent {
     let attrs: BTreeMap<String, Value> =

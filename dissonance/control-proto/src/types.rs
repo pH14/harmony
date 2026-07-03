@@ -184,13 +184,18 @@ pub enum Request {
         /// The `Moment` (retired-instruction count) to apply it at.
         at: Moment,
     },
-    /// Fetch the link-tier SDK event capture of the current run (task 73) →
-    /// [`SdkEvents`](Reply::SdkEvents). The `Moment`-stamped `(moment, event_id,
-    /// bytes)` stream a cooperating guest SDK emitted, so a remote client (the
-    /// campaign's `SocketMachine`) can decode it into `RunTrace.events` — the
-    /// server-side capture a socket client cannot otherwise see. Empty for a
-    /// guest with no SDK.
-    SdkEvents,
+    /// Fetch a **page** of the link-tier SDK event capture of the current run
+    /// (task 73), starting at event index `offset` → [`SdkEvents`](Reply::SdkEvents).
+    /// The `Moment`-stamped `(moment, event_id, bytes)` stream a cooperating guest
+    /// SDK emitted, so a remote client (the campaign's `SocketMachine`) can decode
+    /// it into `RunTrace.events` — the server-side capture a socket client cannot
+    /// otherwise see. The server bounds each page to the control frame limit, so a
+    /// long capture is fetched by paging (`offset += page.len()`) until an empty
+    /// page. Empty for a guest with no SDK, or once `offset` reaches the end.
+    SdkEvents {
+        /// The event index to start the page at.
+        offset: u32,
+    },
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)

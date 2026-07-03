@@ -779,13 +779,27 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
 
     fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
         // Unlike `recorded_env` (client-local state), the SDK event capture lives
-        // only server-side, so this is a wire round-trip (task 73).
-        match self.call(&control_proto::Request::SdkEvents)? {
-            control_proto::Reply::SdkEvents(events) => Ok(events),
-            other => Err(MachineError::Transport(format!(
-                "sdk_events answered with an unexpected reply: {other:?}"
-            ))),
+        // only server-side, so this is a wire round-trip (task 73). The server
+        // bounds each reply to the control frame limit (round-5 P4), so page
+        // through: fetch from the running offset until an empty page.
+        let mut all: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+        loop {
+            let page = match self.call(&control_proto::Request::SdkEvents {
+                offset: all.len() as u32,
+            })? {
+                control_proto::Reply::SdkEvents(events) => events,
+                other => {
+                    return Err(MachineError::Transport(format!(
+                        "sdk_events answered with an unexpected reply: {other:?}"
+                    )));
+                }
+            };
+            if page.is_empty() {
+                break;
+            }
+            all.extend(page);
         }
+        Ok(all)
     }
 }
 

@@ -40,6 +40,50 @@ fn trace(events: Vec<(Moment, GuestEvent)>) -> RunTrace {
     }
 }
 
+/// A `state_max` mints novelty only on a per-register **increase** — a repeated
+/// or *decreased* maximum is not new (round-5 P3, else a decrease mints false
+/// novelty); and maxima are tracked per register independently.
+#[test]
+fn state_max_emits_only_on_per_register_increase() {
+    let max = |v: u64| {
+        let mut b = vec![1u8]; // STATE_MAX
+        b.extend_from_slice(&v.to_le_bytes());
+        b
+    };
+    let pack = |reg: u64, v: u64| ((reg & 0xFFFF) << 48) | (v & 0x0000_FFFF_FFFF_FFFF);
+    let state_feat = |m: u64, reg: u64, v: u64| {
+        (
+            Moment(m),
+            Feature {
+                channel: LINK_STATE_CHANNEL,
+                id: FeatureId(pack(reg, v)),
+            },
+        )
+    };
+
+    // Register 40: 5 → 10 → 3 → 10 → 12. Register 41: 7 → 7 (a repeat).
+    let t = trace(vec![
+        (Moment(10), decode_event(eid(NS_STATE, 40), &max(5))), // increase (first)
+        (Moment(15), decode_event(eid(NS_STATE, 41), &max(7))), // increase (first, reg 41)
+        (Moment(20), decode_event(eid(NS_STATE, 40), &max(10))), // increase
+        (Moment(30), decode_event(eid(NS_STATE, 40), &max(3))), // DECREASE — no novelty
+        (Moment(40), decode_event(eid(NS_STATE, 40), &max(10))), // repeat — no novelty
+        (Moment(45), decode_event(eid(NS_STATE, 41), &max(7))), // repeat (reg 41) — no novelty
+        (Moment(50), decode_event(eid(NS_STATE, 40), &max(12))), // increase
+    ]);
+
+    // Only the genuine increases mint, keyed per register.
+    assert_eq!(
+        LinkSensor::new().observe(&t),
+        vec![
+            state_feat(10, 40, 5),
+            state_feat(15, 41, 7),
+            state_feat(20, 40, 10),
+            state_feat(50, 40, 12),
+        ]
+    );
+}
+
 /// The sensor emits a link-assert feature per hit and a link-state feature
 /// encoding (reg, value).
 #[test]

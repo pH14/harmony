@@ -69,6 +69,7 @@ pub control_proto::Request::Run
 pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Answer>
 pub control_proto::Request::Run::until: control_proto::StopConditions
 pub control_proto::Request::SdkEvents
+pub control_proto::Request::SdkEvents::offset: u32
 pub control_proto::Request::Snapshot
 pub enum control_proto::StopReason
 pub control_proto::StopReason::Assertion
