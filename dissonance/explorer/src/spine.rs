@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::prng::Prng;
-use crate::{Answer, Environment, SnapId, StopReason};
+use crate::{Answer, Environment, SnapId, StopConditions, StopReason};
 
 // ---------------------------------------------------------------------------
 // Vocabulary (serializable, `serde`)
@@ -524,10 +524,54 @@ pub trait CellFn {
 /// always-assertion, Elle-over-history). Re-running a **new** oracle over
 /// recorded runs finds real bugs — the strong offline property. Probe oracles
 /// (liveness, `eventually`) are *not* this trait: they run forward from a
-/// state on a throwaway branch and belong to the live plane (task 75).
+/// state on a throwaway branch and belong to the live plane
+/// ([`ProbeOracle`]).
 pub trait Oracle {
     /// Judge a finished run; `Some` exactly when it exhibits a bug.
     fn judge(&self, t: &RunTrace) -> Option<Bug>;
+}
+
+// ---------------------------------------------------------------------------
+// Live-plane oracle — the liveness/`eventually` probe (task 75)
+// ---------------------------------------------------------------------------
+
+/// The budget for one directed liveness probe: how far *forward* to run from a
+/// terminal state before concluding it did (or did not) converge. A fixed
+/// V-time convergence window (plus the [`StopMask`](crate::StopMask) the probe
+/// run surfaces under — normally `NONE`, so the quiesced env answers every
+/// decision nominally and no snapshot forks).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ProbePlan {
+    /// The forward run's stop conditions — the convergence budget as a V-time
+    /// deadline, and the decision classes it surfaces.
+    pub horizon: StopConditions,
+}
+
+/// A **probe oracle** — a liveness / `eventually` check that cannot be a pure
+/// [`Oracle`] because deciding "does the cluster converge once faults stop?"
+/// requires *running forward* from a state. It is a specialized
+/// [`Tactic`]+[`Machine`](crate::Machine) interaction on a **throwaway terminal
+/// branch** (the engine's probe mechanism), never a `judge(&RunTrace)` call.
+///
+/// The split keeps the liveness in *producing* the probe trace, not in judging
+/// it: [`plan`](ProbeOracle::plan) selects which terminal states are worth a
+/// forward probe and how long to run; the engine branches a discarded branch,
+/// runs to the horizon, records the probe's [`RunTrace`], and hands it to
+/// [`judge_probe`](ProbeOracle::judge_probe), which is **pure** over that trace.
+/// The probe run is never admitted to the [`Archive`], so it cannot contaminate
+/// the timeline.
+pub trait ProbeOracle {
+    /// Whether this terminal state warrants a forward probe, and with what
+    /// budget. `None` skips the probe entirely (the common case — most states
+    /// need no liveness check).
+    fn plan(&self, t: &RunTrace) -> Option<ProbePlan>;
+
+    /// Judge the probe **purely** over its recorded trace: `original` is the
+    /// state that was probed, `probe` is the forward-convergence window the
+    /// engine ran and recorded (its `env` already genesis-complete via
+    /// [`EnvCodec::compose`](crate::EnvCodec::compose)). `Some` exactly when the
+    /// convergence property was violated.
+    fn judge_probe(&self, original: &RunTrace, probe: &RunTrace) -> Option<Bug>;
 }
 
 // ---------------------------------------------------------------------------

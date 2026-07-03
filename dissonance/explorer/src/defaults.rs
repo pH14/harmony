@@ -15,8 +15,7 @@
 
 use std::collections::BTreeSet;
 
-use sha2::{Digest, Sha256};
-
+use crate::fingerprint;
 use crate::prng::Prng;
 use crate::spine::{
     Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, ExemplarRef, Feature,
@@ -380,48 +379,58 @@ impl Oracle for TerminalOracle {
     }
 }
 
-/// A stable 32-byte digest of a bug stop, so the same crash/assertion dedups
-/// across the many environments that reach it. Domain-separated by a leading tag;
-/// only the bug-bearing variants are expected, but every variant hashes totally.
-/// Byte-identical to the pre-refactor fingerprint (the equivalence gate depends
-/// on it).
-pub(crate) fn fingerprint(stop: &StopReason) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"dissonance.explorer.bug.v1");
+/// The `TerminalOracle`'s stable id for the shared fingerprint's coordinate 1.
+const TERMINAL_ORACLE_ID: &str = "terminal";
+
+/// Anomaly-class codes the terminal oracle assigns (coordinate 1's `class`).
+/// Only the two bug-bearing stops are ever judged; the rest keep the mapping
+/// total so `fingerprint` never panics on an unexpected stop.
+fn terminal_class(stop: &StopReason) -> u32 {
     match stop {
-        StopReason::Crash { vtime, info } => {
-            h.update([0xC1]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(info);
-        }
-        StopReason::Assertion { vtime, id, data } => {
-            h.update([0xA1]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(id.to_le_bytes());
-            h.update(data);
-        }
-        // Non-bug stops are never fingerprinted in practice; hash their tag so
-        // the function stays total.
-        StopReason::Deadline { vtime } => {
-            h.update([0xD1]);
-            h.update(vtime.0.to_le_bytes());
-        }
-        StopReason::Quiescent { vtime } => {
-            h.update([0x01]);
-            h.update(vtime.0.to_le_bytes());
-        }
-        StopReason::Decision { vtime, id, ctx } => {
-            h.update([0xDE]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(id.to_le_bytes());
-            h.update(ctx);
-        }
-        StopReason::SnapshotPoint { vtime } => {
-            h.update([0x5A]);
-            h.update(vtime.0.to_le_bytes());
-        }
+        StopReason::Crash { .. } => 0,
+        StopReason::Assertion { .. } => 1,
+        StopReason::Deadline { .. } => 2,
+        StopReason::Quiescent { .. } => 3,
+        StopReason::Decision { .. } => 4,
+        StopReason::SnapshotPoint { .. } => 5,
     }
-    h.finalize().into()
+}
+
+/// The **normalized** detail bytes for coordinate 1: the crash marker or the
+/// assertion `(id, data)`. The V-time is *not* here — it is coordinate 3
+/// (quantized). No raw addresses (the toy's `info`/`data` are opaque markers).
+fn terminal_detail(stop: &StopReason) -> Vec<u8> {
+    match stop {
+        StopReason::Crash { info, .. } => info.clone(),
+        StopReason::Assertion { id, data, .. } => {
+            let mut d = id.to_le_bytes().to_vec();
+            d.extend_from_slice(data);
+            d
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A stable 32-byte digest of a bug stop, so the same crash/assertion dedups
+/// across the many environments that reach it. Mints through the pinned,
+/// versioned [`fingerprint`](crate::fingerprint) schema (task 75), superseding
+/// task 12's stop-reason-only `dissonance.explorer.bug.v1` digest: coordinate 1
+/// is the terminal signature (oracle id + class + normalized crash/assertion
+/// detail + stop discriminant), coordinate 2 is empty (a pure trace oracle over
+/// an opaque `Environment` cannot enumerate faults — the campaign's schema-aware
+/// path populates it), and coordinate 3 is the quantized terminal V-time.
+pub(crate) fn fingerprint(stop: &StopReason) -> [u8; 32] {
+    let sig = fingerprint::TerminalSig::new(
+        TERMINAL_ORACLE_ID,
+        terminal_class(stop),
+        stop.discriminant(),
+    )
+    .with_detail(terminal_detail(stop));
+    fingerprint::mint(
+        &sig,
+        &fingerprint::FaultCoord::none(),
+        fingerprint::VTimeCoord::quantize(Moment(stop.vtime().0)),
+    )
 }
 
 #[cfg(test)]
@@ -465,27 +474,57 @@ mod tests {
         a.admit(&trace(), forks, &IdentityCells, &[])
     }
 
-    /// The bug fingerprint is the pinned `sha2` digest of the stop reason — locks
-    /// the domain tag + field layout, kills the `[0;32]`/`[1;32]` mutants, and
-    /// (being the same golden as the pre-refactor test) pins cross-refactor
-    /// fingerprint stability.
+    /// The bug fingerprint mints through the pinned task-75 three-coordinate
+    /// schema (superseding the task-12 stop-only digest): coordinate 1 is the
+    /// terminal signature, coordinate 2 is empty (schema-blind), coordinate 3 is
+    /// the quantized V-time. Cross-checks the `defaults` path against the shared
+    /// `fingerprint::mint`, pins a golden (kills the `[0;32]`/`[1;32]` mutants and
+    /// locks scheme stability), and proves the V-time now lives in coordinate 3.
     #[test]
     fn fingerprint_is_a_pinned_digest() {
         let crash = StopReason::Crash {
             vtime: VTime(80),
             info: vec![2, 4],
         };
+        // The `defaults` fingerprint IS the shared mint over the terminal
+        // signature (oracle id + crash class + info detail + stop discriminant),
+        // an empty fault coordinate, and the quantized V-time.
+        let sig = fingerprint::TerminalSig::new("terminal", 0, crash.discriminant())
+            .with_detail(vec![2, 4]);
+        let expect = fingerprint::mint(
+            &sig,
+            &fingerprint::FaultCoord::none(),
+            fingerprint::VTimeCoord::quantize(Moment(80)),
+        );
+        assert_eq!(fingerprint(&crash), expect);
+
         let golden: [u8; 32] = [
-            0x87, 0x98, 0x12, 0xff, 0x07, 0x03, 0x95, 0x3f, 0x5d, 0x41, 0x10, 0xd9, 0xb7, 0xc9,
-            0x06, 0xcc, 0xfc, 0xf9, 0xc2, 0xeb, 0x81, 0x71, 0x5e, 0xd6, 0xaf, 0x1b, 0x5c, 0x21,
-            0x5c, 0x23, 0x6e, 0x16,
+            0x93, 0x20, 0xde, 0xa2, 0x73, 0xd4, 0x15, 0x61, 0x79, 0x54, 0x9b, 0xea, 0x76, 0x4e,
+            0x66, 0x1b, 0xc6, 0xef, 0xaf, 0x01, 0xcb, 0xcd, 0x54, 0x4c, 0x50, 0xe9, 0xf2, 0xd1,
+            0x51, 0x7c, 0x62, 0x2f,
         ];
         assert_eq!(fingerprint(&crash), golden);
         assert_ne!(fingerprint(&crash), [0u8; 32]);
         assert_ne!(fingerprint(&crash), [1u8; 32]);
+
+        // The V-time is coordinate 3 (quantized), not raw: two crashes in the
+        // same bracket share a fingerprint, one a bracket away does not.
+        let same_bracket = StopReason::Crash {
+            vtime: VTime(
+                80 + fingerprint::FINGERPRINT_VTIME_BRACKET
+                    - 1
+                    - (80 % fingerprint::FINGERPRINT_VTIME_BRACKET),
+            ),
+            info: vec![2, 4],
+        };
+        assert_eq!(fingerprint(&crash), fingerprint(&same_bracket));
     }
 
-    /// Two different stops fingerprint differently (so dedup keeps distinct bugs).
+    /// Distinct stops fingerprint differently so dedup keeps distinct bugs:
+    /// class (crash vs assertion), normalized detail (crash marker / assertion
+    /// data), and a V-time a whole *bracket* away all split. A raw V-time
+    /// difference *within* a bracket does **not** split (that is coordinate 3's
+    /// deliberate quantization — proven in `fingerprint_is_a_pinned_digest`).
     #[test]
     fn fingerprint_distinguishes_stops() {
         let crash = StopReason::Crash {
@@ -497,19 +536,31 @@ mod tests {
             id: 5,
             data: vec![3],
         };
+        // Different class (crash vs assertion).
         assert_ne!(fingerprint(&crash), fingerprint(&assertion));
-        assert_ne!(
-            fingerprint(&crash),
-            fingerprint(&StopReason::Crash {
-                vtime: VTime(81),
-                info: vec![2, 4],
-            })
-        );
+        // Different normalized detail (crash marker).
         assert_ne!(
             fingerprint(&crash),
             fingerprint(&StopReason::Crash {
                 vtime: VTime(80),
                 info: vec![2, 5],
+            })
+        );
+        // A V-time a full bracket away splits (coordinate 3).
+        assert_ne!(
+            fingerprint(&crash),
+            fingerprint(&StopReason::Crash {
+                vtime: VTime(80 + fingerprint::FINGERPRINT_VTIME_BRACKET),
+                info: vec![2, 4],
+            })
+        );
+        // Two assertions with different ids split on their detail.
+        assert_ne!(
+            fingerprint(&assertion),
+            fingerprint(&StopReason::Assertion {
+                vtime: VTime(80),
+                id: 7,
+                data: vec![3],
             })
         );
     }

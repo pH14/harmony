@@ -69,6 +69,7 @@ pub mod adapter;
 mod defaults;
 mod engine;
 mod error;
+mod fingerprint;
 mod materialize;
 mod prng;
 mod seam;
@@ -81,13 +82,18 @@ pub use defaults::{
 };
 pub use engine::{Composition, Explorer, RunOutcome};
 pub use error::MachineError;
+pub use fingerprint::{
+    FINGERPRINT_DOMAIN, FINGERPRINT_VTIME_BRACKET, FaultCoord, TerminalSig, VTimeCoord,
+    mint as mint_fingerprint,
+};
 pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
 pub use prng::Prng;
 pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{
     Archive, Bug, CellFn, CellKey, ChannelId, CoverageView, DecisionPoint, ExemplarRef, Feature,
     FeatureId, FeatureSet, Fork, Frontier, FrontierEntry, GuestEvent, Matchable, Moment, Oracle,
-    Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value, VirtualExemplar,
+    ProbeOracle, ProbePlan, Record, Reward, RunTrace, Selector, Sensor, StreamId, Tactic, Value,
+    VirtualExemplar,
 };
 
 use serde::{Deserialize, Serialize};

@@ -64,6 +64,8 @@ pub explorer::StopReason::Quiescent::vtime: explorer::VTime
 pub explorer::StopReason::SnapshotPoint
 pub explorer::StopReason::SnapshotPoint::vtime: explorer::VTime
 impl explorer::StopReason
+pub fn explorer::StopReason::discriminant(&self) -> u8
+impl explorer::StopReason
 pub fn explorer::StopReason::is_bug(&self) -> bool
 pub fn explorer::StopReason::is_terminal(&self) -> bool
 pub fn explorer::StopReason::vtime(&self) -> explorer::VTime
@@ -146,6 +148,7 @@ pub fn explorer::Explorer<M>::materializer(&self) -> &explorer::Materializer
 pub fn explorer::Explorer<M>::modeled_cost(&self, explorer::ExemplarRef) -> core::option::Option<u64>
 pub fn explorer::Explorer<M>::modulation(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
 pub fn explorer::Explorer<M>::new(M, alloc::boxed::Box<dyn explorer::EnvCodec>, explorer::Composition, u64) -> core::result::Result<Self, explorer::MachineError>
+pub fn explorer::Explorer<M>::probe(&mut self, &dyn explorer::ProbeOracle, &explorer::RunTrace, explorer::SnapId) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
 pub fn explorer::Explorer<M>::progression_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
 pub fn explorer::Explorer<M>::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Explorer<M>::sealed_count(&self) -> usize
@@ -155,6 +158,12 @@ pub fn explorer::Explorer<M>::set_sealable(&mut self, alloc::boxed::Box<dyn core
 pub fn explorer::Explorer<M>::set_stop_conditions(&mut self, explorer::StopConditions)
 pub fn explorer::Explorer<M>::stop_conditions(&self) -> &explorer::StopConditions
 pub fn explorer::Explorer<M>::sweep_dead_seals(&mut self) -> core::result::Result<(), explorer::MachineError>
+pub struct explorer::FaultCoord
+impl explorer::FaultCoord
+pub fn explorer::FaultCoord::from_tokens<I, T>(I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = T>, T: core::convert::Into<alloc::vec::Vec<u8>>
+pub fn explorer::FaultCoord::is_empty(&self) -> bool
+pub fn explorer::FaultCoord::len(&self) -> usize
+pub fn explorer::FaultCoord::none() -> Self
 pub struct explorer::Feature
 pub explorer::Feature::channel: explorer::ChannelId
 pub explorer::Feature::id: explorer::FeatureId
@@ -247,6 +256,8 @@ pub fn explorer::Prng::new(u64) -> Self
 pub fn explorer::Prng::next_u64(&mut self) -> u64
 impl<'de> serde_core::de::Deserialize<'de> for explorer::Prng
 pub fn explorer::Prng::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct explorer::ProbePlan
+pub explorer::ProbePlan::horizon: explorer::StopConditions
 pub struct explorer::Record
 pub explorer::Record::line: alloc::vec::Vec<u8>
 pub explorer::Record::stream: explorer::StreamId
@@ -292,7 +303,18 @@ impl explorer::TerminalOracle
 pub fn explorer::TerminalOracle::new() -> Self
 impl explorer::Oracle for explorer::TerminalOracle
 pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+pub struct explorer::TerminalSig
+pub explorer::TerminalSig::class: u32
+pub explorer::TerminalSig::detail: alloc::vec::Vec<u8>
+pub explorer::TerminalSig::oracle: alloc::string::String
+pub explorer::TerminalSig::stop: u8
+impl explorer::TerminalSig
+pub fn explorer::TerminalSig::new(impl core::convert::Into<alloc::string::String>, u32, u8) -> Self
+pub fn explorer::TerminalSig::with_detail(self, alloc::vec::Vec<u8>) -> Self
 pub struct explorer::VTime(pub u64)
+pub struct explorer::VTimeCoord(pub u64)
+impl explorer::VTimeCoord
+pub fn explorer::VTimeCoord::quantize(explorer::Moment) -> Self
 pub struct explorer::VirtualExemplar
 pub explorer::VirtualExemplar::at: explorer::Moment
 pub explorer::VirtualExemplar::parent: explorer::SnapId
@@ -300,6 +322,8 @@ pub explorer::VirtualExemplar::seed: u64
 pub explorer::VirtualExemplar::suffix: explorer::Environment
 pub const explorer::ADAPTER_BLOB_VERSION: u16
 pub const explorer::COVERAGE_CHANNEL: explorer::ChannelId
+pub const explorer::FINGERPRINT_DOMAIN: &[u8]
+pub const explorer::FINGERPRINT_VTIME_BRACKET: u64
 pub trait explorer::Archive
 pub fn explorer::Archive::admissible(&self, explorer::Moment) -> bool
 pub fn explorer::Archive::admit(&mut self, &explorer::RunTrace, &[explorer::Fork], &dyn explorer::CellFn, &[alloc::boxed::Box<dyn explorer::Sensor>]) -> explorer::Reward
@@ -351,6 +375,9 @@ pub trait explorer::Oracle
 pub fn explorer::Oracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
 impl explorer::Oracle for explorer::TerminalOracle
 pub fn explorer::TerminalOracle::judge(&self, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+pub trait explorer::ProbeOracle
+pub fn explorer::ProbeOracle::judge_probe(&self, &explorer::RunTrace, &explorer::RunTrace) -> core::option::Option<explorer::Bug>
+pub fn explorer::ProbeOracle::plan(&self, &explorer::RunTrace) -> core::option::Option<explorer::ProbePlan>
 pub trait explorer::Selector
 pub fn explorer::Selector::choose(&mut self, &explorer::Frontier, &mut explorer::Prng) -> core::option::Option<explorer::ExemplarRef>
 pub fn explorer::Selector::reward(&mut self, explorer::ExemplarRef, explorer::Reward)
@@ -367,4 +394,5 @@ pub fn explorer::Tactic::decide(&mut self, &explorer::DecisionPoint, &mut explor
 impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
 pub fn explorer::client_caps() -> control_proto::types::Caps
+pub fn explorer::mint_fingerprint(&explorer::TerminalSig, &explorer::FaultCoord, explorer::VTimeCoord) -> [u8; 32]
 pub type explorer::CellKey = alloc::vec::Vec<u8>

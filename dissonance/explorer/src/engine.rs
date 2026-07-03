@@ -37,9 +37,17 @@ use crate::prng::Prng;
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{
     Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment, Oracle,
-    RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
+    ProbeOracle, ProbePlan, RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
 };
 use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason};
+
+/// The seed a liveness [`probe`](Explorer::probe)'s quiesced env is minted with:
+/// a fresh seed carries no overrides, so the throwaway convergence run injects
+/// no faults and answers every decision nominally (the "nominal answers, empty
+/// fault schedule" of task 75's probe ruling). The value is immaterial —
+/// convergence is a property of the *terminal state being probed*, not of the
+/// probe's own seed — so any fixed seed keeps the probe deterministic.
+const PROBE_QUIESCE_SEED: u64 = 0;
 
 /// The result of one Modulation: where it stopped and the **branch-local**
 /// reproducer [`Environment`] accumulated over it
@@ -541,6 +549,89 @@ impl<M: Machine> Explorer<M> {
             }
         }
         Ok(bugs)
+    }
+
+    /// **The probe mechanism (task 75).** Run a directed liveness probe forward
+    /// from a live terminal state on a **throwaway branch**, judge it purely over
+    /// the probe's recorded trace, and discard the branch — the liveness is in
+    /// *producing* the probe trace, not judging it (spine [`ProbeOracle`]).
+    ///
+    /// This is engine plumbing between the Progression and the [`Machine`] (like
+    /// materialization — a function, not a loop change), NOT a `judge(&RunTrace)`
+    /// call. Given a live `terminal` snapshot of the state to probe (the caller's
+    /// chosen quiescent terminal) and its recorded `original` run:
+    ///
+    /// 1. Ask the oracle whether this state warrants a probe
+    ///    ([`ProbeOracle::plan`]); `None` skips it (the common case).
+    /// 2. [`branch`](Machine::branch) the throwaway forward exploration off
+    ///    `terminal` with a **quiesced** env (nominal answers, empty fault
+    ///    schedule — a fresh seed with no overrides), so what it observes is pure
+    ///    convergence behaviour.
+    /// 3. Run to `plan.horizon`, **snapshot-neutral**: decline every surfaced
+    ///    decision and step past any [`StopReason::SnapshotPoint`] *without*
+    ///    sealing, so the probe mints no snapshot and admits no exemplar.
+    /// 4. Record the probe's [`RunTrace`], its `env` folded onto `original.env`
+    ///    via [`EnvCodec::compose`] — genesis-complete, replaying the original
+    ///    run *and* the failed convergence window.
+    /// 5. Hand it to [`ProbeOracle::judge_probe`] (pure) and return the verdict.
+    ///
+    /// The probe run is **never** admitted to the [`Archive`], and this method
+    /// touches neither the archive, the frontier, nor the seal cache: the
+    /// archive/trunk digest (frontier + admitted exemplars + retained snapshot
+    /// set) is byte-identical before and after (the uncontamination property the
+    /// box gate proves). The `terminal` snapshot is the caller's — this method
+    /// neither mints nor drops it; a campaign snapshots the terminal, probes, and
+    /// drops it, leaving the snapshot pool identical.
+    pub fn probe(
+        &mut self,
+        oracle: &dyn ProbeOracle,
+        original: &RunTrace,
+        terminal: SnapId,
+    ) -> Result<Option<Bug>, MachineError> {
+        let Some(plan) = oracle.plan(original) else {
+            return Ok(None);
+        };
+        // Branch the throwaway forward exploration: restore the terminal state,
+        // reseed with a quiesced env. `branch` mints no snapshot.
+        let quiesced = self.codec.seeded(PROBE_QUIESCE_SEED);
+        self.machine.branch(terminal, &quiesced)?;
+        let stop = self.run_probe_to_horizon(&plan)?;
+        // The forward-window reproducer, keyed since the terminal branch, folded
+        // onto the original's genesis-complete env (the task-93 compose ruling).
+        let probe_delta = self.machine.recorded_env()?;
+        let probe_trace = RunTrace {
+            terminal: stop,
+            env: self.codec.compose(&original.env, &probe_delta),
+            coverage: Some(CoverageView {
+                map: self.machine.coverage().to_vec(),
+            }),
+            events: Vec::new(),
+            records: Vec::new(),
+        };
+        Ok(oracle.judge_probe(original, &probe_trace))
+    }
+
+    /// Drive the throwaway probe forward to its horizon, **snapshot-neutral**:
+    /// decline every surfaced decision (so the quiesced env's seed answers
+    /// nominally) and step past any [`StopReason::SnapshotPoint`] without
+    /// sealing. Returns the terminal stop the convergence window reached.
+    fn run_probe_to_horizon(&mut self, plan: &ProbePlan) -> Result<StopReason, MachineError> {
+        let mut resolve: Option<Answer> = None;
+        loop {
+            let stop = self.machine.run(&plan.horizon, resolve.as_ref())?;
+            match stop {
+                StopReason::Decision { .. } => {
+                    // Nominal answer: the empty answer falls through to the
+                    // quiesced env's seed, so no override is forced.
+                    resolve = Some(Answer(Vec::new()));
+                }
+                StopReason::SnapshotPoint { .. } => {
+                    // A probe mints no snapshot: step past without sealing.
+                    resolve = None;
+                }
+                terminal => return Ok(terminal),
+            }
+        }
     }
 
     /// The seal materializing frontier entry `r`, minting one if needed. `r`

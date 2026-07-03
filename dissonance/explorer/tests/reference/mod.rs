@@ -19,11 +19,9 @@
 
 use std::collections::BTreeSet;
 
-use sha2::{Digest, Sha256};
-
 use explorer::{
-    Answer, EnvCodec, Environment, Machine, MachineError, SnapId, StopConditions, StopMask,
-    StopReason,
+    Answer, EnvCodec, Environment, FaultCoord, Machine, MachineError, Moment, SnapId,
+    StopConditions, StopMask, StopReason, TerminalSig, VTimeCoord, mint_fingerprint,
 };
 
 // ---- prng.rs (verbatim) ----
@@ -501,40 +499,32 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
     }
 }
 
-/// The pre-refactor `sha2` bug fingerprint (domain tag `dissonance.explorer.bug.v1`).
+/// The bug fingerprint the reference reports, tracking the pinned scheme the
+/// refactored engine uses. Task 12 minted a stop-reason-only
+/// `dissonance.explorer.bug.v1` digest; task 75 supersedes it with the shared
+/// three-coordinate [`mint_fingerprint`](explorer::mint_fingerprint) schema.
+/// The behavior-equivalence gate proves the engine and this reference agree on
+/// **which bugs, which reproducers, which admissions** — the fingerprint scheme
+/// moved forward on *both* sides in lockstep, so it stays a pure function of the
+/// (stop, env) both sides already agree on. Its byte-for-byte correctness is
+/// independently pinned by the crate's own golden (`defaults::tests`).
 pub fn fingerprint(stop: &StopReason) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"dissonance.explorer.bug.v1");
-    match stop {
-        StopReason::Crash { vtime, info } => {
-            h.update([0xC1]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(info);
+    let (class, detail) = match stop {
+        StopReason::Crash { info, .. } => (0u32, info.clone()),
+        StopReason::Assertion { id, data, .. } => {
+            let mut d = id.to_le_bytes().to_vec();
+            d.extend_from_slice(data);
+            (1u32, d)
         }
-        StopReason::Assertion { vtime, id, data } => {
-            h.update([0xA1]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(id.to_le_bytes());
-            h.update(data);
-        }
-        StopReason::Deadline { vtime } => {
-            h.update([0xD1]);
-            h.update(vtime.0.to_le_bytes());
-        }
-        StopReason::Quiescent { vtime } => {
-            h.update([0x01]);
-            h.update(vtime.0.to_le_bytes());
-        }
-        StopReason::Decision { vtime, id, ctx } => {
-            h.update([0xDE]);
-            h.update(vtime.0.to_le_bytes());
-            h.update(id.to_le_bytes());
-            h.update(ctx);
-        }
-        StopReason::SnapshotPoint { vtime } => {
-            h.update([0x5A]);
-            h.update(vtime.0.to_le_bytes());
-        }
-    }
-    h.finalize().into()
+        StopReason::Deadline { .. } => (2, Vec::new()),
+        StopReason::Quiescent { .. } => (3, Vec::new()),
+        StopReason::Decision { .. } => (4, Vec::new()),
+        StopReason::SnapshotPoint { .. } => (5, Vec::new()),
+    };
+    let sig = TerminalSig::new("terminal", class, stop.discriminant()).with_detail(detail);
+    mint_fingerprint(
+        &sig,
+        &FaultCoord::none(),
+        VTimeCoord::quantize(Moment(stop.vtime().0)),
+    )
 }
