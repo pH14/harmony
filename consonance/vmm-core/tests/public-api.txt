@@ -414,8 +414,14 @@ pub fn vmm_core::snapshot::SnapshotEngine::store(&self) -> &snapshot_store::Stor
 pub fn vmm_core::snapshot::SnapshotEngine::store_stats(&self) -> snapshot_store::StoreStats
 pub fn vmm_core::snapshot::SnapshotEngine::vm_state(&self, snapshot_store::SnapshotId) -> core::result::Result<vm_state::VmState, vmm_core::snapshot::SnapshotError>
 pub mod vmm_core::vmm
+pub enum vmm_core::vmm::SdkStop
+pub vmm_core::vmm::SdkStop::Assertion
+pub vmm_core::vmm::SdkStop::Assertion::data: alloc::vec::Vec<u8>
+pub vmm_core::vmm::SdkStop::Assertion::id: u32
+pub vmm_core::vmm::SdkStop::SnapshotPoint
 pub enum vmm_core::vmm::Step
 pub vmm_core::vmm::Step::Continued
+pub vmm_core::vmm::Step::SdkStop
 pub vmm_core::vmm::Step::Terminal(vmm_core::vmm::TerminalReason)
 pub enum vmm_core::vmm::TerminalReason
 pub vmm_core::vmm::TerminalReason::DebugExit
@@ -449,6 +455,7 @@ pub fn vmm_core::vmm::Vmm<B>::arm_arrival(&mut self, environment::host::Moment) 
 pub fn vmm_core::vmm::Vmm<B>::can_arm_arrival(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::clear_arrival(&mut self)
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
+pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::recorded::RecordedEnv) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
 pub fn vmm_core::vmm::Vmm<B>::guest_memory(&self) -> &[u8]
@@ -470,12 +477,15 @@ pub fn vmm_core::vmm::Vmm<B>::restore_vtime(&mut self, &vmm_core::vmm::VtimeSnap
 pub fn vmm_core::vmm::Vmm<B>::run(&mut self) -> core::result::Result<vmm_core::vmm::RunResult, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::save_vm_state(&self) -> core::result::Result<vm_state::VmState, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::save_vtime(&self) -> core::result::Result<core::option::Option<vmm_core::vmm::VtimeSnapshot>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::sdk_buggify(&self) -> &[(u64, environment::catalog::Answer)]
+pub fn vmm_core::vmm::Vmm<B>::sdk_events(&self) -> &[(u64, u32, alloc::vec::Vec<u8>)]
 pub fn vmm_core::vmm::Vmm<B>::serial(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::snapshot_hashing_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> alloc::vec::Vec<u8>
 pub fn vmm_core::vmm::Vmm<B>::state_components(&self) -> alloc::vec::Vec<(&'static str, [u8; 32])>
 pub fn vmm_core::vmm::Vmm<B>::state_hash(&self) -> [u8; 32]
 pub fn vmm_core::vmm::Vmm<B>::step(&mut self) -> core::result::Result<vmm_core::vmm::Step, vmm_core::vmm::VmmError>
+pub fn vmm_core::vmm::Vmm<B>::take_sdk_stop(&mut self) -> core::option::Option<vmm_core::vmm::SdkStop>
 pub fn vmm_core::vmm::Vmm<B>::terminal_reason(&self) -> core::option::Option<vmm_core::vmm::TerminalReason>
 pub fn vmm_core::vmm::Vmm<B>::vtime_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::wire_lapic(&mut self, lapic::device::Lapic) -> &mut Self
