@@ -29,13 +29,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use conductor::campaign::{
+    CampaignConfig, CampaignReport, render_campaign_table, run_campaign, verify_campaign,
+};
+use conductor::planted::{ToyPlantedMachine, Trigger};
 use conductor::record::{
     RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
     verify_store_reload,
 };
 use conductor::{SweepConfig, render_table, run_session, sweep_client, verify};
 use environment::{EnvSpec, FaultPolicy};
-use explorer::StreamId;
+use explorer::{SpecEnvCodec, StreamId};
 use runtrace::{RetentionPolicy, TraceStore};
 
 #[derive(Parser)]
@@ -54,6 +58,45 @@ enum Mode {
     Mock(SweepArgs),
     /// Box-only: the real Postgres workload on patched KVM.
     Box(BoxArgs),
+    /// The task-60 first campaign: find a planted, fault-triggerable bug and
+    /// reproduce it N/N.
+    #[command(subcommand)]
+    Campaign(CampaignMode),
+}
+
+/// The two campaign paths (task 60): the portable toy planted-bug machine, and
+/// the box milestone against the real Postgres-campaign image.
+#[derive(Subcommand)]
+enum CampaignMode {
+    /// Portable toy planted-bug machine (no /dev/kvm) — gate 2.
+    Mock(CampaignArgs),
+    /// Box-only: the real Postgres-campaign image on patched KVM — gate 1.
+    Box(CampaignBoxArgs),
+}
+
+/// The task-60 milestone replay bar: the emitted reproducer must replay the
+/// identical crash (same `state_hash` at the terminal stop) **25/25** (spec gate
+/// 1). The `--replay-n` flag may only **raise** this bar, never lower it — a
+/// `--replay-n 1` run must not be able to print `GATES PASS` at 1/1 below the
+/// spec, so every campaign path floors `replay_n` at `REPLAY_BAR`.
+const REPLAY_BAR: usize = 25;
+
+/// Shared campaign knobs (both modes).
+#[derive(Parser)]
+struct CampaignArgs {
+    /// Branch budget: give up **loudly** if the planted bug is not found within
+    /// this many branches (a no-find is a gate failure, never a silent pass).
+    #[arg(long, default_value_t = 4096)]
+    max_branches: u64,
+    /// Replays of the emitted reproducer to prove bit-identical reproduction.
+    /// Floored at the spec's [`REPLAY_BAR`] (25) — the flag may raise the bar,
+    /// never lower it.
+    #[arg(long, default_value_t = REPLAY_BAR)]
+    replay_n: usize,
+    /// The campaign stream seed. The whole campaign is a pure function of it, so
+    /// a rerun explores the identical branch sequence.
+    #[arg(long)]
+    campaign_seed: Option<u64>,
 }
 
 #[derive(Parser)]
@@ -99,6 +142,50 @@ struct BoxArgs {
     ready_marker: String,
 }
 
+/// Box-campaign arguments: the image/marker knobs of a `box` sweep, plus the
+/// **seeded fault-search space** the campaign explores.
+///
+/// The search space is deliberately CLI-tunable: the box operator (the foreman)
+/// narrows `--gpa-*` once the planted supervisor's ledger guest-physical address
+/// is pinned (read via `/proc/self/pagemap` during a bring-up boot — see
+/// `guest/linux/campaign-init.sh`), keeping the naive search inside the box
+/// lease. The defaults are a broad, page-strided sweep — a genuine "no knowledge
+/// of the trigger" search that completes only once the space is scoped.
+#[derive(Parser)]
+struct CampaignBoxArgs {
+    #[command(flatten)]
+    campaign: CampaignArgs,
+    /// V-time (ns) each branch runs past the base snapshot before its deadline —
+    /// far enough for the fault to land and the supervisor to react.
+    #[arg(long, default_value_t = 5_000_000_000)]
+    deadline_delta: u64,
+    /// Lowest candidate guest-physical fault address (page-aligned).
+    #[arg(long, default_value_t = 0x0100_0000)]
+    gpa_base: u64,
+    /// Number of page-strided candidate addresses.
+    #[arg(long, default_value_t = 256)]
+    gpa_count: u64,
+    /// Stride between candidate addresses (default one 4 KiB page).
+    #[arg(long, default_value_t = 0x1000)]
+    gpa_stride: u64,
+    /// Lowest fault-Moment offset past the base V-time (ns).
+    #[arg(long, default_value_t = 0)]
+    window_lo: u64,
+    /// One past the highest fault-Moment offset past the base V-time (ns).
+    #[arg(long, default_value_t = 2_000_000_000)]
+    window_hi: u64,
+    /// Kernel bzImage filename under guest/build (or guest/linux).
+    #[arg(long, default_value = "bzImage")]
+    kernel: String,
+    /// Initramfs filename — defaults to the planted-bug campaign image.
+    #[arg(long, default_value = "initramfs-campaign.cpio.gz")]
+    initramfs: String,
+    /// The serial marker after which the base snapshot is sealed (mid-workload,
+    /// post-readiness).
+    #[arg(long, default_value = "CAMPAIGN_READY")]
+    ready_marker: String,
+}
+
 /// Distinct, non-boot branch seeds (a multiplicative hash folded into a base) —
 /// the same shape `live_branching_demo.rs` uses.
 fn seeds(n: usize) -> Vec<u64> {
@@ -130,6 +217,71 @@ fn main() -> ExitCode {
     match cli.mode {
         Mode::Mock(args) => run_mock(args),
         Mode::Box(args) => run_box(args),
+        Mode::Campaign(CampaignMode::Mock(args)) => run_campaign_mock(args),
+        Mode::Campaign(CampaignMode::Box(args)) => run_campaign_box(args),
+    }
+}
+
+/// The portable campaign (task 60, gate 2): the seed-driven search over the toy
+/// planted-bug machine, the emit-and-verify N/N step, and the nominal control —
+/// the identical [`run_campaign`] loop the box milestone drives.
+fn run_campaign_mock(args: CampaignArgs) -> ExitCode {
+    let cfg = CampaignConfig {
+        max_branches: args.max_branches,
+        // Floor at the spec bar (25/25): the flag can raise it, never lower it.
+        replay_n: args.replay_n.max(REPLAY_BAR),
+        campaign_seed: args
+            .campaign_seed
+            .unwrap_or(CampaignConfig::toy().campaign_seed),
+        ..CampaignConfig::toy()
+    };
+    let mut machine = ToyPlantedMachine::new(Trigger::toy());
+    println!(
+        "[conductor] campaign mock: seed-driven search over a toy planted bug \
+         (budget {} branches, verify {}×)\n",
+        cfg.max_branches, cfg.replay_n
+    );
+    match run_campaign(&mut machine, &SpecEnvCodec, &cfg) {
+        Ok(report) => finish_campaign("mock", &report, cfg.replay_n),
+        Err(e) => {
+            eprintln!("[conductor] campaign mock failed (backend): {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The box campaign milestone (task 60, gate 1). Linux-only; refuses to run off
+/// Linux + patched KVM loudly.
+#[cfg(target_os = "linux")]
+fn run_campaign_box(args: CampaignBoxArgs) -> ExitCode {
+    boxrun::run_campaign(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_campaign_box(_args: CampaignBoxArgs) -> ExitCode {
+    eprintln!(
+        "[conductor] campaign box mode needs Linux + patched KVM + the built Postgres-campaign \
+         image + the det-cfl-v1 host (see docs/BOX-PINNING.md). This is not a Linux host."
+    );
+    ExitCode::FAILURE
+}
+
+/// Print a campaign run table and set the exit code from the task-60 gates.
+fn finish_campaign(mode: &str, report: &CampaignReport, n: usize) -> ExitCode {
+    print!("{}", render_campaign_table(report, n));
+    let failures = verify_campaign(report, n);
+    if failures.is_empty() {
+        println!(
+            "\n[conductor] campaign {mode} GATES PASS: planted bug found, reproduced {n}/{n}, \
+             nominal control clean."
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("\n[conductor] campaign {mode} GATES FAILED:");
+        for f in &failures {
+            eprintln!("  - {f}");
+        }
+        ExitCode::FAILURE
     }
 }
 
@@ -325,17 +477,26 @@ mod boxrun {
     use std::io::Write;
     use std::process::ExitCode;
 
+    // Aliased: the module's own `pub fn run_campaign` (the box entry point)
+    // would otherwise collide with the imported campaign loop (E0255), and the
+    // call below would silently resolve to the 1-arg local fn (E0061). This code
+    // is `cfg(target_os = "linux")`, so the collision is invisible to a Mac
+    // `cargo check` — the Linux-target check in the gate list catches it.
+    use conductor::campaign::{CampaignConfig, run_campaign as run_campaign_loop};
     use conductor::record::{RecordConfig, run_recording};
     use conductor::{SweepConfig, run_session, sweep_client};
     use environment::{EnvSpec, FaultPolicy};
-    use explorer::StreamId;
+    use explorer::adapter::SocketMachine;
+    use explorer::{SpecEnvCodec, StreamId};
     use runtrace::TraceStore;
     use vmm_backend::Backend;
     use vmm_core::bringup::{BackendKind, boot_linux_selected};
     use vmm_core::control::{ControlServer, VmmFactory};
     use vmm_core::vmm::{Step, Vmm};
 
-    use super::{BoxArgs, finish, finish_recording, parse_retain, seeds};
+    use super::{
+        BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording, parse_retain, seeds,
+    };
 
     /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
     const GUEST_RAM_LEN: usize = 2 << 30;
@@ -416,18 +577,25 @@ mod boxrun {
         Err(format!("marker not seen within {MAX_BOOT_STEPS} steps"))
     }
 
-    pub fn run(args: BoxArgs) -> ExitCode {
-        // The box milestone gate is N >= 8 — enforce it so a smaller box run
-        // can never print a milestone PASS below the bar.
-        if !super::seeds_ok(args.sweep.seeds, 8) {
-            return ExitCode::FAILURE;
-        }
+    /// Boot the live guest on patched KVM and drive it to `ready_marker`, so the
+    /// base snapshot a later sweep/campaign seals lands **mid-workload,
+    /// post-readiness** (the gate's point) — the one workload-aware step; the
+    /// server and adapter after it stay workload-blind. Returns the composed
+    /// [`ControlServer`] ready to serve, or a failing [`ExitCode`] with a loud
+    /// reason (never a vacuous success). Shared verbatim by the sweep
+    /// ([`run`](run)) and the campaign ([`run_campaign`](run_campaign)) so both
+    /// boot the guest identically.
+    fn boot_server(
+        kernel_name: &str,
+        initramfs_name: &str,
+        ready_marker: &str,
+    ) -> Result<ControlServer<Box<dyn Backend>>, ExitCode> {
         if !std::path::Path::new("/dev/kvm").exists() {
             eprintln!(
                 "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
                  KVM modules, CPU-pinned per docs/BOX-PINNING.md."
             );
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
         // The frozen contract cannot run off the det-cfl-v1 baseline.
         let report = vmm_core::hostassert::report();
@@ -437,22 +605,18 @@ mod boxrun {
                  expected {}, observed {}). Run on the box.",
                 bad.key, bad.expected, bad.actual
             );
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
-        let (Some(kernel), Some(initramfs)) = (artifact(&args.kernel), artifact(&args.initramfs))
+        let (Some(kernel), Some(initramfs)) = (artifact(kernel_name), artifact(initramfs_name))
         else {
             eprintln!(
-                "[conductor] guest image missing ({} / {}) — build it first: `make -C guest fetch \
-                 && make -C guest/linux postgres-image`, or pass --initramfs for an image already \
-                 on the box (e.g. initramfs-docker.cpio.gz).",
-                args.kernel, args.initramfs
+                "[conductor] guest image missing ({kernel_name} / {initramfs_name}) — build it \
+                 first: `make -C guest fetch && make -C guest/linux campaign-image` (or \
+                 `postgres-image`), or pass --initramfs for an image already on the box."
             );
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         };
 
-        // Boot the live guest and drive it to the readiness marker, so the base
-        // snapshot the sweep seals is mid-workload (the gate's point). This is
-        // the workload-aware step; everything after it is workload-blind.
         let mut live = match boot_linux_selected(
             BackendKind::Patched,
             &kernel,
@@ -464,21 +628,18 @@ mod boxrun {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("[conductor] boot_linux_selected (patched) failed: {e}");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         };
-        println!(
-            "[conductor] box mode: booting the guest to the readiness marker {:?} …",
-            args.ready_marker
-        );
-        match drive_to_marker(&mut live, args.ready_marker.as_bytes()) {
+        println!("[conductor] box: booting the guest to the readiness marker {ready_marker:?} …");
+        match drive_to_marker(&mut live, ready_marker.as_bytes()) {
             Ok(steps) => println!(
                 "\n[conductor] readiness marker reached at step {steps}; the base snapshot will be \
                  sealed at the next snapshottable boundary at/after this point.\n"
             ),
             Err(e) => {
                 eprintln!("\n[conductor] failed to reach the readiness marker: {e}");
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         }
 
@@ -498,7 +659,28 @@ mod boxrun {
                 BOOT_SEED,
             )
         });
-        let mut server = ControlServer::new(live, factory);
+        Ok(ControlServer::new(live, factory))
+    }
+
+    /// The initial environment the box's live VM boots under (the seed/policy the
+    /// adapter reports as its starting environment).
+    fn boot_env() -> EnvSpec {
+        EnvSpec::Seeded {
+            seed: BOOT_SEED,
+            policy: FaultPolicy::none(),
+        }
+    }
+
+    pub fn run(args: BoxArgs) -> ExitCode {
+        // The box milestone gate is N >= 8 — enforce it so a smaller box run
+        // can never print a milestone PASS below the bar.
+        if !super::seeds_ok(args.sweep.seeds, 8) {
+            return ExitCode::FAILURE;
+        }
+        let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
 
         // Postgres is interrupt-driven; the snapshot search may need many steps
         // to find a sealable boundary at/after readiness. Generous retry budget
@@ -554,10 +736,7 @@ mod boxrun {
             snapshot_retry_step,
             snapshot_max_attempts,
         };
-        let initial = EnvSpec::Seeded {
-            seed: BOOT_SEED,
-            policy: FaultPolicy::none(),
-        };
+        let initial = boot_env();
         println!(
             "[conductor] box mode: {} seeds x {} runs; each branch runs {} ns of V-time past the \
              snapshot.\n",
@@ -569,5 +748,77 @@ mod boxrun {
             sweep_client(stream, initial, cfg)
         });
         finish("box", served, client)
+    }
+
+    /// The task-60 box milestone: boot the Postgres-**campaign** image (the
+    /// planted-bug workload), seal a mid-workload base, and run the seed-driven
+    /// fault campaign against it — the **identical** [`run_campaign`] loop the
+    /// portable gate drives against the toy, only the backing guest swapped.
+    ///
+    /// The host-fault schedule the campaign mints rides the branch env and is
+    /// enforced by task-59's server between instructions at the fault's `Moment`;
+    /// the emitted `Bug`'s env replays it bit-for-bit (the record → replay
+    /// closure). The search space is CLI-scoped — the operator narrows `--gpa-*`
+    /// once the supervisor's ledger gpa is pinned (see `CampaignBoxArgs`).
+    pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
+        let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+
+        let gpa_candidates: Vec<u64> = (0..args.gpa_count)
+            .map(|i| {
+                args.gpa_base
+                    .saturating_add(i.saturating_mul(args.gpa_stride))
+            })
+            .collect();
+        let cfg = CampaignConfig {
+            campaign_seed: args
+                .campaign
+                .campaign_seed
+                .unwrap_or(CampaignConfig::toy().campaign_seed),
+            max_branches: args.campaign.max_branches,
+            // Floor at the spec bar (25/25): the flag can raise it, never lower it.
+            replay_n: args.campaign.replay_n.max(super::REPLAY_BAR),
+            deadline_delta: Some(args.deadline_delta),
+            gpa_candidates,
+            moment_window: (args.window_lo, args.window_hi),
+            // Single-event upsets on byte boundaries (the naive upset alphabet).
+            mask_bits: vec![7, 15, 23, 31, 39, 47, 55, 63],
+            snapshot_retry_step: 1_000_000,
+            snapshot_max_attempts: 100_000,
+            nominal_seed: CampaignConfig::toy().nominal_seed,
+        };
+        let n = cfg.replay_n;
+        let initial = boot_env();
+        println!(
+            "[conductor] campaign box: searching {} branches over {} gpa candidates × window \
+             [{}, {}) ns × {} mask bits; each branch runs {} ns past the base.\n",
+            cfg.max_branches,
+            cfg.gpa_candidates.len(),
+            cfg.moment_window.0,
+            cfg.moment_window.1,
+            cfg.mask_bits.len(),
+            args.deadline_delta,
+        );
+        let (served, client) = run_session(&mut server, move |stream| {
+            let mut machine = SocketMachine::connect(stream, initial)?;
+            run_campaign_loop(&mut machine, &SpecEnvCodec, &cfg)
+        });
+        let report = match client {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[conductor] campaign box: the campaign failed (transport/backend): {e}");
+                if let Err(se) = served {
+                    eprintln!("[conductor] campaign box: server session ended with: {se}");
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(se) = served {
+            eprintln!("[conductor] campaign box: server session ended with a fatal error: {se}");
+            return ExitCode::FAILURE;
+        }
+        finish_campaign("box", &report, n)
     }
 }

@@ -2,7 +2,7 @@
 # linux/amd64 container (docs/BUILDING.md). The heavy lifting lives in the
 # *.sh scripts next to this Makefile.
 
-.PHONY: kernel initramfs image postgres-image docker-image k3s-image test test-linux clean-artifacts
+.PHONY: kernel initramfs image postgres-image campaign-image docker-image k3s-image test test-linux clean-artifacts
 
 kernel:
 	./build-kernel.sh
@@ -16,6 +16,12 @@ image: kernel initramfs
 # `make kernel`). Produces guest/build/initramfs-postgres.cpio.gz.
 postgres-image:
 	./build-postgres-image.sh
+
+# Task 60 Postgres-campaign workload initramfs: the bare-Postgres image plus the
+# planted-bug supervisor `campaign-super` (root-only; reuses the kernel built by
+# `make kernel`). Produces guest/build/initramfs-campaign.cpio.gz.
+campaign-image:
+	./build-campaign-image.sh
 
 # Task 38 Postgres-in-Docker workload initramfs (root-only; reuses the kernel
 # built by `make kernel`). Produces guest/build/initramfs-docker.cpio.gz.

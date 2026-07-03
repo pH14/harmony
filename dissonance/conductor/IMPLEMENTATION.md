@@ -231,3 +231,235 @@ box` prints exactly this run table and the gate verdicts (`verify(&report, 2)`).
   server + adapter + sweep code against a deterministic guest; the box run swapped the mock guest for the
   real Postgres guest via `boot_linux_selected`, workload-blind, and cleared the milestone bar (8/8
   reproducible, 8 distinct futures, verbatim base replay).
+
+---
+
+# IMPLEMENTATION — task 60 (first campaign: find a planted bug, reproduce it N/N)
+
+**FRONTIER · the milestone the project exists for.** Task 60 extends this bin (the spec's "extend
+task 58's demo bin") with the whole first campaign: a workload with a **planted, fault-triggerable
+bug**, a crash oracle, the seed-driven outer loop searching, and the emitted `Recorded` environment
+replaying the find bit-identically, N/N. It validates the Modulation/Progression mechanism on a real
+seeded bug — the deliberate first step of the fuzzer-validation discipline ("prove the finder against
+seeded bugs before investing in search cleverness"). Depends on tasks **58** (the loop) and **59**
+(host-fault enforcement).
+
+## Surface (and why it merges cleanly after 59)
+
+Task 60's changes are confined to **`dissonance/conductor/` + `guest/`** — vmm-core, explorer,
+environment, and control-proto are **untouched**. The campaign stages its host-fault schedule
+entirely through the *existing* `Machine::branch` env (an `EnvSpec` carrying `Action::Host`
+overrides): task-59's server decodes that env, stages each fault, and applies it between instructions
+at its `Moment`. So the campaign code depends on nothing new in the substrate — it compiles against
+`main` today and runs for real on the box once 59 is merged. The `Machine` seam is unchanged; there is
+no new verb.
+
+| File | Change | Role |
+|---|---|---|
+| `dissonance/conductor/src/campaign.rs` (**new**) | `run_campaign` + `CampaignOracle` + `mint_fault_env` + `verify_campaign` | the campaign loop, the workload-aware crash oracle mapping, the seeded fault-schedule minter, the N/N gate |
+| `dissonance/conductor/src/planted.rs` (**new**) | `ToyPlantedMachine` + `Trigger` | the portable planted-bug guest (a controllable `Machine`) the campaign is proven against |
+| `dissonance/conductor/src/main.rs` | `campaign {mock,box}` subcommands; `boxrun` refactor | the demo/milestone bin; `boot_server` factored out so the sweep and campaign box paths boot identically |
+| `guest/linux/campaign-super.c` (**new**) | the supervised process with the planted bug + the isa-debug-exit crash channel | the box workload's added buggy component |
+| `guest/linux/campaign-init.sh` (**new**) | the `/init`: postgres workload → the supervisor | seals the base at `CAMPAIGN_READY`, runs the fault-sensitive loop |
+| `guest/linux/build-campaign-image.sh` (**new**) + Makefile `campaign-image` | builds `initramfs-campaign.cpio.gz` | `build-postgres-image.sh` + the static `campaign-super` + the campaign `/init` |
+
+## The planted bug (exact trigger, both guests)
+
+The bug is the same *finder-visible contract* on the toy and the box: a supervised process keeps a
+small **ledger** (a canary word + a signed **retry budget**) and runs a bounded retry loop whose
+bookkeeping invariant — canary intact, `0 ≤ budget < BUDGET_MAX` — holds on **every nominal
+iteration**, so the branch guarded by it is dead code nominally. A **single-event upset** — a
+`CorruptMemory { gpa, mask }` that flips the budget's sign bit (or the canary) at a `Moment` inside
+the loop — is the *only* way to reach the guarded branch, which the supervisor reports through a
+**distinctive terminal**:
+
+- **Box** (`guest/linux/campaign-super.c`): a byte `OUT FAIL_CODE(0x60), 0xF4` → vmm-core's
+  isa-debug-exit → `TerminalReason::DebugExit{0x60}` → `map_terminal` → **`Crash{Panic}`**, preceded
+  by the serial marker `CAMPAIGN_BUG: retry-budget invariant violated (…)` (the SDK-less "assertion
+  rides the serial text"). No upset ⇒ `CAMPAIGN_DONE` + a forced reboot ⇒ backend `Shutdown` ⇒
+  **`Crash{Shutdown}`** — the *clean* terminal of this workload.
+- **Toy** (`planted.rs`): the same two terminals, `Crash{Panic}` (planted bug) vs `Crash{Shutdown}`
+  (benign), so the *identical* oracle mapping runs against both.
+
+**Exact trigger conditions.** The bug fires iff the branched env's host schedule contains a
+`CorruptMemory` whose `gpa` is the ledger word, whose `mask` is the guard/sign bit, and whose `Moment`
+is inside the loop's live window — i.e. a specific `(gpa, mask, Moment-window)` point. The campaign is
+built **with no knowledge of this point**; it searches `(gpa, mask, Moment)` schedules until one
+crashes. The toy's point is `Trigger::toy()` (gpa `0x3000`, bit `31`, offset `3`), a single point of a
+128-combination search space (4 gpa × 8 Moment slots × 4 mask bits). On the box, the ledger's
+guest-physical address is pinned by nokaslr + `MAP_FIXED` + `mlock`; the operator scopes the campaign's
+`--gpa-*` around it (read via `/proc/self/pagemap` in a `CAMPAIGN_DEBUG` bring-up boot — the supervisor
+prints `CAMPAIGN_LEDGER_GPA`).
+
+**Why it is a genuine bug, not a fault detector.** The guarded branch encodes an assumption the code
+relies on (the budget word is monotone-bounded) that is true in every nominal execution; the injected
+upset makes the assumption false, exercising a code path that was never meant to run — the planted
+defect. The "detection + report" is how the SDK-less guest surfaces the defect over the serial.
+
+## The crash oracle mapping (workload-aware)
+
+`CampaignOracle` (proptested, `tests/oracle_proptest.rs`) is the one piece of workload knowledge:
+a `Crash` whose leading kind byte is **not** the benign reboot terminal (`CRASH_KIND_SHUTDOWN = 2`),
+or an `Assertion`, is a bug; the benign reboot and every non-terminal stop are not. The kind byte is
+the one the R2 adapter prepends to `Crash.info` (`stop_from_wire`: Panic→0, TripleFault→1, Shutdown→2).
+The emitted `Bug`'s fingerprint is the explorer's canonical one (delegated to `TerminalOracle`), so a
+campaign bug dedups like any other. Interpreting the Shutdown-is-clean convention is the workload-aware
+caller's job (task-58 IMPLEMENTATION.md said as much) — which is why the mapping lives in the campaign,
+not the substrate.
+
+## Acceptance gates
+
+### Gate 2 — portable (macOS + Linux, toy path): **PASS**
+
+The identical `run_campaign` loop the box drives, against `ToyPlantedMachine`:
+
+- **`tests/campaign.rs`** — the milestone's letter on the toy: the campaign, started with no knowledge
+  of the trigger, **finds the planted bug and replays the identical crash (same `StopReason` + same
+  `state_hash`) 25/25**, and a nominal-seed control does not crash (`verify_campaign` clean). Plus:
+  the campaign is a pure function of `(seed, machine)` (a rerun finds at the identical branch with
+  identical hashes); the finder **adapts to a replanted bug** (not hard-coded to one trigger); and an
+  out-of-search-space trigger **fails the gate loudly** (no silent pass).
+- **`tests/oracle_proptest.rs`** (≥512 cases) — the crash-oracle mapping proved total and consistent:
+  a crash is a bug iff its kind ≠ the benign terminal, assertions are always bugs, non-bug stops never
+  are, the mapping is parametric in the benign kind, and a reported bug carries the canonical
+  fingerprint.
+- **Planted-bug logic unit-tested** (`planted.rs`): the exact upset crashes, each near-miss (wrong
+  gpa / wrong bit / outside the window) is inert, a fixed reproducer replays a byte-identical
+  `(stop, state_hash)`, and distinct envs diverge.
+
+Demo (`cargo run -p conductor -- campaign mock`), verbatim:
+
+```
+base snapshot: sealed at V-time 1000 (1 attempt), capture state_hash fbacdab8…2db5aeb1
+planted bug found at branch 867 (seed 0x850bcc59a5668e35) after exploring 868 branches
+  finding stop Crash@1962[2B], state_hash 85480f41…47fc39a7
+  fingerprint 738172063f9232bb3fb0113cfe1e79b4d0ead6019d27f3126c2a3defe4060596
+  replay verification: 25/25 identical (crash reproduced bit-for-bit)
+nominal control (seed only, no faults): Crash@2716[4B] — no bug (adversity-gated, as required)
+[conductor] campaign mock GATES PASS: planted bug found, reproduced 25/25, nominal control clean.
+```
+
+Found at branch **867** of a 128-combination space (naive geometric expectation ~128; the fixed
+campaign stream's first hit). This is the naive seed-search order the spec asks for (~10²–10³).
+
+### Gate 1 — box (the milestone): **handed to the foreman** (needs 58 + 59 merged + the built image)
+
+Box-only: patched KVM, det-cfl-v1 host, `/dev/kvm`, and `initramfs-campaign.cpio.gz`. The **identical**
+`run_campaign` loop drives the real socket `Machine` against vmm-core's control server (with task-59's
+host-fault enforcement) booting the campaign image. `conductor campaign box` prints the run table and
+sets the exit code from `verify_campaign`. Runbook (per `docs/BOX-PINNING.md`; lease via
+`scripts/box-window.sh`):
+
+```sh
+# Build the image (root, on the box / a linux-amd64 container):
+make -C guest fetch && make -C guest/linux campaign-image     # → guest/build/initramfs-campaign.cpio.gz
+# Bring-up (once): pin the ledger gpa to scope the search tightly.
+#   Boot with CAMPAIGN_DEBUG=1 in the env and read the `CAMPAIGN_LEDGER_GPA:` serial line.
+# The campaign (patched KVM loaded for THIS run; coordinate — only load/revert when
+# `lsmod | awk '$1=="kvm_intel"{print $3}'` == 0):
+taskset -c <core> timeout 3600 cargo run -p conductor --release -- campaign box \
+    --gpa-base <pinned_gpa_page> --gpa-count 8 --gpa-stride 0x1000 \
+    --window-lo 0 --window-hi 2000000000 \
+    --max-branches 4096 --replay-n 25
+# ALWAYS revert KVM to stock afterwards and verify: lsmod | grep '^kvm ' == 1396736
+```
+
+The gate asserts: the campaign **finds the planted bug** (a `Crash{Panic}` the oracle calls) and the
+emitted reproducer **replays the identical crash — same `state_hash` at the terminal stop — 25/25**; a
+nominal-seed control run does not crash. **Record in the table below** (foreman fills from the box run):
+branches explored, wall-clock, **branches/hour** (the D5 snapshot-performance trigger — cite it here
+when D5 is specced).
+
+```
+=== TASK-60 BOX GATE — RESULT (foreman to fill) ===
+image: initramfs-campaign.cpio.gz   kernel: <bzImage sha>   head: <commit>
+base sealed at V-time <…>, capture state_hash <…>
+planted bug found at branch <N> (seed <…>) after exploring <B> branches
+  finding stop Crash{Panic}@<…>, state_hash <…>
+  replay verification: 25/25 identical
+nominal control: Crash{Shutdown}@<…> — no bug
+branches explored: <B>   wall-clock: <…>   branches/hour: <…>   (D5 trigger)
+```
+
+### Gate 3 — standard suite + existing gates byte-identical: **PASS**
+
+`build` / `nextest` (29 tests: 13 lib, 4 campaign, 6 oracle-proptest, 6 pre-existing task-58 loopback +
+determinism) / `clippy -D warnings` / `fmt --check` / `cargo deny` / public-api snapshot all green on
+`conductor`. **No existing crate touched** (vmm-core/explorer/environment/control-proto unchanged), so
+every other crate's gate is byte-identical; the task-58 loopback + determinism proptests pass unchanged.
+The guest kernel/initramfs golden (`MANIFEST.sha256`) is untouched — the campaign image is an additive
+build target, not part of `run-tests.sh`'s repro/boot gate. `cargo deny` OK (`sha2` — the toy's
+`state_hash` digest — is whitelisted and already in the lock via explorer/vmm-core; `Cargo.lock` gained
+only the dependency edge, no version churn).
+
+**Linux-target compile check is part of the gate.** The box binary lives behind `#[cfg(target_os =
+"linux")]` (the `boxrun` module), which a Mac `cargo check` never compiles — so a Linux-only break is
+invisible to the default gates. The gate list therefore includes, run from the Mac:
+
+```sh
+cargo check  -p conductor --all-features --target x86_64-unknown-linux-gnu
+cargo clippy -p conductor --all-features --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+```
+
+(round-1 review caught an E0255/E0061 in the `boxrun` campaign path that the Mac gates could not see.)
+
+## Round-1 review fixes (PR #55)
+
+- **Linux-target build break (blocking).** In `boxrun`, `use conductor::campaign::run_campaign` collided
+  (E0255) with the module's own `pub fn run_campaign`, and the call then bound to the 1-arg local fn
+  (E0061). Aliased the import to `run_campaign_loop`; added the Linux-target `cargo check`/`clippy` to the
+  gate list (above) so cfg(linux) code is compile-checked from the Mac.
+- **`campaign-super.c` ledger is now `volatile` (blocking).** The ledger is mutated from outside the TU
+  (the host `CorruptMemory` flip); without `volatile` `-O2` could hoist the `canary`/`budget` guards to
+  constants and delete the planted mechanism. `volatile struct ledger *l` forces a real load on every
+  access, so the injected flip is always observed.
+- **Milestone replay bar floored at 25/25 (blocking).** `--replay-n` now floors at `REPLAY_BAR = 25` on
+  both campaign paths — the flag can only *raise* the bar, never lower it, so a `--replay-n 1` run can no
+  longer print `GATES PASS` at 1/1 below the spec gate.
+- **Toy `run` honors a future deadline (blocking, mock fidelity).** A future deadline that falls before
+  the run's terminal now returns `Deadline` at the deadline (not an overshoot to the terminal), matching
+  the real `Machine`'s `StopConditions` semantics — pinned by
+  `planted::tests::a_future_deadline_before_the_terminal_stops_there`.
+- **SPDX header on `campaign-init.sh` (nit).** Added.
+
+## Deviations considered
+
+- **Portable path is a toy `Machine`, not the socket adapter against the mock `ControlServer`.** The
+  mock server on `main` rejects a host-fault-carrying env as `Unsupported` (task-59 enforcement is not
+  merged), so a mock-server campaign with faults cannot branch until 59 lands. The toy is the honest
+  portable altitude anyway: gate 2 is about the **campaign loop + oracle mapping + planted-bug logic +
+  N/N verification**, not the wire (task 58 already proves the wire). The toy makes the planted trigger
+  fully controllable, so the finder is exercised deterministically. The box gate exercises the real
+  server + 59 + wire.
+- **The fault schedule rides the branch env, not a separate `perturb` call.** The spec's
+  "branch(seed′ + a small seeded host-fault schedule)" maps directly onto task-59's branch-env host
+  overrides (`EnvSpec::perturb` into the blob), so the campaign needs **no new `Machine` verb** and my
+  surface stays `conductor` + `guest`. A `perturb`-verb path would have forced an explorer-seam change.
+- **isa-debug-exit (`Crash{Panic}`) as the distinctive terminal.** On this substrate a triple fault and
+  a `poweroff`/reboot both surface as backend `Shutdown` (`Crash{Shutdown}`), which is the workload's
+  *clean* terminal — so the bug cannot signal through Shutdown. `DebugExit{≠0}` → `Crash{Panic}` is the
+  only distinct non-Shutdown terminal available, hence the `outb 0x60, 0xF4` crash channel. Documented
+  as needing `ioperm` (CONFIG_X86_IOPL_IOPERM, default y) — the supervisor falls back to a nonzero
+  `_exit` + serial marker where it is absent (the foreman then uses the `/dev/port` path).
+- **Wall-clock measured by `time`, not in-process.** `Instant::now`/`SystemTime::now` are
+  determinism-lint-disallowed; the campaign reports the **branch count** and the operator wraps the box
+  run in `time`, so branches/hour is computed for the record without a nondeterminism source in the code.
+
+## Known limitations / integrator notes
+
+- **Box gate is foreman-executed** (the established frontier pattern; every box gate in tasks 58/59/63/65
+  is). The portable gates prove the identical `run_campaign` + oracle + verification code against a
+  deterministic guest; the box run swaps the toy for the real Postgres-campaign guest, workload-blind.
+- **The guest payload (`campaign-super.c` + the two scripts) is box-built and box-validated.** It builds
+  and lints cleanly (shellcheck clean; C is Linux-only, not compilable on the dev Mac), but the trigger
+  gpa pinning, `ioperm` availability, mmap-determinism, and search-space sizing are **box-iterated** by
+  the foreman — the CLI `--gpa-*`/`--window-*` flags exist exactly so the search is tuned to the real
+  image within the lease (the spec's "make the trigger threshold tunable").
+- **Triage/minimization is deliberately not built** (task-60 non-goal). The natural follow-on named by
+  the spec is **ddmin over the `Moment` schedule** (and the `(gpa, mask)` space): shrink the emitted
+  `Bug`'s host-fault schedule to the minimal upset that still reproduces the crash. It plugs in above
+  `run_campaign` (post-find), consuming the emitted `Bug.env` — no loop/oracle change. Spec it as a
+  follow-on; do not build it here.
+- **One fault per branch, `CorruptMemory` only.** The first campaign searches single-upset schedules
+  (the tested task-59 fault). `InjectInterrupt`-timing bugs and multi-fault schedules are a strict
+  superset the same loop drives (widen `mint_fault_env`); out of scope for the milestone.

@@ -193,6 +193,7 @@ dependencies = [
  "explorer",
  "proptest",
  "runtrace",
+ "sha2",
  "tempfile",
  "thiserror",
  "vmm-backend",

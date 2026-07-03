@@ -23,6 +23,17 @@
 //! Everything here is workload-blind: the same sweep runs against the mock
 //! guest and the box's Postgres image; only the composition root (the binary)
 //! knows which.
+//!
+//! ## The first campaign (task 60)
+//!
+//! [`campaign`] extends this bin into the milestone: [`run_campaign`](campaign::run_campaign)
+//! seals a base, searches seed-driven **host-fault schedules** ([`mint_fault_env`](campaign::mint_fault_env),
+//! riding the branch env task-59's server enforces), judges each terminal with the workload-aware
+//! [`CampaignOracle`](campaign::CampaignOracle), and on the first crash emits the [`Bug`](explorer::Bug)
+//! and replays it N/N ([`verify_campaign`](campaign::verify_campaign)). The identical loop drives the
+//! box's real Postgres-campaign guest and, portably, the [`planted`] module's
+//! [`ToyPlantedMachine`](planted::ToyPlantedMachine) — a controllable guest with a planted,
+//! fault-triggerable bug.
 
 use std::os::unix::net::UnixStream;
 
@@ -32,7 +43,9 @@ use explorer::{Machine, MachineError, StopConditions, StopMask, StopReason, VTim
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError};
 
+pub mod campaign;
 pub mod mock;
+pub mod planted;
 pub mod record;
 
 /// Run one control session: `client` on a spawned thread against `server` on

@@ -1,4 +1,54 @@
 pub mod conductor
+pub mod conductor::campaign
+pub struct conductor::campaign::CampaignConfig
+pub conductor::campaign::CampaignConfig::campaign_seed: u64
+pub conductor::campaign::CampaignConfig::deadline_delta: core::option::Option<u64>
+pub conductor::campaign::CampaignConfig::gpa_candidates: alloc::vec::Vec<u64>
+pub conductor::campaign::CampaignConfig::mask_bits: alloc::vec::Vec<u64>
+pub conductor::campaign::CampaignConfig::max_branches: u64
+pub conductor::campaign::CampaignConfig::moment_window: (u64, u64)
+pub conductor::campaign::CampaignConfig::nominal_seed: u64
+pub conductor::campaign::CampaignConfig::replay_n: usize
+pub conductor::campaign::CampaignConfig::snapshot_max_attempts: usize
+pub conductor::campaign::CampaignConfig::snapshot_retry_step: u64
+impl conductor::campaign::CampaignConfig
+pub fn conductor::campaign::CampaignConfig::toy() -> Self
+pub struct conductor::campaign::CampaignOracle
+pub conductor::campaign::CampaignOracle::benign_crash_kind: u8
+impl conductor::campaign::CampaignOracle
+pub fn conductor::campaign::CampaignOracle::is_planted_bug(&self, &explorer::StopReason) -> bool
+pub fn conductor::campaign::CampaignOracle::new(u8) -> Self
+impl core::default::Default for conductor::campaign::CampaignOracle
+pub fn conductor::campaign::CampaignOracle::default() -> Self
+impl explorer::spine::Oracle for conductor::campaign::CampaignOracle
+pub fn conductor::campaign::CampaignOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
+pub struct conductor::campaign::CampaignReport
+pub conductor::campaign::CampaignReport::base_hash: [u8; 32]
+pub conductor::campaign::CampaignReport::base_vtime: u64
+pub conductor::campaign::CampaignReport::branches_explored: u64
+pub conductor::campaign::CampaignReport::found: core::option::Option<conductor::campaign::FoundBug>
+pub conductor::campaign::CampaignReport::nominal: conductor::campaign::NominalRow
+pub conductor::campaign::CampaignReport::replays: alloc::vec::Vec<conductor::RunRow>
+pub conductor::campaign::CampaignReport::snapshot_attempts: usize
+pub struct conductor::campaign::FoundBug
+pub conductor::campaign::FoundBug::branch_index: u64
+pub conductor::campaign::FoundBug::bug: explorer::spine::Bug
+pub conductor::campaign::FoundBug::env: explorer::Environment
+pub conductor::campaign::FoundBug::hash: [u8; 32]
+pub conductor::campaign::FoundBug::seed: u64
+pub conductor::campaign::FoundBug::stop: explorer::StopReason
+pub struct conductor::campaign::NominalRow
+pub conductor::campaign::NominalRow::hash: [u8; 32]
+pub conductor::campaign::NominalRow::is_bug: bool
+pub conductor::campaign::NominalRow::stop: explorer::StopReason
+pub const conductor::campaign::CRASH_KIND_PANIC: u8
+pub const conductor::campaign::CRASH_KIND_SHUTDOWN: u8
+pub const conductor::campaign::CRASH_KIND_TRIPLE_FAULT: u8
+pub fn conductor::campaign::hex32(&[u8; 32]) -> alloc::string::String
+pub fn conductor::campaign::mint_fault_env(u64, u64, &conductor::campaign::CampaignConfig) -> explorer::Environment
+pub fn conductor::campaign::render_campaign_table(&conductor::campaign::CampaignReport, usize) -> alloc::string::String
+pub fn conductor::campaign::run_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::campaign::CampaignConfig) -> core::result::Result<conductor::campaign::CampaignReport, explorer::error::MachineError>
+pub fn conductor::campaign::verify_campaign(&conductor::campaign::CampaignReport, usize) -> alloc::vec::Vec<alloc::string::String>
 pub mod conductor::mock
 pub struct conductor::mock::TickingWork
 impl conductor::mock::TickingWork
@@ -13,6 +63,26 @@ pub fn conductor::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::ex
 pub fn conductor::mock::recording_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
 pub fn conductor::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
 pub fn conductor::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
+pub mod conductor::planted
+pub struct conductor::planted::ToyPlantedMachine
+impl conductor::planted::ToyPlantedMachine
+pub fn conductor::planted::ToyPlantedMachine::new(conductor::planted::Trigger) -> Self
+impl explorer::seam::Machine for conductor::planted::ToyPlantedMachine
+pub fn conductor::planted::ToyPlantedMachine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::coverage(&self) -> &[u8]
+pub fn conductor::planted::ToyPlantedMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub struct conductor::planted::Trigger
+pub conductor::planted::Trigger::gpa: u64
+pub conductor::planted::Trigger::mask: u64
+pub conductor::planted::Trigger::window: (u64, u64)
+impl conductor::planted::Trigger
+pub fn conductor::planted::Trigger::toy() -> Self
+pub const conductor::planted::BASE_VTIME: u64
 pub mod conductor::record
 pub enum conductor::record::RecordError
 pub conductor::record::RecordError::Control(control_proto::error::ControlError)
