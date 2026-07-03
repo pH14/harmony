@@ -1,0 +1,1 @@
+/Users/phemberger/workspace/harmony-task-guest-sdk/guest/sdk/target/debug/libharmony_sdk.rlib: /Users/phemberger/workspace/harmony-task-guest-sdk/consonance/hypercall-proto/src/lib.rs /Users/phemberger/workspace/harmony-task-guest-sdk/guest/sdk/src/lib.rs /Users/phemberger/workspace/harmony-task-guest-sdk/guest/sdk/src/wire.rs
