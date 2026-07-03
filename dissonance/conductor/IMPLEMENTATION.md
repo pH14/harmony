@@ -617,3 +617,18 @@ modprobe kvm_intel`, verify size on a FRESH connection.
   compose contract itself (`compose` fails closed on seed mismatches), i.e.
   exactly what `Explorer`'s exploit path produces (`mutate` preserves the
   base seed).
+
+## Box-gate status (handoff)
+
+Portable gates: **all green** (explorer 91 + conductor 18, clippy `-D
+warnings`, fmt, deny; Linux cross-check of the box-only harnesses compiles).
+Box gates (a)/(b)/(c): **handed to the foreman** — the box was reachable at
+handoff time (2026-07-03, `ssh hetzner`, stock KVM verified 1396736 loaded)
+but mid CI-storm (a cargo-mutants sweep, Kani/CBMC proofs, and KVM-using
+determinism tests across many cores; load ~16). Loading the patched module
+requires `rmmod kvm_intel` with users=0 — impossible and disruptive under
+running CI VMs — and frontier gates serialize on the standing core map
+(`docs/BOX-PINNING.md`; task-60's campaign gate may also hold a core). Run
+the runbook above in a quiet window; the harness prints a self-contained
+`[REPORT]` block to transcribe here, and `verify_materialize` already
+adjudicates every gate including the task-63 baseline quote.
