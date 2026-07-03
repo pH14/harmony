@@ -35,6 +35,32 @@ impl SeededEnv {
         }
     }
 
+    /// Serialize the **dynamic stream state** — both PRNG positions — so a
+    /// snapshot can resume the exact same supply and fault streams (task 73's
+    /// SDK-channel snapshot). 16 bytes: the supply state, then the fault state,
+    /// little-endian. The [`FaultPolicy`] is static (carried by the reproducer),
+    /// so it is deliberately **not** part of this.
+    pub fn stream_state(&self) -> [u8; 16] {
+        let mut out = [0_u8; 16];
+        out[..8].copy_from_slice(&self.supply.raw_state().to_le_bytes());
+        out[8..].copy_from_slice(&self.fault.raw_state().to_le_bytes());
+        out
+    }
+
+    /// Restore the dynamic stream state captured by
+    /// [`stream_state`](SeededEnv::stream_state). Total: a zero word is remapped
+    /// (the nonzero-state invariant), so a corrupted blob never panics.
+    pub fn restore_stream_state(&mut self, state: &[u8; 16]) {
+        let supply = u64::from_le_bytes([
+            state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
+        ]);
+        let fault = u64::from_le_bytes([
+            state[8], state[9], state[10], state[11], state[12], state[13], state[14], state[15],
+        ]);
+        self.supply = Prng::from_raw_state(supply);
+        self.fault = Prng::from_raw_state(fault);
+    }
+
     /// The [`Answer`] this backing gives for `point`, advancing the relevant
     /// stream. Shared by [`RecordedEnv`](crate::RecordedEnv) for its seeded
     /// fallback.

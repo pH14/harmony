@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `sdk-demo`: the SDK-instrumented demo guest (task 73). It drives every guest
 //! SDK verb over the real `Client<VmcallTransport>` doorbell transport:
 //!

@@ -15,6 +15,10 @@
 //!   (`commit_seen`) and one never (`rollback_seen`) — the fired one appears in
 //!   the event stream, the other never does (the never-fired detection the
 //!   portable `link::Catalog` fold reports).
+//! - **Gate D (fork from a mid-run SDK snapshot):** snapshot at `setup_complete`,
+//!   then `replay` reproduces the assertion run **byte-identically** — the SDK
+//!   channel's seeded stream position AND the declared catalog survive the
+//!   snapshot (the review's finding-1 fix).
 //!
 //! Box-only: needs the LOADED patched `/dev/kvm`, `perf_event`, and the
 //! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
@@ -55,7 +59,9 @@ fn assert_event_id(point: u32) -> u32 {
 }
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
 }
 
 fn payload_bytes() -> Vec<u8> {
@@ -81,16 +87,23 @@ fn require_host_baseline() {
     let mut all = true;
     for o in &report {
         if !o.pass {
-            eprintln!("[host-assert] FAIL {}: expected {}, observed {}", o.key, o.expected, o.actual);
+            eprintln!(
+                "[host-assert] FAIL {}: expected {}, observed {}",
+                o.key, o.expected, o.actual
+            );
         }
         all &= o.pass;
     }
-    assert!(all, "host CPU is not the det-cfl-v1 baseline — run on the determinism box.");
+    assert!(
+        all,
+        "host CPU is not the det-cfl-v1 baseline — run on the determinism box."
+    );
 }
 
 fn boot_demo(payload: &[u8], seed: u64) -> vmm_core::vmm::Vmm<Box<dyn Backend>> {
-    let mut vmm = boot_selected(BackendKind::Patched, payload, GUEST_RAM_LEN, seed)
-        .expect("boot_selected(Patched, sdk-demo) — needs the LOADED patched KVM + perf + det-cfl-v1 host");
+    let mut vmm = boot_selected(BackendKind::Patched, payload, GUEST_RAM_LEN, seed).expect(
+        "boot_selected(Patched, sdk-demo) — needs the LOADED patched KVM + perf + det-cfl-v1 host",
+    );
     vmm.wire_snapshot_hashing();
     vmm
 }
@@ -112,7 +125,10 @@ fn drive(s: &mut DynServer, req: &Request) -> Reply {
 }
 
 fn hello(s: &mut DynServer) {
-    assert_eq!(drive(s, &Request::Hello(server_caps())), Reply::Hello(server_caps()));
+    assert_eq!(
+        drive(s, &Request::Hello(server_caps())),
+        Reply::Hello(server_caps())
+    );
 }
 
 fn snapshot(s: &mut DynServer) -> SnapId {
@@ -126,11 +142,24 @@ fn branch(s: &mut DynServer, snap: SnapId, env: Environment) {
     assert_eq!(drive(s, &Request::Branch { snap, env }), Reply::Unit);
 }
 
+fn replay(s: &mut DynServer, snap: SnapId) {
+    assert_eq!(drive(s, &Request::Replay(snap)), Reply::Unit);
+}
+
 fn run_once(s: &mut DynServer) -> StopReason {
     // Arm every class (moot for the seed-driven substrate — the SDK stops always
     // surface — but harmless); the deadline bounds a runaway run.
-    let until = StopConditions { deadline: Some(VTime(DEADLINE)), on: StopMask(u32::MAX) };
-    match drive(s, &Request::Run { until, resolve: None }) {
+    let until = StopConditions {
+        deadline: Some(VTime(DEADLINE)),
+        on: StopMask(u32::MAX),
+    };
+    match drive(
+        s,
+        &Request::Run {
+            until,
+            resolve: None,
+        },
+    ) {
         Reply::Stop(stop) => stop,
         other => panic!("expected Stop reply, got {other:?}"),
     }
@@ -149,7 +178,12 @@ fn run_to_terminal(s: &mut DynServer) -> StopReason {
 }
 
 fn state_hash(s: &mut DynServer) -> [u8; 32] {
-    match drive(s, &Request::Hash { scope: HashScope::Whole }) {
+    match drive(
+        s,
+        &Request::Hash {
+            scope: HashScope::Whole,
+        },
+    ) {
         Reply::Hash(h) => h,
         other => panic!("expected Hash reply, got {other:?}"),
     }
@@ -160,10 +194,15 @@ fn state_hash(s: &mut DynServer) -> [u8; 32] {
 fn branch_env(seed: u64, buggify_fires: bool) -> Environment {
     let mut policy = FaultPolicy::none();
     if buggify_fires {
-        policy.set_buggify_point(BUGGIFY_POINT, 1, 1).expect("den >= 1");
+        policy
+            .set_buggify_point(BUGGIFY_POINT, 1, 1)
+            .expect("den >= 1");
     }
     let spec = EnvSpec::Seeded { seed, policy };
-    Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: spec.encode() }
+    Environment {
+        blob_version: EnvSpec::BLOB_VERSION,
+        bytes: spec.encode(),
+    }
 }
 
 fn events(s: &DynServer) -> Vec<(u64, u32, Vec<u8>)> {
@@ -199,13 +238,22 @@ fn box_gate_a_sdk_run_is_deterministic() {
     let (ev1, h1) = once(SEED);
     let (ev2, h2) = once(SEED);
     eprintln!("[gate A] {} events, state_hash {}", ev1.len(), hex(&h1));
-    assert_eq!(ev1, ev2, "byte-identical decoded event stream across same-seed runs");
+    assert_eq!(
+        ev1, ev2,
+        "byte-identical decoded event stream across same-seed runs"
+    );
     assert_eq!(h1, h2, "equal state_hash across same-seed runs");
     assert!(!ev1.is_empty(), "the SDK demo emitted events");
     // The commit_seen sometimes point fired; rollback_seen never (gate C shape).
     let fired: Vec<u32> = ev1.iter().map(|(_, id, _)| *id).collect();
-    assert!(fired.contains(&assert_event_id(COMMIT_SEEN)), "commit_seen fired");
-    assert!(!fired.contains(&assert_event_id(ROLLBACK_SEEN)), "rollback_seen never fired");
+    assert!(
+        fired.contains(&assert_event_id(COMMIT_SEEN)),
+        "commit_seen fired"
+    );
+    assert!(
+        !fired.contains(&assert_event_id(ROLLBACK_SEEN)),
+        "rollback_seen never fired"
+    );
 }
 
 /// GATE B — the Bug path: buggify-gated always-violation ⇒ `StopReason::Assertion`,
@@ -228,7 +276,10 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
         StopReason::Assertion { ev, .. } => ev.clone(),
         other => panic!("expected StopReason::Assertion, got {other:?}"),
     };
-    assert_eq!(ev.id, ALWAYS_POINT, "the balance_nonneg (id {ALWAYS_POINT}) assertion");
+    assert_eq!(
+        ev.id, ALWAYS_POINT,
+        "the balance_nonneg (id {ALWAYS_POINT}) assertion"
+    );
     eprintln!("[gate B] assertion fired: point {}", ev.id);
 
     // The genesis-complete reproducer.
@@ -248,6 +299,65 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
         }
     }
     eprintln!("[gate B] reproduced {N}/{N}");
+}
+
+/// GATE D — fork from a **mid-run SDK snapshot** reproduces (the finding-1 fix):
+/// snapshot at `setup_complete`, then `replay` reproduces the assertion run
+/// **byte-identically**, including the declared catalog (which a fork must keep
+/// for the never-fired report) and the same `state_hash`. Before the fix, the
+/// fork lost the catalog + the seeded stream position and did not reproduce.
+#[test]
+#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host"]
+fn box_gate_d_replay_from_setup_complete_reproduces() {
+    require_kvm();
+    require_host_baseline();
+
+    let mut s = server(SEED);
+    hello(&mut s);
+    let genesis = snapshot(&mut s);
+    branch(&mut s, genesis, branch_env(SEED, true)); // buggify hot ⇒ the bug
+
+    // Stop at the setup_complete snapshot point and seal it mid-run.
+    let first = run_once(&mut s);
+    assert!(
+        matches!(first, StopReason::SnapshotPoint { .. }),
+        "first stop is the setup_complete snapshot point, got {first:?}"
+    );
+    let setup = snapshot(&mut s);
+
+    // Continue the ORIGINAL run to the assertion; capture its stream + hash.
+    let orig_stop = run_to_terminal(&mut s);
+    assert!(
+        matches!(orig_stop, StopReason::Assertion { .. }),
+        "the original run hits the assertion, got {orig_stop:?}"
+    );
+    let orig_events = events(&s);
+    let orig_hash = state_hash(&mut s);
+    assert!(
+        orig_events.iter().any(|(_, id, _)| *id == 0),
+        "the catalog (event_id 0) is in the stream"
+    );
+
+    // REPLAY from the mid-run snapshot: reproduce byte-identically, N/N.
+    for i in 0..8 {
+        replay(&mut s, setup);
+        let stop = run_to_terminal(&mut s);
+        assert!(
+            matches!(stop, StopReason::Assertion { .. }),
+            "replay {i} hits the assertion, got {stop:?}"
+        );
+        assert_eq!(
+            events(&s),
+            orig_events,
+            "replay {i}: byte-identical event stream (incl. the catalog the fork must keep)"
+        );
+        assert_eq!(
+            state_hash(&mut s),
+            orig_hash,
+            "replay {i}: equal state_hash"
+        );
+    }
+    eprintln!("[gate D] replay-from-setup_complete reproduced 8/8, catalog preserved");
 }
 
 /// GATE C — never-fired: `commit_seen` fires, `rollback_seen` never; the fired one

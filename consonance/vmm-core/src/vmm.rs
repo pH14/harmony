@@ -10,7 +10,9 @@
 //! `KvmBackend` on the box. [`Vmm::state_hash`] is the M2 determinism hash over
 //! all observable state.
 
-use hypercall_proto::{SeededEntropy, Service, ServiceId, Status, decode, encode_response};
+use hypercall_proto::{
+    MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_response,
+};
 use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
 use vtime::{IdlePlanner, VClock, VClockConfig};
@@ -437,6 +439,20 @@ struct SdkChannel {
     buggify: Vec<(u64, environment::Answer)>,
     /// A pending SDK stop to surface at the next step boundary.
     pending_stop: Option<SdkStop>,
+}
+
+/// The SDK channel's **replay-relevant** state, captured with a snapshot (task
+/// 73): the seeded stream position and the emitted event log. Held by the
+/// control server keyed by snapshot handle; restored on branch/replay so a fork
+/// from a mid-run SDK snapshot reproduces (the seeded streams continue from the
+/// right position) and keeps the declared catalog. Kilobytes, not a full state.
+#[derive(Clone, Debug)]
+pub struct SdkSnapshot {
+    /// The seeded stream position (buggify fault + entropy supply), 16 bytes.
+    stream: [u8; 16],
+    /// The `Moment`-stamped event log emitted up to the snapshot (incl. the
+    /// declared catalog), which a fork carries forward.
+    events: Vec<(u64, u32, Vec<u8>)>,
 }
 
 pub struct Vmm<B: Backend> {
@@ -1928,6 +1944,38 @@ impl<B: Backend> Vmm<B> {
         self
     }
 
+    /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
+    /// 73): the seeded stream position (buggify fault + entropy supply) and the
+    /// emitted event log. A fork from a mid-run snapshot restores this so its
+    /// seeded streams continue from the right position and it keeps the catalog
+    /// the never-fired report needs. `None` when no SDK channel is wired.
+    pub fn sdk_snapshot(&self) -> Option<SdkSnapshot> {
+        self.sdk.as_ref().map(|s| SdkSnapshot {
+            stream: s.env.stream_state(),
+            events: s.events.clone(),
+        })
+    }
+
+    /// Restore a captured [`SdkSnapshot`] **verbatim** (the replay path): the
+    /// seeded stream position **and** the event prefix. A no-op when no SDK
+    /// channel is wired (a non-SDK replay).
+    pub fn sdk_restore(&mut self, snap: &SdkSnapshot) {
+        if let Some(s) = self.sdk.as_mut() {
+            s.env.restore_stream_state(&snap.stream);
+            s.events = snap.events.clone();
+        }
+    }
+
+    /// Restore only the **event prefix** of a captured [`SdkSnapshot`] (the branch
+    /// path): a branch reseeds, so the seeded streams start fresh from the new
+    /// seed (`enable_sdk`), but the shared prefix events — the declared catalog —
+    /// carry over so the fork's never-fired report is complete.
+    pub fn sdk_restore_events(&mut self, snap: &SdkSnapshot) {
+        if let Some(s) = self.sdk.as_mut() {
+            s.events = snap.events.clone();
+        }
+    }
+
     /// The `Moment`-stamped SDK event stream captured this run (task 73), for the
     /// link tier to decode. Empty when no SDK channel is wired or nothing was
     /// emitted.
@@ -2060,11 +2108,56 @@ impl<B: Backend> Vmm<B> {
             .unwrap_or(0);
             return (n, None);
         }
-        // Any other service/opcode: the SDK demo rings only Event + Sdk, so this
-        // is unreached in practice. Answer a clean UnknownOpcode for a known
+        // The Entropy service (id 2, op 1): the SDK's `entropy_fill` source. The
+        // spec names the seeded Entropy hypercall as the single guest-random
+        // primitive; answer it from the env's **supply** stream (a
+        // `DecisionPoint::Entropy`), which is snapshotted with the channel — so a
+        // fork resumes the exact entropy stream, the same way buggify does.
+        if header.service == ServiceId::Entropy as u16 && header.opcode == 1 {
+            let n = match *payload {
+                [a, b, c, d] => u32::from_le_bytes([a, b, c, d]),
+                _ => {
+                    let m = encode_response(
+                        ServiceId::Entropy,
+                        1,
+                        header.seq,
+                        Status::BadRequest,
+                        &[],
+                        resp,
+                    )
+                    .unwrap_or(0);
+                    return (m, None);
+                }
+            };
+            if n < 1 || n as usize > MAX_PAYLOAD {
+                let m = encode_response(
+                    ServiceId::Entropy,
+                    1,
+                    header.seq,
+                    Status::BadRequest,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (m, None);
+            }
+            let bytes = self.sdk_supply(n);
+            let (status, body): (Status, &[u8]) = if bytes.len() == n as usize {
+                (Status::Ok, &bytes)
+            } else {
+                // The env clamps `bytes` to `MAX_SUPPLY_LEN` (>> a page), so this
+                // never trips for a page-bounded `n`; fail closed if it ever does.
+                (Status::Internal, &[])
+            };
+            let m =
+                encode_response(ServiceId::Entropy, 1, header.seq, status, body, resp).unwrap_or(0);
+            return (m, None);
+        }
+        // Any other service/opcode: the SDK demo rings Event / Sdk / Entropy, so
+        // this is unreached in practice. Answer a clean UnknownOpcode for a known
         // service, else leave the response page unwritten (the guest transport
         // reads the absent frame magic as a host rejection). A fuller campaign
-        // wiring Console/Entropy/Block registers them here.
+        // wiring Console/Block registers them here.
         if header.service == ServiceId::Event as u16 {
             let n = encode_response(
                 ServiceId::Event,
@@ -2136,6 +2229,22 @@ impl<B: Backend> Vmm<B> {
         let fire = matches!(ans, Answer::Fault(Fault::BuggifyFire));
         sdk.buggify.push((moment, ans));
         fire
+    }
+
+    /// Supply `n` deterministic entropy bytes from the SDK channel's env supply
+    /// stream (task 73's Entropy-service route). Deterministic and snapshotted
+    /// (the supply stream rides the channel's stream state), so a fork resumes
+    /// the exact entropy. Returns `< n` bytes only on a defensively-clamped
+    /// oversize request (never for a page-bounded `n`).
+    fn sdk_supply(&mut self, n: u32) -> Vec<u8> {
+        use environment::{Answer, DecisionPoint, Environment, Outcome};
+        let Some(sdk) = self.sdk.as_mut() else {
+            return Vec::new();
+        };
+        match sdk.env.decide(&DecisionPoint::Entropy { bytes: n }) {
+            Outcome::Resolved(Answer::Supply(bytes)) => bytes,
+            _ => Vec::new(),
+        }
     }
 
     fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
@@ -3539,6 +3648,97 @@ mod tests {
             vmm.dispatch_out(DOORBELL_PORT, 4, 24),
             Err(VmmError::ContractViolation(_))
         ));
+    }
+
+    /// The doorbell routes the **Entropy** service (finding-4 fix): `entropy_fill`
+    /// gets `n` deterministic bytes from the env supply stream, not `HostRejected`.
+    #[test]
+    fn doorbell_routes_entropy_deterministically() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mk = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            vmm.enable_sdk(
+                EnvSpec::Seeded {
+                    seed: 99,
+                    policy: FaultPolicy::none(),
+                }
+                .materialize(),
+            );
+            vmm
+        };
+        let entropy = |vmm: &mut Vmm<MockBackend>, n: u32| -> (u16, Vec<u8>) {
+            let mut buf = [0u8; HC_PAGE];
+            let len = hypercall_proto::encode_request(
+                ServiceId::Entropy,
+                1,
+                1,
+                &n.to_le_bytes(),
+                &mut buf,
+            )
+            .unwrap();
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + len].copy_from_slice(&buf[..len]);
+            vmm.dispatch_out(DOORBELL_PORT, 4, len as u32).unwrap();
+            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+            let (hdr, pl) = decode(&page).expect("a valid response frame");
+            (hdr.status, pl.to_vec())
+        };
+        let mut a = mk();
+        let (status, bytes_a) = entropy(&mut a, 16);
+        assert_eq!(status, Status::Ok as u16, "entropy is routed, not rejected");
+        assert_eq!(bytes_a.len(), 16);
+        let mut b = mk();
+        assert_eq!(
+            entropy(&mut b, 16).1,
+            bytes_a,
+            "entropy is deterministic per seed"
+        );
+    }
+
+    /// The SDK channel snapshot/restore continues the seeded streams from the
+    /// captured position (finding-1 fix): a fork resumed at a snapshot produces
+    /// the identical buggify + entropy continuation, while a fresh channel (the
+    /// old reset-on-restore bug) diverges.
+    #[test]
+    fn sdk_snapshot_restore_resumes_the_seeded_streams() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut policy = FaultPolicy::none();
+        policy.set_buggify_point(1, 1, 2).unwrap();
+        let spec = EnvSpec::Seeded { seed: 7, policy };
+
+        let mut base = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        base.enable_sdk(spec.materialize());
+        for i in 0..5 {
+            let _ = base.decide_buggify(i, 1);
+            let _ = base.sdk_supply(8);
+        }
+        let snap = base.sdk_snapshot().expect("a wired channel snapshots");
+
+        // The continuation from the snapshot position.
+        let cont = |vmm: &mut Vmm<MockBackend>| -> (Vec<bool>, Vec<u8>) {
+            let mut fires = Vec::new();
+            let mut ent = Vec::new();
+            for i in 5..10 {
+                fires.push(vmm.decide_buggify(i, 1));
+                ent.extend(vmm.sdk_supply(4));
+            }
+            (fires, ent)
+        };
+        let expected = cont(&mut base);
+
+        // A fresh channel RESTORED to the snapshot reproduces the continuation.
+        let mut fork = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        fork.enable_sdk(spec.materialize());
+        fork.sdk_restore(&snap);
+        assert_eq!(cont(&mut fork), expected, "restored streams resume exactly");
+
+        // A fresh channel WITHOUT restore (the old bug) diverges.
+        let mut broken = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        broken.enable_sdk(spec.materialize());
+        assert_ne!(
+            cont(&mut broken),
+            expected,
+            "a fresh (position-0) channel is NOT the mid-run continuation"
+        );
     }
 
     #[test]

@@ -396,6 +396,21 @@ impl RecordedEnv {
     pub fn moment(&self) -> Moment {
         self.moment
     }
+
+    /// Serialize the **dynamic stream state** (the seeded base's PRNG positions)
+    /// so a snapshot can resume the exact same supply and fault streams (task
+    /// 73). The `Moment`-keyed overrides are static (part of the reproducer), so
+    /// only the base stream position is captured. Delegates to
+    /// [`SeededEnv::stream_state`].
+    pub fn stream_state(&self) -> [u8; 16] {
+        self.base.stream_state()
+    }
+
+    /// Restore the dynamic stream state captured by
+    /// [`stream_state`](RecordedEnv::stream_state). Total (never panics).
+    pub fn restore_stream_state(&mut self, state: &[u8; 16]) {
+        self.base.restore_stream_state(state);
+    }
 }
 
 impl Environment for RecordedEnv {

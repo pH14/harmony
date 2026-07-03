@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 fn main() {
     // CARGO_MANIFEST_DIR is always set by cargo for build scripts.
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();

@@ -144,12 +144,16 @@ pub fn environment::Ratio::num(self) -> u64
 pub struct environment::RecordedEnv
 impl environment::RecordedEnv
 pub fn environment::RecordedEnv::moment(&self) -> environment::Moment
+pub fn environment::RecordedEnv::restore_stream_state(&mut self, &[u8; 16])
 pub fn environment::RecordedEnv::set_moment(&mut self, environment::Moment)
+pub fn environment::RecordedEnv::stream_state(&self) -> [u8; 16]
 impl environment::Environment for environment::RecordedEnv
 pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 pub struct environment::SeededEnv
 impl environment::SeededEnv
 pub fn environment::SeededEnv::new(u64, environment::FaultPolicy) -> Self
+pub fn environment::SeededEnv::restore_stream_state(&mut self, &[u8; 16])
+pub fn environment::SeededEnv::stream_state(&self) -> [u8; 16]
 impl environment::Environment for environment::SeededEnv
 pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 pub struct environment::StandingFault

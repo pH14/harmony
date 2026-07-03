@@ -14,7 +14,10 @@
 
 mod common;
 
-use environment::{Answer, DecisionPoint, Environment, Fault, FaultPolicy, Outcome, SeededEnv};
+use environment::{
+    Answer, DecisionClass, DecisionPoint, EnvError, Environment, Fault, FaultPolicy, Outcome,
+    SeededEnv,
+};
 
 /// Collect the resolved [`Answer`]s a [`SeededEnv`] gives for a point sequence.
 fn answers(seed: u64, policy: FaultPolicy, points: &[DecisionPoint]) -> Vec<Answer> {
@@ -125,6 +128,82 @@ fn per_point_biasing_reproduces_a_golden_sequence() {
         .map(|a| matches!(a, Answer::Fault(Fault::BuggifyFire)))
         .collect();
     assert_eq!(fired, again, "buggify is deterministic per (seed, policy)");
+}
+
+/// `set_class(Buggify, …)` is rejected (buggify has no per-class slot — it is
+/// keyed per point), and a buggify-only policy set the sanctioned way round-trips
+/// through its **own** bytes. Regression for the review's finding that routing
+/// buggify through `set_class` lands a `BuggifyFire` in the net slot and makes
+/// `from_bytes(to_bytes())` reject the policy's own bytes.
+#[test]
+fn set_class_rejects_buggify_and_policy_round_trips() {
+    let mut p = FaultPolicy::none();
+    assert_eq!(
+        p.set_class(DecisionClass::Buggify, 1, 2, &[]),
+        Err(EnvError::Malformed),
+        "buggify has no class slot — use set_buggify_*"
+    );
+    assert_eq!(
+        p.set_class(DecisionClass::Buggify, 1, 2, &[Fault::BuggifyFire]),
+        Err(EnvError::Malformed)
+    );
+
+    // The sanctioned per-point path, then a self round-trip.
+    p.set_buggify_default(1, 3).unwrap();
+    p.set_buggify_point(50, 1, 1).unwrap();
+    p.set_buggify_point(7, 2, 5).unwrap();
+    let bytes = p.to_bytes();
+    assert_eq!(
+        FaultPolicy::from_bytes(&bytes).unwrap(),
+        p,
+        "a buggify policy must read its own bytes"
+    );
+}
+
+/// The dynamic stream state round-trips: an env resumed at a captured position
+/// produces the **identical** continuation across BOTH the supply (entropy) and
+/// fault (buggify) streams — the SDK-channel snapshot fix (a fork from a mid-run
+/// snapshot must continue the seeded streams from where they were).
+#[test]
+fn stream_state_resumes_both_streams_exactly() {
+    let seed = 0x1234_5678_9ABC_DEF0;
+    let mut policy = FaultPolicy::none();
+    policy.set_buggify_point(1, 1, 2).unwrap();
+
+    let points = [
+        DecisionPoint::Entropy { bytes: 8 },
+        DecisionPoint::Buggify { point: 1 },
+        DecisionPoint::Entropy { bytes: 4 },
+        DecisionPoint::Buggify { point: 1 },
+    ];
+    let seq = |env: &mut SeededEnv| -> Vec<Answer> {
+        points
+            .iter()
+            .map(|p| match env.decide(p) {
+                Outcome::Resolved(a) => a,
+                Outcome::NeedsHost => unreachable!(),
+            })
+            .collect()
+    };
+
+    // Advance to a mid-run position, capture it, and record the continuation.
+    let mut a = SeededEnv::new(seed, policy.clone());
+    let _prefix = seq(&mut a);
+    let mid = a.stream_state();
+    let continuation = seq(&mut a);
+
+    // A fresh env resumed at `mid` produces the identical continuation — and a
+    // wrong-position env (fresh, not resumed) does not.
+    let mut b = SeededEnv::new(seed, policy.clone());
+    b.restore_stream_state(&mid);
+    assert_eq!(seq(&mut b), continuation, "resumed streams match exactly");
+
+    let mut fresh = SeededEnv::new(seed, policy);
+    assert_ne!(
+        seq(&mut fresh),
+        continuation,
+        "a fresh (position-0) env is NOT the mid-run continuation — the bug the fix closes"
+    );
 }
 
 /// A buggify point only admits `Nominal` or `Fault(BuggifyFire)` — never a supply

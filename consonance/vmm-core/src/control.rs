@@ -100,7 +100,7 @@ use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 /// Boots a fresh, equivalently-composed VM — the restore target for every
 /// `branch`/`replay` (see the module doc's fresh-VM discipline). On the box
@@ -219,6 +219,14 @@ pub struct ControlServer<B: Backend> {
     /// re-sent `run` would get the crossed fault applied from the past — the exact
     /// non-reproducing case the error exists to prevent.
     schedule_poisoned: Option<(environment::Moment, u64)>,
+    /// The task-73 **SDK channel snapshots**, keyed by wire [`SnapId`]: the
+    /// replay-relevant SDK state (seeded stream position + emitted event log)
+    /// captured when a snapshot is sealed, so a `branch`/`replay` from a mid-run
+    /// SDK snapshot reproduces (its seeded streams continue from the right
+    /// position) and keeps the declared catalog the never-fired report needs.
+    /// Removed with its snapshot on `drop`; ephemeral pool state, like the
+    /// snapshot handles themselves.
+    sdk_snaps: BTreeMap<u64, SdkSnapshot>,
 }
 
 impl<B: Backend> ControlServer<B> {
@@ -227,13 +235,23 @@ impl<B: Backend> ControlServer<B> {
     /// every `branch`/`replay` and must compose its VMs exactly like `vmm`
     /// (same RAM size, wiring, and contract — a mismatch is caught fail-closed
     /// by [`Vmm::restore_vm_state`] at the first restore).
-    pub fn new(vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
+    pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
         let engine = SnapshotEngine::new(vmm.guest_memory().len());
         // Seed the recorded reproducer from the **live VM's actual entropy stream**
         // (not a bare `0`), so `recorded_env()` reproduces even for a session that
         // runs before its first `branch`/`replay` — a reproducer branched from the
         // starting snapshot then reseeds to this same stream.
         let seed = vmm.entropy_state().unwrap_or(0);
+        let recorded = EnvSpec::Seeded {
+            seed,
+            policy: FaultPolicy::none(),
+        };
+        // Task 73: wire the SDK channel on the **live VM too** (not only restore
+        // targets), so an SDK guest that rings the hypercall doorbell BEFORE its
+        // first `branch`/`replay` is serviced — we advertise `GUEST_HAS_SDK`
+        // unconditionally, so the capability must be honored from construction.
+        // Inert (and unhashed) for a non-SDK guest.
+        vmm.enable_sdk(recorded.materialize());
         ControlServer {
             vmm: Some(vmm),
             factory,
@@ -242,11 +260,9 @@ impl<B: Backend> ControlServer<B> {
             next_snap: 1,
             hello_done: false,
             schedule: BTreeMap::new(),
-            recorded: EnvSpec::Seeded {
-                seed,
-                policy: FaultPolicy::none(),
-            },
+            recorded,
             schedule_poisoned: None,
+            sdk_snaps: BTreeMap::new(),
         }
     }
 
@@ -546,9 +562,16 @@ impl<B: Backend> ControlServer<B> {
         };
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
         let store_id = self.engine.snapshot_base(vmm.guest_memory(), &blob)?;
+        // Task 73: capture the SDK channel's replay-relevant state (seeded stream
+        // position + event log) alongside the guest snapshot — owned, so `vmm`'s
+        // borrow ends before we touch `self.sdk_snaps`.
+        let sdk_snap = vmm.sdk_snapshot();
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
+        if let Some(sdk) = sdk_snap {
+            self.sdk_snaps.insert(id, sdk);
+        }
         Ok(Ok(Reply::SnapId(SnapId(id))))
     }
 
@@ -557,6 +580,9 @@ impl<B: Backend> ControlServer<B> {
         let Some(store_id) = self.snaps.remove(&snap.0) else {
             return Err(ControlError::UnknownSnapshot(snap));
         };
+        // Task 73: drop the SDK channel snapshot with its handle (ephemeral pool
+        // state, released alongside the guest snapshot).
+        self.sdk_snaps.remove(&snap.0);
         // The handle was minted by `snapshot`, which retains exactly one ref;
         // releasing it can only fail if the store lost the layer — an
         // invariant failure we still answer on the wire (the handle is gone
@@ -722,6 +748,21 @@ impl<B: Backend> ControlServer<B> {
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env);
+        // Task 73: restore the SDK channel snapshot for this handle, if any. A
+        // verbatim **replay** (`seed` is `None`) continues the seeded streams from
+        // the snapshot's position AND keeps the event prefix — so a fork from a
+        // mid-run SDK snapshot reproduces. A **branch** reseeds (`enable_sdk` just
+        // set fresh streams from the new seed), so it takes only the shared prefix
+        // events — the declared catalog the never-fired report needs — and lets
+        // the new seed drive the fork's future.
+        if let Some(sdk) = self.sdk_snaps.get(&snap.0).cloned() {
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+            if seed.is_some() {
+                vmm.sdk_restore_events(&sdk);
+            } else {
+                vmm.sdk_restore(&sdk);
+            }
+        }
         for (m, fault) in host {
             self.schedule.insert(m, fault);
         }

@@ -165,8 +165,14 @@ impl FaultPolicy {
     /// [`from_bytes`](FaultPolicy::from_bytes). The `eligible` slice is
     /// canonicalized (sorted, deduplicated) so policy bytes never depend on its
     /// order. Returns [`EnvError::Malformed`] if `class` is a supply class
-    /// (supply classes never fault), if `den == 0`, or if any eligible fault
-    /// does not belong to `class`.
+    /// (supply classes never fault), if `den == 0`, if any eligible fault does
+    /// not belong to `class`, or if `class` is [`DecisionClass::Buggify`] — the
+    /// buggify class has no per-class [`ClassPolicy`] slot (it is keyed
+    /// **per point**), so it is set only via
+    /// [`set_buggify_default`](FaultPolicy::set_buggify_default) /
+    /// [`set_buggify_point`](FaultPolicy::set_buggify_point). (Routing it through
+    /// `set_class` would land a [`Fault::BuggifyFire`] in the net slot, so
+    /// `from_bytes(to_bytes())` would reject the policy's own bytes.)
     pub fn set_class(
         &mut self,
         class: DecisionClass,
@@ -174,7 +180,7 @@ impl FaultPolicy {
         den: u32,
         eligible: &[Fault],
     ) -> Result<(), EnvError> {
-        if !class.is_fault() || den == 0 {
+        if !class.is_fault() || den == 0 || class == DecisionClass::Buggify {
             return Err(EnvError::Malformed);
         }
         for f in eligible {
@@ -318,7 +324,10 @@ impl FaultPolicy {
         match class {
             DecisionClass::BlockIo => &mut self.block,
             DecisionClass::Process => &mut self.process,
-            // NetFlow (and, unreachably, supply classes) land here.
+            // NetFlow lands here. Supply classes and `Buggify` are rejected by
+            // `set_class` (the only caller) before reaching this, so the fall-
+            // through is `NetFlow` only — a buggify fault can never be routed
+            // into the net slot (the round-trip-rejection bug).
             _ => &mut self.net,
         }
     }
