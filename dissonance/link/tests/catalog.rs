@@ -103,6 +103,31 @@ fn fold_books_every_kind_and_ignores_undeclared() {
     assert_eq!(cat.len(), 4);
 }
 
+/// A re-declared name drops its **stale** coordinate: a firing at the old
+/// coordinate no longer resolves to the name (regression for the review's finding
+/// that a redeclare left the old `by_coord` entry behind).
+#[test]
+fn redeclare_removes_the_stale_coordinate() {
+    // "x" declared first as a sometimes point (assert ns, local 1), then
+    // re-declared as a state register (state ns, local 40).
+    let decl = declaration(&[(KIND_SOMETIMES, 1, "x"), (KIND_STATE, 40, "x")]);
+    let cat = Catalog::from_declaration_bytes(&decl);
+    assert_eq!(cat.len(), 1, "one declared name after the redeclare");
+
+    // A firing at the OLD coordinate (assert, 1) must NOT resolve to "x".
+    let old = events(&[(10, id(NS_ASSERT, 1), vec![0, 0, 0])]);
+    assert!(
+        cat.fired(&old).is_empty(),
+        "the stale coordinate no longer resolves to the name"
+    );
+
+    // A firing at the NEW coordinate (state, 40) resolves to "x".
+    let mut state_payload = vec![1u8]; // STATE_MAX
+    state_payload.extend_from_slice(&7u64.to_le_bytes());
+    let new = events(&[(10, id(NS_STATE, 40), state_payload)]);
+    assert_eq!(cat.fired(&new), ["x".to_string()].into_iter().collect());
+}
+
 /// The catalog records each point's kind so the report can be sliced by role.
 #[test]
 fn catalog_records_kinds() {

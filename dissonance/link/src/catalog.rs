@@ -91,6 +91,10 @@ pub struct Catalog {
     /// Runtime coordinate `(namespace, local id)` → declared name, so a firing
     /// event maps back to the point it names.
     by_coord: BTreeMap<(u8, u32), String>,
+    /// Declared name → its current coordinate, so a re-declare can drop the
+    /// name's **stale** coordinate from `by_coord` (else a firing at the old
+    /// coordinate would still resolve to the name).
+    coord_of_name: BTreeMap<String, (u8, u32)>,
 }
 
 impl Catalog {
@@ -138,10 +142,18 @@ impl Catalog {
     }
 
     /// Register one declared point. A re-declared name updates its kind and
-    /// coordinate (idempotent on the name), mirroring task 66's `declare`.
+    /// coordinate (idempotent on the name), mirroring task 66's `declare` — and
+    /// **removes the name's previous coordinate** from `by_coord` when it moves,
+    /// so no stale coordinate survives to resolve a firing to this name.
     fn declare(&mut self, name: String, local: u32, kind: PointKind) {
-        self.by_coord
-            .insert((kind.namespace(), local), name.clone());
+        let coord = (kind.namespace(), local);
+        if let Some(&old) = self.coord_of_name.get(&name)
+            && old != coord
+        {
+            self.by_coord.remove(&old);
+        }
+        self.coord_of_name.insert(name.clone(), coord);
+        self.by_coord.insert(coord, name.clone());
         self.declared.insert(name, kind);
     }
 

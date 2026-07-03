@@ -226,7 +226,20 @@ pub struct ControlServer<B: Backend> {
     /// position) and keeps the declared catalog the never-fired report needs.
     /// Removed with its snapshot on `drop`; ephemeral pool state, like the
     /// snapshot handles themselves.
-    sdk_snaps: BTreeMap<u64, SdkSnapshot>,
+    sdk_snaps: BTreeMap<u64, SdkSnap>,
+}
+
+/// The per-snapshot SDK state the control server retains (task 73): the VM-level
+/// channel snapshot (seeded stream position + event log) **and** the
+/// [`FaultPolicy`] active when the snapshot was sealed. The policy is captured
+/// because [`reset_schedule_to_fresh_vm`](ControlServer::reset_schedule_to_fresh_vm)
+/// resets the recorded reproducer to `none()` on every restore — so a **replay**
+/// must restore this policy before materializing the SDK env, else the restored
+/// stream position would draw all-`Nominal` (the buggify biasing lost).
+#[derive(Clone)]
+struct SdkSnap {
+    channel: SdkSnapshot,
+    policy: FaultPolicy,
 }
 
 impl<B: Backend> ControlServer<B> {
@@ -565,12 +578,15 @@ impl<B: Backend> ControlServer<B> {
         // Task 73: capture the SDK channel's replay-relevant state (seeded stream
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
-        let sdk_snap = vmm.sdk_snapshot();
+        let sdk_channel = vmm.sdk_snapshot();
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
-        if let Some(sdk) = sdk_snap {
-            self.sdk_snaps.insert(id, sdk);
+        if let Some(channel) = sdk_channel {
+            // Capture the active policy too, so a replay restores the buggify
+            // biasing (the restore path resets `recorded` to `none()`).
+            let policy = self.recorded.policy().clone();
+            self.sdk_snaps.insert(id, SdkSnap { channel, policy });
         }
         Ok(Ok(Reply::SnapId(SnapId(id))))
     }
@@ -740,7 +756,15 @@ impl<B: Backend> ControlServer<B> {
         // the seeded fault stream and a replay from the recorded overrides. Wired
         // on every restore; inert (and unhashed) for a guest that never rings the
         // doorbell, so non-SDK paths are unchanged.
-        if let Some(policy) = env_policy {
+        // Task 73: choose the policy the SDK env materializes with. A **branch**
+        // uses the branch env's (buggify-only) policy; a **replay** restores the
+        // policy active when the snapshot was sealed — else the reset-to-`none`
+        // above would make the restored stream draw all-`Nominal` (P1). `env_policy`
+        // is `Some` iff branching, so `or_else` picks the snapshot's policy only on
+        // a replay.
+        let sdk_snap = self.sdk_snaps.get(&snap.0).cloned();
+        let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
+        if let Some(policy) = restore_policy {
             self.set_recorded_policy(policy);
         }
         let sdk_env = self.recorded.materialize();
@@ -748,19 +772,19 @@ impl<B: Backend> ControlServer<B> {
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env);
-        // Task 73: restore the SDK channel snapshot for this handle, if any. A
-        // verbatim **replay** (`seed` is `None`) continues the seeded streams from
-        // the snapshot's position AND keeps the event prefix — so a fork from a
-        // mid-run SDK snapshot reproduces. A **branch** reseeds (`enable_sdk` just
-        // set fresh streams from the new seed), so it takes only the shared prefix
-        // events — the declared catalog the never-fired report needs — and lets
-        // the new seed drive the fork's future.
-        if let Some(sdk) = self.sdk_snaps.get(&snap.0).cloned() {
+        // Restore the SDK channel snapshot for this handle, if any. A verbatim
+        // **replay** (`seed` is `None`) continues the seeded streams from the
+        // snapshot's position AND keeps the event prefix — so a fork from a mid-run
+        // SDK snapshot reproduces. A **branch** reseeds (`enable_sdk` just set fresh
+        // streams from the new seed), so it takes only the shared prefix events —
+        // the declared catalog the never-fired report needs — and lets the new seed
+        // drive the fork's future.
+        if let Some(s) = sdk_snap {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             if seed.is_some() {
-                vmm.sdk_restore_events(&sdk);
+                vmm.sdk_restore_events(&s.channel);
             } else {
-                vmm.sdk_restore(&sdk);
+                vmm.sdk_restore(&s.channel);
             }
         }
         for (m, fault) in host {
@@ -930,13 +954,25 @@ impl<B: Backend> ControlServer<B> {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
                     let stop = vmm.take_sdk_stop();
-                    // The SDK stop is a guest-observable stop, not a substrate
-                    // terminal, and (like the deadline stop) leaves any future
-                    // staged fault staged — no poison. Buggify decisions are
-                    // reproduced by the reproducer's seed + buggify-only policy
-                    // (`recorded_env`), so nothing is recorded here.
+                    // **Poison loud on ANY staged fault (P2, task 59's crossed-
+                    // fault rule).** An SDK stop surfaces at a hypercall-doorbell
+                    // `OUT` — NOT a V-time intercept — so `effective_vns` here is
+                    // only a lower bound; a still-staged fault at-or-just-above it
+                    // may already be crossed (the guest ran past `m` within the
+                    // skid window). Exactly like the terminal arm below, poison
+                    // rather than silently returning a stop past a crossed fault;
+                    // the client rewinds via `branch`/`replay`. (Buggify decisions
+                    // reproduce from the reproducer's seed + policy, so nothing is
+                    // recorded here.)
+                    if let Some((&m, _)) = self.schedule.iter().next() {
+                        self.schedule_poisoned = Some((m, vns));
+                        return Ok(Err(ControlError::ScheduleUnsatisfiable {
+                            moment: m,
+                            vtime: vns,
+                        }));
+                    }
                     let reason = match stop {
-                        Some(vmm_core_sdk_stop) => sdk_stop_to_reason(vmm_core_sdk_stop, vns),
+                        Some(sdk_stop) => sdk_stop_to_reason(sdk_stop, vns),
                         // `SdkStop` is armed before the step returns `SdkStop`, so
                         // this is statically unreachable; be total anyway.
                         None => StopReason::SnapshotPoint { vtime: VTime(vns) },
@@ -1228,6 +1264,53 @@ mod tests {
             "a dropped handle cannot be restored"
         );
         assert_eq!(s.handle(&Request::Drop(b)).unwrap(), Ok(Reply::Unit));
+    }
+
+    /// A **replay** restores the buggify policy captured with the SDK snapshot
+    /// (P1). The restore path resets the recorded reproducer to `none()`, so
+    /// without capturing the policy a replay would materialize an SDK env whose
+    /// buggify draws all-`Nominal` — the restored stream position would then not
+    /// reproduce. Branch with a firing buggify policy → snapshot → replay → the
+    /// reproducer's policy must survive (not be wiped to `none`).
+    #[test]
+    fn replay_restores_the_buggify_policy() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+
+        // Branch with a buggify-only policy (point 1 always fires).
+        let mut policy = FaultPolicy::none();
+        policy.set_buggify_point(1, 1, 1).unwrap();
+        let env = Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: EnvSpec::Seeded {
+                seed: 5,
+                policy: policy.clone(),
+            }
+            .encode(),
+        };
+        assert_eq!(
+            s.handle(&Request::Branch { snap: base, env }).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            s.recorded_env().policy(),
+            &policy,
+            "the branch carries the buggify policy"
+        );
+
+        // Snapshot the SDK-policy state, then replay it.
+        let mid = snap(&mut s);
+        assert_eq!(s.handle(&Request::Replay(mid)).unwrap(), Ok(Reply::Unit));
+
+        // Without the P1 fix, the replay's reproducer policy would be `none()`;
+        // with it, the snapshot's buggify policy is restored so the run reproduces.
+        assert_eq!(
+            s.recorded_env().policy(),
+            &policy,
+            "replay restored the buggify policy, not none()"
+        );
+        assert_ne!(s.recorded_env().policy(), &FaultPolicy::none());
     }
 
     #[test]
