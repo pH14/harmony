@@ -71,6 +71,21 @@ seam (61 reuses it).
    removes the name's old `by_coord` entry on a move. Test:
    `redeclare_removes_the_stale_coordinate`. All three private (no public-API change).
 
+## Round-3 review (2 new P1s + self-sweep — all fixed; box A/B/C re-run 3/3)
+
+1. **The link tier is live over the real wire (P1a).** New control-proto `SdkEvents` verb +
+   `Reply::SdkEvents` (APP_PROTOCOL_VERSION 2→3) carries the `(moment,event_id,bytes)` capture;
+   `ControlServer` answers it from `Vmm::sdk_events`; `Machine::sdk_events` (defaulted, overridden
+   by `SocketMachine`) does the wire round-trip. **Both** RunTrace sites fill `events`:
+   `record.rs` in-process, `campaign.rs` remote → `link::decode_events`. conductor gains a `link`
+   dep. Loopback gate proves a non-empty decoded `RunTrace.events` over the socket.
+2. **Doorbell E820 reservation (P1b).** `build_boot_params` splits low RAM to reserve
+   `[0xE000,0x10000)`, so a Linux SDK guest never allocates over REQ_GPA/RESP_GPA. Loader E820
+   tests + a per-ram-size doorbell-reserved check; xAPIC-split tests shifted +2 entries.
+3. **Self-sweep:** doorbell totality on empty/oversize/garbage/page-boundary requests
+   (`doorbell_is_total_on_edge_requests`); reentrancy structurally impossible (one atomic OUT);
+   catalog limits bounded (SDK rejects over-frame; link decode total).
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
