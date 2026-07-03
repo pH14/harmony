@@ -100,6 +100,21 @@ seam (61 reuses it).
    **Sweep:** every VM-swap that keeps a VM wires the SDK channel (new/RestoreFailed/success);
    `SnapshotPoint` only surfaces sealably; no other advertised-vs-actual mismatch.
 
+## Round-5 review (1 P1 + 3 P2s + stop/restore surface pass — all fixed; box A/B/C 3/3)
+
+1. **Deferred snapshot drains first (P1).** The deferred `SnapshotPoint` surfaces at the top of
+   the run loop **after the drain** (not the `Continued` arm), so a fault at the boundary is
+   applied + cleared before the seal — no `SnapshotWhileArmed`. Test at the fault-arrival seam.
+2. **entropy_fill = VMM SeededEntropy (P2).** Routed through the same stream RDRAND uses (via
+   `VtimeWiring::draw_entropy`); `sdk_supply` removed. Mixed-use test proves one stream (no dup
+   words). Fail-closed if V-time unwired.
+3. **state_max increase-only (P3).** `op`-aware per-register running max; only a strict increase
+   mints novelty. `attr_str` helper. Test with a 5→10→3→10→12 sequence.
+4. **SdkEvents paged (P4).** `Request::SdkEvents { offset }`, each reply bounded to `MAX_FRAME_LEN`,
+   `SocketMachine` pages until empty. Test: a >1-frame capture splits + reassembles.
+   Final surface pass: no other advertised-vs-actual mismatch (pending_snapshot can't be captured
+   mid-flight — NotQuiescent there; entropy resumes via the VM snapshot; paging always progresses).
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
