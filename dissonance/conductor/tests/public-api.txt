@@ -66,6 +66,7 @@ pub conductor::materialize::MaterializeReport::folded: explorer::materialize::Ma
 pub conductor::materialize::MaterializeReport::folded_hash: [u8; 32]
 pub conductor::materialize::MaterializeReport::genesis_at: u64
 pub conductor::materialize::MaterializeReport::genesis_attempts: usize
+pub conductor::materialize::MaterializeReport::hop_draws: alloc::vec::Vec<bool>
 pub conductor::materialize::MaterializeReport::hops: alloc::vec::Vec<conductor::materialize::HopRow>
 pub conductor::materialize::MaterializeReport::hot: explorer::materialize::Materialization
 pub conductor::materialize::MaterializeReport::hot_hash: [u8; 32]

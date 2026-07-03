@@ -236,11 +236,13 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     );
     if env_u64("REQUIRE_DRAWS", 1) == 1 {
         assert!(
-            report.tail_draws,
-            "the tail window did not draw entropy (two-seed probe): the task-78 gate needs a \
-             draw-carrying window — move READY_MARKER into the Postgres workload loop \
-             (gen_random_uuid() draws), use an entropy-drawing payload, or set REQUIRE_DRAWS=0 \
-             to accept the draw-free (pre-task-78) shape"
+            report.hop_draws.iter().any(|d| *d),
+            "no collapsed hop window drew entropy (probes: {:?}): the task-78 gate needs a \
+             draw inside a compose-collapsed interval — raise HOPS/HOP_DELTA_VNS so a hop \
+             window covers a drawing span, move READY_MARKER into the Postgres workload loop, \
+             use an entropy-drawing payload, or set REQUIRE_DRAWS=0 to accept the draw-free \
+             (pre-task-78) shape",
+            report.hop_draws
         );
     }
 

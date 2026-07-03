@@ -98,8 +98,10 @@ fn chain_gates_pass_over_the_socket() {
         "bug_env carries every collapsed leg's reseed marker (3 hops + tail)"
     );
     assert!(
-        !report.tail_draws,
-        "the draws=false script must probe draw-free"
+        !report.tail_draws && report.hop_draws.iter().all(|d| !d),
+        "the draws=false script must probe draw-free everywhere (hops {:?}, tail {})",
+        report.hop_draws,
+        report.tail_draws
     );
 
     // Depth accounting: three hops with the same delta ⇒ the fold spans two
@@ -260,8 +262,11 @@ fn chain_gates_pass_on_a_draw_carrying_script() {
         render_materialize_table(&report)
     );
     assert!(
-        report.tail_draws,
-        "the draw probe must read DRAWS on this script (one RDRAND per 400 ns)"
+        report.tail_draws && report.hop_draws.iter().all(|d| *d),
+        "every window must probe DRAWS on this script (one RDRAND per 400 ns): hops {:?}, \
+         tail {}",
+        report.hop_draws,
+        report.tail_draws
     );
     let decoded = AdapterEnv::decode(&report.bug_env).expect("adapter blob");
     assert_eq!(

@@ -132,6 +132,13 @@ pub struct MaterializeReport {
     pub replay_stop: StopReason,
     /// `state_hash` at the replay leg's stop.
     pub replay_hash: [u8; 32],
+    /// **Draw probes (task 78), per collapsed hop window:** `hop_draws[j]` is
+    /// `true` iff hop `j`'s window (parent seal → landed boundary) actually
+    /// draws entropy — measured with the same trailing-reseed probe as
+    /// [`tail_draws`](MaterializeReport::tail_draws) (below). These are the
+    /// windows a compose-fold collapses, so the reseed-aware bit-identity
+    /// gates ((b)/(c)) exercise entropy exactly when one of these is `true`.
+    pub hop_draws: Vec<bool>,
     /// **Draw probe (task 78):** `true` iff the tail window actually draws
     /// entropy — measured, not assumed. The probe leg re-runs the tail window
     /// under the SAME branch seed plus a trailing reseed marker back to that
@@ -232,6 +239,7 @@ pub fn run_materialize<M: Machine>(
     //    landed boundary (grid-restricted), each suffix a real recorded_env.
     let mut hops: Vec<HopRow> = Vec::with_capacity(cfg.hops);
     let mut refs: Vec<ExemplarRef> = Vec::with_capacity(cfg.hops);
+    let mut seals: Vec<SnapId> = Vec::with_capacity(cfg.hops);
     let mut cur = genesis;
     let mut cur_at = genesis_at;
     let mut entry_env: Option<Environment> = None;
@@ -269,12 +277,35 @@ pub fn run_materialize<M: Machine>(
             attempts,
         });
         refs.push(r);
+        seals.push(seal);
         entry_env = Some(env);
         cur = seal;
         cur_at = at;
     }
     let deep = refs[cfg.hops - 1];
     let deep_env = entry_env.expect("hops >= 3");
+
+    // 2b. Per-hop draw probes (task 78), while every hop's parent seal is
+    //     still live: re-run each hop window plainly and with a trailing
+    //     reseed marker back to the same seed at the landed boundary — the
+    //     hashes differ iff a draw inside the window moved the stream (the
+    //     same self-normalizing probe as the tail's, step 6b).
+    let mut hop_draws: Vec<bool> = Vec::with_capacity(cfg.hops);
+    {
+        let mut parent = genesis;
+        let mut parent_at = genesis_at;
+        for (i, h) in hops.iter().enumerate() {
+            machine.branch(parent, &codec.seeded(cfg.seed))?;
+            let landed = run_to(machine, h.at, &format!("hop {i} plain probe"))?;
+            let h_plain = machine.hash()?;
+            machine.branch(parent, &reseed_probe_env(cfg.seed, parent_at, h.at))?;
+            run_to(machine, h.at, &format!("hop {i} marker probe"))?;
+            hop_draws.push(machine.hash()? != h_plain);
+            debug_assert_eq!(landed, h.at, "the hop leg is deterministic");
+            parent = seals[i];
+            parent_at = h.at;
+        }
+    }
 
     // 3. Gate (a): evict the deep exemplar's own (eager) seal and materialize
     //    — the hot, parent-rooted, suffix-only replay.
@@ -334,19 +365,7 @@ pub fn run_materialize<M: Machine>(
     //     moved the stream off its reseed point.
     let landing = leg_stop.vtime().0;
     let deep_at = cur_at;
-    let mut spec = environment::EnvSpec::Seeded {
-        seed: cfg.seed,
-        policy: environment::FaultPolicy::none(),
-    };
-    spec.record_reseed(0, cfg.seed);
-    spec.record_reseed(landing - deep_at, cfg.seed);
-    let probe_env = explorer::AdapterEnv {
-        base_offset: deep_at,
-        pos: deep_at,
-        spec,
-    }
-    .encode();
-    machine.branch(deep_seal, &probe_env)?;
+    machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing))?;
     let probe_stop = machine.run(
         &StopConditions {
             deadline: Some(VTime(landing)),
@@ -380,8 +399,28 @@ pub fn run_materialize<M: Machine>(
         bug_env,
         replay_stop,
         replay_hash,
+        hop_draws,
         tail_draws,
     })
+}
+
+/// The draw-probe env (task 78): branch-reseed to `seed` at the window origin
+/// plus a trailing reseed back to `seed` at the landed boundary — a no-op iff
+/// no draw inside `[origin, landed]` moved the stream, so the probe leg's hash
+/// equals the plain leg's exactly when the window is draw-free.
+fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Environment {
+    let mut spec = environment::EnvSpec::Seeded {
+        seed,
+        policy: environment::FaultPolicy::none(),
+    };
+    spec.record_reseed(0, seed);
+    spec.record_reseed(landed - origin, seed);
+    explorer::AdapterEnv {
+        base_offset: origin,
+        pos: origin,
+        spec,
+    }
+    .encode()
 }
 
 /// Integer parts-per-million of `num / den` (`den == 0` reports 0).
@@ -689,6 +728,7 @@ mod tests {
             },
             replay_stop: StopReason::Deadline { vtime: VTime(20) },
             replay_hash: [0; 32],
+            hop_draws: Vec::new(),
             tail_draws: false,
         }
     }
