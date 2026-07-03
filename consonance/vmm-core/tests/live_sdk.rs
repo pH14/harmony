@@ -117,8 +117,8 @@ fn hello(s: &mut DynServer) {
 
 fn snapshot(s: &mut DynServer) -> SnapId {
     match drive(s, &Request::Snapshot) {
-        Reply::Snapshot(id) => id,
-        other => panic!("expected Snapshot reply, got {other:?}"),
+        Reply::SnapId(id) => id,
+        other => panic!("expected SnapId reply, got {other:?}"),
     }
 }
 
@@ -127,7 +127,9 @@ fn branch(s: &mut DynServer, snap: SnapId, env: Environment) {
 }
 
 fn run_once(s: &mut DynServer) -> StopReason {
-    let until = StopConditions { deadline: Some(VTime(DEADLINE)), on: StopMask::ALL };
+    // Arm every class (moot for the seed-driven substrate — the SDK stops always
+    // surface — but harmless); the deadline bounds a runaway run.
+    let until = StopConditions { deadline: Some(VTime(DEADLINE)), on: StopMask(u32::MAX) };
     match drive(s, &Request::Run { until, resolve: None }) {
         Reply::Stop(stop) => stop,
         other => panic!("expected Stop reply, got {other:?}"),
