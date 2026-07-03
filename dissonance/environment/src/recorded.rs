@@ -105,8 +105,12 @@ impl EnvSpec {
     /// (magic, [`Action`] map, standing faults) is unchanged, but the network
     /// [`Fault`](crate::Fault) byte vocabulary was reshaped (per-frame → per-flow),
     /// so a task-45 `v2` blob carrying an old net fault must reject rather than
-    /// silently reinterpret it as a new flow policy.
-    pub const BLOB_VERSION: u16 = 3;
+    /// silently reinterpret it as a new flow policy. Bumped to `4` by task 73: the
+    /// embedded [`FaultPolicy`](crate::FaultPolicy) gained a trailing buggify
+    /// section (its own version moved `2 → 3`), an inner byte vocabulary changing
+    /// incompatibly — so a task-50 `v3` blob (whose policy has no buggify section)
+    /// rejects at the container version rather than truncating mid-policy.
+    pub const BLOB_VERSION: u16 = 4;
 
     /// The seed every backing draws from.
     pub fn seed(&self) -> u64 {

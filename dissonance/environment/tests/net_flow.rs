@@ -161,8 +161,9 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
         standing: vec![],
     };
     let mut bytes = spec.encode();
-    // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION (3).
-    assert_eq!(bytes[4..6], 3u16.to_le_bytes(), "current blob is version 3");
+    // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION (4,
+    // task 73's buggify-section policy bump); a stale v2 blob still rejects.
+    assert_eq!(bytes[4..6], 4u16.to_le_bytes(), "current blob is version 4");
     bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
     assert_eq!(
         EnvSpec::decode(&bytes),
