@@ -15,10 +15,10 @@
 //!   (`commit_seen`) and one never (`rollback_seen`) — the fired one appears in
 //!   the event stream, the other never does (the never-fired detection the
 //!   portable `link::Catalog` fold reports).
-//! - **Gate D (fork from a mid-run SDK snapshot):** snapshot at `setup_complete`,
-//!   then `replay` reproduces the assertion run **byte-identically** — the SDK
-//!   channel's seeded stream position AND the declared catalog survive the
-//!   snapshot (the review's finding-1 fix).
+//!
+//! The SDK-channel snapshot/restore fix (a fork continues the seeded streams +
+//! keeps the catalog) is verified **portably** — a bare payload has no
+//! synchronized mid-run point to seal at (see the NOTE below gate B).
 //!
 //! Box-only: needs the LOADED patched `/dev/kvm`, `perf_event`, and the
 //! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
@@ -140,10 +140,6 @@ fn snapshot(s: &mut DynServer) -> SnapId {
 
 fn branch(s: &mut DynServer, snap: SnapId, env: Environment) {
     assert_eq!(drive(s, &Request::Branch { snap, env }), Reply::Unit);
-}
-
-fn replay(s: &mut DynServer, snap: SnapId) {
-    assert_eq!(drive(s, &Request::Replay(snap)), Reply::Unit);
 }
 
 fn run_once(s: &mut DynServer) -> StopReason {
@@ -301,64 +297,18 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
     eprintln!("[gate B] reproduced {N}/{N}");
 }
 
-/// GATE D — fork from a **mid-run SDK snapshot** reproduces (the finding-1 fix):
-/// snapshot at `setup_complete`, then `replay` reproduces the assertion run
-/// **byte-identically**, including the declared catalog (which a fork must keep
-/// for the never-fired report) and the same `state_hash`. Before the fix, the
-/// fork lost the catalog + the seeded stream position and did not reproduce.
-#[test]
-#[ignore = "box-only: needs the LOADED patched KVM + perf + det-cfl-v1 host"]
-fn box_gate_d_replay_from_setup_complete_reproduces() {
-    require_kvm();
-    require_host_baseline();
-
-    let mut s = server(SEED);
-    hello(&mut s);
-    let genesis = snapshot(&mut s);
-    branch(&mut s, genesis, branch_env(SEED, true)); // buggify hot ⇒ the bug
-
-    // Stop at the setup_complete snapshot point and seal it mid-run.
-    let first = run_once(&mut s);
-    assert!(
-        matches!(first, StopReason::SnapshotPoint { .. }),
-        "first stop is the setup_complete snapshot point, got {first:?}"
-    );
-    let setup = snapshot(&mut s);
-
-    // Continue the ORIGINAL run to the assertion; capture its stream + hash.
-    let orig_stop = run_to_terminal(&mut s);
-    assert!(
-        matches!(orig_stop, StopReason::Assertion { .. }),
-        "the original run hits the assertion, got {orig_stop:?}"
-    );
-    let orig_events = events(&s);
-    let orig_hash = state_hash(&mut s);
-    assert!(
-        orig_events.iter().any(|(_, id, _)| *id == 0),
-        "the catalog (event_id 0) is in the stream"
-    );
-
-    // REPLAY from the mid-run snapshot: reproduce byte-identically, N/N.
-    for i in 0..8 {
-        replay(&mut s, setup);
-        let stop = run_to_terminal(&mut s);
-        assert!(
-            matches!(stop, StopReason::Assertion { .. }),
-            "replay {i} hits the assertion, got {stop:?}"
-        );
-        assert_eq!(
-            events(&s),
-            orig_events,
-            "replay {i}: byte-identical event stream (incl. the catalog the fork must keep)"
-        );
-        assert_eq!(
-            state_hash(&mut s),
-            orig_hash,
-            "replay {i}: equal state_hash"
-        );
-    }
-    eprintln!("[gate D] replay-from-setup_complete reproduced 8/8, catalog preserved");
-}
+// NOTE — the finding-1 fix (the SDK channel's seeded-stream position + event log
+// survive snapshot/restore) is verified **portably**, not by a box gate: a bare
+// `sdk-demo` payload has no V-time intercept (no RDTSC/RDRAND), so it never
+// reaches a synchronized mid-run point to seal at — the `setup_complete`
+// SnapshotPoint surfaces at a hypercall-doorbell OUT, which is PMU-skid-tainted,
+// so `save_vm_state` reports `NotQuiescent` there (a real RDTSC-heavy workload
+// seals at a synchronized point; the campaign snapshots at V-time boundaries, as
+// task 59 does — not at the doorbell OUT). The fix is exercised by
+// `vmm::tests::sdk_snapshot_restore_resumes_the_seeded_streams` (the stream
+// continuation), `environment`'s `stream_state_resumes_both_streams_exactly`, and
+// every mock control test that snapshots/branches/replays/drops with the SDK
+// channel wired.
 
 /// GATE C — never-fired: `commit_seen` fires, `rollback_seen` never; the fired one
 /// appears in the event stream. (The `link::Catalog` fold that turns this into the
