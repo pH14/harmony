@@ -201,5 +201,5 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p flow -p matcher -p runtrace -p conductor \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p flow -p matcher -p runtrace -p conductor -p tactics-regime \
             --test public_api -- --ignored --nocapture
