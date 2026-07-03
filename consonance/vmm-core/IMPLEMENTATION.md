@@ -3620,17 +3620,18 @@ waiver of hard rule 1) honored — only `consonance/vmm-core` touched:
 
 **Status:** gate 1 DONE & GREEN on macOS. **Gate 2 (box measurement): DONE** — `tests/seal_rate_sweep.rs`
 compiled + clippy-clean + run to completion on the determinism box (rc=0; KVM reverted to stock
-1396736, verified). Measured (corrected, **guarded** harness — round-2/2b review): §1 nominal
-**64/64 = 100 %**, **§3 adversarial 100 %** (26/26; 38 skipped-overshot, 0 unprobed — the earlier
-34/56 = 60.7 % was an overshoot-contamination artifact), §5 interior 17/26 = 65 %, §2
-branch-determinism **9/9 this run** (6 full-horizon + 3 truncated-at-terminal, min 32 239; 26/26
-across runs), §4 parent-rooted **== genesis-rooted** (ratio 1.66 %), **§4b MATCH** (the probe/
-deadline schedule is a *deterministic* part of the trajectory → substrate sound), `sealable()`
-**100 %/100 %**; addressability is **coarse** (overshoot p90 ≈ 4.76 M ns; 0/64 exact; 38/64
-jittered targets collapse). **Mechanical summary: GO (grid-restricted)** (the corrected §3 clears
-the 95 % bar — up from NO-GO/RESTRICTED on the contaminated data). Full numbers in
-`SEAL-RATE-REPORT.md` §6 + PR #50. **Gate 3 (final ruling): escalated to the integrator** — §9
-presents the GO(boundary-keyed) fork.
+1396736, verified). Measured (guarded harness, **N = 66 incl. the busy-window population** —
+round-5): §1 nominal **66/66 = 100 %** (incl. **6/6 busy-window** interrupt-service targets), **§3
+adversarial 100 %** (29/29; 37 skipped-overshot, 0 unprobed — the earlier 34/56 = 60.7 % was an
+overshoot-contamination artifact), §5 interior 19/29 = 65 %, §2 branch-determinism **13/13 this
+run** (**busy §2 = 6/6**; 10 full-horizon + 3 truncated-but-≥floor min 32 239), §4 parent-rooted
+**== genesis-rooted** (ratio 1.55 %), **§4b MATCH** (the probe/deadline schedule is a
+*deterministic* part of the trajectory → substrate sound), `sealable()` **100 %/100 %**;
+addressability is **coarse** (overshoot p90 ≈ 4.73 M ns; only the 6 busy targets hit exactly).
+**Mechanical summary: GO (grid-restricted)** — the busy results **strengthen** the GO (task 41's
+in-flight-injection capture holds at the busy-window boundaries §5 flagged), they do not change it.
+Full numbers in `SEAL-RATE-REPORT.md` §6 + PR #50. **Gate 3 (final ruling): escalated to the
+integrator** — §9 presents the GO(boundary-keyed) fork + the three adjudicated open decisions.
 
 ### The load-bearing substrate finding
 
