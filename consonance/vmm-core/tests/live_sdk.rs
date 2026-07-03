@@ -161,8 +161,9 @@ fn run_once(s: &mut DynServer) -> StopReason {
     }
 }
 
-/// Run to a **terminal** stop, treating a `setup_complete` snapshot point as a
-/// seal opportunity to step past (the demo emits one early in `payload_main`).
+/// Run to a **terminal** stop, stepping past any `SnapshotPoint`. The bare demo
+/// has no V-time intercept after `setup_complete`, so its deferred snapshot point
+/// (round-4 P1) never actually surfaces here — but stay total in case it does.
 fn run_to_terminal(s: &mut DynServer) -> StopReason {
     for _ in 0..64 {
         let stop = run_once(s);
@@ -300,15 +301,16 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
 // NOTE — the finding-1 fix (the SDK channel's seeded-stream position + event log
 // survive snapshot/restore) is verified **portably**, not by a box gate: a bare
 // `sdk-demo` payload has no V-time intercept (no RDTSC/RDRAND), so it never
-// reaches a synchronized mid-run point to seal at — the `setup_complete`
-// SnapshotPoint surfaces at a hypercall-doorbell OUT, which is PMU-skid-tainted,
-// so `save_vm_state` reports `NotQuiescent` there (a real RDTSC-heavy workload
-// seals at a synchronized point; the campaign snapshots at V-time boundaries, as
-// task 59 does — not at the doorbell OUT). The fix is exercised by
-// `vmm::tests::sdk_snapshot_restore_resumes_the_seeded_streams` (the stream
-// continuation), `environment`'s `stream_state_resumes_both_streams_exactly`, and
-// every mock control test that snapshots/branches/replays/drops with the SDK
-// channel wired.
+// reaches a synchronized mid-run point to seal at. `setup_complete` rings at a
+// hypercall-doorbell OUT, which is PMU-skid-tainted (`save_vm_state` reports
+// `NotQuiescent` there) — so the snapshot point is **deferred** to the next
+// synchronized boundary (round-4 P1), which a real RDTSC-heavy workload reaches
+// but this bare demo never does (so it simply never surfaces one). The fix is
+// exercised by `vmm::tests::sdk_snapshot_restore_resumes_the_seeded_streams` (the
+// stream continuation), `environment`'s `stream_state_resumes_both_streams_exactly`,
+// the conductor `setup_complete_yields_a_usable_seal_...` loopback gate (the
+// deferred point surfaces sealably over the wire), and every mock control test
+// that snapshots/branches/replays/drops with the SDK channel wired.
 
 /// GATE C — never-fired: `commit_seen` fires, `rollback_seen` never; the fired one
 /// appears in the event stream. (The `link::Catalog` fold that turns this into the

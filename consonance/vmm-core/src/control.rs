@@ -738,6 +738,15 @@ impl<B: Backend> ControlServer<B> {
                 // session on the reset fresh boot. Callers treat `RestoreFailed` as
                 // "the session VM was replaced; re-establish your point."
                 self.reset_schedule_to_fresh_vm();
+                // Task 73 (round-4 P3): the kept fresh VM must carry an SDK channel
+                // too — `GUEST_HAS_SDK` is advertised unconditionally, so a doorbell
+                // on it after a recoverable `RestoreFailed` would otherwise be a
+                // contract violation (`sdk: None`). Wire it from the reset (bare
+                // `Seeded`) reproducer, mirroring `new` + the success path.
+                let sdk_env = self.recorded.materialize();
+                if let Some(vmm) = self.vmm.as_mut() {
+                    vmm.enable_sdk(sdk_env);
+                }
                 return Ok(Err(ControlError::RestoreFailed));
             }
             // Post-validation substrate breakage — the VM is unvouched; tear down.
@@ -957,7 +966,22 @@ impl<B: Backend> ControlServer<B> {
             // 4. Step. A terminal stop ends the run; a cooperating-SDK stop
             //    (task 73) surfaces the assertion / snapshot point.
             match vmm.step()? {
-                Step::Continued => {}
+                Step::Continued => {
+                    // Task 73 (P1): a deferred `setup_complete` snapshot point
+                    // surfaces HERE — at the first V-time-synchronized boundary
+                    // after setup_complete — where a seal succeeds (unlike the
+                    // skid-tainted doorbell OUT it was requested at, which would
+                    // fail `NotQuiescent`). The drain at the top of this loop
+                    // already applied every fault at-or-below this exact vns, so
+                    // the point is clean — no crossed-fault poison needed.
+                    if vmm.take_synchronized_snapshot_point() {
+                        let vns = vmm.effective_vns().unwrap_or(0);
+                        vmm.clear_arrival();
+                        return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
+                            vtime: VTime(vns),
+                        })));
+                    }
+                }
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
@@ -981,9 +1005,10 @@ impl<B: Backend> ControlServer<B> {
                     }
                     let reason = match stop {
                         Some(sdk_stop) => sdk_stop_to_reason(sdk_stop, vns),
-                        // `SdkStop` is armed before the step returns `SdkStop`, so
-                        // this is statically unreachable; be total anyway.
-                        None => StopReason::SnapshotPoint { vtime: VTime(vns) },
+                        // `SdkStop` is armed (an assertion) before the step returns
+                        // `SdkStop`, so this is statically unreachable; be total
+                        // anyway with a benign quiescent stop.
+                        None => StopReason::Quiescent { vtime: VTime(vns) },
                     };
                     return Ok(Ok(Reply::Stop(reason)));
                 }
@@ -1031,11 +1056,13 @@ impl<B: Backend> ControlServer<B> {
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
     let vtime = VTime(vns);
     match stop {
+        // `setup_complete`'s snapshot point is deferred to a synchronized boundary
+        // (surfaced directly in the run loop), so the only immediate SDK stop is an
+        // assertion.
         SdkStop::Assertion { id, data } => StopReason::Assertion {
             vtime,
             ev: EventRef { id, data },
         },
-        SdkStop::SnapshotPoint => StopReason::SnapshotPoint { vtime },
     }
 }
 
@@ -1821,6 +1848,12 @@ mod tests {
         assert!(
             s.vmm().is_some(),
             "the fresh VM was kept after the rejection"
+        );
+        // Round-4 P3: the kept fresh VM must still carry an SDK channel, or a
+        // doorbell on it would be a contract violation despite GUEST_HAS_SDK.
+        assert!(
+            s.vmm().unwrap().sdk_is_enabled(),
+            "the kept fresh VM stays SDK-capable after a recoverable RestoreFailed"
         );
         let _ = hash(&mut s); // still usable
     }

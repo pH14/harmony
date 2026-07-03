@@ -386,6 +386,99 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
     );
 }
 
+/// **Task 73 (round-4 P1): setup_complete yields a USABLE seal.** `setup_complete`
+/// rings at a skid-tainted doorbell OUT that is NOT sealable — surfacing a
+/// `SnapshotPoint` there would fail an eager `snapshot()` with `NotQuiescent`
+/// (the explorer seals eagerly on that stop). The point is now **deferred** to the
+/// next V-time-synchronized boundary: a run past `setup_complete` surfaces
+/// `StopReason::SnapshotPoint` at the following RDTSC, and a `snapshot()` there
+/// **succeeds** — an Explorer gets a usable seal through `setup_complete`.
+#[test]
+fn setup_complete_yields_a_usable_seal_at_the_next_synchronized_boundary() {
+    use vmm_backend::{Exit, MockBackend};
+    use vmm_core::control::ControlServer;
+    use vmm_core::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
+
+    const DOORBELL_PORT: u16 = 0x0CA1;
+    const REQ_GPA: usize = 0xE000;
+    const RAM: usize = 0x2_0000;
+    let setup_id: u32 = 4 << 24; // lifecycle namespace, local 0 == setup_complete
+
+    // A setup_complete Event frame (just the id — a lifecycle event) staged at
+    // REQ_GPA.
+    let mut frame = vec![0u8; 4096];
+    let n = hypercall_proto::encode_request(
+        hypercall_proto::ServiceId::Event,
+        1,
+        1,
+        &setup_id.to_le_bytes(),
+        &mut frame,
+    )
+    .unwrap();
+
+    let build = move |script: Vec<Exit>| -> Result<Vmm<MockBackend>, VmmError> {
+        let mut b = MockBackend::with_exits(script);
+        vmm_backend::Backend::set_cpuid(&mut b, &vmm_backend::CpuidModel::default())?;
+        vmm_backend::Backend::set_msr_filter(&mut b, &vmm_backend::MsrFilter::default())?;
+        let mut v = Vmm::new(b, GuestRam::new(RAM)?);
+        v.wire_vtime(VtimeWiring::new(
+            contract_vclock_config(),
+            Box::new(mock::TickingWork::new(mock::WORK_STEP)),
+            0x99,
+        )?);
+        v.wire_snapshot_hashing();
+        let mut ram = vec![0u8; RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        v.restore_guest_memory(&ram)?;
+        Ok(v)
+    };
+    // Sync RDTSC, ring setup_complete (unsealable OUT), then an RDTSC — the first
+    // synchronized boundary AFTER setup_complete, where the deferred point surfaces.
+    let live = build(vec![
+        Exit::Rdtsc,
+        Exit::Io {
+            port: DOORBELL_PORT,
+            size: 4,
+            write: Some(n as u32),
+        },
+        Exit::Rdtsc,
+        Exit::Hlt,
+    ])
+    .unwrap();
+    let factory = {
+        let build = build.clone();
+        Box::new(move || build(vec![Exit::Hlt]))
+    };
+    let mut server = ControlServer::new(live, factory);
+
+    let boot_env = EnvSpec::Seeded {
+        seed: 0x99,
+        policy: FaultPolicy::none(),
+    };
+    let (served, (stop, seal)) = run_session(&mut server, move |stream| {
+        let mut m = SocketMachine::connect(stream, boot_env).unwrap();
+        let until = StopConditions {
+            deadline: Some(VTime(10_000_000)),
+            on: StopMask(u32::MAX),
+        };
+        // The run surfaces the deferred snapshot point at the post-setup RDTSC...
+        let stop = m.run(&until, None).unwrap();
+        // ...and the eager seal an Explorer takes there SUCCEEDS.
+        let seal = m.snapshot();
+        (stop, seal)
+    });
+    served.expect("server session ends cleanly");
+
+    assert!(
+        matches!(stop, StopReason::SnapshotPoint { .. }),
+        "the deferred setup_complete point surfaced at a synchronized boundary, got {stop:?}"
+    );
+    assert!(
+        seal.is_ok(),
+        "a snapshot() at the deferred point is a USABLE seal (not NotQuiescent): {seal:?}"
+    );
+}
+
 #[test]
 fn snapshot_retry_finds_a_boundary_when_the_first_point_is_unsnappable() {
     // Compose a server whose live VM sits at a NON-synchronized point (a serial

@@ -107,8 +107,10 @@ pub enum SdkStop {
         /// Opaque assertion detail bytes.
         data: Vec<u8>,
     },
-    /// A `setup_complete` lifecycle point — a snapshot-fork opportunity.
-    SnapshotPoint,
+    // NB: `setup_complete` no longer surfaces an immediate `SnapshotPoint` stop —
+    // its doorbell OUT is unsealable, so it is **deferred** (see
+    // `SdkChannel::pending_snapshot`) to the next synchronized boundary, surfaced
+    // by the control loop as `StopReason::SnapshotPoint` there.
 }
 
 /// Errors that abort a run. A `ContractViolation` is the default-deny posture made
@@ -439,6 +441,12 @@ struct SdkChannel {
     buggify: Vec<(u64, environment::Answer)>,
     /// A pending SDK stop to surface at the next step boundary.
     pending_stop: Option<SdkStop>,
+    /// A `setup_complete` was seen but its doorbell `OUT` is **not** a sealable
+    /// point (PMU-skid-tainted V-time — `save_vm_state` would report
+    /// `NotQuiescent`). Deferred: the run surfaces `StopReason::SnapshotPoint` at
+    /// the next V-time-synchronized boundary, where a seal actually succeeds — so
+    /// the explorer never eagerly seals an unsealable point (round-4 P1).
+    pending_snapshot: bool,
 }
 
 /// The SDK channel's **replay-relevant** state, captured with a snapshot (task
@@ -1940,8 +1948,17 @@ impl<B: Backend> Vmm<B> {
             events: Vec::new(),
             buggify: Vec::new(),
             pending_stop: None,
+            pending_snapshot: false,
         });
         self
+    }
+
+    /// Whether an SDK channel is wired (a doorbell will be serviced, not a
+    /// contract violation). Test-only observation — the control server asserts a
+    /// kept fresh VM stays SDK-capable after a recoverable `RestoreFailed`.
+    #[cfg(test)]
+    pub(crate) fn sdk_is_enabled(&self) -> bool {
+        self.sdk.is_some()
     }
 
     /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
@@ -2011,7 +2028,19 @@ impl<B: Backend> Vmm<B> {
     /// is serviced before the guest resumes (the single-`OUT` atomic doorbell).
     fn service_doorbell(&mut self, size: u8, req_len: u32) -> Result<Step, VmmError> {
         require_dword_io("OUT", DOORBELL_PORT, size)?;
-        let req_len = (req_len as usize).min(HC_PAGE);
+        // ABI: the request occupies exactly one page — the loopback host reads a
+        // fixed `MAX_FRAME` buffer. A `req_len` past the page is a malformed request:
+        // REJECT it with a clean `BadRequest` (round-4 P2) rather than silently
+        // clamping the read to a page and servicing a frame the guest never framed
+        // (which could mask a guest-side length bug).
+        if req_len as usize > HC_PAGE {
+            let mut resp = [0_u8; HC_PAGE];
+            let n = encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
+                .unwrap_or(0);
+            self.write_doorbell_response(&resp[..n])?;
+            return Ok(Step::Continued);
+        }
+        let req_len = req_len as usize;
         // Copy the request out of guest RAM so the immutable borrow ends before
         // we compute the response and write the response page.
         let ram = self.guest_memory();
@@ -2026,16 +2055,7 @@ impl<B: Backend> Vmm<B> {
         let moment = self.effective_vns().unwrap_or(0);
         let mut resp = [0_u8; HC_PAGE];
         let (resp_len, stop) = self.dispatch_doorbell(moment, &req, &mut resp);
-        // Write the response frame into the response page. The guest zeroed that
-        // page before ringing, so writing only the frame leaves a clean tail.
-        let ram = self.ram.as_mut_bytes();
-        let Some(dst) = ram.get_mut(RESP_GPA..RESP_GPA + resp_len) else {
-            return Err(VmmError::ContractViolation(format!(
-                "doorbell response page {RESP_GPA:#x}+{resp_len} is out of guest RAM ({} bytes)",
-                ram.len()
-            )));
-        };
-        dst.copy_from_slice(&resp[..resp_len]);
+        self.write_doorbell_response(&resp[..resp_len])?;
         match stop {
             Some(s) => {
                 if let Some(sdk) = self.sdk.as_mut() {
@@ -2045,6 +2065,21 @@ impl<B: Backend> Vmm<B> {
             }
             None => Ok(Step::Continued),
         }
+    }
+
+    /// Write a doorbell response frame into the response page. The guest zeroed
+    /// that page before ringing, so writing only the frame leaves a clean tail.
+    fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
+        let ram = self.ram.as_mut_bytes();
+        let Some(dst) = ram.get_mut(RESP_GPA..RESP_GPA + resp.len()) else {
+            return Err(VmmError::ContractViolation(format!(
+                "doorbell response page {RESP_GPA:#x}+{} is out of guest RAM ({} bytes)",
+                resp.len(),
+                ram.len()
+            )));
+        };
+        dst.copy_from_slice(resp);
+        Ok(())
     }
 
     /// Route one decoded doorbell request to the Event / SDK service, writing the
@@ -2082,6 +2117,13 @@ impl<B: Backend> Vmm<B> {
             let stop = Self::sdk_event_stop(id, &data);
             if let Some(sdk) = self.sdk.as_mut() {
                 sdk.events.push((moment, id, data));
+                // Task 73 (P1): `setup_complete` is a lifecycle milestone at a
+                // skid-tainted doorbell OUT — not sealable here. Defer a snapshot
+                // point; the control loop surfaces it at the next synchronized
+                // boundary, where a seal succeeds.
+                if Self::is_setup_complete(id) {
+                    sdk.pending_snapshot = true;
+                }
             }
             let n = encode_response(ServiceId::Event, 1, header.seq, Status::Ok, &[], resp)
                 .unwrap_or(0);
@@ -2206,9 +2248,33 @@ impl<B: Backend> Vmm<B> {
                     data: detail,
                 })
             }
-            SDK_NS_LIFECYCLE if local == 0 => Some(SdkStop::SnapshotPoint),
+            // `setup_complete` (lifecycle, local 0) does NOT surface an immediate
+            // stop — it defers a snapshot point (see the Event handler +
+            // `pending_snapshot`), so it is intentionally absent here.
             _ => None,
         }
+    }
+
+    /// Whether an event id is the `setup_complete` lifecycle milestone (namespace
+    /// [`SDK_NS_LIFECYCLE`], local 0).
+    fn is_setup_complete(id: u32) -> bool {
+        (id >> SDK_NS_SHIFT) as u8 == SDK_NS_LIFECYCLE && (id & SDK_LOCAL_MASK) == 0
+    }
+
+    /// Take the deferred `setup_complete` snapshot point **iff** the VM is now at a
+    /// V-time-synchronized (sealable) boundary (round-4 P1). The control loop calls
+    /// this after a `Continued` step: `true` (and the pending flag cleared) means
+    /// surface `StopReason::SnapshotPoint` here — a point where `save_vm_state`
+    /// succeeds, so the explorer's eager seal does not fail `NotQuiescent`.
+    pub fn take_synchronized_snapshot_point(&mut self) -> bool {
+        if self.is_synchronized()
+            && let Some(sdk) = self.sdk.as_mut()
+            && sdk.pending_snapshot
+        {
+            sdk.pending_snapshot = false;
+            return true;
+        }
+        false
     }
 
     /// Resolve a buggify decision for `point` at `moment` (task 73 seam 3): ask
@@ -3626,11 +3692,16 @@ mod tests {
             })
         );
 
-        // setup_complete (lifecycle ns, local 0): SdkStop SnapshotPoint.
+        // setup_complete (lifecycle ns, local 0): NO immediate stop — its
+        // snapshot point is deferred (P1) to the next synchronized boundary. The
+        // event is still captured; the doorbell continues.
         let setup_id = 4u32 << 24;
         let (step, status, _) = ring(&mut vmm, ServiceId::Event, &setup_id.to_le_bytes());
-        assert_eq!((step, status), (Step::SdkStop, Status::Ok as u16));
-        assert_eq!(vmm.take_sdk_stop(), Some(SdkStop::SnapshotPoint));
+        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
+        assert!(
+            vmm.take_sdk_stop().is_none(),
+            "setup_complete does not stop"
+        );
 
         // All three emissions were captured (Moment 0, no vtime wired), and the
         // buggify decision recorded a fire.
@@ -3668,10 +3739,24 @@ mod tests {
             .materialize(),
         );
 
-        // Empty request; oversize length (clamped); a full-page request.
+        // Empty request; an oversize length; a full-page request.
         assert_eq!(
             vmm.dispatch_out(DOORBELL_PORT, 4, 0).unwrap(),
             Step::Continued
+        );
+        // Oversize (> one page) is REJECTED with a clean BadRequest (P2), not
+        // clamped: no OOB read, and the response says so.
+        assert_eq!(
+            vmm.dispatch_out(DOORBELL_PORT, 4, HC_PAGE as u32 + 1)
+                .unwrap(),
+            Step::Continued
+        );
+        let resp = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, _) = decode(&resp).expect("a valid response frame");
+        assert_eq!(
+            hdr.status,
+            Status::BadRequest as u16,
+            "an oversize req_len is rejected, not clamped"
         );
         assert_eq!(
             vmm.dispatch_out(DOORBELL_PORT, 4, u32::MAX).unwrap(),
