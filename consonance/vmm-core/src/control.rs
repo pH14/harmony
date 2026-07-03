@@ -28,7 +28,15 @@
 //!   composed VM** (from the [`VmmFactory`]) and **reseed the entropy stream
 //!   from the env's seed** ([`Vmm::reseed_entropy`]) so the branched future
 //!   diverges through the already-deterministic RDRAND path (the proven
-//!   divergence mechanism, tasks 40/42). The env blob is decoded (and rejected
+//!   divergence mechanism, tasks 40/42). An env carrying **reseed markers**
+//!   (task 78) is honored marker-wise instead: the marker at the restore floor
+//!   is the branch reseed, markers beyond it are staged and re-executed at
+//!   their exact `Moment`s by `run` (a collapsed hop's reseed replays at its
+//!   recorded position — bit-identical compose folds under entropy draws), and
+//!   a marker beyond the trajectory is the same loud
+//!   [`ControlError::ScheduleUnsatisfiable`] as a crossed fault. The no-marker
+//!   path is byte-for-byte the task-58/59 behavior.
+//!   The env blob is decoded (and rejected
 //!   loudly — [`ControlError::BadEnvVersion`] / [`ControlError::MalformedEnvironment`])
 //!   but now its **host-plane overrides are enforced** (task 59): they are staged
 //!   like a `perturb` and applied at their `Moment`s during the branched run. An
@@ -192,6 +200,18 @@ pub struct ControlServer<B: Backend> {
     /// integrator's final ruling — spec amendment PR #54.) A `BTreeMap` so no
     /// insertion order can reach the apply sequence.
     schedule: BTreeMap<environment::Moment, environment::HostFault>,
+    /// The **staged reseed schedule** (task 78): the branch env's reseed markers
+    /// strictly beyond the restore floor, ordered. A marker-carrying env's
+    /// collapsed-hop reseeds are re-executed at their recorded `Moment`s by
+    /// [`run`](ControlServer::run) (the exact-arrival discipline of the task-59
+    /// plane) — the ruled fix for the sequential-entropy splice: a compose-folded
+    /// env replays each hop's reseed at its position instead of reseeding once at
+    /// the fold's root. A reseed staged beyond the trajectory is the same loud
+    /// [`ControlError::ScheduleUnsatisfiable`] class as a crossed fault. At a
+    /// `Moment` shared with a staged host fault the reseed applies **first**
+    /// (fixed order, so the apply sequence is deterministic; the recorded
+    /// tables are disjoint, so replay preserves it).
+    reseed_schedule: BTreeMap<environment::Moment, u64>,
     /// The **active recorded reproducer** (task 59 requirement 3): every applied
     /// host fault is stamped here via task-45's [`EnvSpec::perturb`], so the env
     /// [`recorded_env`](ControlServer::recorded_env) returns replays to the
@@ -235,6 +255,7 @@ impl<B: Backend> ControlServer<B> {
             next_snap: 1,
             hello_done: false,
             schedule: BTreeMap::new(),
+            reseed_schedule: BTreeMap::new(),
             recorded: EnvSpec::Seeded {
                 seed,
                 policy: FaultPolicy::none(),
@@ -523,7 +544,7 @@ impl<B: Backend> ControlServer<B> {
         if let Some((moment, vtime)) = self.schedule_poisoned {
             return Ok(Err(ControlError::ScheduleUnsatisfiable { moment, vtime }));
         }
-        if !self.schedule.is_empty() {
+        if !self.schedule.is_empty() || !self.reseed_schedule.is_empty() {
             return Ok(Err(ControlError::SnapshotWhileArmed));
         }
         let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
@@ -572,6 +593,7 @@ impl<B: Backend> ControlServer<B> {
         //    `seed` is the branch seed (`None` for a verbatim replay); `host` is
         //    the env's host-plane schedule to stage after a successful restore.
         let mut host: Vec<(environment::Moment, environment::HostFault)> = Vec::new();
+        let mut reseeds: BTreeMap<environment::Moment, u64> = BTreeMap::new();
         let seed = match env {
             None => None,
             Some(env) => {
@@ -603,6 +625,7 @@ impl<B: Backend> ControlServer<B> {
                     return Ok(Err(ControlError::Unsupported));
                 }
                 host = spec.host_faults().collect();
+                reseeds = spec.reseeds().clone();
                 Some(spec.seed())
             }
         };
@@ -635,6 +658,24 @@ impl<B: Backend> ControlServer<B> {
             }
             if !seen.insert(*m) {
                 return Ok(Err(ControlError::PerturbMomentTaken { at: *m }));
+            }
+        }
+        // 1c. **Validate the reseed markers the same way (task 78).** A marker
+        //     behind the snapshot floor could only apply later than recorded —
+        //     the same non-reproducing class as a past host fault; a marker
+        //     strictly beyond the floor needs the exact-count arrival seam
+        //     (like a staged fault), so an unarmable backend rejects up front
+        //     rather than reseeding late. A marker AT the floor is the branch
+        //     reseed itself (applied below, no arrival needed).
+        for &m in reseeds.keys() {
+            if m < restored_floor {
+                return Ok(Err(ControlError::PerturbPastMoment {
+                    at: m,
+                    floor: restored_floor,
+                }));
+            }
+            if m > restored_floor && !self.vmm.as_ref().is_some_and(|v| v.can_arm_arrival()) {
+                return Ok(Err(ControlError::Unsupported));
             }
         }
         // 2. Drop the live VM (frees its work counter — the box allows one
@@ -674,11 +715,23 @@ impl<B: Backend> ControlServer<B> {
             // Post-validation substrate breakage — the VM is unvouched; tear down.
             Err(e) => return Err(e.into()),
         }
-        // 4. Branch ⇒ fork the entropy stream from the env's seed. On this
-        //    substrate `reseed_entropy` fails only if V-time is unwired — a
-        //    composition bug (the factory must mirror the live VM), fatal.
+        // 4. Branch ⇒ fork the entropy stream. On this substrate `reseed_entropy`
+        //    fails only if V-time is unwired — a composition bug (the factory must
+        //    mirror the live VM), fatal.
+        //
+        //    **No markers** (the pre-task-78 shape): reseed from the env's seed —
+        //    byte-for-byte the task-58/59 behavior. **Markers present**: the table
+        //    is authoritative (task 78) — a marker at the restore floor is the
+        //    (collapsed) branch reseed and applies now; markers beyond the floor
+        //    are staged for `run`'s exact-arrival drain; and with no marker at the
+        //    floor the stream deliberately continues from the snapshot (a fold
+        //    whose first hop carried no reseed).
         if let Some(seed) = seed {
-            fresh.reseed_entropy(seed)?;
+            if reseeds.is_empty() {
+                fresh.reseed_entropy(seed)?;
+            } else if let Some(&s0) = reseeds.get(&restored_floor) {
+                fresh.reseed_entropy(s0)?;
+            }
         }
         self.vmm = Some(fresh);
         // 5. A restore rewinds the VM, so **re-arm the host-plane schedule** from
@@ -691,6 +744,24 @@ impl<B: Backend> ControlServer<B> {
         self.reset_schedule_to_fresh_vm();
         for (m, fault) in host {
             self.schedule.insert(m, fault);
+        }
+        // Stage the future reseeds (strictly beyond the floor), and — iff the
+        // env carried markers — stamp the branch-point reseed into the recorded
+        // reproducer as a marker at the floor, so `recorded_env()` replays
+        // through the marker path (its mid-run reseeds, stamped by `run`, only
+        // reproduce if the floor reseed re-executes too). A no-marker branch
+        // records the plain `Seeded` shape, byte-for-byte the task-59 behavior.
+        if !reseeds.is_empty() {
+            use std::ops::Bound;
+            for (&m, &s) in reseeds.range((Bound::Excluded(restored_floor), Bound::Unbounded)) {
+                self.reseed_schedule.insert(m, s);
+            }
+            let stream = self
+                .vmm
+                .as_ref()
+                .and_then(|v| v.entropy_state())
+                .unwrap_or(0);
+            self.recorded.record_reseed(restored_floor, stream);
         }
         Ok(Ok(Reply::Unit))
     }
@@ -707,6 +778,7 @@ impl<B: Backend> ControlServer<B> {
     /// actually reproduces.
     fn reset_schedule_to_fresh_vm(&mut self) {
         self.schedule.clear();
+        self.reseed_schedule.clear();
         // A rewind is the recovery from a poisoned schedule (round-3): clear the
         // latch so `run`/`perturb`/`snapshot` work again on the fresh timeline.
         self.schedule_poisoned = None;
@@ -788,7 +860,20 @@ impl<B: Backend> ControlServer<B> {
             //    can't be trusted). This is the drain half of the round-7 family fix;
             //    the `perturb` gate ensures nothing is *staged* at an unsynchronized
             //    point in the first place, so this is the in-run belt-and-suspenders.
-            while let Some((&m, _)) = self.schedule.range(..=vns).next() {
+            //    Reseeds drain through the identical classification (task 78) and
+            //    apply BEFORE a same-`Moment` fault (the schedule-field doc's
+            //    fixed order): the loop below always services the reseed map
+            //    first at any given reached `Moment`.
+            loop {
+                let next_reseed = self.reseed_schedule.range(..=vns).next().map(|(&m, _)| m);
+                let next_fault = self.schedule.range(..=vns).next().map(|(&m, _)| m);
+                // Reseed-first at a shared Moment: pick the reseed on ties.
+                let (m, is_reseed) = match (next_reseed, next_fault) {
+                    (Some(r), Some(f)) if r <= f => (r, true),
+                    (Some(_) | None, Some(f)) => (f, false),
+                    (Some(r), None) => (r, true),
+                    (None, None) => break,
+                };
                 if m < vns || !synchronized {
                     self.schedule_poisoned = Some((m, vns));
                     return Ok(Err(ControlError::ScheduleUnsatisfiable {
@@ -796,14 +881,25 @@ impl<B: Backend> ControlServer<B> {
                         vtime: vns,
                     }));
                 }
-                let fault = self.schedule.remove(&m).expect("range key exists");
-                // An apply failure (out-of-range gpa — pre-validated at stage time;
-                // a reserved vector; an unwired LAPIC) is substrate-level breakage
-                // of a vouched run: fail loud (session-fatal), never a silent skip
-                // that would desync the recorded env from the run.
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                vmm.apply_host_fault(&fault).map_err(ServeError::Vmm)?;
-                self.recorded.perturb(fault, m);
+                if is_reseed {
+                    // A mid-trajectory reseed marker (a collapsed hop's branch
+                    // reseed): re-execute it here, between instructions, and stamp
+                    // it into the recorded reproducer so `recorded_env()` replays
+                    // it at the identical count. A failure is substrate breakage
+                    // (V-time unwired on a marker-validated backend): fail loud.
+                    let seed = self.reseed_schedule.remove(&m).expect("range key exists");
+                    vmm.reseed_entropy(seed).map_err(ServeError::Vmm)?;
+                    self.recorded.record_reseed(m, seed);
+                } else {
+                    let fault = self.schedule.remove(&m).expect("range key exists");
+                    // An apply failure (out-of-range gpa — pre-validated at stage
+                    // time; a reserved vector; an unwired LAPIC) is substrate-level
+                    // breakage of a vouched run: fail loud (session-fatal), never a
+                    // silent skip that would desync the recorded env from the run.
+                    vmm.apply_host_fault(&fault).map_err(ServeError::Vmm)?;
+                    self.recorded.perturb(fault, m);
+                }
             }
 
             // 2. Opportunistic V-time deadline (task-58 semantics, unchanged): stop
@@ -825,12 +921,14 @@ impl<B: Backend> ControlServer<B> {
             //    the opportunistic stop above catches the deadline first, matching
             //    the task-58 no-hard-force-exit posture). No such `Moment` ⇒ no
             //    arrival armed (plain open-ended step / task-47 timer preemption).
-            let next = self
-                .schedule
-                .keys()
-                .next()
-                .copied()
-                .filter(|&m| until.deadline.is_none_or(|d| m <= d.0));
+            let next = [
+                self.schedule.keys().next().copied(),
+                self.reseed_schedule.keys().next().copied(),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .filter(|&m| until.deadline.is_none_or(|d| m <= d.0));
             match next {
                 Some(m) => {
                     vmm.arm_arrival(m);
@@ -857,7 +955,17 @@ impl<B: Backend> ControlServer<B> {
                     // which campaign flows do anyway, so the task-60 crash path stays
                     // viable and the round-5 `SnapshotWhileArmed` trap stays fixed: a
                     // named, rewindable error instead of a silent stuck state).
-                    if let Some((&m, _)) = self.schedule.iter().next() {
+                    // Any staged host fault OR staged reseed (task 78) poisons:
+                    // a reseed beyond the trajectory is the same non-reproducing
+                    // class as a crossed fault.
+                    let staged = [
+                        self.schedule.keys().next().copied(),
+                        self.reseed_schedule.keys().next().copied(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                    if let Some(m) = staged {
                         self.schedule_poisoned = Some((m, vns));
                         return Ok(Err(ControlError::ScheduleUnsatisfiable {
                             moment: m,
@@ -3277,5 +3385,186 @@ mod tests {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 78 — reseed-aware branch: a marker-carrying env re-executes each
+    // collapsed hop's entropy reseed at its recorded Moment (exact-arrival
+    // discipline), instead of reseeding once at the fold's root. The fold ==
+    // hop-by-hop equality (the flipped task-68 pin) is the conductor's socket
+    // gate; here we pin the server-side mechanics.
+    // -----------------------------------------------------------------------
+
+    /// A branch env carrying only reseed markers (no overrides/standing).
+    fn marker_env(seed: u64, markers: &[(u64, u64)]) -> Environment {
+        let mut spec = EnvSpec::Seeded {
+            seed,
+            policy: FaultPolicy::none(),
+        };
+        for &(m, s) in markers {
+            spec.record_reseed(m, s);
+        }
+        Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        }
+    }
+
+    #[test]
+    fn branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed() {
+        // Markers are authoritative: a marker at the restore floor IS the branch
+        // reseed, and the env's own seed is not consulted for reseeding.
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let base = arr_snap(&mut s);
+        let mut branch_hash = |env: Environment| -> [u8; 32] {
+            s.handle(&Request::Branch { snap: base, env })
+                .unwrap()
+                .unwrap();
+            arr_hash(&s)
+        };
+        let h_marker = branch_hash(marker_env(7, &[(0, 0x1111)]));
+        let h_seed = branch_hash(seeded_env(0x1111));
+        let h_env_seed = branch_hash(seeded_env(7));
+        assert_eq!(
+            h_marker, h_seed,
+            "a floor marker reseeds exactly like a plain branch on the marker's seed"
+        );
+        assert_ne!(
+            h_marker, h_env_seed,
+            "the env's own seed (7) is NOT the reseed value when markers are present"
+        );
+    }
+
+    #[test]
+    fn mid_run_reseed_marker_applies_at_its_moment_and_recorded_env_reproduces() {
+        // A mid-trajectory marker (a collapsed hop's branch reseed) is applied at
+        // its exact Moment, the run is deterministic, the marker value reaches the
+        // state (control differs), and the emitted recorded env replays to the
+        // identical hash (the record → replay closure).
+        let run_leg = |mid_seed: u64| -> ([u8; 32], EnvSpec) {
+            let mut s = arrival_server();
+            arr_hello(&mut s);
+            let base = arr_snap(&mut s);
+            s.handle(&Request::Branch {
+                snap: base,
+                env: marker_env(0x1111, &[(0, 0x1111), (300, mid_seed)]),
+            })
+            .unwrap()
+            .unwrap();
+            assert!(matches!(arr_run(&mut s), Ok(Reply::Stop(_))));
+            (arr_hash(&s), s.recorded_env().clone())
+        };
+        let (h1, rec1) = run_leg(0x2222);
+        let (h1_again, _) = run_leg(0x2222);
+        assert_eq!(h1, h1_again, "same markers ⇒ bit-identical terminal hash");
+        let (h2, _) = run_leg(0x3333);
+        assert_ne!(h2, h1, "the mid-run reseed value reaches the state");
+
+        // The recorded env carries both markers and reproduces from the base.
+        assert_eq!(rec1.reseeds().len(), 2, "floor + mid-run markers recorded");
+        let mut r = arrival_server();
+        arr_hello(&mut r);
+        let base_r = arr_snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: rec1.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
+        assert_eq!(arr_hash(&r), h1, "recorded_env replays the reseed schedule");
+    }
+
+    #[test]
+    fn reseed_marker_behind_the_restore_floor_is_rejected() {
+        // Advance the live V-time to 100 (a perturb-armed deadline run lands
+        // exactly there), seal, then try to branch with a marker behind it.
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        s.handle(&Request::Perturb {
+            fault: HostFault(
+                EnvHostFault::CorruptMemory {
+                    gpa: 0x40,
+                    mask: BitMask(0xFF),
+                }
+                .encode(),
+            ),
+            at: Moment(100),
+        })
+        .unwrap()
+        .unwrap();
+        let stop = s
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(VTime(100)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap();
+        assert!(matches!(stop, Ok(Reply::Stop(_))));
+        let base = arr_snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: marker_env(7, &[(50, 0xAB)]),
+            })
+            .unwrap(),
+            Err(ControlError::PerturbPastMoment { at: 50, floor: 100 }),
+            "a marker behind the snapshot floor can only apply later than recorded — reject"
+        );
+    }
+
+    #[test]
+    fn snapshot_with_a_staged_reseed_is_snapshot_while_armed() {
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let base = arr_snap(&mut s);
+        s.handle(&Request::Branch {
+            snap: base,
+            env: marker_env(7, &[(0, 7), (300, 9)]),
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            s.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotWhileArmed),
+            "a staged reseed is armed future state a snapshot cannot carry"
+        );
+    }
+
+    #[test]
+    fn terminal_with_a_staged_reseed_poisons_and_rewind_recovers() {
+        // A reseed staged beyond the trajectory is the same loud
+        // ScheduleUnsatisfiable class as a crossed fault (the task spec's gate).
+        let mut s = server(vec![Exit::Rdtsc, Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        s.handle(&Request::Branch {
+            snap: base,
+            env: marker_env(7, &[(1_000_000, 9)]),
+        })
+        .unwrap()
+        .unwrap();
+        // The fork halts long before Moment 1_000_000: poison, loud.
+        assert!(matches!(
+            run_all_res(&mut s),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment: 1_000_000,
+                ..
+            })
+        ));
+        // Latched until a rewind.
+        assert!(matches!(
+            run_all_res(&mut s),
+            Err(ControlError::ScheduleUnsatisfiable { .. })
+        ));
+        // A replay rewinds and clears the latch.
+        assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
+        assert!(run_all_res(&mut s).is_ok());
     }
 }
