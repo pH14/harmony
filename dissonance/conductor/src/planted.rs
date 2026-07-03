@@ -266,18 +266,15 @@ impl Machine for ToyPlantedMachine {
         // `[base, stop_at]`, mirroring task-59's exact-arrival backend
         // (`control.rs` run(): drain `m == vns`, poison anything crossed or
         // still staged at a natural terminal). Faults are in `Moment` order.
+        let mut triggered = false;
         for (m, f) in self.schedule() {
             if base <= m && m <= stop_at {
-                // Reached and applied at exact arrival. A trigger match aborts
-                // the supervisor → reboot → Crash (the box's Crash{Shutdown});
-                // a non-matching upset is inert, keep scanning.
+                // Reached and applied at exact arrival. A trigger match will
+                // abort the supervisor → reboot → Crash; a non-matching upset is
+                // inert. Record it, but the terminal (and whether the deadline
+                // pre-empts the crash) is decided after the scan.
                 if self.trigger.fires(m, &f) {
-                    self.vtime = terminal_vtime;
-                    return Ok(StopReason::Crash {
-                        // The `0x60` byte after the kind tags the task-60 planted crash.
-                        vtime: VTime(self.vtime),
-                        info: vec![CRASH_KIND_SHUTDOWN, 0x60],
-                    });
+                    triggered = true;
                 }
             } else if hits_deadline && m > stop_at {
                 // Beyond the deadline: never armed, left staged — the run stops
@@ -297,14 +294,27 @@ impl Machine for ToyPlantedMachine {
             }
         }
 
-        // No trigger fired and nothing was unsatisfiable: the clean terminal.
+        // The **caller's deadline bounds the terminal.** A triggered upset aborts
+        // the supervisor, but the resulting reboot completes at `terminal_vtime`;
+        // if a deadline falls in `(fault Moment, terminal_vtime)` the real
+        // `Machine` stops at the deadline **before** the crash is observed, so the
+        // toy must return `Deadline` at `d.0` — never a `Crash` (or `Quiescent`)
+        // stamped beyond the caller's bound.
         self.vtime = stop_at;
         if hits_deadline {
-            Ok(StopReason::Deadline {
+            return Ok(StopReason::Deadline {
                 vtime: VTime(stop_at),
+            });
+        }
+        // The natural terminal is within the bound: a triggered reboot → Crash,
+        // else the loop completed → `/init` halts → Quiescent.
+        if triggered {
+            Ok(StopReason::Crash {
+                // The `0x60` byte after the kind tags the task-60 planted crash.
+                vtime: VTime(stop_at),
+                info: vec![CRASH_KIND_SHUTDOWN, 0x60],
             })
         } else {
-            // The loop completed → `/init` halts → Quiescent.
             Ok(StopReason::Quiescent {
                 vtime: VTime(stop_at),
             })
@@ -611,6 +621,49 @@ mod tests {
             let stop = m.run(&StopConditions::default(), None).expect("in-window fault applies");
             let is_trigger = gpa == 0x3000 && bit == 31;
             prop_assert_eq!(matches!(stop, StopReason::Crash { .. }), is_trigger);
+        }
+
+        /// **Deadline-vs-crash ordering.** The exact upset triggers, but the
+        /// resulting reboot only completes at the run's `terminal` V-time. A
+        /// caller deadline landing in `(fault Moment, terminal)` must WIN — the
+        /// real `Machine` stops at the deadline before the crash is observed, so
+        /// the toy returns `Deadline` at exactly `d`, never a `Crash` stamped
+        /// beyond the caller's bound. (A deadline at/after `terminal` still
+        /// yields the `Crash`.)
+        #[test]
+        fn a_deadline_inside_the_crash_wins_over_the_crash(pick in 1u64..10_000) {
+            let mut m = ToyPlantedMachine::new(trigger());
+            let b = m.snapshot().expect("boot is quiescent");
+            let env = fault_env(0x3000, 1 << 31, BASE_VTIME + 3); // the exact trigger, Moment 1003
+            // The crash terminal with no deadline (> the fault Moment).
+            m.branch(b, &env).unwrap();
+            let crash = m.run(&StopConditions::default(), None).unwrap();
+            let terminal = crash.vtime().0;
+            prop_assert!(matches!(crash, StopReason::Crash { .. }), "no-deadline run must crash");
+            prop_assert!(terminal > BASE_VTIME + 3 + 1);
+            // A deadline strictly inside (Moment 1003, terminal) → Deadline wins.
+            let lo = BASE_VTIME + 3 + 1;
+            let d = lo + (pick % (terminal - lo));
+            m.branch(b, &env).unwrap();
+            let stop = m
+                .run(
+                    &StopConditions { deadline: Some(VTime(d)), ..StopConditions::default() },
+                    None,
+                )
+                .unwrap();
+            prop_assert_eq!(stop, StopReason::Deadline { vtime: VTime(d) });
+            // A deadline at/after the terminal still observes the crash.
+            m.branch(b, &env).unwrap();
+            let stop_far = m
+                .run(
+                    &StopConditions { deadline: Some(VTime(terminal + pick)), ..StopConditions::default() },
+                    None,
+                )
+                .unwrap();
+            prop_assert!(
+                matches!(stop_far, StopReason::Crash { .. }),
+                "a deadline at/after the terminal still observes the crash"
+            );
         }
     }
 }
