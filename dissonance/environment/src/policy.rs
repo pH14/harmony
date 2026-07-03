@@ -296,6 +296,22 @@ impl FaultPolicy {
         self.buggify.sample(point, rng)
     }
 
+    /// Whether this policy faults **only** via buggify — every service class
+    /// ([`NetFlow`](DecisionClass::NetFlow) / [`BlockIo`](DecisionClass::BlockIo)
+    /// / [`Process`](DecisionClass::Process)) is the never-fault baseline, and
+    /// only the per-point [`DecisionClass::Buggify`] biasing may be set (task 73).
+    ///
+    /// The task-73 SDK decide-seam enforces buggify (the guest asks over
+    /// [`ServiceId::Sdk`], the host answers via [`decide`](crate::Environment::decide)),
+    /// so a control server that has not yet built the full task-61 guest-fault
+    /// enforcement loop can still **accept** a buggify-only reproducer — while a
+    /// policy carrying an unenforced net/block/process fault is still rejected.
+    pub fn is_buggify_only(&self) -> bool {
+        self.net == ClassPolicy::none()
+            && self.block == ClassPolicy::none()
+            && self.process == ClassPolicy::none()
+    }
+
     /// Mutable access to a fault class's policy. The caller guarantees `class` is
     /// a fault class (checked in [`set_class`](FaultPolicy::set_class)).
     fn class_mut(&mut self, class: DecisionClass) -> &mut ClassPolicy {

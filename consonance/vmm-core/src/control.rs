@@ -15,8 +15,9 @@
 //!
 //! - **`hello(caps)`** → the server's [`Caps`]: protocol 1, `Environment` blob
 //!   version exactly [`EnvSpec::BLOB_VERSION`], **empty/zero-width coverage
-//!   geometry** (no coverage producer exists yet) and `GUEST_HAS_SDK` off. Any
-//!   other verb before `hello` answers [`ControlError::Unsupported`].
+//!   geometry** (no coverage producer exists yet) and — task 73 —
+//!   `GUEST_HAS_SDK` (the doorbell is serviced). Any other verb before `hello`
+//!   answers [`ControlError::Unsupported`].
 //! - **`snapshot`** → seal the current point (memory + `vm_state`) into the
 //!   engine and mint a pool-wide [`SnapId`]. Task 41's non-quiescent capture is
 //!   merged, so mid-workload points are sealable; the remaining fail-closed
@@ -91,15 +92,15 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use control_proto::{
-    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, HashScope, Reply, Request, SnapId,
-    StopReason, VTime, decode_request, encode_reply,
+    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Reply,
+    Request, SnapId, StopReason, VTime, decode_request, encode_reply,
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 /// Boots a fresh, equivalently-composed VM — the restore target for every
 /// `branch`/`replay` (see the module doc's fresh-VM discipline). On the box
@@ -144,8 +145,10 @@ pub enum ServeError {
 /// The [`Caps`] this server negotiates: the current negotiated application
 /// protocol ([`control_proto::APP_PROTOCOL_VERSION`]), `Environment` blobs exactly
 /// at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry** (no coverage
-/// producer exists — task 58 is seed-driven), and no flags (`GUEST_HAS_SDK` off).
-/// Exposed so the client side can pin its compatibility check against the same
+/// producer exists — task 58 is seed-driven), and — task 73 — the
+/// `GUEST_HAS_SDK` flag (the server services the hypercall doorbell for a
+/// cooperating guest SDK). Exposed so the client side can pin its check against
+/// the same
 /// constant — a peer that negotiated an older version rejects **at `hello`** rather
 /// than breaking mid-session on a reply tag it does not know (PR #51 round-8).
 pub fn server_caps() -> Caps {
@@ -157,7 +160,11 @@ pub fn server_caps() -> Caps {
             map_bytes: 0,
             producer: 0,
         },
-        flags: control_proto::CapFlags::NONE,
+        // Task 73: the server now services the hypercall doorbell for a
+        // cooperating guest SDK — assertions surface `StopReason::Assertion`,
+        // `setup_complete` surfaces `StopReason::SnapshotPoint`, and buggify
+        // decisions are answered — so `GUEST_HAS_SDK` is advertised.
+        flags: control_proto::CapFlags::GUEST_HAS_SDK,
     }
 }
 
@@ -572,6 +579,10 @@ impl<B: Backend> ControlServer<B> {
         //    `seed` is the branch seed (`None` for a verbatim replay); `host` is
         //    the env's host-plane schedule to stage after a successful restore.
         let mut host: Vec<(environment::Moment, environment::HostFault)> = Vec::new();
+        // Task 73: the branch env's (buggify-only) fault policy, preserved into the
+        // recorded reproducer below so `recorded_env()` re-emits it and a replay
+        // reproduces the buggify decisions. `None` for a verbatim replay.
+        let mut env_policy: Option<FaultPolicy> = None;
         let seed = match env {
             None => None,
             Some(env) => {
@@ -589,8 +600,15 @@ impl<B: Backend> ControlServer<B> {
                 // REJECTED rather than silently run without them (a silent no-op
                 // mints reproducers that do not reproduce): a **guest** override
                 // needs the task-61 `decide`-seam loop; a **standing** fault needs
-                // the guest-utility enforcement; a **non-`none` fault policy** makes
-                // the seeded stream answer decisions with faults no service enforces.
+                // the guest-utility enforcement; a fault policy that faults a
+                // **service** class (net/block/process) makes the seeded stream
+                // answer decisions with faults no service enforces.
+                //
+                // **Task 73 relaxation:** a **buggify-only** policy IS enforceable
+                // now — the SDK decide-seam (the doorbell's `Sdk` service →
+                // `Environment::decide`) answers `DecisionClass::Buggify`, so a
+                // reproducer whose only faults are buggify biasing is accepted
+                // (its buggify decisions replay from the seeded fault stream).
                 let has_standing = matches!(
                     &spec,
                     EnvSpec::Recorded { standing, .. } if !standing.is_empty()
@@ -599,10 +617,11 @@ impl<B: Backend> ControlServer<B> {
                     .overrides()
                     .values()
                     .any(|a| a.guest_answer().is_some());
-                if has_guest || has_standing || spec.policy() != &FaultPolicy::none() {
+                if has_guest || has_standing || !spec.policy().is_buggify_only() {
                     return Ok(Err(ControlError::Unsupported));
                 }
                 host = spec.host_faults().collect();
+                env_policy = Some(spec.policy().clone());
                 Some(spec.seed())
             }
         };
@@ -689,10 +708,34 @@ impl<B: Backend> ControlServer<B> {
         //    order, no duplicates) at step 1b against the live VM — side-effect-free —
         //    so this only stages them; `run` applies + records them.
         self.reset_schedule_to_fresh_vm();
+        // Task 73: preserve the branch env's (buggify-only) policy in the recorded
+        // reproducer (the reset above reset it to `none`), then wire the SDK
+        // channel from the now-final reproducer so a seeded run draws buggify from
+        // the seeded fault stream and a replay from the recorded overrides. Wired
+        // on every restore; inert (and unhashed) for a guest that never rings the
+        // doorbell, so non-SDK paths are unchanged.
+        if let Some(policy) = env_policy {
+            self.set_recorded_policy(policy);
+        }
+        let sdk_env = self.recorded.materialize();
+        self.vmm
+            .as_mut()
+            .ok_or(ServeError::Poisoned)?
+            .enable_sdk(sdk_env);
         for (m, fault) in host {
             self.schedule.insert(m, fault);
         }
         Ok(Ok(Reply::Unit))
+    }
+
+    /// Overwrite the recorded reproducer's fault policy in place, keeping its
+    /// variant (task 73): the branch env's buggify-only policy must survive into
+    /// [`recorded_env`](ControlServer::recorded_env) so a replay reproduces the
+    /// buggify decisions.
+    fn set_recorded_policy(&mut self, policy: FaultPolicy) {
+        match &mut self.recorded {
+            EnvSpec::Seeded { policy: p, .. } | EnvSpec::Recorded { policy: p, .. } => *p = policy,
+        }
     }
 
     /// Reset the host-plane schedule + recorded reproducer for the VM currently in
@@ -838,9 +881,27 @@ impl<B: Backend> ControlServer<B> {
                 None => vmm.clear_arrival(),
             }
 
-            // 4. Step. A terminal stop ends the run.
+            // 4. Step. A terminal stop ends the run; a cooperating-SDK stop
+            //    (task 73) surfaces the assertion / snapshot point.
             match vmm.step()? {
                 Step::Continued => {}
+                Step::SdkStop => {
+                    let vns = vmm.effective_vns().unwrap_or(0);
+                    vmm.clear_arrival();
+                    let stop = vmm.take_sdk_stop();
+                    // The SDK stop is a guest-observable stop, not a substrate
+                    // terminal, and (like the deadline stop) leaves any future
+                    // staged fault staged — no poison. Buggify decisions are
+                    // reproduced by the reproducer's seed + buggify-only policy
+                    // (`recorded_env`), so nothing is recorded here.
+                    let reason = match stop {
+                        Some(vmm_core_sdk_stop) => sdk_stop_to_reason(vmm_core_sdk_stop, vns),
+                        // `SdkStop` is armed before the step returns `SdkStop`, so
+                        // this is statically unreachable; be total anyway.
+                        None => StopReason::SnapshotPoint { vtime: VTime(vns) },
+                    };
+                    return Ok(Ok(Reply::Stop(reason)));
+                }
                 Step::Terminal(reason) => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
@@ -879,6 +940,20 @@ impl<B: Backend> ControlServer<B> {
 /// a workload whose *clean terminal is a forced reboot* (the Postgres image)
 /// reads as `Crash{Shutdown}` here, and interpreting that convention is the
 /// workload-aware caller's job.
+/// Map a task-73 [`SdkStop`] to the wire [`StopReason`], stamped with the
+/// effective V-time. An assertion violation carries its point id + detail as the
+/// [`EventRef`]; a `setup_complete` is a snapshot fork.
+fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
+    let vtime = VTime(vns);
+    match stop {
+        SdkStop::Assertion { id, data } => StopReason::Assertion {
+            vtime,
+            ev: EventRef { id, data },
+        },
+        SdkStop::SnapshotPoint => StopReason::SnapshotPoint { vtime },
+    }
+}
+
 fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
     let vtime = VTime(vns);
     match reason {
@@ -1072,8 +1147,8 @@ mod tests {
         assert_eq!(caps.coverage.map_bytes, 0, "no coverage producer exists");
         assert_eq!(caps.coverage.producer, 0);
         assert!(
-            !caps.flags.contains(CapFlags::GUEST_HAS_SDK),
-            "GUEST_HAS_SDK is off"
+            caps.flags.contains(CapFlags::GUEST_HAS_SDK),
+            "task 73 services the doorbell, so GUEST_HAS_SDK is advertised"
         );
     }
 

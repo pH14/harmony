@@ -129,6 +129,7 @@ pub fn environment::EnvCodec::seeded(u64, environment::FaultPolicy) -> environme
 pub struct environment::FaultPolicy
 impl environment::FaultPolicy
 pub fn environment::FaultPolicy::from_bytes(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::FaultPolicy::is_buggify_only(&self) -> bool
 pub fn environment::FaultPolicy::none() -> Self
 pub fn environment::FaultPolicy::set_buggify_default(&mut self, u32, u32) -> core::result::Result<(), environment::EnvError>
 pub fn environment::FaultPolicy::set_buggify_point(&mut self, u32, u32, u32) -> core::result::Result<(), environment::EnvError>
