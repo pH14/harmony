@@ -1,0 +1,18 @@
+[package]
+name = "sdk-demo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+# The SDK-instrumented demo guest (task 73): a bare-metal payload that drives the
+# whole guest SDK — the catalog, every assertion verb, IJON state, buggify, and
+# the setup-complete lifecycle — over the real `Client<VmcallTransport>` doorbell
+# transport. Box-only to *run* (needs the patched KVM + the vmm-core doorbell
+# seam); builds standalone for x86_64-unknown-none as the compile proof.
+[dependencies]
+common = { path = "../common" }
+# The guest SDK (its own workspace under guest/sdk) and the doorbell transport
+# (consonance). Path deps cross workspaces; guest-side no_std throughout.
+harmony-sdk = { path = "../../sdk" }
+vmcall-transport = { path = "../../../consonance/vmcall-transport" }
