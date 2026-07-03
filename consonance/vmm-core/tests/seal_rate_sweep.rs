@@ -672,9 +672,25 @@ fn seal_rate_sweep() {
     let prof = profile(&kernel, &initramfs);
     let schedule = SamplingSchedule::build(prof.span_start, prof.span_end, n, &prof.busy)
         .expect("build the sampling schedule over the post-readiness span");
+    // The schedule dedups colliding busy-center/uniform targets, so `len()` is the TRUE distinct
+    // count (≤ n). Assert distinctness (belt-and-braces on the box run) and that we still have the
+    // required ≥ 64 distinct Moments after dedup.
+    let scheduled = schedule.len();
+    assert!(
+        schedule
+            .targets()
+            .windows(2)
+            .all(|w| w[0].vtime < w[1].vtime),
+        "schedule targets must be distinct (strictly increasing)"
+    );
+    assert!(
+        scheduled >= 64,
+        "after dedup only {scheduled} distinct targets remain (< 64 required) — increase TARGETS \
+         or reduce busy-window collisions"
+    );
     eprintln!(
-        "[sweep] schedule: {} targets ({} uniform + {} busy) across [{}, {})",
-        schedule.len(),
+        "[sweep] schedule: {scheduled} distinct targets (of {n} requested; {} uniform + {} busy) \
+         across [{}, {})",
         schedule.uniform_count(),
         schedule.busy_count(),
         prof.span_start,
@@ -1017,7 +1033,7 @@ fn seal_rate_sweep() {
         overshoot,
         &predicate,
         depth,
-        schedule_faithful,
+        schedule_faithful.map(|(m, _, _)| m),
         &nondeterministic,
         &inputs.determinism_summary(),
         horizon_insufficient.len(),
@@ -1026,12 +1042,30 @@ fn seal_rate_sweep() {
 
     // A NO-GO / grid-restricted verdict is a *valid finding*, not a test failure — do not
     // assert on the ruling. Assert only the structural + regression invariants:
-    assert_eq!(nominal.len(), n, "must have measured all N targets");
-    assert!(n >= 64, "N >= 64");
+    assert_eq!(
+        nominal.len(),
+        scheduled,
+        "must have measured every distinct scheduled target"
+    );
+    assert!(scheduled >= 64, "N >= 64 distinct targets");
     assert!(
         !sealed.is_empty(),
         "no target sealed at all — task 41's non-quiescent capture regressed (escalate)"
     );
+    // §4b ESCALATE: a schedule-faithful mismatch means the probe/deadline schedule is NOT a
+    // deterministic part of the trajectory — the substrate is not sound. The ESCALATE class must
+    // NEVER exit green; fail the sweep, quoting both hashes.
+    if let Some((false, child_hash, replayed_hash)) = schedule_faithful {
+        panic!(
+            "§4b ESCALATE — schedule-faithful replay MISMATCH: restoring the parent and re-running \
+             the live legs with the same run(deadline)+probe schedule did NOT reproduce the child's \
+             probe-laden state_hash. The schedule is not a deterministic part of the trajectory; the \
+             substrate is NOT sound (escalate to the foreman, do not patch here).\n  \
+             child live_hash_probed = {}\n  schedule-faithful replay = {}",
+            hex(&child_hash),
+            hex(&replayed_hash),
+        );
+    }
     // A genuine seal that will not branch deterministically is a determinism-core
     // regression to escalate (task 63 non-goal: do not patch it here).
     assert!(
@@ -1135,15 +1169,16 @@ fn materialization_depth(
 ///   substrate is sound (materialize by replaying the exact schedule, or probe-free).
 /// - **Mismatch** ⇒ the probes inject non-reproducible perturbation → escalate.
 ///
-/// Reports the verdict; does **not** assert (the GO/NO-GO ruling is the integrator's). `None`
-/// if there is no distinct-depth snapshotted pair to test.
+/// Returns `(matches, child_live_hash_probed, replayed_hash)`; a `false` match is the ESCALATE
+/// class (substrate NOT sound) and the caller **fails the sweep** with both hashes. `None` if
+/// there is no distinct-depth snapshotted pair to test.
 fn materialization_schedule_faithful(
     engine: &SnapshotEngine,
     sealed: &[Sealed],
     schedule: &SamplingSchedule,
     kernel: &[u8],
     initramfs: &[u8],
-) -> Option<bool> {
+) -> Option<(bool, [u8; 32], [u8; 32])> {
     if sealed.len() < 2 {
         eprintln!("[sweep] §4b schedule-faithful replay: <2 seals, skipped");
         return None;
@@ -1188,7 +1223,7 @@ fn materialization_schedule_faithful(
         hex(&child.live_hash_probed),
         hex(&replayed),
     );
-    Some(matches)
+    Some((matches, child.live_hash_probed, replayed))
 }
 
 /// Print the full measurement in the shape `SEAL-RATE-REPORT.md` transcribes.

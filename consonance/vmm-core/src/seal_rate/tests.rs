@@ -105,6 +105,43 @@ fn build_no_windows_all_uniform() {
     let s = SamplingSchedule::build(1_000, 100_000, 64, &[]).unwrap();
     assert_eq!(s.busy_count(), 0);
     assert_eq!(s.uniform_count(), 64);
+    // Distinct (no dedup needed here, but the invariant holds).
+    for w in s.targets().windows(2) {
+        assert!(w[0].vtime < w[1].vtime);
+    }
+}
+
+#[test]
+fn build_dedups_colliding_busy_centers() {
+    // Two windows with the SAME center (50 000) — without dedup that is two probes at one
+    // V-time, inflating the denominator. After dedup exactly one survives, targets are distinct,
+    // and the true count drops below the requested 64.
+    let ws = vec![
+        BusyWindow {
+            start: 49_500,
+            end: 50_500,
+            kind: BusyKind::WalFsync,
+        }, // center 50_000
+        BusyWindow {
+            start: 49_000,
+            end: 51_000,
+            kind: BusyKind::SchedulerTick,
+        }, // center 50_000
+    ];
+    let s = SamplingSchedule::build(0, 1_000_000, 64, &ws).unwrap();
+    let ts = s.targets();
+    assert_eq!(
+        ts.iter().filter(|t| t.vtime == 50_000).count(),
+        1,
+        "the two colliding busy centers deduped to one"
+    );
+    assert!(
+        s.len() <= 63,
+        "a collision was removed → fewer than 64 distinct targets"
+    );
+    for w in ts.windows(2) {
+        assert!(w[0].vtime < w[1].vtime, "distinct after dedup");
+    }
 }
 
 #[test]
@@ -116,14 +153,15 @@ fn jitter_zero_is_identity() {
 #[test]
 fn jitter_u64_max_does_not_overflow() {
     // `2 * jitter + 1` must not panic (debug) / wrap (release) at the extreme — the internal
-    // span is computed in u128. Every target still lands within the span and stays sorted.
+    // span is computed in u128. Every target stays in range + distinct; the count may shrink
+    // (extreme jitter clamps many targets onto the span bounds, which dedup collapses).
     let s = SamplingSchedule::build(1_000, 1_000_000, 64, &[]).unwrap();
     let j = s.jittered(u64::MAX);
-    assert_eq!(j.len(), 64);
+    assert!(!j.is_empty() && j.len() <= 64);
     let ts = j.targets();
     assert!(ts.iter().all(|t| t.vtime >= 1_000 && t.vtime < 1_000_000));
     for w in ts.windows(2) {
-        assert!(w[0].vtime <= w[1].vtime);
+        assert!(w[0].vtime < w[1].vtime, "distinct after dedup");
     }
 }
 
@@ -146,14 +184,16 @@ proptest! {
 
         match SamplingSchedule::build(start, end, n, &ws) {
             Ok(sched) => {
-                prop_assert_eq!(sched.len(), n);
-                prop_assert_eq!(sched.uniform_count() + sched.busy_count(), n);
+                // Dedup by V-time may drop busy-center collisions, so len() <= n and every
+                // target is DISTINCT (strictly increasing).
+                prop_assert!(sched.len() <= n);
+                prop_assert_eq!(sched.uniform_count() + sched.busy_count(), sched.len());
                 let expected_busy = if ws.is_empty() { 0 } else { ws.len().min((n/8).max(1)).min(n) };
-                prop_assert_eq!(sched.busy_count(), expected_busy);
-                // sorted + in-range
+                prop_assert!(sched.busy_count() <= expected_busy);
+                // strictly-increasing (distinct) + in-range
                 let ts = sched.targets();
                 for w in ts.windows(2) {
-                    prop_assert!(w[0].vtime <= w[1].vtime);
+                    prop_assert!(w[0].vtime < w[1].vtime);
                 }
                 prop_assert!(ts.iter().all(|t| t.vtime >= start && t.vtime < end));
             }
@@ -164,7 +204,7 @@ proptest! {
         }
     }
 
-    /// Jitter preserves length, range, and sort order.
+    /// Jitter preserves range + distinctness; length may shrink (collisions dedup away).
     #[test]
     fn prop_jitter_preserves_invariants(
         start in 0u64..100_000,
@@ -175,10 +215,11 @@ proptest! {
         let end = start + width;
         let sched = SamplingSchedule::build(start, end, n, &[]).unwrap();
         let j = sched.jittered(jitter);
-        prop_assert_eq!(j.len(), sched.len());
+        prop_assert!(j.len() <= sched.len());
+        prop_assert!(!j.is_empty());
         let ts = j.targets();
         for w in ts.windows(2) {
-            prop_assert!(w[0].vtime <= w[1].vtime);
+            prop_assert!(w[0].vtime < w[1].vtime);
         }
         prop_assert!(ts.iter().all(|t| t.vtime >= start && t.vtime < end));
     }

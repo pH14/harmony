@@ -239,6 +239,14 @@ impl SamplingSchedule {
         }
 
         targets.sort_by_key(|t| t.vtime);
+        // Dedup by V-time so a busy-window center that collides with a uniform target (or another
+        // window's center) does not inflate the sampled denominator with two probes at one point.
+        // The result is strictly increasing; `len()` is the true distinct count (may be < `n`).
+        targets.dedup_by_key(|t| t.vtime);
+        debug_assert!(
+            targets.windows(2).all(|w| w[0].vtime < w[1].vtime),
+            "schedule targets must be strictly increasing (distinct) after dedup"
+        );
         Ok(SamplingSchedule {
             targets,
             span_start,
@@ -312,6 +320,14 @@ impl SamplingSchedule {
             })
             .collect();
         targets.sort_by_key(|t| t.vtime);
+        // Jitter (and its clamp to the span bounds) can collide two targets onto one V-time —
+        // dedup so the distinct-target invariant holds here too (`len()` may shrink below the
+        // pre-jitter count for large jitter, which is correct: fewer distinct points).
+        targets.dedup_by_key(|t| t.vtime);
+        debug_assert!(
+            targets.windows(2).all(|w| w[0].vtime < w[1].vtime),
+            "jittered targets must be strictly increasing (distinct) after dedup"
+        );
         SamplingSchedule {
             targets,
             span_start: self.span_start,
