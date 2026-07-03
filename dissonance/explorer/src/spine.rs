@@ -183,9 +183,10 @@ pub enum Value {
 }
 
 /// A decoded link-tier guest event (SDK assertions, state registers, buggify
-/// results). The stream stays **empty until task 73** wires the guest SDK; the
-/// slot exists so [`RunTrace`]'s shape is fixed now. `kind` + sorted `attrs`
-/// make any event adaptable to [`Matchable`] by the channel plugin.
+/// results). Populated by the task-73 `link` plugin, which decodes the raw
+/// `(Moment, event_id, bytes)` the guest SDK emits into this typed form. `kind` +
+/// sorted `attrs` make any event adaptable to [`Matchable`] by the channel
+/// plugin (a `link`-local newtype does so — orphan rules keep the impl there).
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub struct GuestEvent {
     /// The event kind (an SDK-defined discriminator, e.g. `"assert_sometimes"`).
@@ -241,7 +242,9 @@ pub struct RunTrace {
     /// accumulated bitmap available (in production) only at run end, so it is a
     /// **terminal** signal — never blended into along-timeline cell keys.
     pub coverage: Option<CoverageView>,
-    /// The link-tier event stream (decoded SDK) — **empty until task 73**.
+    /// The link-tier event stream (decoded SDK) — populated by task 73's `link`
+    /// plugin from the guest SDK's Event emissions (empty for a run with no
+    /// cooperating SDK).
     pub events: Vec<(Moment, GuestEvent)>,
     /// The scrape-tier record stream (decoded logs/spans/events) — **empty
     /// until task 65**.

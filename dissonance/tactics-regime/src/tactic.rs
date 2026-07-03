@@ -22,6 +22,12 @@ pub fn class_tag(class: DecisionClass) -> u16 {
         DecisionClass::NetFlow => 4,
         DecisionClass::BlockIo => 5,
         DecisionClass::Process => 6,
+        // Task 73 added the buggify class (discriminant 7). This regime tactic
+        // does **not** govern buggify — [`class_from_tag`] deliberately still
+        // rejects tag 7, so a buggify point declines to the seeded base, where
+        // the `FaultPolicy`'s per-point buggify biasing answers it. The arm
+        // exists only to keep this mirror of `environment`'s numbering exhaustive.
+        DecisionClass::Buggify => 7,
     }
 }
 
