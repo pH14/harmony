@@ -62,7 +62,9 @@
 //! seals get the full 2 GiB snapshot + §2/§4 branch-verify, default 24), `WALL_BUDGET_SECS`
 //! (per **guest**, default 1800), `SPAN_START`/`SPAN_END` (skip the profiling pass and use
 //! this V-time span directly), `BUSY_CENTERS` (comma-separated V-times to place
-//! interrupt-service windows at when profiling is skipped), `UNPROBED_TAIL_ALLOWANCE` (max §3
+//! interrupt-service windows at when profiling is skipped), `BUSY_TARGETS` (how many known-busy
+//! interrupt-service windows the profiling pass locates, default 6 — the schedule then places a
+//! handful of §1 targets inside them, spec §1), `UNPROBED_TAIL_ALLOWANCE` (max §3
 //! jittered targets allowed to be dropped past a terminal break, default 4 — a mid-span step
 //! error always fails), `BOOT_CMDLINE`.
 #![cfg(target_os = "linux")]
@@ -75,8 +77,8 @@ use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::seal_rate::{
     BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Overshoot,
-    PredicateQuality, Ruling, RulingInputs, RulingThresholds, SamplingSchedule, SealAttempt,
-    SealResult, SealStats, VTime, ppm_percent, rate_ppm, sealable,
+    PredicateQuality, Ruling, RulingInputs, RulingThresholds, SampleKind, SamplingSchedule,
+    SealAttempt, SealResult, SealStats, VTime, ppm_percent, rate_ppm, sealable,
 };
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vmm::{Step, TerminalReason, Vmm, VmmError};
@@ -494,11 +496,14 @@ struct Profile {
 }
 
 /// Run one live guest to a clean terminal, recording the V-time at `PG_READY` (span start),
-/// the terminal V-time (span end), and up to three interrupt-service busy windows (V-times
-/// where a genuine active event injection is in flight). Deterministic (same seed ⇒ same
-/// timeline as the measurement passes).
+/// the terminal V-time (span end), and a handful of interrupt-service busy windows (V-times
+/// where the vCPU carries in-flight interrupt-injection state — the task 39 fail-closed class).
+/// Deterministic (same seed ⇒ same timeline as the measurement passes; the detector is a
+/// non-mutating read).
 fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
     let start = watchdog_start();
+    // How many busy-window targets to locate (spec §1's "a handful"; default 6).
+    let busy_target_cap = env_usize("BUSY_TARGETS", 6);
     // Allow skipping the (expensive) profiling run by pinning the span + busy centers.
     if let (Ok(s), Ok(e)) = (std::env::var("SPAN_START"), std::env::var("SPAN_END")) {
         let span_start: VTime = s.parse().expect("SPAN_START is a u64");
@@ -566,11 +571,17 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
             span_start = vmm.effective_vns().unwrap_or(0);
             eprintln!("[profile] PG_READY at V-time {span_start}");
         }
-        // Sample a few busy windows: genuine active event injection in the post-readiness
-        // phase (interrupt service). Only at synchronized boundaries (effective_vns valid).
+        // Locate a handful of KNOWN-busy windows in the post-readiness phase: V-times where the
+        // vCPU carries **in-flight interrupt-injection state** — the *interrupt-service* class
+        // (task 39 would have fail-closed-rejected it: an injected/pending vector or KVM's
+        // post-injection modifier residuals). This is the LAPIC-timer/scheduler-tick + IRQ-service
+        // signature; a never-halting Postgres guest under the V-time timer passes through it
+        // repeatedly. `has_inflight_event_injection()` is a **non-mutating** (`&self`) best-effort
+        // read, so profiling's trajectory is identical to the measurement guest's (same seed) —
+        // the detected centers are valid targets. Spread by ≥ 1 M ns so they cover the span.
         if ready
-            && busy_centers.len() < 3
-            && vmm.has_active_event_injection()
+            && busy_centers.len() < busy_target_cap
+            && vmm.has_inflight_event_injection()
             && let Some(v) = vmm.effective_vns()
             && busy_centers.last().is_none_or(|&last| v > last + 1_000_000)
         {
@@ -688,6 +699,14 @@ fn seal_rate_sweep() {
         "after dedup only {scheduled} distinct targets remain (< 64 required) — increase TARGETS \
          or reduce busy-window collisions"
     );
+    // Spec §1: a handful (≥ 4) of targets deliberately inside known-busy windows. If the detector
+    // under-finds, raise BUSY_TARGETS / broaden detection — never measure a busy-less §1.
+    assert!(
+        schedule.busy_count() >= 4,
+        "only {} busy-window target(s) scheduled (< 4) — spec §1 requires a handful inside \
+         known-busy windows; raise BUSY_TARGETS or supply BUSY_CENTERS",
+        schedule.busy_count()
+    );
     eprintln!(
         "[sweep] schedule: {scheduled} distinct targets (of {n} requested; {} uniform + {} busy) \
          across [{}, {})",
@@ -731,7 +750,10 @@ fn seal_rate_sweep() {
                 );
             }
             let landed = live.effective_vns().unwrap_or(0);
-            let take_snapshot = i % snap_stride == 0 || i == last_idx;
+            // Snapshot the spread subset (+ the deepest) AND **every busy-window target**, so the
+            // busy population gets §2 branch-determinism evidence (spec §1), not just §1 seal.
+            let is_busy = matches!(target.kind, SampleKind::Busy(_));
+            let take_snapshot = i % snap_stride == 0 || i == last_idx || is_busy;
             // `state_hash` hashes the full 2 GiB guest image — expensive. Only compute it for the
             // snapshotted subset that actually needs it (§2/§4/§4b), not every target (computing
             // it for all N was the second run's timeout). Capture the CLEAN hash BEFORE probe_seal:
@@ -784,6 +806,19 @@ fn seal_rate_sweep() {
         );
         // Drop the live guest (frees its perf counter) before any fork boots.
     }
+
+    // The BUSY-WINDOW population (spec §1: "a handful inside known-busy windows"). Every busy
+    // target is snapshotted (`is_busy` above), so every busy seal is branch-verified in §2.
+    let busy_scheduled = schedule
+        .targets()
+        .iter()
+        .filter(|t| matches!(t.kind, SampleKind::Busy(_)))
+        .count();
+    let busy_sealed = nominal
+        .iter()
+        .filter(|a| matches!(a.target.kind, SampleKind::Busy(_)) && a.result.is_sealed())
+        .count();
+    eprintln!("[sweep] busy-window population: {busy_sealed}/{busy_scheduled} sealed (§1)");
 
     // --- 2. Prove each successful seal is a real branch point --------------
     eprintln!("\n[sweep] === branch-determinism check: 2 same-seed branches per sealed point ===");
@@ -1028,6 +1063,7 @@ fn seal_rate_sweep() {
         &nominal_stats,
         &adversarial_stats,
         &interior_stats,
+        (busy_scheduled, busy_sealed),
         skipped_overshot,
         adv_unprobed,
         overshoot,
@@ -1233,6 +1269,7 @@ fn emit_report(
     nominal: &SealStats,
     adversarial: &SealStats,
     interior: &SealStats,
+    busy: (usize, usize),
     skipped_overshot: usize,
     unprobed: usize,
     overshoot: Option<Overshoot>,
@@ -1262,6 +1299,11 @@ fn emit_report(
             eprintln!("[REPORT]     nominal fail [{reason}]: {count}");
         }
     }
+    eprintln!(
+        "[REPORT] BUSY-WINDOW population (spec §1, interrupt-service centers): {}/{} sealed; every \
+         busy target is snapshotted → also branch-verified in §2 (see branch-determinism line)",
+        busy.1, busy.0,
+    );
     eprintln!(
         "[REPORT] ADVERSARIAL seal rate: {}/{} = {} (denominators: {} probed / {skipped_overshot} \
          skipped-overshot / {unprobed} unprobed — no silent contamination or shrunk denominator)",
