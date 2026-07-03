@@ -4,8 +4,9 @@
 //! host-side reader of code the guest emits, so — exactly as `vmcall-transport`
 //! privately mirrors `hypercall-proto`'s frame magic (conventions rule 2, the
 //! guest/host protocol pattern) — these constants restate the guest's format and
-//! a golden test (`tests/wire_golden.rs`) pins byte-for-byte agreement with the
-//! bytes the SDK actually emits.
+//! the decode goldens in `tests/decode.rs` pin byte-for-byte agreement with the
+//! bytes the SDK actually emits (`guest/sdk/tests/loopback.rs` pins the guest
+//! side); if the two ever drift, a golden breaks on one side or the other.
 //!
 //! Event-id layout: the top 8 bits are a namespace, the low 24 bits a local id.
 

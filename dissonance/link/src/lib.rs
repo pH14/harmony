@@ -39,7 +39,7 @@
 //! The SDK event byte format is owned by the guest SDK crate
 //! (`guest/sdk/src/wire.rs`, the canonical source). link mirrors those constants
 //! privately (`wire.rs`, conventions rule 2 — the guest/host protocol pattern)
-//! and a golden test (`tests/wire_golden.rs`) pins byte-for-byte agreement.
+//! and the decode goldens in `tests/decode.rs` pin byte-for-byte agreement.
 //!
 //! ## Determinism discipline
 //!
