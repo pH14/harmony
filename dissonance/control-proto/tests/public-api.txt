@@ -20,6 +20,8 @@ pub control_proto::ControlError::PerturbOutOfRange::ram_len: u64
 pub control_proto::ControlError::PerturbPastMoment
 pub control_proto::ControlError::PerturbPastMoment::at: u64
 pub control_proto::ControlError::PerturbPastMoment::floor: u64
+pub control_proto::ControlError::PerturbReservedVector
+pub control_proto::ControlError::PerturbReservedVector::vector: u8
 pub control_proto::ControlError::Protocol(control_proto::ProtocolError)
 pub control_proto::ControlError::ResolveWithoutDecision
 pub control_proto::ControlError::RestoreFailed
@@ -121,6 +123,7 @@ pub const control_proto::StopMask::NONE: Self
 pub fn control_proto::StopMask::arm(self, u16) -> Self
 pub fn control_proto::StopMask::armed(&self, u16) -> bool
 pub struct control_proto::VTime(pub u64)
+pub const control_proto::APP_PROTOCOL_VERSION: u16
 pub const control_proto::MAX_FRAME_LEN: usize
 pub const control_proto::PROTO_VERSION: u16
 pub fn control_proto::decode_reply(&[u8]) -> core::result::Result<core::option::Option<(u32, core::result::Result<control_proto::Reply, control_proto::ControlError>, usize)>, control_proto::ProtocolError>

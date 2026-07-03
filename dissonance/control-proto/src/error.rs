@@ -180,6 +180,16 @@ pub enum ControlError {
     /// staging (task 59; PR #51 round-7 — the exact-`effective_vns` family).
     #[error("perturb at a non-synchronized point (effective V-time is a lower bound)")]
     NotSynchronized,
+    /// A `perturb` (or a `branch` env host fault) stages an `InjectInterrupt` with an
+    /// **architecturally reserved vector** (`0..=15`), which the LAPIC cannot raise.
+    /// A stage-time-decidable property of the request, rejected loudly here (like
+    /// [`PerturbOutOfRange`](Self::PerturbOutOfRange) for a gpa) rather than exploding
+    /// as a session-fatal apply-time failure (task 59; PR #51 round-8).
+    #[error("perturb InjectInterrupt vector {vector} is architecturally reserved (< 16)")]
+    PerturbReservedVector {
+        /// The reserved vector.
+        vector: u8,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

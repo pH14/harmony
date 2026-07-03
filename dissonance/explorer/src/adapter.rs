@@ -432,10 +432,11 @@ impl<S: Read + Write> SocketMachine<S> {
                 )));
             }
         };
-        if caps.protocol_version != 1 {
+        if caps.protocol_version != control_proto::APP_PROTOCOL_VERSION {
             return Err(MachineError::Transport(format!(
-                "incompatible control protocol version {} (need 1)",
-                caps.protocol_version
+                "incompatible control protocol version {} (need {})",
+                caps.protocol_version,
+                control_proto::APP_PROTOCOL_VERSION,
             )));
         }
         if caps.env_version_min > EnvSpec::BLOB_VERSION
@@ -521,11 +522,12 @@ impl<S: Read + Write> SocketMachine<S> {
     }
 }
 
-/// The client half of the caps exchange: same pins as the server (protocol 1,
-/// `EnvSpec` blobs only, no coverage producer, no SDK).
+/// The client half of the caps exchange: same pins as the server (the negotiated
+/// [`control_proto::APP_PROTOCOL_VERSION`], `EnvSpec` blobs only, no coverage
+/// producer, no SDK).
 pub fn client_caps() -> control_proto::Caps {
     control_proto::Caps {
-        protocol_version: 1,
+        protocol_version: control_proto::APP_PROTOCOL_VERSION,
         env_version_min: EnvSpec::BLOB_VERSION,
         env_version_max: EnvSpec::BLOB_VERSION,
         coverage: control_proto::CoverageGeometry {
@@ -1116,7 +1118,7 @@ mod tests {
     /// A `Hello` reply with a chosen coverage geometry (for the guard test).
     fn server_caps_reply_geo(map_bytes: u32, producer: u8) -> control_proto::Reply {
         control_proto::Reply::Hello(control_proto::Caps {
-            protocol_version: 1,
+            protocol_version: control_proto::APP_PROTOCOL_VERSION,
             env_version_min: EnvSpec::BLOB_VERSION,
             env_version_max: EnvSpec::BLOB_VERSION,
             coverage: control_proto::CoverageGeometry {

@@ -468,6 +468,16 @@ fn err_not_synchronized() {
 }
 
 #[test]
+fn err_perturb_reserved_vector() {
+    // RESULT_ERR (0x01), CE_PERTURB_RESERVED_VECTOR (0x10), vector (u8).
+    check_reply(
+        48,
+        Err(ControlError::PerturbReservedVector { vector: 7 }),
+        &[0x01, 0x10, 0x07],
+    );
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,

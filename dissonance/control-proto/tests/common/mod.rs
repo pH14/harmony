@@ -146,6 +146,7 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
         (any::<u64>(), any::<u64>())
             .prop_map(|(moment, vtime)| ControlError::ScheduleUnsatisfiable { moment, vtime }),
         Just(ControlError::NotSynchronized),
+        any::<u8>().prop_map(|vector| ControlError::PerturbReservedVector { vector }),
         arb_protocol_error().prop_map(ControlError::Protocol),
     ]
 }

@@ -3535,3 +3535,36 @@ rewind → accepted) and `perturb_after_a_synchronized_deadline_stop_reproduces`
 synchronized arrival-deadline stop is accepted, and the multi-run recorded env replays to the identical
 `state_hash`). `control-proto`: `NotSynchronized` (disc 15) + golden + generator + regenerated
 `public-api.txt`; `vmm-core/tests/public-api.txt` hand-adds `Vmm::is_synchronized`.
+
+### PR #51 round 8 — stage-time InjectInterrupt validation + the negotiated-version bump
+
+Both are the same principle this PR has enforced throughout, applied to two adjacent spots:
+recoverable-at-stage vs. fatal-at-apply, and loud-at-negotiation vs. broken-mid-session.
+
+1. **`InjectInterrupt` stage-time completeness.** A reserved vector (`0..=15`, which the LAPIC cannot
+   raise) or an interrupt on a **LAPIC-less** VM previously passed `validate_host_fault` and only
+   exploded at `apply_host_fault` as a session-fatal `ServeError::Vmm`. Both are stage-time-decidable
+   properties of the request/backend, so `check_fault_admissible` now rejects them as recoverable
+   replies (mirroring the `CorruptMemory` bounds check): a reserved vector →
+   `ControlError::PerturbReservedVector { vector }` (new tag; a request error the client can fix), no
+   LAPIC → `ControlError::Unsupported` (a permanent backend limitation — unlike `CorruptMemory`, which
+   a no-LAPIC guest still takes via the round-6 idle arrival-wake). Tests:
+   `perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time`,
+   `perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported`. (The shared test `server()` now wires a
+   LAPIC so its `InjectInterrupt`-using tests stay valid; IF stays 0 so a HLT is still terminal, and
+   every hash eq/ne relationship the tests assert still holds.)
+2. **Negotiated application-protocol version bump (1 → 2).** Ruling B's "wire-additive" describes the
+   change *shape*; the documented control-proto procedure still requires bumping the *negotiated*
+   version so an incompatible peer rejects **at `hello`** rather than passing it and then hitting a
+   mid-session `ProtocolError::ShortFrame` on the first unknown reply tag. Introduced a single source
+   of truth — `control_proto::APP_PROTOCOL_VERSION` (distinct from the framing `PROTO_VERSION`, with
+   the bump procedure documented on it) — bumped to `2` for the six task-59 reply tags, and pointed
+   every consumer at it: `server_caps` (vmm-core), `client_caps` + the compatibility check (explorer),
+   and the negotiation fixtures (control-proto). Golden + roundtrip fixtures and `public-api.txt`
+   updated per the procedure.
+
+**Cross-crate (beyond vmm-core + control-proto):** `dissonance/explorer` — `client_caps` and the Hello
+compatibility check now pin `control_proto::APP_PROTOCOL_VERSION` (so the in-repo client stays
+compatible with the bumped server); `dissonance/conductor` — its loopback `conductor_server_caps`
+mirror is `explorer::client_caps`, so it tracks the bump automatically. Both are mechanical
+consequences of this PR's wire change (same posture as the round-1 conductor loopback fix).

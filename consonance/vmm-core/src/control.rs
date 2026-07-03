@@ -141,14 +141,16 @@ pub enum ServeError {
     Poisoned,
 }
 
-/// The [`Caps`] this server negotiates: application protocol 1, `Environment`
-/// blobs exactly at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry**
-/// (no coverage producer exists — task 58 is seed-driven), and no flags
-/// (`GUEST_HAS_SDK` off). Exposed so the client side can pin its compatibility
-/// check against the same constant.
+/// The [`Caps`] this server negotiates: the current negotiated application
+/// protocol ([`control_proto::APP_PROTOCOL_VERSION`]), `Environment` blobs exactly
+/// at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry** (no coverage
+/// producer exists — task 58 is seed-driven), and no flags (`GUEST_HAS_SDK` off).
+/// Exposed so the client side can pin its compatibility check against the same
+/// constant — a peer that negotiated an older version rejects **at `hello`** rather
+/// than breaking mid-session on a reply tag it does not know (PR #51 round-8).
 pub fn server_caps() -> Caps {
     Caps {
-        protocol_version: 1,
+        protocol_version: control_proto::APP_PROTOCOL_VERSION,
         env_version_min: EnvSpec::BLOB_VERSION,
         env_version_max: EnvSpec::BLOB_VERSION,
         coverage: CoverageGeometry {
@@ -423,10 +425,12 @@ impl<B: Backend> ControlServer<B> {
     ///   [`SetClockRate`](environment::HostFault::SetClockRate)** →
     ///   [`ControlError::Unsupported`] (a follow-on lights these up).
     ///
-    /// An [`InjectInterrupt`](environment::HostFault::InjectInterrupt) passes the
-    /// gate unconditionally; its LAPIC-wired / non-reserved-vector requirements are
-    /// enforced at apply time (fail-loud there is session-fatal, since a run that
-    /// cannot deliver a staged interrupt is unvouched).
+    /// An [`InjectInterrupt`](environment::HostFault::InjectInterrupt) is rejected
+    /// here (not at apply time) when its vector is architecturally reserved
+    /// (`< 16`) → [`ControlError::PerturbReservedVector`], or the VM has no
+    /// userspace LAPIC to raise it into → [`ControlError::Unsupported`] (PR #51
+    /// round-8) — both stage-time-decidable, so a recoverable reply instead of a
+    /// session-fatal apply-time failure.
     fn validate_host_fault(
         &self,
         fault: &environment::HostFault,
@@ -483,7 +487,24 @@ impl<B: Backend> ControlServer<B> {
             environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
                 return Err(ControlError::Unsupported);
             }
-            environment::HostFault::InjectInterrupt { .. } => {}
+            environment::HostFault::InjectInterrupt { vector } => {
+                // Both `InjectInterrupt` failure modes are stage-time-decidable
+                // properties of the request/backend (PR #51 round-8) — reject them
+                // here as recoverable replies, mirroring the `CorruptMemory` bounds
+                // check, rather than letting them explode as a session-fatal
+                // `ServeError::Vmm` at `apply_host_fault`:
+                // - no userspace LAPIC to raise the vector into → `Unsupported`
+                //   (a permanent backend limitation — unlike `CorruptMemory`, which a
+                //   no-LAPIC guest can still take via the idle arrival-wake);
+                if !vmm.lapic_wired() {
+                    return Err(ControlError::Unsupported);
+                }
+                // - an architecturally reserved vector (`< 16`) the LAPIC cannot raise
+                //   → `PerturbReservedVector` (a request error the client can fix).
+                if *vector < 16 {
+                    return Err(ControlError::PerturbReservedVector { vector: *vector });
+                }
+            }
         }
         Ok(())
     }
@@ -924,6 +945,17 @@ mod tests {
             .unwrap(),
         );
         v.wire_snapshot_hashing();
+        // Wire the userspace xAPIC so `InjectInterrupt` host faults are enforceable
+        // on this generic test server (round-8 rejects a LAPIC-less InjectInterrupt).
+        // IF stays 0, so a HLT is still terminal (no idle-resume) — the base hash
+        // gains a LAPC chunk but every eq/ne relationship the tests assert holds.
+        v.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
         let mut image = vec![0u8; RAM];
         image[..12].copy_from_slice(b"SERVER_BOOT\n");
         v.restore_guest_memory(&image).unwrap();
@@ -951,6 +983,15 @@ mod tests {
                 .unwrap(),
             );
             v.wire_snapshot_hashing();
+            // Mirror the live VM's LAPIC wiring so a `branch`/`replay` restore
+            // matches (and InjectInterrupt is enforceable on the fork too).
+            v.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
             Ok(v)
         });
         ControlServer::new(live, factory)
@@ -1021,7 +1062,11 @@ mod tests {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
         let caps = server_caps();
-        assert_eq!(caps.protocol_version, 1);
+        assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
+        assert_eq!(
+            caps.protocol_version, 2,
+            "bumped for the round-8 reply tags"
+        );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.coverage.map_bytes, 0, "no coverage producer exists");
@@ -2748,6 +2793,68 @@ mod tests {
             .unwrap(),
             Err(ControlError::Unsupported),
             "an unarmable backend cannot enforce host faults exactly"
+        );
+    }
+
+    #[test]
+    fn perturb_inject_interrupt_reserved_vector_is_rejected_at_stage_time() {
+        // PR #51 round-8 item 1: an InjectInterrupt with an architecturally reserved
+        // vector (0..=15) is a stage-time-decidable request error — a recoverable
+        // `PerturbReservedVector`, not a session-fatal apply-time `ServeError`.
+        let mut s = arrival_server(); // LAPIC wired, synchronized
+        arr_hello(&mut s);
+        for vector in [0u8, 1, 15] {
+            assert_eq!(
+                s.handle(&Request::Perturb {
+                    fault: HostFault(EnvHostFault::InjectInterrupt { vector }.encode()),
+                    at: Moment(100),
+                })
+                .unwrap(),
+                Err(ControlError::PerturbReservedVector { vector })
+            );
+        }
+        // A non-reserved vector still stages cleanly.
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 16 }.encode()),
+                at: Moment(100),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
+    fn perturb_inject_interrupt_on_a_no_lapic_vm_is_unsupported() {
+        // PR #51 round-8 item 1: an InjectInterrupt on a VM with no userspace LAPIC
+        // has no interrupt controller to raise into — reject at stage time with the
+        // recoverable `Unsupported`, not a session-fatal apply-time failure. (The VM
+        // is V-time-wired + deterministic, so `CorruptMemory` would still be armable.)
+        let mut s = rdtsc_then_hlt_server(500); // V-time wired, NO LAPIC
+        hello(&mut s);
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(EnvHostFault::InjectInterrupt { vector: 0x40 }.encode()),
+                at: Moment(1000),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported),
+            "no LAPIC ⇒ InjectInterrupt cannot be delivered — rejected at stage time"
+        );
+        // CorruptMemory on the same no-LAPIC VM is still accepted (round-6 idle wake).
+        assert_eq!(
+            s.handle(&Request::Perturb {
+                fault: HostFault(
+                    EnvHostFault::CorruptMemory {
+                        gpa: 0x40,
+                        mask: BitMask(0xFF),
+                    }
+                    .encode(),
+                ),
+                at: Moment(1000),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
         );
     }
 

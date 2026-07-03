@@ -51,10 +51,28 @@ pub use types::{
 
 /// The wire-format version carried in every frame header. Bumps only when the
 /// *framing* layout changes (distinct from the negotiated
-/// [`Caps::protocol_version`] and from an [`Environment::blob_version`], which the
-/// codec never validates). A frame whose header version differs is rejected with
-/// [`ProtocolError::BadVersion`].
+/// [`APP_PROTOCOL_VERSION`] / [`Caps::protocol_version`] and from an
+/// [`Environment::blob_version`], which the codec never validates). A frame whose
+/// header version differs is rejected with [`ProtocolError::BadVersion`].
 pub const PROTO_VERSION: u16 = 1;
+
+/// The current **negotiated application-protocol version** — the single source of
+/// truth both peers advertise in [`Caps::protocol_version`] and compare at
+/// `hello`. Distinct from the framing [`PROTO_VERSION`]: it names the *verb + reply
+/// vocabulary and semantics*, not the frame layout.
+///
+/// **Bump procedure.** Increment this whenever the wire vocabulary changes — a new
+/// verb, a new [`Reply`], or (as here) a new [`ControlError`] tag — even when the
+/// change is byte-*additive* to the codec. An additive tag decodes fine on a peer
+/// that already knows it, but a peer that negotiated the *old* version would pass
+/// `hello` and then hit a mid-session `ProtocolError::ShortFrame` on the first new
+/// tag; bumping the negotiated version makes such a peer reject **at `hello`**
+/// instead (the `caps.protocol_version` mismatch is detectable there — see the
+/// negotiation gate). Bumped to **2** by PR #51 (task 59): the host-plane
+/// enforcement path added the `PerturbOutOfRange` / `PerturbPastMoment` /
+/// `PerturbMomentTaken` / `ScheduleUnsatisfiable` / `NotSynchronized` /
+/// `PerturbReservedVector` reply tags.
+pub const APP_PROTOCOL_VERSION: u16 = 2;
 
 /// Maximum on-wire frame *body* length. Generous for [`Environment`] blobs and
 /// hashes, but bounded so untrusted transport can never force unbounded
@@ -75,5 +93,6 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
+        assert_eq!(APP_PROTOCOL_VERSION, 2); // bumped by PR #51 (task 59 reply tags)
     }
 }

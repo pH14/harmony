@@ -85,6 +85,7 @@ const CE_PERTURB_PAST_MOMENT: u8 = 12;
 const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
 const CE_NOT_SYNCHRONIZED: u8 = 15;
+const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -535,6 +536,10 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             put_u64(w, *vtime);
         }
         Ce::NotSynchronized => w.push(CE_NOT_SYNCHRONIZED),
+        Ce::PerturbReservedVector { vector } => {
+            w.push(CE_PERTURB_RESERVED_VECTOR);
+            w.push(*vector);
+        }
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -573,6 +578,7 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
             vtime: r.u64()?,
         },
         CE_NOT_SYNCHRONIZED => Ce::NotSynchronized,
+        CE_PERTURB_RESERVED_VECTOR => Ce::PerturbReservedVector { vector: r.u8()? },
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,

@@ -6,12 +6,14 @@
 //! decode error.
 
 use control_proto::{
-    CapFlags, Caps, CoverageGeometry, Environment, PROTO_VERSION, Request, SnapId, decode_request,
-    encode_request,
+    APP_PROTOCOL_VERSION, CapFlags, Caps, CoverageGeometry, Environment, Request, SnapId,
+    decode_request, encode_request,
 };
 
-/// What a backend supports, for the negotiation predicates below.
-const OUR_PROTOCOL: u16 = PROTO_VERSION;
+/// What a backend supports, for the negotiation predicates below. The **negotiated
+/// application** version ([`APP_PROTOCOL_VERSION`]), not the framing
+/// [`PROTO_VERSION`] — the two are distinct (see `lib.rs`).
+const OUR_PROTOCOL: u16 = APP_PROTOCOL_VERSION;
 const OUR_ENV_MIN: u16 = 1;
 const OUR_ENV_MAX: u16 = 3;
 
