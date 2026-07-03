@@ -86,6 +86,20 @@ seam (61 reuses it).
    (`doorbell_is_total_on_edge_requests`); reentrancy structurally impossible (one atomic OUT);
    catalog limits bounded (SDK rejects over-frame; link decode total).
 
+## Round-4 review (1 P1 + 2 P2s + state-machine sweep — all fixed; box A/B/C 3/3)
+
+1. **setup_complete deferral (P1).** The engine seals eagerly on `StopReason::SnapshotPoint`, and
+   a doorbell OUT is unsealable (`NotQuiescent`). Fix: `SdkChannel.pending_snapshot` set at
+   setup_complete; the control loop surfaces `SnapshotPoint` at the next V-time-synchronized
+   boundary (sealable). `SdkStop::SnapshotPoint` removed. Loopback gate proves a usable seal
+   through setup_complete. Box `state_hash` byte-identical (only host-side surfacing moved).
+2. **Reject oversized `req_len` (P2).** `service_doorbell` returns `BadRequest` for `req_len >
+   MAX_FRAME` (loopback-host ABI), not a silent clamp.
+3. **RestoreFailed keeps SDK (P3).** The recoverable branch now `enable_sdk`s the kept fresh VM
+   (was `sdk: None` under an advertised `GUEST_HAS_SDK`).
+   **Sweep:** every VM-swap that keeps a VM wires the SDK channel (new/RestoreFailed/success);
+   `SnapshotPoint` only surfaces sealably; no other advertised-vs-actual mismatch.
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
