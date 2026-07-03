@@ -55,14 +55,17 @@
 //!   standing faults exist); `mutate` still refuses (panics on) a
 //!   standing-fault-carrying base rather than slicing one into a branch-local
 //!   delta, so the confinement rule is enforced here the day they appear.
-//! - **Genesis-complete bases only (task-68 boundary).** `mutate`/`compose`
-//!   re-key a base's overrides as **absolute** Moments, which is correct only
-//!   for a genesis-complete base (`base_offset == 0`) — the only kind the v1
-//!   explorer flow ever feeds them (every corpus base is rebased to
-//!   genesis-complete; `seeded` mints `base_offset == 0`). A `base_offset > 0`
-//!   base is a **parent-rooted chain** (relative keys) owned by task 68; both
-//!   seams **panic** on one rather than splice in the wrong coordinate system
-//!   (the same fail-loud, never-silently-mis-key discipline).
+//! - **Parent-rooted chains (task 68).** `mutate`/`compose` operate in the
+//!   base's **own coordinate system**: a base's override keys are relative to
+//!   its `base_offset` (absolute keys are the `base_offset == 0` special
+//!   case). `compose` splices at the **relative** cut
+//!   `d.base_offset − b.base_offset` and keeps the base's root, so folding a
+//!   suffix chain (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage) yields one
+//!   delta still rooted at the chain's retained ancestor — exactly what the
+//!   task-68 materialization engine replays with **one** branch. `mutate`
+//!   slices at `b.pos − b.base_offset`. A delta keyed **before** its base's
+//!   root (`d.base_offset < b.base_offset`) is a mis-ordered chain — a defect,
+//!   panicked on (the same fail-loud, never-silently-mis-key discipline).
 //!
 //! ## Error mapping (two categories, preserved)
 //!
@@ -218,27 +221,21 @@ impl crate::EnvCodec for SpecEnvCodec {
 
     fn mutate(&self, base: &Environment, salt: u64) -> Environment {
         let b = Self::require(base, "mutate");
-        // Coordinate-system guard (task 58/68). The slice below treats the
-        // base's override keys and `pos` as **absolute** Moments — true only
-        // for a **genesis-complete** base (`base_offset == 0`), the only kind
-        // the v1 explorer flow ever feeds here (every corpus base is rebased to
-        // genesis-complete via `compose`; `seeded` mints `base_offset == 0`). A
-        // `base_offset > 0` base is a **parent-rooted chain** whose keys are
-        // relative to its own origin — re-keying it here would silently splice
-        // in the wrong coordinate system. Chains are task-68 scope; fail loud
-        // (task-93 ruling: never silently mis-key) until it owns the relative
-        // arithmetic (`cut = b.pos - b.base_offset`, checked).
-        assert_eq!(
-            b.base_offset, 0,
-            "SpecEnvCodec::mutate: base is not genesis-complete (base_offset={}); parent-rooted \
-             chains with relative keys are task 68 — refusing to slice in the wrong coordinate \
-             system rather than silently mis-key (task-93 ruling)",
-            b.base_offset
-        );
-        // A corpus base is genesis-complete; the branch it seeds runs from the
-        // base snapshot's capture point, so slice the suffix at `pos` into a
-        // branch-local delta (keys re-based to the branch origin), preserving
-        // seed/policy so a later genesis recompose is stream-consistent.
+        // Coordinate system (task 68): the base's override keys are relative
+        // to its own `base_offset`, so the slice point is the **relative**
+        // distance from the base's root to its capture position. A capture
+        // position behind the root is a malformed blob — a defect, loud.
+        let cut = b.pos.checked_sub(b.base_offset).unwrap_or_else(|| {
+            panic!(
+                "SpecEnvCodec::mutate: base captured at pos {} BEFORE its own root offset {} — \
+                 a malformed chain blob (task-93 ruling: defect, never silently mis-key)",
+                b.pos, b.base_offset
+            )
+        });
+        // The branch this delta seeds runs from the base snapshot's capture
+        // point, so slice the suffix at `cut` into a branch-local delta (keys
+        // re-based to the branch origin), preserving seed/policy so a later
+        // recompose is stream-consistent.
         //
         // NOTE (v1 sequencing): the underlying `environment::EnvCodec::mutate`
         // inserts a **host-plane** `Action::Host` override, so a mutate-minted
@@ -264,8 +261,8 @@ impl crate::EnvCodec for SpecEnvCodec {
             .spec
             .overrides()
             .iter()
-            .filter(|(m, _)| **m >= b.pos)
-            .map(|(m, a)| (m - b.pos, a.clone()))
+            .filter(|(m, _)| **m >= cut)
+            .map(|(m, a)| (m - cut, a.clone()))
             .collect();
         let sliced = EnvSpec::Recorded {
             seed,
@@ -287,28 +284,25 @@ impl crate::EnvCodec for SpecEnvCodec {
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment {
         let b = Self::require(base, "compose");
         let d = Self::require(branch_local, "compose");
-        // Coordinate-system guard (task 58/68), symmetric with `mutate`. The
-        // splice keeps the base's overrides where `m < at` and shifts the delta
-        // by `+at` — correct only when the base's keys are **absolute**, i.e. a
-        // **genesis-complete** base (`base_offset == 0`), the only kind the v1
-        // flow composes against (a bug is rebased onto the genesis-complete
-        // corpus base; a snapshot forked below one is rebased through it). A
-        // `base_offset > 0` base is a task-68 parent-rooted chain whose correct
-        // splice point is `d.base_offset - b.base_offset` (checked); doing the
-        // absolute arithmetic on it would silently mis-key. Fail loud until
-        // task 68 owns the relative form. (The delta's `base_offset > 0` is
-        // fine — it IS the splice point `at`.)
-        assert_eq!(
-            b.base_offset, 0,
-            "SpecEnvCodec::compose: base is not genesis-complete (base_offset={}); parent-rooted \
-             chains are task 68 — refusing to splice in the wrong coordinate system rather than \
-             silently mis-key (task-93 ruling)",
-            b.base_offset
-        );
-        // The ruling's "`at` provenance": the delta carries the absolute
-        // Moment it is keyed from, so `at` is recoverable from the delta alone.
-        let at = d.base_offset;
-        let composed = match environment::EnvCodec::compose(&b.spec, &d.spec, at) {
+        // Coordinate system (task 68), symmetric with `mutate`: the base's
+        // keys are relative to its own `base_offset`, so the splice point is
+        // the **relative** distance from the base's root to the delta's branch
+        // origin (the ruling's "`at` provenance" — the delta carries the
+        // absolute Moment it is keyed from, so the cut is recoverable from the
+        // two blobs alone). With a genesis-complete base (`base_offset == 0`)
+        // this reduces to the absolute splice the v1 flow always used; with a
+        // parent-rooted base it is the chain fold the task-68 materialization
+        // engine drives (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage), whose
+        // result stays rooted at the base's own origin. A delta branched
+        // BEFORE its base's root is a mis-ordered chain — a defect, loud.
+        let cut = d.base_offset.checked_sub(b.base_offset).unwrap_or_else(|| {
+            panic!(
+                "SpecEnvCodec::compose: delta keyed from {} BEFORE the base's root offset {} — \
+                 a mis-ordered chain (task-93 ruling: defect, never silently mis-key)",
+                d.base_offset, b.base_offset
+            )
+        });
+        let composed = match environment::EnvCodec::compose(&b.spec, &d.spec, cut) {
             Ok(spec) => spec,
             Err(e) => panic!(
                 "SpecEnvCodec::compose failed ({e}) — unreachable under the task-93 adapter \
@@ -945,39 +939,147 @@ mod tests {
         let _ = SpecEnvCodec.compose(&junk, &junk);
     }
 
-    // The coordinate-system guard (task 58/68): `mutate`/`compose` panic on a
-    // non-genesis base (base_offset > 0 — a parent-rooted chain, task 68) rather
-    // than re-key in the wrong coordinate system. In v1 every base fed here is
-    // genesis-complete, so this never fires; the guard is the fail-loud handoff.
+    // The task-68 coordinate system: `mutate`/`compose` operate in the base's
+    // OWN coordinate system (keys relative to its `base_offset`), so a
+    // parent-rooted chain folds correctly — and a mis-ordered chain (a delta
+    // keyed before its base's root, or a capture behind the root) is a defect
+    // that panics rather than silently mis-keys (task-93 discipline).
 
     #[test]
-    #[should_panic(expected = "base is not genesis-complete")]
-    fn mutate_panics_on_a_non_genesis_base_chain_is_task_68() {
+    fn compose_folds_a_parent_rooted_chain_at_the_relative_cut() {
+        // suffix₁: rooted at 100 (keys relative to it), captured at 250.
         let base = AdapterEnv {
-            base_offset: 100, // parent-rooted, relative keys
-            pos: 200,
-            spec: spec_with_overrides(7, &[]),
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_overrides(7, &[20, 180]),
         }
         .encode();
-        let _ = SpecEnvCodec.mutate(&base, 0x1);
+        // suffix₂: branched at 250, captured at 400.
+        let delta = AdapterEnv {
+            base_offset: 250,
+            pos: 400,
+            spec: spec_with_overrides(7, &[5, 60]),
+        }
+        .encode();
+        let folded = SpecEnvCodec.compose(&base, &delta);
+        let decoded = AdapterEnv::decode(&folded).unwrap();
+        assert_eq!(
+            decoded.base_offset, 100,
+            "the fold stays rooted at the base's own origin (the retained ancestor)"
+        );
+        assert_eq!(decoded.pos, 400, "pos is the delta's capture point");
+        // Relative cut = 250 − 100 = 150: base keeps keys < 150 (20; the 180
+        // is superseded by the branch), delta re-keys by +150 (5→155, 60→210).
+        let keys: Vec<u64> = decoded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![20, 155, 210]);
+        assert_eq!(decoded.spec.seed(), 7);
     }
 
     #[test]
-    #[should_panic(expected = "base is not genesis-complete")]
-    fn compose_panics_on_a_non_genesis_base_chain_is_task_68() {
-        let base = AdapterEnv {
-            base_offset: 100, // parent-rooted, relative keys
-            pos: 200,
-            spec: spec_with_overrides(7, &[]),
+    fn compose_then_compose_folds_a_two_hop_chain_onto_genesis() {
+        // A genesis-complete base + two chain suffixes: fold(fold(b, s1), s2)
+        // must equal splicing each at its own relative cut — the exact shape
+        // the materialization engine replays from genesis in the worst case.
+        let b = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_overrides(7, &[40]),
         }
         .encode();
-        let delta = AdapterEnv {
+        let s1 = AdapterEnv {
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_overrides(7, &[20]),
+        }
+        .encode();
+        let s2 = AdapterEnv {
+            base_offset: 250,
+            pos: 300,
+            spec: spec_with_overrides(7, &[10]),
+        }
+        .encode();
+        let folded = SpecEnvCodec.compose(&SpecEnvCodec.compose(&b, &s1), &s2);
+        let decoded = AdapterEnv::decode(&folded).unwrap();
+        assert_eq!(decoded.base_offset, 0, "genesis-complete");
+        assert_eq!(decoded.pos, 300);
+        let keys: Vec<u64> = decoded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![40, 120, 260], "each suffix keyed at its own cut");
+    }
+
+    #[test]
+    fn mutate_slices_a_parent_rooted_base_at_the_relative_cut() {
+        // Guest overrides are preserved verbatim by the underlying codec's
+        // contract (only a host-plane tweak is applied), so the slice is
+        // exactly assertable. Rooted at 100, captured at 160 → relative cut
+        // 60: the pre-capture override (5) is dropped, the suffix re-keys
+        // (70→10, 90→30).
+        let mut overrides = BTreeMap::new();
+        for k in [5u64, 70, 90] {
+            overrides.insert(k, Action::Guest(environment::Answer::Nominal));
+        }
+        let base = AdapterEnv {
+            base_offset: 100,
+            pos: 160,
+            spec: EnvSpec::Recorded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+                overrides,
+                standing: Vec::new(),
+            },
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        assert_eq!(
+            decoded.base_offset, 160,
+            "keyed from the base's (absolute) capture point"
+        );
+        assert_eq!(decoded.spec.seed(), 7, "seed preserved (compose-consistent)");
+        let guest_keys: Vec<u64> = decoded
+            .spec
+            .overrides()
+            .iter()
+            .filter(|(_, a)| a.guest_answer().is_some())
+            .map(|(k, _)| *k)
+            .collect();
+        assert_eq!(
+            guest_keys,
+            vec![10, 30],
+            "the suffix sliced at the RELATIVE cut (60), not the absolute pos"
+        );
+        // Deterministic: same (base, salt) ⇒ same blob.
+        assert_eq!(out, SpecEnvCodec.mutate(&base, 0x5A17));
+    }
+
+    #[test]
+    #[should_panic(expected = "mis-ordered chain")]
+    fn compose_panics_on_a_mis_ordered_chain() {
+        let base = AdapterEnv {
             base_offset: 200,
             pos: 300,
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
+        // A delta keyed BEFORE the base's root: not a suffix of it.
+        let delta = AdapterEnv {
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
         let _ = SpecEnvCodec.compose(&base, &delta);
+    }
+
+    #[test]
+    #[should_panic(expected = "BEFORE its own root offset")]
+    fn mutate_panics_on_a_capture_behind_the_root() {
+        let base = AdapterEnv {
+            base_offset: 200,
+            pos: 100, // malformed: captured before its own root
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        let _ = SpecEnvCodec.mutate(&base, 0x1);
     }
 
     #[test]
