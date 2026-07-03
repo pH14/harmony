@@ -38,15 +38,24 @@
 //! **class** (any `Crash` is the bug), so the *identical* oracle runs against the
 //! toy and the real guest.
 //!
-//! ## Determinism
+//! ## Determinism and exact-arrival fidelity
 //!
 //! Every method is a pure function of `(base snapshot, branch env)`: the
 //! terminal outcome is a pure function of the branch env's host schedule, the
 //! terminal V-time is a pure (integer-hash) function of the env bytes, and the
-//! 32-byte `state_hash` is `sha256` of a domain tag + the env bytes + the
-//! terminal encoding. So a fixed env replays to a byte-identical
-//! `(StopReason, state_hash)` every time — the N/N property the milestone
-//! verifies — and distinct envs diverge to distinct hashes.
+//! 32-byte `state_hash` is `sha256` of a domain tag + the env bytes. So a fixed
+//! env replays to a byte-identical `(StopReason, state_hash)` every time — the
+//! N/N property the milestone verifies — and distinct envs diverge to distinct
+//! hashes.
+//!
+//! [`run`](Machine::run) mirrors task-59's **exact-arrival** backend: a fault is
+//! applied only when its `Moment` falls **inside the traversed run**
+//! `[base, terminal]`; a fault staged *beyond* the natural terminal (or crossed
+//! behind the current point) is unreachable and surfaces as the backend's
+//! `ScheduleUnsatisfiable` (a transport error), **never** a `Crash` or a clean
+//! `Quiescent`. The terminal-offset floor (`WINDOW_COVER`) keeps every
+//! campaign-minted `Moment` inside the run, so the portable gate exercises the
+//! real find path rather than a schedule the real backend would reject.
 
 use std::collections::BTreeMap;
 
@@ -155,29 +164,33 @@ impl ToyPlantedMachine {
         }
     }
 
-    /// Decode the active env's host-fault schedule and report whether any staged
-    /// fault is the planted single-event upset (the supervised process aborts
-    /// iff so). A malformed adapter blob decodes to no schedule → never fires
-    /// (the same fail-safe the real supervisor has: no upset, no bug).
-    fn triggered(&self) -> bool {
-        let Ok(decoded) = AdapterEnv::decode(&self.current) else {
-            return false;
-        };
-        decoded
-            .spec
-            .host_faults()
-            .any(|(m, f)| self.trigger.fires(m, &f))
+    /// The active env's host-fault schedule (empty on a malformed blob — the
+    /// fail-safe the real supervisor has: no upset, no bug).
+    fn schedule(&self) -> Vec<(u64, HostFault)> {
+        match AdapterEnv::decode(&self.current) {
+            Ok(decoded) => decoded.spec.host_faults().collect(),
+            Err(_) => Vec::new(),
+        }
     }
 
-    /// The deterministic V-time offset the run advances by before terminating —
-    /// a pure integer hash of the env bytes, so identical envs reach an
-    /// identical terminal V-time (the N/N property) while distinct envs land at
-    /// (almost always) distinct times. Kept small so it never oversteps a
-    /// realistic deadline.
+    /// The deterministic V-time offset the run advances by before its natural
+    /// terminal — a pure integer hash of the env bytes, so identical envs reach
+    /// an identical terminal V-time (the N/N property) while distinct envs land
+    /// at (almost always) distinct times. The `+ WINDOW_COVER` floor keeps the
+    /// natural terminal at least a campaign fault-window past the base, so a
+    /// campaign-minted fault (Moment within `[base, base + moment_window.1)`)
+    /// always lands *inside* the traversed run — never beyond it, which would be
+    /// the exact-arrival backend's `ScheduleUnsatisfiable` (see [`Machine::run`]).
     fn terminal_offset(&self) -> u64 {
-        (fold64(&self.current.bytes) % 4096) + 1
+        (fold64(&self.current.bytes) % 4096) + WINDOW_COVER
     }
 }
+
+/// The floor on the toy's terminal offset: at least this many ns of traversed
+/// run past the base, so every campaign fault-window Moment (the toy config's
+/// `moment_window` tops out well below this) is reachable within the run rather
+/// than staged beyond its terminal.
+const WINDOW_COVER: u64 = 64;
 
 /// The canonical "boot" environment: a genesis-complete, fault-free seeded blob
 /// keyed at offset zero (the toy's pre-branch state).
@@ -232,46 +245,70 @@ impl Machine for ToyPlantedMachine {
         until: &StopConditions,
         _resolve: Option<&Answer>,
     ) -> Result<StopReason, MachineError> {
+        let base = self.vtime;
         // Deadline already met → stop immediately without advancing (the
         // `probe_vtime` idiom, and a truthful V-time stamp).
         if let Some(d) = until.deadline
-            && d.0 <= self.vtime
+            && d.0 <= base
         {
-            return Ok(StopReason::Deadline {
-                vtime: VTime(self.vtime),
-            });
+            return Ok(StopReason::Deadline { vtime: VTime(base) });
         }
-        // Where the terminal would land. If a (future) deadline falls *before*
-        // it, the real `Machine` stops at the deadline, not the terminal — so
-        // the toy must too (mock fidelity is what the portable gate certifies).
-        // Advance to the deadline and return `Deadline`, leaving the run
-        // resumable exactly as the real substrate would.
-        let terminal_vtime = self.vtime.saturating_add(self.terminal_offset());
-        if let Some(d) = until.deadline
-            && d.0 < terminal_vtime
-        {
-            self.vtime = d.0;
-            return Ok(StopReason::Deadline { vtime: VTime(d.0) });
-        }
-        // Advance to the guest's terminal, mirroring the box terminal convention
-        // (`guest/linux/campaign-init.sh`): the supervised process aborts iff the
-        // planted single-event upset is staged → `/init` reboots → `Crash{Shutdown}`
-        // (the bug); otherwise the loop completes → `/init` halts → `Quiescent`
-        // (the clean terminal). The campaign oracle keys on this class.
-        let bug = self.triggered();
-        self.vtime = terminal_vtime;
-        Ok(if bug {
-            StopReason::Crash {
-                // The box maps the bug's reboot to Crash{Shutdown}; the `0x60`
-                // byte after the kind tags the task-60 planted crash.
-                vtime: VTime(self.vtime),
-                info: vec![CRASH_KIND_SHUTDOWN, 0x60],
+        let terminal_vtime = base.saturating_add(self.terminal_offset());
+        // Where this run actually stops: its natural terminal, unless a nearer
+        // deadline clamps it first (mock fidelity — the real `Machine` stops at
+        // the deadline, not the terminal, and leaves later faults staged there).
+        let (stop_at, hits_deadline) = match until.deadline {
+            Some(d) if d.0 < terminal_vtime => (d.0, true),
+            _ => (terminal_vtime, false),
+        };
+
+        // Classify the staged schedule against the **traversed window**
+        // `[base, stop_at]`, mirroring task-59's exact-arrival backend
+        // (`control.rs` run(): drain `m == vns`, poison anything crossed or
+        // still staged at a natural terminal). Faults are in `Moment` order.
+        for (m, f) in self.schedule() {
+            if base <= m && m <= stop_at {
+                // Reached and applied at exact arrival. A trigger match aborts
+                // the supervisor → reboot → Crash (the box's Crash{Shutdown});
+                // a non-matching upset is inert, keep scanning.
+                if self.trigger.fires(m, &f) {
+                    self.vtime = terminal_vtime;
+                    return Ok(StopReason::Crash {
+                        // The `0x60` byte after the kind tags the task-60 planted crash.
+                        vtime: VTime(self.vtime),
+                        info: vec![CRASH_KIND_SHUTDOWN, 0x60],
+                    });
+                }
+            } else if hits_deadline && m > stop_at {
+                // Beyond the deadline: never armed, left staged — the run stops
+                // at the deadline (no poison; the deadline path does not poison).
+                break;
+            } else {
+                // Crossed (`m < base`) or staged past a NATURAL terminal
+                // (`m > terminal_vtime`): the exact-arrival backend can never
+                // apply it at its recorded count and reports
+                // `ScheduleUnsatisfiable` — a transport error, never a Crash and
+                // never a clean Quiescent. Mirror that.
+                self.vtime = stop_at;
+                return Err(MachineError::Transport(format!(
+                    "schedule unsatisfiable: staged fault Moment {m} is outside the traversed \
+                     run window [{base}, {stop_at}] (mirrors task-59 exact-arrival)"
+                )));
             }
+        }
+
+        // No trigger fired and nothing was unsatisfiable: the clean terminal.
+        self.vtime = stop_at;
+        if hits_deadline {
+            Ok(StopReason::Deadline {
+                vtime: VTime(stop_at),
+            })
         } else {
-            StopReason::Quiescent {
-                vtime: VTime(self.vtime),
-            }
-        })
+            // The loop completed → `/init` halts → Quiescent.
+            Ok(StopReason::Quiescent {
+                vtime: VTime(stop_at),
+            })
+        }
     }
 
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
@@ -295,14 +332,13 @@ impl Machine for ToyPlantedMachine {
     }
 
     fn hash(&mut self) -> Result<[u8; 32], MachineError> {
-        // The state hash is a pure function of the active env and its terminal
-        // outcome, so a fixed reproducer hashes identically every replay and
-        // distinct reproducers diverge.
+        // The state hash is a pure function of the active env (which determines
+        // the run's outcome), so a fixed reproducer hashes identically every
+        // replay (the N/N property) and distinct reproducers diverge.
         let mut h = Sha256::new();
         h.update(b"conductor.toy.planted.state_hash.v1");
         h.update((self.current.bytes.len() as u64).to_le_bytes());
         h.update(&self.current.bytes);
-        h.update([if self.triggered() { 1 } else { 0 }]);
         Ok(h.finalize().into())
     }
 
@@ -326,6 +362,12 @@ mod tests {
     use crate::campaign::mint_fault_env;
     use environment::{BitMask, EnvSpec, FaultPolicy};
     use explorer::{EnvCodec, SpecEnvCodec};
+    use proptest::prelude::*;
+
+    /// The largest `Moment` offset past the base any run's terminal can reach
+    /// (`fold64 % 4096` maxes at 4095, plus the `WINDOW_COVER` floor). A fault
+    /// staged beyond `base + this` is unreachable in *every* run.
+    const MAX_TERMINAL_OFFSET: u64 = 4095 + WINDOW_COVER;
 
     /// The canonical toy trigger (matches [`Trigger::toy`]).
     fn trigger() -> Trigger {
@@ -520,5 +562,55 @@ mod tests {
         assert_eq!(m.recorded_env().unwrap(), boot_env());
         m.drop_snap(b).unwrap();
         assert_eq!(m.drop_snap(b), Err(MachineError::UnknownSnapshot(b.0)));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// **Exact-arrival fidelity (the round-2 blocking fix).** A fault staged
+        /// at a `Moment` *beyond the run's traversed terminal* is unreachable by
+        /// the real exact-arrival backend, which reports `ScheduleUnsatisfiable`
+        /// rather than applying it — so the toy must **never** turn a
+        /// beyond-terminal fault into a `Crash` (nor a clean `Quiescent`). Any
+        /// `Moment` past `base + MAX_TERMINAL_OFFSET` is beyond every run's
+        /// terminal, so `run` (no deadline) is always a transport error — even for
+        /// the exact trigger gpa/mask (the position, not the pattern, makes it
+        /// unsatisfiable).
+        #[test]
+        fn a_fault_beyond_the_terminal_is_unsatisfiable_never_crash(
+            gpa in prop::sample::select(vec![0x1000u64, 0x2000, 0x3000, 0x4000]),
+            bit in 0u32..64,
+            past in 1u64..1_000_000,
+        ) {
+            let mut m = ToyPlantedMachine::new(trigger());
+            let b = m.snapshot().expect("boot is quiescent");
+            let at = BASE_VTIME + MAX_TERMINAL_OFFSET + past; // strictly beyond every terminal
+            let env = fault_env(gpa, 1u64 << bit, at);
+            m.branch(b, &env).unwrap();
+            let r = m.run(&StopConditions::default(), None);
+            prop_assert!(
+                matches!(r, Err(MachineError::Transport(_))),
+                "a beyond-terminal fault must be unsatisfiable, got {r:?}"
+            );
+        }
+
+        /// The complement: a fault whose `Moment` lands **inside** the traversed
+        /// run is applied — the exact trigger crashes, any other single upset is
+        /// inert (a clean `Quiescent`). Never an unsatisfiable error.
+        #[test]
+        fn an_in_window_fault_crashes_iff_it_matches_the_trigger(
+            gpa in prop::sample::select(vec![0x1000u64, 0x2000, 0x3000, 0x4000]),
+            bit in 0u32..64,
+        ) {
+            let mut m = ToyPlantedMachine::new(trigger());
+            let b = m.snapshot().expect("boot is quiescent");
+            // The trigger's Moment (offset 3) is always inside the terminal
+            // (offset >= WINDOW_COVER), so it is always reached and applied.
+            let env = fault_env(gpa, 1u64 << bit, BASE_VTIME + 3);
+            m.branch(b, &env).unwrap();
+            let stop = m.run(&StopConditions::default(), None).expect("in-window fault applies");
+            let is_trigger = gpa == 0x3000 && bit == 31;
+            prop_assert_eq!(matches!(stop, StopReason::Crash { .. }), is_trigger);
+        }
     }
 }
