@@ -1,6 +1,7 @@
 # The architecture boundary — ISA seam design
 
-Status: **design ruling (2026-07-03).** Supersedes the codebase survey in `docs/ARM-PORT.md`
+Status: **design ruling (2026-07-03; amended same day with §B — the machine-characterization
+axis, forced by the AMD question).** Supersedes the codebase survey in `docs/ARM-PORT.md`
 ("What a port costs, by component" and its "no arch seam exists yet" premise), which predates
 Wave 4/5 and undercounts the tree by most of `vmm-core`, `vmm-backend`, `lapic`, `vm-state`,
 and all seven dissonance crates. ARM-PORT.md's **hardware facts and its viability gate stand
@@ -16,6 +17,15 @@ and the entire dissonance layer. The x86 coupling is concentrated, not smeared: 
 `vmm-backend` value-type vocabulary, five nameable modules of `vmm-core`, the `lapic` crate,
 and the guest payloads. The restructure is therefore **promoting an implicit boundary into a
 compiler-enforced one**, not an untangling.
+
+The system has **three orthogonal axes**, and only one of them is ISA: **ISA** (the `Arch`
+seam, §A — ARM lives here), **substrate** (the existing R-Backend `Backend` trait — stock-KVM
+vs patched-KVM vs mock, and VMX vs SVM mechanism differences), and **machine characterization**
+(the `Baseline`, §B — everything measured-or-frozen per vendor/microarch/box: PMU event
+encoding, skid, contract content, host prep). AMD is the proof the axes are distinct: same
+ISA, same substrate family, entirely different characterization. Modeling any axis at the
+wrong altitude duplicates code (AMD-as-`Arch`) or hard-pins data (Coffee-Lake constants in
+source, which is the status quo §B removes).
 
 ## The boundary, stated crisply
 
@@ -107,7 +117,9 @@ trait Arch {
     type Exit;        // arch-specific exit variants only
     type Event;       // injectable events (x86: Interrupt{vec}/Nmi; arm: GIC INTID class)
     type VcpuState;   // full register record set
-    type Policy;      // x86: CpuidModel + MsrFilter; arm: IdRegModel + SysregTrapPolicy
+    type Policy;      // the policy SCHEMA — x86: CpuidModel + MsrFilter; arm: IdRegModel +
+                      // SysregTrapPolicy. Content (which leaves, which values) is Baseline
+                      // data (§B): det-cfl-v1 and det-zen*-v1 share this type, not its rows.
     type IntId;       // u8 vector vs GIC INTID
     type Caps;        // arch capability flags
 }
@@ -140,12 +152,75 @@ Trait method regrouping: `set_cpuid`/`set_msr_filter` collapse into `set_policy(
 the completion methods keep the neutral read/ok/fault trio and carry arch payloads via an
 associated completion type; the IRQ trio takes `A::IntId`; `run`/`run_until`/`save`/`restore`/
 `map_memory`/`exit_counts` keep their shapes with generic returns. `run_until.rs`, `error.rs`,
-`MockBackend`, and the perf ring machinery move unmodified; the `0x1c4` event pin becomes a
-per-arch constant supplied with the backend. `Capabilities`' `deterministic_tsc` /
+`MockBackend`, and the perf ring machinery move unmodified; the `0x1c4` event pin is **not**
+an `Arch` matter at all — it is per-microarch measured data and moves into the `Baseline`
+(§B). `Capabilities`' `deterministic_tsc` /
 `enforces_tsc_deadline_msr` become arch-named flags in `A::Caps` (the *concepts* —
 deterministic guest clock, enforced timer-deadline register — recur per-arch; the names don't).
 
-### B. `vmm-core` = engine + personality
+### B. `Baseline` — the machine-characterization axis (data, not code)
+
+AMD is the forcing case for this section. Zen shares the x86 vocabulary end to end — exits,
+registers, LAPIC, `u8` vectors, boot protocol, the `KVM_X86_SET_MSR_FILTER`/`KVM_SET_CPUID2`
+enforcement mechanism — so **AMD must not become a second `Arch`**: that would duplicate the
+entire x86 type surface for zero benefit. What actually changes on an AMD box is the
+*characterized data*:
+
+- **PMU event encoding.** `0x1c4` (`BR_INST_RETIRED.CONDITIONAL`) is Coffee-Lake-specific;
+  Zen's retired-conditional-branch event is a different raw code (rr records on Zen with it,
+  so the event *class* is proven — `rr/src/PerfCounters.cc`).
+- **Measured constants.** `skid_margin`, `SimCpu` density/max-skid parameters.
+- **Contract content.** `docs/CPU-MSR-CONTRACT.md` scopes "Out of scope: AMD" (line 68) and
+  freezes Intel conventions; an AMD box needs a `det-zen*-v1` model — new rows, **same
+  `A::Policy` schema**, same disposition vocabulary, same enforcement path.
+- **Host expectations + prep.** The hostassert probe rows differ, and Zen adds a *required
+  host knob*: rr's documented SpecLockMap workaround — set `MSRC001_1020[54]` to disable
+  speculative-lock-map, which otherwise rolls back instructions without rolling back the
+  counters (rr wiki "Zen"; `rr/scripts/zen_workaround.py`). It is per-core, volatile across
+  reboot/suspend, and **silently reset over time by kernel SSB-mitigation switching** (rr
+  issue #3531) — so host prep must be *re-verified at VM start on the pinned core*, not
+  asserted once at boot.
+
+**Ruling: everything measured-or-frozen moves out of code into one value**, typed per-`Arch`:
+
+```rust
+/// One characterized (vendor, microarch, box-discipline) point — the registry
+/// entry type task 92 needs. Pure data; nothing here is derived at runtime.
+struct Baseline<A: Arch> {
+    id: &'static str,          // "det-cfl-v1" today; "det-zen4-v1", "det-x925-v1" later
+    policy: A::Policy,         // frozen guest CPU contract CONTENT (schema is A's)
+    work_event: PmuEventSpec,  // raw encoding + semantics of the V-time counter event
+    skid_margin: u64,          // measured worst-case skid → PlannerConfig
+    host: HostExpectations,    // hostassert probe rows + required host prep, split into
+                               // boot-stable rows and a volatile subset re-checked at VM start
+}
+```
+
+Consumers are all existing seams — no new trait: `bringup::compose` installs
+`baseline.policy` via `set_policy`; `work_perf` opens `baseline.work_event` behind the
+unchanged `WorkSource` trait; `PlannerConfig` takes `baseline.skid_margin`;
+`hostassert::enforce` checks `baseline.host` and the engine re-checks the volatile subset at
+VM start. The snapshot's `contract_hash` generalizes to a **`baseline_hash`**, so a replay
+refuses to run against a different characterization — the same fail-closed posture, wider net.
+The composition root names a **triple**: `(Backend impl, Arch personality, Baseline)`.
+
+The three axes and what each future target touches:
+
+| Axis | Seam | ARM (post-spike) | AMD |
+|---|---|---|---|
+| ISA | `Arch` (§A) | new personality + backend vocabulary | **unchanged** |
+| Substrate | `Backend` (R-BACKEND; exists) | new KVM/arm64 impl | patched-backend variant: SVM has no MTF, so the 0005 single-step and the 0004 force-exit need SVM mechanisms |
+| Characterization | `Baseline` (this section) | `det-<core>-v1` from the ARM spike | `det-zen*-v1` from a cheap Zen spike (rr-proven event class; SpecLockMap hazard documented) |
+
+**The AMD corollary.** AMD's total cost above the trait line is one `Baseline` plus one
+backend variant — zero personality or engine changes. That makes an AMD box the cheapest
+possible proof that the Baseline/registry machinery works (same ISA, same devices, same boot
+path, rr-proven counter class) before ARM raises the stakes on all three axes at once. It is
+also the concrete de-risk for the "every constant is secretly Coffee Lake" failure mode that
+task 92 (ROADMAP's multi-CPU/backend characterization registry) exists to fix: `Baseline` is
+task 92's registry-entry type, arrived at from the other direction.
+
+### C. `vmm-core` = engine + personality
 
 The **engine** (arch-neutral, generic over `Arch`): run-loop skeleton, `GuestRam`,
 `SnapshotEngine`, the state-hash *framework* (canonical record list → hash), `control.rs`,
@@ -163,14 +238,20 @@ The **personality** (per-arch; x86 is the first and, until spike GO, only one):
 | Work counter | `work_perf.rs` (Intel `0x1c4`) | `BR_RETIRED` `0x21` behind the unchanged `WorkSource` trait |
 | State records (hash + snapshot) | `to_vm_*` adapters + `vm-state` x86 records | arm64 record set; same TLV container; `VM_STATE_VERSION` bump + arch tag in the header |
 
+Three of those rows are really *mechanism* (personality) wrapped around *content* (`Baseline`,
+§B): the contract row's table values, the probe row's expected values + host prep, and the
+work-counter row's event encoding are all `Baseline` data — an Intel box and an AMD box share
+this entire personality column and differ only in the `Baseline` they compose with.
+
 **Module split first, crate split when ARM lands.** The boundary is the trait, not the crate
 wall; moving ~10k lines between crates while task branches are in flight is churn with no
 gate-visible payoff. When an ARM backend is actually added, the crate split (so adding a
 backend doesn't compile x86 code) falls out along the already-drawn module lines. The
 composition-root discipline (`docs/BRINGUP.md`: `fn main` is the one place a concrete backend
-is named) extends naturally: main names the `(Backend impl, Arch personality)` pair.
+is named) extends naturally: main names the `(Backend impl, Arch personality, Baseline)`
+triple (§B).
 
-### C. Upstream fixes (cheap, justified regardless of ARM)
+### D. Upstream fixes (cheap, justified regardless of ARM)
 
 1. `environment`: widen `InjectInterrupt { vector: u8 }` — GIC INTIDs exceed 8 bits. One codec
    change (`environment/src/codec.rs`), one demo constant (`explorer/src/adapter.rs`). This is
@@ -182,23 +263,34 @@ is named) extends naturally: main names the `(Backend impl, Arch personality)` p
 4. `conductor/main.rs` box-mode defaults (`bzImage`, x86 cmdline, `BackendKind`) become
    per-arch config data.
 
-### D. Explicitly NOT restructuring — the ARM new-build (post-spike only)
+### E. Explicitly NOT restructuring — the per-target new-builds (post-spike only)
 
-Additive crates/artifacts, zero edits to the neutral spine: KVM/arm64 backend impl; GICv3 +
-generic-timer models; the ARM CPU-contract document (the x86 one is the template for *rigor*,
-not content); `Image`/DTB loader; arm64 payload runtime (boot shim, exception vectors, PL011,
-GIC init) + new contract payloads + regenerated goldens; the 0004-analogue kernel patch;
-re-measured `skid_margin` / `SimCpu` parameters; arm64 kernel-config audit + `kata/arm64`.
+**ARM** (gated on ARM-PORT.md spike #1): additive crates/artifacts, zero edits to the neutral
+spine — KVM/arm64 backend impl; GICv3 + generic-timer models; the ARM CPU-contract document
+(the x86 one is the template for *rigor*, not content); `Image`/DTB loader; arm64 payload
+runtime (boot shim, exception vectors, PL011, GIC init) + new contract payloads + regenerated
+goldens; the 0004-analogue kernel patch; a `det-<core>-v1` `Baseline`; arm64 kernel-config
+audit + `kata/arm64`.
+
+**AMD** (gated on a Zen spike — the cheap cousin: same measurement shape as ARM's, on a
+rentable Zen box, after applying the §B SpecLockMap prep): a `det-zen*-v1` `Baseline`
+(contract content, work event, skid, host rows); the SVM variant of the patched backend
+(0004 force-exit in the SVM exit path; a 0005-equivalent single-step, since MTF is VMX-only);
+nothing else — no personality, engine, guest-payload, or dissonance changes.
 
 ## Sequencing, cost, risks
 
-**Order.** (1) The C-list + `HypercallFrame`/`Idle` neutralizations — small, land any time.
-(2) Mechanical extraction of x86 value types into an arch module inside `vmm-backend`, no
-semantics change, all gates green. (3) **The keystone**: `Arch` trait + generic `Backend` +
-engine/personality module split in `vmm-core`, x86 as the sole implementation, every existing
-portable + box gate passing unchanged through it. (4) `vm-state` arch-tagged records + version
-bump. Then — only after ARM-PORT.md's spike #1 returns GO on real silicon — the D-list as an
-additive backend wave.
+**Order.** (1) The D-list + `HypercallFrame`/`Idle` neutralizations — small, land any time.
+(2) Mechanical extraction of x86 value types into an arch module inside `vmm-backend`, plus
+extraction of `det-cfl-v1` into the first `Baseline` value (§B — the `0x1c4` pin, skid margin,
+contract content, hostassert rows move from code to data; no semantics change), all gates
+green. (3) **The keystone**: `Arch` trait + generic `Backend` + engine/personality module
+split in `vmm-core`, x86 as the sole implementation, every existing portable + box gate
+passing unchanged through it. (4) `vm-state` arch-tagged records + version bump +
+`contract_hash` → `baseline_hash`. Then, per target: after a Zen spike, the AMD E-list (a
+`Baseline` + an SVM backend variant — exercisable as task 92's first second-registry-entry);
+after ARM-PORT.md's spike #1 returns GO, the ARM E-list as an additive backend wave. Step 2's
+`Baseline` extraction is independently justified by AMD/task-92 even if ARM never happens.
 
 **Cost.** Steps 1–4 ≈ four tasks, mostly mechanical. The creative parts: the `Arch` trait
 shape (ruled above; freeze per the spike caveat below) and keeping the state-hash canonical
@@ -225,12 +317,13 @@ that slip.
 
 Still true and still binding: the hardware table (Spark vs Grace, ECV), the three
 load-bearing-mechanism analysis, the rr evidence base, the LL/SC vs LSE hazard, and the gate —
-**spike #1 on real silicon decides whether ARM happens; no D-list work before GO.**
+**spike #1 on real silicon decides whether ARM happens; no ARM E-list work before GO.** (The
+AMD E-list has its own, much cheaper spike gate — §B/§E — and does not wait on ARM's.)
 
 Superseded by this document: the "What a port costs, by component" survey and its premises
 ("no arch seam exists", "`vmm-core` unwritten", the ~60/40 split) — the audit above replaces
 them; and the blanket "do not build the arch abstraction pre-emptively" is **refined**, not
-reversed: the A–C restructure is justified on x86-hygiene grounds alone (it makes the
+reversed: the A–D restructure is justified on x86-hygiene grounds alone (it makes the
 R-Backend boundary compiler-enforced and the product thesis explicit — a deterministic-execution
 engine with an x86 backend, not an x86 hypervisor with a bug-finder attached), while the trait
 *freeze* and all ARM-side building remain spike-gated exactly as ARM-PORT.md demands.
