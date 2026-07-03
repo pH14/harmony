@@ -157,22 +157,25 @@ struct CampaignBoxArgs {
     campaign: CampaignArgs,
     /// V-time (ns) each branch runs past the base snapshot before its deadline —
     /// far enough for the fault to land and the supervisor to react.
-    #[arg(long, default_value_t = 5_000_000_000)]
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_u64_flexible)]
     deadline_delta: u64,
-    /// Lowest candidate guest-physical fault address (page-aligned).
-    #[arg(long, default_value_t = 0x0100_0000)]
+    /// Lowest candidate guest-physical fault address (page-aligned). Accepts
+    /// decimal or `0x`-hex (a gpa is naturally written in hex).
+    #[arg(long, default_value_t = 0x0100_0000, value_parser = parse_u64_flexible)]
     gpa_base: u64,
     /// Number of page-strided candidate addresses.
-    #[arg(long, default_value_t = 256)]
+    #[arg(long, default_value_t = 256, value_parser = parse_u64_flexible)]
     gpa_count: u64,
-    /// Stride between candidate addresses (default one 4 KiB page).
-    #[arg(long, default_value_t = 0x1000)]
+    /// Stride between candidate addresses (default one 4 KiB page). Decimal or
+    /// `0x`-hex.
+    #[arg(long, default_value_t = 0x1000, value_parser = parse_u64_flexible)]
     gpa_stride: u64,
-    /// Lowest fault-Moment offset past the base V-time (ns).
-    #[arg(long, default_value_t = 0)]
+    /// Lowest fault-Moment offset past the base V-time (ns). Decimal or `0x`-hex.
+    #[arg(long, default_value_t = 0, value_parser = parse_u64_flexible)]
     window_lo: u64,
     /// One past the highest fault-Moment offset past the base V-time (ns).
-    #[arg(long, default_value_t = 2_000_000_000)]
+    /// Decimal or `0x`-hex.
+    #[arg(long, default_value_t = 2_000_000_000, value_parser = parse_u64_flexible)]
     window_hi: u64,
     /// Kernel bzImage filename under guest/build (or guest/linux).
     #[arg(long, default_value = "bzImage")]
@@ -184,6 +187,19 @@ struct CampaignBoxArgs {
     /// post-readiness).
     #[arg(long, default_value = "CAMPAIGN_READY")]
     ready_marker: String,
+}
+
+/// Parse a `u64` from a CLI flag as **decimal or `0x`-prefixed hex** — clap's
+/// built-in `u64` parser is decimal-only, which makes a guest-physical address
+/// like `0x3ff9a000` a hard error (the box milestone's `--gpa-base` is written
+/// in hex). Accepts either form; underscores are permitted as digit separators.
+fn parse_u64_flexible(s: &str) -> Result<u64, String> {
+    let t = s.trim().replace('_', "");
+    let parsed = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => t.parse::<u64>(),
+    };
+    parsed.map_err(|e| format!("expected a u64 (decimal or 0x-hex), got {s:?}: {e}"))
 }
 
 /// Distinct, non-boot branch seeds (a multiplicative hash folded into a base) —
