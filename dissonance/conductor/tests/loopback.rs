@@ -24,7 +24,9 @@ use conductor::{SweepConfig, run_session, run_sweep, sweep_client, verify};
 use control_proto::{ControlError, HashScope, HostFault, Moment, Reply, Request, SnapId};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
-use explorer::{EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime};
+use explorer::{
+    EnvCodec, Machine, RunTrace, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime,
+};
 
 /// A raw-frame control-proto call over a stream — the test harness for
 /// wire-level cases the typed adapter deliberately cannot express (`perturb`,
@@ -270,6 +272,118 @@ fn replay_reproduces_the_pre_snapshot_hash_after_interleaved_verbs() {
         );
     });
     served.expect("server session ends cleanly");
+}
+
+/// **Task 73: the link tier is live over the real wire.** A guest that rings the
+/// Event doorbell during a run has its `(Moment, event_id, bytes)` capture fetched
+/// by the socket `Machine` (the new `SdkEvents` verb), decoded by `link`, and
+/// assembled into a **non-empty** [`RunTrace::events`] — the production path
+/// `record.rs:311` and `campaign.rs` now travel (previously `events: vec![]`).
+#[test]
+fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
+    use vmm_backend::{Exit, MockBackend};
+    use vmm_core::control::ControlServer;
+    use vmm_core::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
+
+    const DOORBELL_PORT: u16 = 0x0CA1;
+    const REQ_GPA: usize = 0xE000;
+    // Large enough to hold the doorbell REQ/RESP pages at 0xE000/0xF000.
+    const RAM: usize = 0x2_0000;
+    let hit_id: u32 = (1 << 24) | 1; // assert namespace, point 1
+
+    // An Event "hit" frame (assert point 1, DISP_HIT) staged at REQ_GPA — a
+    // doorbell OUT during the run captures exactly one SDK event.
+    let mut payload = hit_id.to_le_bytes().to_vec();
+    payload.extend_from_slice(&[0, 0, 0]); // [DISP_HIT, detail_len = 0]
+    let mut frame = vec![0u8; 4096];
+    let n = hypercall_proto::encode_request(
+        hypercall_proto::ServiceId::Event,
+        1,
+        1,
+        &payload,
+        &mut frame,
+    )
+    .unwrap();
+
+    let build = move |script: Vec<Exit>| -> Result<Vmm<MockBackend>, VmmError> {
+        let mut b = MockBackend::with_exits(script);
+        vmm_backend::Backend::set_cpuid(&mut b, &vmm_backend::CpuidModel::default())?;
+        vmm_backend::Backend::set_msr_filter(&mut b, &vmm_backend::MsrFilter::default())?;
+        let mut v = Vmm::new(b, GuestRam::new(RAM)?);
+        v.wire_vtime(VtimeWiring::new(
+            contract_vclock_config(),
+            Box::new(mock::TickingWork::new(mock::WORK_STEP)),
+            0x99,
+        )?);
+        v.wire_snapshot_hashing();
+        let mut ram = vec![0u8; RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        v.restore_guest_memory(&ram)?;
+        Ok(v)
+    };
+    // Live guest: sync RDTSC, ring the Event doorbell, HLT.
+    let live = build(vec![
+        Exit::Rdtsc,
+        Exit::Io {
+            port: DOORBELL_PORT,
+            size: 4,
+            write: Some(n as u32),
+        },
+        Exit::Hlt,
+    ])
+    .unwrap();
+    // The factory is unused (this test runs the live VM directly, no branch), but
+    // the server requires one; a minimal HLT fork suffices.
+    let factory = {
+        let build = build.clone();
+        Box::new(move || build(vec![Exit::Hlt]))
+    };
+    let mut server = ControlServer::new(live, factory);
+
+    let boot_env = EnvSpec::Seeded {
+        seed: 0x99,
+        policy: FaultPolicy::none(),
+    };
+    let (served, (stop, env, raw)) = run_session(&mut server, move |stream| {
+        let mut m = SocketMachine::connect(stream, boot_env).unwrap();
+        let until = StopConditions {
+            deadline: Some(VTime(10_000_000)),
+            on: StopMask(u32::MAX),
+        };
+        let stop = m.run(&until, None).unwrap();
+        let env = m.recorded_env().unwrap();
+        let raw = m.sdk_events().unwrap(); // the capture, over the wire
+        (stop, env, raw)
+    });
+    served.expect("server session ends cleanly");
+
+    // The raw event rode the socket intact...
+    assert_eq!(
+        raw.len(),
+        1,
+        "one Event emission captured + fetched over the wire"
+    );
+    assert_eq!(
+        raw[0].1, hit_id,
+        "the assert-hit event id survived the round-trip"
+    );
+
+    // ...and decodes into a NON-EMPTY RunTrace.events (the link tier, live).
+    let remapped: Vec<(explorer::Moment, u32, Vec<u8>)> = raw
+        .into_iter()
+        .map(|(m, id, b)| (explorer::Moment(m), id, b))
+        .collect();
+    let trace = RunTrace {
+        terminal: stop,
+        env,
+        coverage: None,
+        events: link::decode_events(&remapped),
+        records: Vec::new(),
+    };
+    assert!(
+        !trace.events.is_empty(),
+        "a non-empty RunTrace.events assembled over the real wire (link tier is no longer dead)"
+    );
 }
 
 #[test]

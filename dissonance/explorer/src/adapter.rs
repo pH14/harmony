@@ -776,6 +776,17 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         }
         .encode())
     }
+
+    fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+        // Unlike `recorded_env` (client-local state), the SDK event capture lives
+        // only server-side, so this is a wire round-trip (task 73).
+        match self.call(&control_proto::Request::SdkEvents)? {
+            control_proto::Reply::SdkEvents(events) => Ok(events),
+            other => Err(MachineError::Transport(format!(
+                "sdk_events answered with an unexpected reply: {other:?}"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]

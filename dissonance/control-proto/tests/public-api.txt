@@ -49,6 +49,7 @@ pub control_proto::ProtocolError::ShortFrame
 pub enum control_proto::Reply
 pub control_proto::Reply::Hash([u8; 32])
 pub control_proto::Reply::Hello(control_proto::Caps)
+pub control_proto::Reply::SdkEvents(alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>)
 pub control_proto::Reply::SnapId(control_proto::SnapId)
 pub control_proto::Reply::Stop(control_proto::StopReason)
 pub control_proto::Reply::Unit
@@ -67,6 +68,7 @@ pub control_proto::Request::Replay(control_proto::SnapId)
 pub control_proto::Request::Run
 pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Answer>
 pub control_proto::Request::Run::until: control_proto::StopConditions
+pub control_proto::Request::SdkEvents
 pub control_proto::Request::Snapshot
 pub enum control_proto::StopReason
 pub control_proto::StopReason::Assertion

@@ -373,6 +373,14 @@ impl<B: Backend> ControlServer<B> {
             // stage it at its `Moment`. `run` applies it there and stamps it into
             // the recorded env.
             Request::Perturb { fault, at } => Ok(self.perturb(fault, *at)),
+            // Task 73: surface the link-tier SDK event capture over the wire, so a
+            // remote `SocketMachine` client can fill `RunTrace.events` (a socket
+            // client cannot see the server-side `Vmm::sdk_events` capture directly).
+            // Empty for a guest with no SDK.
+            Request::SdkEvents => {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(Ok(Reply::SdkEvents(vmm.sdk_events().to_vec())))
+            }
         }
     }
 
@@ -1216,8 +1224,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 2,
-            "bumped for the round-8 reply tags"
+            caps.protocol_version, 3,
+            "task 73 bumped for the SdkEvents verb + reply"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -1227,6 +1235,22 @@ mod tests {
             caps.flags.contains(CapFlags::GUEST_HAS_SDK),
             "task 73 services the doorbell, so GUEST_HAS_SDK is advertised"
         );
+    }
+
+    /// The `SdkEvents` verb (task 73) is routed to the live VM's capture — a
+    /// mock guest that never rings the doorbell yields an empty `SdkEvents` reply
+    /// (not `Unsupported`), so a remote client always gets the capture over the
+    /// wire.
+    #[test]
+    fn sdk_events_verb_is_routed_to_the_capture() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        match s.handle(&Request::SdkEvents).unwrap() {
+            Ok(Reply::SdkEvents(events)) => {
+                assert!(events.is_empty(), "the mock guest emits no doorbell events")
+            }
+            other => panic!("SdkEvents verb answered unexpectedly: {other:?}"),
+        }
     }
 
     #[test]

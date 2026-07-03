@@ -184,6 +184,13 @@ pub enum Request {
         /// The `Moment` (retired-instruction count) to apply it at.
         at: Moment,
     },
+    /// Fetch the link-tier SDK event capture of the current run (task 73) →
+    /// [`SdkEvents`](Reply::SdkEvents). The `Moment`-stamped `(moment, event_id,
+    /// bytes)` stream a cooperating guest SDK emitted, so a remote client (the
+    /// campaign's `SocketMachine`) can decode it into `RunTrace.events` — the
+    /// server-side capture a socket client cannot otherwise see. Empty for a
+    /// guest with no SDK.
+    SdkEvents,
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)
@@ -200,6 +207,10 @@ pub enum Reply {
     Stop(StopReason),
     /// A 32-byte canonical digest (reply to [`Hash`](Request::Hash)).
     Hash([u8; 32]),
+    /// The link-tier SDK event capture (reply to [`SdkEvents`](Request::SdkEvents)):
+    /// the `Moment`-stamped `(moment, event_id, bytes)` stream, order-preserving.
+    /// Empty for a guest with no SDK.
+    SdkEvents(Vec<(u64, u32, Vec<u8>)>),
 }
 
 /// The guest-observable outcome of a [`Run`](Request::Run) — the explorer's

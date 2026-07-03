@@ -3650,6 +3650,61 @@ mod tests {
         ));
     }
 
+    /// The doorbell is **total** on edge/hostile requests (self-sweep): an empty
+    /// request, an oversize length (clamped to one page — never an OOB read), a
+    /// garbage frame, and a full-page request all return `Continued` with a clean
+    /// (error) response and never a spurious stop. The request page (`0xE000`)
+    /// abuts the response page (`0xF000`), so a page-length request reads exactly
+    /// its own page and touches neither the response page nor past guest RAM.
+    #[test]
+    fn doorbell_is_total_on_edge_requests() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(
+            EnvSpec::Seeded {
+                seed: 1,
+                policy: FaultPolicy::none(),
+            }
+            .materialize(),
+        );
+
+        // Empty request; oversize length (clamped); a full-page request.
+        assert_eq!(
+            vmm.dispatch_out(DOORBELL_PORT, 4, 0).unwrap(),
+            Step::Continued
+        );
+        assert_eq!(
+            vmm.dispatch_out(DOORBELL_PORT, 4, u32::MAX).unwrap(),
+            Step::Continued
+        );
+        assert_eq!(
+            vmm.dispatch_out(DOORBELL_PORT, 4, HC_PAGE as u32).unwrap(),
+            Step::Continued
+        );
+
+        // A garbage (non-frame) request: decoded as a bad request, never a panic
+        // or a stop.
+        for (i, b) in vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + 96]
+            .iter_mut()
+            .enumerate()
+        {
+            *b = (i as u8).wrapping_mul(37).wrapping_add(1);
+        }
+        assert_eq!(
+            vmm.dispatch_out(DOORBELL_PORT, 4, 96).unwrap(),
+            Step::Continued
+        );
+
+        assert!(
+            vmm.take_sdk_stop().is_none(),
+            "no spurious stop from garbage"
+        );
+        assert!(
+            vmm.sdk_events().is_empty(),
+            "garbage never captures an event"
+        );
+    }
+
     /// The doorbell routes the **Entropy** service (finding-4 fix): `entropy_fill`
     /// gets `n` deterministic bytes from the env supply stream, not `HostRejected`.
     #[test]

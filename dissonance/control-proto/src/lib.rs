@@ -71,8 +71,9 @@ pub const PROTO_VERSION: u16 = 1;
 /// negotiation gate). Bumped to **2** by PR #51 (task 59): the host-plane
 /// enforcement path added the `PerturbOutOfRange` / `PerturbPastMoment` /
 /// `PerturbMomentTaken` / `ScheduleUnsatisfiable` / `NotSynchronized` /
-/// `PerturbReservedVector` reply tags.
-pub const APP_PROTOCOL_VERSION: u16 = 2;
+/// `PerturbReservedVector` reply tags. Bumped to **3** by task 73: the
+/// `SdkEvents` verb + `SdkEvents` reply carry the link-tier event capture.
+pub const APP_PROTOCOL_VERSION: u16 = 3;
 
 /// Maximum on-wire frame *body* length. Generous for [`Environment`] blobs and
 /// hashes, but bounded so untrusted transport can never force unbounded
@@ -93,6 +94,6 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 2); // bumped by PR #51 (task 59 reply tags)
+        assert_eq!(APP_PROTOCOL_VERSION, 3); // task 73: the SdkEvents verb + reply
     }
 }
