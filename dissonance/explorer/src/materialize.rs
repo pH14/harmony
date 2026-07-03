@@ -333,7 +333,12 @@ impl Materializer {
 
     /// [`modeled_cost`](Self::modeled_cost) under the counterfactual that
     /// `excluding` were evicted.
-    fn cost_excluding(&self, ex: &VirtualExemplar, r: ExemplarRef, excluding: Option<SnapId>) -> u64 {
+    fn cost_excluding(
+        &self,
+        ex: &VirtualExemplar,
+        r: ExemplarRef,
+        excluding: Option<SnapId>,
+    ) -> u64 {
         if let Some(&own) = self.seals.get(&r.0)
             && Some(own) != excluding
         {
@@ -619,9 +624,15 @@ mod tests {
 
         // Chain: genesis(100) → E0 @ 200 (seal 10) → E1 @ 350 (seal 11).
         let r0 = f.insert(entry(genesis, 200));
-        assert_eq!(m.register(r0, SnapId(10), genesis, env(vec![]), Moment(200)), None);
+        assert_eq!(
+            m.register(r0, SnapId(10), genesis, env(vec![]), Moment(200)),
+            None
+        );
         let r1 = f.insert(entry(SnapId(10), 350));
-        assert_eq!(m.register(r1, SnapId(11), SnapId(10), env(vec![]), Moment(350)), None);
+        assert_eq!(
+            m.register(r1, SnapId(11), SnapId(10), env(vec![]), Moment(350)),
+            None
+        );
 
         // Own seals live: both cost 0.
         assert_eq!(m.modeled_cost(&f, r0), Some(0));
@@ -674,7 +685,11 @@ mod tests {
         m.seals.remove(&r1.0); // force a real walk
         let walk = m.nearest_retained(&f.get(r1).unwrap().exemplar, None);
         assert!(!walk.from_genesis);
-        assert_eq!(walk.base, SnapId(20), "the re-minted handle, not the dead id");
+        assert_eq!(
+            walk.base,
+            SnapId(20),
+            "the re-minted handle, not the dead id"
+        );
         assert_eq!(walk.base_at, Moment(10));
         assert!(walk.fold.is_empty(), "direct parent — nothing to fold");
 

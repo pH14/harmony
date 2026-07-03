@@ -1034,7 +1034,11 @@ mod tests {
             decoded.base_offset, 160,
             "keyed from the base's (absolute) capture point"
         );
-        assert_eq!(decoded.spec.seed(), 7, "seed preserved (compose-consistent)");
+        assert_eq!(
+            decoded.spec.seed(),
+            7,
+            "seed preserved (compose-consistent)"
+        );
         let guest_keys: Vec<u64> = decoded
             .spec
             .overrides()
