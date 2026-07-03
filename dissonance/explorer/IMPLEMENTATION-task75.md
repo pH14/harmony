@@ -118,10 +118,48 @@ is caught on the discarded branch; a nominal run converges.
 on a fresh ssh. Pin builds/tests to `taskset -c 2`. Foreground gates, read
 results before reporting.
 
-## Test status (this branch, macOS)
+## Test status
 
+**macOS (dev host):**
 - `explorer`: `nextest` 102 pass (1 skipped = the ignored public-api test, which
   I refreshed via `UPDATE_PUBLIC_API=1`); `clippy -D warnings`, `fmt --check`,
   `cargo deny` clean. Dependent crates (`matcher`, `runtrace`, `tactics-regime`,
   `conductor`) still build/test green against the new explorer.
 - `oracle-elle`: 25 tests + 3 proptests (≥256) pass; full standard suite green.
+
+**Linux (determinism box, `ssh hetzner`, `taskset -c 2` per BOX-PINNING):** the
+portable-logic gates for both crates re-run green on Linux (conventions rule 6:
+must pass on macOS *and* Linux) — `build`, `nextest` (explorer 102, oracle-elle
+25), `clippy -D warnings`, `fmt --check` all pass. `cargo-deny` is not installed
+on the box (verified on macOS; it is a platform-independent advisory/license
+check). **No patched-KVM window was opened and no KVM operation was run** (these
+are pure cargo gates), so the box was left on stock KVM (1396736, verified) with
+no revert owed.
+
+## Box gates 4 & 5 — status: NOT run (require new guest workloads to be built)
+
+I did **not** run gates 4 & 5, and did not fabricate a pass. They are blocked on
+guest infrastructure that **does not exist in the repo yet**, not on box access
+(the box is up, patched KVM is loadable via `scripts/box-window.sh`, and Postgres
+images are staged):
+
+- **Gate 4** needs a *concurrent multi-session SQL transaction driver* that emits
+  the `elle`-tagged op history (unique writes + final reads), plus a task-59
+  fault schedule that **induces an isolation anomaly the declared level forbids
+  without crashing the DB**. The staged Postgres images only boot Postgres to the
+  readiness banner and idle — none run a transaction workload. Inducing a *clean*
+  isolation anomaly (not a crash) via a memory-corruption bit-flip is research-
+  grade; task-60's "tunable/planted" discipline would instead plant the trigger
+  in a purpose-built KV workload. Either way this is a new guest image + a new
+  conductor `run_isolation_campaign` (adding `oracle-elle` as a conductor dep) +
+  fault tuning.
+- **Gate 5** needs the planted **bug (vi)** convergence-failure workload (a
+  post-fault non-self-healing state) built into task-69's manifest, plus the
+  conductor liveness-probe campaign.
+
+Both are genuine frontier builds (multi-hour, box-intensive, with fault-tuning
+uncertainty). The complete live path — guest workload shape, op-emission format,
+conductor wiring, uncontamination assertion, and KVM-safety discipline — is
+specced above. The portable half of the probe mechanism is already gated
+(`tests/probe.rs`), so the engine plumbing gate 5 exercises is proven; what
+remains is the guest workload.
