@@ -175,7 +175,18 @@ struct CampaignBoxArgs {
     window_lo: u64,
     /// One past the highest fault-Moment offset past the base V-time (ns).
     /// Decimal or `0x`-hex.
-    #[arg(long, default_value_t = 2_000_000_000, value_parser = parse_u64_flexible)]
+    ///
+    /// **Bound this to the workload's fault-sensitive phase, NOT the deadline.**
+    /// The server (task 59) applies a staged fault by *exact arrival* at its
+    /// `Moment`; if the guest reaches its natural terminal with a fault still
+    /// staged — i.e. the `Moment` lands *beyond* where this run ends — it fails
+    /// loud with `ScheduleUnsatisfiable` and the campaign aborts. So a `Moment`
+    /// must fall inside `[base, base + natural-terminal-span]` (for the campaign
+    /// image that is the supervisor loop, ~10⁶ ns past the base — well under any
+    /// deadline). The default is a loop-scale `1_000_000` ns; scope it to the
+    /// pinned workload's loop (`CAMPAIGN_READY` → the loop's end), never to the
+    /// far deadline.
+    #[arg(long, default_value_t = 1_000_000, value_parser = parse_u64_flexible)]
     window_hi: u64,
     /// Kernel bzImage filename under guest/build (or guest/linux).
     #[arg(long, default_value = "bzImage")]
