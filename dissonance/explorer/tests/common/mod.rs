@@ -249,6 +249,23 @@ impl EnvCodec for ToyCodec {
             overrides,
         })
     }
+
+    fn quiesce(&self, base: &Environment) -> Environment {
+        // Same seed (compose-compatible), overrides cleared (no faults),
+        // genesis-frame — the toy analogue of `SpecEnvCodec::quiesce`.
+        let b = decode(base).unwrap_or(ToyEnv {
+            base_offset: 0,
+            pos: 0,
+            seed: 0,
+            overrides: BTreeMap::new(),
+        });
+        encode(&ToyEnv {
+            base_offset: 0,
+            pos: 0,
+            seed: b.seed,
+            overrides: BTreeMap::new(),
+        })
+    }
 }
 
 // ---- the toy machine ----

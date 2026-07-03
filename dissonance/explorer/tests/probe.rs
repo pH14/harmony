@@ -98,6 +98,16 @@ impl EnvCodec for ConvCodec {
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment {
         let b = dec(base).expect("compose base");
         let d = dec(branch_local).expect("compose delta");
+        // Mirror the production `SpecEnvCodec` seed-mismatch guard, so this test
+        // codec actually exercises the compose contract a forward probe must
+        // honor (a `seeded(0)` probe delta on a non-zero-seeded base would panic
+        // here — the round-3 P1 the `quiesce` fix prevents).
+        assert_eq!(
+            b.seed, d.seed,
+            "ConvCodec::compose: seed mismatch (base {} vs delta {}) — a probe delta must be \
+             quiesced from the original, not freshly seeded",
+            b.seed, d.seed
+        );
         let mut marks = b.marks.clone();
         marks.extend_from_slice(&d.marks);
         enc(&ConvEnv {
@@ -105,6 +115,17 @@ impl EnvCodec for ConvCodec {
             seed: b.seed,
             fault: b.fault,
             marks,
+        })
+    }
+
+    fn quiesce(&self, base: &Environment) -> Environment {
+        // Same seed (compose-compatible), fault cleared (nominal forward run).
+        let b = dec(base).expect("quiesce base");
+        enc(&ConvEnv {
+            base_offset: 0,
+            seed: b.seed,
+            fault: 0,
+            marks: Vec::new(),
         })
     }
 }
@@ -130,6 +151,11 @@ struct ConvMachine {
     vtime: u64,
     poisoned: bool,
     active_fault: bool,
+    /// The seed of the env this branch was reseeded with — carried into the
+    /// recorded delta so `compose` can enforce seed consistency (a probe that
+    /// reseeds with a fresh `seeded(0)` instead of `quiesce`ing the original
+    /// would surface as a compose seed mismatch — the round-3 P1).
+    seed: u64,
     marks: Vec<u8>,
     coverage: Vec<u8>,
 }
@@ -143,6 +169,7 @@ impl ConvMachine {
             vtime: 0,
             poisoned: false,
             active_fault: false,
+            seed: 0,
             marks: Vec::new(),
             coverage: vec![0u8; 8],
         }
@@ -164,6 +191,7 @@ impl Machine for ConvMachine {
         let e = dec(env)?;
         self.branch_vtime = s.vtime;
         self.vtime = s.vtime;
+        self.seed = e.seed;
         self.active_fault = e.fault != 0;
         // A fault poisons the state; a quiesced branch (fault 0) carries the
         // parent's poison forward unchanged.
@@ -255,10 +283,11 @@ impl Machine for ConvMachine {
     }
 
     fn recorded_env(&self) -> Result<Environment, MachineError> {
-        // Branch-local: the marks since this branch, keyed from branch_vtime.
+        // Branch-local: the marks since this branch, keyed from branch_vtime,
+        // carrying the branch's seed so compose can check consistency.
         Ok(enc(&ConvEnv {
             base_offset: self.branch_vtime,
-            seed: 7,
+            seed: self.seed,
             fault: self.active_fault as u8,
             marks: self.marks.clone(),
         }))

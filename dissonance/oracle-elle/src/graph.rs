@@ -109,12 +109,25 @@ impl DepGraph {
         //
         //    Every observed value must have a writer, under the right key.
         let mut append_keys: BTreeSet<Key> = BTreeSet::new();
+        let mut register_keys: BTreeSet<Key> = BTreeSet::new();
         for t in h.iter() {
             for op in &t.ops {
-                if matches!(op.kind, OpKind::Append(_)) {
-                    append_keys.insert(op.key.clone());
+                match op.kind {
+                    OpKind::Append(_) => {
+                        append_keys.insert(op.key.clone());
+                    }
+                    OpKind::Write(_) => {
+                        register_keys.insert(op.key.clone());
+                    }
+                    OpKind::Read(_) => {}
                 }
             }
+        }
+        // A key written by BOTH models is unrecoverable — its version order can't
+        // be a list order and a write-moment order at once, and classifying it as
+        // one would silently drop the other's writes (a false-clean channel).
+        if let Some(key) = append_keys.intersection(&register_keys).next() {
+            return Err(DecodeError::MixedModel { key: key.clone() });
         }
         let mut lists_by_key: BTreeMap<Key, Vec<Vec<Elem>>> = BTreeMap::new();
         for t in h.iter() {

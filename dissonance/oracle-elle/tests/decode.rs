@@ -302,6 +302,52 @@ fn op_after_termination_fails_loud() {
     }
 }
 
+/// Round-3 P2 (boundary): an op AT its commit's exact Moment is **legal** (the
+/// commit is the same V-time tick as the txn's final op) — accepted; only an op
+/// strictly after is rejected.
+#[test]
+fn op_at_commit_moment_is_legal() {
+    // The write and the commit share Moment 5 — accepted.
+    let ok = record_trace(&[(5, "elle op s=1 t=1 k=k W=1"), (5, "elle commit t=1")]);
+    let h = RecordDecoder::new()
+        .decode(&ok)
+        .expect("at-Moment op is legal");
+    assert_eq!(h.txns.get(&1).expect("txn 1").ops.len(), 1);
+    // One tick later is post-termination — rejected.
+    let bad = record_trace(&[(5, "elle commit t=1"), (6, "elle op s=1 t=1 k=k W=1")]);
+    match RecordDecoder::new().decode(&bad) {
+        Err(DecodeError::OpAfterTermination {
+            txn: 1,
+            op_at: 6,
+            marker_at: 5,
+        }) => {}
+        other => panic!("expected OpAfterTermination, got {other:?}"),
+    }
+}
+
+/// Round-3 P2: a key targeted by both a register write and a list append is an
+/// incompatible mixed model — a loud `MixedModel`, never a silent classification
+/// that drops one model's writes from the version order.
+#[test]
+fn mixed_write_append_key_fails_loud() {
+    let t = trace(
+        vec![
+            write(1, 1, 1, "k", 1), // register write to k
+            commit(2, 1),
+            append(3, 2, 2, "k", 2), // ...and an append to the same key
+            commit(4, 2),
+        ],
+        0,
+    );
+    let h = EventDecoder::new()
+        .decode(&t)
+        .expect("decodes into a history");
+    match DepGraph::build(&h) {
+        Err(DecodeError::MixedModel { key }) => assert_eq!(key, b"k".to_vec()),
+        other => panic!("expected MixedModel, got {other:?}"),
+    }
+}
+
 /// Item 3 corollary: an *idempotent* repeat of the same marker is harmless (only
 /// contradictory markers fail).
 #[test]

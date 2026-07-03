@@ -123,4 +123,15 @@ pub enum DecodeError {
         /// The committed append value that no read observed.
         value: Elem,
     },
+
+    /// A key was targeted by **both** a register write and a list append. The two
+    /// version-order models are incompatible (append order comes from observed
+    /// lists, register order from write moments), so mixing them on one key is
+    /// unrecoverable — never a silent classification that drops one model's
+    /// writes from the order.
+    #[error("key {key:?} mixes register writes and list appends (incompatible models)")]
+    MixedModel {
+        /// The key with both a `Write` and an `Append`.
+        key: Key,
+    },
 }

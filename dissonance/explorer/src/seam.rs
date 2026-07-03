@@ -105,5 +105,24 @@ pub trait EnvCodec {
     /// IDs onto the end of `base`. This is how a [`Bug`](crate::Bug) found below a
     /// non-genesis corpus snapshot still yields a portable, genesis-replayable
     /// reproducer. Deterministic.
+    ///
+    /// **Contract:** the delta must be [`compose`](Self::compose)-compatible with
+    /// `base` — same seed and fault *policy* — or a schema-aware codec rejects it
+    /// loudly rather than mint a reproducer that does not replay
+    /// ([`SpecEnvCodec`](crate::SpecEnvCodec) panics on a seed/policy mismatch).
+    /// [`quiesce`](Self::quiesce) exists so a forward probe honors this.
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment;
+
+    /// A **quiesced** view of `base`: the *same* seed and fault policy (so a
+    /// branch-local delta recorded after branching with it stays
+    /// [`compose`](Self::compose)-compatible with `base`), but with the concrete
+    /// **fault schedule stripped** — the per-`Moment` fault overrides and any
+    /// standing faults removed — so a run reseeded from it injects no faults and
+    /// answers nominally. This is what a directed liveness probe branches with
+    /// ("nominal answers, empty fault schedule"): deriving the seed from `base`
+    /// keeps the probe's delta seed-consistent, so
+    /// [`Explorer::probe`](crate::Explorer::probe) never aborts on a
+    /// seed-mismatch panic for a non-zero-seeded campaign. Genesis-frame,
+    /// deterministic.
+    fn quiesce(&self, base: &Environment) -> Environment;
 }

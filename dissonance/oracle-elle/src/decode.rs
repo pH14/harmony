@@ -86,8 +86,14 @@ impl Builder {
     fn finish(self) -> Result<History, DecodeError> {
         let mut txns: BTreeMap<TxnId, Transaction> = BTreeMap::new();
         // Every transaction that issued ops must have a terminal marker, and no
-        // op may occur *after* that marker (post-termination activity would
-        // silently mutate the graph).
+        // op may occur *strictly after* that marker (post-termination activity
+        // would silently mutate the graph).
+        //
+        // **Boundary:** an op AT the marker's exact Moment is **legal** — the
+        // commit/abort is recorded at the same V-time tick as the transaction's
+        // final op (they are one instant on the deterministic timeline, the op
+        // then the commit). Only `op.at > marker` is post-termination. So the
+        // check is strict-greater, and an at-Moment op stays in the transaction.
         for (&id, ops) in &self.ops {
             let Some(&(outcome, at)) = self.outcomes.get(&id) else {
                 return Err(DecodeError::UnterminatedTxn(id));

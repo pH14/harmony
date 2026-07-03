@@ -383,6 +383,26 @@ impl crate::EnvCodec for SpecEnvCodec {
         }
         .encode()
     }
+
+    fn quiesce(&self, base: &Environment) -> Environment {
+        let b = Self::require(base, "quiesce");
+        // Preserve the seed AND the fault *policy* (the compose contract keys on
+        // both), but drop the concrete fault schedule — the per-Moment `Action`
+        // overrides and any standing faults — so the forward convergence window
+        // injects no faults. Genesis-frame (`base_offset == 0`), `Recorded` so it
+        // is a valid compose base like `seeded`.
+        AdapterEnv {
+            base_offset: 0,
+            pos: 0,
+            spec: EnvSpec::Recorded {
+                seed: b.spec.seed(),
+                policy: b.spec.policy().clone(),
+                overrides: BTreeMap::new(),
+                standing: Vec::new(),
+            },
+        }
+        .encode()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,6 +958,50 @@ mod tests {
             "always the Recorded variant, so compose's variant check cannot fire"
         );
         assert!(decoded.spec.overrides().is_empty());
+    }
+
+    /// Round-3 P1: `quiesce` derives the probe env from the original — SAME seed
+    /// (so the probe's recorded delta stays compose-compatible), fault schedule
+    /// STRIPPED — so `Explorer::probe` on a non-zero-seeded campaign composes
+    /// without tripping the adapter's seed-mismatch guard. (The old
+    /// `seeded(0)`-based probe would have minted a seed-0 delta and panicked;
+    /// `compose_panics_on_a_seed_mismatch_per_the_ruling` documents that guard.)
+    #[test]
+    fn quiesce_yields_a_compose_safe_probe_delta() {
+        // A non-zero-seeded campaign env carrying a fault schedule (the original
+        // run the probe interrogates).
+        let original = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_overrides(0xABCD_1234, &[40]),
+        }
+        .encode();
+
+        let q = SpecEnvCodec.quiesce(&original);
+        let qd = AdapterEnv::decode(&q).unwrap();
+        assert_eq!(qd.spec.seed(), 0xABCD_1234, "quiesce preserves the seed");
+        assert!(
+            qd.spec.overrides().is_empty(),
+            "the fault schedule is stripped"
+        );
+        assert_eq!(qd.base_offset, 0, "genesis-frame");
+
+        // The exact operation `Explorer::probe` performs: compose the original
+        // with a branch-local delta carrying the QUIESCED seed (what
+        // `recorded_env` returns after branching with `q`), keyed at the terminal
+        // (the original's `pos`). Seeds match, so no panic.
+        let probe_delta = AdapterEnv {
+            base_offset: 100,
+            pos: 200,
+            spec: spec_with_overrides(0xABCD_1234, &[]),
+        }
+        .encode();
+        let composed = SpecEnvCodec.compose(&original, &probe_delta);
+        assert_eq!(
+            AdapterEnv::decode(&composed).unwrap().spec.seed(),
+            0xABCD_1234,
+            "the composed reproducer keeps the campaign seed"
+        );
     }
 
     #[test]

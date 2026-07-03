@@ -41,14 +41,6 @@ use crate::spine::{
 };
 use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason};
 
-/// The seed a liveness [`probe`](Explorer::probe)'s quiesced env is minted with:
-/// a fresh seed carries no overrides, so the throwaway convergence run injects
-/// no faults and answers every decision nominally (the "nominal answers, empty
-/// fault schedule" of task 75's probe ruling). The value is immaterial —
-/// convergence is a property of the *terminal state being probed*, not of the
-/// probe's own seed — so any fixed seed keeps the probe deterministic.
-const PROBE_QUIESCE_SEED: u64 = 0;
-
 /// The result of one Modulation: where it stopped and the **branch-local**
 /// reproducer [`Environment`] accumulated over it
 /// ([`Machine::recorded_env`], keyed since the Modulation's branch origin). The
@@ -564,8 +556,9 @@ impl<M: Machine> Explorer<M> {
     /// 1. Ask the oracle whether this state warrants a probe
     ///    ([`ProbeOracle::plan`]); `None` skips it (the common case).
     /// 2. [`branch`](Machine::branch) the throwaway forward exploration off
-    ///    `terminal` with a **quiesced** env (nominal answers, empty fault
-    ///    schedule — a fresh seed with no overrides), so what it observes is pure
+    ///    `terminal` with a **quiesced** env ([`EnvCodec::quiesce`] of the
+    ///    original: same seed + policy, fault schedule stripped), so what it
+    ///    observes is pure
     ///    convergence behaviour.
     /// 3. Run to `plan.horizon`, **snapshot-neutral**: decline every surfaced
     ///    decision and step past any [`StopReason::SnapshotPoint`] *without*
@@ -592,8 +585,12 @@ impl<M: Machine> Explorer<M> {
             return Ok(None);
         };
         // Branch the throwaway forward exploration: restore the terminal state,
-        // reseed with a quiesced env. `branch` mints no snapshot.
-        let quiesced = self.codec.seeded(PROBE_QUIESCE_SEED);
+        // reseed with a **quiesced** view of the original env — same seed + fault
+        // policy (so the probe's delta stays compose-compatible with
+        // `original.env`; a fresh `seeded(0)` would panic the production codec's
+        // seed-mismatch guard for a non-zero-seeded campaign), fault schedule
+        // stripped (nominal, no faults). `branch` mints no snapshot.
+        let quiesced = self.codec.quiesce(&original.env);
         self.machine.branch(terminal, &quiesced)?;
         let stop = self.run_probe_to_horizon(&plan)?;
         // The forward-window reproducer, keyed since the terminal branch, folded
