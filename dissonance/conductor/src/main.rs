@@ -812,8 +812,12 @@ mod boxrun {
             moment_window: (args.window_lo, args.window_hi),
             // Single-event upsets on byte boundaries (the naive upset alphabet).
             mask_bits: vec![7, 15, 23, 31, 39, 47, 55, 63],
-            snapshot_retry_step: 1_000_000,
-            snapshot_max_attempts: 100_000,
+            // A fine retry step so the base seals *close to* CAMPAIGN_READY (early
+            // in the supervisor loop), maximizing the remaining fault window — a
+            // coarse step overshoots a short loop into the halt tail (the base
+            // gate proved a coarse step + short loop leaves the loop unreachable).
+            snapshot_retry_step: 10_000,
+            snapshot_max_attempts: 200_000,
             nominal_seed: CampaignConfig::toy().nominal_seed,
         };
         let n = cfg.replay_n;

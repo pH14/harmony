@@ -50,9 +50,15 @@
 // The nominal retry-budget bound. The loop keeps `budget` in [0, BUDGET_MAX)
 // forever; a sign-bit upset drives it negative, tripping the guarded branch.
 #define BUDGET_MAX 1000000
-// Loop length — long enough that its V-time span brackets a generous fault
-// window past the base snapshot (the campaign's --window-* is tuned to it).
-#define ITERS 2000000L
+// Loop length. This MUST be long (in V-time) enough that the campaign's
+// mid-workload base snapshot — sealed at the first snapshottable boundary
+// at/after CAMPAIGN_READY, which the retry search overshoots by up to
+// `snapshot_retry_step` ns — lands *inside* the loop, not past it in the halt
+// tail. A short loop (the original 2·10⁶) finished before the base sealed, so no
+// injected fault could ever reach the fault-sensitive guard (the box gate proved
+// this: a fault at base+0 did not trigger). 2·10⁸ spans tens of ms of V-time —
+// the base seals deep inside it, leaving a wide fault window for `--window-*`.
+#define ITERS 200000000L
 // The isa-debug-exit port (vmm-core `ISA_DEBUG_EXIT_PORT`) and the FAIL code the
 // supervisor writes to it. A nonzero code → DebugExit{code} → Crash{Panic};
 // 0x60 tags "task 60".
