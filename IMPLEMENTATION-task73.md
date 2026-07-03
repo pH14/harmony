@@ -33,6 +33,29 @@ KVM was loaded patched (1400832) for the run and **reverted to stock 1396736**
 box-safety intact. The doorbell→services seam this landed is the shared-with-61
 seam (61 reuses it).
 
+## Round-1 review (4 blocking + nit — all addressed)
+
+1. **SDK channel survives snapshot/restore (P1).** `SdkSnapshot` captures the
+   channel's replay-relevant state (seeded stream position — buggify fault +
+   entropy supply — and the event log); the `ControlServer` keys it by `SnapId`
+   (captured on `snapshot`, restored on `branch`/`replay`, dropped on `drop`). A
+   verbatim replay continues the streams + keeps the catalog; a branch reseeds
+   but keeps the catalog. `environment` grew `Prng::raw_state/from_raw_state` +
+   `SeededEnv`/`RecordedEnv::stream_state/restore_stream_state`. Verified
+   **portably** (a bare payload has no synchronized mid-run point to seal at — the
+   `setup_complete` SnapshotPoint is a skid-tainted doorbell OUT → `NotQuiescent`;
+   the campaign seals at V-time boundaries, not there): the mock stream-resume
+   tests + every mock control snapshot/branch/replay/drop now run with the SDK
+   channel wired.
+2. **`set_class(Buggify)` rejected** — buggify has no per-class slot (per-point
+   only), so it never lands a `BuggifyFire` in the net slot / makes the policy
+   self-unreadable. Round-trip regression added.
+3. **`GUEST_HAS_SDK` honored from construction** — `ControlServer::new`
+   `enable_sdk`s the live VM, so an SDK guest before its first branch is serviced.
+4. **Entropy routed** — `dispatch_doorbell` services `ServiceId::Entropy` from the
+   env supply stream (snapshotted with the channel), so `entropy_fill` works.
+   (nit) SPDX headers on `sdk-demo`.
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
