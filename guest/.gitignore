@@ -1,2 +1,4 @@
 # Build artifacts of the payloads workspace (root .gitignore only covers /target).
 payloads/target/
+# Build artifacts of the guest SDK workspace (task 73; standalone workspace).
+sdk/target/
