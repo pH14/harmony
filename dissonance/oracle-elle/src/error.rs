@@ -9,7 +9,7 @@
 
 use thiserror::Error;
 
-use crate::op::{Elem, Key, TxnId};
+use crate::op::{Elem, Key, TxnId, TxnOutcome};
 
 /// A history that cannot be decoded or recovered. Never a silent "no anomaly":
 /// the checker refuses to guess, and the campaign surfaces this loudly.
@@ -55,4 +55,57 @@ pub enum DecodeError {
     /// outcome (and thus whether its writes are visible) is unknown.
     #[error("transaction {0} has operations but no commit/abort marker")]
     UnterminatedTxn(TxnId),
+
+    /// A single operation carried more than one of the mutually-exclusive
+    /// `W`/`A`/`R` payloads, so its kind is ambiguous — a mis-classified op
+    /// would corrupt the recovered graph. Never last-wins; always loud.
+    #[error("transaction {txn}: op has an ambiguous payload (more than one of W/A/R present)")]
+    AmbiguousOp {
+        /// The transaction the ambiguous op belongs to.
+        txn: TxnId,
+    },
+
+    /// A transaction received two contradictory lifecycle markers (e.g. a commit
+    /// *and* an abort) — its outcome is undefined, so it can never be judged.
+    #[error("transaction {txn} has conflicting lifecycle markers ({first:?} then {second:?})")]
+    ConflictingLifecycle {
+        /// The transaction with contradictory markers.
+        txn: TxnId,
+        /// The outcome seen first.
+        first: TxnOutcome,
+        /// The contradictory outcome seen after it.
+        second: TxnOutcome,
+    },
+
+    /// A read observed a value that was written to a **different key**, so it
+    /// cannot join the read's key's version order — a mis-attribution would
+    /// silently merge two keys' histories. The history is unrecoverable.
+    #[error(
+        "value {value} written to key {wrote_key:?} was observed under key {read_key:?} \
+         (cross-key attribution)"
+    )]
+    MisattributedValue {
+        /// The mis-attributed value.
+        value: Elem,
+        /// The key the value was actually written to.
+        wrote_key: Key,
+        /// The key it was (wrongly) observed under.
+        read_key: Key,
+    },
+
+    /// A **committed append** value never appeared in any read of its key, so the
+    /// key's recovered version order is incomplete (a final read at quiesce is
+    /// missing). Proceeding would drop the missing write's dependency edges and
+    /// could judge a real anomaly **clean** — so this is a fail-loud unrecoverable
+    /// history, never a silent partial order.
+    #[error(
+        "key {key:?}: committed append value {value} is never observed by a read \
+         (missing final read — version order incomplete)"
+    )]
+    UnobservedAppend {
+        /// The key whose version order is incomplete.
+        key: Key,
+        /// The committed append value that no read observed.
+        value: Elem,
+    },
 }

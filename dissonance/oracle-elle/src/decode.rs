@@ -48,19 +48,39 @@ struct Builder {
 }
 
 impl Builder {
-    fn push(&mut self, m: Marker, at: Moment) {
+    fn push(&mut self, m: Marker, at: Moment) -> Result<(), DecodeError> {
         match m {
             Marker::Op(op) => {
                 self.sessions.entry(op.txn).or_insert(op.session);
                 self.ops.entry(op.txn).or_default().push(op);
             }
-            Marker::Commit(t) => {
-                self.outcomes.insert(t, (TxnOutcome::Committed, at));
+            Marker::Commit(t) => self.mark(t, TxnOutcome::Committed, at)?,
+            Marker::Abort(t) => self.mark(t, TxnOutcome::Aborted, at)?,
+        }
+        Ok(())
+    }
+
+    /// Record a transaction's terminal outcome, rejecting a **contradictory**
+    /// second marker (a commit after an abort, or vice versa) — never last-wins,
+    /// which could flip a bug's visibility. An identical repeat marker is
+    /// idempotent (harmless); the earliest moment is kept.
+    fn mark(&mut self, txn: TxnId, outcome: TxnOutcome, at: Moment) -> Result<(), DecodeError> {
+        match self.outcomes.get_mut(&txn) {
+            Some((prev, prev_at)) => {
+                if *prev != outcome {
+                    return Err(DecodeError::ConflictingLifecycle {
+                        txn,
+                        first: *prev,
+                        second: outcome,
+                    });
+                }
+                *prev_at = (*prev_at).min(at);
             }
-            Marker::Abort(t) => {
-                self.outcomes.insert(t, (TxnOutcome::Aborted, at));
+            None => {
+                self.outcomes.insert(txn, (outcome, at));
             }
         }
+        Ok(())
     }
 
     fn finish(self) -> Result<History, DecodeError> {
@@ -170,46 +190,85 @@ impl RecordDecoder {
     }
 
     /// Parse one `elle ...` line into a marker (`None` for a non-`elle` line).
-    fn parse_line(line: &str) -> Result<Option<Marker>, DecodeError> {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("elle ") else {
+    ///
+    /// Parses at the **byte** level: numeric/verb fields are ASCII, but the key
+    /// value is kept **verbatim** (never UTF-8-lossy-decoded — a mangled key
+    /// could collide two distinct keys and hide or fabricate an anomaly).
+    fn parse_line(line: &[u8]) -> Result<Option<Marker>, DecodeError> {
+        let line = line.trim_ascii();
+        let Some(rest) = line.strip_prefix(b"elle ") else {
             return Ok(None);
         };
-        let mut fields = rest.split_whitespace();
+        let show = || String::from_utf8_lossy(line).into_owned();
+        let mut fields = rest
+            .split(|b: &u8| b.is_ascii_whitespace())
+            .filter(|f| !f.is_empty());
         let verb = fields
             .next()
-            .ok_or_else(|| DecodeError::Malformed(format!("empty elle line {line:?}")))?;
-        // Collect the `k=v` tokens deterministically.
-        let mut kv: BTreeMap<&str, &str> = BTreeMap::new();
+            .ok_or_else(|| DecodeError::Malformed(format!("empty elle line {:?}", show())))?;
+        // Collect the `k=v` tokens deterministically (values kept as raw bytes).
+        let mut kv: BTreeMap<&[u8], &[u8]> = BTreeMap::new();
         for tok in fields {
-            let (k, v) = tok.split_once('=').ok_or_else(|| {
-                DecodeError::Malformed(format!("token {tok:?} not k=v in {line:?}"))
+            let eq = tok.iter().position(|&b| b == b'=').ok_or_else(|| {
+                DecodeError::Malformed(format!(
+                    "token {:?} not k=v in {:?}",
+                    String::from_utf8_lossy(tok),
+                    show()
+                ))
             })?;
-            kv.insert(k, v);
+            kv.insert(&tok[..eq], &tok[eq + 1..]);
         }
-        let get_u64 = |k: &str| -> Result<u64, DecodeError> {
-            kv.get(k)
-                .ok_or_else(|| DecodeError::Malformed(format!("missing {k}= in {line:?}")))?
-                .parse::<u64>()
-                .map_err(|_| DecodeError::Malformed(format!("bad {k}= in {line:?}")))
+        let get_u64 = |k: &[u8]| -> Result<u64, DecodeError> {
+            let raw = kv.get(k).ok_or_else(|| {
+                DecodeError::Malformed(format!(
+                    "missing {}= in {:?}",
+                    String::from_utf8_lossy(k),
+                    show()
+                ))
+            })?;
+            std::str::from_utf8(raw)
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    DecodeError::Malformed(format!(
+                        "bad {}= in {:?}",
+                        String::from_utf8_lossy(k),
+                        show()
+                    ))
+                })
         };
         match verb {
-            "commit" => Ok(Some(Marker::Commit(get_u64("t")?))),
-            "abort" => Ok(Some(Marker::Abort(get_u64("t")?))),
-            "op" => {
-                let session = get_u64("s")?;
-                let txn = get_u64("t")?;
+            b"commit" => Ok(Some(Marker::Commit(get_u64(b"t")?))),
+            b"abort" => Ok(Some(Marker::Abort(get_u64(b"t")?))),
+            b"op" => {
+                let session = get_u64(b"s")?;
+                let txn = get_u64(b"t")?;
                 let key = kv
-                    .get("k")
-                    .ok_or_else(|| DecodeError::Malformed(format!("missing k= in {line:?}")))?
-                    .as_bytes()
+                    .get(b"k".as_slice())
+                    .ok_or_else(|| DecodeError::Malformed(format!("missing k= in {:?}", show())))?
                     .to_vec();
-                // Exactly one of W/A/R is the op payload.
-                let payload = ["W", "A", "R"]
-                    .into_iter()
-                    .find_map(|verb| kv.get(verb).map(|v| (verb, *v)));
-                let (verb, payload) = payload.ok_or_else(|| {
-                    DecodeError::Malformed(format!("op line has no W=/A=/R= payload: {line:?}"))
+                // Exactly one of W/A/R may be present — more than one is an
+                // ambiguous op kind, never last-wins.
+                let present: Vec<(&str, &[u8])> = [
+                    ("W", b"W".as_slice()),
+                    ("A", b"A".as_slice()),
+                    ("R", b"R".as_slice()),
+                ]
+                .into_iter()
+                .filter_map(|(verb, k)| kv.get(k).map(|v| (verb, *v)))
+                .collect();
+                let (verb, payload) = match present.as_slice() {
+                    [] => {
+                        return Err(DecodeError::Malformed(format!(
+                            "op line has no W=/A=/R= payload: {:?}",
+                            show()
+                        )));
+                    }
+                    [one] => *one,
+                    _ => return Err(DecodeError::AmbiguousOp { txn }),
+                };
+                let payload = std::str::from_utf8(payload).map_err(|_| {
+                    DecodeError::Malformed(format!("non-UTF-8 {verb}= payload in {:?}", show()))
                 })?;
                 Ok(Some(Marker::Op(assemble_op(
                     session,
@@ -221,7 +280,9 @@ impl RecordDecoder {
                 )?)))
             }
             other => Err(DecodeError::Malformed(format!(
-                "unknown elle verb {other:?} in {line:?}"
+                "unknown elle verb {:?} in {:?}",
+                String::from_utf8_lossy(other),
+                show()
             ))),
         }
     }
@@ -231,8 +292,7 @@ impl OpDecode for RecordDecoder {
     fn decode(&self, t: &RunTrace) -> Result<History, DecodeError> {
         let mut b = Builder::default();
         for (at, rec) in &t.records {
-            let line = String::from_utf8_lossy(&rec.line);
-            if let Some(marker) = RecordDecoder::parse_line(&line)? {
+            if let Some(marker) = RecordDecoder::parse_line(&rec.line)? {
                 // Stamp the op with the record's Moment (the parse used a
                 // placeholder).
                 let marker = match marker {
@@ -242,7 +302,7 @@ impl OpDecode for RecordDecoder {
                     }
                     other => other,
                 };
-                b.push(marker, *at);
+                b.push(marker, *at)?;
             }
         }
         b.finish()
@@ -301,14 +361,21 @@ impl OpDecode for EventDecoder {
                     let session = attr_u64(ev, "s")?;
                     let txn = attr_u64(ev, "t")?;
                     let key = attr_bytes(ev, "k")?;
-                    let (verb, payload) = ["W", "A", "R"]
+                    // Exactly one of W/A/R may be present — more than one is an
+                    // ambiguous op kind, never first-wins.
+                    let present: Vec<(&str, &Value)> = ["W", "A", "R"]
                         .into_iter()
-                        .find_map(|verb| ev.attrs.get(verb).map(|v| (verb, v)))
-                        .ok_or_else(|| {
-                            DecodeError::Malformed(format!(
+                        .filter_map(|verb| ev.attrs.get(verb).map(|v| (verb, v)))
+                        .collect();
+                    let (verb, payload) = match present.as_slice() {
+                        [] => {
+                            return Err(DecodeError::Malformed(format!(
                                 "op event has no W/A/R attr (txn {txn})"
-                            ))
-                        })?;
+                            )));
+                        }
+                        [one] => *one,
+                        _ => return Err(DecodeError::AmbiguousOp { txn }),
+                    };
                     // W/A carry an integer; R carries a comma list as a string.
                     let payload = match (verb, payload) {
                         ("R", Value::Str(s)) => s.clone(),
@@ -326,7 +393,7 @@ impl OpDecode for EventDecoder {
                 // concern; skip them.
                 _ => continue,
             };
-            b.push(marker, *at);
+            b.push(marker, *at)?;
         }
         b.finish()
     }

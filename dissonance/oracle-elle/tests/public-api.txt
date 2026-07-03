@@ -1,0 +1,242 @@
+pub mod oracle_elle
+pub mod oracle_elle::anomaly
+pub enum oracle_elle::anomaly::AnomalyKind
+pub oracle_elle::anomaly::AnomalyKind::AbortedRead
+pub oracle_elle::anomaly::AnomalyKind::DirtyWrite
+pub oracle_elle::anomaly::AnomalyKind::LostUpdate
+impl oracle_elle::anomaly::AnomalyKind
+pub fn oracle_elle::anomaly::AnomalyKind::class(&self) -> u32
+pub fn oracle_elle::anomaly::AnomalyKind::name(&self) -> &'static str
+pub enum oracle_elle::anomaly::IsolationLevel
+pub oracle_elle::anomaly::IsolationLevel::ReadCommitted
+pub oracle_elle::anomaly::IsolationLevel::ReadUncommitted
+pub oracle_elle::anomaly::IsolationLevel::Serializable
+pub oracle_elle::anomaly::IsolationLevel::SnapshotIsolation
+impl oracle_elle::anomaly::IsolationLevel
+pub fn oracle_elle::anomaly::IsolationLevel::forbids(&self, oracle_elle::anomaly::AnomalyKind) -> bool
+pub struct oracle_elle::anomaly::Anomaly
+pub oracle_elle::anomaly::Anomaly::at: explorer::spine::Moment
+pub oracle_elle::anomaly::Anomaly::keys: alloc::vec::Vec<oracle_elle::op::Key>
+pub oracle_elle::anomaly::Anomaly::kind: oracle_elle::anomaly::AnomalyKind
+pub oracle_elle::anomaly::Anomaly::txns: alloc::vec::Vec<oracle_elle::op::TxnId>
+pub fn oracle_elle::anomaly::check(&oracle_elle::op::History, &oracle_elle::graph::DepGraph, oracle_elle::anomaly::IsolationLevel) -> core::option::Option<oracle_elle::anomaly::Anomaly>
+pub fn oracle_elle::anomaly::check_all(&oracle_elle::op::History, &oracle_elle::graph::DepGraph, oracle_elle::anomaly::IsolationLevel) -> alloc::vec::Vec<oracle_elle::anomaly::Anomaly>
+pub mod oracle_elle::decode
+pub struct oracle_elle::decode::EventDecoder
+impl oracle_elle::decode::EventDecoder
+pub fn oracle_elle::decode::EventDecoder::new() -> Self
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::EventDecoder
+pub fn oracle_elle::decode::EventDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+pub struct oracle_elle::decode::RecordDecoder
+impl oracle_elle::decode::RecordDecoder
+pub fn oracle_elle::decode::RecordDecoder::new() -> Self
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::RecordDecoder
+pub fn oracle_elle::decode::RecordDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+pub trait oracle_elle::decode::OpDecode
+pub fn oracle_elle::decode::OpDecode::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::EventDecoder
+pub fn oracle_elle::decode::EventDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::RecordDecoder
+pub fn oracle_elle::decode::RecordDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+pub mod oracle_elle::error
+pub enum oracle_elle::error::DecodeError
+pub oracle_elle::error::DecodeError::AmbiguousOp
+pub oracle_elle::error::DecodeError::AmbiguousOp::txn: oracle_elle::op::TxnId
+pub oracle_elle::error::DecodeError::ConflictingLifecycle
+pub oracle_elle::error::DecodeError::ConflictingLifecycle::first: oracle_elle::op::TxnOutcome
+pub oracle_elle::error::DecodeError::ConflictingLifecycle::second: oracle_elle::op::TxnOutcome
+pub oracle_elle::error::DecodeError::ConflictingLifecycle::txn: oracle_elle::op::TxnId
+pub oracle_elle::error::DecodeError::DuplicateValue
+pub oracle_elle::error::DecodeError::DuplicateValue::first: oracle_elle::op::TxnId
+pub oracle_elle::error::DecodeError::DuplicateValue::second: oracle_elle::op::TxnId
+pub oracle_elle::error::DecodeError::DuplicateValue::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::InconsistentOrder
+pub oracle_elle::error::DecodeError::InconsistentOrder::key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::Malformed(alloc::string::String)
+pub oracle_elle::error::DecodeError::MisattributedValue
+pub oracle_elle::error::DecodeError::MisattributedValue::read_key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::MisattributedValue::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::MisattributedValue::wrote_key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::UnknownValue
+pub oracle_elle::error::DecodeError::UnknownValue::key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::UnknownValue::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::UnobservedAppend
+pub oracle_elle::error::DecodeError::UnobservedAppend::key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::UnobservedAppend::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::UnterminatedTxn(oracle_elle::op::TxnId)
+pub mod oracle_elle::graph
+pub struct oracle_elle::graph::DepGraph
+impl oracle_elle::graph::DepGraph
+pub fn oracle_elle::graph::DepGraph::build(&oracle_elle::op::History) -> core::result::Result<Self, oracle_elle::error::DecodeError>
+pub fn oracle_elle::graph::DepGraph::is_committed(&self, oracle_elle::op::TxnId) -> bool
+pub fn oracle_elle::graph::DepGraph::rw_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::version_order(&self, &oracle_elle::op::Key) -> core::option::Option<&[oracle_elle::op::Elem]>
+pub fn oracle_elle::graph::DepGraph::wr_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::writer(&self, oracle_elle::op::Elem) -> core::option::Option<oracle_elle::op::TxnId>
+pub fn oracle_elle::graph::DepGraph::ww_cycle(&self) -> core::option::Option<alloc::vec::Vec<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::ww_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::ww_keys_among(&self, &alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>) -> alloc::vec::Vec<oracle_elle::op::Key>
+pub mod oracle_elle::op
+pub enum oracle_elle::op::OpKind
+pub oracle_elle::op::OpKind::Append(oracle_elle::op::Elem)
+pub oracle_elle::op::OpKind::Read(alloc::vec::Vec<oracle_elle::op::Elem>)
+pub oracle_elle::op::OpKind::Write(oracle_elle::op::Elem)
+pub enum oracle_elle::op::TxnOutcome
+pub oracle_elle::op::TxnOutcome::Aborted
+pub oracle_elle::op::TxnOutcome::Committed
+pub struct oracle_elle::op::History
+pub oracle_elle::op::History::txns: alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, oracle_elle::op::Transaction>
+impl oracle_elle::op::History
+pub fn oracle_elle::op::History::is_empty(&self) -> bool
+pub fn oracle_elle::op::History::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = &oracle_elle::op::Transaction>
+pub fn oracle_elle::op::History::len(&self) -> usize
+pub fn oracle_elle::op::History::new() -> Self
+pub fn oracle_elle::op::History::ops_in_time_order(&self) -> alloc::vec::Vec<&oracle_elle::op::Op>
+pub struct oracle_elle::op::Op
+pub oracle_elle::op::Op::at: explorer::spine::Moment
+pub oracle_elle::op::Op::key: oracle_elle::op::Key
+pub oracle_elle::op::Op::kind: oracle_elle::op::OpKind
+pub oracle_elle::op::Op::session: oracle_elle::op::Session
+pub oracle_elle::op::Op::txn: oracle_elle::op::TxnId
+impl oracle_elle::op::Op
+pub fn oracle_elle::op::Op::observed(&self) -> core::option::Option<&[oracle_elle::op::Elem]>
+pub fn oracle_elle::op::Op::observed_version(&self) -> core::option::Option<oracle_elle::op::Elem>
+pub fn oracle_elle::op::Op::written(&self) -> core::option::Option<oracle_elle::op::Elem>
+pub struct oracle_elle::op::Transaction
+pub oracle_elle::op::Transaction::at: explorer::spine::Moment
+pub oracle_elle::op::Transaction::id: oracle_elle::op::TxnId
+pub oracle_elle::op::Transaction::ops: alloc::vec::Vec<oracle_elle::op::Op>
+pub oracle_elle::op::Transaction::outcome: oracle_elle::op::TxnOutcome
+pub oracle_elle::op::Transaction::session: oracle_elle::op::Session
+impl oracle_elle::op::Transaction
+pub fn oracle_elle::op::Transaction::committed(&self) -> bool
+pub fn oracle_elle::op::Transaction::first_moment(&self) -> explorer::spine::Moment
+pub type oracle_elle::op::Elem = i64
+pub type oracle_elle::op::Key = alloc::vec::Vec<u8>
+pub type oracle_elle::op::Session = u64
+pub type oracle_elle::op::TxnId = u64
+pub mod oracle_elle::oracle
+pub struct oracle_elle::oracle::ElleOracle
+impl oracle_elle::oracle::ElleOracle
+pub fn oracle_elle::oracle::ElleOracle::analyze(&self, &explorer::spine::RunTrace) -> core::result::Result<core::option::Option<oracle_elle::anomaly::Anomaly>, oracle_elle::error::DecodeError>
+pub fn oracle_elle::oracle::ElleOracle::judge_checked(&self, &explorer::spine::RunTrace) -> core::result::Result<core::option::Option<explorer::spine::Bug>, oracle_elle::error::DecodeError>
+pub fn oracle_elle::oracle::ElleOracle::level(&self) -> oracle_elle::anomaly::IsolationLevel
+pub fn oracle_elle::oracle::ElleOracle::new(alloc::boxed::Box<dyn oracle_elle::decode::OpDecode>, oracle_elle::anomaly::IsolationLevel) -> Self
+impl explorer::spine::Oracle for oracle_elle::oracle::ElleOracle
+pub fn oracle_elle::oracle::ElleOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
+pub enum oracle_elle::AnomalyKind
+pub oracle_elle::AnomalyKind::AbortedRead
+pub oracle_elle::AnomalyKind::DirtyWrite
+pub oracle_elle::AnomalyKind::LostUpdate
+impl oracle_elle::anomaly::AnomalyKind
+pub fn oracle_elle::anomaly::AnomalyKind::class(&self) -> u32
+pub fn oracle_elle::anomaly::AnomalyKind::name(&self) -> &'static str
+pub enum oracle_elle::DecodeError
+pub oracle_elle::DecodeError::AmbiguousOp
+pub oracle_elle::DecodeError::AmbiguousOp::txn: oracle_elle::op::TxnId
+pub oracle_elle::DecodeError::ConflictingLifecycle
+pub oracle_elle::DecodeError::ConflictingLifecycle::first: oracle_elle::op::TxnOutcome
+pub oracle_elle::DecodeError::ConflictingLifecycle::second: oracle_elle::op::TxnOutcome
+pub oracle_elle::DecodeError::ConflictingLifecycle::txn: oracle_elle::op::TxnId
+pub oracle_elle::DecodeError::DuplicateValue
+pub oracle_elle::DecodeError::DuplicateValue::first: oracle_elle::op::TxnId
+pub oracle_elle::DecodeError::DuplicateValue::second: oracle_elle::op::TxnId
+pub oracle_elle::DecodeError::DuplicateValue::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::InconsistentOrder
+pub oracle_elle::DecodeError::InconsistentOrder::key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::Malformed(alloc::string::String)
+pub oracle_elle::DecodeError::MisattributedValue
+pub oracle_elle::DecodeError::MisattributedValue::read_key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::MisattributedValue::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::MisattributedValue::wrote_key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::UnknownValue
+pub oracle_elle::DecodeError::UnknownValue::key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::UnknownValue::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::UnobservedAppend
+pub oracle_elle::DecodeError::UnobservedAppend::key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::UnobservedAppend::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::UnterminatedTxn(oracle_elle::op::TxnId)
+pub enum oracle_elle::IsolationLevel
+pub oracle_elle::IsolationLevel::ReadCommitted
+pub oracle_elle::IsolationLevel::ReadUncommitted
+pub oracle_elle::IsolationLevel::Serializable
+pub oracle_elle::IsolationLevel::SnapshotIsolation
+impl oracle_elle::anomaly::IsolationLevel
+pub fn oracle_elle::anomaly::IsolationLevel::forbids(&self, oracle_elle::anomaly::AnomalyKind) -> bool
+pub enum oracle_elle::OpKind
+pub oracle_elle::OpKind::Append(oracle_elle::op::Elem)
+pub oracle_elle::OpKind::Read(alloc::vec::Vec<oracle_elle::op::Elem>)
+pub oracle_elle::OpKind::Write(oracle_elle::op::Elem)
+pub enum oracle_elle::TxnOutcome
+pub oracle_elle::TxnOutcome::Aborted
+pub oracle_elle::TxnOutcome::Committed
+pub struct oracle_elle::Anomaly
+pub oracle_elle::Anomaly::at: explorer::spine::Moment
+pub oracle_elle::Anomaly::keys: alloc::vec::Vec<oracle_elle::op::Key>
+pub oracle_elle::Anomaly::kind: oracle_elle::anomaly::AnomalyKind
+pub oracle_elle::Anomaly::txns: alloc::vec::Vec<oracle_elle::op::TxnId>
+pub struct oracle_elle::DepGraph
+impl oracle_elle::graph::DepGraph
+pub fn oracle_elle::graph::DepGraph::build(&oracle_elle::op::History) -> core::result::Result<Self, oracle_elle::error::DecodeError>
+pub fn oracle_elle::graph::DepGraph::is_committed(&self, oracle_elle::op::TxnId) -> bool
+pub fn oracle_elle::graph::DepGraph::rw_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::version_order(&self, &oracle_elle::op::Key) -> core::option::Option<&[oracle_elle::op::Elem]>
+pub fn oracle_elle::graph::DepGraph::wr_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::writer(&self, oracle_elle::op::Elem) -> core::option::Option<oracle_elle::op::TxnId>
+pub fn oracle_elle::graph::DepGraph::ww_cycle(&self) -> core::option::Option<alloc::vec::Vec<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::ww_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
+pub fn oracle_elle::graph::DepGraph::ww_keys_among(&self, &alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>) -> alloc::vec::Vec<oracle_elle::op::Key>
+pub struct oracle_elle::ElleOracle
+impl oracle_elle::oracle::ElleOracle
+pub fn oracle_elle::oracle::ElleOracle::analyze(&self, &explorer::spine::RunTrace) -> core::result::Result<core::option::Option<oracle_elle::anomaly::Anomaly>, oracle_elle::error::DecodeError>
+pub fn oracle_elle::oracle::ElleOracle::judge_checked(&self, &explorer::spine::RunTrace) -> core::result::Result<core::option::Option<explorer::spine::Bug>, oracle_elle::error::DecodeError>
+pub fn oracle_elle::oracle::ElleOracle::level(&self) -> oracle_elle::anomaly::IsolationLevel
+pub fn oracle_elle::oracle::ElleOracle::new(alloc::boxed::Box<dyn oracle_elle::decode::OpDecode>, oracle_elle::anomaly::IsolationLevel) -> Self
+impl explorer::spine::Oracle for oracle_elle::oracle::ElleOracle
+pub fn oracle_elle::oracle::ElleOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
+pub struct oracle_elle::EventDecoder
+impl oracle_elle::decode::EventDecoder
+pub fn oracle_elle::decode::EventDecoder::new() -> Self
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::EventDecoder
+pub fn oracle_elle::decode::EventDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+pub struct oracle_elle::History
+pub oracle_elle::History::txns: alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, oracle_elle::op::Transaction>
+impl oracle_elle::op::History
+pub fn oracle_elle::op::History::is_empty(&self) -> bool
+pub fn oracle_elle::op::History::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = &oracle_elle::op::Transaction>
+pub fn oracle_elle::op::History::len(&self) -> usize
+pub fn oracle_elle::op::History::new() -> Self
+pub fn oracle_elle::op::History::ops_in_time_order(&self) -> alloc::vec::Vec<&oracle_elle::op::Op>
+pub struct oracle_elle::Op
+pub oracle_elle::Op::at: explorer::spine::Moment
+pub oracle_elle::Op::key: oracle_elle::op::Key
+pub oracle_elle::Op::kind: oracle_elle::op::OpKind
+pub oracle_elle::Op::session: oracle_elle::op::Session
+pub oracle_elle::Op::txn: oracle_elle::op::TxnId
+impl oracle_elle::op::Op
+pub fn oracle_elle::op::Op::observed(&self) -> core::option::Option<&[oracle_elle::op::Elem]>
+pub fn oracle_elle::op::Op::observed_version(&self) -> core::option::Option<oracle_elle::op::Elem>
+pub fn oracle_elle::op::Op::written(&self) -> core::option::Option<oracle_elle::op::Elem>
+pub struct oracle_elle::RecordDecoder
+impl oracle_elle::decode::RecordDecoder
+pub fn oracle_elle::decode::RecordDecoder::new() -> Self
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::RecordDecoder
+pub fn oracle_elle::decode::RecordDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+pub struct oracle_elle::Transaction
+pub oracle_elle::Transaction::at: explorer::spine::Moment
+pub oracle_elle::Transaction::id: oracle_elle::op::TxnId
+pub oracle_elle::Transaction::ops: alloc::vec::Vec<oracle_elle::op::Op>
+pub oracle_elle::Transaction::outcome: oracle_elle::op::TxnOutcome
+pub oracle_elle::Transaction::session: oracle_elle::op::Session
+impl oracle_elle::op::Transaction
+pub fn oracle_elle::op::Transaction::committed(&self) -> bool
+pub fn oracle_elle::op::Transaction::first_moment(&self) -> explorer::spine::Moment
+pub trait oracle_elle::OpDecode
+pub fn oracle_elle::OpDecode::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::EventDecoder
+pub fn oracle_elle::decode::EventDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+impl oracle_elle::decode::OpDecode for oracle_elle::decode::RecordDecoder
+pub fn oracle_elle::decode::RecordDecoder::decode(&self, &explorer::spine::RunTrace) -> core::result::Result<oracle_elle::op::History, oracle_elle::error::DecodeError>
+pub type oracle_elle::Key = alloc::vec::Vec<u8>
+pub type oracle_elle::Session = u64
+pub type oracle_elle::TxnId = u64

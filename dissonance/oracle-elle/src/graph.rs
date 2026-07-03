@@ -51,8 +51,13 @@ impl DepGraph {
     pub fn build(h: &History) -> Result<Self, DecodeError> {
         let mut g = DepGraph::default();
 
-        // 1. Attribute every written value to its (unique) writer. A repeat is
-        //    a non-unique write — the history is unrecoverable.
+        // 1. Attribute every written value to its (unique) writer AND the key it
+        //    was written to. A repeat value is a non-unique write; the write-key
+        //    map lets step 2 reject a value observed under the *wrong* key. Also
+        //    tally each key's committed append values, so step 2 can prove the
+        //    recovered order observed them all (no missing final read).
+        let mut write_key: BTreeMap<Elem, Key> = BTreeMap::new();
+        let mut committed_appends: BTreeMap<Key, BTreeSet<Elem>> = BTreeMap::new();
         for t in h.iter() {
             if t.committed() {
                 g.committed.insert(t.id);
@@ -67,6 +72,13 @@ impl DepGraph {
                         });
                     }
                     g.writer.insert(v, t.id);
+                    write_key.insert(v, op.key.clone());
+                    if t.committed() && matches!(op.kind, OpKind::Append(_)) {
+                        committed_appends
+                            .entry(op.key.clone())
+                            .or_default()
+                            .insert(v);
+                    }
                 }
             }
         }
@@ -101,11 +113,23 @@ impl DepGraph {
             for op in &t.ops {
                 if let OpKind::Read(vs) = &op.kind {
                     for &e in vs {
-                        if !g.writer.contains_key(&e) {
-                            return Err(DecodeError::UnknownValue {
-                                value: e,
-                                key: op.key.clone(),
-                            });
+                        match write_key.get(&e) {
+                            None => {
+                                return Err(DecodeError::UnknownValue {
+                                    value: e,
+                                    key: op.key.clone(),
+                                });
+                            }
+                            // A value written to a different key must never join
+                            // this key's order (cross-key contamination).
+                            Some(wrote) if wrote != &op.key => {
+                                return Err(DecodeError::MisattributedValue {
+                                    value: e,
+                                    wrote_key: wrote.clone(),
+                                    read_key: op.key.clone(),
+                                });
+                            }
+                            Some(_) => {}
                         }
                     }
                     if append_keys.contains(&op.key) {
@@ -149,6 +173,26 @@ impl DepGraph {
             ordered.sort_unstable();
             g.version_order
                 .insert(key.clone(), ordered.into_iter().map(|(_, v)| v).collect());
+        }
+
+        // The recoverability contract for **append** keys: final reads at quiesce
+        // fix version order, so every committed append must appear in the
+        // recovered order. If one does not (a missing final read, or no read of
+        // the key at all), the order is incomplete — its ww edges are missing and
+        // a real dirty-write could be judged clean. Fail loud instead of
+        // proceeding on a partial order.
+        for (key, appends) in &committed_appends {
+            let recovered: BTreeSet<Elem> = g
+                .version_order
+                .get(key)
+                .map(|o| o.iter().copied().collect())
+                .unwrap_or_default();
+            if let Some(&missing) = appends.iter().find(|v| !recovered.contains(v)) {
+                return Err(DecodeError::UnobservedAppend {
+                    key: key.clone(),
+                    value: missing,
+                });
+            }
         }
 
         g.build_edges(h);

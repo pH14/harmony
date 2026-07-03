@@ -177,6 +177,33 @@ fn reported_bug_uses_the_runs_terminal_and_a_stable_fingerprint() {
     assert_eq!(bug.fingerprint, o.judge(&t).unwrap().fingerprint);
 }
 
+/// Round-1 review, item 5 at the oracle layer: an append dirty-write history
+/// whose recovered order is incomplete (one key's final read missing) must
+/// **not** be judged clean. `analyze` surfaces the recoverability failure loud
+/// instead of returning `Ok(None)` — the false-clean the review flagged.
+#[test]
+fn incomplete_append_history_is_not_judged_clean() {
+    let t = trace(
+        vec![
+            append(1, 1, 21, "a", 1),
+            append(2, 1, 21, "b", 2),
+            commit(3, 21),
+            append(4, 2, 22, "b", 3),
+            append(5, 2, 22, "a", 4),
+            commit(6, 22),
+            read(7, 3, 23, "a", &[4, 1]), // `b` is never read back
+            commit(8, 23),
+        ],
+        0,
+    );
+    // A dirty write is forbidden at every level; the run must not read as clean.
+    let verdict = oracle(IsolationLevel::ReadUncommitted).analyze(&t);
+    assert!(
+        verdict.is_err(),
+        "an incomplete order must fail loud, not judge clean: {verdict:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Property tests (>= 256 cases)
 // ---------------------------------------------------------------------------
