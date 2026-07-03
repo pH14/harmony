@@ -223,6 +223,79 @@ fn end_to_end_loopback_and_identical_transcripts() {
     assert_eq!(a, b);
 }
 
+/// A bare loopback that services one preconfigured dispatcher.
+struct DispatcherLoopback(Dispatcher);
+
+impl Transport for DispatcherLoopback {
+    type Error = ();
+    fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
+        Ok(self.0.dispatch(req, resp))
+    }
+}
+
+/// The task-73 SDK buggify round-trip: the guest `buggify_decide(point)` reaches
+/// the [`SdkBuggify`] service (id 6, op 1), which answers a one-byte fire flag
+/// from its per-point table (default otherwise), and records every asked point.
+#[test]
+fn buggify_decide_round_trips_the_fire_flag() {
+    let mut svc = SdkBuggify::new(false); // default: don't fire
+    svc.set_point(1, true); // point 1 fires
+    svc.set_point(2, false); // point 2 explicitly nominal
+
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Sdk, Box::new(svc));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert!(
+        !client.buggify_decide(0).unwrap(),
+        "point 0 uses the default"
+    );
+    assert!(client.buggify_decide(1).unwrap(), "point 1 fires");
+    assert!(!client.buggify_decide(2).unwrap(), "point 2 is nominal");
+    assert!(
+        !client.buggify_decide(9).unwrap(),
+        "an unmapped point uses the default"
+    );
+}
+
+/// The SDK service errors as `UnknownService` when nothing is registered at id 6,
+/// so a guest whose host lacks SDK support gets a clean status, never a panic.
+#[test]
+fn buggify_decide_without_sdk_service_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    assert_eq!(
+        client.buggify_decide(0),
+        Err(ClientError::Status(Status::UnknownService))
+    );
+}
+
+/// `SdkBuggify` snapshots and restores its table + asked log, so a buggify
+/// service survives a corpus snapshot exactly like the other reference services.
+#[test]
+fn sdk_buggify_state_round_trips() {
+    let mut svc = SdkBuggify::new(true);
+    svc.set_point(3, false);
+    // Drive op 1 directly so the asked log is populated on this very instance.
+    let mut out = [0_u8; 1];
+    for point in [3u32, 7] {
+        let (status, n) = svc.handle(1, &point.to_le_bytes(), &mut out);
+        assert_eq!(status, Status::Ok);
+        assert_eq!(n, 1);
+    }
+    assert_eq!(svc.asked(), [3, 7]);
+    let saved = svc.save_state();
+    let mut restored = SdkBuggify::new(false);
+    restored.restore_state(&saved).unwrap();
+    assert_eq!(restored, svc, "state round-trips exactly");
+    assert_eq!(
+        restored.save_state(),
+        saved,
+        "bytes are stable across restore"
+    );
+}
+
 #[test]
 fn snapshot_round_trip_restores_entropy_stream() {
     let mut dispatcher = test_dispatcher(55);

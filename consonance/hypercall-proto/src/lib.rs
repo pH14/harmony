@@ -38,6 +38,13 @@ pub enum ServiceId {
     Block = 3,
     /// Test/coverage event service.
     Event = 4,
+    /// SDK control service (task 73): the guest asks the host to resolve a
+    /// buggify decision (op 1, `buggify_decide`). Service id **5** is reserved
+    /// for task 61's `Net` vertical, so the SDK takes **6**. Unlike the fire-and-
+    /// forget [`Event`](ServiceId::Event) service, this one round-trips a
+    /// one-byte answer (fire / don't fire); the host resolves it through its
+    /// `Environment::decide` seam and records it at the surfacing `Moment`.
+    Sdk = 6,
 }
 
 impl ServiceId {
@@ -460,6 +467,23 @@ mod guest {
             put_u32(&mut payload[..4], id);
             payload[4..4 + data.len()].copy_from_slice(data);
             self.call_expect_empty(ServiceId::Event, 1, &payload[..4 + data.len()])
+        }
+
+        /// Ask the host to resolve a **buggify** decision for `point` (task 73's
+        /// SDK control service, [`ServiceId::Sdk`], op 1). Returns whether the
+        /// host decided to **fire** the deliberate perturbation. One request
+        /// carries the 4-byte little-endian `point`; the response is exactly one
+        /// byte (`0` = don't fire, non-zero = fire) — any other length is a
+        /// protocol error, never trusted.
+        pub fn buggify_decide(&mut self, point: u32) -> Result<bool, ClientError<T::Error>> {
+            let mut payload = [0_u8; 4];
+            put_u32(&mut payload, point);
+            let mut out = [0_u8; 1];
+            let copied = self.call_copy(ServiceId::Sdk, 1, &payload, &mut out)?;
+            if copied != 1 {
+                return Err(ClientError::Protocol(ProtoError::BadPayload));
+            }
+            Ok(out[0] != 0)
         }
 
         fn call_expect_empty(
@@ -1021,7 +1045,134 @@ mod host {
             Ok(())
         }
     }
+
+    /// Reference SDK control service (task 73, [`ServiceId::Sdk`]): resolves a
+    /// guest `buggify_decide(point)` (op 1) to a one-byte fire/don't-fire answer.
+    ///
+    /// This is the deterministic **reference** answerer used by loopback tests —
+    /// it maps a point to a fixed decision from a per-point table plus a default,
+    /// mirroring the host's per-point biasing at a table level (no PRNG). The
+    /// production host wires this opcode to its `Environment::decide` seam
+    /// instead; the wire shape is identical either way. Every ask is recorded, so
+    /// a test can assert which points the guest actually reached.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct SdkBuggify {
+        default_fire: bool,
+        decisions: BTreeMap<u32, bool>,
+        asked: Vec<u32>,
+    }
+
+    impl SdkBuggify {
+        /// A service that answers every point with `default_fire` unless a
+        /// per-point decision is set.
+        pub fn new(default_fire: bool) -> Self {
+            Self {
+                default_fire,
+                decisions: BTreeMap::new(),
+                asked: Vec::new(),
+            }
+        }
+
+        /// Pin the fire/don't-fire answer for a specific `point`.
+        pub fn set_point(&mut self, point: u32, fire: bool) {
+            self.decisions.insert(point, fire);
+        }
+
+        /// The points the guest has asked about, in call order.
+        pub fn asked(&self) -> &[u32] {
+            &self.asked
+        }
+
+        /// The decision in force for `point` (its override, else the default).
+        fn decide(&self, point: u32) -> bool {
+            self.decisions
+                .get(&point)
+                .copied()
+                .unwrap_or(self.default_fire)
+        }
+    }
+
+    impl Service for SdkBuggify {
+        fn handle(
+            &mut self,
+            opcode: u16,
+            payload: &[u8],
+            resp_payload: &mut [u8],
+        ) -> (Status, usize) {
+            if opcode != 1 {
+                return (Status::UnknownOpcode, 0);
+            }
+            if payload.len() != 4 {
+                return (Status::BadRequest, 0);
+            }
+            let point = match read_u32(payload, 0) {
+                Ok(value) => value,
+                Err(_) => return (Status::BadRequest, 0),
+            };
+            if resp_payload.is_empty() {
+                return (Status::Internal, 0);
+            }
+            self.asked.push(point);
+            resp_payload[0] = u8::from(self.decide(point));
+            (Status::Ok, 1)
+        }
+
+        fn save_state(&self) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.push(u8::from(self.default_fire));
+            out.extend_from_slice(&(self.decisions.len() as u32).to_le_bytes());
+            for (point, fire) in &self.decisions {
+                out.extend_from_slice(&point.to_le_bytes());
+                out.push(u8::from(*fire));
+            }
+            out.extend_from_slice(&(self.asked.len() as u32).to_le_bytes());
+            for point in &self.asked {
+                out.extend_from_slice(&point.to_le_bytes());
+            }
+            out
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
+            let mut offset = 0;
+            let default_fire = *state.get(offset).ok_or(ProtoError::BadState)? != 0;
+            offset += 1;
+            let dec_count = {
+                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
+                offset += 4;
+                u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize
+            };
+            let mut decisions = BTreeMap::new();
+            for _ in 0..dec_count {
+                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
+                let point = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                offset += 4;
+                let fire = *state.get(offset).ok_or(ProtoError::BadState)? != 0;
+                offset += 1;
+                decisions.insert(point, fire);
+            }
+            let ask_count = {
+                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
+                offset += 4;
+                u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize
+            };
+            let mut asked = Vec::new();
+            for _ in 0..ask_count {
+                let b = state.get(offset..offset + 4).ok_or(ProtoError::BadState)?;
+                asked.push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                offset += 4;
+            }
+            if offset != state.len() {
+                return Err(ProtoError::BadState);
+            }
+            self.default_fire = default_fire;
+            self.decisions = decisions;
+            self.asked = asked;
+            Ok(())
+        }
+    }
 }
 
 #[cfg(feature = "host")]
-pub use host::{ConsoleSink, Dispatcher, EventSink, MemBlockDevice, SeededEntropy, Service};
+pub use host::{
+    ConsoleSink, Dispatcher, EventSink, MemBlockDevice, SdkBuggify, SeededEntropy, Service,
+};
