@@ -28,10 +28,23 @@ pub const explorer::adapter::ADAPTER_BLOB_VERSION: u16
 pub fn explorer::adapter::client_caps() -> control_proto::types::Caps
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
+pub explorer::MachineError::MaterializeDivergence
+pub explorer::MachineError::MaterializeDivergence::at: u64
+pub explorer::MachineError::MaterializeDivergence::exemplar: u64
+pub explorer::MachineError::MaterializeDivergence::landed: u64
 pub explorer::MachineError::NotQuiescent
+pub explorer::MachineError::NotSealable(u64)
 pub explorer::MachineError::Transport(alloc::string::String)
 pub explorer::MachineError::UnknownExemplar(u64)
 pub explorer::MachineError::UnknownSnapshot(u64)
+pub enum explorer::SealBudget
+pub explorer::SealBudget::Frontier
+pub explorer::SealBudget::Frontier::base: u64
+pub explorer::SealBudget::Frontier::den: u64
+pub explorer::SealBudget::Frontier::num: u64
+pub explorer::SealBudget::Unbounded
+impl explorer::SealBudget
+pub fn explorer::SealBudget::of(&self, usize) -> usize
 pub enum explorer::StopReason
 pub explorer::StopReason::Assertion
 pub explorer::StopReason::Assertion::data: alloc::vec::Vec<u8>
@@ -120,17 +133,25 @@ pub fn explorer::ExploreExploitSelector::reward(&mut self, explorer::ExemplarRef
 pub struct explorer::Explorer<M: explorer::Machine>
 impl<M: explorer::Machine> explorer::Explorer<M>
 pub fn explorer::Explorer<M>::archive(&self) -> &dyn explorer::Archive
+pub fn explorer::Explorer<M>::enforce_seal_budget(&mut self) -> core::result::Result<alloc::vec::Vec<explorer::SnapId>, explorer::MachineError>
+pub fn explorer::Explorer<M>::evict_seal(&mut self, explorer::ExemplarRef) -> core::result::Result<core::option::Option<explorer::SnapId>, explorer::MachineError>
 pub fn explorer::Explorer<M>::evict_seals(&mut self) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Explorer<M>::explore(&mut self, u64) -> core::result::Result<alloc::vec::Vec<explorer::Bug>, explorer::MachineError>
 pub fn explorer::Explorer<M>::frontier(&self) -> &explorer::Frontier
 pub fn explorer::Explorer<M>::genesis(&self) -> explorer::SnapId
 pub fn explorer::Explorer<M>::machine_mut(&mut self) -> &mut M
 pub fn explorer::Explorer<M>::materialize(&mut self, explorer::ExemplarRef) -> core::result::Result<explorer::SnapId, explorer::MachineError>
+pub fn explorer::Explorer<M>::materialize_report(&mut self, explorer::ExemplarRef) -> core::result::Result<(explorer::SnapId, core::option::Option<explorer::Materialization>), explorer::MachineError>
+pub fn explorer::Explorer<M>::materializer(&self) -> &explorer::Materializer
+pub fn explorer::Explorer<M>::modeled_cost(&self, explorer::ExemplarRef) -> core::option::Option<u64>
 pub fn explorer::Explorer<M>::modulation(&mut self, explorer::SnapId, &explorer::Environment, &explorer::StopConditions) -> core::result::Result<explorer::RunOutcome, explorer::MachineError>
 pub fn explorer::Explorer<M>::new(M, alloc::boxed::Box<dyn explorer::EnvCodec>, explorer::Composition, u64) -> core::result::Result<Self, explorer::MachineError>
 pub fn explorer::Explorer<M>::progression_step(&mut self) -> core::result::Result<core::option::Option<explorer::Bug>, explorer::MachineError>
 pub fn explorer::Explorer<M>::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
 pub fn explorer::Explorer<M>::sealed_count(&self) -> usize
+pub fn explorer::Explorer<M>::set_genesis_moment(&mut self, explorer::Moment)
+pub fn explorer::Explorer<M>::set_seal_budget(&mut self, explorer::SealBudget)
+pub fn explorer::Explorer<M>::set_sealable(&mut self, alloc::boxed::Box<dyn core::ops::function::Fn(explorer::Moment) -> bool>)
 pub fn explorer::Explorer<M>::set_stop_conditions(&mut self, explorer::StopConditions)
 pub fn explorer::Explorer<M>::stop_conditions(&self) -> &explorer::StopConditions
 pub fn explorer::Explorer<M>::sweep_dead_seals(&mut self) -> core::result::Result<(), explorer::MachineError>
@@ -187,6 +208,38 @@ impl explorer::IdentityCells
 pub fn explorer::IdentityCells::new() -> Self
 impl explorer::CellFn for explorer::IdentityCells
 pub fn explorer::IdentityCells::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
+pub struct explorer::Lineage
+pub explorer::Lineage::at: explorer::Moment
+pub explorer::Lineage::parent: explorer::SnapId
+pub explorer::Lineage::suffix: explorer::Environment
+pub struct explorer::Materialization
+pub explorer::Materialization::at: explorer::Moment
+pub explorer::Materialization::base: explorer::SnapId
+pub explorer::Materialization::base_at: explorer::Moment
+pub explorer::Materialization::folded: u64
+pub explorer::Materialization::from_genesis: bool
+impl explorer::Materialization
+pub fn explorer::Materialization::depth(&self) -> u64
+pub struct explorer::Materializer
+impl explorer::Materializer
+pub fn explorer::Materializer::budget(&self) -> explorer::SealBudget
+pub fn explorer::Materializer::enforce_budget<M: explorer::Machine>(&mut self, &mut M, &explorer::Frontier) -> core::result::Result<alloc::vec::Vec<explorer::SnapId>, explorer::MachineError>
+pub fn explorer::Materializer::evict_all<M: explorer::Machine>(&mut self, &mut M) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Materializer::evict_seal<M: explorer::Machine>(&mut self, &mut M, explorer::ExemplarRef) -> core::result::Result<core::option::Option<explorer::SnapId>, explorer::MachineError>
+pub fn explorer::Materializer::genesis(&self) -> explorer::SnapId
+pub fn explorer::Materializer::genesis_at(&self) -> explorer::Moment
+pub fn explorer::Materializer::lineage_of(&self, explorer::SnapId) -> core::option::Option<&explorer::Lineage>
+pub fn explorer::Materializer::materialize<M: explorer::Machine>(&mut self, &mut M, &dyn explorer::EnvCodec, &explorer::Frontier, explorer::ExemplarRef) -> core::result::Result<(explorer::SnapId, core::option::Option<explorer::Materialization>), explorer::MachineError>
+pub fn explorer::Materializer::modeled_cost(&self, &explorer::Frontier, explorer::ExemplarRef) -> core::option::Option<u64>
+pub fn explorer::Materializer::new(explorer::SnapId, explorer::Moment) -> Self
+pub fn explorer::Materializer::register(&mut self, explorer::ExemplarRef, explorer::SnapId, explorer::SnapId, explorer::Environment, explorer::Moment) -> core::option::Option<explorer::SnapId>
+pub fn explorer::Materializer::seal_of(&self, explorer::ExemplarRef) -> core::option::Option<explorer::SnapId>
+pub fn explorer::Materializer::sealable_at(&self, explorer::Moment) -> bool
+pub fn explorer::Materializer::sealed_count(&self) -> usize
+pub fn explorer::Materializer::set_budget(&mut self, explorer::SealBudget)
+pub fn explorer::Materializer::set_genesis_at(&mut self, explorer::Moment)
+pub fn explorer::Materializer::set_sealable(&mut self, alloc::boxed::Box<dyn core::ops::function::Fn(explorer::Moment) -> bool>)
+pub fn explorer::Materializer::sweep_dead<M: explorer::Machine>(&mut self, &mut M, &explorer::Frontier) -> core::result::Result<(), explorer::MachineError>
 pub struct explorer::Moment(pub u64)
 pub struct explorer::Prng
 impl explorer::Prng
