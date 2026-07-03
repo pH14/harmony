@@ -31,12 +31,13 @@
 //!    `Bug.env`, and `branch(base, composed)` → identical stop + hash.
 //!
 //! [`verify_materialize`] returns every violated gate; a round-trip hash
-//! mismatch carries the **sequential-entropy-splice diagnostic** (the
-//! substrate's `branch` reseeds the entropy stream at every hop, and a
-//! compose-fold collapses the intermediate reseed points — entropy drawn in a
-//! collapsed interval desyncs the stream). That failure mode is a substrate
-//! contract finding to **escalate**, never to patch from this surface; the
-//! loopback suite pins it portably on a draw-carrying mock script.
+//! mismatch carries the **sequential-entropy-splice diagnostic**. Since task
+//! 78 the env format stores every hop's **reseed marker** and the server
+//! re-executes each collapsed hop's reseed at its recorded Moment, so folds
+//! are bit-identical **even with draws inside collapsed intervals** — the
+//! loopback suite pins the positive property portably on a draw-carrying mock
+//! script, and [`MaterializeReport::tail_draws`] measures (never assumes)
+//! whether a live window actually drew.
 
 use explorer::{
     EnvCodec, Environment, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError,
@@ -131,6 +132,16 @@ pub struct MaterializeReport {
     pub replay_stop: StopReason,
     /// `state_hash` at the replay leg's stop.
     pub replay_hash: [u8; 32],
+    /// **Draw probe (task 78):** `true` iff the tail window actually draws
+    /// entropy — measured, not assumed. The probe leg re-runs the tail window
+    /// under the SAME branch seed plus a trailing reseed marker back to that
+    /// seed at the landing boundary (using the very task-78 machinery under
+    /// test): a no-op iff no draw moved the stream, so its hash differs from
+    /// the tail leg's iff the window drew. The reseed-aware fold gates
+    /// ((b)/(c) bit-identity) are only *entropy-exercising* when this is
+    /// `true`; a draw-free workload window leaves them vacuous on the entropy
+    /// axis (the task-68 situation).
+    pub tail_draws: bool,
 }
 
 /// Seal the machine's current point, nudging past non-sealable boundaries the
@@ -315,6 +326,41 @@ pub fn run_materialize<M: Machine>(
     )?;
     let replay_hash = machine.hash()?;
 
+    // 6b. The draw probe (task 78): the tail leg again under the SAME branch
+    //     seed, plus a trailing reseed marker back to that seed at the landing
+    //     boundary. The guest executes identically (same seed ⇒ same drawn
+    //     values), so the probe hash differs from `leg_hash` exactly when the
+    //     trailing reseed was NOT a no-op — i.e. when a draw inside the window
+    //     moved the stream off its reseed point.
+    let landing = leg_stop.vtime().0;
+    let deep_at = cur_at;
+    let mut spec = environment::EnvSpec::Seeded {
+        seed: cfg.seed,
+        policy: environment::FaultPolicy::none(),
+    };
+    spec.record_reseed(0, cfg.seed);
+    spec.record_reseed(landing - deep_at, cfg.seed);
+    let probe_env = explorer::AdapterEnv {
+        base_offset: deep_at,
+        pos: deep_at,
+        spec,
+    }
+    .encode();
+    machine.branch(deep_seal, &probe_env)?;
+    let probe_stop = machine.run(
+        &StopConditions {
+            deadline: Some(VTime(landing)),
+            on: StopMask::NONE,
+        },
+        None,
+    )?;
+    debug_assert_eq!(
+        probe_stop.vtime().0,
+        landing,
+        "timing is draw-value-independent"
+    );
+    let tail_draws = machine.hash()? != leg_hash;
+
     // 7. Cleanup: release every seal and the base (corpus GC over the wire).
     mat.evict_all(machine)?;
     machine.drop_snap(genesis)?;
@@ -334,6 +380,7 @@ pub fn run_materialize<M: Machine>(
         bug_env,
         replay_stop,
         replay_hash,
+        tail_draws,
     })
 }
 
@@ -355,11 +402,13 @@ pub fn depth_ratio_ppm(m: &Materialization) -> u64 {
 }
 
 /// The sequential-entropy-splice diagnostic appended to a round-trip hash
-/// mismatch (module doc): the finding to escalate, never to patch here.
-const SPLICE_DIAGNOSTIC: &str = "SUSPECT the sequential-entropy splice: the substrate's `branch` \
-     reseeds the entropy stream at every hop, and a compose-fold collapses the intermediate \
-     reseed points — entropy drawn inside a collapsed interval desyncs the stream (and its \
-     hashed position). A substrate contract finding to ESCALATE to the foreman, not patch here.";
+/// mismatch. Task 78 made the fold reseed-aware (the env stores each hop's
+/// reseed marker and the server re-executes it at its recorded Moment), so a
+/// mismatch now points at a defect in that chain, not a documented limit.
+const SPLICE_DIAGNOSTIC: &str = "SUSPECT the sequential-entropy splice machinery (task 78): every \
+     hop's branch reseed is recorded as a reseed marker, compose splices markers positionally, \
+     and the server re-executes each collapsed hop's reseed at its recorded Moment — a mismatch \
+     means a marker was lost, mis-spliced, mis-anchored, or applied at the wrong count.";
 
 /// The task-68 gates over a [`MaterializeReport`]:
 ///
@@ -589,6 +638,14 @@ pub fn render_materialize_table(r: &MaterializeReport) -> String {
         "baseline: task-63 §4 = {TASK63_BASELINE_PPM} ppm (1.5463%); measured hot = {} ppm",
         depth_ratio_ppm(&r.hot)
     ));
+    push(format!(
+        "draw probe: tail window {} entropy (two-seed divergence probe, task 78)",
+        if r.tail_draws {
+            "DRAWS"
+        } else {
+            "does NOT draw"
+        }
+    ));
     out
 }
 
@@ -632,6 +689,7 @@ mod tests {
             },
             replay_stop: StopReason::Deadline { vtime: VTime(20) },
             replay_hash: [0; 32],
+            tail_draws: false,
         }
     }
 

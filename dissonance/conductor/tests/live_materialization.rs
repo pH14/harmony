@@ -37,15 +37,22 @@
 //! '^kvm_intel'` users=0 → `rmmod kvm_intel kvm; modprobe kvm; modprobe
 //! kvm_intel` → verify size 1396736 on a FRESH connection.
 //!
-//! **Known live risk (the escalation, not a patch):** the round-trip /
-//! reproducer hashes are bit-identical **iff no entropy is drawn inside a
-//! collapsed hop interval** — the substrate's `branch` reseeds the sequential
-//! entropy stream at every hop, and a compose-fold collapses the intermediate
-//! reseed points (pinned portably in
-//! `tests/materialize_loopback.rs::sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit`).
-//! Post-readiness Postgres spans of a few M ns are expected draw-free; if a
-//! gate (b)/(c) hash mismatch appears here, it is that substrate contract
-//! finding — escalate to the foreman with this log, do not patch.
+//! **Task 78 (draw-carrying fold, FRONTIER).** The env format now stores every
+//! hop's **reseed marker** and the server re-executes each collapsed hop's
+//! reseed at its recorded Moment, so the round-trip / reproducer hashes are
+//! bit-identical **even when entropy is drawn inside a collapsed interval**
+//! (the task-68 documented limit, retired; positive twin pinned portably in
+//! `tests/materialize_loopback.rs::sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin`).
+//! This gate therefore also requires the tail window to actually DRAW
+//! (`MaterializeReport::tail_draws`, a measured two-seed divergence probe —
+//! never an assumption): drive the guest into an entropy-drawing span (the
+//! Postgres workload's `gen_random_uuid()` loop rides `pg_strong_random` →
+//! RDRAND, so a `READY_MARKER` inside the workload loop works; a raw-RDRAND
+//! payload or the task-73 SDK entropy service also qualifies), or set
+//! `REQUIRE_DRAWS=0` to accept a draw-free window (the pre-task-78 shape,
+//! e.g. for an A/B against the old baseline). If a gate (b)/(c) hash mismatch
+//! appears WITH draws, that is a task-78 defect (marker lost / mis-spliced /
+//! mis-anchored) — a real finding on this task's machinery.
 
 #![cfg(target_os = "linux")]
 
@@ -192,10 +199,11 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     });
     let mut server = ControlServer::new(live, factory);
 
+    let cfg_hops = env_u64("HOPS", 3) as usize;
     let cfg = MaterializeConfig {
         // The same non-boot chain seed shape the task-58 box sweep branches.
         seed: env_u64("CHAIN_SEED", 0x0028_C0FF_EE5E_EDC0 ^ 0x9E37_79B9_7F4A_7C15),
-        hops: env_u64("HOPS", 3) as usize,
+        hops: cfg_hops,
         hop_delta: env_u64("HOP_DELTA_VNS", 2_000_000),
         tail_delta: env_u64("TAIL_DELTA_VNS", 1_000_000),
         // Postgres is interrupt-driven; generous retry past non-sealable
@@ -215,6 +223,26 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
 
     println!("\n[REPORT] task-68 live_materialization (box)");
     print!("{}", render_materialize_table(&report));
+
+    // Task-78 assertions: the reproducer is reseed-aware (one marker per
+    // branch leg: the chain's hops plus the tail leg), and — unless explicitly
+    // waived — the tail window actually drew entropy, so the bit-identity
+    // gates exercised the reseed-marker machinery, not a draw-free span.
+    let decoded = explorer::AdapterEnv::decode(&report.bug_env).expect("adapter blob");
+    assert_eq!(
+        decoded.spec.reseeds().len(),
+        cfg_hops + 1,
+        "bug_env must carry every collapsed leg's reseed marker (hops + tail)"
+    );
+    if env_u64("REQUIRE_DRAWS", 1) == 1 {
+        assert!(
+            report.tail_draws,
+            "the tail window did not draw entropy (two-seed probe): the task-78 gate needs a \
+             draw-carrying window — move READY_MARKER into the Postgres workload loop \
+             (gen_random_uuid() draws), use an entropy-drawing payload, or set REQUIRE_DRAWS=0 \
+             to accept the draw-free (pre-task-78) shape"
+        );
+    }
 
     let failures = verify_materialize(&report, Some(TASK63_BASELINE_PPM));
     if failures.is_empty() {
