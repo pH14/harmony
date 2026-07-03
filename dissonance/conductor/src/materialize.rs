@@ -678,7 +678,8 @@ pub fn render_materialize_table(r: &MaterializeReport) -> String {
         depth_ratio_ppm(&r.hot)
     ));
     push(format!(
-        "draw probe: tail window {} entropy (two-seed divergence probe, task 78)",
+        "draw probes (task 78): hops {:?}; tail window {} entropy (trailing-reseed probe)",
+        r.hop_draws,
         if r.tail_draws {
             "DRAWS"
         } else {
