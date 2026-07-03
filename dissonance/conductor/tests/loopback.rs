@@ -186,9 +186,16 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
 }
 
 /// The server's negotiated caps (mirror of `vmm_core::control::server_caps`,
-/// restated to avoid a test dep on that path — it equals `client_caps`).
+/// restated to avoid a test dep on that path). Task 73: the server now services
+/// the hypercall doorbell, so it advertises `GUEST_HAS_SDK` — a server-side
+/// capability the client (`client_caps`) does not carry, so the two differ only
+/// in that flag (the adapter's negotiation checks protocol/env-version, not
+/// flags).
 fn conductor_server_caps() -> control_proto::Caps {
-    explorer::client_caps()
+    control_proto::Caps {
+        flags: control_proto::CapFlags::GUEST_HAS_SDK,
+        ..explorer::client_caps()
+    }
 }
 
 #[test]
