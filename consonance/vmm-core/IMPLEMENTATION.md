@@ -3568,3 +3568,36 @@ compatibility check now pin `control_proto::APP_PROTOCOL_VERSION` (so the in-rep
 compatible with the bumped server); `dissonance/conductor` — its loopback `conductor_server_caps`
 mirror is `explorer::client_caps`, so it tracks the bump automatically. Both are mechanical
 consequences of this PR's wire change (same posture as the round-1 conductor loopback fix).
+
+### Box gate (gate 2) — PASSED on the determinism box
+
+The spec's end-to-end box gate ran GREEN on the determinism box (i9-9900K, patched KVM `1400832`,
+core-2-pinned via `box-window.sh`, real Postgres workload on `#[cfg(target_os = "linux")]` patched
+`KvmBackend`), then reverted to stock `1396736` and re-verified. Harness:
+`consonance/vmm-core/tests/live_host_plane.rs` — a `#[ignore]`d box-only gate that drives the
+`ControlServer` verbs **in-process** (`perturb` is not expressible via the explorer `Machine`
+adapter): boot Postgres → seal a base snapshot → stage a `CorruptMemory` (guest-RAM XOR at
+`gpa 0x1000000`, `Moment` 500000) and an `InjectInterrupt` (vector `0x60`, `Moment` 1500000) → run.
+
+```
+[REPORT] task59-host-plane box gate
+  snapshot_vtime=0 attempts=1
+  schedule: CorruptMemory{gpa=0x1000000}@500000, InjectInterrupt{vector=0x60}@1500000, deadline=5000000
+  (a) run#1 83de8d25…1040 Quiescent@1500000
+      run#2 83de8d25…1040 Quiescent@1500000   => IDENTICAL: true
+  (b) replay 83de8d25…1040 Quiescent@1500000   => MATCHES run#1: true
+  (c) control 439aa62b…2ab9 Deadline@74058347  => DIFFERS: true
+  RESULT: PASS  rc=0   (finished in 37.25s)
+```
+
+- **(a)** the same schedule run twice is bit-identical (both `83de8d25…`) — the two faults land at
+  their exact `Moment`s (the PMU `run_until` exact-count arrival) and derail early boot into a
+  deterministic HLT at V-time 1500000.
+- **(b)** replaying the emitted `Recorded` env reproduces that hash — the record → replay closure.
+- **(c)** the schedule-absent control differs (`439aa62b…`, runs on to `Deadline@74058347` instead of
+  halting) — the faults are demonstrably what changed the run.
+
+**Box discipline:** leased core 2 via `box-window.sh acquire`, `taskset -c 2 timeout 1800`, released →
+reverted to stock `1396736` + verified (`REVERT OK`; a fresh `lsmod` confirms). Gate 3 (existing
+`live_*` byte-identical) holds by construction — enforcement is additive (arrival deadline / schedule
+empty on every no-fault path). **All acceptance gates for task 59 are green.**
