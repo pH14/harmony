@@ -40,4 +40,25 @@ pub enum MachineError {
     /// the offending entry index.
     #[error("selector chose an unknown frontier exemplar {0}")]
     UnknownExemplar(u64),
+    /// The engine refused to seal/materialize at a `Moment` the injected
+    /// task-63 `sealable` predicate rejects (the GO grid-restricted /
+    /// RESTRICTED seam, task 68): such an exemplar should never have been
+    /// admitted — the Archive keys on the same predicate. Carries the
+    /// offending moment.
+    #[error("moment {0} is not sealable under the task-63 predicate")]
+    NotSealable(u64),
+    /// A materialization replay stopped at a different `Moment` than the
+    /// exemplar's keyed `at`. Under the task-63 GO (grid-restricted) ruling,
+    /// `at` is a synchronized boundary of the exemplar's own recorded
+    /// trajectory, so an identical replay must stop exactly there — anything
+    /// else is a determinism/keying violation to escalate, never to seal.
+    #[error("materialization of exemplar {exemplar} landed at {landed}, not its keyed moment {at}")]
+    MaterializeDivergence {
+        /// The raw [`ExemplarRef`](crate::ExemplarRef) being materialized.
+        exemplar: u64,
+        /// The exemplar's keyed moment.
+        at: u64,
+        /// The moment the replay actually stopped at.
+        landed: u64,
+    },
 }
