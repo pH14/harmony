@@ -17,15 +17,19 @@ use crate::catalog::Answer;
 use crate::codec::{self, Reader};
 use crate::error::EnvError;
 
-/// The single deterministic time axis: a count of retired instructions. Every
-/// override — host *and* guest — is keyed by a `Moment`, which is what lets the
-/// Progression treat them as one ordered timeline (`(Moment, opaque Action)`) without
-/// learning an override's plane. Virtual time ([`VTime`]) is a *derived view* of
-/// this same axis, not a second clock.
+/// The single deterministic time axis: **the deterministic V-time axis** (`vns`,
+/// effective virtual nanoseconds) — the same axis as `run(deadline)`, snapshot
+/// addressing, and `state_hash` points. Retired-instruction work counts are the
+/// *derivation* of this axis, not its unit (they coincide only at clock ratio 1);
+/// see the integrator ruling in `docs/INTEGRATION.md` §6b. Every override — host
+/// *and* guest — is keyed by a `Moment`, which is what lets the Progression treat
+/// them as one ordered timeline (`(Moment, opaque Action)`) without learning an
+/// override's plane. Virtual time ([`VTime`]) is a *derived view* of this same
+/// axis, not a second clock.
 ///
 /// A bare `u64` alias, exactly as the dissonance ruling specifies — a `Moment`
-/// is an absolute count, not a typed handle, so the codec and `EnvCodec`'s
-/// re-keying are plain integer arithmetic.
+/// is an absolute position on this axis, not a typed handle, so the codec and
+/// `EnvCodec`'s re-keying are plain integer arithmetic.
 pub type Moment = u64;
 
 /// An exact, **float-free** rational — the `SetClockRate` knob (retired-branches
