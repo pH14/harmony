@@ -151,6 +151,42 @@ fn jitter_zero_is_identity() {
 }
 
 #[test]
+fn mock_attempt_at_u64_max_does_not_overflow() {
+    // A busy target near `u64::MAX` forced into the non-synchronized interior branch must not
+    // overflow (debug panic) / wrap (release → a landing before the target). Both the interior
+    // add and the boundary multiply saturate.
+    let cfg = MockConfig {
+        busy_desync_ppm: PPM, // always take the interior (busy-strand) branch
+        sync_stride: 4_096,
+        ..MockConfig::default()
+    };
+    let oracle = MockOracle::new(cfg, &[]);
+    let busy = Target {
+        vtime: u64::MAX,
+        kind: SampleKind::Busy(BusyKind::InterruptService),
+    };
+    let a = oracle.attempt(busy);
+    assert_eq!(
+        a.landed_vtime,
+        u64::MAX,
+        "interior landing saturates, never wraps below target"
+    );
+    assert!(!a.snapshot.synchronized);
+
+    // The boundary (`next_boundary`, saturating_mul) path at the extreme.
+    let uniform = Target {
+        vtime: u64::MAX,
+        kind: SampleKind::Uniform,
+    };
+    let b = oracle.attempt(uniform);
+    assert_eq!(
+        b.landed_vtime,
+        u64::MAX,
+        "next boundary at/after MAX saturates to MAX"
+    );
+}
+
+#[test]
 fn jitter_u64_max_does_not_overflow() {
     // `2 * jitter + 1` must not panic (debug) / wrap (release) at the extreme — the internal
     // span is computed in u128. Every target stays in range + distinct; the count may shrink

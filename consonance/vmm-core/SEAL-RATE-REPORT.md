@@ -291,3 +291,14 @@ view (each was raised in review and adjudicated to this package rather than re-w
    the coarse grid (p90 overshoot ≈ 4.76 M ns) means exemplars snap to the nearest synchronized
    boundary rather than an exact interior `Moment`. Whether that restriction is acceptable for
    Phase C is the integrator's call.
+
+## 10. Ruling (acceptance gate 3)
+
+**RULING: GO (grid-restricted)** — the mechanical-thresholds ruling on the committed evidence
+(§1 nominal 100 % incl. busy 6/6, §2 determinism clean incl. busy 6/6, §3 adversarial 100 %,
+§4 ancestor-independent at 1.55 % suffix cost, §4b MATCH, `sealable()` 100 %/100 %). Arbitrary-
+V-time sealing to the nearest synchronized boundary holds at the rate the Archive relies on, so
+**Phase C proceeds** — keying exemplars to the nearest synchronized boundary (which
+`run(deadline) → seal` lands on by construction and `sealable()` accepts). Ratification of the
+three §9 decisions (DET_SUBSET=all / adversarial-coverage re-approach / unrestricted-vs-grid-
+restricted) remains the integrator's, and does not block this verdict.

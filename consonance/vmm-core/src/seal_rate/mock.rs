@@ -107,9 +107,12 @@ impl MockOracle {
         let (landed, synchronized) =
             if busy && self.draw(target.vtime, 0xB005) < self.cfg.busy_desync_ppm {
                 // A busy target that stranded at a non-synchronized interior exit: the run
-                // stepped a little way in without hitting a V-time intercept.
-                let interior = target.vtime
-                    + (self.draw(target.vtime, 0x1D1E) as u64 % self.cfg.sync_stride.max(1));
+                // stepped a little way in without hitting a V-time intercept. Saturating so a
+                // target near `u64::MAX` cannot overflow (library totality; `next_boundary`
+                // above is already `saturating_mul`).
+                let interior = target.vtime.saturating_add(
+                    self.draw(target.vtime, 0x1D1E) as u64 % self.cfg.sync_stride.max(1),
+                );
                 (interior, false)
             } else {
                 (self.next_boundary(target.vtime), true)
