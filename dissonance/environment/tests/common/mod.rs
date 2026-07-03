@@ -189,6 +189,11 @@ pub fn arb_overrides() -> impl Strategy<Value = BTreeMap<Moment, Action>> {
     prop::collection::btree_map(any::<u64>(), arb_action(), 0..12)
 }
 
+/// An arbitrary `Moment`-keyed reseed-marker table (task 78).
+pub fn arb_reseeds() -> impl Strategy<Value = BTreeMap<Moment, u64>> {
+    prop::collection::btree_map(any::<u64>(), any::<u64>(), 0..6)
+}
+
 /// An arbitrary reproducer spec (standing in arbitrary order; use [`canon`]
 /// before a structural round-trip comparison — the override map is already
 /// canonical, being a `BTreeMap`).
@@ -200,13 +205,17 @@ pub fn arb_spec() -> impl Strategy<Value = EnvSpec> {
             arb_policy(),
             arb_overrides(),
             prop::collection::vec(arb_standing(), 0..6),
+            arb_reseeds(),
         )
-            .prop_map(|(seed, policy, overrides, standing)| EnvSpec::Recorded {
-                seed,
-                policy,
-                overrides,
-                standing,
-            }),
+            .prop_map(
+                |(seed, policy, overrides, standing, reseeds)| EnvSpec::Recorded {
+                    seed,
+                    policy,
+                    overrides,
+                    standing,
+                    reseeds,
+                }
+            ),
     ]
 }
 
@@ -220,6 +229,7 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
             policy,
             overrides,
             mut standing,
+            reseeds,
         } => {
             standing.sort_by(|a, b| standing_key(a).cmp(&standing_key(b)));
             standing.dedup_by(|a, b| standing_key(a) == standing_key(b));
@@ -228,6 +238,7 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
                 policy,
                 overrides,
                 standing,
+                reseeds,
             }
         }
         s => s,

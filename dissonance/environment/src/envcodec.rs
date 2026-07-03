@@ -57,6 +57,10 @@ impl EnvCodec {
             EnvSpec::Recorded { standing, .. } => standing.clone(),
             EnvSpec::Seeded { .. } => Vec::new(),
         };
+        // Reseed markers are timeline facts, not proposals: preserved verbatim
+        // (like guest overrides — removing or moving one would desync every
+        // draw after it, minting a reproducer that does not reproduce).
+        let reseeds = env.reseeds().clone();
         let mut rng = Prng::new(salt ^ MUTATE_DOMAIN);
 
         // Only host actions are legal move/remove victims. With none present, the
@@ -99,6 +103,7 @@ impl EnvCodec {
             policy: env.policy().clone(),
             overrides,
             standing,
+            reseeds,
         }
     }
 
@@ -161,11 +166,27 @@ impl EnvCodec {
             overrides.insert(rekey_moment(*m, at)?, a.clone());
         }
 
+        // Reseed markers splice positionally exactly like overrides (task 78):
+        // base keeps its prefix [0, at), tail re-keys by + at — so a folded env
+        // carries every collapsed hop's reseed at its recorded position and the
+        // frontier re-executes each on `branch` (bit-identical folds under
+        // entropy draws, the ruled fix for the sequential-entropy splice).
+        let mut reseeds: BTreeMap<Moment, u64> = base
+            .reseeds()
+            .iter()
+            .filter(|(m, _)| **m < at)
+            .map(|(m, s)| (*m, *s))
+            .collect();
+        for (m, s) in tail.reseeds() {
+            reseeds.insert(rekey_moment(*m, at)?, *s);
+        }
+
         Ok(EnvSpec::Recorded {
             seed: base.seed(),
             policy: base.policy().clone(),
             overrides,
             standing: Vec::new(),
+            reseeds,
         })
     }
 }
@@ -384,6 +405,7 @@ mod tests {
             policy: FaultPolicy::none(),
             overrides: BTreeMap::from([(k, action)]),
             standing: vec![],
+            reseeds: std::collections::BTreeMap::new(),
         }
     }
 
