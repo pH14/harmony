@@ -20,10 +20,13 @@
 //! counter-mode entropy) ever makes it splice-invariant, the pin fails loudly
 //! and both it and the escalation note should be retired together.
 
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+
 use conductor::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
 use conductor::mock::{self, chain_fork_script};
 use conductor::{materialize_client, probe_vtime, run_session};
-use environment::{EnvSpec, FaultPolicy};
+use environment::{Action, BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::adapter::SocketMachine;
 use explorer::{
     AdapterEnv, EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime,
@@ -176,6 +179,220 @@ fn sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit() {
              (branch reseeds per hop; a fold collapses the reseed points) no longer diverges. \
              If the substrate made entropy splice-invariant (e.g. Moment-keyed counter mode), \
              retire this pin together with task 68's escalation note."
+        );
+    });
+    served.expect("server session");
+}
+
+// ---------------------------------------------------------------------------
+// The wire coordinate-frame fix (PR #58 round-1 blocking finding): host faults
+// under a parent-rooted fold, on the real ControlServer wire.
+// ---------------------------------------------------------------------------
+
+/// A `HostFault` staged below a **parent-rooted fold** applies at the correct
+/// **absolute** Moment on the real wire. The blob frame keys overrides
+/// relative to the blob's origin; the server's task-59 contract is absolute
+/// Moments; `SocketMachine::branch` is the single conversion point. Three
+/// pins, end-to-end over the socket:
+///
+/// 1. the fault leg branches successfully AND takes effect (pre-fix, the raw
+///    relative key 200 would have been rejected `PerturbPastMoment` behind
+///    the snapshot floor — the loud shape of the old bug);
+/// 2. the adapter's recorded delta stays blob-frame (relative), so it
+///    composes; and
+/// 3. the compose-folded, genesis-complete env — re-anchored from a
+///    **different** origin (the base's) — replays the fault leg
+///    bit-identically: both frames name the same absolute point.
+#[test]
+fn host_fault_below_a_parent_rooted_fold_applies_at_the_absolute_moment() {
+    const SEED: u64 = 0xFA_017;
+    let mut server = mock::server(chain_fork_script(48, false)).unwrap();
+    let (served, ()) = run_session(&mut server, |stream| {
+        let mut m = SocketMachine::connect(stream, boot_env()).expect("connect");
+        let codec = SpecEnvCodec;
+        let run_to = |m: &mut SocketMachine<_>, deadline: u64| -> u64 {
+            let stop = m
+                .run(
+                    &StopConditions {
+                        deadline: Some(VTime(deadline)),
+                        on: StopMask::NONE,
+                    },
+                    None,
+                )
+                .expect("run");
+            match stop {
+                StopReason::Deadline { vtime } => vtime.0,
+                other => panic!("expected a Deadline stop, got {other:?}"),
+            }
+        };
+
+        // Base + one seed-only hop (the parent the fold will collapse onto).
+        let v0 = probe_vtime(&mut m).expect("probe");
+        let g = m.snapshot().expect("base seal");
+        m.branch(g, &codec.seeded(SEED)).expect("branch hop 1");
+        let a1 = run_to(&mut m, v0 + 400);
+        let s1 = m.snapshot().expect("hop-1 seal (draw-free boundary)");
+        let suffix1 = m.recorded_env().expect("suffix 1");
+
+        // The fault env below S1, in the BLOB frame: a memory upset at
+        // RELATIVE Moment 200 (absolute a1 + 200, on the mock's 100-grid).
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            200u64,
+            Action::Host(HostFault::CorruptMemory {
+                gpa: 0x2000, // the mock image's distinctive 0x5A page
+                mask: BitMask(0xFF),
+            }),
+        );
+        let fault_env = AdapterEnv {
+            base_offset: a1,
+            pos: a1,
+            spec: EnvSpec::Recorded {
+                seed: SEED,
+                policy: FaultPolicy::none(),
+                overrides,
+                standing: Vec::new(),
+            },
+        }
+        .encode();
+
+        // Reference: the same leg with no fault.
+        m.branch(s1, &codec.seeded(SEED)).expect("plain branch");
+        let a2 = run_to(&mut m, a1 + 400);
+        let h_plain = m.hash().expect("plain hash");
+
+        // The fault leg. Pre-fix, this branch was rejected (relative 200 <
+        // floor a1 → PerturbPastMoment → Transport) — the loud shape of the
+        // round-1 bug; post-fix it ships absolute a1+200 and applies.
+        m.branch(s1, &fault_env).expect(
+            "the fault env must branch: its key crosses the wire as an ABSOLUTE Moment \
+             (origin + relative), never the raw blob-frame key",
+        );
+        assert_eq!(run_to(&mut m, a1 + 400), a2, "same deadline boundary");
+        let h_fault = m.hash().expect("fault hash");
+        assert_ne!(h_fault, h_plain, "the memory upset took effect");
+        let suffix2f = m.recorded_env().expect("fault suffix");
+
+        // The recorded delta stays in the BLOB frame (relative key), ready
+        // for compose — the inverse conversion.
+        let decoded = AdapterEnv::decode(&suffix2f).expect("adapter blob");
+        assert_eq!(decoded.base_offset, a1);
+        let keys: Vec<u64> = decoded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![200], "recorded_env is blob-frame (relative)");
+
+        // The compose-folded, genesis-complete reproducer re-anchors from the
+        // BASE's origin and must hit the same absolute point: bit-identical.
+        let folded = codec.compose(&suffix1, &suffix2f);
+        m.branch(g, &folded).expect("branch the fold from the base");
+        assert_eq!(run_to(&mut m, a2), a2);
+        let h_fold = m.hash().expect("fold hash");
+        assert_eq!(
+            h_fold, h_fault,
+            "the fold (rooted at the base) applies the fault at the same absolute Moment as \
+             the parent-rooted leg — the wire frame conversion is origin-independent"
+        );
+    });
+    served.expect("server session");
+}
+
+/// A raw-frame control-proto call (mirrors `tests/loopback.rs::raw_call`):
+/// the harness for wire-level cases the typed adapter deliberately cannot
+/// express — here, shipping a mis-framed (blob-frame-looking) key raw.
+fn raw_call<S: Read + Write>(
+    stream: &mut S,
+    seq: u32,
+    req: &control_proto::Request,
+) -> Result<control_proto::Reply, control_proto::ControlError> {
+    let mut out = Vec::new();
+    control_proto::encode_request(seq, req, &mut out).expect("encode request");
+    stream.write_all(&out).expect("write request");
+    stream.flush().expect("flush request");
+    let mut inbuf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some((got_seq, reply, consumed)) =
+            control_proto::decode_reply(&inbuf).expect("reply framing")
+        {
+            assert_eq!(got_seq, seq, "reply echoes the request seq");
+            assert_eq!(consumed, inbuf.len(), "one reply per request");
+            return reply;
+        }
+        let n = stream.read(&mut chunk).expect("read reply");
+        assert_ne!(n, 0, "server closed mid-reply");
+        inbuf.extend_from_slice(&chunk[..n]);
+    }
+}
+
+/// The rejected-behind-snapshot regression: what the round-1 bug would have
+/// put on the wire — a blob-frame (small, relative-looking) host-fault key —
+/// is REJECTED by the server's floor guard (`PerturbPastMoment`), never
+/// silently applied at the wrong point; the same fault at an admissible
+/// absolute Moment branches fine. This is the server-side guard that made
+/// the old mis-key loud rather than silent, pinned on the real wire.
+#[test]
+fn behind_snapshot_host_fault_is_rejected_on_the_wire() {
+    let mut server = mock::server(chain_fork_script(8, false)).unwrap();
+    let (served, ()) = run_session(&mut server, |mut stream| {
+        let hello = raw_call(
+            &mut stream,
+            1,
+            &control_proto::Request::Hello(explorer::client_caps()),
+        );
+        assert!(matches!(hello, Ok(control_proto::Reply::Hello(_))));
+        // Seal the live VM (post-sync boundary, vns ~100): the branch floor.
+        let base = match raw_call(&mut stream, 2, &control_proto::Request::Snapshot) {
+            Ok(control_proto::Reply::SnapId(id)) => id,
+            other => panic!("snapshot: {other:?}"),
+        };
+        let env_at = |at: u64| {
+            let mut overrides = BTreeMap::new();
+            overrides.insert(
+                at,
+                Action::Host(HostFault::CorruptMemory {
+                    gpa: 0x2000,
+                    mask: BitMask(0xFF),
+                }),
+            );
+            control_proto::Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: EnvSpec::Recorded {
+                    seed: 7,
+                    policy: FaultPolicy::none(),
+                    overrides,
+                    standing: Vec::new(),
+                }
+                .encode(),
+            }
+        };
+        // The mis-framed key (what the pre-fix adapter shipped): behind the
+        // snapshot floor → rejected, loudly and recoverably.
+        let bad = raw_call(
+            &mut stream,
+            3,
+            &control_proto::Request::Branch {
+                snap: base,
+                env: env_at(5),
+            },
+        );
+        assert!(
+            matches!(
+                bad,
+                Err(control_proto::ControlError::PerturbPastMoment { at: 5, .. })
+            ),
+            "a behind-floor Moment must be rejected, got {bad:?}"
+        );
+        // The correctly-framed ABSOLUTE Moment is admissible.
+        let good = raw_call(
+            &mut stream,
+            4,
+            &control_proto::Request::Branch {
+                snap: base,
+                env: env_at(300),
+            },
+        );
+        assert!(
+            matches!(good, Ok(control_proto::Reply::Unit)),
+            "an at-or-past-floor absolute Moment branches, got {good:?}"
         );
     });
     served.expect("server session");

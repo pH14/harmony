@@ -341,6 +341,28 @@ the one substantive finding).
   pruning a dead intermediate would strand its descendants on the genesis
   worst case forever.
 
+## Round-1 review fix: the wire coordinate frame (blocking, codex-found)
+
+`SocketMachine::branch` used to ship the blob's inner `EnvSpec` verbatim —
+override keys **relative** to the blob's origin — while `ControlServer`'s
+task-59 contract validates and applies host faults at **absolute** Moments;
+a host fault under a parent-rooted fold mis-keyed on the wire (the seed-only
+task-68 gates could not see it). Fixed at the single conversion point:
+`branch` re-anchors blob-frame keys at the branched snapshot's capture moment
+(`origin + relative`, checked — an overflowing rebase is refused before any
+wire traffic), and the frame convention is now settled **authoritatively in
+one place** (`adapter.rs` module doc, "Coordinate frames": blob frame =
+relative, all `EnvCodec` seams + `recorded_env`; wire frame = absolute;
+`branch` outbound / `recorded_env` inbound are the only conversions).
+Pinned three ways: the exact wire bytes (a captured-stream adapter test:
+relative 5 below a snapshot at 200 ships as Moment 205, and the recorded
+delta re-emits relative 5), a `materialize_loopback` case applying a
+`CorruptMemory` below a parent-rooted fold on the real server wire (effect
+observed + the compose-folded reproducer re-anchored from the *base's*
+origin replays bit-identically — origin-independence), and the
+rejected-behind-snapshot regression (the raw pre-fix shape is refused
+`PerturbPastMoment`, never silently mis-applied).
+
 ## Known limitations / integrator notes
 
 - **`MachineError` gained `NotSealable` and `MaterializeDivergence`** —

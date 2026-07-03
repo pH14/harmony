@@ -35,6 +35,39 @@
 //! `EnvSpec::BLOB_VERSION`): the server speaks pure task-24 blobs and never
 //! learns the wrapper, so the two sides share no adapter-private schema.
 //!
+//! ## Coordinate frames (AUTHORITATIVE — the one place this is settled)
+//!
+//! Two frames exist, and exactly one code point converts between them:
+//!
+//! - **The blob frame** (`R2A1` / this adapter / every [`EnvCodec`](crate::EnvCodec)
+//!   seam): an [`AdapterEnv`]'s override keys are **relative** to its
+//!   `base_offset` — the origin of the blob's frame. `seeded` mints at origin
+//!   0; `mutate` slices and `compose` splices **within** this frame (the
+//!   relative cut, task 68), so a fold of lineage suffixes stays rooted at
+//!   its base's origin; [`Machine::recorded_env`] records into it (an answer
+//!   at absolute stop `m` is stamped at `m − branch_offset`).
+//! - **The wire frame** (`control-proto` / `ControlServer`): an `EnvSpec`'s
+//!   override `Moment`s are **absolute** on the deterministic axis — the
+//!   task-59 contract: a branch env's host faults are validated against the
+//!   restored snapshot's floor and applied at `vns == Moment`. The server
+//!   knows nothing of blob origins.
+//!
+//! **The single conversion point is [`Machine::branch`]** (`SocketMachine`):
+//! outbound, it re-anchors the blob-frame keys at the **actual restore
+//! origin** — the branched snapshot's capture moment — shipping
+//! `origin + relative` (checked; overflow is a malformed blob, refused before
+//! any wire traffic). The blob's own `base_offset` names its frame for
+//! provenance/compose; the anchor at branch time is authoritative (a
+//! genesis-complete env branched off a mid-run seal re-anchors there, exactly
+//! like its overrides' decision-index semantics). `recorded_env` is the
+//! inverse direction (absolute stop → relative key), and **no other code
+//! converts frames**. Two deliberate edges: the session-initial spec handed
+//! to [`SocketMachine::connect`] must be override-free (v1 boots are — a
+//! boot-time override's frame would be ambiguous), and standing faults ride
+//! the wire unconverted (v1 rejects them server-side as `Unsupported`; their
+//! window axis is unsettled until a `Moment → VTime` map exists, per the
+//! task-93 ruling).
+//!
 //! ## The task-93 adapter contract, implemented here
 //!
 //! - **Tail-completeness.** [`Machine::recorded_env`] emits every decision
@@ -159,6 +192,40 @@ impl AdapterEnv {
     }
 }
 
+/// Convert a blob-frame spec (override keys **relative** to the blob's
+/// origin) to the wire frame (**absolute** `Moment`s) by re-anchoring at
+/// `origin` — the branched snapshot's capture moment. The single outbound
+/// frame conversion (module doc, "Coordinate frames"); its inverse is
+/// `recorded_env`'s `m − branch_offset` stamping. A key that overflows the
+/// axis is a malformed blob: refused with [`MachineError::BadEnvironment`]
+/// **before** any wire traffic. Standing faults are carried unconverted (v1
+/// rejects them server-side; their window axis is unsettled — module doc).
+fn rebase_to_wire(spec: &EnvSpec, origin: u64) -> Result<EnvSpec, MachineError> {
+    match spec {
+        EnvSpec::Seeded { .. } => Ok(spec.clone()),
+        EnvSpec::Recorded {
+            seed,
+            policy,
+            overrides,
+            standing,
+        } => {
+            let mut absolute = BTreeMap::new();
+            for (rel, action) in overrides {
+                let at = origin
+                    .checked_add(*rel)
+                    .ok_or(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))?;
+                absolute.insert(at, action.clone());
+            }
+            Ok(EnvSpec::Recorded {
+                seed: *seed,
+                policy: policy.clone(),
+                overrides: absolute,
+                standing: standing.clone(),
+            })
+        }
+    }
+}
+
 /// Normalize a spec for a compose-safe artifact: the [`EnvSpec::Seeded`]
 /// variant is promoted to [`EnvSpec::Recorded`] with no overrides (stream-wise
 /// identical), so every adapter-emitted artifact is the `Recorded` variant the
@@ -237,14 +304,13 @@ impl crate::EnvCodec for SpecEnvCodec {
         // re-based to the branch origin), preserving seed/policy so a later
         // recompose is stream-consistent.
         //
-        // NOTE (v1 sequencing): the underlying `environment::EnvCodec::mutate`
-        // inserts a **host-plane** `Action::Host` override, so a mutate-minted
-        // env is `Recorded` with an override. The seed-driven task-58 server
-        // rejects any override-carrying `branch` env with `Unsupported` (host-
-        // plane enforcement is task 59) — so mutate is only *usable* against the
-        // server once task 59 lands. It is exercised here for the codec/rebasing
-        // contract (compose consistency, slicing at `pos`), not as a live
-        // campaign proposal yet.
+        // NOTE: the underlying `environment::EnvCodec::mutate` inserts a
+        // **host-plane** `Action::Host` override (at a blob-frame, relative
+        // key), so a mutate-minted env is `Recorded` with an override. Task 59
+        // landed host-plane enforcement server-side, and `branch`'s wire-frame
+        // conversion (module doc, "Coordinate frames") re-anchors the relative
+        // key at the restore origin — so mutate-minted envs are live campaign
+        // proposals now, not just codec/rebasing exercises.
         let (seed, policy) = (b.spec.seed(), b.spec.policy().clone());
         if let EnvSpec::Recorded { standing, .. } = &b.spec
             && !standing.is_empty()
@@ -590,17 +656,25 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
 
 impl<S: Read + Write> Machine for SocketMachine<S> {
     fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
-        // Decode the adapter blob first (a caller error must not touch the
-        // session), then ship only the inner EnvSpec bytes on the wire.
+        // Decode the adapter blob and resolve the branch origin first (a
+        // caller error must not touch the session).
         let decoded = AdapterEnv::decode(env)?;
-        let wire_env = control_proto::Environment {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: decoded.spec.encode(),
-        };
         let Some(meta) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         let origin = meta.vtime;
+        // The single outbound frame conversion (module doc, "Coordinate
+        // frames"): the blob's override keys are RELATIVE to its origin, the
+        // server's contract is ABSOLUTE Moments (task 59 validates against
+        // the restored floor and applies at `vns == Moment`) — re-anchor at
+        // the actual restore point before shipping. Shipping the blob-frame
+        // keys raw would mis-key every host fault under a parent-rooted fold
+        // (PR #58 round-1 blocking finding).
+        let wire_spec = rebase_to_wire(&decoded.spec, origin)?;
+        let wire_env = control_proto::Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: wire_spec.encode(),
+        };
         match self.call(&control_proto::Request::Branch {
             snap: control_proto::SnapId(snap.0),
             env: wire_env,
@@ -1346,6 +1420,155 @@ mod tests {
         // then completes the handshake.
         let stream = scripted(&[(1, server_caps_reply()), (2, probe_reply(0))]);
         assert!(SocketMachine::connect(stream, seeded_env(1)).is_ok());
+    }
+
+    // ---- the wire-frame conversion (PR #58 round-1 blocking fix) ----------
+
+    /// A scripted stream that additionally CAPTURES the client's request
+    /// bytes, so a test can decode exactly what went on the wire.
+    struct CapturingStream {
+        replies: Cursor<Vec<u8>>,
+        written: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+    }
+
+    impl Read for CapturingStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.replies.read(buf)
+        }
+    }
+
+    impl Write for CapturingStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Decode every request frame the client wrote.
+    fn captured_requests(bytes: &[u8]) -> Vec<control_proto::Request> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while let Some((_seq, req, used)) =
+            control_proto::decode_request(rest).expect("request framing")
+        {
+            out.push(req);
+            rest = &rest[used..];
+        }
+        assert!(rest.is_empty(), "no partial trailing frame");
+        out
+    }
+
+    /// The round-1 blocking fix, pinned at the exact wire bytes: `branch`
+    /// re-anchors the blob-frame (relative) override keys at the branched
+    /// snapshot's capture moment, so the server — whose task-59 contract is
+    /// ABSOLUTE Moments — sees `origin + relative`. A host fault at relative
+    /// 5 below a snapshot at 200 goes on the wire at Moment 205, never 5.
+    #[test]
+    fn branch_re_anchors_blob_frame_keys_to_absolute_wire_moments() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (seq, reply) in [
+            (1, server_caps_reply()),        // hello
+            (2, probe_reply(200)),           // connect's V-time probe → origin 200
+            (3, Reply::SnapId(WsSnapId(1))), // snapshot @ 200
+            (4, Reply::Unit),                // branch
+        ] {
+            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+
+        let fault = Action::Host(HostFault::CorruptMemory {
+            gpa: 64,
+            mask: environment::BitMask(0xFF),
+        });
+        let mut overrides = BTreeMap::new();
+        overrides.insert(5u64, fault.clone()); // blob frame: relative to 200
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec: EnvSpec::Recorded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+                overrides,
+                standing: Vec::new(),
+            },
+        }
+        .encode();
+        m.branch(snap, &env).unwrap();
+
+        let reqs = captured_requests(&written.borrow());
+        let wire = reqs
+            .iter()
+            .find_map(|r| match r {
+                control_proto::Request::Branch { env, .. } => Some(env.clone()),
+                _ => None,
+            })
+            .expect("a Branch request went on the wire");
+        let spec = EnvSpec::decode(&wire.bytes).expect("wire spec decodes");
+        let keys: Vec<u64> = spec.overrides().keys().copied().collect();
+        assert_eq!(
+            keys,
+            vec![205],
+            "the wire carries the ABSOLUTE Moment (origin 200 + relative 5)"
+        );
+        assert_eq!(spec.overrides().get(&205), Some(&fault), "action preserved");
+        assert_eq!(spec.seed(), 7);
+
+        // The adapter's OWN state stays in the blob frame: the recorded delta
+        // re-emits the relative key, ready for compose.
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let keys: Vec<u64> = recorded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![5], "recorded_env stays blob-frame (relative)");
+        assert_eq!(recorded.base_offset, 200);
+    }
+
+    /// A rebase that would overflow the axis is a malformed blob: refused
+    /// loudly BEFORE any wire traffic (no Branch frame is ever written).
+    #[test]
+    fn branch_refuses_an_axis_overflowing_rebase_before_the_wire() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (seq, reply) in [
+            (1, server_caps_reply()),
+            (2, probe_reply(200)),
+            (3, Reply::SnapId(WsSnapId(1))),
+        ] {
+            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec: spec_with_overrides(7, &[u64::MAX]), // 200 + MAX overflows
+        }
+        .encode();
+        assert_eq!(
+            m.branch(snap, &env),
+            Err(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))
+        );
+        let reqs = captured_requests(&written.borrow());
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| matches!(r, control_proto::Request::Branch { .. })),
+            "the malformed rebase never reached the wire"
+        );
     }
 
     /// The task-93 tail-completeness fix: a `run(None)` issued **while a
