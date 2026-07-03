@@ -382,6 +382,20 @@ pub fn verify_materialize(r: &MaterializeReport, baseline_ppm: Option<u64>) -> V
     let mut failures = Vec::new();
     let n = r.hops.len();
 
+    // 0. Chain depth. The gates below index the parent (n−2) and grandparent
+    //    (n−3) hops, and gate (b)'s fold is only meaningful with a retained
+    //    non-genesis ancestor above the evicted parent — so a short chain is
+    //    a verification FAILURE, never a panic (this is a public, total
+    //    function over an arbitrary report; conventions rule 4).
+    if n < 3 {
+        failures.push(format!(
+            "report carries only {n} hop(s) — the chain gates need >= 3 (gate (b)'s fold must \
+             collapse a real intermediate below a retained non-genesis ancestor); nothing to \
+             verify"
+        ));
+        return failures;
+    }
+
     // 1. Grid keying.
     for (i, h) in r.hops.iter().enumerate() {
         if h.at < h.requested {
@@ -576,4 +590,76 @@ pub fn render_materialize_table(r: &MaterializeReport) -> String {
         depth_ratio_ppm(&r.hot)
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use explorer::{Environment, Materialization, Moment, SnapId, StopReason, VTime};
+
+    use super::*;
+
+    /// A syntactically-complete report with `hops` chain rows (contents
+    /// synthetic — only the shape matters to the short-chain guard).
+    fn report(hops: usize) -> MaterializeReport {
+        let m = Materialization {
+            base: SnapId(1),
+            base_at: Moment(0),
+            at: Moment(10),
+            folded: 0,
+            from_genesis: false,
+        };
+        MaterializeReport {
+            genesis_at: 0,
+            genesis_attempts: 1,
+            hops: (0..hops)
+                .map(|i| HopRow {
+                    requested: i as u64 * 10,
+                    at: i as u64 * 10,
+                    attempts: 1,
+                })
+                .collect(),
+            hot: m,
+            hot_hash: [0; 32],
+            folded: m,
+            folded_hash: [0; 32],
+            worst: m,
+            worst_hash: [0; 32],
+            leg_stop: StopReason::Deadline { vtime: VTime(20) },
+            leg_hash: [0; 32],
+            bug_env: Environment {
+                blob_version: 1,
+                bytes: Vec::new(),
+            },
+            replay_stop: StopReason::Deadline { vtime: VTime(20) },
+            replay_hash: [0; 32],
+        }
+    }
+
+    /// `verify_materialize` is a total, public function over an arbitrary
+    /// report (conventions rule 4): a chain shorter than the 3 hops the gates
+    /// index is a verification FAILURE, never a panic (PR #58 round-2 fix —
+    /// the parent/grandparent rows were read unguarded).
+    #[test]
+    fn verify_rejects_a_short_chain_without_panicking() {
+        for n in 0..3 {
+            let failures = verify_materialize(&report(n), Some(TASK63_BASELINE_PPM));
+            assert_eq!(
+                failures.len(),
+                1,
+                "a {n}-hop report fails the depth check alone (and reaches no indexing)"
+            );
+            assert!(
+                failures[0].contains("need >= 3"),
+                "a {n}-hop report must name the depth failure, got {failures:?}"
+            );
+        }
+        // A 3-hop report passes the depth guard and reaches the real gates
+        // (whose synthetic-value failures are the proof it got there).
+        let failures = verify_materialize(&report(3), None);
+        assert!(!failures.iter().any(|f| f.contains("need >= 3")));
+        assert!(
+            !failures.is_empty(),
+            "the synthetic report reaches (and fails) the substantive gates"
+        );
+    }
 }
