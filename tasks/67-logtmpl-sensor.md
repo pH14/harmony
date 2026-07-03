@@ -54,11 +54,30 @@ deterministic fold, all integer math:
 
 - Tokenize on whitespace. Pre-mask tokens containing digits to `<*>` (a knob, default on).
 - Fixed-depth parse tree: bucket by token count, then by the first `D` tokens (default `D = 2`),
-  reaching a leaf list of candidate templates.
-- Similarity = count of exactly-equal token positions, compared against a threshold `τ = num/den`
-  by cross-multiplication — **no floats anywhere** (hard rule 4). At or above `τ`: merge, with
-  differing positions generalized to `<*>`. Below for all candidates: new template. Ties break to
-  the lowest existing template id.
+  reaching a leaf list of candidate templates. The tree keys the first `D` tokens by **kind**
+  (literal-vs-wildcard), not their display text, so a literal token that is textually `<*>` never
+  routes into the same leaf as a masked wildcard.
+- Similarity scores the template's **constant (non-`<*>`) positions only**: `matches / constants`
+  where `constants` is the number of literal positions in the template and `matches` is how many
+  equal the line's token; wildcard positions are excluded from **both** numerator and denominator.
+  Compared against a threshold `τ = num/den` by cross-multiplication, **strictly above** τ —
+  **no floats anywhere** (hard rule 4). A **zero-constant template (all `<*>`) matches nothing** via
+  this rule. Strictly above `τ`: merge into the best candidate (most matched constants; ties break
+  to the lowest existing template id), with differing positions generalized to `<*>`. Not above `τ`
+  for any candidate: **new template — unless the leaf already holds a live template with this exact
+  shape**, in which case reuse it (a zero-constant line, e.g. a blank or all-digit line, cannot
+  match via similarity yet must still get a stable, non-duplicated id — the shape-uniqueness
+  invariant applies on the mint path too).
+
+  > **Amendment (foreman-authored, shipped with PR #53).** The original bullet — "count of
+  > *exactly-equal token positions* [over all positions], at or above τ" — is self-inconsistent
+  > once `<*>` exists: scoring wildcards as mismatches remints already-absorbed lines after a
+  > template generalizes (the round-3 reproduced id-instability: `[0,0,0,0,1] → [0,2,2,0,1]`),
+  > while scoring wildcards as free matches over-merges distinct species (the round-5 example:
+  > `a b y q r` scores `3/5 ≥ τ` against `a b <*> d e` and wrongly merges). Scoring the constant
+  > positions only is the unique local rule satisfying both: an absorbed line still matches every
+  > surviving constant (`constants/constants = 1`, stable ids), while `a b y q r` shares only the
+  > `a b` prefix (`2/4`, not above τ → a new species, no over-merge).
 
 ## The codebook — internal, serialized, stable
 
@@ -68,6 +87,44 @@ run): a `BTreeMap`-backed structure with a version field, serialized determinist
 Serialize → reload → continue must be indistinguishable from never having stopped. The Sensor
 emits `Feature { channel: templates, id }` with ids already stabilized; nothing codebook-shaped
 appears in any public signature that the spine or another crate could couple to.
+
+**Shape-uniqueness invariant + id aliasing (integrator ruling, Option A).** No two *live*
+templates may share the same shape. When a merge-generalization would make a template's shape
+equal an existing live template's, the two instead **merge into the survivor** (the lowest id):
+the other id is retired (removed from its parse-tree leaf) and an entry `retired_id → survivor_id`
+is recorded in a serialized **alias table** (a `BTreeMap`, deterministic; the codebook's serialized
+state gains this field, so the version is bumped). Every id the crate returns — `Feature` emission,
+the `Matchable` adapter, CellFn's folded ids — is **canonicalized** through the alias table
+(survivors are always lower, so canonicalization strictly descends and cannot loop). A historical id
+therefore stays meaningful even after two species converge; exact re-derivation of a recorded trace
+goes through its recording-time snapshot (the re-derivation contract below).
+
+> **Amendment (integrator ruling, shipped with PR #53).** Without this invariant, convergent
+> generalization can make two template shapes identical (`a b c d e` → 0, `a b x y z` → 1, one-token
+> variants generalize both to `a b <*> <*> <*>`); a re-arriving `a b x y z` then scores `2/2` on
+> both and the lowest-id tie-break silently reassigns it across species, so previously-emitted id-1
+> features disagree with later re-derivation. This is the third manifestation of one root cause —
+> *stateless re-scoring against an evolving template set cannot guarantee assignment stability* (see
+> also the round-3 wildcard-scoring and round-5 adapt/observe-ordering fixes) — so it is fixed
+> structurally (shape-uniqueness + aliasing), not by another point patch. Options B (per-line memo,
+> unbounded) and C (freeze-on-first-assignment, weakens cross-run identity) were considered and
+> rejected.
+
+**Re-derivation contract (integrator ruling D1; `INTEGRATION.md` 6c).** "Serialize → reload →
+continue is indistinguishable" is the *persistence* guarantee (a serialized codebook resumes
+bit-identically). **Exact re-derivation of a recorded trace** is defined as **replay against the
+codebook snapshot as of recording time** — the task-65 runtrace store already persists that
+snapshot, so a recorded trace re-derives bit-for-bit by construction. What is **not** guaranteed,
+and is **explicitly accepted as documented clustering drift** ("canonical modulo drift"), is
+re-observing a trace against a *later, evolved* codebook: shape convergence is still reconciled by
+the Option-A alias table, but a **cross-observe erosion-steal** — a line reassigned between two
+still-live species because a *later* line eroded a constant the tie-break had relied on — can shift
+a line's canonical species with no reconciling alias (the two templates never converge to one
+shape). This is a 4th manifestation of the same *stateless-re-scoring* root cause; ruling D1 accepts
+it rather than complicating the tie-break, because the recording-time snapshot already gives exact
+replay where exactness is required. (The alternative directions D2/D3 — reshaping the tie-break or
+aliasing on every steal — were considered and rejected; see `INTEGRATION.md` 6c for the full
+rationale.)
 
 ## The `Matchable` adapter
 
@@ -142,8 +199,7 @@ UUIDs). The k3s fixture must be ≥ 5,000 lines (the cardinality gate needs it);
    final serialized bytes identical to the uninterrupted run.
 4. **Proptests (≥256):** every line clusters (totality, no panic on arbitrary bytes); lines
    differing only in masked parameter positions land in the same template; codebook round-trip;
-   `CellKey` encoding is injective over distinct channel-value tuples and stable under
-   re-encoding.
+   `CellKey` encoding is injective over distinct channel-value tuples and stable under re-encoding.
 5. **Cardinality bound:** with default knobs, the number of distinct `CellKey`s over the full
    k3s fixture timeline is ≥ 32 and ≤ 1,024, asserted in a test (not degenerate, not exploding).
 6. **Adapter unit tests:** for known fixture lines, the `Matchable` impl exposes the documented

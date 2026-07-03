@@ -1,0 +1,71 @@
+pub mod logtmpl
+pub enum logtmpl::Error
+pub logtmpl::Error::CorruptAlias
+pub logtmpl::Error::CorruptAlias::retired: u64
+pub logtmpl::Error::CorruptAlias::survivor: u64
+pub logtmpl::Error::DanglingTemplate
+pub logtmpl::Error::DanglingTemplate::count: usize
+pub logtmpl::Error::DanglingTemplate::id: u64
+pub logtmpl::Error::Decode(serde_json::error::Error)
+pub logtmpl::Error::DuplicateLiveShape
+pub logtmpl::Error::DuplicateLiveShape::id: u64
+pub logtmpl::Error::NonAscendingLeaf
+pub logtmpl::Error::NonAscendingLeaf::next: u64
+pub logtmpl::Error::NonAscendingLeaf::previous: u64
+pub logtmpl::Error::RetiredTemplateLive
+pub logtmpl::Error::RetiredTemplateLive::id: u64
+pub logtmpl::Error::RetiredTemplateLive::survivor: u64
+pub logtmpl::Error::Version
+pub logtmpl::Error::Version::expected: u16
+pub logtmpl::Error::Version::found: u16
+pub enum logtmpl::Quant
+pub logtmpl::Quant::Identity
+pub logtmpl::Quant::Log2
+pub struct logtmpl::CellConfig
+pub logtmpl::CellConfig::cell_channels: alloc::vec::Vec<explorer::spine::ChannelId>
+pub logtmpl::CellConfig::fold_k: u64
+pub logtmpl::CellConfig::last_new_species: bool
+pub logtmpl::CellConfig::species_progress: bool
+pub logtmpl::CellConfig::species_quant: logtmpl::Quant
+pub logtmpl::CellConfig::template_channel: explorer::spine::ChannelId
+impl core::default::Default for logtmpl::CellConfig
+pub fn logtmpl::CellConfig::default() -> Self
+pub struct logtmpl::CellFnV1
+impl logtmpl::CellFnV1
+pub fn logtmpl::CellFnV1::config(&self) -> &logtmpl::CellConfig
+pub fn logtmpl::CellFnV1::fields(&self, &explorer::spine::FeatureSet) -> alloc::vec::Vec<core::option::Option<u64>>
+pub fn logtmpl::CellFnV1::new() -> Self
+pub fn logtmpl::CellFnV1::with_config(logtmpl::CellConfig) -> Self
+impl explorer::spine::CellFn for logtmpl::CellFnV1
+pub fn logtmpl::CellFnV1::key(&self, explorer::spine::Moment, &explorer::spine::FeatureSet) -> explorer::spine::CellKey
+pub struct logtmpl::LogSensor
+impl logtmpl::LogSensor
+pub fn logtmpl::LogSensor::adapt(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<logtmpl::TemplateRecord>
+pub fn logtmpl::LogSensor::channel(&self) -> explorer::spine::ChannelId
+pub fn logtmpl::LogSensor::codebook_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn logtmpl::LogSensor::new() -> Self
+pub fn logtmpl::LogSensor::with_channel(self, explorer::spine::ChannelId) -> Self
+pub fn logtmpl::LogSensor::with_codebook_bytes(explorer::spine::ChannelId, &[u8]) -> logtmpl::Result<Self>
+impl core::default::Default for logtmpl::LogSensor
+pub fn logtmpl::LogSensor::default() -> Self
+impl core::fmt::Debug for logtmpl::LogSensor
+pub fn logtmpl::LogSensor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl explorer::spine::Sensor for logtmpl::LogSensor
+pub fn logtmpl::LogSensor::observe(&self, &explorer::spine::RunTrace) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Feature)>
+pub struct logtmpl::TemplateRecord
+impl logtmpl::TemplateRecord
+pub fn logtmpl::TemplateRecord::msg(&self) -> &str
+pub fn logtmpl::TemplateRecord::new(explorer::spine::Moment, alloc::string::String, u64, alloc::vec::Vec<alloc::string::String>) -> Self
+pub fn logtmpl::TemplateRecord::params(&self) -> &[alloc::string::String]
+pub fn logtmpl::TemplateRecord::template(&self) -> u64
+impl explorer::spine::Matchable for logtmpl::TemplateRecord
+pub fn logtmpl::TemplateRecord::attr(&self, &str) -> core::option::Option<explorer::spine::Value>
+pub fn logtmpl::TemplateRecord::kind(&self) -> &str
+pub fn logtmpl::TemplateRecord::moment(&self) -> explorer::spine::Moment
+pub const logtmpl::DEFAULT_FOLD_K: u64
+pub const logtmpl::TEMPLATE_CHANNEL: explorer::spine::ChannelId
+pub fn logtmpl::decode_cell_key(&[u8]) -> core::option::Option<alloc::vec::Vec<core::option::Option<u64>>>
+pub fn logtmpl::encode_cell_key(&[core::option::Option<u64>]) -> explorer::spine::CellKey
+pub fn logtmpl::load_console_log(&str) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Record)>
+pub fn logtmpl::log2_bucket(u64) -> u64
+pub type logtmpl::Result<T> = core::result::Result<T, logtmpl::Error>
