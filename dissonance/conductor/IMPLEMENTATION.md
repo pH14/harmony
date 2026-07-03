@@ -345,19 +345,21 @@ The identical `run_campaign` loop the box drives, against `ToyPlantedMachine`:
 Demo (`cargo run -p conductor -- campaign mock`), verbatim:
 
 ```
-base snapshot: sealed at V-time 1000 (1 attempt), capture state_hash fbacdab8…2db5aeb1
+base snapshot: sealed at V-time 1000 (1 attempt), capture state_hash 8fa7e948…4ec31a3a
 planted bug found at branch 867 (seed 0x850bcc59a5668e35) after exploring 868 branches
-  finding stop Crash@1962[2B], state_hash 85480f41…47fc39a7
-  fingerprint 738172063f9232bb3fb0113cfe1e79b4d0ead6019d27f3126c2a3defe4060596
+  finding stop Crash@2025[2B], state_hash b2583c05…31359728
+  fingerprint 7f3999e5d138ce223a347b398865cc44c43dbd40c4f3b067436c8da84e8c783a
   replay verification: 25/25 identical (crash reproduced bit-for-bit)
-nominal control (seed only, no faults): Crash@2716[4B] — no bug (adversity-gated, as required)
+nominal control (seed only, no faults): Quiescent@2779 — no bug (adversity-gated, as required)
 [conductor] campaign mock GATES PASS: planted bug found, reproduced 25/25, nominal control clean.
 ```
 
 Found at branch **867** of a 128-combination space (naive geometric expectation ~128; the fixed
-campaign stream's first hit). This is the naive seed-search order the spec asks for (~10²–10³).
+campaign stream's first hit). This is the naive seed-search order the spec asks for (~10²–10³). The
+bug reboots to a `Crash`, the clean control halts to `Quiescent` — the same terminal convention the box
+guest uses.
 
-### Gate 1 — box (the milestone): run on the determinism box
+### Gate 1 — box (the milestone): **PASS** (run on the determinism box)
 
 Box-only: patched KVM, det-cfl-v1 host, `/dev/kvm`, and `initramfs-campaign.cpio.gz`. The **identical**
 `run_campaign` loop drives the real socket `Machine` against vmm-core's control server (with task-59's
@@ -370,16 +372,18 @@ the last release):
 # 1. Build the image (root, on the box / a linux-amd64 container). The kernel is
 #    the shared task-36 bzImage (no kernel change); only the initramfs is built.
 make -C guest fetch && make -C guest/linux campaign-image     # → guest/build/initramfs-campaign.cpio.gz
-# 2. Bring-up (once per image): pin the ledger gpa. campaign-init.sh exports
-#    CAMPAIGN_DEBUG=1, so the boot serial prints `CAMPAIGN_LEDGER_GPA: canary=0x…`
-#    (and the crash-channel self-test). Read it from a short run's log.
+# 2. Bring-up (once per image): read the ledger gpa AND the loop span. campaign-init.sh
+#    exports CAMPAIGN_DEBUG=1, so the boot serial prints `CAMPAIGN_LEDGER_GPA: canary=0x…`;
+#    a --max-branches 1 run's nominal control prints Quiescent@<t>, so the loop span is
+#    <t> − <base V-time>. Scope --window-hi below that span (a Moment past the natural
+#    terminal poisons — see the known-limitations note).
 # 3. The gate — lease a core, pin the ledger gpa (gpa-count 1 → every fault hits
 #    the ledger, so any Crash is unambiguously the planted bug), window covering
 #    the supervisor loop:
 CORE=$(bash scripts/box-window.sh acquire t60gate)
-taskset -c "$CORE" timeout 3000 target/release/conductor campaign box \
-    --gpa-base <pinned_ledger_gpa> --gpa-count 1 --gpa-stride 0x1000 \
-    --window-lo 0 --window-hi 3000000 --deadline-delta 2000000000 \
+taskset -c "$CORE" timeout 3600 target/release/conductor campaign box \
+    --gpa-base 0x1fc9000 --gpa-count 1 --gpa-stride 0x1000 \
+    --window-lo 0 --window-hi 700000000 --deadline-delta 5000000000 \
     --max-branches 4096 --replay-n 25
 bash scripts/box-window.sh release t60gate   # reverts KVM to stock on last lease + verifies
 ```
@@ -388,25 +392,45 @@ The gate asserts: the campaign, started with no knowledge of which `(mask, Momen
 planted bug** — a `Crash` (the guest rebooted; the supervisor's `CAMPAIGN_BUG:` marker is on the
 serial) the oracle calls — and the emitted reproducer **replays the identical crash (same terminal
 `StopReason` and `state_hash`) 25/25**; the nominal-seed control run **halts (`Quiescent`), not a
-crash**. Wall-clock / branches-hour (the D5 trigger) are recorded from the box run (wrap in `time`).
+crash**.
+
+**RESULT — PASS** (determinism box, core 2, patched KVM loaded via `box-window.sh` then reverted to
+stock `1396736` + verified; head `6ca8414`, shared task-36 `bzImage` `f06a34a790…`, ledger gpa
+`0x1fc9000`):
 
 ```
-=== TASK-60 BOX GATE — RESULT (fill from the box run) ===
-image: initramfs-campaign.cpio.gz   kernel: shared task-36 bzImage   head: <commit>   ledger gpa: <0x…>
-base sealed at V-time <…>, capture state_hash <…>
-planted bug found at branch <N> (seed <…>) after exploring <B> branches
-  finding stop Crash@<…>, state_hash <…>
-  replay verification: 25/25 identical
-nominal control: Quiescent@<…> — no bug
-branches explored: <B>   wall-clock: <…>   branches/hour: <…>   (D5 trigger)
+base snapshot: sealed at V-time 473415720 (2 attempts), capture state_hash f6d23b75…8ce8b1de
+planted bug found at branch 0 (seed 0x550e9f9e4d395f0b) after exploring 1 branches
+  finding stop Crash@817175834 [65B], state_hash a8e08cef3d319355bf58b708121859159f33d8b60acbda6a1e00bbe74d7801b3
+  fingerprint 897f7187443416687c923d9d30ef2e498630e50ef29db6a96a59c2871b0495cc
+  replay verification: 25/25 identical (crash reproduced bit-for-bit)
+nominal control (seed only, no faults): Quiescent@1265091633 — no bug (adversity-gated, as required)
+campaign box GATES PASS: planted bug found, reproduced 25/25, nominal control clean.   (rc=0)
 ```
+
+**What it shows.** With the ledger gpa pinned (bring-up) and the window `[0, 7×10⁸)` covering the ~7.9×10⁸-ns
+supervisor loop (base `473415720` → clean-halt terminal `1265091633`), the **first** injected upset landed
+inside the loop, flipped the canary, and the supervisor detected the impossible state and rebooted →
+`Crash{Shutdown}` at V-time `817175834` — so the campaign found the planted bug at **branch 0**. The
+emitted `Bug`'s reproducer (the recorded env: `seed 0x550e9f9e…` + the `CorruptMemory` at the ledger gpa,
+composed genesis-complete) then **replayed the identical crash — same terminal `state_hash`
+`a8e08cef…` — 25/25**, and the nominal-seed control (no fault) halted clean at `Quiescent@1265091633`.
+
+**Branches / D5 note.** The search explored **1 branch to find** (the pinned-gpa scoping means the first
+in-loop fault triggers), plus 25 replays + 1 control = 27 verification VM runs; the run completed well
+inside the box lease. Because the find is at branch 0, this run does not exercise a large search space, so
+it is not a meaningful **branches/hour** snapshot-throughput figure — that number wants an unpinned/wider
+search (a `--gpa-count > 1` sweep, deferred with the D5 snapshot-performance work — the campaign already
+supports it via the CLI). Cite this run for the *find + N/N reproduction* milestone; cite a future wide
+sweep for the D5 branches/hour trigger.
 
 ### Gate 3 — standard suite + existing gates byte-identical: **PASS**
 
-`build` / `nextest` (29 tests: 13 lib, 4 campaign, 6 oracle-proptest, 6 pre-existing task-58 loopback +
-determinism) / `clippy -D warnings` / `fmt --check` / `cargo deny` / public-api snapshot all green on
-`conductor`. **No existing crate touched** (vmm-core/explorer/environment/control-proto unchanged), so
-every other crate's gate is byte-identical; the task-58 loopback + determinism proptests pass unchanged.
+`build` / `nextest` (37 tests: lib incl. the toy exact-arrival proptests, campaign, oracle-proptest, and
+the pre-existing task-58 loopback + determinism + task-65 recording) / `clippy -D warnings` (host **and**
+`x86_64-unknown-linux-gnu`) / `fmt --check` / `cargo deny` / public-api snapshot all green on `conductor`.
+**No existing crate touched** (vmm-core/explorer/environment/control-proto unchanged), so every other
+crate's gate is byte-identical; the task-58 loopback + determinism proptests pass unchanged.
 The guest kernel/initramfs golden (`MANIFEST.sha256`) is untouched — the campaign image is an additive
 build target, not part of `run-tests.sh`'s repro/boot gate. `cargo deny` OK (`sha2` — the toy's
 `state_hash` digest — is whitelisted and already in the lock via explorer/vmm-core; `Cargo.lock` gained
@@ -477,6 +501,13 @@ cargo clippy -p conductor --all-features --all-targets --target x86_64-unknown-l
   The CLI default is loop-scale (`1_000_000`); the box gate scopes it from the observed
   `CAMPAIGN_READY`→halt span. (The loud abort is the correct signal that the window is mis-scoped — it
   is not swallowed.)
+- **The supervisor loop must out-span the snapshot seal point.** The base is sealed at the first
+  snapshottable boundary at/after `CAMPAIGN_READY`, which the retry search overshoots by up to
+  `snapshot_retry_step` ns. If the loop is shorter than that overshoot the seal lands *past* it (in the
+  halt tail) and no injected fault can reach the fault-sensitive guard — the box gate proved this with the
+  original 2×10⁶-iteration loop (a fault at base+0 did not trigger). The fix: `ITERS = 2×10⁸` (the loop
+  spans ~8×10⁸ ns, base seals deep inside it) and a fine `snapshot_retry_step` (10⁴ ns, so the seal is
+  close to `CAMPAIGN_READY`). The window (~7×10⁸ ns) then covers most of the loop.
 - **The guest payload (`campaign-super.c` + the two scripts) is box-built and box-validated.** It builds
   and lints cleanly (shellcheck clean; C is Linux-only, not compilable on the dev Mac). The distinctive
   terminal is `reboot -f`/`halt -f` (not port I/O — the kernel has no `CONFIG_X86_IOPL_IOPERM` /
