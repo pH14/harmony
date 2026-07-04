@@ -100,7 +100,7 @@ proptest! {
         overrides in arb_overrides_with_host(),
         points in prop::collection::vec(arb_point(), 1..24),
     ) {
-        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![] };
+        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default() };
         let sched = build_schedule(spec.overrides(), &points);
 
         // record: serialize. replay: decode it back.
@@ -179,6 +179,7 @@ fn host_overrides_never_leak_into_guest_answers() {
             }),
         )]),
         standing: vec![],
+        reseeds: std::collections::BTreeMap::new(),
     };
 
     let point = P::BlockIo {

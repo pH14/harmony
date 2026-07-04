@@ -66,18 +66,20 @@ fn standing() -> impl Strategy<Value = StandingFault> {
 }
 
 /// An arbitrary recorded env: a seed, a set of `Moment → Action` overrides at
-/// unique moments, and some standing faults.
+/// unique moments, some standing faults, and some reseed markers (task 78).
 fn arb_env() -> impl Strategy<Value = EnvSpec> {
     (
         any::<u64>(),
         prop::collection::btree_map(any::<u64>(), action(), 0..24),
         prop::collection::vec(standing(), 0..3),
+        prop::collection::btree_map(any::<u64>(), any::<u64>(), 0..4),
     )
-        .prop_map(|(seed, overrides, standing)| EnvSpec::Recorded {
+        .prop_map(|(seed, overrides, standing, reseeds)| EnvSpec::Recorded {
             seed,
             policy: FaultPolicy::none(),
             overrides,
             standing,
+            reseeds,
         })
 }
 

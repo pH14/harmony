@@ -31,12 +31,13 @@
 //!    `Bug.env`, and `branch(base, composed)` → identical stop + hash.
 //!
 //! [`verify_materialize`] returns every violated gate; a round-trip hash
-//! mismatch carries the **sequential-entropy-splice diagnostic** (the
-//! substrate's `branch` reseeds the entropy stream at every hop, and a
-//! compose-fold collapses the intermediate reseed points — entropy drawn in a
-//! collapsed interval desyncs the stream). That failure mode is a substrate
-//! contract finding to **escalate**, never to patch from this surface; the
-//! loopback suite pins it portably on a draw-carrying mock script.
+//! mismatch carries the **sequential-entropy-splice diagnostic**. Since task
+//! 78 the env format stores every hop's **reseed marker** and the server
+//! re-executes each collapsed hop's reseed at its recorded Moment, so folds
+//! are bit-identical **even with draws inside collapsed intervals** — the
+//! loopback suite pins the positive property portably on a draw-carrying mock
+//! script, and [`MaterializeReport::tail_draws`] measures (never assumes)
+//! whether a live window actually drew.
 
 use explorer::{
     EnvCodec, Environment, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError,
@@ -131,6 +132,23 @@ pub struct MaterializeReport {
     pub replay_stop: StopReason,
     /// `state_hash` at the replay leg's stop.
     pub replay_hash: [u8; 32],
+    /// **Draw probes (task 78), per collapsed hop window:** `hop_draws[j]` is
+    /// `true` iff hop `j`'s window (parent seal → landed boundary) actually
+    /// draws entropy — measured with the same trailing-reseed probe as
+    /// [`tail_draws`](MaterializeReport::tail_draws) (below). These are the
+    /// windows a compose-fold collapses, so the reseed-aware bit-identity
+    /// gates ((b)/(c)) exercise entropy exactly when one of these is `true`.
+    pub hop_draws: Vec<bool>,
+    /// **Draw probe (task 78):** `true` iff the tail window actually draws
+    /// entropy — measured, not assumed. The probe leg re-runs the tail window
+    /// under the SAME branch seed plus a trailing reseed marker back to that
+    /// seed at the landing boundary (using the very task-78 machinery under
+    /// test): a no-op iff no draw moved the stream, so its hash differs from
+    /// the tail leg's iff the window drew. The reseed-aware fold gates
+    /// ((b)/(c) bit-identity) are only *entropy-exercising* when this is
+    /// `true`; a draw-free workload window leaves them vacuous on the entropy
+    /// axis (the task-68 situation).
+    pub tail_draws: bool,
 }
 
 /// Seal the machine's current point, nudging past non-sealable boundaries the
@@ -221,6 +239,7 @@ pub fn run_materialize<M: Machine>(
     //    landed boundary (grid-restricted), each suffix a real recorded_env.
     let mut hops: Vec<HopRow> = Vec::with_capacity(cfg.hops);
     let mut refs: Vec<ExemplarRef> = Vec::with_capacity(cfg.hops);
+    let mut seals: Vec<SnapId> = Vec::with_capacity(cfg.hops);
     let mut cur = genesis;
     let mut cur_at = genesis_at;
     let mut entry_env: Option<Environment> = None;
@@ -258,12 +277,35 @@ pub fn run_materialize<M: Machine>(
             attempts,
         });
         refs.push(r);
+        seals.push(seal);
         entry_env = Some(env);
         cur = seal;
         cur_at = at;
     }
     let deep = refs[cfg.hops - 1];
     let deep_env = entry_env.expect("hops >= 3");
+
+    // 2b. Per-hop draw probes (task 78), while every hop's parent seal is
+    //     still live: re-run each hop window plainly and with a trailing
+    //     reseed marker back to the same seed at the landed boundary — the
+    //     hashes differ iff a draw inside the window moved the stream (the
+    //     same self-normalizing probe as the tail's, step 6b).
+    let mut hop_draws: Vec<bool> = Vec::with_capacity(cfg.hops);
+    {
+        let mut parent = genesis;
+        let mut parent_at = genesis_at;
+        for (i, h) in hops.iter().enumerate() {
+            machine.branch(parent, &codec.seeded(cfg.seed))?;
+            let landed = run_to(machine, h.at, &format!("hop {i} plain probe"))?;
+            let h_plain = machine.hash()?;
+            machine.branch(parent, &reseed_probe_env(cfg.seed, parent_at, h.at)?)?;
+            run_to(machine, h.at, &format!("hop {i} marker probe"))?;
+            hop_draws.push(machine.hash()? != h_plain);
+            debug_assert_eq!(landed, h.at, "the hop leg is deterministic");
+            parent = seals[i];
+            parent_at = h.at;
+        }
+    }
 
     // 3. Gate (a): evict the deep exemplar's own (eager) seal and materialize
     //    — the hot, parent-rooted, suffix-only replay.
@@ -315,6 +357,41 @@ pub fn run_materialize<M: Machine>(
     )?;
     let replay_hash = machine.hash()?;
 
+    // 6b. The draw probe (task 78): the tail leg again under the SAME branch
+    //     seed, plus a trailing reseed marker back to that seed at the landing
+    //     boundary. The guest executes identically (same seed ⇒ same drawn
+    //     values), so the probe hash differs from `leg_hash` exactly when the
+    //     trailing reseed was NOT a no-op — i.e. when a draw inside the window
+    //     moved the stream off its reseed point.
+    //
+    //     **Deadline-stopped tails only (PR #62 round-4 blocking fix).** For a
+    //     Quiescent/Crash tail the probe's `deadline = landing` stops BEFORE
+    //     consuming the terminal exit, so the hashes would differ from the
+    //     skipped terminal state, not from any draw — a false positive. A
+    //     terminal tail reports `tail_draws = false` (draws-unknown; the
+    //     per-hop probes are unaffected — their legs are Deadline stops by
+    //     construction).
+    let tail_draws = if matches!(leg_stop, StopReason::Deadline { .. }) {
+        let landing = leg_stop.vtime().0;
+        let deep_at = cur_at;
+        machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing)?)?;
+        let probe_stop = machine.run(
+            &StopConditions {
+                deadline: Some(VTime(landing)),
+                on: StopMask::NONE,
+            },
+            None,
+        )?;
+        debug_assert_eq!(
+            probe_stop.vtime().0,
+            landing,
+            "timing is draw-value-independent"
+        );
+        machine.hash()? != leg_hash
+    } else {
+        false
+    };
+
     // 7. Cleanup: release every seal and the base (corpus GC over the wire).
     mat.evict_all(machine)?;
     machine.drop_snap(genesis)?;
@@ -334,7 +411,40 @@ pub fn run_materialize<M: Machine>(
         bug_env,
         replay_stop,
         replay_hash,
+        hop_draws,
+        tail_draws,
     })
+}
+
+/// The draw-probe env (task 78): branch-reseed to `seed` at the window origin
+/// plus a trailing reseed back to `seed` at the landed boundary — a no-op iff
+/// no draw inside `[origin, landed]` moved the stream, so the probe leg's hash
+/// equals the plain leg's exactly when the window is draw-free.
+///
+/// `landed` and `origin` arrive from the Machine/transport boundary, so the
+/// relative-key subtraction **fails closed** (PR #62 round-1 blocking fix): a
+/// stop vtime below the branch origin is a broken monotonicity invariant —
+/// a loud [`MachineError::Transport`], never a debug panic or a release wrap
+/// that would encode a marker near `u64::MAX`.
+fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Result<Environment, MachineError> {
+    let rel = landed.checked_sub(origin).ok_or_else(|| {
+        MachineError::Transport(format!(
+            "draw probe: landed vtime {landed} is BELOW the branch origin {origin} — the \
+             machine reported a non-monotone stop; refusing to mint a wrapped reseed marker"
+        ))
+    })?;
+    let mut spec = environment::EnvSpec::Seeded {
+        seed,
+        policy: environment::FaultPolicy::none(),
+    };
+    spec.record_reseed(0, seed);
+    spec.record_reseed(rel, seed);
+    Ok(explorer::AdapterEnv {
+        base_offset: origin,
+        pos: origin,
+        spec,
+    }
+    .encode())
 }
 
 /// Integer parts-per-million of `num / den` (`den == 0` reports 0).
@@ -355,11 +465,13 @@ pub fn depth_ratio_ppm(m: &Materialization) -> u64 {
 }
 
 /// The sequential-entropy-splice diagnostic appended to a round-trip hash
-/// mismatch (module doc): the finding to escalate, never to patch here.
-const SPLICE_DIAGNOSTIC: &str = "SUSPECT the sequential-entropy splice: the substrate's `branch` \
-     reseeds the entropy stream at every hop, and a compose-fold collapses the intermediate \
-     reseed points — entropy drawn inside a collapsed interval desyncs the stream (and its \
-     hashed position). A substrate contract finding to ESCALATE to the foreman, not patch here.";
+/// mismatch. Task 78 made the fold reseed-aware (the env stores each hop's
+/// reseed marker and the server re-executes it at its recorded Moment), so a
+/// mismatch now points at a defect in that chain, not a documented limit.
+const SPLICE_DIAGNOSTIC: &str = "SUSPECT the sequential-entropy splice machinery (task 78): every \
+     hop's branch reseed is recorded as a reseed marker, compose splices markers positionally, \
+     and the server re-executes each collapsed hop's reseed at its recorded Moment — a mismatch \
+     means a marker was lost, mis-spliced, mis-anchored, or applied at the wrong count.";
 
 /// The task-68 gates over a [`MaterializeReport`]:
 ///
@@ -589,6 +701,15 @@ pub fn render_materialize_table(r: &MaterializeReport) -> String {
         "baseline: task-63 §4 = {TASK63_BASELINE_PPM} ppm (1.5463%); measured hot = {} ppm",
         depth_ratio_ppm(&r.hot)
     ));
+    push(format!(
+        "draw probes (task 78): hops {:?}; tail window {} entropy (trailing-reseed probe)",
+        r.hop_draws,
+        if r.tail_draws {
+            "DRAWS"
+        } else {
+            "does NOT draw"
+        }
+    ));
     out
 }
 
@@ -632,7 +753,27 @@ mod tests {
             },
             replay_stop: StopReason::Deadline { vtime: VTime(20) },
             replay_hash: [0; 32],
+            hop_draws: Vec::new(),
+            tail_draws: false,
         }
+    }
+
+    /// The draw probe's relative-key subtraction fails closed (PR #62 round-1
+    /// blocking fix): a landed vtime below the branch origin — a non-monotone
+    /// stop from the transport — is a loud `MachineError`, never a wrapped
+    /// marker near `u64::MAX`.
+    #[test]
+    fn reseed_probe_env_rejects_a_landed_vtime_below_the_origin() {
+        let err = reseed_probe_env(7, 100, 50).expect_err("landed < origin must fail closed");
+        assert!(
+            matches!(err, explorer::MachineError::Transport(_)),
+            "fails as a transport-invariant error, got {err:?}"
+        );
+        // The boundary case is fine: an empty window keys both markers at 0
+        // (last write wins — one marker), still a valid probe env.
+        let env = reseed_probe_env(7, 100, 100).expect("landed == origin is a valid empty window");
+        let decoded = explorer::AdapterEnv::decode(&env).expect("adapter blob");
+        assert_eq!(decoded.spec.reseeds().len(), 1);
     }
 
     /// `verify_materialize` is a total, public function over an arbitrary

@@ -13,12 +13,13 @@
 //! - gate (c): the compose-folded reproducer replays with identical stop +
 //!   `state_hash` on the production codec.
 //!
-//! Plus the **sequential-entropy-splice pin**: on a draw-carrying script the
-//! round-trip hashes MUST diverge (the substrate's `branch` reseeds per hop;
-//! a fold collapses the reseed points). That test documents the contract
-//! boundary task 68 escalates — if a substrate change (e.g. Moment-keyed
-//! counter-mode entropy) ever makes it splice-invariant, the pin fails loudly
-//! and both it and the escalation note should be retired together.
+//! Plus the **reseed-aware splice pin** (task 78 — the positive twin of task
+//! 68's `sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit`
+//! documented-limit pin, retired per the ruling in `docs/INTEGRATION.md` §6c):
+//! on a draw-carrying script the compose-folded round trip is now
+//! **bit-identical** — the env format stores each hop's reseed marker and the
+//! server re-executes it at its recorded Moment, so a fold no longer collapses
+//! the reseed points.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -88,6 +89,21 @@ fn chain_gates_pass_over_the_socket() {
         "bug_env is rooted at the campaign genesis"
     );
 
+    // Reseed-aware (task 78): one marker per collapsed branch leg (the three
+    // chain hops plus the tail leg), and the draw probe reads draw-free on
+    // this all-RDTSC script (the probe measures, never assumes).
+    assert_eq!(
+        decoded.spec.reseeds().len(),
+        4,
+        "bug_env carries every collapsed leg's reseed marker (3 hops + tail)"
+    );
+    assert!(
+        !report.tail_draws && report.hop_draws.iter().all(|d| !d),
+        "the draws=false script must probe draw-free everywhere (hops {:?}, tail {})",
+        report.hop_draws,
+        report.tail_draws
+    );
+
     // Depth accounting: three hops with the same delta ⇒ the fold spans two
     // hop windows, the worst case three (monotone, ≪ nothing here — the mock
     // is synthetic; the ratio gate is the box's).
@@ -96,25 +112,27 @@ fn chain_gates_pass_over_the_socket() {
     assert!(report.worst.from_genesis);
 }
 
-/// The sequential-entropy-splice pin (module doc), demonstrated minimally and
-/// directly over the wire — **no mid-fold seal**, so nothing but the splice
-/// itself is in play (a seal inside the fold would trip the mock's
-/// script-restart phase artifact, which the real guest does not have):
+/// The **flipped task-68 pin** (task 78): the draw-carrying compose fold is
+/// bit-identical to its hop-by-hop original, over the real wire —
+/// `SocketMachine` + `ControlServer<MockBackend-composition>`:
 ///
 /// - two-hop leg: `branch(G, seed) → run → seal S1; branch(S1, seed) → run →
 ///   hash` — the substrate reseeds the entropy stream at **both** hops;
 /// - folded leg: `branch(G, compose(suffix₁, suffix₂)) → run → hash` — one
-///   branch, one reseed; the collapsed hop's reseed point is gone, so the
-///   RDRAND draw counts/positions desync and the hashes MUST diverge.
+///   branch, but the fold now **carries the collapsed hop's reseed marker**
+///   (the adapter records each branch reseed at relative 0; `compose` splices
+///   markers positionally; the server re-executes the mid-trajectory reseed at
+///   its exact Moment). The RDRAND draw counts/positions match, so the hashes
+///   are **equal**.
 ///
-/// The two-hop leg itself reproduces bit-identically (re-run), proving the
-/// divergence is the splice, not nondeterminism. This is the documented
-/// substrate contract limit task 68 escalates — not an engine defect. If a
-/// substrate change (Moment-keyed counter-mode entropy) ever makes branch
-/// reseeds splice-invariant, this pin fails loudly: retire it together with
-/// the escalation note.
+/// This test replaces (and inverts) task 68's
+/// `sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit` —
+/// the documented-limit pin retired together with its escalation note, per the
+/// integrator's 2026-07-03 ruling (`docs/INTEGRATION.md` §6c ruling 3, spec:
+/// `tasks/78`). The two-hop leg is still re-run to prove the equality is
+/// determinism, not accident.
 #[test]
-fn sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit() {
+fn sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin() {
     let mut server = mock::server(chain_fork_script(48, true)).unwrap();
     let (served, ()) = run_session(&mut server, |stream| {
         let mut m = SocketMachine::connect(stream, boot_env()).expect("connect");
@@ -159,29 +177,142 @@ fn sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit() {
         let h_two = m.hash().expect("hash two-hop");
         let suffix2 = m.recorded_env().expect("suffix 2");
 
-        // The two-hop leg is itself deterministic (the divergence below is
-        // the splice, not flakiness).
+        // The two-hop leg is itself deterministic (the equality below is
+        // determinism, not accident).
         m.branch(s1, &seed_env).expect("branch hop 2 again");
         assert_eq!(run_to(&mut m, a1 + 400), a2);
         assert_eq!(m.hash().expect("hash"), h_two, "two-hop leg reproduces");
 
-        // The folded leg: one branch from G over the composed suffix chain
-        // (the production codec's relative splice), run to the same V-time.
+        // The suffixes carry their branch reseeds as markers at relative 0.
+        for (name, suffix) in [("suffix 1", &suffix1), ("suffix 2", &suffix2)] {
+            let decoded = AdapterEnv::decode(suffix).expect("adapter blob");
+            assert_eq!(
+                decoded.spec.reseeds().iter().collect::<Vec<_>>(),
+                vec![(&0u64, &0xD1CEu64)],
+                "{name} records its branch reseed at relative 0"
+            );
+        }
+
+        // The folded leg: one branch from G over the composed suffix chain.
+        // The fold carries BOTH reseed markers (the collapsed hop's at its
+        // splice position), so the server re-executes the S1 reseed at its
+        // recorded Moment and the draw stream matches hop-by-hop exactly.
         let folded = codec.compose(&suffix1, &suffix2);
+        let decoded = AdapterEnv::decode(&folded).expect("adapter blob");
+        assert_eq!(
+            decoded.spec.reseeds().len(),
+            2,
+            "the fold carries the collapsed hop's reseed marker"
+        );
         m.branch(g, &folded).expect("branch folded");
         let a2_fold = run_to(&mut m, a2);
         assert_eq!(a2_fold, a2, "V-time timing is draw-value-independent");
         let h_fold = m.hash().expect("hash folded");
 
-        assert_ne!(
+        assert_eq!(
             h_fold, h_two,
-            "the collapsed fold matched the two-hop leg — the sequential-entropy splice \
-             (branch reseeds per hop; a fold collapses the reseed points) no longer diverges. \
-             If the substrate made entropy splice-invariant (e.g. Moment-keyed counter mode), \
-             retire this pin together with task 68's escalation note."
+            "the compose-folded leg must be BIT-IDENTICAL to the hop-by-hop leg: the reseed \
+             markers (task 78) re-execute each collapsed hop's reseed at its recorded Moment. \
+             A mismatch means a marker was lost, mis-spliced, or applied at the wrong count."
         );
     });
     served.expect("server session");
+}
+
+/// The task-68 gates on a **draw-carrying** script (task 78): the whole chain
+/// protocol — including the compose-folded and from-genesis re-materializations
+/// — is bit-identical with RDRAND draws inside every collapsed interval, and
+/// the draw probe measures `tail_draws == true`. The script is period-400
+/// (`RDTSC, RDRAND, RDTSC, RDTSC`) with hop deadlines landing on 400-multiples,
+/// the one shape whose draw pattern survives the mock's script restart at each
+/// branch (see `reseed_fold_proptest.rs`'s module doc; a real guest has no such
+/// restart, so the box gate runs unconstrained shapes).
+#[test]
+fn chain_gates_pass_on_a_draw_carrying_script() {
+    let mut script = Vec::new();
+    for _ in 0..18 {
+        script.push(vmm_backend::Exit::Rdtsc);
+        script.push(vmm_backend::Exit::Rdrand { width: 8 });
+        script.push(vmm_backend::Exit::Rdtsc);
+        script.push(vmm_backend::Exit::Rdtsc);
+    }
+    script.push(vmm_backend::Exit::Hlt);
+    let cfg = MaterializeConfig {
+        seed: 0x1234_5678_9ABC_DEF0,
+        hops: 3,
+        // Off-grid requests landing on the 400-ns period boundary (a sealable
+        // RDTSC with no staged RNG), so seals take one attempt and every hop
+        // span is a period multiple.
+        hop_delta: 350,
+        tail_delta: 350,
+        snapshot_retry_step: 100,
+        snapshot_max_attempts: 16,
+    };
+    let mut server = mock::server(script).unwrap();
+    let (served, report) = run_session(&mut server, move |stream| {
+        materialize_client(stream, boot_env(), cfg)
+    });
+    served.expect("server session");
+    let report = report.expect("chain protocol");
+    let failures = verify_materialize(&report, None);
+    assert!(
+        failures.is_empty(),
+        "task-78 draw-carrying chain gates failed:\n{}\n{}",
+        failures.join("\n"),
+        render_materialize_table(&report)
+    );
+    assert!(
+        report.tail_draws && report.hop_draws.iter().all(|d| *d),
+        "every window must probe DRAWS on this script (one RDRAND per 400 ns): hops {:?}, \
+         tail {}",
+        report.hop_draws,
+        report.tail_draws
+    );
+    let decoded = AdapterEnv::decode(&report.bug_env).expect("adapter blob");
+    assert_eq!(
+        decoded.spec.reseeds().len(),
+        4,
+        "bug_env carries every collapsed leg's reseed marker (3 hops + tail)"
+    );
+}
+
+/// A **terminal tail** (the guest halts before the tail deadline) must report
+/// `tail_draws = false`, never a false positive (PR #62 round-4 blocking fix):
+/// the probe cannot re-run a terminal window to the same point without
+/// consuming the terminal exit, so it is skipped for non-Deadline tails.
+/// (Gate (c) itself is not asserted here: on the scripted mock the terminal
+/// V-time is a function of the branch point — the script restarts per branch
+/// — so the genesis-rooted replay halts at a different V-time than the
+/// deep-rooted leg, a restart phase artifact a real guest does not have.
+/// The probe-semantics fix is what this test pins.)
+#[test]
+fn a_terminal_tail_reports_no_draws_not_a_false_positive() {
+    // 20 intercepts fit the 3 hops (3 × ~300 ns + retries), but the tail
+    // deadline lies far beyond the script's Hlt — the tail leg ends terminal.
+    let cfg = MaterializeConfig {
+        seed: 0x1234_5678_9ABC_DEF0,
+        hops: 3,
+        hop_delta: 250,
+        tail_delta: 1_000_000,
+        snapshot_retry_step: 100,
+        snapshot_max_attempts: 16,
+    };
+    let mut server = mock::server(chain_fork_script(48, false)).unwrap();
+    let (served, report) = run_session(&mut server, move |stream| {
+        materialize_client(stream, boot_env(), cfg)
+    });
+    served.expect("server session");
+    let report = report.expect("chain protocol");
+    assert!(
+        matches!(report.leg_stop, explorer::StopReason::Quiescent { .. }),
+        "the tail leg ends at the script's terminal, got {:?}",
+        report.leg_stop
+    );
+    assert!(
+        !report.tail_draws,
+        "a terminal tail is draws-unknown and must report false — the probe would otherwise \
+         false-positive on the skipped terminal exit"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +383,7 @@ fn host_fault_below_a_parent_rooted_fold_applies_at_the_absolute_moment() {
                 policy: FaultPolicy::none(),
                 overrides,
                 standing: Vec::new(),
+                reseeds: std::collections::BTreeMap::new(),
             },
         }
         .encode();
@@ -360,6 +492,7 @@ fn behind_snapshot_host_fault_is_rejected_on_the_wire() {
                     policy: FaultPolicy::none(),
                     overrides,
                     standing: Vec::new(),
+                    reseeds: std::collections::BTreeMap::new(),
                 }
                 .encode(),
             }

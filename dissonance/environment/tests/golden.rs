@@ -247,7 +247,8 @@ fn golden_action_wire_format() {
 #[test]
 fn golden_recorded_blob_with_host_overrides() {
     // A small mixed reproducer, frozen, so the whole `EnvSpec` layout (magic +
-    // version + Moment-keyed Action map) is pinned against silent drift.
+    // version + Moment-keyed Action map + reseed-marker table) is pinned
+    // against silent drift.
     let spec = EnvSpec::Recorded {
         seed: 0,
         policy: FaultPolicy::none(),
@@ -256,6 +257,7 @@ fn golden_recorded_blob_with_host_overrides() {
             (2, Action::Guest(Answer::Nominal)),
         ]),
         standing: vec![],
+        reseeds: BTreeMap::from([(3, 0xD1CE)]),
     };
     let hex = to_hex(&spec.encode());
     if std::env::var_os("GOLDEN_CAPTURE").is_some() {
@@ -263,13 +265,14 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            // "DEV2"(44455632) + version(0300) + variant(01) + seed(00×8) +
+            // "DEV2"(44455632) + version(0400) + variant(01) + seed(00×8) +
             // length-prefixed policy(FPL1 magic + version 0200, baseline, len 0x2a=42) +
             // overrides count(02000000) +
             //   Moment 1 + len-prefixed Action::Host(InjectInterrupt 0x80) = [00 03 80] +
             //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
-            // standing count(00000000).
-            "4445563203000100000000000000002a00000046504c31020000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000",
+            // standing count(00000000) +
+            // reseed count(01000000) + Moment 3 + seed 0xD1CE (both u64 LE).
+            "4445563204000100000000000000002a00000046504c31020000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000010000000300000000000000ced1000000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);

@@ -676,3 +676,32 @@ passed) / `cargo clippy --all-targets -D warnings` / `cargo fmt --check` /
 `tests/public-api.txt` **unchanged**. `cargo doc` adds no new warnings (the 3
 pre-existing private-module-link warnings remain). No `unsafe`, so no Miri
 obligation.
+
+---
+
+# IMPLEMENTATION — task 78 (reseed-aware compose: the reseed-marker table)
+
+`EnvSpec::Recorded` gained the **reseed-marker table** (`reseeds:
+BTreeMap<Moment, u64>` — deterministic container, integer keys, no floats):
+each entry records that the sequential entropy stream was reseeded to
+`SeededEntropy::new(seed)` at that `Moment` (a branch origin). This is the
+ruled fix (`docs/INTEGRATION.md` §6c ruling 3) for PR #58's escalated
+sequential-entropy-splice finding: `compose` now splices markers positionally
+exactly like overrides (base keeps `m < at`, tail re-keys by `+ at`, checked
+overflow), `mutate` preserves them verbatim (they are timeline facts, not
+proposals), and the frontier re-executes each collapsed hop's reseed at its
+recorded position.
+
+- **`BLOB_VERSION` 3 → 4**: the `Recorded` layout gained the trailing marker
+  table (count + `(u64 moment, u64 seed)` pairs, strictly ascending on
+  decode). A v3 blob rejects with `BadVersion` rather than mis-parsing.
+- New public API: `EnvSpec::reseeds()`, `EnvSpec::record_reseed(at, seed)`
+  (promotes `Seeded` → `Recorded`, mirrors `record`). Snapshot refreshed.
+- Goldens: the frozen `Recorded` blob now pins the marker table; the golden
+  answer sequence / host-fault wire formats are untouched (no stream change).
+
+Deviations considered: storing markers inside the override map as a new
+`Action` variant was rejected — a reseed is not an `Action` at the `decide`
+seam (it never reaches `decide`), and the one-action-per-`Moment` rule would
+collide a reseed with a host fault at a shared branch origin. A separate
+table keeps both recordable and the apply order fixed (reseed before fault).
