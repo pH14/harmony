@@ -426,6 +426,7 @@ pub enum vmm_core::vmm::TerminalReason
 pub vmm_core::vmm::TerminalReason::DebugExit
 pub vmm_core::vmm::TerminalReason::DebugExit::code: u8
 pub vmm_core::vmm::TerminalReason::Hlt
+pub vmm_core::vmm::TerminalReason::SdkStop
 pub vmm_core::vmm::TerminalReason::Shutdown
 pub enum vmm_core::vmm::VmmError
 pub vmm_core::vmm::VmmError::Backend(vmm_backend::error::BackendError)
@@ -446,6 +447,7 @@ pub fn vmm_core::vmm::GuestRam::new(usize) -> core::result::Result<Self, vmm_cor
 pub struct vmm_core::vmm::RunResult
 pub vmm_core::vmm::RunResult::exit_counts: vmm_backend::exit::ExitCounts
 pub vmm_core::vmm::RunResult::reason: vmm_core::vmm::TerminalReason
+pub vmm_core::vmm::RunResult::sdk_stop: core::option::Option<vmm_core::vmm::SdkStop>
 pub vmm_core::vmm::RunResult::serial: alloc::vec::Vec<u8>
 pub struct vmm_core::vmm::SdkSnapshot
 pub struct vmm_core::vmm::Vmm<B: vmm_backend::backend::Backend>
