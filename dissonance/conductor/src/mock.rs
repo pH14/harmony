@@ -86,7 +86,13 @@ impl SharedWork {
 
     /// One scripted exit serviced: the guest ran to its next natural boundary.
     fn on_exit(&self) {
-        let n = self.natural.load(Ordering::Relaxed) + WORK_STEP;
+        // Saturating (PR #62 round-6): a grid already driven to the top of the
+        // axis (an on_deadline at/near u64::MAX) must pin there, never wrap a
+        // release build back to a tiny work count (or panic a debug one).
+        let n = self
+            .natural
+            .load(Ordering::Relaxed)
+            .saturating_add(WORK_STEP);
         self.natural.store(n, Ordering::Relaxed);
         // The natural grid has caught up with (or passed) any arrival point
         // (`run_until` only stages an arrival strictly below natural + step).
@@ -165,7 +171,13 @@ impl Backend for CountingBackend {
                 reached: vmm_backend::Vtime(cur),
             });
         }
-        if d.0 <= self.work.natural.load(Ordering::Relaxed) + WORK_STEP {
+        if d.0
+            <= self
+                .work
+                .natural
+                .load(Ordering::Relaxed)
+                .saturating_add(WORK_STEP)
+        {
             // Exact arrival between exits: the guest runs to exactly `d` and
             // stops; no scripted exit is consumed and the natural grid is
             // untouched, so the armed leg services the same script at the same
@@ -483,5 +495,54 @@ mod tests {
             250 + WORK_STEP,
             "the next intercept samples work above the anchored V-time"
         );
+    }
+
+    /// The top of the work axis (PR #62 round-6 blocking fix): an arrival /
+    /// delegated Deadline at `u64::MAX` pins the grid there — a subsequent
+    /// serviced exit saturates instead of wrapping (release) or panicking
+    /// (debug), and a re-armed `run_until` at the pinned top is the zero-step,
+    /// never an overflowed boundary comparison.
+    #[test]
+    fn counting_backend_saturates_at_the_top_of_the_work_axis() {
+        let work = Arc::new(SharedWork::default());
+        let mut inner = MockBackend::with_exits(vec![
+            Exit::Deadline { reached: Vtime(0) },
+            Exit::Rdtsc,
+            Exit::Hlt,
+        ]);
+        inner
+            .set_cpuid(&vmm_backend::CpuidModel::default())
+            .unwrap();
+        inner
+            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut b = CountingBackend {
+            inner,
+            work: Arc::clone(&work),
+        };
+        // Drive the grid to the top via the delegated scripted Deadline.
+        let exit = b.run_until(Vtime(u64::MAX)).unwrap();
+        assert_eq!(
+            exit,
+            Exit::Deadline {
+                reached: Vtime(u64::MAX)
+            }
+        );
+        assert_eq!(work.current(), u64::MAX, "grid pinned at the axis top");
+        // A serviced exit saturates — never wraps below the anchored V-time.
+        let exit = b.run().unwrap();
+        assert_eq!(exit, Exit::Rdtsc);
+        assert_eq!(work.current(), u64::MAX, "on_exit saturates at u64::MAX");
+        // Re-arming at the pinned top is the zero-step (reached == current),
+        // exercising the saturating boundary comparison, not an overflow.
+        let exit = b.run_until(Vtime(u64::MAX)).unwrap();
+        assert_eq!(
+            exit,
+            Exit::Deadline {
+                reached: Vtime(u64::MAX)
+            },
+            "at-the-top re-arm is a zero-step"
+        );
+        assert_eq!(work.current(), u64::MAX);
     }
 }
