@@ -488,3 +488,181 @@ fn probe_is_deterministic() {
     assert_eq!(b1.env.bytes, b2.env.bytes);
     assert_eq!(b1.stop, b2.stop);
 }
+
+// ---------------------------------------------------------------------------
+// Adapter-semantics regression: the probe must mask decisions out of its
+// horizon, so the socket adapter is never handed an empty (malformed) Answer.
+// ---------------------------------------------------------------------------
+
+/// A machine mimicking the production socket adapter on two points that matter
+/// here: an accepted resolve of **empty bytes is malformed** (a transport
+/// error), and it **surfaces a decision** whenever the run's `StopMask` admits
+/// one. So if the probe ran under a decision-surfacing mask and answered with
+/// the empty `Answer`, this backend would abort — exactly the round-8 bug.
+struct StrictDecisionMachine {
+    snaps: BTreeMap<u64, u64>,
+    next: u64,
+    vtime: u64,
+    seed: u64,
+    surfaced: bool,
+    coverage: Vec<u8>,
+}
+
+impl StrictDecisionMachine {
+    fn new() -> Self {
+        Self {
+            snaps: BTreeMap::new(),
+            next: 1,
+            vtime: 0,
+            seed: 0,
+            surfaced: false,
+            coverage: vec![0u8; 4],
+        }
+    }
+}
+
+impl Machine for StrictDecisionMachine {
+    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
+        let &v = self
+            .snaps
+            .get(&snap.0)
+            .ok_or(MachineError::UnknownSnapshot(snap.0))?;
+        self.vtime = v;
+        self.seed = dec(env)?.seed;
+        self.surfaced = false;
+        Ok(())
+    }
+    fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+        let &v = self
+            .snaps
+            .get(&snap.0)
+            .ok_or(MachineError::UnknownSnapshot(snap.0))?;
+        self.vtime = v;
+        self.surfaced = false;
+        Ok(())
+    }
+    fn run(
+        &mut self,
+        until: &StopConditions,
+        resolve: Option<&Answer>,
+    ) -> Result<StopReason, MachineError> {
+        // Socket-adapter semantics: an empty accepted answer is malformed.
+        if let Some(a) = resolve
+            && a.0.is_empty()
+        {
+            return Err(MachineError::Transport(
+                "empty Answer is malformed (socket-adapter semantics)".into(),
+            ));
+        }
+        // Surface one decision whenever the mask admits any — the probe must not.
+        if until.on != StopMask::NONE && !self.surfaced {
+            self.surfaced = true;
+            self.vtime += 1;
+            return Ok(StopReason::Decision {
+                vtime: VTime(self.vtime),
+                id: 0,
+                ctx: vec![],
+            });
+        }
+        self.vtime += 10;
+        Ok(StopReason::Quiescent {
+            vtime: VTime(self.vtime),
+        })
+    }
+    fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+        let id = self.next;
+        self.next += 1;
+        self.snaps.insert(id, self.vtime);
+        Ok(SnapId(id))
+    }
+    fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
+        self.snaps
+            .remove(&snap.0)
+            .ok_or(MachineError::UnknownSnapshot(snap.0))?;
+        Ok(())
+    }
+    fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+        Ok([0u8; 32])
+    }
+    fn coverage(&self) -> &[u8] {
+        &self.coverage
+    }
+    fn recorded_env(&self) -> Result<Environment, MachineError> {
+        Ok(enc(&ConvEnv {
+            base_offset: self.vtime,
+            seed: self.seed,
+            fault: 0,
+            marks: Vec::new(),
+        }))
+    }
+}
+
+/// A probe oracle whose horizon deliberately turns **decisions on**
+/// (`StopMask::ALL`) — the engine must still mask them out of the actual probe
+/// run.
+struct DecisionsOnProbe;
+
+impl ProbeOracle for DecisionsOnProbe {
+    fn plan(&self, t: &RunTrace) -> Option<ProbePlan> {
+        match t.terminal {
+            StopReason::Quiescent { vtime } => Some(ProbePlan {
+                horizon: StopConditions {
+                    deadline: Some(VTime(vtime.0 + 1000)),
+                    on: StopMask::ALL,
+                },
+            }),
+            _ => None,
+        }
+    }
+    fn judge_probe(&self, _original: &RunTrace, _probe: &RunTrace) -> Option<Bug> {
+        None
+    }
+}
+
+/// Round-8 P2: even when the probe oracle's horizon admits decisions, the engine
+/// masks them out of the actual probe run — so a decision never surfaces and the
+/// backend is never handed the empty (malformed) `Answer` the old code staged. A
+/// backend with the socket adapter's empty-answer semantics returns a verdict
+/// (here `None`) instead of aborting the probe.
+#[test]
+fn probe_masks_decisions_from_the_backend() {
+    let mut ex = Explorer::new(
+        StrictDecisionMachine::new(),
+        Box::new(ConvCodec),
+        Composition::defaults(),
+        1,
+    )
+    .expect("new");
+    let genesis = ex.genesis();
+
+    // Drive an original run to a quiescent terminal (no decisions here) and
+    // snapshot it.
+    let m = ex.machine_mut();
+    m.branch(genesis, &faulted_env(0)).expect("branch");
+    let stop = m
+        .run(
+            &StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            None,
+        )
+        .expect("run to terminal");
+    let terminal = m.snapshot().expect("snapshot");
+    let env = m.recorded_env().expect("recorded env");
+    let original = RunTrace {
+        terminal: stop,
+        env,
+        coverage: None,
+        events: Vec::new(),
+        records: Vec::new(),
+    };
+
+    // The oracle turns decisions ON, but the probe must mask them out — so the
+    // adapter-semantics backend is never sent an empty Answer and the probe
+    // returns Ok (not a transport error).
+    let verdict = ex
+        .probe(&DecisionsOnProbe, &original, terminal)
+        .expect("the probe must not stage a malformed empty Answer");
+    assert!(verdict.is_none());
+}

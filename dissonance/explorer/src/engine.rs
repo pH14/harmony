@@ -560,9 +560,10 @@ impl<M: Machine> Explorer<M> {
     ///    original: same seed + policy, fault schedule stripped), so what it
     ///    observes is pure
     ///    convergence behaviour.
-    /// 3. Run to `plan.horizon`, **snapshot-neutral**: decline every surfaced
-    ///    decision and step past any [`StopReason::SnapshotPoint`] *without*
-    ///    sealing, so the probe mints no snapshot and admits no exemplar.
+    /// 3. Run to `plan.horizon`'s deadline under a `StopMask::NONE` mask: every
+    ///    decision (and the snapshot point) is masked out, so the seed answers
+    ///    each decision locally, none surfaces, and the engine never stages a
+    ///    resolve — the probe mints no snapshot and admits no exemplar.
     /// 4. Record the probe's [`RunTrace`], its `env` folded onto `original.env`
     ///    via [`EnvCodec::compose`] — genesis-complete, replaying the original
     ///    run *and* the failed convergence window.
@@ -608,24 +609,27 @@ impl<M: Machine> Explorer<M> {
         Ok(oracle.judge_probe(original, &probe_trace))
     }
 
-    /// Drive the throwaway probe forward to its horizon, **snapshot-neutral**:
-    /// decline every surfaced decision (so the quiesced env's seed answers
-    /// nominally) and step past any [`StopReason::SnapshotPoint`] without
-    /// sealing. Returns the terminal stop the convergence window reached.
+    /// Drive the throwaway probe forward to its horizon under a **`StopMask::NONE`**
+    /// mask: every decision class (and the snapshot point) is masked *out* of the
+    /// probe horizon, so the quiesced env's seed answers each decision **locally**
+    /// and none ever surfaces. The engine therefore never stages a `resolve` — in
+    /// particular never an empty [`Answer`], which the production socket adapter
+    /// decodes as an `environment::Answer` where **empty bytes are malformed** and
+    /// would abort the probe. Masking the snapshot bit also keeps the probe
+    /// snapshot-neutral for free. The caller's `plan.horizon` supplies only the
+    /// convergence **deadline**; its decision/snapshot bits are deliberately
+    /// dropped.
     fn run_probe_to_horizon(&mut self, plan: &ProbePlan) -> Result<StopReason, MachineError> {
-        let mut resolve: Option<Answer> = None;
+        let horizon = StopConditions {
+            deadline: plan.horizon.deadline,
+            on: StopMask::NONE,
+        };
         loop {
-            let stop = self.machine.run(&plan.horizon, resolve.as_ref())?;
-            match stop {
-                StopReason::Decision { .. } => {
-                    // Nominal answer: the empty answer falls through to the
-                    // quiesced env's seed, so no override is forced.
-                    resolve = Some(Answer(Vec::new()));
-                }
-                StopReason::SnapshotPoint { .. } => {
-                    // A probe mints no snapshot: step past without sealing.
-                    resolve = None;
-                }
+            match self.machine.run(&horizon, None)? {
+                // Unreachable for a mask-honoring backend (NONE surfaces neither).
+                // A backend that surfaces anyway is stepped past with a nominal
+                // (seed) `None` answer — never a staged empty one.
+                StopReason::Decision { .. } | StopReason::SnapshotPoint { .. } => continue,
                 terminal => return Ok(terminal),
             }
         }

@@ -94,6 +94,7 @@ pub fn oracle_elle::graph::DepGraph::writer(&self, oracle_elle::op::Elem) -> cor
 pub fn oracle_elle::graph::DepGraph::ww_cycle(&self) -> core::option::Option<alloc::vec::Vec<oracle_elle::op::TxnId>>
 pub fn oracle_elle::graph::DepGraph::ww_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
 pub fn oracle_elle::graph::DepGraph::ww_keys_among(&self, &alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>) -> alloc::vec::Vec<oracle_elle::op::Key>
+pub fn oracle_elle::graph::DepGraph::ww_sccs(&self) -> alloc::vec::Vec<alloc::vec::Vec<oracle_elle::op::TxnId>>
 pub mod oracle_elle::op
 pub enum oracle_elle::op::OpKind
 pub oracle_elle::op::OpKind::Append(oracle_elle::op::Elem)
@@ -222,6 +223,7 @@ pub fn oracle_elle::graph::DepGraph::writer(&self, oracle_elle::op::Elem) -> cor
 pub fn oracle_elle::graph::DepGraph::ww_cycle(&self) -> core::option::Option<alloc::vec::Vec<oracle_elle::op::TxnId>>
 pub fn oracle_elle::graph::DepGraph::ww_edges(&self) -> &alloc::collections::btree::map::BTreeMap<oracle_elle::op::TxnId, alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>>
 pub fn oracle_elle::graph::DepGraph::ww_keys_among(&self, &alloc::collections::btree::set::BTreeSet<oracle_elle::op::TxnId>) -> alloc::vec::Vec<oracle_elle::op::Key>
+pub fn oracle_elle::graph::DepGraph::ww_sccs(&self) -> alloc::vec::Vec<alloc::vec::Vec<oracle_elle::op::TxnId>>
 pub struct oracle_elle::ElleOracle
 impl oracle_elle::oracle::ElleOracle
 pub fn oracle_elle::oracle::ElleOracle::analyze(&self, &explorer::spine::RunTrace) -> core::result::Result<core::option::Option<oracle_elle::anomaly::Anomaly>, oracle_elle::error::DecodeError>

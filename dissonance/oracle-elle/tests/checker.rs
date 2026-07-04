@@ -11,7 +11,7 @@ mod common;
 
 use common::{abort, append, commit, read, trace, write};
 use explorer::{Bug, Moment, Oracle};
-use oracle_elle::{AnomalyKind, ElleOracle, EventDecoder, IsolationLevel};
+use oracle_elle::{AnomalyKind, DepGraph, ElleOracle, EventDecoder, IsolationLevel, OpDecode};
 use proptest::prelude::*;
 
 fn oracle(level: IsolationLevel) -> ElleOracle {
@@ -127,6 +127,56 @@ fn register_conflicting_write_order_is_a_dirty_write() {
     assert_eq!(a.kind, AnomalyKind::DirtyWrite);
     assert_eq!(a.txns, vec![21, 22], "both writers are on the cycle");
     assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
+}
+
+/// Round-8 P2 (`check_all` contract): the enumeration API returns **every**
+/// independent forbidden anomaly — two lost updates on different keys yield two
+/// witnesses, not one. (`analyze`/`judge` still report the canonical first as one
+/// `Bug`; this pins the fuller `check_all`.)
+#[test]
+fn check_all_returns_every_independent_lost_update() {
+    let t = trace(
+        vec![
+            // Lost update on k1: T11, T12 both read version 1, both write.
+            write(1, 0, 10, "k1", 1),
+            commit(2, 10),
+            read(3, 1, 11, "k1", &[1]),
+            write(4, 1, 11, "k1", 2),
+            commit(5, 11),
+            read(6, 2, 12, "k1", &[1]),
+            write(7, 2, 12, "k1", 3),
+            commit(8, 12),
+            // Independent lost update on k2: T21, T22 both read version 10.
+            write(9, 0, 20, "k2", 10),
+            commit(10, 20),
+            read(11, 3, 21, "k2", &[10]),
+            write(12, 3, 21, "k2", 20),
+            commit(13, 21),
+            read(14, 4, 22, "k2", &[10]),
+            write(15, 4, 22, "k2", 30),
+            commit(16, 22),
+        ],
+        0,
+    );
+    let h = EventDecoder::new().decode(&t).expect("decode");
+    let g = DepGraph::build(&h).expect("recoverable");
+    let all = oracle_elle::anomaly::check_all(&h, &g, IsolationLevel::SnapshotIsolation);
+    let lost: Vec<_> = all
+        .iter()
+        .filter(|a| a.kind == AnomalyKind::LostUpdate)
+        .collect();
+    assert_eq!(
+        lost.len(),
+        2,
+        "both independent lost updates are reported: {all:#?}"
+    );
+    let keys: std::collections::BTreeSet<Vec<u8>> =
+        lost.iter().flat_map(|a| a.keys.iter().cloned()).collect();
+    assert_eq!(
+        keys,
+        [b"k1".to_vec(), b"k2".to_vec()].into_iter().collect(),
+        "one witness per key"
+    );
 }
 
 /// Round-7 P1 (register order from final reads): T1 writes a,b; T2 writes b,a;

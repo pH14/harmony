@@ -112,24 +112,22 @@ impl Anomaly {
     }
 }
 
-/// Every forbidden anomaly in `h` at `level`, in canonical order (earliest and
-/// most fundamental first). Pure and deterministic.
+/// **Every** forbidden anomaly in `h` at `level`, in canonical order (earliest
+/// and most fundamental first). Each *independent* occurrence is its own witness:
+/// one per strongly-connected write-cycle (G0), one per committed read of an
+/// aborted write (G1a), one per `(key, read-version)` lost-update group. So two
+/// independent lost updates on different keys yield two witnesses — an
+/// enumeration caller (task 76 triage) sees them all. Pure and deterministic.
 pub fn check_all(h: &History, g: &DepGraph, level: IsolationLevel) -> Vec<Anomaly> {
     let mut found: Vec<Anomaly> = Vec::new();
-    if level.forbids(AnomalyKind::DirtyWrite)
-        && let Some(a) = detect_dirty_write(h, g)
-    {
-        found.push(a);
+    if level.forbids(AnomalyKind::DirtyWrite) {
+        found.extend(detect_dirty_writes(h, g));
     }
-    if level.forbids(AnomalyKind::AbortedRead)
-        && let Some(a) = detect_aborted_read(h, g)
-    {
-        found.push(a);
+    if level.forbids(AnomalyKind::AbortedRead) {
+        found.extend(detect_aborted_reads(h, g));
     }
-    if level.forbids(AnomalyKind::LostUpdate)
-        && let Some(a) = detect_lost_update(h)
-    {
-        found.push(a);
+    if level.forbids(AnomalyKind::LostUpdate) {
+        found.extend(detect_lost_updates(h));
     }
     found.sort_by_key(|a| a.order_key());
     found
@@ -141,28 +139,34 @@ pub fn check(h: &History, g: &DepGraph, level: IsolationLevel) -> Option<Anomaly
     check_all(h, g, level).into_iter().next()
 }
 
-/// G0: the first write-write cycle, witnessed by its transactions and the keys
-/// whose version order closes it.
-fn detect_dirty_write(h: &History, g: &DepGraph) -> Option<Anomaly> {
-    let cycle = g.ww_cycle()?;
-    let set: BTreeSet<TxnId> = cycle.iter().copied().collect();
-    let keys = g.ww_keys_among(&set);
-    let at = set
-        .iter()
-        .filter_map(|t| h.txns.get(t).map(|t| t.first_moment()))
-        .min()
-        .unwrap_or_default();
-    Some(Anomaly {
-        kind: AnomalyKind::DirtyWrite,
-        txns: set.into_iter().collect(),
-        keys,
-        at,
-    })
+/// G0: one witness per **independent** write-write cycle (strongly-connected
+/// component), each with the cycle's transactions and the keys whose version
+/// order closes it.
+fn detect_dirty_writes(h: &History, g: &DepGraph) -> Vec<Anomaly> {
+    g.ww_sccs()
+        .into_iter()
+        .map(|scc| {
+            let set: BTreeSet<TxnId> = scc.iter().copied().collect();
+            let keys = g.ww_keys_among(&set);
+            let at = set
+                .iter()
+                .filter_map(|t| h.txns.get(t).map(|t| t.first_moment()))
+                .min()
+                .unwrap_or_default();
+            Anomaly {
+                kind: AnomalyKind::DirtyWrite,
+                txns: scc,
+                keys,
+                at,
+            }
+        })
+        .collect()
 }
 
-/// G1a: the earliest committed read of an aborted transaction's write.
-fn detect_aborted_read(h: &History, g: &DepGraph) -> Option<Anomaly> {
-    let mut best: Option<Anomaly> = None;
+/// G1a: one witness per `(reader, aborted-writer, key)` — every committed read of
+/// an aborted transaction's write (the earliest moment of each). Deterministic.
+fn detect_aborted_reads(h: &History, g: &DepGraph) -> Vec<Anomaly> {
+    let mut seen: BTreeMap<(Vec<TxnId>, Key), Moment> = BTreeMap::new();
     for t in h.iter() {
         if !t.committed() {
             continue;
@@ -176,32 +180,29 @@ fn detect_aborted_read(h: &History, g: &DepGraph) -> Option<Anomaly> {
                     {
                         let mut txns = vec![t.id, w];
                         txns.sort_unstable();
-                        txns.dedup();
-                        let cand = Anomaly {
-                            kind: AnomalyKind::AbortedRead,
-                            txns,
-                            keys: vec![op.key.clone()],
-                            at: op.at,
-                        };
-                        if best
-                            .as_ref()
-                            .is_none_or(|b| cand.order_key() < b.order_key())
-                        {
-                            best = Some(cand);
-                        }
+                        seen.entry((txns, op.key.clone()))
+                            .and_modify(|m| *m = (*m).min(op.at))
+                            .or_insert(op.at);
                     }
                 }
             }
         }
     }
-    best
+    seen.into_iter()
+        .map(|((txns, key), at)| Anomaly {
+            kind: AnomalyKind::AbortedRead,
+            txns,
+            keys: vec![key],
+            at,
+        })
+        .collect()
 }
 
-/// A lost update: two committed transactions did a read-modify-write on one key
-/// based on the *same version*. Returns the earliest such conflict. Recovered
-/// straight from the history (commit status + per-txn read-before-write), so it
-/// needs no [`DepGraph`].
-fn detect_lost_update(h: &History) -> Option<Anomaly> {
+/// Lost updates: one witness per `(key, read-version)` group of >= 2 committed
+/// transactions that did a read-modify-write on that key based on the same
+/// version. Recovered straight from the history (commit status + per-txn
+/// read-before-write), so it needs no [`DepGraph`].
+fn detect_lost_updates(h: &History) -> Vec<Anomaly> {
     // For each committed txn and key it writes, the version its write was based
     // on: the tip of the last read of the key *before* its first write of it. A
     // blind write (no prior read of the key) is not a lost-update participant.
@@ -243,26 +244,20 @@ fn detect_lost_update(h: &History) -> Option<Anomaly> {
         }
     }
 
-    let mut best: Option<Anomaly> = None;
+    let mut out = Vec::new();
     for ((key, _version), txns) in &groups {
         if txns.len() < 2 {
             continue;
         }
         let at = txns.values().copied().min().unwrap_or_default();
-        let cand = Anomaly {
+        out.push(Anomaly {
             kind: AnomalyKind::LostUpdate,
             txns: txns.keys().copied().collect(),
             keys: vec![key.clone()],
             at,
-        };
-        if best
-            .as_ref()
-            .is_none_or(|b| cand.order_key() < b.order_key())
-        {
-            best = Some(cand);
-        }
+        });
     }
-    best
+    out
 }
 
 #[cfg(test)]

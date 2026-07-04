@@ -389,6 +389,57 @@ impl DepGraph {
         &self.rw
     }
 
+    /// The nodes reachable from `start` by following ww edges (excluding `start`
+    /// unless a cycle returns to it).
+    fn ww_reachable(&self, start: TxnId) -> BTreeSet<TxnId> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![start];
+        while let Some(u) = stack.pop() {
+            if let Some(vs) = self.ww.get(&u) {
+                for &v in vs {
+                    if seen.insert(v) {
+                        stack.push(v);
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Every **independent** write-write cycle as a strongly-connected component
+    /// (each with >= 2 transactions, since ww has no self-loops), sorted. Two
+    /// disjoint G0 cycles are two SCCs. Deterministic (`u, v` are in one SCC iff
+    /// `u` reaches `v` and `v` reaches `u`).
+    pub fn ww_sccs(&self) -> Vec<Vec<TxnId>> {
+        let mut nodes: BTreeSet<TxnId> = BTreeSet::new();
+        for (&u, vs) in &self.ww {
+            nodes.insert(u);
+            nodes.extend(vs.iter().copied());
+        }
+        let reaches: BTreeMap<TxnId, BTreeSet<TxnId>> =
+            nodes.iter().map(|&u| (u, self.ww_reachable(u))).collect();
+        let mut assigned: BTreeSet<TxnId> = BTreeSet::new();
+        let mut sccs = Vec::new();
+        for &u in &nodes {
+            // A node is on a cycle iff it reaches itself; skip trivial SCCs.
+            if assigned.contains(&u) || !reaches[&u].contains(&u) {
+                continue;
+            }
+            let scc: Vec<TxnId> = nodes
+                .iter()
+                .copied()
+                .filter(|&v| reaches[&u].contains(&v) && reaches[&v].contains(&u))
+                .collect();
+            for &v in &scc {
+                assigned.insert(v);
+            }
+            if scc.len() >= 2 {
+                sccs.push(scc);
+            }
+        }
+        sccs
+    }
+
     /// The first write-write cycle, as the transactions on it in cycle order, or
     /// `None` if the ww graph is acyclic. Iterative DFS over sorted nodes and
     /// sorted neighbours — deterministic and stack-safe on untrusted input.
