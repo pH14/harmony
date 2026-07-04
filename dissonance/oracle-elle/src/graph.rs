@@ -133,6 +133,16 @@ impl DepGraph {
         for t in h.iter() {
             for op in &t.ops {
                 if let OpKind::Read(vs) = &op.kind {
+                    // A register (non-append) key's reads observe a singleton or
+                    // empty value. A multi-value read of one is malformed under
+                    // the op model — never let it fall silently through order
+                    // recovery (which would judge it clean).
+                    if !append_keys.contains(&op.key) && vs.len() > 1 {
+                        return Err(DecodeError::MultiValueRegisterRead {
+                            key: op.key.clone(),
+                            count: vs.len(),
+                        });
+                    }
                     let mut seen_in_list: BTreeSet<Elem> = BTreeSet::new();
                     for &e in vs {
                         // A value repeated within one observed list is malformed:
@@ -235,16 +245,26 @@ impl DepGraph {
                             self.wr.entry(we).or_default().insert(t.id);
                         }
                     }
-                    // Read-write anti-dependency: the reader of a tip version is
-                    // anti-dependent on whoever overwrote it (the next version).
-                    if let Some(&tip) = vs.last()
-                        && let Some(order) = self.version_order.get(&op.key)
-                        && let Some(pos) = order.iter().position(|&e| e == tip)
-                        && let Some(&next) = order.get(pos + 1)
-                        && let Some(&wnext) = self.writer.get(&next)
-                        && wnext != t.id
-                    {
-                        self.rw.entry(t.id).or_default().insert(wnext);
+                    // Read-write anti-dependency: the reader of a version is
+                    // anti-dependent on whoever overwrote it (the *next* version).
+                    // An **empty** read observed the initial/unwritten version, so
+                    // its overwriter is the key's FIRST writer — without this the
+                    // public graph would miss initial-version conflicts.
+                    if let Some(order) = self.version_order.get(&op.key) {
+                        let next = match vs.last() {
+                            Some(&tip) => order
+                                .iter()
+                                .position(|&e| e == tip)
+                                .and_then(|pos| order.get(pos + 1))
+                                .copied(),
+                            None => order.first().copied(),
+                        };
+                        if let Some(next) = next
+                            && let Some(&wnext) = self.writer.get(&next)
+                            && wnext != t.id
+                        {
+                            self.rw.entry(t.id).or_default().insert(wnext);
+                        }
                     }
                 }
             }
@@ -577,5 +597,38 @@ mod tests {
         assert!(!g.is_committed(1));
         assert!(g.is_committed(2));
         assert_eq!(g.writer(5), Some(1));
+    }
+
+    /// Round-6 P2: an empty read observes the initial/unwritten version, so it
+    /// mints an rw anti-dependency to the key's FIRST writer. Two cross-reading
+    /// transactions form an **initial-version rw cycle** the public graph must
+    /// represent (previously empty reads minted no rw edge at all).
+    #[test]
+    fn empty_read_mints_rw_to_first_writer() {
+        // T1 reads a (initial) then writes b; T2 reads b (initial) then writes a.
+        let h = history(vec![
+            tx(
+                1,
+                TxnOutcome::Committed,
+                vec![
+                    op(1, 1, "a", OpKind::Read(vec![])), // initial version of a
+                    op(2, 1, "b", OpKind::Write(10)),
+                ],
+            ),
+            tx(
+                2,
+                TxnOutcome::Committed,
+                vec![
+                    op(3, 2, "b", OpKind::Read(vec![])), // initial version of b
+                    op(4, 2, "a", OpKind::Write(20)),
+                ],
+            ),
+        ]);
+        let g = DepGraph::build(&h).expect("recoverable");
+        // a's first writer is T2 (a<-20); T1's empty read of a is anti-dependent
+        // on it. b's first writer is T1; T2's empty read of b is anti-dependent
+        // on it. Together: an rw cycle T1 ⇄ T2.
+        assert!(g.rw_edges()[&1].contains(&2), "T1 →rw T2 (empty read of a)");
+        assert!(g.rw_edges()[&2].contains(&1), "T2 →rw T1 (empty read of b)");
     }
 }

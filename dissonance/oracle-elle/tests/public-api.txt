@@ -59,6 +59,9 @@ pub oracle_elle::error::DecodeError::MisattributedValue::value: oracle_elle::op:
 pub oracle_elle::error::DecodeError::MisattributedValue::wrote_key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::MixedModel
 pub oracle_elle::error::DecodeError::MixedModel::key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::MultiValueRegisterRead
+pub oracle_elle::error::DecodeError::MultiValueRegisterRead::count: usize
+pub oracle_elle::error::DecodeError::MultiValueRegisterRead::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::OpAfterTermination
 pub oracle_elle::error::DecodeError::OpAfterTermination::marker_at: u64
 pub oracle_elle::error::DecodeError::OpAfterTermination::op_at: u64
@@ -166,6 +169,9 @@ pub oracle_elle::DecodeError::MisattributedValue::value: oracle_elle::op::Elem
 pub oracle_elle::DecodeError::MisattributedValue::wrote_key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::MixedModel
 pub oracle_elle::DecodeError::MixedModel::key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::MultiValueRegisterRead
+pub oracle_elle::DecodeError::MultiValueRegisterRead::count: usize
+pub oracle_elle::DecodeError::MultiValueRegisterRead::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::OpAfterTermination
 pub oracle_elle::DecodeError::OpAfterTermination::marker_at: u64
 pub oracle_elle::DecodeError::OpAfterTermination::op_at: u64

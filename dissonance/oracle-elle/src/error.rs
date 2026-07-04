@@ -162,6 +162,20 @@ pub enum DecodeError {
         /// The conflicting session seen after it.
         second_session: u64,
     },
+
+    /// A **register** (non-append) key's read observed more than one value. Under
+    /// the op model a register read is a singleton (the current value) or empty
+    /// (unwritten) — a multi-value observation is malformed. Never silently fall
+    /// through order recovery (which would judge it clean).
+    #[error(
+        "key {key:?}: register read observed {count} values (a register read is singleton/empty)"
+    )]
+    MultiValueRegisterRead {
+        /// The register key whose read observed multiple values.
+        key: Key,
+        /// How many values the read observed.
+        count: usize,
+    },
 }
 
 impl DecodeError {
@@ -185,6 +199,7 @@ impl DecodeError {
             DecodeError::MixedModel { .. } => "mixed-model",
             DecodeError::RepeatedObservation { .. } => "repeated-observation",
             DecodeError::ReusedTxnId { .. } => "reused-txn-id",
+            DecodeError::MultiValueRegisterRead { .. } => "multi-value-register-read",
         }
     }
 }

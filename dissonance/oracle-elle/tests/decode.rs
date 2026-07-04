@@ -400,6 +400,33 @@ fn same_moment_ops_decode_order_independently() {
     assert_eq!(ha, hb, "same-Moment ops decode order-independently");
 }
 
+/// Round-6 P2: a register (non-append) key read observing more than one value is
+/// malformed under the op model (register reads are singleton/empty) — a loud
+/// `MultiValueRegisterRead`, never a silent fall-through to a clean verdict.
+#[test]
+fn multi_value_register_read_fails_loud() {
+    let t = trace(
+        vec![
+            write(1, 1, 1, "k", 1), // register key k
+            commit(2, 1),
+            write(3, 2, 2, "k", 2),
+            commit(4, 2),
+            read(5, 3, 3, "k", &[1, 2]), // a register read can't observe two values
+            commit(6, 3),
+        ],
+        0,
+    );
+    let h = EventDecoder::new()
+        .decode(&t)
+        .expect("decodes into a history");
+    match DepGraph::build(&h) {
+        Err(DecodeError::MultiValueRegisterRead { key, count: 2 }) => {
+            assert_eq!(key, b"k".to_vec())
+        }
+        other => panic!("expected MultiValueRegisterRead, got {other:?}"),
+    }
+}
+
 /// Round-5 P2: one transaction id carrying ops from two different sessions is a
 /// reused id — a loud `ReusedTxnId`, never a silent merge of two transactions
 /// into one graph node.
