@@ -65,6 +65,11 @@ pub enum TerminalReason {
     Hlt,
     /// Backend `Shutdown` (triple fault / explicit shutdown).
     Shutdown,
+    /// The run stopped at a cooperating-SDK stop (task 73) — an assertion — rather
+    /// than swallowing it (round-6): NOT a substrate terminal (the run could
+    /// resume), and never latched as [`Vmm`]'s terminal. The stop's details are in
+    /// [`RunResult::sdk_stop`].
+    SdkStop,
 }
 
 /// The hypercall **doorbell** port (task 73 / INTEGRATION.md §1): an `OUT` here
@@ -174,6 +179,9 @@ pub enum Step {
 pub struct RunResult {
     /// Why the run stopped.
     pub reason: TerminalReason,
+    /// The cooperating-SDK stop the run halted at (task 73), if `reason` is
+    /// [`TerminalReason::SdkStop`] — else `None`. `run` no longer swallows it.
+    pub sdk_stop: Option<SdkStop>,
     /// The serial capture buffer, in order.
     pub serial: Vec<u8>,
     /// Per-exit-reason counts read from the backend (R-Backend observability).
@@ -1560,16 +1568,26 @@ impl<B: Backend> Vmm<B> {
         // The work counter is prepared at the first guest entry inside `step`
         // (`first_entry_done`), so a `step()`-then-`run()` consumer is handled
         // correctly — `run` itself does not touch it.
+        // Stop at a substrate terminal OR a cooperating-SDK stop (round-6): an
+        // assertion must NOT be swallowed by looping on to a later terminal.
         let reason = loop {
-            if let Step::Terminal(r) = self.step()? {
-                break r;
+            match self.step()? {
+                Step::Terminal(r) => break r,
+                Step::SdkStop => break TerminalReason::SdkStop,
+                Step::Continued => {}
             }
+        };
+        let sdk_stop = if reason == TerminalReason::SdkStop {
+            self.take_sdk_stop()
+        } else {
+            None
         };
         // Capture the final vCPU state once (propagating any save error here, so
         // the infallible `state_blob` reads a consistent snapshot).
         self.saved_state = Some(self.backend.save()?);
         Ok(RunResult {
             reason,
+            sdk_stop,
             serial: self.uart.capture().to_vec(),
             exit_counts: self.backend.exit_counts(),
         })
@@ -3144,6 +3162,12 @@ impl<B: Backend> Vmm<B> {
             }
             Some(TerminalReason::Hlt) => v.push(2),
             Some(TerminalReason::Shutdown) => v.push(3),
+            // `SdkStop` is a `run` stop reason, never latched as the VM's terminal
+            // (only substrate terminals latch via `terminate`), so it is never
+            // serialized here.
+            Some(TerminalReason::SdkStop) => {
+                unreachable!("SdkStop never latches as the VM terminal")
+            }
         }
         v
     }
@@ -3684,6 +3708,55 @@ mod tests {
             vmm.dispatch_out(DOORBELL_PORT, 4, 24),
             Err(VmmError::ContractViolation(_))
         ));
+    }
+
+    /// `Vmm::run()` STOPS at a cooperating-SDK assertion — it does not swallow it by
+    /// looping on to the later terminal (round-6 P2). A guest rings the doorbell
+    /// with an `always` violation, then HLTs: `run` returns `reason == SdkStop` with
+    /// the assertion in `sdk_stop`, NOT `reason == Hlt`.
+    #[test]
+    fn run_stops_on_an_sdk_assertion_not_the_later_terminal() {
+        use environment::{EnvSpec, FaultPolicy};
+        let viol_id: u32 = (1 << 24) | 20; // assert namespace, point 20
+        let mut payload = viol_id.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
+        let mut frame = [0u8; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut frame).unwrap();
+
+        let mut vmm = Vmm::new(
+            configured_mock(vec![
+                Exit::Io {
+                    port: DOORBELL_PORT,
+                    size: 4,
+                    write: Some(n as u32),
+                },
+                Exit::Hlt,
+            ]),
+            GuestRam::new(0x2_0000).unwrap(),
+        );
+        vmm.enable_sdk(
+            EnvSpec::Seeded {
+                seed: 1,
+                policy: FaultPolicy::none(),
+            }
+            .materialize(),
+        );
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+
+        let r = vmm.run().expect("run");
+        assert_eq!(
+            r.reason,
+            TerminalReason::SdkStop,
+            "run stops at the assertion, not the HLT that follows"
+        );
+        assert_eq!(
+            r.sdk_stop,
+            Some(SdkStop::Assertion {
+                id: 20,
+                data: vec![]
+            })
+        );
     }
 
     /// The doorbell is **total** on edge/hostile requests (self-sweep): an empty

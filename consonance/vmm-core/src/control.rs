@@ -938,22 +938,26 @@ impl<B: Backend> ControlServer<B> {
             }
 
             // 1b. Surface a DEFERRED `setup_complete` snapshot point (task 73 P1) —
-            //     but only HERE, **after the drain** (round-5 P1). The drain above
-            //     just applied every fault at-or-below this exact synchronized vns
-            //     and poisoned any crossed one, so the schedule now carries only
-            //     future faults: a fault landing exactly at the deferred boundary is
-            //     applied *before* the seal, and `clear_arrival` disarms the next
-            //     arrival — so the explorer's eager `snapshot()` here is never
-            //     `SnapshotWhileArmed` / does not seal past an unapplied fault.
-            //     (`take_synchronized_snapshot_point` is a no-op unless the VM is at
-            //     a synchronized, sealable boundary.)
-            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            if vmm.take_synchronized_snapshot_point() {
-                let vns = vmm.effective_vns().unwrap_or(0);
-                vmm.clear_arrival();
-                return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
-                    vtime: VTime(vns),
-                })));
+            //     only HERE, **after the drain** (round-5 P1), and only when the
+            //     schedule is **EMPTY** (round-6 P2): `snapshot` rejects *any*
+            //     non-empty schedule (`SnapshotWhileArmed`), so a still-staged
+            //     FUTURE fault (`m > vns`) would make the advertised seal fail. The
+            //     drain applied every fault at-or-below this synchronized vns; if a
+            //     future fault remains, keep deferring — the run applies each fault
+            //     at its `Moment`, shrinking the schedule, and the point surfaces at
+            //     the first synchronized boundary where the schedule has drained to
+            //     empty (`clear_arrival` then disarms the next arrival, so the seal
+            //     is clean). (`take_synchronized_snapshot_point` is a no-op unless
+            //     the VM is at a synchronized, sealable boundary.)
+            if self.schedule.is_empty() {
+                let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+                if vmm.take_synchronized_snapshot_point() {
+                    let vns = vmm.effective_vns().unwrap_or(0);
+                    vmm.clear_arrival();
+                    return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
+                        vtime: VTime(vns),
+                    })));
+                }
             }
 
             // 2. Opportunistic V-time deadline (task-58 semantics, unchanged): stop
@@ -1121,6 +1125,15 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
                     .to_vec(),
             },
         },
+        // The control loop surfaces `Step::SdkStop` via its own arm (mapping it to
+        // `StopReason::Assertion` / the deferred snapshot point), so an SDK stop is
+        // never routed through `map_terminal` — which only ever sees the substrate
+        // terminals from `Step::Terminal`.
+        TerminalReason::SdkStop => {
+            unreachable!(
+                "SdkStop is surfaced by the run loop's Step::SdkStop arm, not map_terminal"
+            )
+        }
     }
 }
 
@@ -2334,6 +2347,85 @@ mod tests {
             word, 0xDEAD_BEEF,
             "the boundary fault was applied before the seal"
         );
+    }
+
+    #[test]
+    fn a_future_fault_keeps_deferring_the_snapshot_point_until_the_schedule_drains() {
+        // Round-6 P2(1): the deferred `setup_complete` point must NOT surface while a
+        // FUTURE fault (m > vns) is still staged — `snapshot()` rejects any non-empty
+        // schedule (`SnapshotWhileArmed`), so the advertised seal would fail. Ring
+        // `setup_complete`, then hit a synchronized RDTSC boundary (vns 0, the fault
+        // still future) where round-5 would surface early, then land the fault's
+        // arrival at M. The point surfaces ONLY at M, once the schedule has drained to
+        // empty — and a `snapshot()` there SUCCEEDS.
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+        let m: u64 = 4_000;
+
+        let setup_id: u32 = 4 << 24;
+        let mut frame = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            1,
+            &setup_id.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+
+        // setup_complete → an RDTSC (a synchronized boundary at vns 0, the fault
+        // still future) → the fault's arrival at M.
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Rdtsc,
+            Exit::Deadline { reached: Vtime(0) },
+            Exit::Hlt,
+        ]);
+        mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9).unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+
+        // A FUTURE fault at M (> the RDTSC boundary's vns of 0).
+        let fault = EnvHostFault::CorruptMemory {
+            gpa: 0x1000,
+            mask: BitMask(0x00C0_FFEE),
+        };
+        s.handle(&Request::Perturb {
+            fault: HostFault(fault.encode()),
+            at: Moment(m),
+        })
+        .unwrap()
+        .unwrap();
+
+        // The point surfaces only after the schedule drains (at M), NOT at the RDTSC.
+        match run_all(&mut s) {
+            StopReason::SnapshotPoint { vtime } => assert_eq!(
+                vtime.0, m,
+                "surfaced after the future fault drained, not at the earlier RDTSC"
+            ),
+            other => panic!("expected a deferred SnapshotPoint, got {other:?}"),
+        }
+        // The schedule is empty, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
+        match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(_)) => {}
+            other => panic!("seal failed with a future fault mishandled: {other:?}"),
+        }
     }
 
     #[test]
