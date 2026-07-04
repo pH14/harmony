@@ -34,10 +34,40 @@ pub const KIND_UNKNOWN: &str = "unknown";
 
 /// Decode a whole captured event stream into typed, timestamped events — the
 /// value [`RunTrace::events`](explorer::RunTrace) holds. Order-preserving.
+///
+/// If the stream's catalog declaration names an **unsupported wire version**, the
+/// WHOLE stream is decoded as `unknown` — not just the catalog event. A future
+/// version may lay out every event's payload differently, so decoding the later
+/// events under *this* version's field layout would silently mis-key them (e.g. a
+/// v2 assert with an extra header field would decode as a v1 assert at the wrong
+/// point). Tainting the whole stream keeps the raw `event_id`/bytes recoverable
+/// and refuses to invent typed events under a layout we cannot read.
 pub fn decode_events(raw: &[(Moment, u32, Vec<u8>)]) -> Vec<(Moment, GuestEvent)> {
+    if stream_declares_unsupported_version(raw) {
+        return raw
+            .iter()
+            .map(|(at, id, bytes)| (*at, unknown(*id, bytes)))
+            .collect();
+    }
     raw.iter()
         .map(|(at, id, bytes)| (*at, decode_event(*id, bytes)))
         .collect()
+}
+
+/// Whether the stream carries a catalog declaration that parses cleanly (correct
+/// magic) but names a wire version other than [`wire::SDK_WIRE_VERSION`]. A
+/// malformed catalog (bad magic / truncated) does NOT taint the stream — it has
+/// said nothing trustworthy about the layout, so it decodes to a single `unknown`
+/// catalog event via [`decode_catalog`] and the rest of the stream is unaffected.
+fn stream_declares_unsupported_version(raw: &[(Moment, u32, Vec<u8>)]) -> bool {
+    raw.iter().any(|(_, id, bytes)| {
+        if *id != wire::CATALOG_EVENT_ID {
+            return false;
+        }
+        let mut r = Reader::new(bytes);
+        r.u32() == Some(wire::CATALOG_MAGIC)
+            && matches!(r.u8(), Some(v) if v != wire::SDK_WIRE_VERSION)
+    })
 }
 
 /// Decode one raw `(event_id, bytes)` into a typed [`GuestEvent`]. Total: any

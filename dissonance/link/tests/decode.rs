@@ -143,6 +143,61 @@ fn malformed_and_unknown_fall_back() {
     assert_eq!(ev.kind, KIND_UNKNOWN);
 }
 
+/// A catalog declaring an **unsupported wire version** taints the WHOLE stream:
+/// every event — not just the catalog — decodes to `unknown`, because a future
+/// version may lay out each payload differently and decoding the later events
+/// under this version's field layout would silently mis-key them (PR-A deferred
+/// P2). Without this, the assert/buggify events below would still decode as v1.
+#[test]
+fn a_future_catalog_version_taints_the_whole_stream() {
+    let mut catalog = b"SDKC".to_vec();
+    catalog.push(2); // a future wire version — current is 1
+    catalog.extend_from_slice(&0u32.to_le_bytes()); // count
+    let raw = vec![
+        (Moment(1), 0, catalog),
+        (Moment(2), id(NS_ASSERT, 5), vec![0, 0, 0]), // a v1-valid assert hit
+        (Moment(3), id(NS_BUGGIFY, 7), vec![1]),      // a v1-valid buggify
+    ];
+    let decoded = decode_events(&raw);
+    assert_eq!(decoded.len(), 3);
+    // Every event is unknown, and each preserves its raw id so nothing is lost.
+    for (i, (_, ev)) in decoded.iter().enumerate() {
+        assert_eq!(ev.kind, KIND_UNKNOWN, "event {i} tainted to unknown");
+    }
+    assert_eq!(
+        attr(&decoded[1].1, "event_id"),
+        &Value::UInt(id(NS_ASSERT, 5) as u64),
+        "the tainted event still carries its raw id"
+    );
+}
+
+/// A **supported**-version catalog leaves the stream decoding normally — the taint
+/// gate fires only on a version mismatch, and a malformed (bad-magic) catalog does
+/// not taint (it becomes a single `unknown` catalog event, rest decodes as v1).
+#[test]
+fn a_supported_catalog_version_does_not_taint_the_stream() {
+    let mut catalog = b"SDKC".to_vec();
+    catalog.push(1); // the current wire version
+    catalog.extend_from_slice(&0u32.to_le_bytes());
+    let raw = vec![
+        (Moment(1), 0, catalog),
+        (Moment(2), id(NS_ASSERT, 5), vec![0, 0, 0]),
+    ];
+    let decoded = decode_events(&raw);
+    assert_eq!(decoded[0].1.kind, KIND_CATALOG);
+    assert_eq!(decoded[1].1.kind, KIND_ASSERT_HIT);
+
+    // Bad magic ⇒ no trustworthy version claim ⇒ no taint: the malformed catalog
+    // is a lone `unknown`, and the following assert still decodes as v1.
+    let raw = vec![
+        (Moment(1), 0, b"XXXX\x02".to_vec()),
+        (Moment(2), id(NS_ASSERT, 5), vec![0, 0, 0]),
+    ];
+    let decoded = decode_events(&raw);
+    assert_eq!(decoded[0].1.kind, KIND_UNKNOWN);
+    assert_eq!(decoded[1].1.kind, KIND_ASSERT_HIT);
+}
+
 /// decode_events preserves order and stamps.
 #[test]
 fn decode_events_preserves_order_and_stamps() {
