@@ -67,6 +67,16 @@ pub trait Machine {
     /// into a [`RunOutcome`](crate::RunOutcome)/[`Frontier`](crate::Frontier)
     /// without parsing it.
     fn recorded_env(&self) -> Result<Environment, MachineError>;
+
+    /// The link-tier SDK event capture of the current run (task 73): the
+    /// `Moment`-stamped `(moment, event_id, bytes)` stream a cooperating guest
+    /// SDK emitted, order-preserving — what the conductor decodes into
+    /// `RunTrace.events`. **Default: empty** — a machine whose guest has no SDK
+    /// channel (the toy machine) has nothing to report; the socket machine
+    /// overrides it with a wire round-trip to the server-side capture.
+    fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Spawns fresh [`Machine`]s at their quiescent boot point. The R2 adapter spawns

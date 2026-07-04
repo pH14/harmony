@@ -39,6 +39,7 @@ const REQ_REPLAY: u8 = 5;
 const REQ_RUN: u8 = 6;
 const REQ_HASH: u8 = 7;
 const REQ_PERTURB: u8 = 8;
+const REQ_SDK_EVENTS: u8 = 9;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -50,6 +51,7 @@ const REPLY_SNAPID: u8 = 2;
 const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
+const REPLY_SDK_EVENTS: u8 = 6;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -243,6 +245,10 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             put_bytes(w, bytes);
             put_u64(w, *at);
         }
+        Request::SdkEvents { offset } => {
+            w.push(REQ_SDK_EVENTS);
+            put_u32(w, *offset);
+        }
     }
 }
 
@@ -267,6 +273,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             fault: HostFault(r.bytes()?.to_vec()),
             at: Moment(r.u64()?),
         },
+        REQ_SDK_EVENTS => Request::SdkEvents { offset: r.u32()? },
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -315,6 +322,15 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             w.push(REPLY_HASH);
             w.extend_from_slice(digest);
         }
+        Reply::SdkEvents(events) => {
+            w.push(REPLY_SDK_EVENTS);
+            put_u32(w, events.len() as u32);
+            for (moment, id, bytes) in events {
+                put_u64(w, *moment);
+                put_u32(w, *id);
+                put_bytes(w, bytes);
+            }
+        }
     }
 }
 
@@ -325,6 +341,20 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
         REPLY_UNIT => Reply::Unit,
         REPLY_STOP => Reply::Stop(read_stop_reason(r)?),
         REPLY_HASH => Reply::Hash(read_array32(r)?),
+        REPLY_SDK_EVENTS => {
+            let count = r.u32()?;
+            // Do NOT pre-allocate on the untrusted `count` (conventions rule 4):
+            // the per-element reads are bounds-checked and simply run out of
+            // buffer (→ `ShortFrame`) if `count` over-claims.
+            let mut events = Vec::new();
+            for _ in 0..count {
+                let moment = r.u64()?;
+                let id = r.u32()?;
+                let bytes = r.bytes()?.to_vec();
+                events.push((moment, id, bytes));
+            }
+            Reply::SdkEvents(events)
+        }
         _ => return Err(ProtocolError::ShortFrame),
     })
 }

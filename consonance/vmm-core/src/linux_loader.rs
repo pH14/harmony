@@ -110,6 +110,15 @@ const TYPE_OF_LOADER_UNDEFINED: u8 = 0xFF;
 /// Top of the low-memory usable E820 region (640 KiB); the `0xA0000..0x100000`
 /// hole (legacy VGA/BIOS) is left unmapped so the kernel never uses it.
 const LOW_RAM_TOP: u64 = 0x000A_0000;
+/// The hypercall-doorbell REQ/RESP pages (task 73): `vmcall-transport`'s
+/// `REQ_GPA` = `0xE000` and `RESP_GPA` = `0xF000` — two 4 KiB pages the guest SDK
+/// stages its request/response frames in. They fall inside the usable low-RAM
+/// span, so the E820 map **reserves** `[0xE000, 0x10000)` (splitting entry 0):
+/// `GUEST_HAS_SDK` is advertised unconditionally, so a Linux guest must never
+/// allocate over the pages the doorbell transport reads/writes.
+const DOORBELL_PAGES_START: u64 = 0x0000_E000;
+/// One past the doorbell pages: `0xE000 + 2 * 4 KiB`.
+const DOORBELL_PAGES_END: u64 = 0x0001_0000;
 /// Start of high memory (1 MiB).
 const HIGH_RAM_START: u64 = 0x0010_0000;
 /// E820 entry type: usable RAM.
@@ -723,13 +732,35 @@ fn build_boot_params(
     bp.hdr.ramdisk_image = initramfs.start as u32;
     bp.hdr.ramdisk_size = initramfs.len as u32;
 
-    // E820 low RAM: `[0, 640 KiB)`. The `0xA0000..0x100000` legacy hole is
-    // deliberately omitted (left unmapped). Non-empty (`LOW_RAM_TOP > 0`).
-    bp.e820_table[0] = BootE820Entry {
-        addr: 0,
-        size: LOW_RAM_TOP,
-        type_: E820_RAM,
+    // A running index into `e820_table`, so the doorbell-reservation split (below)
+    // and the xAPIC split compose without hand-tracking entry numbers.
+    let mut n = 0usize;
+    let push = |bp: &mut BootParams, n: &mut usize, addr: u64, size: u64, type_: u32| {
+        bp.e820_table[*n] = BootE820Entry { addr, size, type_ };
+        *n += 1;
     };
+
+    // E820 low RAM `[0, 640 KiB)`, SPLIT to **reserve** the two hypercall-doorbell
+    // pages `[0xE000, 0x10000)` (task 73) so a Linux SDK guest never allocates over
+    // REQ_GPA/RESP_GPA. The `0xA0000..0x100000` legacy hole stays omitted. The
+    // doorbell span sits strictly inside `(0, LOW_RAM_TOP)`, so all three parts are
+    // non-empty. (Mirrors the xAPIC carve-out pattern below.)
+    push(&mut bp, &mut n, 0, DOORBELL_PAGES_START, E820_RAM);
+    push(
+        &mut bp,
+        &mut n,
+        DOORBELL_PAGES_START,
+        DOORBELL_PAGES_END - DOORBELL_PAGES_START,
+        E820_RESERVED,
+    );
+    push(
+        &mut bp,
+        &mut n,
+        DOORBELL_PAGES_END,
+        LOW_RAM_TOP - DOORBELL_PAGES_END,
+        E820_RAM,
+    );
+
     // High RAM `[1 MiB, ram)` with the 4 KiB xAPIC MMIO page (`LAPIC_MMIO_PAGE`)
     // carved out as **reserved**: that page must NOT be usable RAM, or the kernel
     // zeroes it on init (its content is then dead RAM and the backend's matching
@@ -739,42 +770,41 @@ fn build_boot_params(
     //
     //   * `ram <= page`        → one high-RAM entry `[1 MiB, ram)` (page never RAM).
     //   * `page < ram <= page+0x1000` → `[1 MiB, page) RAM` + `[page, +0x1000) RESERVED`
-    //     (3 entries; the tail past the page is empty, so it is omitted).
-    //   * `ram > page+0x1000`  → the full 4-entry split with a `[page+0x1000, ram) RAM`
+    //     (the tail past the page is empty, so it is omitted).
+    //   * `ram > page+0x1000`  → the full split with a `[page+0x1000, ram) RAM`
     //     tail (the 8 GiB Postgres-guest shape).
     //
     // For any page-aligned `ram` only the first and last shapes occur (no page
     // multiple lies strictly inside the page); the middle shape keeps the
     // never-typed-RAM invariant exact for the pathological boundary too.
     if ram > LAPIC_MMIO_PAGE {
-        bp.e820_table[1] = BootE820Entry {
-            addr: HIGH_RAM_START,
-            size: LAPIC_MMIO_PAGE - HIGH_RAM_START,
-            type_: E820_RAM,
-        };
-        bp.e820_table[2] = BootE820Entry {
-            addr: LAPIC_MMIO_PAGE,
-            size: 0x1000,
-            type_: E820_RESERVED,
-        };
+        push(
+            &mut bp,
+            &mut n,
+            HIGH_RAM_START,
+            LAPIC_MMIO_PAGE - HIGH_RAM_START,
+            E820_RAM,
+        );
+        push(&mut bp, &mut n, LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED);
         if ram > LAPIC_MMIO_PAGE + 0x1000 {
-            bp.e820_table[3] = BootE820Entry {
-                addr: LAPIC_MMIO_PAGE + 0x1000,
-                size: ram - (LAPIC_MMIO_PAGE + 0x1000),
-                type_: E820_RAM,
-            };
-            bp.e820_entries = 4;
-        } else {
-            bp.e820_entries = 3;
+            push(
+                &mut bp,
+                &mut n,
+                LAPIC_MMIO_PAGE + 0x1000,
+                ram - (LAPIC_MMIO_PAGE + 0x1000),
+                E820_RAM,
+            );
         }
     } else {
-        bp.e820_table[1] = BootE820Entry {
-            addr: HIGH_RAM_START,
-            size: ram - HIGH_RAM_START,
-            type_: E820_RAM,
-        };
-        bp.e820_entries = 2;
+        push(
+            &mut bp,
+            &mut n,
+            HIGH_RAM_START,
+            ram - HIGH_RAM_START,
+            E820_RAM,
+        );
     }
+    bp.e820_entries = n as u8;
     bp.acpi_rsdp_addr = ACPI_RSDP_GPA.to_le_bytes();
     bp
 }
@@ -1133,7 +1163,11 @@ mod tests {
 
         // --- boot_params fields at their absolute offsets ------------------
         let bp = BOOT_PARAMS_GPA as usize;
-        assert_eq!(mem[bp + 0x1e8], 2, "e820_entries = 2");
+        assert_eq!(
+            mem[bp + 0x1e8],
+            4,
+            "e820_entries = 4 (3-entry doorbell low split + 1 high)"
+        );
         assert_eq!(mem[bp + 0x210], TYPE_OF_LOADER_UNDEFINED, "type_of_loader");
         assert_eq!(rd32(&mem, bp + 0x214), 0x10_0000, "code32_start = pref");
         assert_eq!(rd32(&mem, bp + 0x218), 0x7F_D000, "ramdisk_image");
@@ -1152,17 +1186,33 @@ mod tests {
         assert_eq!(&mem[c..c + cmd.len()], cmd.as_bytes());
         assert_eq!(mem[c + cmd.len()], 0);
 
-        // --- E820: [0,640K) then [1M, ram) usable -------------------------
+        // --- E820: the 3-entry low split (doorbell pages reserved) then
+        //     [1M, ram) usable (task 73) ----------------------------------
         let e0 = bp + 0x2d0;
         assert_eq!(rd64(&mem, e0), 0);
-        assert_eq!(rd64(&mem, e0 + 8), LOW_RAM_TOP); // 0xA0000
+        assert_eq!(rd64(&mem, e0 + 8), DOORBELL_PAGES_START); // 0xE000
         assert_eq!(rd32(&mem, e0 + 16), E820_RAM);
         let e1 = e0 + 20;
-        assert_eq!(rd64(&mem, e1), HIGH_RAM_START); // 0x100000
-        assert_eq!(rd64(&mem, e1 + 8), ram - HIGH_RAM_START); // 0x70_0000
-        assert_eq!(rd32(&mem, e1 + 16), E820_RAM);
-        // The third entry slot is untouched (exactly two entries written).
-        assert_eq!(rd64(&mem, e1 + 20), 0);
+        assert_eq!(rd64(&mem, e1), DOORBELL_PAGES_START); // 0xE000
+        assert_eq!(
+            rd64(&mem, e1 + 8),
+            DOORBELL_PAGES_END - DOORBELL_PAGES_START
+        ); // 0x2000
+        assert_eq!(
+            rd32(&mem, e1 + 16),
+            E820_RESERVED,
+            "doorbell pages reserved"
+        );
+        let e2 = e1 + 20;
+        assert_eq!(rd64(&mem, e2), DOORBELL_PAGES_END); // 0x10000
+        assert_eq!(rd64(&mem, e2 + 8), LOW_RAM_TOP - DOORBELL_PAGES_END); // 0x90000
+        assert_eq!(rd32(&mem, e2 + 16), E820_RAM);
+        let e3 = e2 + 20;
+        assert_eq!(rd64(&mem, e3), HIGH_RAM_START); // 0x100000
+        assert_eq!(rd64(&mem, e3 + 8), ram - HIGH_RAM_START); // 0x70_0000
+        assert_eq!(rd32(&mem, e3 + 16), E820_RAM);
+        // The fifth entry slot is untouched (exactly four entries written).
+        assert_eq!(rd64(&mem, e3 + 20), 0);
     }
 
     #[test]
@@ -1453,10 +1503,12 @@ mod tests {
         ));
     }
 
-    /// E820 xAPIC-reservation split (task 54, gate 1): `build_boot_params` carves the
-    /// 4 KiB LAPIC MMIO page out of usable RAM and marks it `E820_RESERVED`, so the
-    /// kernel never zeroes it and the backend's memslot hole routes LAPIC accesses to
-    /// the userspace xAPIC model.
+    /// E820 reservation splits: the 4 KiB xAPIC LAPIC MMIO page (task 54, gate 1)
+    /// and the two hypercall-doorbell pages `[0xE000, 0x10000)` (task 73). Each is
+    /// carved out of usable RAM and marked `E820_RESERVED`, so the kernel never
+    /// zeroes it — the LAPIC page routes to the userspace xAPIC model, and the
+    /// doorbell pages stay intact for the guest SDK transport. The doorbell split
+    /// makes low RAM **three** entries (indices 0–2); high RAM starts at index 3.
     mod e820_lapic_reservation {
         use super::super::*; // crate items, incl. the private `build_boot_params`
         use proptest::prelude::*;
@@ -1479,6 +1531,30 @@ mod tests {
             (e.addr, e.size, e.type_)
         }
 
+        /// The three low-RAM entries every guest has (task 73): `[0, 0xE000) RAM`,
+        /// the reserved doorbell pages `[0xE000, 0x10000)`, and `[0x10000, 640K)
+        /// RAM`. High RAM begins at index 3.
+        fn assert_low_split(bp: &BootParams) {
+            assert_eq!(entry(bp, 0), (0, DOORBELL_PAGES_START, E820_RAM));
+            assert_eq!(
+                entry(bp, 1),
+                (
+                    DOORBELL_PAGES_START,
+                    DOORBELL_PAGES_END - DOORBELL_PAGES_START,
+                    E820_RESERVED
+                ),
+                "the doorbell pages are reserved"
+            );
+            assert_eq!(
+                entry(bp, 2),
+                (
+                    DOORBELL_PAGES_END,
+                    LOW_RAM_TOP - DOORBELL_PAGES_END,
+                    E820_RAM
+                )
+            );
+        }
+
         /// Far fewer cases under Miri (10–100× slower interpreted), and no failure
         /// persistence there (its regression-file path uses `getcwd`, which Miri's
         /// fs isolation rejects) — mirrors the loader's other proptest helpers.
@@ -1490,65 +1566,98 @@ mod tests {
             cfg
         }
 
-        /// 8 GiB guest: EXACTLY the four entries, the LAPIC page `E820_RESERVED`.
+        /// 8 GiB guest: EXACTLY six entries — the 3-entry low split (doorbell pages
+        /// reserved) + the 3-entry high split with the LAPIC page `E820_RESERVED`.
         #[test]
         fn eight_gib_guest_reserves_the_lapic_page() {
             let ram = 8u64 << 30;
             let bp = table_for(ram);
-            assert_eq!(bp.e820_entries, 4);
-            assert_eq!(entry(&bp, 0), (0, LOW_RAM_TOP, E820_RAM));
-            assert_eq!(
-                entry(&bp, 1),
-                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
-            );
-            assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(bp.e820_entries, 6);
+            assert_low_split(&bp);
             assert_eq!(
                 entry(&bp, 3),
+                (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
+            );
+            assert_eq!(entry(&bp, 4), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(
+                entry(&bp, 5),
                 (
                     LAPIC_MMIO_PAGE + 0x1000,
                     ram - (LAPIC_MMIO_PAGE + 0x1000),
                     E820_RAM
                 )
             );
-            // The 5th slot is untouched (exactly four entries written).
-            assert_eq!(entry(&bp, 4), (0, 0, 0));
+            // The 7th slot is untouched (exactly six entries written).
+            assert_eq!(entry(&bp, 6), (0, 0, 0));
         }
 
-        /// Sub-`0xFEE01000` guest (2 GiB): the single high-RAM entry, no reserved page.
+        /// Sub-`0xFEE01000` guest (2 GiB): the 3-entry low split + one high-RAM
+        /// entry, no reserved LAPIC page.
         #[test]
-        fn sub_page_guest_is_two_entries() {
+        fn sub_page_guest_is_four_entries() {
             let ram = 2u64 << 30;
             let bp = table_for(ram);
-            assert_eq!(bp.e820_entries, 2);
-            assert_eq!(entry(&bp, 0), (0, LOW_RAM_TOP, E820_RAM));
+            assert_eq!(bp.e820_entries, 4);
+            assert_low_split(&bp);
             assert_eq!(
-                entry(&bp, 1),
+                entry(&bp, 3),
                 (HIGH_RAM_START, ram - HIGH_RAM_START, E820_RAM)
             );
-            // No third entry written.
-            assert_eq!(entry(&bp, 2), (0, 0, 0));
+            // No fifth entry written.
+            assert_eq!(entry(&bp, 4), (0, 0, 0));
         }
 
         /// Page-aligned boundaries: RAM ending exactly at the page start stays a
         /// single high-RAM entry (the page is excluded); ending one page past it
-        /// reserves the page with the empty tail dropped (3 entries).
+        /// reserves the page with the empty tail dropped. Both atop the 3-entry
+        /// low split (⇒ 4 and 5 entries).
         #[test]
         fn page_aligned_boundaries() {
             let bp = table_for(LAPIC_MMIO_PAGE);
-            assert_eq!(bp.e820_entries, 2);
+            assert_eq!(bp.e820_entries, 4);
+            assert_low_split(&bp);
             assert_eq!(
-                entry(&bp, 1),
+                entry(&bp, 3),
                 (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
             );
 
             let bp = table_for(LAPIC_MMIO_PAGE + 0x1000);
-            assert_eq!(bp.e820_entries, 3);
+            assert_eq!(bp.e820_entries, 5);
+            assert_low_split(&bp);
             assert_eq!(
-                entry(&bp, 1),
+                entry(&bp, 3),
                 (HIGH_RAM_START, LAPIC_MMIO_PAGE - HIGH_RAM_START, E820_RAM)
             );
-            assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
-            assert_eq!(entry(&bp, 3), (0, 0, 0));
+            assert_eq!(entry(&bp, 4), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+            assert_eq!(entry(&bp, 5), (0, 0, 0));
+        }
+
+        /// THE task-73 property: for ANY guest RAM size, the doorbell pages
+        /// `[0xE000, 0x10000)` are reserved and NEVER inside a usable-RAM E820
+        /// entry — so a Linux SDK guest cannot allocate over REQ_GPA/RESP_GPA.
+        #[test]
+        fn doorbell_pages_are_reserved_for_every_ram_size() {
+            for ram in [
+                HIGH_RAM_START + 0x1000,
+                2u64 << 30,
+                LAPIC_MMIO_PAGE,
+                LAPIC_MMIO_PAGE + 0x1000,
+                8u64 << 30,
+            ] {
+                let bp = table_for(ram);
+                assert_low_split(&bp); // the reserved doorbell entry, exactly
+                for i in 0..bp.e820_entries as usize {
+                    let (addr, size, type_) = entry(&bp, i);
+                    if type_ == E820_RAM {
+                        let overlaps =
+                            addr < DOORBELL_PAGES_END && DOORBELL_PAGES_START < addr + size;
+                        assert!(
+                            !overlaps,
+                            "ram={ram:#x}: RAM entry {i} [{addr:#x}, +{size:#x}) covers a doorbell page"
+                        );
+                    }
+                }
+            }
         }
 
         proptest! {
@@ -1576,11 +1685,13 @@ mod tests {
                         );
                     }
                 }
-                // The page is reserved exactly when RAM reaches it.
+                // The LAPIC page is reserved exactly when RAM reaches it — now at
+                // index 4 (the 3-entry doorbell low split precedes it). When RAM
+                // stops short, only the low split + one high-RAM entry (4 total).
                 if ram > LAPIC_MMIO_PAGE {
-                    prop_assert_eq!(entry(&bp, 2), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
+                    prop_assert_eq!(entry(&bp, 4), (LAPIC_MMIO_PAGE, 0x1000, E820_RESERVED));
                 } else {
-                    prop_assert_eq!(bp.e820_entries, 2);
+                    prop_assert_eq!(bp.e820_entries, 4);
                 }
             }
         }

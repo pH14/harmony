@@ -82,16 +82,31 @@ pub mod class_bit {
     /// whole class; the mirror exists so the discriminant is pinned against the
     /// enum and reserved (bit `7`) alongside the standalone SDK-stop bits.
     pub const BUGGIFY: u16 = 7;
+    /// The SDK lifecycle **snapshot point** stop (task 73, `setup_complete`) — a
+    /// **standalone** stop class, NOT a `DecisionClass` (so it starts at 8, past
+    /// the decision discriminants + the reserved buggify bit 7). A deferred
+    /// snapshot point surfaces from a `Run` only when this bit is armed (round-7).
+    pub const SNAPSHOT_POINT: u16 = 8;
+    /// The SDK **assertion** stop (task 73) — a standalone stop class; an
+    /// `assert_always` violation surfaces only when this bit is armed. `StopMask::
+    /// NONE` runs a cooperating-SDK guest straight through to the terminal.
+    pub const ASSERTION: u16 = 9;
 }
 
 /// A bitset over decision/exit **classes** that selects which non-terminal
-/// decisions surface from a [`Run`](Request::Run) (vs. being auto-serviced by the
-/// seed). Crash / assertion / quiescence always stop regardless of the mask.
+/// decisions **and cooperating-SDK stops** surface from a [`Run`](Request::Run)
+/// (vs. being auto-serviced / run through). The substrate **terminals** —
+/// crash / quiescence / deadline — always stop regardless of the mask; the SDK
+/// stops [`Assertion`](StopReason::Assertion) and
+/// [`SnapshotPoint`](StopReason::SnapshotPoint) are gated on their class bits
+/// ([`class_bit::ASSERTION`] / [`class_bit::SNAPSHOT_POINT`], round-7), so
+/// `StopMask::NONE` runs an SDK guest straight through to the terminal.
 ///
 /// Bit layout is the integrator-pinned mapping: `bit N == (1 << class_bit)` where
-/// `class_bit` is the [`class_bit`] (i.e. `environment::DecisionClass`)
-/// discriminant. The same bit is computed in both crates so the armed-class set
-/// can never diverge.
+/// `class_bit` is the [`class_bit`] — the `environment::DecisionClass` discriminant
+/// for decision classes (1..=6, plus 7 reserved for buggify), and standalone
+/// constants (≥ 8) for the SDK stops. The same bit is computed in both crates so
+/// the armed-class set can never diverge.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct StopMask(pub u32);
 
@@ -191,6 +206,18 @@ pub enum Request {
         /// The `Moment` (retired-instruction count) to apply it at.
         at: Moment,
     },
+    /// Fetch a **page** of the link-tier SDK event capture of the current run
+    /// (task 73), starting at event index `offset` → [`SdkEvents`](Reply::SdkEvents).
+    /// The `Moment`-stamped `(moment, event_id, bytes)` stream a cooperating guest
+    /// SDK emitted, so a remote client (the campaign's `SocketMachine`) can decode
+    /// it into `RunTrace.events` — the server-side capture a socket client cannot
+    /// otherwise see. The server bounds each page to the control frame limit, so a
+    /// long capture is fetched by paging (`offset += page.len()`) until an empty
+    /// page. Empty for a guest with no SDK, or once `offset` reaches the end.
+    SdkEvents {
+        /// The event index to start the page at.
+        offset: u32,
+    },
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)
@@ -207,11 +234,18 @@ pub enum Reply {
     Stop(StopReason),
     /// A 32-byte canonical digest (reply to [`Hash`](Request::Hash)).
     Hash([u8; 32]),
+    /// The link-tier SDK event capture (reply to [`SdkEvents`](Request::SdkEvents)):
+    /// the `Moment`-stamped `(moment, event_id, bytes)` stream, order-preserving.
+    /// Empty for a guest with no SDK.
+    SdkEvents(Vec<(u64, u32, Vec<u8>)>),
 }
 
 /// The guest-observable outcome of a [`Run`](Request::Run) — the explorer's
-/// reaction surface. The first three are always present (the substrate); the last
-/// three appear only with a cooperating guest / SDK.
+/// reaction surface. The substrate terminals (`Deadline`/`Quiescent`/`Crash`)
+/// always surface; the cooperating-SDK stops (`Decision`/`SnapshotPoint`/
+/// `Assertion`) appear only with a cooperating guest AND only when their
+/// [`StopMask`] class bit is armed (round-7) — so `StopMask::NONE` runs an SDK
+/// guest straight through to the terminal.
 ///
 /// There is deliberately no `Host` variant: an in-band hypercall is serviced by
 /// the consonance plane and the run continues; anything R2 must react to arrives
