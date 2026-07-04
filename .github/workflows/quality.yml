@@ -220,3 +220,7 @@ jobs:
           cargo test \
             -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p link -p flow -p matcher -p runtrace -p conductor -p tactics-regime \
             --test public_api -- --ignored --nocapture
+          # guest/sdk is out-of-workspace (its own manifest), so it is not in the
+          # `-p` list above — freeze its public surface on its own manifest.
+          cargo test --manifest-path guest/sdk/Cargo.toml \
+            --test public_api -- --ignored --nocapture

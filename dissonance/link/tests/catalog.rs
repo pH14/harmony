@@ -103,6 +103,30 @@ fn fold_books_every_kind_and_ignores_undeclared() {
     assert_eq!(cat.len(), 4);
 }
 
+/// An unrecognized kind byte declares a `PointKind::Unknown` point, which has NO
+/// runtime namespace: it must NOT register under `NS_ASSERT` (the old wildcard
+/// fallback). A real assert firing at the SAME id must not resolve to the unknown
+/// point — it is declared but always never-fired.
+#[test]
+fn unknown_kind_point_never_registers_under_ns_assert() {
+    const KIND_UNRECOGNIZED: u8 = 0xFF;
+    let decl = declaration(&[(KIND_UNRECOGNIZED, 1, "mystery")]);
+    // A real assert HIT fires at (NS_ASSERT, 1) — the coordinate the unknown point
+    // would alias if it (wrongly) fell back to NS_ASSERT.
+    let ev = events(&[(10, id(NS_ASSERT, 1), vec![0, 0, 0])]);
+    let cat = Catalog::from_declaration_bytes(&decl);
+    let fired = cat.fired(&ev);
+    assert!(
+        fired.is_empty(),
+        "an assert firing must not resolve to an unknown-kind point"
+    );
+    assert_eq!(
+        cat.report(&fired).never_fired,
+        ["mystery".to_string()].into_iter().collect(),
+        "the unknown-kind point is declared and always never-fired"
+    );
+}
+
 /// A re-declared name drops its **stale** coordinate: a firing at the old
 /// coordinate no longer resolves to the name (regression for the review's finding
 /// that a redeclare left the old `by_coord` entry behind).

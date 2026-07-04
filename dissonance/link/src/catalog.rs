@@ -59,13 +59,22 @@ impl PointKind {
         }
     }
 
-    /// The runtime event-id namespace a firing of this kind arrives under.
-    fn namespace(self) -> u8 {
+    /// The runtime event-id namespace a firing of this kind arrives under, or
+    /// `None` for [`Unknown`](PointKind::Unknown) — an unrecognized kind byte has
+    /// no runtime namespace, so the host cannot know where (or whether) it fires.
+    /// It must NOT fall back to `NS_ASSERT`: that would register the point at a
+    /// real assert coordinate, aliasing an actual assert (or being falsely marked
+    /// fired). Without a namespace it holds no firing coordinate and is always
+    /// reported never-fired.
+    fn namespace(self) -> Option<u8> {
         match self {
-            PointKind::StateReg => wire::NS_STATE,
-            PointKind::Buggify => wire::NS_BUGGIFY,
-            // All four assertion kinds fire under the assert namespace.
-            _ => wire::NS_ASSERT,
+            PointKind::AssertAlways
+            | PointKind::AssertSometimes
+            | PointKind::AssertReachable
+            | PointKind::AssertUnreachable => Some(wire::NS_ASSERT),
+            PointKind::StateReg => Some(wire::NS_STATE),
+            PointKind::Buggify => Some(wire::NS_BUGGIFY),
+            PointKind::Unknown => None,
         }
     }
 }
@@ -146,14 +155,27 @@ impl Catalog {
     /// **removes the name's previous coordinate** from `by_coord` when it moves,
     /// so no stale coordinate survives to resolve a firing to this name.
     fn declare(&mut self, name: String, local: u32, kind: PointKind) {
-        let coord = (kind.namespace(), local);
+        let coord = kind.namespace().map(|ns| (ns, local));
+        // Drop the name's previous coordinate when it moves or disappears, so no
+        // stale coordinate survives to resolve a firing to this name.
         if let Some(&old) = self.coord_of_name.get(&name)
-            && old != coord
+            && Some(old) != coord
         {
             self.by_coord.remove(&old);
         }
-        self.coord_of_name.insert(name.clone(), coord);
-        self.by_coord.insert(coord, name.clone());
+        match coord {
+            // A kind with a runtime namespace: (re)register its firing coordinate.
+            Some(c) => {
+                self.coord_of_name.insert(name.clone(), c);
+                self.by_coord.insert(c, name.clone());
+            }
+            // `Unknown`: no runtime namespace ⇒ no firing coordinate. It stays in
+            // `declared` (so it is reported, always as never-fired) but can never
+            // be matched by a firing.
+            None => {
+                self.coord_of_name.remove(&name);
+            }
+        }
         self.declared.insert(name, kind);
     }
 

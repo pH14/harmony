@@ -1,0 +1,67 @@
+pub mod harmony_sdk
+pub mod harmony_sdk::wire
+pub const harmony_sdk::wire::CATALOG_EVENT_ID: u32
+pub const harmony_sdk::wire::CATALOG_MAGIC: u32
+pub const harmony_sdk::wire::DISP_HIT: u8
+pub const harmony_sdk::wire::DISP_VIOLATION: u8
+pub const harmony_sdk::wire::KIND_ALWAYS: u8
+pub const harmony_sdk::wire::KIND_BUGGIFY: u8
+pub const harmony_sdk::wire::KIND_REACHABLE: u8
+pub const harmony_sdk::wire::KIND_SOMETIMES: u8
+pub const harmony_sdk::wire::KIND_STATE: u8
+pub const harmony_sdk::wire::KIND_UNREACHABLE: u8
+pub const harmony_sdk::wire::LOCAL_MASK: u32
+pub const harmony_sdk::wire::LOCAL_MAX: u32
+pub const harmony_sdk::wire::NS_ASSERT: u8
+pub const harmony_sdk::wire::NS_BUGGIFY: u8
+pub const harmony_sdk::wire::NS_CONTROL: u8
+pub const harmony_sdk::wire::NS_LIFECYCLE: u8
+pub const harmony_sdk::wire::NS_SHIFT: u32
+pub const harmony_sdk::wire::NS_STATE: u8
+pub const harmony_sdk::wire::SDK_WIRE_VERSION: u8
+pub const harmony_sdk::wire::SETUP_COMPLETE_EVENT_ID: u32
+pub const harmony_sdk::wire::STATE_MAX: u8
+pub const harmony_sdk::wire::STATE_SET: u8
+pub const fn harmony_sdk::wire::event_id(u8, u32) -> u32
+pub const fn harmony_sdk::wire::split(u32) -> (u8, u32)
+pub enum harmony_sdk::PointKind
+pub harmony_sdk::PointKind::AssertAlways
+pub harmony_sdk::PointKind::AssertReachable
+pub harmony_sdk::PointKind::AssertSometimes
+pub harmony_sdk::PointKind::AssertUnreachable
+pub harmony_sdk::PointKind::Buggify
+pub harmony_sdk::PointKind::StateReg
+pub enum harmony_sdk::SdkError<E>
+pub harmony_sdk::SdkError::CatalogTooLarge
+pub harmony_sdk::SdkError::Client(hypercall_proto::guest::ClientError<E>)
+pub harmony_sdk::SdkError::DuplicateCoordinate
+pub harmony_sdk::SdkError::DuplicateName
+pub harmony_sdk::SdkError::PointIdTooLarge
+impl<E: core::fmt::Debug> core::fmt::Display for harmony_sdk::SdkError<E>
+pub fn harmony_sdk::SdkError<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::convert::From<hypercall_proto::guest::ClientError<E>> for harmony_sdk::SdkError<E>
+pub fn harmony_sdk::SdkError<E>::from(hypercall_proto::guest::ClientError<E>) -> Self
+pub struct harmony_sdk::Point
+pub harmony_sdk::Point::id: u32
+pub harmony_sdk::Point::kind: harmony_sdk::PointKind
+pub harmony_sdk::Point::name: &'static str
+impl harmony_sdk::Point
+pub const fn harmony_sdk::Point::always(u32, &'static str) -> Self
+pub const fn harmony_sdk::Point::buggify(u32, &'static str) -> Self
+pub const fn harmony_sdk::Point::reachable(u32, &'static str) -> Self
+pub const fn harmony_sdk::Point::sometimes(u32, &'static str) -> Self
+pub const fn harmony_sdk::Point::state(u32, &'static str) -> Self
+pub const fn harmony_sdk::Point::unreachable(u32, &'static str) -> Self
+pub struct harmony_sdk::Sdk<T: hypercall_proto::guest::Transport>
+impl<T: hypercall_proto::guest::Transport> harmony_sdk::Sdk<T>
+pub fn harmony_sdk::Sdk<T>::assert_always(&mut self, bool, u32) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::assert_reachable(&mut self, u32) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::assert_sometimes(&mut self, bool, u32) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::assert_unreachable(&mut self, u32) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::buggify(&mut self, u32) -> core::result::Result<bool, harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::client_mut(&mut self) -> &mut hypercall_proto::guest::Client<T>
+pub fn harmony_sdk::Sdk<T>::entropy_fill(&mut self, &mut [u8]) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::init(T, &[harmony_sdk::Point]) -> core::result::Result<Self, harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::setup_complete(&mut self) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::state_max(&mut self, u32, u64) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
+pub fn harmony_sdk::Sdk<T>::state_set(&mut self, u32, u64) -> core::result::Result<(), harmony_sdk::SdkError<<T as hypercall_proto::guest::Transport>::Error>>
