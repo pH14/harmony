@@ -16,7 +16,9 @@
 //! keys) is surfaced by [`ElleOracle::analyze`], since [`Bug`] itself is only the
 //! dedup artifact.
 
-use explorer::{Bug, FaultCoord, Oracle, RunTrace, TerminalSig, VTimeCoord, mint_fingerprint};
+use explorer::{
+    Bug, FaultCoord, Moment, Oracle, RunTrace, TerminalSig, VTimeCoord, mint_fingerprint,
+};
 
 use crate::anomaly::{self, Anomaly, IsolationLevel};
 use crate::decode::OpDecode;
@@ -26,6 +28,12 @@ use crate::op::Key;
 
 /// The oracle's stable id — coordinate 1 of every fingerprint it mints.
 const ORACLE_ID: &str = "elle";
+
+/// The distinguished anomaly-class code for a **decode failure** — a
+/// malformed/unrecoverable history, surfaced through the [`Oracle`] plugin path
+/// as a loud `Bug` (never silent-clean) yet unmistakably *not* a consistency
+/// anomaly: `u32::MAX` sits far above the ladder's classes (0/1/2).
+const DECODE_FAILURE_CLASS: u32 = u32::MAX;
 
 /// An Elle-shaped isolation checker: an [`OpDecode`] source plus the declared
 /// [`IsolationLevel`] it holds the workload to.
@@ -76,17 +84,45 @@ impl ElleOracle {
             fingerprint: mint_fingerprint(&sig, &FaultCoord::none(), VTimeCoord::quantize(a.at)),
         }
     }
+
+    /// Mint the **distinguished decode-failure** [`Bug`] (see [`judge`](Oracle::judge)):
+    /// the run's reproducer/terminal plus a fingerprint whose terminal signature
+    /// is oracle id `"elle"`, the reserved [`DECODE_FAILURE_CLASS`], and the
+    /// error's stable [`kind_tag`](DecodeError::kind_tag) — so a malformed history
+    /// surfaces loudly, dedups by decode-error kind, and can never be confused
+    /// with a real consistency anomaly.
+    fn decode_failure(&self, t: &RunTrace, err: &DecodeError) -> Bug {
+        let sig = TerminalSig::new(ORACLE_ID, DECODE_FAILURE_CLASS, t.terminal.discriminant())
+            .with_detail(err.kind_tag().as_bytes().to_vec());
+        Bug {
+            env: t.env.clone(),
+            stop: t.terminal.clone(),
+            fingerprint: mint_fingerprint(
+                &sig,
+                &FaultCoord::none(),
+                VTimeCoord::quantize(Moment(t.terminal.vtime().0)),
+            ),
+        }
+    }
 }
 
 impl Oracle for ElleOracle {
-    /// The pure trace-oracle verdict. A [`DecodeError`] is a fail-loud condition
-    /// [`judge_checked`](Self::judge_checked) surfaces; the `Oracle` trait cannot
-    /// return it, and the checker must never *guess* an anomaly from an
-    /// unrecoverable history — so an undecodable run reports **no** bug here
-    /// (not a fabricated one). Campaigns call [`judge_checked`](Self::judge_checked)
-    /// to see the error loudly.
+    /// The pure trace-oracle verdict. A **clean** run reports `None`; a real
+    /// anomaly reports its [`Bug`].
+    ///
+    /// A [`DecodeError`] is *not* silently clean: silent-clean is the worse
+    /// failure (a campaign would pass with a real decode failure hidden — and
+    /// this `dyn Oracle` path is exactly what Explorer integrates against). So a
+    /// malformed/unrecoverable history reports a **distinguished decode-failure
+    /// [`Bug`]** (class [`DECODE_FAILURE_CLASS`], not a consistency anomaly) — the
+    /// checker never *guesses an anomaly*, but it never hides the failure either.
+    /// [`judge_checked`](Self::judge_checked)/[`analyze`](Self::analyze) surface
+    /// the typed error for a caller that wants it.
     fn judge(&self, t: &RunTrace) -> Option<Bug> {
-        self.judge_checked(t).unwrap_or(None)
+        match self.judge_checked(t) {
+            Ok(verdict) => verdict,
+            Err(e) => Some(self.decode_failure(t, &e)),
+        }
     }
 }
 

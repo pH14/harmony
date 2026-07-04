@@ -148,4 +148,43 @@ pub enum DecodeError {
         /// The value observed more than once.
         value: Elem,
     },
+
+    /// One transaction id carried operations from **two different sessions** — a
+    /// reused id. Merging them into one [`Transaction`](crate::Transaction) would
+    /// collapse two distinct transactions into one graph node and hide anomalies,
+    /// so a session mismatch on an already-seen id is unrecoverable.
+    #[error("transaction id {txn} reused across sessions {first_session} and {second_session}")]
+    ReusedTxnId {
+        /// The reused transaction id.
+        txn: TxnId,
+        /// The first session seen for the id.
+        first_session: u64,
+        /// The conflicting session seen after it.
+        second_session: u64,
+    },
+}
+
+impl DecodeError {
+    /// A **stable per-variant tag** — the fingerprint detail for the
+    /// distinguished decode-failure [`Bug`](explorer::Bug)
+    /// [`ElleOracle::judge`](crate::ElleOracle) mints (so decode failures dedup by
+    /// kind and stay disjoint from the consistency-anomaly classes). Stable across
+    /// releases; a rename would re-key existing decode-failure fingerprints.
+    pub fn kind_tag(&self) -> &'static str {
+        match self {
+            DecodeError::Malformed(_) => "malformed",
+            DecodeError::DuplicateValue { .. } => "duplicate-value",
+            DecodeError::UnknownValue { .. } => "unknown-value",
+            DecodeError::InconsistentOrder { .. } => "inconsistent-order",
+            DecodeError::UnterminatedTxn(_) => "unterminated-txn",
+            DecodeError::AmbiguousOp { .. } => "ambiguous-op",
+            DecodeError::ConflictingLifecycle { .. } => "conflicting-lifecycle",
+            DecodeError::MisattributedValue { .. } => "misattributed-value",
+            DecodeError::OpAfterTermination { .. } => "op-after-termination",
+            DecodeError::UnobservedAppend { .. } => "unobserved-append",
+            DecodeError::MixedModel { .. } => "mixed-model",
+            DecodeError::RepeatedObservation { .. } => "repeated-observation",
+            DecodeError::ReusedTxnId { .. } => "reused-txn-id",
+        }
+    }
 }

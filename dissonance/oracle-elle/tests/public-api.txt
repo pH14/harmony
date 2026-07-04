@@ -66,6 +66,10 @@ pub oracle_elle::error::DecodeError::OpAfterTermination::txn: oracle_elle::op::T
 pub oracle_elle::error::DecodeError::RepeatedObservation
 pub oracle_elle::error::DecodeError::RepeatedObservation::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::RepeatedObservation::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::ReusedTxnId
+pub oracle_elle::error::DecodeError::ReusedTxnId::first_session: u64
+pub oracle_elle::error::DecodeError::ReusedTxnId::second_session: u64
+pub oracle_elle::error::DecodeError::ReusedTxnId::txn: oracle_elle::op::TxnId
 pub oracle_elle::error::DecodeError::UnknownValue
 pub oracle_elle::error::DecodeError::UnknownValue::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::UnknownValue::value: oracle_elle::op::Elem
@@ -73,6 +77,8 @@ pub oracle_elle::error::DecodeError::UnobservedAppend
 pub oracle_elle::error::DecodeError::UnobservedAppend::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::UnobservedAppend::value: oracle_elle::op::Elem
 pub oracle_elle::error::DecodeError::UnterminatedTxn(oracle_elle::op::TxnId)
+impl oracle_elle::error::DecodeError
+pub fn oracle_elle::error::DecodeError::kind_tag(&self) -> &'static str
 pub mod oracle_elle::graph
 pub struct oracle_elle::graph::DepGraph
 impl oracle_elle::graph::DepGraph
@@ -167,6 +173,10 @@ pub oracle_elle::DecodeError::OpAfterTermination::txn: oracle_elle::op::TxnId
 pub oracle_elle::DecodeError::RepeatedObservation
 pub oracle_elle::DecodeError::RepeatedObservation::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::RepeatedObservation::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::ReusedTxnId
+pub oracle_elle::DecodeError::ReusedTxnId::first_session: u64
+pub oracle_elle::DecodeError::ReusedTxnId::second_session: u64
+pub oracle_elle::DecodeError::ReusedTxnId::txn: oracle_elle::op::TxnId
 pub oracle_elle::DecodeError::UnknownValue
 pub oracle_elle::DecodeError::UnknownValue::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::UnknownValue::value: oracle_elle::op::Elem
@@ -174,6 +184,8 @@ pub oracle_elle::DecodeError::UnobservedAppend
 pub oracle_elle::DecodeError::UnobservedAppend::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::UnobservedAppend::value: oracle_elle::op::Elem
 pub oracle_elle::DecodeError::UnterminatedTxn(oracle_elle::op::TxnId)
+impl oracle_elle::error::DecodeError
+pub fn oracle_elle::error::DecodeError::kind_tag(&self) -> &'static str
 pub enum oracle_elle::IsolationLevel
 pub oracle_elle::IsolationLevel::ReadCommitted
 pub oracle_elle::IsolationLevel::ReadUncommitted

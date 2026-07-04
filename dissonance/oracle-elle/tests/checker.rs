@@ -174,6 +174,59 @@ fn dirty_write_across_an_aborted_gap_is_caught() {
     );
 }
 
+/// Round-5 P1 (fail-loud through the plugin path): a malformed history judged via
+/// `Box<dyn Oracle>` — the advertised Explorer integration — must NOT report
+/// clean. It surfaces a **distinguished decode-failure Bug** (class disjoint from
+/// the anomaly ladder), whose fingerprint differs from a real anomaly's; a clean
+/// run still reports `None`.
+#[test]
+fn malformed_history_through_dyn_oracle_is_not_clean() {
+    let o: Box<dyn Oracle> = Box::new(ElleOracle::new(
+        Box::new(EventDecoder::new()),
+        IsolationLevel::SnapshotIsolation,
+    ));
+
+    // Malformed: value 7 written twice (DuplicateValue) — the plugin path must
+    // surface it, not swallow it as clean.
+    let malformed = trace(
+        vec![
+            write(1, 1, 1, "a", 7),
+            commit(2, 1),
+            write(3, 2, 2, "b", 7),
+            commit(4, 2),
+        ],
+        0,
+    );
+    let decode_bug = o
+        .judge(&malformed)
+        .expect("a decode failure must NOT be reported as clean");
+
+    // A genuinely clean run still reports None.
+    let clean = trace(vec![write(1, 1, 1, "k", 1), commit(2, 1)], 0);
+    assert!(o.judge(&clean).is_none(), "a clean run is still clean");
+
+    // A real anomaly's fingerprint is distinct from the decode-failure Bug's
+    // (the decode failure is not a consistency anomaly).
+    let lost_update = trace(
+        vec![
+            write(1, 0, 10, "k", 1),
+            commit(2, 10),
+            read(3, 1, 11, "k", &[1]),
+            write(4, 1, 11, "k", 2),
+            commit(5, 11),
+            read(6, 2, 12, "k", &[1]),
+            write(7, 2, 12, "k", 3),
+            commit(8, 12),
+        ],
+        0,
+    );
+    let anomaly_bug = o.judge(&lost_update).expect("a real lost update");
+    assert_ne!(
+        decode_bug.fingerprint, anomaly_bug.fingerprint,
+        "a decode failure is distinguished from a consistency anomaly"
+    );
+}
+
 /// Round-4 P2 (malformed history must not FABRICATE a verdict): a read list that
 /// repeats a (unique) written value is malformed; the oracle must fail loud, not
 /// report a fabricated dirty-write.

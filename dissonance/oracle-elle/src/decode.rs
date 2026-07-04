@@ -51,7 +51,23 @@ impl Builder {
     fn push(&mut self, m: Marker, at: Moment) -> Result<(), DecodeError> {
         match m {
             Marker::Op(op) => {
-                self.sessions.entry(op.txn).or_insert(op.session);
+                // A transaction belongs to exactly one session. A second session
+                // on an already-seen txn id is a **reused id** — never silently
+                // merge the two sessions' ops into one node (which would collapse
+                // two transactions and hide anomalies); fail loud.
+                match self.sessions.get(&op.txn) {
+                    Some(&s) if s != op.session => {
+                        return Err(DecodeError::ReusedTxnId {
+                            txn: op.txn,
+                            first_session: s,
+                            second_session: op.session,
+                        });
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.sessions.insert(op.txn, op.session);
+                    }
+                }
                 self.ops.entry(op.txn).or_default().push(op);
             }
             Marker::Commit(t) => self.mark(t, TxnOutcome::Committed, at)?,
@@ -106,7 +122,14 @@ impl Builder {
                 });
             }
             let mut ops = ops.clone();
-            ops.sort_by(|a, b| a.at.cmp(&b.at).then(a.kind.cmp(&b.kind)));
+            // Program order is by Moment, but two ops at the SAME Moment need a
+            // **total** content tie-break so the decoded history — and hence the
+            // verdict and fingerprint — is a pure function of the trace content,
+            // never of record emission order. `Op`'s full `Ord` (kind, key, …) is
+            // total: two ops compare Equal only when fully identical, where order
+            // is irrelevant. (Comparing only `kind` left same-kind different-key
+            // ops order-dependent — the round-5 leak.)
+            ops.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.cmp(b)));
             txns.insert(
                 id,
                 Transaction {

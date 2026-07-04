@@ -373,6 +373,56 @@ fn mixed_write_append_key_fails_loud() {
     }
 }
 
+/// Round-5 P1 (determinism): the decoded history is a pure function of trace
+/// CONTENT, not record emission order. Two same-Moment ops the *kind-only*
+/// tie-break could not distinguish — two empty reads on different keys (same
+/// `Read([])` kind) — decode identically whichever order they were emitted in.
+#[test]
+fn same_moment_ops_decode_order_independently() {
+    let a_first = trace(
+        vec![
+            read(5, 1, 1, "a", &[]),
+            read(5, 1, 1, "b", &[]),
+            commit(6, 1),
+        ],
+        0,
+    );
+    let b_first = trace(
+        vec![
+            read(5, 1, 1, "b", &[]), // the two same-Moment reads swapped
+            read(5, 1, 1, "a", &[]),
+            commit(6, 1),
+        ],
+        0,
+    );
+    let ha = EventDecoder::new().decode(&a_first).expect("decode a");
+    let hb = EventDecoder::new().decode(&b_first).expect("decode b");
+    assert_eq!(ha, hb, "same-Moment ops decode order-independently");
+}
+
+/// Round-5 P2: one transaction id carrying ops from two different sessions is a
+/// reused id — a loud `ReusedTxnId`, never a silent merge of two transactions
+/// into one graph node.
+#[test]
+fn reused_txn_id_across_sessions_fails_loud() {
+    let t = trace(
+        vec![
+            write(1, 1, 5, "a", 1),  // session 1, txn 5
+            read(2, 2, 5, "b", &[]), // session 2, SAME txn 5
+            commit(3, 5),
+        ],
+        0,
+    );
+    match EventDecoder::new().decode(&t) {
+        Err(DecodeError::ReusedTxnId {
+            txn: 5,
+            first_session: 1,
+            second_session: 2,
+        }) => {}
+        other => panic!("expected ReusedTxnId, got {other:?}"),
+    }
+}
+
 /// Item 3 corollary: an *idempotent* repeat of the same marker is harmless (only
 /// contradictory markers fail).
 #[test]
