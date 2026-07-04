@@ -129,6 +129,65 @@ fn register_conflicting_write_order_is_a_dirty_write() {
     assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
 }
 
+/// Round-7 P1 (register order from final reads): T1 writes a,b; T2 writes b,a;
+/// the **final reads** see `a` from T1 and `b` from T2 — establishing OPPOSITE
+/// per-key orders (a G0 cycle). Register order is pinned by those quiesce reads,
+/// not by write Moments (which here would report clean), so the cycle is caught.
+#[test]
+fn register_g0_from_final_reads_contradicting_write_moments() {
+    let t = trace(
+        vec![
+            write(1, 1, 1, "a", 1), // T1: a<-1
+            write(2, 1, 1, "b", 2), // T1: b<-2
+            commit(3, 1),
+            write(4, 2, 2, "b", 3), // T2: b<-3 (later Moment on b)
+            write(5, 2, 2, "a", 4), // T2: a<-4 (later Moment on a)
+            commit(6, 2),
+            // Final reads AFTER all writes: a's final is T1's (1), b's is T2's (3)
+            // — contradicting the write-Moment order (which had T2 last on both).
+            read(7, 3, 3, "a", &[1]),
+            read(8, 3, 3, "b", &[3]),
+            commit(9, 3),
+        ],
+        0,
+    );
+    let a = oracle(IsolationLevel::ReadUncommitted)
+        .analyze(&t)
+        .expect("decodes")
+        .expect("the register dirty-write the final reads establish (not clean)");
+    assert_eq!(a.kind, AnomalyKind::DirtyWrite);
+    assert_eq!(a.txns, vec![1, 2]);
+    assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
+}
+
+/// Round-7 P2 (same-Moment RMW): each transaction's read and write of `k` share
+/// one Moment. The read-before-write must still be counted (via canonical op
+/// order, not a strict `read.at < write.at`), so both RMWs are recognized as
+/// based on version 1 — a lost update, not two blind writes judged clean.
+#[test]
+fn same_moment_rmw_reads_count_as_lost_update() {
+    let t = trace(
+        vec![
+            write(1, 0, 10, "k", 1), // install version 1
+            commit(2, 10),
+            read(5, 1, 11, "k", &[1]), // T11 reads v1...
+            write(5, 1, 11, "k", 2),   // ...and writes at the SAME Moment
+            commit(6, 11),
+            read(7, 2, 12, "k", &[1]), // T12 reads the same v1...
+            write(7, 2, 12, "k", 3),   // ...and writes at the SAME Moment
+            commit(8, 12),
+        ],
+        0,
+    );
+    let a = oracle(IsolationLevel::SnapshotIsolation)
+        .analyze(&t)
+        .expect("decodes")
+        .expect("a lost update (same-Moment RMW reads counted)");
+    assert_eq!(a.kind, AnomalyKind::LostUpdate);
+    assert_eq!(a.txns, vec![11, 12]);
+    assert_eq!(a.keys, vec![b"k".to_vec()]);
+}
+
 /// Round-4 P1 (aborted-gap false-clean): a G0 dirty-write cycle over two append
 /// keys where one key's committed versions are separated in the observed order
 /// by an **aborted** value (a dirty read, legal at Read Uncommitted). ww edges

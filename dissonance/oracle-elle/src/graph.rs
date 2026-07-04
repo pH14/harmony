@@ -39,8 +39,13 @@ pub struct DepGraph {
     /// Write-read edges: writer → readers of its writes.
     wr: BTreeMap<TxnId, BTreeSet<TxnId>>,
     /// Write-write edges (committed writers only): earlier → later in version
-    /// order.
+    /// order. Derived from [`ww_contrib`](Self::ww_contrib).
     ww: BTreeMap<TxnId, BTreeSet<TxnId>>,
+    /// Every ww edge with the key that witnesses it: `(earlier, later, key)`.
+    /// Register keys contribute a **star** (each non-final writer → the final
+    /// writer) rather than adjacency, so this cannot be recovered by re-pairing a
+    /// linear order — it is stored directly.
+    ww_contrib: BTreeSet<(TxnId, TxnId, Key)>,
     /// Read-write anti-dependency edges: reader of a version → its overwriter.
     rw: BTreeMap<TxnId, BTreeSet<TxnId>>,
 }
@@ -91,6 +96,17 @@ impl DepGraph {
             }
         }
 
+        // The latest committed-write Moment per key — used to tell a **quiesce**
+        // read (after all writes, so it pins the final version) from a pre-RMW
+        // read (before a later write, e.g. the stale read of a lost update, which
+        // pins nothing).
+        let mut last_write_moment: BTreeMap<Key, Moment> = BTreeMap::new();
+        for (key, writes) in &committed_writes {
+            if let Some(&(m, _)) = writes.iter().max_by_key(|(m, _)| *m) {
+                last_write_moment.insert(key.clone(), m);
+            }
+        }
+
         // 2. Recover each key's version order. The recovery is **model-aware**:
         //
         //    - **append keys** (any `Append` targets them): each read observes a
@@ -98,14 +114,14 @@ impl DepGraph {
         //      observed list and every read must be one of its prefixes (a fork
         //      is unrecoverable → `InconsistentOrder`); completeness is checked
         //      below (every committed append must be observed).
-        //    - **register keys** (writes only): the order is the committed writes
-        //      in **write-moment** order. The deterministic timeline places every
-        //      committed write, so the order is complete — an unobserved committed
-        //      write can never silently drop a ww edge and hide a G0 cycle (the
-        //      round-2 false-clean). Reads do **not** define register order (a
-        //      read seeing a non-current version is an *anomaly*, not a
-        //      reordering); they only validate value/key attribution here and
-        //      feed wr/rw/lost-update elsewhere.
+        //    - **register keys** (writes only): the order is fixed by **quiesce
+        //      reads** — a read after all committed writes to the key sees the
+        //      *final* version; every other committed writer precedes it (a
+        //      **star** of ww edges to the final writer). Write Moments are NOT
+        //      order evidence (they are the issue order, which can differ from the
+        //      committed version order — the round-7 counterexample). A key with
+        //      no quiesce read has no read-forced order, so no ww edges — which is
+        //      correct: with no evidence, any serialization works (clean).
         //
         //    Every observed value must have a writer, under the right key.
         let mut append_keys: BTreeSet<Key> = BTreeSet::new();
@@ -124,12 +140,14 @@ impl DepGraph {
             }
         }
         // A key written by BOTH models is unrecoverable — its version order can't
-        // be a list order and a write-moment order at once, and classifying it as
-        // one would silently drop the other's writes (a false-clean channel).
+        // be a list order and a register order at once, and classifying it as one
+        // would silently drop the other's writes (a false-clean channel).
         if let Some(key) = append_keys.intersection(&register_keys).next() {
             return Err(DecodeError::MixedModel { key: key.clone() });
         }
         let mut lists_by_key: BTreeMap<Key, Vec<Vec<Elem>>> = BTreeMap::new();
+        // Register quiesce reads: `(value)` observed by a read after all writes.
+        let mut reg_quiesce: BTreeMap<Key, BTreeSet<Elem>> = BTreeMap::new();
         for t in h.iter() {
             for op in &t.ops {
                 if let OpKind::Read(vs) = &op.kind {
@@ -174,16 +192,36 @@ impl DepGraph {
                             Some(_) => {}
                         }
                     }
+                    // Only a **committed** reader's observations are authoritative
+                    // order evidence — an aborted transaction may have read a
+                    // dirty/inconsistent snapshot (indeed that can be why it
+                    // aborted), so its reads must never fix the version order.
+                    if !t.committed() {
+                        continue;
+                    }
                     if append_keys.contains(&op.key) {
                         lists_by_key
                             .entry(op.key.clone())
                             .or_default()
                             .push(vs.clone());
+                    } else if let Some(&tip) = vs.last() {
+                        // A register read is a quiesce (final-version) read iff it
+                        // observes a committed value AFTER all committed writes to
+                        // the key. A pre-RMW/stale read (before a later write)
+                        // pins nothing.
+                        let after_all_writes =
+                            last_write_moment.get(&op.key).is_none_or(|&lw| op.at > lw);
+                        if after_all_writes
+                            && g.writer.get(&tip).is_some_and(|w| g.committed.contains(w))
+                        {
+                            reg_quiesce.entry(op.key.clone()).or_default().insert(tip);
+                        }
                     }
                 }
             }
         }
-        // Append keys: longest observed list, every read a prefix of it.
+        // Append keys: longest observed list, every read a prefix of it; then ww
+        // over the committed subsequence's adjacency.
         for (key, lists) in &lists_by_key {
             let candidate = lists
                 .iter()
@@ -195,25 +233,21 @@ impl DepGraph {
                     return Err(DecodeError::InconsistentOrder { key: key.clone() });
                 }
             }
+            let committed_seq: Vec<Elem> = candidate
+                .iter()
+                .copied()
+                .filter(|&v| g.is_committed_value(v))
+                .collect();
+            for pair in committed_seq.windows(2) {
+                g.add_ww_edge(pair[0], pair[1], key);
+            }
             g.version_order.insert(key.clone(), candidate);
         }
-        // Register keys: committed writes in write-moment order (complete).
-        for (key, writes) in &committed_writes {
-            if append_keys.contains(key) {
-                continue;
-            }
-            let mut ws = writes.clone();
-            ws.sort_unstable(); // by (moment, value) — a deterministic total order
-            g.version_order
-                .insert(key.clone(), ws.into_iter().map(|(_, v)| v).collect());
-        }
-
         // The recoverability contract for **append** keys: final reads at quiesce
         // fix version order, so every committed append must appear in the
         // recovered order. If one does not (a missing final read, or no read of
         // the key at all), the order is incomplete — its ww edges are missing and
-        // a real dirty-write could be judged clean. Fail loud instead of
-        // proceeding on a partial order.
+        // a real dirty-write could be judged clean. Fail loud instead.
         for (key, appends) in &committed_appends {
             let recovered: BTreeSet<Elem> = g
                 .version_order
@@ -226,6 +260,36 @@ impl DepGraph {
                     value: missing,
                 });
             }
+        }
+        // Register keys: quiesce reads pin the final version; every other
+        // committed writer → the final writer (a star). No quiesce read → no ww.
+        for key in &register_keys {
+            let committed_vals: Vec<Elem> = committed_writes
+                .get(key)
+                .map(|w| w.iter().map(|(_, v)| *v).collect())
+                .unwrap_or_default();
+            let quiesced = reg_quiesce.get(key);
+            // All quiesce reads (after all writes) must agree on the final value.
+            if let Some(q) = quiesced
+                && q.len() > 1
+            {
+                return Err(DecodeError::InconsistentOrder { key: key.clone() });
+            }
+            let final_v = quiesced.and_then(|q| q.iter().next().copied());
+            let mut order: Vec<Elem> = committed_vals
+                .iter()
+                .copied()
+                .filter(|v| Some(*v) != final_v)
+                .collect();
+            order.sort_unstable();
+            if let Some(fv) = final_v {
+                // Star: every other committed writer precedes the final writer.
+                for &v in &order {
+                    g.add_ww_edge(v, fv, key);
+                }
+                order.push(fv);
+            }
+            g.version_order.insert(key.clone(), order);
         }
 
         g.build_edges(h);
@@ -269,40 +333,30 @@ impl DepGraph {
                 }
             }
         }
-
-        // Write-write: consecutive writers in each key's **committed** version
-        // order. The committed subsequence is paired (not the raw order), so an
-        // aborted version observed between two committed writes never breaks the
-        // committed→committed edge across it (round-4: else a G0 cycle spanning
-        // the aborted gap would be judged clean).
-        for order in self.version_order.values() {
-            let seq = self.committed_subseq(order);
-            for pair in seq.windows(2) {
-                if let (Some(&wa), Some(&wb)) =
-                    (self.writer.get(&pair[0]), self.writer.get(&pair[1]))
-                    && wa != wb
-                {
-                    self.ww.entry(wa).or_default().insert(wb);
-                }
-            }
-        }
+        // ww edges are minted during recovery (append adjacency + register star);
+        // see [`add_ww_edge`](Self::add_ww_edge).
     }
 
-    /// The values of `order` whose writer **committed**, preserving order — the
-    /// sequence ww edges are paired over, so aborted intermediates are skipped
-    /// (never breaking a committed→committed edge). A no-op for register keys
-    /// (their order is already committed-only) and load-bearing for append keys
-    /// (whose observed order may interleave dirty-read aborted values).
-    fn committed_subseq(&self, order: &[Elem]) -> Vec<Elem> {
-        order
-            .iter()
-            .copied()
-            .filter(|v| {
-                self.writer
-                    .get(v)
-                    .is_some_and(|w| self.committed.contains(w))
-            })
-            .collect()
+    /// Whether `value`'s writer exists and committed.
+    fn is_committed_value(&self, value: Elem) -> bool {
+        self.writer
+            .get(&value)
+            .is_some_and(|w| self.committed.contains(w))
+    }
+
+    /// Record a ww edge writer(`a`) → writer(`b`) witnessed by `key`, iff both
+    /// writers are distinct and committed. Updates both the adjacency
+    /// ([`ww`](Self::ww)) and the witnessed contributions
+    /// ([`ww_contrib`](Self::ww_contrib)).
+    fn add_ww_edge(&mut self, a: Elem, b: Elem, key: &Key) {
+        if let (Some(&wa), Some(&wb)) = (self.writer.get(&a), self.writer.get(&b))
+            && wa != wb
+            && self.committed.contains(&wa)
+            && self.committed.contains(&wb)
+        {
+            self.ww.entry(wa).or_default().insert(wb);
+            self.ww_contrib.insert((wa, wb, key.clone()));
+        }
     }
 
     /// The transaction that wrote `value`, if any.
@@ -390,24 +444,16 @@ impl DepGraph {
         None
     }
 
-    /// The keys whose version order places a ww edge between two members of
-    /// `set` — the constructive key witness for a ww-cycle (G0) finding. Sorted
-    /// and deduplicated.
+    /// The keys that witness a ww edge between two members of `set` — the
+    /// constructive key witness for a ww-cycle (G0) finding. Read straight off
+    /// the recorded [`ww_contrib`](Self::ww_contrib) (which stores the star edges
+    /// register keys mint), so it stays exact for both models. Sorted and
+    /// deduplicated.
     pub fn ww_keys_among(&self, set: &BTreeSet<TxnId>) -> Vec<Key> {
         let mut keys: BTreeSet<Key> = BTreeSet::new();
-        for (key, order) in &self.version_order {
-            // Pair the committed subsequence (round-4 twin of the ww-edge fix),
-            // so an aborted intermediate does not hide a witnessing key.
-            let seq = self.committed_subseq(order);
-            for pair in seq.windows(2) {
-                if let (Some(&wa), Some(&wb)) =
-                    (self.writer.get(&pair[0]), self.writer.get(&pair[1]))
-                    && wa != wb
-                    && set.contains(&wa)
-                    && set.contains(&wb)
-                {
-                    keys.insert(key.clone());
-                }
+        for (a, b, key) in &self.ww_contrib {
+            if set.contains(a) && set.contains(b) {
+                keys.insert(key.clone());
             }
         }
         keys.into_iter().collect()
@@ -520,9 +566,10 @@ mod tests {
         assert_eq!(g.ww_keys_among(&set), vec![b"a".to_vec(), b"b".to_vec()]);
     }
 
-    /// A register's version order is the committed writes in **write-moment**
-    /// order — reads observing different single values are fine (not a false
-    /// `InconsistentOrder`), and every committed write is placed.
+    /// A register's version order is pinned by the **quiesce read** (the read
+    /// after all writes): `R[20]` after both writes fixes 20 as the final
+    /// version, so 10 precedes it. Reads observing different single values are
+    /// fine (not a false `InconsistentOrder`).
     #[test]
     fn register_version_order_is_recovered_by_time() {
         let h = history(vec![
@@ -551,30 +598,40 @@ mod tests {
         assert!(g.ww_cycle().is_none());
     }
 
-    /// A committed register write that no read observes is still placed by its
-    /// write moment (the round-2 false-clean fix): here `a=4` is never read, but
-    /// it is ordered before the final `a=1`, so the ww edge exists.
+    /// Register order comes from the **quiesce read** (round-7): a final read
+    /// pinning `a=1` means every *other* committed writer of `a` (T2's `a=4`)
+    /// precedes it — the star ww edge T2 → T1 — even though `a=4` was written at
+    /// a *later* Moment (write Moments are the issue order, not the version
+    /// order). Without any read, the two writes would be unordered (no edge).
     #[test]
-    fn unobserved_register_write_is_still_ordered() {
+    fn register_order_from_quiesce_read_pins_final() {
         let h = history(vec![
             tx(
                 1,
                 TxnOutcome::Committed,
-                vec![op(3, 1, "a", OpKind::Write(1))], // later moment → final
+                vec![op(1, 1, "a", OpKind::Write(1))],
             ),
             tx(
                 2,
                 TxnOutcome::Committed,
-                vec![op(1, 2, "a", OpKind::Write(4))], // earlier moment, never read
+                vec![op(2, 2, "a", OpKind::Write(4))], // later Moment...
+            ),
+            tx(
+                3,
+                TxnOutcome::Committed,
+                vec![op(3, 3, "a", OpKind::Read(vec![1]))], // ...but the final read sees a=1
             ),
         ]);
         let g = DepGraph::build(&h).expect("recoverable");
         assert_eq!(
             g.version_order(&b"a".to_vec()),
             Some(&[4, 1][..]),
-            "4 before 1 by moment"
+            "4 precedes the read-pinned final 1"
         );
-        assert!(g.ww_edges()[&2].contains(&1), "T2 (a=4) →ww T1 (a=1)");
+        assert!(
+            g.ww_edges()[&2].contains(&1),
+            "T2 (a=4) →ww T1 (a=1, final)"
+        );
     }
 
     /// An aborted writer stays out of the committed set (so its writes are

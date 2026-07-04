@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f131805cb849f81a003130f878c90898690f81028ba80bfc45f678769d8fa6f1 # shrinks to txns = [RTxn { id: 1, ops: [W(0, 1), W(0, 2)], committed: true }, RTxn { id: 2, ops: [R(0, Some(2)), R(0, None)], committed: false }, RTxn { id: 3, ops: [R(0, Some(1)), W(0, 3)], committed: false }]
+cc 544e28a43dfcd5b9b9ec4f418b10c1f80628b89b6f4b7fbf19111d71793c0d82 # shrinks to txns = [RTxn { id: 1, ops: [W(0, 1), W(1, 2)], committed: true }, RTxn { id: 2, ops: [R(0, None), R(0, Some(1))], committed: true }]

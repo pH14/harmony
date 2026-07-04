@@ -212,29 +212,25 @@ fn detect_lost_update(h: &History) -> Option<Anomaly> {
         if !t.committed() {
             continue;
         }
-        // First write moment per key in this txn.
-        let mut first_write: BTreeMap<Key, Moment> = BTreeMap::new();
-        for op in &t.ops {
+        // The first write's **index** per key. `t.ops` is canonically sorted, so
+        // index order is the deterministic program order — and a read at the SAME
+        // Moment as the write sorts *before* it (`Read` < `Write`), so a
+        // same-Moment read-modify-write is counted as read-before-write, not
+        // dropped (the round-5 raw-Moment strict-`<` bug that misclassified it as
+        // a blind write and let the SI lost-update check return clean).
+        let mut first_write_idx: BTreeMap<Key, usize> = BTreeMap::new();
+        for (idx, op) in t.ops.iter().enumerate() {
             if op.written().is_some() {
-                first_write
-                    .entry(op.key.clone())
-                    .and_modify(|m| {
-                        if op.at < *m {
-                            *m = op.at;
-                        }
-                    })
-                    .or_insert(op.at);
+                first_write_idx.entry(op.key.clone()).or_insert(idx);
             }
         }
-        for (key, &wmoment) in &first_write {
-            // The version read just before the first write of this key.
-            let based = t
-                .ops
+        for (key, &widx) in &first_write_idx {
+            // The version read just before the first write of this key, by op
+            // order (not raw Moment): the last read of the key at index < widx.
+            let based = t.ops[..widx]
                 .iter()
-                .filter(|op| {
-                    &op.key == key && op.at < wmoment && matches!(op.kind, OpKind::Read(_))
-                })
-                .max_by_key(|op| op.at)
+                .rev()
+                .find(|op| &op.key == key && matches!(op.kind, OpKind::Read(_)))
                 .map(|op| op.observed_version());
             // No prior read of the key → a blind write, not a participant.
             let Some(based_version) = based else {
@@ -243,7 +239,7 @@ fn detect_lost_update(h: &History) -> Option<Anomaly> {
             groups
                 .entry((key.clone(), based_version))
                 .or_default()
-                .insert(t.id, wmoment);
+                .insert(t.id, t.ops[widx].at);
         }
     }
 
