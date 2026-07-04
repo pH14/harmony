@@ -75,16 +75,32 @@ pub mod class_bit {
     pub const BLOCK_IO: u16 = 5;
     /// `DecisionClass::Process` — a node lifecycle point.
     pub const PROCESS: u16 = 6;
+    // Bit 7 is reserved for `environment::DecisionClass::Buggify` (discriminant 7).
+    /// The SDK lifecycle **snapshot point** stop (task 73, `setup_complete`) — a
+    /// **standalone** stop class, NOT a `DecisionClass` (so it starts at 8, past
+    /// the decision discriminants + the reserved buggify bit 7). A deferred
+    /// snapshot point surfaces from a `Run` only when this bit is armed (round-7).
+    pub const SNAPSHOT_POINT: u16 = 8;
+    /// The SDK **assertion** stop (task 73) — a standalone stop class; an
+    /// `assert_always` violation surfaces only when this bit is armed. `StopMask::
+    /// NONE` runs a cooperating-SDK guest straight through to the terminal.
+    pub const ASSERTION: u16 = 9;
 }
 
 /// A bitset over decision/exit **classes** that selects which non-terminal
-/// decisions surface from a [`Run`](Request::Run) (vs. being auto-serviced by the
-/// seed). Crash / assertion / quiescence always stop regardless of the mask.
+/// decisions **and cooperating-SDK stops** surface from a [`Run`](Request::Run)
+/// (vs. being auto-serviced / run through). The substrate **terminals** —
+/// crash / quiescence / deadline — always stop regardless of the mask; the SDK
+/// stops [`Assertion`](StopReason::Assertion) and
+/// [`SnapshotPoint`](StopReason::SnapshotPoint) are gated on their class bits
+/// ([`class_bit::ASSERTION`] / [`class_bit::SNAPSHOT_POINT`], round-7), so
+/// `StopMask::NONE` runs an SDK guest straight through to the terminal.
 ///
 /// Bit layout is the integrator-pinned mapping: `bit N == (1 << class_bit)` where
-/// `class_bit` is the [`class_bit`] (i.e. `environment::DecisionClass`)
-/// discriminant. The same bit is computed in both crates so the armed-class set
-/// can never diverge.
+/// `class_bit` is the [`class_bit`] — the `environment::DecisionClass` discriminant
+/// for decision classes (1..=6, plus 7 reserved for buggify), and standalone
+/// constants (≥ 8) for the SDK stops. The same bit is computed in both crates so
+/// the armed-class set can never diverge.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct StopMask(pub u32);
 
@@ -219,8 +235,11 @@ pub enum Reply {
 }
 
 /// The guest-observable outcome of a [`Run`](Request::Run) — the explorer's
-/// reaction surface. The first three are always present (the substrate); the last
-/// three appear only with a cooperating guest / SDK.
+/// reaction surface. The substrate terminals (`Deadline`/`Quiescent`/`Crash`)
+/// always surface; the cooperating-SDK stops (`Decision`/`SnapshotPoint`/
+/// `Assertion`) appear only with a cooperating guest AND only when their
+/// [`StopMask`] class bit is armed (round-7) — so `StopMask::NONE` runs an SDK
+/// guest straight through to the terminal.
 ///
 /// There is deliberately no `Host` variant: an in-band hypercall is serviced by
 /// the consonance plane and the run continues; anything R2 must react to arrives

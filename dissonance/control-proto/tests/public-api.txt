@@ -1,11 +1,13 @@
 pub mod control_proto
 pub mod control_proto::class_bit
+pub const control_proto::class_bit::ASSERTION: u16
 pub const control_proto::class_bit::BLOCK_IO: u16
 pub const control_proto::class_bit::ENTROPY: u16
 pub const control_proto::class_bit::NET_SEND: u16
 pub const control_proto::class_bit::PAYLOAD: u16
 pub const control_proto::class_bit::PROCESS: u16
 pub const control_proto::class_bit::SCHEDULER: u16
+pub const control_proto::class_bit::SNAPSHOT_POINT: u16
 pub enum control_proto::ControlError
 pub control_proto::ControlError::BadEnvVersion(u16)
 pub control_proto::ControlError::MalformedAnswer

@@ -1635,6 +1635,17 @@ impl<B: Backend> Vmm<B> {
             legy.extend_from_slice(&legacy.pic_imr());
             put_chunk(&mut out, b"LEGY", &legy);
         }
+        // The task-73 SDK channel's **replay-relevant** state — present **only**
+        // when a channel is wired (`enable_sdk`), so an SDK-less run's blob
+        // (M1/M2/corpus/Linux-boot) is byte-for-byte unchanged (round-7). It folds
+        // the seeded stream positions (buggify + inert supply) and the pending stop
+        // into the hash, so two same-seed forks that diverge in their SDK stream (a
+        // different buggify draw sequence) hash differently — the SDK divergence is
+        // now IN the determinism hash, not silently outside it. The event log stays
+        // out (host-side observation, like the report stream).
+        if let Some(sdk) = &self.sdk {
+            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk));
+        }
         // The canonical `vm_state` blob, folded into the hash **only** when the
         // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps
         // M1/M2/corpus/Linux-boot blobs byte-for-byte unchanged (their goldens do
@@ -3370,6 +3381,28 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     v
 }
 
+/// Deterministic, fixed-layout encoding of the task-73 SDK channel's
+/// **replay-relevant** state for the `SDK\0` hash chunk (round-7): the seeded
+/// stream positions (16 bytes — the buggify + inert supply PRNG states) and the
+/// pending stop. The event log is deliberately excluded (host-side observation,
+/// like the report stream). A different buggify draw sequence (a diverged fork)
+/// moves the stream state, so it hashes differently.
+fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.extend_from_slice(&sdk.env.stream_state());
+    match &sdk.pending_stop {
+        None => v.push(0),
+        Some(SdkStop::Assertion { id, data }) => {
+            v.push(1);
+            v.extend_from_slice(&id.to_le_bytes());
+            v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            v.extend_from_slice(data);
+        }
+    }
+    v.push(u8::from(sdk.pending_snapshot));
+    v
+}
+
 /// Deterministic, fixed-layout encoding of an xAPIC [`lapic::LapicState`] for the
 /// `LAPC` hash chunk: every field little-endian in declaration order (all plain
 /// `u32`/`u64`/`[u32; N]`/`bool` POD — no map iteration, no float). A change in any
@@ -4008,6 +4041,52 @@ mod tests {
             cont(&mut broken),
             expected,
             "a fresh (position-0) channel is NOT the mid-run continuation"
+        );
+    }
+
+    /// The `state_hash` folds the wired SDK channel's replay-relevant state
+    /// (round-7): two same-seed VMs whose SDK buggify streams diverge hash
+    /// **differently**; and a VM with NO SDK channel carries no `SDK\0` chunk, so
+    /// an SDK-less golden (M1/M2/corpus/Linux) is byte-for-byte unchanged.
+    #[test]
+    fn state_hash_folds_the_sdk_stream_and_is_absent_when_unwired() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut policy = FaultPolicy::none();
+        policy.set_buggify_point(1, 1, 2).unwrap();
+        let spec = EnvSpec::Seeded { seed: 7, policy };
+        let mk = || Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+
+        // Same seed + same stream position ⇒ equal hash; a diverged buggify draw
+        // sequence ⇒ DIFFERENT hash (the SDK divergence is IN the determinism hash).
+        let mut a = mk();
+        a.enable_sdk(spec.materialize());
+        let mut b = mk();
+        b.enable_sdk(spec.materialize());
+        assert_eq!(
+            a.state_hash(),
+            b.state_hash(),
+            "same SDK stream position hashes equal"
+        );
+        for i in 0..3 {
+            let _ = b.decide_buggify(i, 1);
+        }
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "a diverged SDK stream hashes differently"
+        );
+
+        // No SDK channel ⇒ no `SDK\0` chunk in the blob (the golden does not move).
+        let has_sdk_chunk = |blob: &[u8]| blob.windows(4).any(|w| w == b"SDK\0");
+        assert!(
+            !has_sdk_chunk(&mk().state_blob()),
+            "no SDK chunk when unwired"
+        );
+        let mut wired = mk();
+        wired.enable_sdk(spec.materialize());
+        assert!(
+            has_sdk_chunk(&wired.state_blob()),
+            "SDK chunk present when wired"
         );
     }
 

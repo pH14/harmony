@@ -50,8 +50,12 @@
 //!   caller's (workload-aware) job, never this server's. `resolve` is accepted
 //!   on the wire but there is never an outstanding decision on the seed-driven
 //!   substrate, so any resolve answers [`ControlError::ResolveWithoutDecision`].
-//!   The [`StopMask`](control_proto::StopMask) is carried but moot: no decision
-//!   class can surface yet; crash / quiescence / deadline always stop.
+//!   The [`StopMask`](control_proto::StopMask) gates no *decision* class yet (none
+//!   surface on the seed substrate), but it DOES gate the cooperating-SDK stops
+//!   (task 73 round-7): [`SnapshotPoint`](control_proto::StopReason::SnapshotPoint)
+//!   and [`Assertion`](control_proto::StopReason::Assertion) surface only when
+//!   their class bit is armed, so `StopMask::NONE` runs an SDK guest straight
+//!   through to the terminal. Crash / quiescence / deadline always stop.
 //! - **`hash(scope)`** → [`Vmm::state_hash`] for `Whole`; `Disk` / `Region`
 //!   answer [`ControlError::Unsupported`] (no disk device exists; region
 //!   hashing has no consumer yet).
@@ -949,7 +953,13 @@ impl<B: Backend> ControlServer<B> {
             //     empty (`clear_arrival` then disarms the next arrival, so the seal
             //     is clean). (`take_synchronized_snapshot_point` is a no-op unless
             //     the VM is at a synchronized, sealable boundary.)
-            if self.schedule.is_empty() {
+            //     Gated on the client `StopMask` (round-7): only surface when the
+            //     `SNAPSHOT_POINT` class is armed. The whole block is gated (not
+            //     just the return), so an unarmed run does NOT consume the pending
+            //     point — it stays deferred and the run continues to the terminal
+            //     (`StopMask::NONE` runs straight through setup_complete).
+            if until.on.armed(control_proto::class_bit::SNAPSHOT_POINT) && self.schedule.is_empty()
+            {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                 if vmm.take_synchronized_snapshot_point() {
                     let vns = vmm.effective_vns().unwrap_or(0);
@@ -1018,6 +1028,14 @@ impl<B: Backend> ControlServer<B> {
                             moment: m,
                             vtime: vns,
                         }));
+                    }
+                    // Gate the assertion on the client `StopMask` (round-7): if the
+                    // `ASSERTION` class is not armed, the stop is already consumed
+                    // (`take_sdk_stop` above) and the guest is past the assert
+                    // doorbell `OUT`, so continue the loop — the run proceeds to the
+                    // terminal (`StopMask::NONE` runs an assertion straight through).
+                    if !until.on.armed(control_proto::class_bit::ASSERTION) {
+                        continue;
                     }
                     let reason = match stop {
                         Some(sdk_stop) => sdk_stop_to_reason(sdk_stop, vns),
@@ -1268,6 +1286,23 @@ mod tests {
         }
     }
 
+    /// Like `run_all` but arms the SDK `SNAPSHOT_POINT` class (round-7), so a
+    /// deferred `setup_complete` point surfaces (the default `StopMask::NONE` now
+    /// runs straight through it).
+    fn run_seeking_snapshot(server: &mut ControlServer<MockBackend>) -> StopReason {
+        let req = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT),
+            },
+            resolve: None,
+        };
+        match server.handle(&req).unwrap() {
+            Ok(Reply::Stop(stop)) => stop,
+            other => panic!("run reply: {other:?}"),
+        }
+    }
+
     /// A deadline-free `run` returning the raw reply (for the loud-error paths).
     fn run_all_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
         server
@@ -1298,8 +1333,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 3,
-            "task 73 bumped for the SdkEvents verb + reply"
+            caps.protocol_version, 4,
+            "task 73 round-7 bumped for StopMask-gated SDK stops"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -2326,8 +2361,9 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        // The run surfaces the deferred snapshot point at M, the fault drained first.
-        let stop = run_all(&mut s);
+        // The run surfaces the deferred snapshot point at M, the fault drained first
+        // (arm the SNAPSHOT_POINT class — round-7 gates it on the mask).
+        let stop = run_seeking_snapshot(&mut s);
         assert!(
             matches!(stop, StopReason::SnapshotPoint { .. }),
             "the deferred point surfaced, got {stop:?}"
@@ -2413,8 +2449,9 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        // The point surfaces only after the schedule drains (at M), NOT at the RDTSC.
-        match run_all(&mut s) {
+        // The point surfaces only after the schedule drains (at M), NOT at the RDTSC
+        // (arm the SNAPSHOT_POINT class — round-7 gates it on the mask).
+        match run_seeking_snapshot(&mut s) {
             StopReason::SnapshotPoint { vtime } => assert_eq!(
                 vtime.0, m,
                 "surfaced after the future fault drained, not at the earlier RDTSC"
@@ -2426,6 +2463,108 @@ mod tests {
             Ok(Reply::SnapId(_)) => {}
             other => panic!("seal failed with a future fault mishandled: {other:?}"),
         }
+    }
+
+    #[test]
+    fn stop_mask_gates_the_sdk_snapshot_point_and_assertion() {
+        // Round-7: the deferred SnapshotPoint AND an Assertion honor the client
+        // StopMask. `StopMask::NONE` runs a cooperating-SDK guest straight through
+        // to the terminal; arming the class bit surfaces the stop.
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+
+        let frame_for = |payload: &[u8]| -> Vec<u8> {
+            let mut buf = [0u8; 4096];
+            let n = hypercall_proto::encode_request(
+                hypercall_proto::ServiceId::Event,
+                1,
+                1,
+                payload,
+                &mut buf,
+            )
+            .unwrap();
+            buf[..n].to_vec()
+        };
+        // Run a guest that rings the doorbell (first exit, req_len = `frame.len()`)
+        // then `rest`, under mask `on`; return the stop.
+        let run_with = |rest: Vec<Exit>, frame: &[u8], on: StopMask| -> StopReason {
+            let mut script = vec![Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(frame.len() as u32),
+            }];
+            script.extend(rest);
+            let mut mb = MockBackend::with_exits(script);
+            mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+            live.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 3)
+                    .unwrap(),
+            );
+            live.wire_snapshot_hashing();
+            let mut ram = vec![0u8; BIG_RAM];
+            ram[REQ_GPA..REQ_GPA + frame.len()].copy_from_slice(frame);
+            live.restore_guest_memory(&ram).unwrap();
+            let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+            let mut s = ControlServer::new(live, factory);
+            hello(&mut s);
+            match s
+                .handle(&Request::Run {
+                    until: StopConditions { deadline: None, on },
+                    resolve: None,
+                })
+                .unwrap()
+            {
+                Ok(Reply::Stop(stop)) => stop,
+                other => panic!("run reply: {other:?}"),
+            }
+        };
+
+        // (a) setup_complete → an RDTSC (a synchronized, sealable boundary).
+        let setup = frame_for(&(4u32 << 24).to_le_bytes());
+        assert!(
+            matches!(
+                run_with(vec![Exit::Rdtsc, Exit::Hlt], &setup, StopMask::NONE),
+                StopReason::Quiescent { .. }
+            ),
+            "StopMask::NONE runs through setup_complete straight to the terminal"
+        );
+        assert!(
+            matches!(
+                run_with(
+                    vec![Exit::Rdtsc, Exit::Hlt],
+                    &setup,
+                    StopMask::NONE.arm(control_proto::class_bit::SNAPSHOT_POINT)
+                ),
+                StopReason::SnapshotPoint { .. }
+            ),
+            "arming SNAPSHOT_POINT surfaces the deferred point at the RDTSC"
+        );
+
+        // (b) an always-violation assertion.
+        let mut viol = ((1u32 << 24) | 20).to_le_bytes().to_vec();
+        viol.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
+        let viol = frame_for(&viol);
+        assert!(
+            matches!(
+                run_with(vec![Exit::Hlt], &viol, StopMask::NONE),
+                StopReason::Quiescent { .. }
+            ),
+            "StopMask::NONE runs through an assertion straight to the terminal"
+        );
+        assert!(
+            matches!(
+                run_with(
+                    vec![Exit::Hlt],
+                    &viol,
+                    StopMask::NONE.arm(control_proto::class_bit::ASSERTION)
+                ),
+                StopReason::Assertion { .. }
+            ),
+            "arming ASSERTION surfaces the assertion"
+        );
     }
 
     #[test]
