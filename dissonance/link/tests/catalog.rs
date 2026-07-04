@@ -152,6 +152,34 @@ fn redeclare_removes_the_stale_coordinate() {
     assert_eq!(cat.fired(&new), ["x".to_string()].into_iter().collect());
 }
 
+/// A **malformed** declaration can put two names at one coordinate (the SDK's
+/// `init` rejects this, but link decode is total and must survive arbitrary
+/// bytes). Last-writer-wins in `by_coord`, so when the FIRST name later moves it
+/// must NOT evict the coordinate the SECOND name now owns.
+#[test]
+fn redeclare_does_not_evict_another_names_coordinate() {
+    // "a" and "b" both declared at (assert, 1) — "b" wins the coordinate; then
+    // "a" moves to (assert, 2). "b" must keep (assert, 1).
+    let decl = declaration(&[
+        (KIND_SOMETIMES, 1, "a"),
+        (KIND_SOMETIMES, 1, "b"),
+        (KIND_SOMETIMES, 2, "a"),
+    ]);
+    let cat = Catalog::from_declaration_bytes(&decl);
+
+    // A firing at (assert, 1) still resolves to "b" — its coordinate survived the
+    // move of "a" (the bug would have deleted it, orphaning "b").
+    let at1 = events(&[(10, id(NS_ASSERT, 1), vec![0, 0, 0])]);
+    assert_eq!(
+        cat.fired(&at1),
+        ["b".to_string()].into_iter().collect(),
+        "b keeps the coordinate it owns; a's move must not evict it"
+    );
+    // "a" now lives at (assert, 2).
+    let at2 = events(&[(10, id(NS_ASSERT, 2), vec![0, 0, 0])]);
+    assert_eq!(cat.fired(&at2), ["a".to_string()].into_iter().collect());
+}
+
 /// The catalog records each point's kind so the report can be sliced by role.
 #[test]
 fn catalog_records_kinds() {

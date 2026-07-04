@@ -83,6 +83,14 @@ jobs:
           # std leak). Fails the gate if anything pulls in std.
           rustup target add x86_64-unknown-none
           cargo build --manifest-path guest/sdk/Cargo.toml --lib --target x86_64-unknown-none
+      # Actually LINK the SDK-instrumented demo guest for bare metal — from its own
+      # dir, so guest/payloads/.cargo/config.toml (target + linker) applies. The
+      # guest/sdk `--lib` proof above compiles the library, but only a full payload
+      # link exercises the SDK end-to-end against the boot shim; a regression that
+      # breaks the demo (the box gate's guest) would otherwise surface only on the box.
+      - name: guest/payloads sdk-demo build (bare metal, from its dir)
+        working-directory: guest/payloads
+        run: cargo build -p sdk-demo
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`

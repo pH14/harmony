@@ -1,6 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
 #![doc = "Deterministic guest/host hypercall wire protocol framing, guest client helpers, and host dispatch support for the Hypervizor VMM."]
+//!
+//! # Services and opcodes (the wire ABI)
+//!
+//! Every request names a [`ServiceId`] and a service-specific `opcode`. The
+//! registered services and their opcodes (mirrored in `docs/INTEGRATION.md` §1):
+//!
+//! | Service | id | opcode(s) |
+//! |---------|----|-----------|
+//! | [`Console`](ServiceId::Console) | 1 | `1` = write bytes |
+//! | [`Entropy`](ServiceId::Entropy) | 2 | `1` = fill from the seeded stream |
+//! | [`Block`](ServiceId::Block)     | 3 | `1` = capacity, `2` = read sectors |
+//! | [`Event`](ServiceId::Event)     | 4 | `1` = emit `(event_id, bytes)` (fire-and-forget) |
+//! | `Net` (reserved — task 61)      | 5 | — |
+//! | [`Sdk`](ServiceId::Sdk)         | 6 | `1` = `buggify_decide` (round-trips a one-byte fire / no-fire answer) |
+//!
+//! Id **5** is reserved for task 61's `Net` vertical, so the task-73 SDK control
+//! service ([`Sdk`](ServiceId::Sdk)) takes id **6**. An unregistered service id or
+//! an opcode a service does not implement is a [`Status::UnknownService`] /
+//! [`Status::UnknownOpcode`], never a silent drop.
 
 #[cfg(feature = "host")]
 extern crate std;

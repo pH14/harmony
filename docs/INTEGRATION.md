@@ -113,6 +113,29 @@ dedicated port**, distinct from the doorbell.
   row in the §6 canonical form or `contract_hash` — it lives here and in `docs/cpu-msr-contract.toml`
   `[ports]` (documentary), not as a hashed contract row. (`contract_hash` is unchanged by it.)
 
+### 1.2 Services and opcodes (the doorbell payload ABI)
+
+Every hypercall frame carried by the doorbell above names a **service id** and a service-specific
+**opcode** (`consonance/hypercall-proto`; the `ServiceId` enum is authoritative — this table mirrors
+its module doc):
+
+| Service | id | opcode(s) |
+|---------|----|-----------|
+| `Console` | 1 | `1` = write bytes |
+| `Entropy` | 2 | `1` = fill from the run's seeded entropy stream |
+| `Block`   | 3 | `1` = capacity, `2` = read sectors |
+| `Event`   | 4 | `1` = emit `(event_id, bytes)` — fire-and-forget (the link-tier SDK stream) |
+| `Net`     | 5 | *reserved for task 61's network vertical* |
+| `Sdk`     | 6 | `1` = `buggify_decide` — round-trips a one-byte fire / no-fire answer |
+
+- **`Sdk = 6` (task 73).** The guest SDK's buggify verb asks the host to resolve a decision at a
+  named point; unlike the fire-and-forget `Event` service it **round-trips** a one-byte answer, which
+  the host resolves through its `Environment::decide` seam and records at the surfacing `Moment` (so a
+  replay reproduces it). Id **5** is reserved for the `Net` vertical, so the SDK control service is
+  **6** — the numbering never moves (a released wire ABI).
+- An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
+  `Status::UnknownOpcode` — never a silent drop.
+
 ## 2. Run-loop ownership
 
 `vmm-core` owns the `KVM_RUN` loop. The vtime `InjectionPlanner` was specced as the driver

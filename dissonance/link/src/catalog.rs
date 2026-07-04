@@ -157,9 +157,13 @@ impl Catalog {
     fn declare(&mut self, name: String, local: u32, kind: PointKind) {
         let coord = kind.namespace().map(|ns| (ns, local));
         // Drop the name's previous coordinate when it moves or disappears, so no
-        // stale coordinate survives to resolve a firing to this name.
+        // stale coordinate survives to resolve a firing to this name — but ONLY if
+        // it still resolves to THIS name. A malformed declaration can put two
+        // names at one coordinate (last-writer-wins in `by_coord`); the earlier
+        // name must not then evict the coordinate the later name now owns.
         if let Some(&old) = self.coord_of_name.get(&name)
             && Some(old) != coord
+            && self.by_coord.get(&old) == Some(&name)
         {
             self.by_coord.remove(&old);
         }
