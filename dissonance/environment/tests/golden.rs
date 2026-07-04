@@ -52,6 +52,10 @@ fn policy() -> FaultPolicy {
         ],
     )
     .unwrap();
+    // A buggify point that always fires (per-point, not per-class), so the golden
+    // pins the `Fault::BuggifyFire` wire tag (16) byte-exactly — a round-trip test
+    // would not catch a tag renumbering.
+    p.set_buggify_point(99, 1, 1).unwrap();
     p
 }
 
@@ -83,6 +87,9 @@ fn sequence() -> Vec<P> {
         P::Process { node: NodeId(2) },
         P::Process { node: NodeId(3) },
         P::Process { node: NodeId(4) },
+        // A buggify decision — the always-firing point declared in `policy()`, so
+        // the golden covers `Fault::BuggifyFire` (the one class the sequence missed).
+        P::Buggify { point: 99 },
     ]
 }
 
@@ -125,6 +132,7 @@ const EXPECTED: &[&str] = &[
     "020a",                       // Process       → Fault(ProcKill)
     "02090a00000000000000",       // Process       → Fault(ProcPause(10))
     "020a",                       // Process       → Fault(ProcKill)
+    "0210",                       // Buggify       → Fault(BuggifyFire) (tag 16)
 ];
 
 #[test]

@@ -509,3 +509,24 @@ fn err_protocol() {
         &[0x01, 0x09, 0x02],
     );
 }
+
+/// The `class_bit` constants are a hand-maintained mirror of
+/// `environment::DecisionClass` (the lib stays schema-blind — conventions rule 2,
+/// so it never imports the enum). This test — the only place both are in scope —
+/// pins the mirror against the real enum: a renumbering on either side, or a new
+/// class added to only one, fails here rather than silently desyncing the
+/// armed-class `StopMask` from the backend's decision classes.
+#[test]
+fn class_bit_mirrors_decision_class() {
+    use environment::DecisionClass as D;
+    assert_eq!(class_bit::ENTROPY, D::Entropy as u16);
+    assert_eq!(class_bit::PAYLOAD, D::Payload as u16);
+    assert_eq!(class_bit::SCHEDULER, D::Scheduler as u16);
+    assert_eq!(class_bit::NET_SEND, D::NetFlow as u16);
+    assert_eq!(class_bit::BLOCK_IO, D::BlockIo as u16);
+    assert_eq!(class_bit::PROCESS, D::Process as u16);
+    assert_eq!(class_bit::BUGGIFY, D::Buggify as u16);
+    // And the task-73 addition is pinned to its literal, so the enum and the
+    // mirror moving together (to the wrong shared value) is still caught.
+    assert_eq!(class_bit::BUGGIFY, 7);
+}
