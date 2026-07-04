@@ -419,21 +419,46 @@ impl crate::EnvCodec for SpecEnvCodec {
 
     fn quiesce(&self, base: &Environment) -> Environment {
         let b = Self::require(base, "quiesce");
-        // Preserve the seed AND the fault *policy* (the compose contract keys on
-        // both), but drop the concrete fault schedule — the per-Moment `Action`
-        // overrides, any standing faults, and the recorded entropy `reseeds` — so
-        // the forward convergence window is a pure nominal base. Genesis-frame
-        // (`base_offset == 0`), `Recorded` so it is a valid compose base like
-        // `seeded`.
+        // Preserve the seed (the compose contract keys on it), but model "once
+        // faults stop": the fault **policy** is set to `none()` — a copied policy
+        // would still sample FRESH faults during the forward run under
+        // `StopMask::NONE`, so a liveness probe could report non-convergence
+        // caused by new faults, not the terminal state. The concrete schedule (the
+        // per-Moment `Action` overrides, any standing faults, the recorded entropy
+        // `reseeds`) is dropped too. Genesis-frame (`base_offset == 0`), `Recorded`
+        // so it is a valid compose base like `seeded`.
         AdapterEnv {
             base_offset: 0,
             pos: 0,
             spec: EnvSpec::Recorded {
                 seed: b.spec.seed(),
-                policy: b.spec.policy().clone(),
+                policy: FaultPolicy::none(),
                 overrides: BTreeMap::new(),
                 standing: Vec::new(),
                 reseeds: BTreeMap::new(),
+            },
+        }
+        .encode()
+    }
+
+    fn without_faults(&self, base: &Environment) -> Environment {
+        let b = Self::require(base, "without_faults");
+        // Keep the recorded schedule that reached this point — the concrete
+        // per-Moment overrides (and seed, frame, reseeds) — but set the policy to
+        // none() and drop standing faults, so a replay applies exactly those
+        // recorded faults and then samples **no** fresh ones. This is the probe
+        // reproducer's compose base: its policy is none(), matching the nominal
+        // (policy-none) probe delta, so `compose` accepts it and the folded env
+        // replays the original faults up to the terminal, then quiesces nominally.
+        AdapterEnv {
+            base_offset: b.base_offset,
+            pos: b.pos,
+            spec: EnvSpec::Recorded {
+                seed: b.spec.seed(),
+                policy: FaultPolicy::none(),
+                overrides: b.spec.overrides().clone(),
+                standing: Vec::new(),
+                reseeds: b.spec.reseeds().clone(),
             },
         }
         .encode()
@@ -922,7 +947,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Cursor, Read, Write};
 
-    use environment::{Action, EnvSpec, FaultPolicy, HostFault};
+    use environment::{Action, DecisionClass, EnvSpec, Fault, FaultPolicy, HostFault};
 
     use super::{
         ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
@@ -1047,6 +1072,90 @@ mod tests {
             AdapterEnv::decode(&composed).unwrap().spec.seed(),
             0xABCD_1234,
             "the composed reproducer keeps the campaign seed"
+        );
+    }
+
+    /// A faulty [`FaultPolicy`] on the base.
+    fn faulty_policy() -> FaultPolicy {
+        let mut p = FaultPolicy::none();
+        p.set_class(DecisionClass::Process, 1, 2, &[Fault::ProcKill])
+            .expect("valid class");
+        p
+    }
+
+    /// Round-12 P2: on a base with a **non-none** `FaultPolicy`, `quiesce` must
+    /// stop fault injection — a copied policy would sample fresh faults during the
+    /// probe under `StopMask::NONE`, so a liveness probe could report
+    /// non-convergence caused by new faults, not the terminal. `without_faults`
+    /// stops injection too but keeps the recorded schedule, and — being policy
+    /// `none()` like the nominal probe delta — is the compose base a probe folds
+    /// onto without tripping the policy guard.
+    #[test]
+    fn quiesce_and_without_faults_stop_a_faulty_policy() {
+        let original = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: EnvSpec::Recorded {
+                seed: 0xABCD_1234,
+                policy: faulty_policy(),
+                overrides: BTreeMap::from([(
+                    40,
+                    Action::Host(HostFault::InjectInterrupt { vector: 32 }),
+                )]),
+                standing: Vec::new(),
+                reseeds: BTreeMap::new(),
+            },
+        }
+        .encode();
+
+        // quiesce: the forward-run branch env — policy none, schedule stripped.
+        let q = AdapterEnv::decode(&SpecEnvCodec.quiesce(&original)).unwrap();
+        assert_eq!(
+            q.spec.policy(),
+            &FaultPolicy::none(),
+            "the quiesced probe env injects no fresh faults"
+        );
+        assert!(q.spec.overrides().is_empty(), "schedule stripped");
+        assert_eq!(q.spec.seed(), 0xABCD_1234, "seed preserved");
+
+        // without_faults: the compose base — policy none, schedule KEPT.
+        let wf = AdapterEnv::decode(&SpecEnvCodec.without_faults(&original)).unwrap();
+        assert_eq!(
+            wf.spec.policy(),
+            &FaultPolicy::none(),
+            "the reproducer base samples no fresh faults on replay"
+        );
+        assert!(
+            wf.spec.overrides().contains_key(&40),
+            "the recorded schedule that reached the terminal is kept"
+        );
+
+        // The exact probe fold: the nominal (policy-none) delta composes onto the
+        // fault-stopped base without tripping the policy guard.
+        let probe_delta = AdapterEnv {
+            base_offset: 100,
+            pos: 200,
+            spec: EnvSpec::Recorded {
+                seed: 0xABCD_1234,
+                policy: FaultPolicy::none(),
+                overrides: BTreeMap::new(),
+                standing: Vec::new(),
+                reseeds: BTreeMap::new(),
+            },
+        }
+        .encode();
+        let composed = AdapterEnv::decode(
+            &SpecEnvCodec.compose(&SpecEnvCodec.without_faults(&original), &probe_delta),
+        )
+        .unwrap();
+        assert_eq!(
+            composed.spec.policy(),
+            &FaultPolicy::none(),
+            "reproducer is fault-stopped"
+        );
+        assert!(
+            composed.spec.overrides().contains_key(&40),
+            "reproducer still replays the original faults to the terminal"
         );
     }
 

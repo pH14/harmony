@@ -585,12 +585,20 @@ impl<M: Machine> Explorer<M> {
         let Some(plan) = oracle.plan(original) else {
             return Ok(None);
         };
+        // A probe MUST be bounded: without a positive convergence deadline the
+        // forward run (which surfaces nothing under `StopMask::NONE`) would spin
+        // forever on a non-converging terminal. Reject a missing/zero deadline
+        // loudly **before** touching the machine.
+        match plan.horizon.deadline {
+            Some(d) if d.0 > 0 => {}
+            _ => return Err(MachineError::UnboundedProbe),
+        }
         // Branch the throwaway forward exploration: restore the terminal state,
-        // reseed with a **quiesced** view of the original env — same seed + fault
-        // policy (so the probe's delta stays compose-compatible with
-        // `original.env`; a fresh `seeded(0)` would panic the production codec's
-        // seed-mismatch guard for a non-zero-seeded campaign), fault schedule
-        // stripped (nominal, no faults). `branch` mints no snapshot.
+        // reseed with a **quiesced** view of the original env — same seed (so the
+        // probe's delta stays compose-compatible; a fresh `seeded(0)` would panic
+        // the production codec's seed guard for a non-zero-seeded campaign), fault
+        // policy set to none and schedule stripped (nominal, no faults — a copied
+        // policy would sample fresh faults). `branch` mints no snapshot.
         let quiesced = self.codec.quiesce(&original.env);
         self.machine.branch(terminal, &quiesced)?;
         let stop = self.run_probe_to_horizon(&plan)?;
@@ -599,7 +607,15 @@ impl<M: Machine> Explorer<M> {
         let probe_delta = self.machine.recorded_env()?;
         let probe_trace = RunTrace {
             terminal: stop,
-            env: self.codec.compose(&original.env, &probe_delta),
+            // Fold the nominal forward window onto a **fault-stopped** view of the
+            // original (its recorded schedule kept, policy set to none) — so the
+            // reproducer replays the original faults to the terminal then quiesces
+            // nominally, and its policy matches the (nominal) probe delta so
+            // `compose` accepts it (a policy-P base would reject the policy-none
+            // delta the quiesced probe records).
+            env: self
+                .codec
+                .compose(&self.codec.without_faults(&original.env), &probe_delta),
             coverage: Some(CoverageView {
                 map: self.machine.coverage().to_vec(),
             }),
@@ -624,15 +640,21 @@ impl<M: Machine> Explorer<M> {
             deadline: plan.horizon.deadline,
             on: StopMask::NONE,
         };
-        loop {
+        // A fail-loud backstop: the deadline already bounds forward progress, so a
+        // mask-honoring backend returns a terminal on the first `run`. The loop
+        // only re-enters on a Decision/SnapshotPoint a NONE mask should never
+        // surface — cap those so a misbehaving backend aborts loudly instead of
+        // spinning.
+        const PROBE_STEP_CAP: usize = 1 << 16;
+        for _ in 0..PROBE_STEP_CAP {
             match self.machine.run(&horizon, None)? {
-                // Unreachable for a mask-honoring backend (NONE surfaces neither).
                 // A backend that surfaces anyway is stepped past with a nominal
                 // (seed) `None` answer — never a staged empty one.
                 StopReason::Decision { .. } | StopReason::SnapshotPoint { .. } => continue,
                 terminal => return Ok(terminal),
             }
         }
+        Err(MachineError::UnboundedProbe)
     }
 
     /// The seal materializing frontier entry `r`, minting one if needed. `r`

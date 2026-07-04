@@ -61,4 +61,11 @@ pub enum MachineError {
         /// The moment the replay actually stopped at.
         landed: u64,
     },
+    /// A probe could not be bounded: its [`ProbePlan`](crate::ProbePlan) had no
+    /// positive convergence deadline (missing or zero — rejected **before** the
+    /// machine is touched), or the forward run blew past the fail-loud step cap
+    /// that backstops a misbehaving backend. Either way the probe would otherwise
+    /// spin forever on a non-converging terminal, so it aborts loudly.
+    #[error("probe is unbounded (no positive deadline, or step cap exceeded)")]
+    UnboundedProbe,
 }

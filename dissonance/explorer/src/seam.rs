@@ -110,19 +110,32 @@ pub trait EnvCodec {
     /// `base` — same seed and fault *policy* — or a schema-aware codec rejects it
     /// loudly rather than mint a reproducer that does not replay
     /// ([`SpecEnvCodec`](crate::SpecEnvCodec) panics on a seed/policy mismatch).
-    /// [`quiesce`](Self::quiesce) exists so a forward probe honors this.
+    /// [`quiesce`](Self::quiesce)/[`without_faults`](Self::without_faults) exist so
+    /// a forward probe honors this.
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment;
 
-    /// A **quiesced** view of `base`: the *same* seed and fault policy (so a
-    /// branch-local delta recorded after branching with it stays
-    /// [`compose`](Self::compose)-compatible with `base`), but with the concrete
-    /// **fault schedule stripped** — the per-`Moment` fault overrides and any
-    /// standing faults removed — so a run reseeded from it injects no faults and
-    /// answers nominally. This is what a directed liveness probe branches with
-    /// ("nominal answers, empty fault schedule"): deriving the seed from `base`
-    /// keeps the probe's delta seed-consistent, so
-    /// [`Explorer::probe`](crate::Explorer::probe) never aborts on a
-    /// seed-mismatch panic for a non-zero-seeded campaign. Genesis-frame,
-    /// deterministic.
+    /// A **quiesced** view of `base`: the same *seed* (so a branch-local delta
+    /// recorded after branching with it stays [`compose`](Self::compose)-
+    /// compatible), but with fault injection **fully stopped** — the fault policy
+    /// set to none *and* the concrete schedule (per-`Moment` overrides, standing
+    /// faults) stripped — so a run reseeded from it injects no faults and answers
+    /// nominally. This is what a directed liveness probe branches with: a copied
+    /// policy would keep sampling fresh faults under `StopMask::NONE`, so a probe
+    /// could report non-convergence caused by new faults rather than the terminal
+    /// state. Genesis-frame, deterministic.
     fn quiesce(&self, base: &Environment) -> Environment;
+
+    /// `base` with fault **injection stopped but its recorded schedule kept**: the
+    /// fault policy set to none (no fresh sampling on replay) while the concrete
+    /// per-`Moment` overrides and frame are preserved. It is the compose base for
+    /// a probe reproducer: folding the nominal forward window onto it yields a
+    /// genesis-complete env that replays the original faults up to the terminal
+    /// and then **no faults** — the "faults stop" the probe explored — and whose
+    /// policy matches the (nominal) probe delta so [`compose`](Self::compose)
+    /// accepts it. The default is the identity, correct for a codec whose faults
+    /// are not policy-sampled (a fixed schedule); a policy-driven codec overrides
+    /// it. Deterministic.
+    fn without_faults(&self, base: &Environment) -> Environment {
+        base.clone()
+    }
 }

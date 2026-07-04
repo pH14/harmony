@@ -666,3 +666,59 @@ fn probe_masks_decisions_from_the_backend() {
         .expect("the probe must not stage a malformed empty Answer");
     assert!(verdict.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Round-12: a probe must be bounded.
+// ---------------------------------------------------------------------------
+
+/// A probe oracle whose plan carries **no deadline** — an unbounded horizon.
+struct UnboundedProbe {
+    deadline: Option<VTime>,
+}
+
+impl ProbeOracle for UnboundedProbe {
+    fn plan(&self, t: &RunTrace) -> Option<ProbePlan> {
+        match t.terminal {
+            StopReason::Quiescent { .. } => Some(ProbePlan {
+                horizon: StopConditions {
+                    deadline: self.deadline,
+                    on: StopMask::NONE,
+                },
+            }),
+            _ => None,
+        }
+    }
+    fn judge_probe(&self, _original: &RunTrace, _probe: &RunTrace) -> Option<Bug> {
+        None
+    }
+}
+
+/// Round-12 P2: a plan with a missing (or zero) deadline is unbounded — the
+/// forward run surfaces nothing under `StopMask::NONE`, so it would spin forever
+/// on a non-converging terminal. The probe rejects it loudly *before* running,
+/// never hanging.
+#[test]
+fn probe_rejects_an_unbounded_plan() {
+    for deadline in [None, Some(VTime(0))] {
+        let (mut ex, original, terminal) = setup(0);
+        let err = ex
+            .probe(&UnboundedProbe { deadline }, &original, terminal)
+            .expect_err("an unbounded probe must be rejected, not hang");
+        assert_eq!(
+            err,
+            MachineError::UnboundedProbe,
+            "deadline {deadline:?} must be rejected"
+        );
+    }
+
+    // A positive deadline is accepted and runs to a verdict.
+    let (mut ex, original, terminal) = setup(0);
+    let ok = ex.probe(
+        &UnboundedProbe {
+            deadline: Some(VTime(10_000)),
+        },
+        &original,
+        terminal,
+    );
+    assert!(ok.is_ok(), "a bounded probe runs: {ok:?}");
+}
