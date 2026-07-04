@@ -127,6 +127,19 @@ seam (61 reuses it).
    in map_terminal + terminal serialization (SDK stop never routes/latches there). Test through `run()`.
    Another control/stop surface pass found nothing further.
 
+## Round-7 review (2 items — fixed; box A/B/C 3/3, state_hash moved by design)
+
+1. **SDK channel folded into the state_hash.** `state_blob` gains an `SDK\0` chunk (seeded stream
+   positions + pending stop) present ONLY when `enable_sdk`'d — SDK-less goldens byte-identical, but
+   a diverged SDK buggify stream now hashes differently. `encode_sdk_channel` helper. The demo's box
+   `state_hash` moved (`3ec756…` → `df3e79…`) — expected (it's an SDK guest); gate A asserts equality,
+   not a pinned value. Test: `state_hash_folds_the_sdk_stream_and_is_absent_when_unwired`.
+2. **SDK stops honor the StopMask.** control-proto class bits `SNAPSHOT_POINT=8`, `ASSERTION=9`
+   (standalone, bit 7 reserved for Buggify); the run loop gates both surfaces on `until.on.armed(bit)`.
+   `StopMask::NONE` runs straight through; `u32::MAX`/`ALL` (box gate/engine) unchanged.
+   `APP_PROTOCOL_VERSION 3→4`. Docs amended. Test: `stop_mask_gates_the_sdk_snapshot_point_and_assertion`.
+   (Reviewer's round-6 split trigger fired — 3rd round on this surface; escalated to the integrator.)
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
