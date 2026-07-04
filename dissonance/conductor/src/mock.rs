@@ -92,6 +92,17 @@ impl SharedWork {
         // (`run_until` only stages an arrival strictly below natural + step).
         self.arrival.store(0, Ordering::Relaxed);
     }
+
+    /// A **scripted** `Deadline` serviced through the delegated far-deadline
+    /// `run_until` (PR #62 round-5 fix): the guest ran to exactly `reached`,
+    /// so the natural grid advances TO it (monotone), not by one step — else
+    /// the next intercept would sample work below the V-time vmm-core just
+    /// anchored from `reached`.
+    fn on_deadline(&self, reached: u64) {
+        let n = self.natural.load(Ordering::Relaxed).max(reached);
+        self.natural.store(n, Ordering::Relaxed);
+        self.arrival.store(0, Ordering::Relaxed);
+    }
 }
 
 /// A pure-reader [`WorkSource`] over the [`SharedWork`] the backend advances.
@@ -170,7 +181,12 @@ impl Backend for CountingBackend {
         // fix: falling through to `run()` handed vmm-core the stale scripted
         // value, mis-anchoring V-time and the schedule/reseed drains).
         let exit = self.inner.run_until(d)?;
-        self.work.on_exit();
+        match &exit {
+            // A scripted Deadline placeholder was rewritten to `reached = d`:
+            // the guest ran to exactly there — advance the grid TO it.
+            Exit::Deadline { reached } => self.work.on_deadline(reached.0),
+            _ => self.work.on_exit(),
+        }
         Ok(exit)
     }
     fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
@@ -423,8 +439,49 @@ mod tests {
         );
         assert_eq!(
             work.current(),
-            WORK_STEP,
-            "the serviced exit ticks the grid"
+            250,
+            "the grid advances TO the reached deadline (round-5 fix), not by one step"
+        );
+    }
+
+    /// After a delegated scripted-Deadline stop, the NEXT intercept samples
+    /// work at-or-above the V-time the Deadline anchored (PR #62 round-5
+    /// blocking fix): a `[Deadline, Rdtsc]` script must never hand vmm-core a
+    /// work count below the recorded `reached`.
+    #[test]
+    fn counting_backend_next_intercept_samples_at_or_above_the_reached_deadline() {
+        let work = Arc::new(SharedWork::default());
+        let mut inner = MockBackend::with_exits(vec![
+            Exit::Deadline { reached: Vtime(0) },
+            Exit::Rdtsc,
+            Exit::Hlt,
+        ]);
+        inner
+            .set_cpuid(&vmm_backend::CpuidModel::default())
+            .unwrap();
+        inner
+            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut b = CountingBackend {
+            inner,
+            work: Arc::clone(&work),
+        };
+        let exit = b.run_until(Vtime(250)).unwrap();
+        assert_eq!(
+            exit,
+            Exit::Deadline {
+                reached: Vtime(250)
+            }
+        );
+        assert_eq!(work.current(), 250, "grid at the reached deadline");
+        // The following Rdtsc intercept reads 350 — never 200 (one step off
+        // the pre-fix +WORK_STEP grid, BELOW the anchored 250).
+        let exit = b.run().unwrap();
+        assert_eq!(exit, Exit::Rdtsc);
+        assert_eq!(
+            work.current(),
+            250 + WORK_STEP,
+            "the next intercept samples work above the anchored V-time"
         );
     }
 }
