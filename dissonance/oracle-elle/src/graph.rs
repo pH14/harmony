@@ -75,6 +75,14 @@ impl DepGraph {
         let mut write_key: BTreeMap<Elem, Key> = BTreeMap::new();
         let mut committed_writes: BTreeMap<Key, Vec<(Moment, Elem)>> = BTreeMap::new();
         let mut committed_appends: BTreeMap<Key, BTreeSet<Elem>> = BTreeMap::new();
+        // The latest **commit** Moment among a key's committed writers — the
+        // cutoff for a quiesce read. A write op's Moment is NOT the cutoff: a
+        // writer's value only becomes the settled version at its *commit*, which
+        // can be arbitrarily later (writes-then-late-commits). A read is a final
+        // read only if it follows every committed writer's commit; a read after
+        // the writes but before some writer's commit saw a not-yet-final state and
+        // must not pin the order.
+        let mut last_commit_moment: BTreeMap<Key, Moment> = BTreeMap::new();
         for t in h.iter() {
             if t.committed() {
                 g.committed.insert(t.id);
@@ -95,6 +103,10 @@ impl DepGraph {
                             .entry(op.key.clone())
                             .or_default()
                             .push((op.at, v));
+                        last_commit_moment
+                            .entry(op.key.clone())
+                            .and_modify(|m| *m = (*m).max(t.at))
+                            .or_insert(t.at);
                         if matches!(op.kind, OpKind::Append(_)) {
                             committed_appends
                                 .entry(op.key.clone())
@@ -106,17 +118,6 @@ impl DepGraph {
             }
         }
 
-        // The latest committed-write Moment per key — used to tell a **quiesce**
-        // read (after all writes, so it pins the final version) from a pre-RMW
-        // read (before a later write, e.g. the stale read of a lost update, which
-        // pins nothing).
-        let mut last_write_moment: BTreeMap<Key, Moment> = BTreeMap::new();
-        for (key, writes) in &committed_writes {
-            if let Some(&(m, _)) = writes.iter().max_by_key(|(m, _)| *m) {
-                last_write_moment.insert(key.clone(), m);
-            }
-        }
-
         // 2. Recover each key's version order. The recovery is **model-aware**:
         //
         //    - **append keys** (any `Append` targets them): each read observes a
@@ -125,8 +126,8 @@ impl DepGraph {
         //      is unrecoverable → `InconsistentOrder`); completeness is checked
         //      below (every committed append must be observed).
         //    - **register keys** (writes only): the order is fixed by **quiesce
-        //      reads** — a read after all committed writes to the key sees the
-        //      *final* version; every other committed writer precedes it (a
+        //      reads** — a read after **every committed writer has committed** sees
+        //      the *final* version; every other committed writer precedes it (a
         //      **star** of ww edges to the final writer). Write Moments are NOT
         //      order evidence (they are the issue order, which can differ from the
         //      committed version order — the round-7 counterexample). A single
@@ -218,12 +219,13 @@ impl DepGraph {
                             .push(vs.clone());
                     } else if let Some(&tip) = vs.last() {
                         // A register read is a quiesce (final-version) read iff it
-                        // observes a committed value AFTER all committed writes to
-                        // the key. A pre-RMW/stale read (before a later write)
-                        // pins nothing.
-                        let after_all_writes =
-                            last_write_moment.get(&op.key).is_none_or(|&lw| op.at > lw);
-                        if after_all_writes
+                        // observes a committed value AFTER **every committed writer
+                        // has committed** — not merely after their write ops. A
+                        // read stamped between the writes and a late commit saw a
+                        // not-yet-settled state and pins nothing.
+                        let after_all_commits =
+                            last_commit_moment.get(&op.key).is_none_or(|&lc| op.at > lc);
+                        if after_all_commits
                             && g.writer.get(&tip).is_some_and(|w| g.committed.contains(w))
                         {
                             reg_quiesce.entry(op.key.clone()).or_default().insert(tip);
@@ -563,13 +565,17 @@ mod tests {
     use super::*;
     use crate::op::{Op, Transaction, TxnOutcome};
 
+    // The commit Moment is the txn's last op Moment — so a read stamped after a
+    // key's writers' ops is also after their commits (the quiesce cutoff is the
+    // commit Moment). Tests wanting a late commit set `at` explicitly.
     fn tx(id: TxnId, outcome: TxnOutcome, ops: Vec<Op>) -> Transaction {
+        let at = ops.iter().map(|o| o.at).max().unwrap_or(Moment(1000));
         Transaction {
             id,
             session: id,
             ops,
             outcome,
-            at: Moment(1000),
+            at,
         }
     }
 
@@ -820,6 +826,45 @@ mod tests {
             g.rw_edges().get(&3).is_none_or(|s| !s.contains(&1)),
             "no rw edge fabricated from numeric predecessor value order"
         );
+    }
+
+    /// Round-11 P1: the quiesce cutoff is a committed writer's **commit** Moment,
+    /// not its write-op Moment. T1 writes `k=1` @1 but commits @10; T2 writes
+    /// `k=2` @2 but commits @11; T3 reads `k=1` @5 — after both write *ops* but
+    /// before either *commit*. A write-op cutoff would wrongly treat the read as
+    /// final and pin the order; the commit cutoff pins nothing, so the two-writer
+    /// register is unrecoverable (`UnpinnedRegister`).
+    #[test]
+    fn a_read_before_a_late_commit_is_not_a_quiesce_read() {
+        let late = |id: TxnId, at: u64, ops: Vec<Op>| Transaction {
+            id,
+            session: id,
+            ops,
+            outcome: TxnOutcome::Committed,
+            at: Moment(at),
+        };
+        let h = history(vec![
+            late(1, 10, vec![op(1, 1, "k", OpKind::Write(1))]),
+            late(2, 11, vec![op(2, 2, "k", OpKind::Write(2))]),
+            late(3, 12, vec![op(5, 3, "k", OpKind::Read(vec![1]))]),
+        ]);
+        assert_eq!(
+            DepGraph::build(&h),
+            Err(DecodeError::UnpinnedRegister {
+                key: b"k".to_vec(),
+                writes: 2,
+            }),
+            "a read before the writers' commits pins nothing"
+        );
+
+        // The same read stamped after both commits (@20) IS a quiesce read.
+        let ok = history(vec![
+            late(1, 10, vec![op(1, 1, "k", OpKind::Write(1))]),
+            late(2, 11, vec![op(2, 2, "k", OpKind::Write(2))]),
+            late(3, 21, vec![op(20, 3, "k", OpKind::Read(vec![1]))]),
+        ]);
+        let g = DepGraph::build(&ok).expect("a post-commit read pins the final");
+        assert_eq!(g.version_order(&b"k".to_vec()), Some(&[2, 1][..]));
     }
 
     /// An aborted writer stays out of the committed set (so its writes are

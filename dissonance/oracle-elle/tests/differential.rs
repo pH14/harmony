@@ -209,41 +209,18 @@ fn build(specs: Vec<(Shape, bool)>) -> Vec<RTxn> {
     txns
 }
 
-fn arb_history() -> impl Strategy<Value = Vec<RTxn>> {
-    // Up to six transactions on two keys, so a register key can receive three or
-    // more committed writes with only a final read pinning the last version — the
-    // class where the non-final predecessors' order is unrecoverable and must not
-    // be fabricated (round 10). The reference enumerates the committed subset's
-    // permutations, which stays cheap at this size.
-    prop::collection::vec((arb_shape(), any::<bool>()), 2..=6).prop_map(build)
-}
-
-/// Convert a reference history into a `RunTrace` the oracle judges (register
-/// model: `W`/`R` on `k<key>`, one session per txn, increasing Moments, ops
-/// before the commit/abort marker).
-fn to_trace(txns: &[RTxn]) -> RunTrace {
-    let mut events = Vec::new();
-    let mut at = 1u64;
-    for t in txns {
-        for op in &t.ops {
-            let key = format!("k{}", key_of(op));
-            match op {
-                ROp::R(_, obs) => {
-                    let vs: Vec<i64> = obs.iter().copied().collect();
-                    events.push(read(at, t.id, t.id, &key, &vs));
-                }
-                ROp::W(_, v) => events.push(write(at, t.id, t.id, &key, *v)),
-            }
-            at += 1;
-        }
-        events.push(if t.committed {
-            commit(at, t.id)
-        } else {
-            abort(at, t.id)
-        });
-        at += 1;
-    }
-    trace(events, 0)
+/// A generated history plus its per-txn commit schedule: `(shape, committed,
+/// commit_deferred)` for each txn. Up to six transactions on two keys, so a
+/// register key can receive three or more committed writes (round 10); the
+/// per-txn `commit_deferred` flag decouples a write's op Moment from its commit
+/// Moment (round 11: writes-then-late-commits). The reference enumerates the
+/// committed subset's permutations, cheap at this size.
+fn arb_history() -> impl Strategy<Value = (Vec<RTxn>, Vec<bool>)> {
+    prop::collection::vec((arb_shape(), any::<bool>(), any::<bool>()), 2..=6).prop_map(|specs| {
+        let delays: Vec<bool> = specs.iter().map(|(_, _, d)| *d).collect();
+        let txns = build(specs.into_iter().map(|(s, c, _)| (s, c)).collect());
+        (txns, delays)
+    })
 }
 
 fn key_of(op: &ROp) -> K {
@@ -252,15 +229,76 @@ fn key_of(op: &ROp) -> K {
     }
 }
 
+/// Assign Moments to a history's ops and commit markers. Ops run sequentially in
+/// txn order; each txn's commit/abort marker lands right after its ops **unless
+/// deferred** (`delays[i]`), in which case every deferred marker lands after all
+/// ops and non-deferred markers — a **writes-then-late-commits** interleaving, so
+/// a read can fall between the writes and a writer's commit. Returns the op
+/// Moments per txn and the commit Moment per txn.
+fn layout(txns: &[RTxn], delays: &[bool]) -> (Vec<Vec<u64>>, Vec<u64>) {
+    let mut at = 1u64;
+    let mut op_moments: Vec<Vec<u64>> = Vec::with_capacity(txns.len());
+    let mut commit_moments = vec![0u64; txns.len()];
+    let mut deferred: Vec<usize> = Vec::new();
+    for (i, t) in txns.iter().enumerate() {
+        let mut oms = Vec::with_capacity(t.ops.len());
+        for _ in &t.ops {
+            oms.push(at);
+            at += 1;
+        }
+        op_moments.push(oms);
+        if delays.get(i).copied().unwrap_or(false) {
+            deferred.push(i);
+        } else {
+            commit_moments[i] = at;
+            at += 1;
+        }
+    }
+    for i in deferred {
+        commit_moments[i] = at;
+        at += 1;
+    }
+    (op_moments, commit_moments)
+}
+
+/// Convert a reference history + commit schedule into a `RunTrace` the oracle
+/// judges (register model: `W`/`R` on `k<key>`, one session per txn). Events are
+/// emitted at their laid-out Moments and sorted, so a deferred commit really does
+/// follow the reads stamped before it.
+fn to_trace(txns: &[RTxn], delays: &[bool]) -> RunTrace {
+    let (op_moments, commit_moments) = layout(txns, delays);
+    let mut events = Vec::new();
+    for (i, t) in txns.iter().enumerate() {
+        for (j, op) in t.ops.iter().enumerate() {
+            let at = op_moments[i][j];
+            let key = format!("k{}", key_of(op));
+            events.push(match op {
+                ROp::R(_, obs) => {
+                    let vs: Vec<i64> = obs.iter().copied().collect();
+                    read(at, t.id, t.id, &key, &vs)
+                }
+                ROp::W(_, v) => write(at, t.id, t.id, &key, *v),
+            });
+        }
+        let at = commit_moments[i];
+        events.push(if t.committed {
+            commit(at, t.id)
+        } else {
+            abort(at, t.id)
+        });
+    }
+    events.sort_by_key(|(m, _)| m.0);
+    trace(events, 0)
+}
+
 /// The checker's **register recoverability** contract, computed independently: a
 /// register key with two or more committed writes needs a *quiesce read* — a
-/// committed read of a **committed** value strictly after all the key's committed
-/// writes — to pin the final version. Without one the version order is
-/// unrecoverable (`DecodeError::UnpinnedRegister`), never fabricated by sorting.
-/// Op positions mirror [`to_trace`]'s Moment assignment (one per op, one per
-/// commit/abort marker), so a read counts as "after all writes" iff its position
-/// exceeds every committed-write position of the key.
-fn recoverable(txns: &[RTxn]) -> bool {
+/// committed read of a **committed** value strictly after every committed
+/// writer's **commit** Moment (round 11: the commit, not the write op). Without
+/// one the version order is unrecoverable (`DecodeError::UnpinnedRegister`), never
+/// fabricated. Moments come from the same [`layout`] `to_trace` uses.
+fn recoverable(txns: &[RTxn], delays: &[bool]) -> bool {
+    let (op_moments, commit_moments) = layout(txns, delays);
     let mut committed_writer: BTreeMap<V, bool> = BTreeMap::new();
     for t in txns {
         for op in &t.ops {
@@ -269,35 +307,40 @@ fn recoverable(txns: &[RTxn]) -> bool {
             }
         }
     }
-    let mut pos = 0u64;
-    let mut writes: BTreeMap<K, Vec<u64>> = BTreeMap::new();
+    let mut writes: BTreeMap<K, usize> = BTreeMap::new();
+    let mut last_commit: BTreeMap<K, u64> = BTreeMap::new();
     let mut quiesce_reads: BTreeMap<K, Vec<u64>> = BTreeMap::new();
-    for t in txns {
-        for op in &t.ops {
+    for (i, t) in txns.iter().enumerate() {
+        for (j, op) in t.ops.iter().enumerate() {
             match op {
-                ROp::W(k, _) if t.committed => writes.entry(*k).or_default().push(pos),
+                ROp::W(k, _) if t.committed => {
+                    *writes.entry(*k).or_default() += 1;
+                    let c = commit_moments[i];
+                    last_commit
+                        .entry(*k)
+                        .and_modify(|m| *m = (*m).max(c))
+                        .or_insert(c);
+                }
                 ROp::R(k, obs)
                     if t.committed
                         && obs
                             .as_ref()
                             .is_some_and(|v| committed_writer.get(v).copied().unwrap_or(false)) =>
                 {
-                    quiesce_reads.entry(*k).or_default().push(pos)
+                    quiesce_reads.entry(*k).or_default().push(op_moments[i][j])
                 }
                 _ => {}
             }
-            pos += 1;
         }
-        pos += 1; // commit/abort marker
     }
-    for (k, ws) in &writes {
-        if ws.len() < 2 {
+    for (k, &n) in &writes {
+        if n < 2 {
             continue; // a single committed write is unambiguous
         }
-        let last_write = *ws.iter().max().unwrap();
+        let cutoff = last_commit.get(k).copied().unwrap_or(0);
         let pinned = quiesce_reads
             .get(k)
-            .is_some_and(|rs| rs.iter().any(|&r| r > last_write));
+            .is_some_and(|rs| rs.iter().any(|&r| r > cutoff));
         if !pinned {
             return false;
         }
@@ -315,31 +358,34 @@ proptest! {
     /// On a **recoverable** history the oracle at Serializable reports an anomaly
     /// **iff** the independent reference finds it non-serializable (on this
     /// fragment the v1 ladder coincides with serializability); on an
-    /// **unrecoverable** one — a multi-write register key with no quiesce read —
-    /// it fails loud with a `DecodeError` instead of fabricating an order. The
-    /// oracle's Ok/Err split must match the independent `recoverable` predicate
-    /// exactly.
+    /// **unrecoverable** one — a multi-write register key with no quiesce read
+    /// (including one whose only late reads precede a deferred commit) — it fails
+    /// loud with a `DecodeError` instead of fabricating an order. The oracle's
+    /// Ok/Err split must match the independent `recoverable` predicate exactly,
+    /// across commit schedules.
     #[test]
-    fn oracle_matches_the_reference(txns in arb_history()) {
-        let t = to_trace(&txns);
+    fn oracle_matches_the_reference((txns, delays) in arb_history()) {
+        let t = to_trace(&txns, &delays);
         let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
         let result = oracle.analyze(&t);
-        if recoverable(&txns) {
+        if recoverable(&txns, &delays) {
             let verdict = result.expect("a recoverable history decodes");
             let ref_flags = !is_serializable(&txns);
             prop_assert_eq!(
                 verdict.is_some(),
                 ref_flags,
-                "oracle={:?} reference_non_serializable={} for {:#?}",
+                "oracle={:?} reference_non_serializable={} for {:#?} delays={:?}",
                 verdict,
                 ref_flags,
-                txns
+                txns,
+                delays
             );
         } else {
             prop_assert!(
                 result.is_err(),
-                "multi-write register with no quiesce read must DecodeError: {:#?}",
-                txns
+                "multi-write register with no quiesce read must DecodeError: {:#?} delays={:?}",
+                txns,
+                delays
             );
         }
     }
@@ -373,16 +419,47 @@ fn harness_covers_anomalous_histories() {
         ), // T3: R(0,1 STALE) W(0,3)
         (Shape::Read(0), true),         // T4: final read pins key 0's order (quiesce)
     ]);
+    let no_delay = vec![false; txns.len()];
     assert!(
         !is_serializable(&txns),
         "the planted lost update is not serializable"
     );
-    assert!(recoverable(&txns), "the final read makes it recoverable");
-    let t = to_trace(&txns);
+    assert!(
+        recoverable(&txns, &no_delay),
+        "the final read makes it recoverable"
+    );
+    let t = to_trace(&txns, &no_delay);
     let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
     assert!(
         oracle.analyze(&t).expect("recoverable").is_some(),
         "the oracle flags the planted lost update, matching the reference"
+    );
+}
+
+/// Round-11 coverage: the same three-writer register, but the writers' commits
+/// are **deferred** past the final read (writes-then-late-commits). The read now
+/// precedes every writer's commit, so it is not a quiesce read — the register is
+/// unrecoverable and the oracle must fail loud, exactly as the commit-cutoff
+/// predicate says (a write-op cutoff would wrongly recover and could invent an
+/// anomaly).
+#[test]
+fn harness_covers_a_read_before_a_late_commit() {
+    let txns = build(vec![
+        (Shape::Writes(vec![0]), true), // T1: W(0,1)
+        (Shape::Writes(vec![0]), true), // T2: W(0,2)
+        (Shape::Read(0), true),         // T3: reads current (2)
+    ]);
+    // Defer T1's and T2's commits to the very end — after T3's read.
+    let delays = vec![true, true, false];
+    assert!(
+        !recoverable(&txns, &delays),
+        "the read precedes the writers' deferred commits — unrecoverable"
+    );
+    let t = to_trace(&txns, &delays);
+    let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
+    assert!(
+        oracle.analyze(&t).is_err(),
+        "a read before the writers' commits must not pin the order — fail loud"
     );
 }
 
@@ -399,15 +476,16 @@ fn harness_covers_a_three_writer_register_with_only_a_final_read() {
         (Shape::Writes(vec![0]), true), // T3: W(0,3)
         (Shape::Read(0), true),         // T4: final read (current = 3)
     ]);
+    let no_delay = vec![false; txns.len()];
     assert!(
-        recoverable(&txns),
+        recoverable(&txns, &no_delay),
         "the final read pins the settled version — recoverable"
     );
     assert!(
         is_serializable(&txns),
         "a serial write order reproduces the single read — serializable"
     );
-    let t = to_trace(&txns);
+    let t = to_trace(&txns, &no_delay);
     let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
     assert!(
         oracle.analyze(&t).expect("recoverable").is_none(),
