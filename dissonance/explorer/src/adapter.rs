@@ -344,15 +344,24 @@ impl crate::EnvCodec for SpecEnvCodec {
             .map(|(m, a)| (m - cut, a.clone()))
             .collect();
         // Reseed markers slice consistently (task 78): the suffix keeps the
-        // markers at-or-past the cut, re-keyed to the branch origin. (The
-        // branch this delta seeds will stamp its own origin reseed at 0.)
-        let suffix_reseeds: BTreeMap<u64, u64> = b
+        // markers at-or-past the cut, re-keyed to the branch origin — and it
+        // must ALSO carry the origin marker (0 → seed) when none lands
+        // exactly at the cut (PR #62 round-2 blocking fix): a marker-carrying
+        // env's table is authoritative on the server, so a non-empty sliced
+        // table with no floor marker would make the branch CONTINUE the
+        // parent stream instead of reseeding — and `branch`'s is-empty stamp
+        // never fires on a non-empty table. A base marker exactly at the cut
+        // wins (its value IS what the stream became at that point).
+        let mut suffix_reseeds: BTreeMap<u64, u64> = b
             .spec
             .reseeds()
             .iter()
             .filter(|(m, _)| **m >= cut)
             .map(|(m, s)| (m - cut, *s))
             .collect();
+        if !suffix_reseeds.is_empty() {
+            suffix_reseeds.entry(0).or_insert(seed);
+        }
         let sliced = EnvSpec::Recorded {
             seed,
             policy,
@@ -1769,6 +1778,71 @@ mod tests {
         );
     }
 
+    /// The PR #62 round-2 blocking fix: slicing a marker-carrying base at a
+    /// NON-marker cut retains the future markers AND inserts the origin
+    /// marker (0 → env seed) — a non-empty table with no floor marker would
+    /// otherwise make the server continue the parent stream (the
+    /// authoritative-table path; `branch`'s is-empty stamp never fires), so
+    /// the branch's first draws must come from the env seed, which the
+    /// vmm-core floor-marker gate
+    /// (`branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed`)
+    /// pins server-side for exactly this marker shape.
+    #[test]
+    fn mutate_slicing_at_a_non_marker_cut_inserts_the_origin_reseed() {
+        // Base rooted at 0, captured at pos 100 (the cut — no marker there):
+        // its own branch reseed at 0 and a future marker at 140.
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (140, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 7), (40, 0xBB)],
+            "the sliced suffix carries the origin marker (0 → env seed) plus the re-keyed \
+             future marker — never a floor-markerless non-empty table"
+        );
+        // A base marker exactly at the cut wins over the synthetic origin
+        // marker (its value IS the stream at that point).
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(100, 0xCC), (140, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(got, vec![(0, 0xCC), (40, 0xBB)]);
+        // And a fully-sliced-away table stays empty (the branch stamp path).
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(0, 0xAA)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        assert!(
+            decoded.spec.reseeds().is_empty(),
+            "no future markers ⇒ empty table ⇒ branch's is-empty stamp handles the origin"
+        );
+    }
+
     /// `mutate` slices reseed markers at the relative cut, consistently with
     /// overrides; `compose` splices them positionally (through the underlying
     /// codec) so a folded delta stays reseed-aware.
@@ -1791,7 +1865,11 @@ mod tests {
             .iter()
             .map(|(k, v)| (*k, *v))
             .collect();
-        assert_eq!(got, vec![(10, 0xBB)], "reseeds sliced at the relative cut");
+        assert_eq!(
+            got,
+            vec![(0, 7), (10, 0xBB)],
+            "reseeds sliced at the relative cut, with the origin marker inserted (round-2 fix)"
+        );
 
         // Compose: suffix₁ rooted at 100 (marker at its own 0), suffix₂
         // branched at 250 (marker at its own 0) → the fold carries both, the
