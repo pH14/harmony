@@ -298,7 +298,7 @@ pub fn run_materialize<M: Machine>(
             machine.branch(parent, &codec.seeded(cfg.seed))?;
             let landed = run_to(machine, h.at, &format!("hop {i} plain probe"))?;
             let h_plain = machine.hash()?;
-            machine.branch(parent, &reseed_probe_env(cfg.seed, parent_at, h.at))?;
+            machine.branch(parent, &reseed_probe_env(cfg.seed, parent_at, h.at)?)?;
             run_to(machine, h.at, &format!("hop {i} marker probe"))?;
             hop_draws.push(machine.hash()? != h_plain);
             debug_assert_eq!(landed, h.at, "the hop leg is deterministic");
@@ -365,7 +365,7 @@ pub fn run_materialize<M: Machine>(
     //     moved the stream off its reseed point.
     let landing = leg_stop.vtime().0;
     let deep_at = cur_at;
-    machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing))?;
+    machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing)?)?;
     let probe_stop = machine.run(
         &StopConditions {
             deadline: Some(VTime(landing)),
@@ -408,19 +408,31 @@ pub fn run_materialize<M: Machine>(
 /// plus a trailing reseed back to `seed` at the landed boundary — a no-op iff
 /// no draw inside `[origin, landed]` moved the stream, so the probe leg's hash
 /// equals the plain leg's exactly when the window is draw-free.
-fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Environment {
+///
+/// `landed` and `origin` arrive from the Machine/transport boundary, so the
+/// relative-key subtraction **fails closed** (PR #62 round-1 blocking fix): a
+/// stop vtime below the branch origin is a broken monotonicity invariant —
+/// a loud [`MachineError::Transport`], never a debug panic or a release wrap
+/// that would encode a marker near `u64::MAX`.
+fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Result<Environment, MachineError> {
+    let rel = landed.checked_sub(origin).ok_or_else(|| {
+        MachineError::Transport(format!(
+            "draw probe: landed vtime {landed} is BELOW the branch origin {origin} — the \
+             machine reported a non-monotone stop; refusing to mint a wrapped reseed marker"
+        ))
+    })?;
     let mut spec = environment::EnvSpec::Seeded {
         seed,
         policy: environment::FaultPolicy::none(),
     };
     spec.record_reseed(0, seed);
-    spec.record_reseed(landed - origin, seed);
-    explorer::AdapterEnv {
+    spec.record_reseed(rel, seed);
+    Ok(explorer::AdapterEnv {
         base_offset: origin,
         pos: origin,
         spec,
     }
-    .encode()
+    .encode())
 }
 
 /// Integer parts-per-million of `num / den` (`den == 0` reports 0).
@@ -732,6 +744,24 @@ mod tests {
             hop_draws: Vec::new(),
             tail_draws: false,
         }
+    }
+
+    /// The draw probe's relative-key subtraction fails closed (PR #62 round-1
+    /// blocking fix): a landed vtime below the branch origin — a non-monotone
+    /// stop from the transport — is a loud `MachineError`, never a wrapped
+    /// marker near `u64::MAX`.
+    #[test]
+    fn reseed_probe_env_rejects_a_landed_vtime_below_the_origin() {
+        let err = reseed_probe_env(7, 100, 50).expect_err("landed < origin must fail closed");
+        assert!(
+            matches!(err, explorer::MachineError::Transport(_)),
+            "fails as a transport-invariant error, got {err:?}"
+        );
+        // The boundary case is fine: an empty window keys both markers at 0
+        // (last write wins — one marker), still a valid probe env.
+        let env = reseed_probe_env(7, 100, 100).expect("landed == origin is a valid empty window");
+        let decoded = explorer::AdapterEnv::decode(&env).expect("adapter blob");
+        assert_eq!(decoded.spec.reseeds().len(), 1);
     }
 
     /// `verify_materialize` is a total, public function over an arbitrary

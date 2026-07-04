@@ -318,3 +318,70 @@ pub fn server(fork_script: Vec<Exit>) -> Result<ControlServer<CountingBackend>, 
     let factory: VmmFactory<CountingBackend> = Box::new(move || vmm(fork_script.clone(), 0));
     Ok(ControlServer::new(live, factory))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Lib-target unit tests so the crate's one `unsafe` block (the
+    //! `CountingBackend::map_memory` forward) and the exact-arrival
+    //! `run_until` seam are reachable under the nightly Miri job
+    //! (`cargo miri test -p conductor --lib` — the unsafe⇒Miri rule).
+
+    use super::*;
+
+    /// Composing the mock VM exercises the unsafe `map_memory` forward
+    /// (GuestRam is mapped into the backend at `Vmm::new`), and a step
+    /// advances the exit-driven work counter by exactly one intercept.
+    #[test]
+    fn mock_vmm_composes_maps_memory_and_ticks_per_exit() {
+        let mut v = vmm(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Hlt], 7).expect("compose");
+        assert_eq!(v.step().unwrap(), vmm_core::vmm::Step::Continued);
+        let vns1 = v.effective_vns().expect("V-time wired");
+        assert_eq!(vns1, WORK_STEP, "one serviced exit = one work step");
+        // Bookkeeping reads are cadence-neutral: reading V-time again does
+        // not advance it (the task-78 fix over the old TickingWork).
+        assert_eq!(v.effective_vns().unwrap(), vns1);
+    }
+
+    /// The exact-arrival seam: an armed `run_until` whose deadline falls
+    /// before the next natural boundary stops between exits at exactly the
+    /// deadline (no scripted exit consumed); the natural grid is untouched,
+    /// so the deferred exit still lands at its own boundary.
+    #[test]
+    fn counting_backend_run_until_arrives_between_exits() {
+        let work = Arc::new(SharedWork::default());
+        let mut inner = MockBackend::with_exits(vec![Exit::Rdtsc, Exit::Hlt]);
+        inner
+            .set_cpuid(&vmm_backend::CpuidModel::default())
+            .unwrap();
+        inner
+            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut b = CountingBackend {
+            inner,
+            work: Arc::clone(&work),
+        };
+        // Arrival at 40 (< natural 0 + 100): a Deadline at exactly 40, script
+        // untouched, reads observe 40.
+        let exit = b.run_until(vmm_backend::Vtime(40)).unwrap();
+        assert_eq!(
+            exit,
+            Exit::Deadline {
+                reached: vmm_backend::Vtime(40)
+            }
+        );
+        assert_eq!(work.current(), 40);
+        // Zero-step: at-or-past deadline reports reached == current, no entry.
+        let exit = b.run_until(vmm_backend::Vtime(40)).unwrap();
+        assert_eq!(
+            exit,
+            Exit::Deadline {
+                reached: vmm_backend::Vtime(40)
+            }
+        );
+        // The deferred scripted exit still lands on its natural boundary
+        // (100), clearing the transient arrival.
+        let exit = b.run_until(vmm_backend::Vtime(500)).unwrap();
+        assert_eq!(exit, Exit::Rdtsc);
+        assert_eq!(work.current(), WORK_STEP);
+    }
+}
