@@ -521,3 +521,236 @@ cargo clippy -p conductor --all-features --all-targets --target x86_64-unknown-l
 - **One fault per branch, `CorruptMemory` only.** The first campaign searches single-upset schedules
   (the tested task-59 fault). `InjectInterrupt`-timing bugs and multi-fault schedules are a strict
   superset the same loop drives (widen `mint_fault_env`); out of scope for the milestone.
+
+---
+
+# task 68 — the chain protocol: live materialization gates over the socket
+
+`src/materialize.rs` + `tests/materialize_loopback.rs` (portable) +
+`tests/live_materialization.rs` (box-only, `#[ignore]`) + the `materialize`
+bin subcommand. The engine itself is `dissonance/explorer`'s `Materializer`
+(its IMPLEMENTATION.md §task 68); this crate drives it over the task-58
+socket with the production `SpecEnvCodec` and real `recorded_env` — vmm-core
+untouched (read-only surface), except the two foreman-assigned P2 hardenings
+in `consonance/vmm-core/tests/seal_rate_sweep.rs` (unknown seal-error classes
+now abort instead of miscounting as `Unrepresentable`; the §4 replay legs
+assert they really reached `to_vtime`).
+
+## The protocol (`run_materialize`, workload-blind)
+
+Seal the base → build an `n ≥ 3` seal chain below it (`branch →
+run(deadline) → seal` per hop, exemplars keyed by the **landed** synchronized
+boundary per the GO grid-restricted ruling; every suffix a real
+`recorded_env`) → gate (a): evict the deep exemplar's seal, materialize
+(must be parent-rooted, suffix-only) → gate (b): evict the retained ancestor,
+re-materialize (compose-folded, deeper) then evict everything (the
+from-genesis worst case) — both must hash **bit-identically** → gate (c): run
+a tail below the chain, fold its delta into a `bug_env` exactly as
+`Explorer::report` would, `branch(base, bug_env)` → identical stop + hash.
+`verify_materialize(report, baseline_ppm)` is a pure gate; the box passes
+`TASK63_BASELINE_PPM = 15_463` (task-63 §4: 1.5463 % suffix cost — gate (a)
+must beat it and quotes both numbers).
+
+Portable status: **all gates green over the real wire** (mock guest,
+`chain_gates_pass_over_the_socket`), with visible grid overshoot (off-grid
+250-ns targets land on 100-ns boundaries and are keyed by the landing).
+
+## FINDING (escalate to the foreman/integrator): the sequential-entropy splice
+
+The substrate's `branch` **reseeds the entropy stream at every hop**
+(`ControlServer::restore` → `reseed_entropy(seed)`; the stream is sequential,
+`SeededEntropy::new`). A compose-fold collapses the intermediate reseed
+points — `EnvCodec::compose` can re-key overrides but cannot express "reseed
+at `Moment` m". Consequence: a folded materialization (or a composed
+genesis-complete reproducer) is bit-identical to its hop-by-hop original
+**iff no RDRAND/RDSEED draw lands inside a collapsed interval** (a draw
+desyncs the stream sequence and its VMST-hashed position).
+
+- Pinned portably:
+  `materialize_loopback.rs::sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit`
+  (a draw-carrying mock script; the two-hop leg reproduces itself, the fold
+  diverges — so it is the splice, not nondeterminism). If a substrate change
+  (e.g. the task-93 ruling's named future option: Moment-keyed counter-mode
+  entropy) makes reseeds splice-invariant, the pin fails loudly — retire it
+  together with this note.
+- Live blast radius: task-63 §2/§4/§4b never measured a *mid-chain reseed*
+  (its §4 chain was a single no-reseed trajectory), so this is the first task
+  whose gates exercise it. Post-readiness Postgres spans of a few M ns are
+  expected draw-free (the kernel crng reseeds on ~minute timescales), so the
+  box gates are expected green; a gate (b)/(c) hash mismatch on the box IS
+  this finding materializing — `verify_materialize` stamps the diagnostic on
+  exactly those failures. Escalate with the log; do not patch from this
+  surface.
+
+## Box runbook (gates 3–5; hand to the foreman if ssh is down)
+
+```sh
+# on the box, this branch, patched KVM loaded, image built:
+taskset -c 2 timeout 7200 cargo test -p conductor --test live_materialization \
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/live_materialization.log
+# knobs: HOPS (3) · HOP_DELTA_VNS (2_000_000) · TAIL_DELTA_VNS (1_000_000)
+#        CHAIN_SEED · READY_MARKER · KERNEL/INITRAMFS
+```
+
+Transcribe the `[REPORT]` block here. Core 2 is the standing frontier-gate
+core (`docs/BOX-PINNING.md` is authoritative; note task-60's campaign gate
+may hold a core — serialize). **Box-safety:** stock KVM = 1396736 — `pkill
+-9 -f live_materialization` FIRST (separate ssh call, expect exit 255), wait
+`lsmod | grep '^kvm_intel'` users=0, `rmmod kvm_intel kvm; modprobe kvm;
+modprobe kvm_intel`, verify size on a FRESH connection.
+
+## Known limitations
+
+- **The mock restarts its exit script on every `branch`** (fork VMs replay
+  the script from position 0), so a fold changes the *script phase* at a
+  given V-time — an artifact the real guest does not have (its instruction
+  stream is positionally continuous). The splice pin therefore takes **no
+  seal inside the fold** (it hashes at deadline stops), isolating the
+  entropy effect from the phase artifact.
+- **Gate (c)'s "bug" is a deadline stop, not a crash**: the seed-driven v1
+  vocabulary cannot mint a guest crash (no fault enforcement below the
+  chain's suffixes yet — that is task 60/69 territory). The task-93 contract
+  verified is exactly the gate's: the compose-folded, genesis-complete,
+  `SnapId`-free artifact replays to an **identical stop + `state_hash`** on
+  the production codec and real `recorded_env`.
+- The chain uses one seed for every hop — not a harness convenience but the
+  compose contract itself (`compose` fails closed on seed mismatches), i.e.
+  exactly what `Explorer`'s exploit path produces (`mutate` preserves the
+  base seed).
+
+## Box-gate status: PASSED (2026-07-03, determinism box)
+
+Portable gates: **all green** (explorer 91 + conductor 18 + the full
+workspace's 1105, clippy `-D warnings`, fmt, deny; Linux cross-check of the
+box-only harnesses). Box gates (a)/(b)/(c): **PASSED** — run via
+`scripts/box-window.sh` (leased core 2, patched KVM 1400832, det-cfl-v1
+host, release build; gate wall time 54.6 s), window released and **stock KVM
+1396736 re-verified** after. The transcribed `[REPORT]`:
+
+```
+[REPORT] task-68 live_materialization (box)
+base: sealed at V-time 442905523 (2 attempts)
+hop         requested     landed(at)  overshoot  attempts
+0           444905523      445147970     242447         1
+1           447147970      447148315        345         1
+2           449148315      449165676      17361         1
+hot     base_at      447148315 -> at      449165676  depth      2017361  ratio   4491 ppm  folds 0  from_genesis false  state_hash c4ad3e0108510603dc116959e907ee49afa7bb7f79aec43efb232d868694c4a6
+folded  base_at      445147970 -> at      449165676  depth      4017706  ratio   8944 ppm  folds 1  from_genesis false  state_hash c4ad3e0108510603dc116959e907ee49afa7bb7f79aec43efb232d868694c4a6
+worst   base_at      442905523 -> at      449165676  depth      6260153  ratio  13937 ppm  folds 0  from_genesis true   state_hash c4ad3e0108510603dc116959e907ee49afa7bb7f79aec43efb232d868694c4a6
+round-trip: folded == hot, worst == hot
+reproducer: leg    Deadline@450224167       state_hash b1990e89370f4db934c68baa21c036fce92e527007fc58234746d309fd632cd0
+reproducer: replay Deadline@450224167       state_hash b1990e89370f4db934c68baa21c036fce92e527007fc58234746d309fd632cd0 (== leg; bug_env 91 bytes, genesis-complete)
+baseline: task-63 s4 = 15463 ppm (1.5463%); measured hot = 4491 ppm
+[REPORT] GATES PASS: (a) parent-rooted depth beats the task-63 baseline; (b) eviction round-trip bit-identical (folded + from-genesis worst case); (c) composed reproducer replays with identical stop + state_hash.
+```
+
+Reading: **(a)** the deep exemplar materialized from its direct parent at
+**4,491 ppm** (0.449 %) of a full from-scratch re-execution — beating the
+task-63 §4 baseline (15,463 ppm / 1.5463 %) by ~3.4×. **(b)** the folded
+(one collapsed hop, 2× depth) and from-genesis worst-case (3.1× depth)
+re-materializations hash **bit-identically** to the hot seal — and, load-
+bearing for the escalated finding: the real post-readiness Postgres spans
+were **draw-free**, so the sequential-entropy splice did not materialize
+live (exactly as predicted; the portable pin remains the documentation of
+the boundary). **(c)** the 91-byte genesis-complete `bug_env` replayed below
+the 3-deep chain to an identical stop + `state_hash` — the task-93
+end-to-end gate on the production codec and real `recorded_env`. The grid
+restriction is visible live (overshoots 242,447 / 345 / 17,361 ns; every
+exemplar keyed by its landed boundary).
+
+---
+
+# IMPLEMENTATION — task 78 (reseed-aware compose: bit-identical folds under entropy draws)
+
+The ruled fix for the task-68 escalated **sequential-entropy-splice** finding
+(`docs/INTEGRATION.md` §6c ruling 3): the env format stores **reseed markers**
+(`environment` — blob v4), `compose` splices them positionally, the adapter
+records each branch reseed at relative 0 and re-anchors markers on the wire
+(`explorer`), and the `ControlServer` re-executes each collapsed hop's reseed
+at its exact recorded `Moment` (`vmm-core`, the task-59 exact-arrival plane).
+Per-crate details in each crate's IMPLEMENTATION.md.
+
+## The pin flips
+
+Task 68's documented-limit pin
+`sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit` is
+replaced by its positive twin
+`sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin`
+(`tests/materialize_loopback.rs`): on the draw-carrying script the
+compose-folded leg is now **bit-identical** to the hop-by-hop original, over
+the real wire. The escalation note in this file's task-68 section and in
+`live_materialization.rs` is retired with it (this section supersedes both).
+
+## Portable gates
+
+- `tests/reseed_fold_proptest.rs` — 256 random chains (depth 2–4, off-grid
+  per-hop spans, random seeds) with RDRAND draws inside every collapsed
+  interval: fold == hop-by-hop, always, over `SocketMachine` +
+  `ControlServer` (the production codec + real `recorded_env`).
+- `chain_gates_pass_on_a_draw_carrying_script` — the full task-68 chain
+  protocol (gates a/b/c) green on a draw-carrying script, `bug_env` carrying
+  one reseed marker per collapsed leg, all draw probes reading DRAWS.
+- **Mock constraint:** the scripted mock restarts its exit script at every
+  branch (script position is not in `VcpuState`), so portable draw-carrying
+  comparisons need restart-phase-invariant shapes (the proptest's period-400
+  script / the pin's alternating script; documented in the proptest module
+  doc). A real guest has no such restart — unconstrained shapes are the box
+  gate's job.
+- **Mock work model rework (`src/mock.rs`):** `TickingWork` (tick on every
+  read) made V-time advance on host-side bookkeeping reads, so an armed
+  (exact-arrival) run had a different V-time cadence than an unarmed one —
+  no schedule-carrying mock run could be compared against a plain one. The
+  composition now uses `SharedWork` (a counter advanced only per serviced
+  scripted exit — the box's guest-branches-only semantics) + a
+  `CountingBackend` wrapper implementing exact arrival between exits.
+  `TickingWork` remains for the one loopback test that composes its own VM.
+
+## Draw probes (measured, never assumed)
+
+`run_materialize` gained self-normalizing **draw probes**: each hop window
+(and the tail) is re-run with a trailing reseed marker back to the same seed
+at the landed boundary — a no-op iff no draw moved the stream, so the probe
+hash differs from the plain leg's exactly when the window drew
+(`MaterializeReport::{hop_draws, tail_draws}`). The live gate requires a
+draw inside a collapsed window (`REQUIRE_DRAWS=0` waives).
+
+## Box gate (FRONTIER) — PASSED 2026-07-03, determinism box
+
+Runs 2/3 (HOPS=4, identical results — deterministic), leased core 2 via
+`scripts/box-window.sh`, patched KVM 1400832, release build, gate wall
+~135 s; stock 1396736 re-verified after, 0 leases:
+
+- draw probes: **hops [false, false, false, true]; tail DRAWS** — hop 3's
+  collapsed window and the tail both draw entropy (RDRAND via the guest CRNG
+  path), measured on real KVM.
+- gate (b): folded (1 fold) AND from-genesis worst case — the latter
+  collapsing the draw-carrying hop-3 window — bit-identical to the hot seal
+  (state_hash 8fa042da…); hot ratio 4 504 ppm beats the 15 463 baseline.
+- gate (c): the 175-byte genesis-complete `bug_env` (5 reseed markers)
+  collapses a reseed point that sits AFTER hop 3's draws — the exact shape
+  the pre-task-78 code provably diverged on — and replays with identical
+  stop + state_hash (725387df…).
+- Run 1 (HOPS=3, default config) also passed with the tail drawing — the
+  same seals/hashes as task-68's run (c4ad3e01…), confirming the no-marker
+  compatibility surface live.
+
+Runbook (foreman re-run): `/root/harmony-t78` on the box (branch pushed via
+`ssh://hetzner/root/harmony-t78`, guest/build symlinked to harmony-pr44's
+image), driver `/root/task78/gate.sh` (acquires the box-window lease, re-pins
+it to the long-lived driver PID — the command-substitution PPID gotcha —
+runs `HOPS=4 taskset -c $CORE timeout 7200 cargo test --release -p conductor
+--test live_materialization -- --ignored --nocapture --test-threads=1`,
+releases on EXIT). Logs: `/root/task78/gate{1,2,3}.log`.
+
+## Known limitations / integrator notes
+
+- Marker seeds are recorded at branch time from the env's seed (adapter) or
+  the marker table (server); the server-side recorded reproducer stamps the
+  floor reseed only for marker-carrying branches, so the no-marker
+  `recorded_env()` byte shape is unchanged from task 59 (modulo the blob v4
+  trailing empty table).
+- Moment-keyed counter-mode entropy (task 93's deeper option) remains out of
+  scope — this makes the *sequential* scheme compose-safe, per the ruling.
+- Miri: run clean on `conductor --lib` (17 tests, `-Zmiri-disable-isolation`)
+  after the mock gained the (delegating, SAFETY-commented) `map_memory`
+  forward in `CountingBackend`.

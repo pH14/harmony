@@ -33,7 +33,7 @@ fn cfg(retain: RetentionPolicy) -> RecordConfig {
     }
 }
 
-fn server() -> vmm_core::control::ControlServer<vmm_backend::MockBackend> {
+fn server() -> vmm_core::control::ControlServer<conductor::mock::CountingBackend> {
     mock::server(mock::recording_fork_script()).expect("compose mock recording server")
 }
 

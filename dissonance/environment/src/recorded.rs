@@ -94,6 +94,16 @@ pub enum EnvSpec {
         overrides: BTreeMap<Moment, Action>,
         /// Correlated, V-time-windowed faults.
         standing: Vec<StandingFault>,
+        /// The **reseed-marker table** (task 78): the sequential-entropy
+        /// reseeds this reproducer's timeline carries, keyed by the [`Moment`]
+        /// each took effect (a branch origin), valued by the seed
+        /// (`SeededEntropy::new(seed)`). A compose-folded env re-executes each
+        /// collapsed hop's reseed at its recorded position instead of
+        /// reseeding once at the fold's root — the ruled fix for PR #58's
+        /// sequential-entropy-splice finding. A `BTreeMap` (integer keys, no
+        /// floats) so the table is inherently canonical and no insertion
+        /// order can reach an encoded byte.
+        reseeds: BTreeMap<Moment, u64>,
     },
 }
 
@@ -105,11 +115,15 @@ impl EnvSpec {
     /// (magic, [`Action`] map, standing faults) is unchanged, but the network
     /// [`Fault`](crate::Fault) byte vocabulary was reshaped (per-frame → per-flow),
     /// so a task-45 `v2` blob carrying an old net fault must reject rather than
-    /// silently reinterpret it as a new flow policy. Bumped to `4` by task 73: the
-    /// embedded [`FaultPolicy`](crate::FaultPolicy) gained a trailing buggify
-    /// section (its own version moved `2 → 3`), an inner byte vocabulary changing
-    /// incompatibly — so a task-50 `v3` blob (whose policy has no buggify section)
-    /// rejects at the container version rather than truncating mid-policy.
+    /// silently reinterpret it as a new flow policy. Bumped to `4` by **two**
+    /// inner-format changes that landed together (tasks 78 + 73), each of which a
+    /// `v3` reader must reject rather than mis-parse: task 78 gave the
+    /// [`Recorded`](EnvSpec::Recorded) layout a trailing **reseed-marker table** (a
+    /// v3 blob has no table), and task 73 gave the embedded
+    /// [`FaultPolicy`](crate::FaultPolicy) a trailing **buggify section** (its own
+    /// version moved `2 → 3`; a v3 blob's policy has none). A `v4` blob carries
+    /// both; the policy is self-versioned (`FPL1` + its own `VERSION`), so the two
+    /// changes coexist under one container version.
     pub const BLOB_VERSION: u16 = 4;
 
     /// The seed every backing draws from.
@@ -137,6 +151,39 @@ impl EnvSpec {
                 static EMPTY: BTreeMap<Moment, Action> = BTreeMap::new();
                 &EMPTY
             }
+        }
+    }
+
+    /// The reseed-marker table (empty for [`Seeded`](EnvSpec::Seeded)): the
+    /// sequential-entropy reseeds this reproducer carries, keyed by the
+    /// [`Moment`] each took effect (a collapsed branch origin), valued by the
+    /// seed. The frontier re-executes each at its `Moment` on `branch` — see
+    /// the [`Recorded`](EnvSpec::Recorded) field doc.
+    pub fn reseeds(&self) -> &BTreeMap<Moment, u64> {
+        match self {
+            Self::Recorded { reseeds, .. } => reseeds,
+            Self::Seeded { .. } => {
+                // A process-wide empty map; `Seeded` has no reseed markers, so
+                // a shared empty borrow is correct and allocation-free.
+                static EMPTY: BTreeMap<Moment, u64> = BTreeMap::new();
+                &EMPTY
+            }
+        }
+    }
+
+    /// Stamp a reseed marker at `at`: the entropy stream was reseeded to
+    /// `SeededEntropy::new(seed)` at that [`Moment`] (a branch origin).
+    /// Promotes a [`Seeded`](EnvSpec::Seeded) spec to
+    /// [`Recorded`](EnvSpec::Recorded) on first use; a later stamp at the same
+    /// `Moment` overwrites (last write wins), matching [`record`](EnvSpec::record).
+    pub fn record_reseed(&mut self, at: Moment, seed: u64) {
+        self.promote();
+        match self {
+            Self::Recorded { reseeds, .. } => {
+                reseeds.insert(at, seed);
+            }
+            // Unreachable: `promote` converted any `Seeded` to `Recorded`.
+            Self::Seeded { .. } => unreachable!("Seeded was just promoted to Recorded"),
         }
     }
 
@@ -168,17 +215,25 @@ impl EnvSpec {
         self.record(at, Action::Host(fault));
     }
 
-    /// `&mut` access to the override map, promoting a [`Seeded`](EnvSpec::Seeded)
-    /// spec into an empty [`Recorded`](EnvSpec::Recorded) one in place.
-    fn overrides_mut(&mut self) -> &mut BTreeMap<Moment, Action> {
+    /// Promote a [`Seeded`](EnvSpec::Seeded) spec into an empty
+    /// [`Recorded`](EnvSpec::Recorded) one in place (no-op if already
+    /// `Recorded`).
+    fn promote(&mut self) {
         if let Self::Seeded { seed, policy } = self {
             *self = Self::Recorded {
                 seed: *seed,
                 policy: policy.clone(),
                 overrides: BTreeMap::new(),
                 standing: Vec::new(),
+                reseeds: BTreeMap::new(),
             };
         }
+    }
+
+    /// `&mut` access to the override map, promoting a [`Seeded`](EnvSpec::Seeded)
+    /// spec into an empty [`Recorded`](EnvSpec::Recorded) one in place.
+    fn overrides_mut(&mut self) -> &mut BTreeMap<Moment, Action> {
+        self.promote();
         match self {
             Self::Recorded { overrides, .. } => overrides,
             // Unreachable: the block above converted any `Seeded` to `Recorded`.
@@ -205,6 +260,7 @@ impl EnvSpec {
                 policy,
                 overrides,
                 standing,
+                reseeds,
             } => {
                 w.push(1);
                 codec::put_u64(&mut w, *seed);
@@ -231,6 +287,14 @@ impl EnvSpec {
                     codec::put_bytes(&mut w, &s.target);
                     codec::put_u64(&mut w, s.window.0.0);
                     codec::put_u64(&mut w, s.window.1.0);
+                }
+
+                // The reseed-marker table (task 78), ascending `Moment`s — the
+                // map is inherently canonical, like the override map above.
+                codec::put_len(&mut w, reseeds.len());
+                for (m, seed) in reseeds {
+                    codec::put_u64(&mut w, *m);
+                    codec::put_u64(&mut w, *seed);
                 }
             }
         }
@@ -266,6 +330,7 @@ impl EnvSpec {
             1 => {
                 let overrides = read_overrides(&mut r)?;
                 let standing = read_standing(&mut r)?;
+                let reseeds = read_reseeds(&mut r)?;
                 if !r.at_end() {
                     return Err(EnvError::Malformed);
                 }
@@ -274,6 +339,7 @@ impl EnvSpec {
                     policy,
                     overrides,
                     standing,
+                    reseeds,
                 })
             }
             _ => Err(EnvError::Malformed),
@@ -349,6 +415,25 @@ fn read_standing(r: &mut Reader) -> Result<Vec<StandingFault>, EnvError> {
         });
     }
     Ok(standing)
+}
+
+/// Read the reseed-marker table, requiring strictly-ascending `Moment`s (so a
+/// hand-crafted blob with a duplicate or out-of-order key — which `encode`
+/// never emits — is rejected, not silently collapsed).
+fn read_reseeds(r: &mut Reader) -> Result<BTreeMap<Moment, u64>, EnvError> {
+    let n = r.u32()?;
+    let mut reseeds: BTreeMap<Moment, u64> = BTreeMap::new();
+    let mut prev: Option<Moment> = None;
+    for _ in 0..n {
+        let m = r.u64()?;
+        if prev.is_some_and(|p| m <= p) {
+            return Err(EnvError::Malformed);
+        }
+        prev = Some(m);
+        let seed = r.u64()?;
+        reseeds.insert(m, seed);
+    }
+    Ok(reseeds)
 }
 
 /// Answers a guest decision from a [`Moment`]-keyed override first, else from the

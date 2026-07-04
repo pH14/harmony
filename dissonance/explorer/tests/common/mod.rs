@@ -172,30 +172,32 @@ impl EnvCodec for ToyCodec {
     }
 
     fn mutate(&self, base: &Environment, salt: u64) -> Environment {
-        // A corpus base is genesis-complete; produce a branch-local delta keyed
-        // from the base snapshot's offset (`pos` — `SNAP_AT` for a genesis-rooted
-        // base, `SNAP_AT2` for a nested one), the suffix the snapshot will branch
-        // into. Keep the base seed so a later genesis recompose is PRNG-consistent.
+        // Produce a branch-local delta keyed from the base snapshot's capture
+        // point, slicing at the **relative** cut `pos − base_offset` (task 68:
+        // a base's overrides are keyed relative to its own root; a
+        // genesis-complete base is the `base_offset == 0` special case). Keep
+        // the base seed so a later recompose is PRNG-consistent.
         let b = decode(base).unwrap_or(ToyEnv {
             base_offset: 0,
             pos: SNAP_AT,
             seed: salt,
             overrides: BTreeMap::new(),
         });
-        let offset = b.pos.min(TOTAL_DECISIONS);
-        let local_len = (TOTAL_DECISIONS - offset).max(1);
+        let pos = b.pos.min(TOTAL_DECISIONS);
+        let cut = pos.saturating_sub(b.base_offset);
+        let local_len = (TOTAL_DECISIONS - pos).max(1);
         let mut overrides: BTreeMap<u64, u8> = b
             .overrides
             .iter()
-            .filter(|(abs, _)| **abs >= offset)
-            .map(|(abs, v)| (abs - offset, *v))
+            .filter(|(rel, _)| **rel >= cut)
+            .map(|(rel, v)| (rel - cut, *v))
             .collect();
         // Tweak exactly one suffix override, deterministically by salt.
         let pick = salt % local_len;
         let val = ((salt >> 8) % K as u64) as u8;
         overrides.insert(pick, val);
         encode(&ToyEnv {
-            base_offset: offset,
+            base_offset: pos,
             pos: TOTAL_DECISIONS,
             seed: b.seed,
             overrides,
@@ -215,21 +217,33 @@ impl EnvCodec for ToyCodec {
             seed: b.seed,
             overrides: BTreeMap::new(),
         });
-        let k = d.base_offset;
-        // Genesis prefix from base (abs < k) + the delta re-keyed onto the end. The
-        // result's `pos` is the delta's capture point, so a composed nested base
-        // still records *its* snapshot offset for a later `mutate`.
+        // Splice at the **relative** cut (task 68): the delta's branch origin
+        // minus the base's own root. With a genesis-complete base this is the
+        // absolute splice; with a parent-rooted base (a lineage suffix) the
+        // fold stays rooted at the base's origin, so chains compose. A delta
+        // keyed before its base's root is a mis-ordered chain — test code, so
+        // assert loudly.
+        assert!(
+            d.base_offset >= b.base_offset,
+            "ToyCodec::compose: mis-ordered chain (delta origin {} < base root {})",
+            d.base_offset,
+            b.base_offset
+        );
+        let cut = d.base_offset - b.base_offset;
+        // Base prefix (rel < cut) + the delta re-keyed onto the end. The
+        // result's `pos` is the delta's capture point, so a composed nested
+        // base still records *its* snapshot offset for a later `mutate`.
         let mut overrides: BTreeMap<u64, u8> = b
             .overrides
             .iter()
-            .filter(|(abs, _)| **abs < k)
+            .filter(|(rel, _)| **rel < cut)
             .map(|(a, v)| (*a, *v))
             .collect();
         for (lid, v) in &d.overrides {
-            overrides.insert(lid + k, *v);
+            overrides.insert(lid + cut, *v);
         }
         encode(&ToyEnv {
-            base_offset: 0,
+            base_offset: b.base_offset,
             pos: d.pos,
             seed: b.seed,
             overrides,

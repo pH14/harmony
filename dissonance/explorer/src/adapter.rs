@@ -35,6 +35,39 @@
 //! `EnvSpec::BLOB_VERSION`): the server speaks pure task-24 blobs and never
 //! learns the wrapper, so the two sides share no adapter-private schema.
 //!
+//! ## Coordinate frames (AUTHORITATIVE — the one place this is settled)
+//!
+//! Two frames exist, and exactly one code point converts between them:
+//!
+//! - **The blob frame** (`R2A1` / this adapter / every [`EnvCodec`](crate::EnvCodec)
+//!   seam): an [`AdapterEnv`]'s override keys are **relative** to its
+//!   `base_offset` — the origin of the blob's frame. `seeded` mints at origin
+//!   0; `mutate` slices and `compose` splices **within** this frame (the
+//!   relative cut, task 68), so a fold of lineage suffixes stays rooted at
+//!   its base's origin; [`Machine::recorded_env`] records into it (an answer
+//!   at absolute stop `m` is stamped at `m − branch_offset`).
+//! - **The wire frame** (`control-proto` / `ControlServer`): an `EnvSpec`'s
+//!   override `Moment`s are **absolute** on the deterministic axis — the
+//!   task-59 contract: a branch env's host faults are validated against the
+//!   restored snapshot's floor and applied at `vns == Moment`. The server
+//!   knows nothing of blob origins.
+//!
+//! **The single conversion point is [`Machine::branch`]** (`SocketMachine`):
+//! outbound, it re-anchors the blob-frame keys at the **actual restore
+//! origin** — the branched snapshot's capture moment — shipping
+//! `origin + relative` (checked; overflow is a malformed blob, refused before
+//! any wire traffic). The blob's own `base_offset` names its frame for
+//! provenance/compose; the anchor at branch time is authoritative (a
+//! genesis-complete env branched off a mid-run seal re-anchors there, exactly
+//! like its overrides' decision-index semantics). `recorded_env` is the
+//! inverse direction (absolute stop → relative key), and **no other code
+//! converts frames**. Two deliberate edges: the session-initial spec handed
+//! to [`SocketMachine::connect`] must be override-free (v1 boots are — a
+//! boot-time override's frame would be ambiguous), and standing faults ride
+//! the wire unconverted (v1 rejects them server-side as `Unsupported`; their
+//! window axis is unsettled until a `Moment → VTime` map exists, per the
+//! task-93 ruling).
+//!
 //! ## The task-93 adapter contract, implemented here
 //!
 //! - **Tail-completeness.** [`Machine::recorded_env`] emits every decision
@@ -55,14 +88,17 @@
 //!   standing faults exist); `mutate` still refuses (panics on) a
 //!   standing-fault-carrying base rather than slicing one into a branch-local
 //!   delta, so the confinement rule is enforced here the day they appear.
-//! - **Genesis-complete bases only (task-68 boundary).** `mutate`/`compose`
-//!   re-key a base's overrides as **absolute** Moments, which is correct only
-//!   for a genesis-complete base (`base_offset == 0`) — the only kind the v1
-//!   explorer flow ever feeds them (every corpus base is rebased to
-//!   genesis-complete; `seeded` mints `base_offset == 0`). A `base_offset > 0`
-//!   base is a **parent-rooted chain** (relative keys) owned by task 68; both
-//!   seams **panic** on one rather than splice in the wrong coordinate system
-//!   (the same fail-loud, never-silently-mis-key discipline).
+//! - **Parent-rooted chains (task 68).** `mutate`/`compose` operate in the
+//!   base's **own coordinate system**: a base's override keys are relative to
+//!   its `base_offset` (absolute keys are the `base_offset == 0` special
+//!   case). `compose` splices at the **relative** cut
+//!   `d.base_offset − b.base_offset` and keeps the base's root, so folding a
+//!   suffix chain (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage) yields one
+//!   delta still rooted at the chain's retained ancestor — exactly what the
+//!   task-68 materialization engine replays with **one** branch. `mutate`
+//!   slices at `b.pos − b.base_offset`. A delta keyed **before** its base's
+//!   root (`d.base_offset < b.base_offset`) is a mis-ordered chain — a defect,
+//!   panicked on (the same fail-loud, never-silently-mis-key discipline).
 //!
 //! ## Error mapping (two categories, preserved)
 //!
@@ -156,6 +192,52 @@ impl AdapterEnv {
     }
 }
 
+/// Convert a blob-frame spec (override keys **relative** to the blob's
+/// origin) to the wire frame (**absolute** `Moment`s) by re-anchoring at
+/// `origin` — the branched snapshot's capture moment. The single outbound
+/// frame conversion (module doc, "Coordinate frames"); its inverse is
+/// `recorded_env`'s `m − branch_offset` stamping. A key that overflows the
+/// axis is a malformed blob: refused with [`MachineError::BadEnvironment`]
+/// **before** any wire traffic. Standing faults are carried unconverted (v1
+/// rejects them server-side; their window axis is unsettled — module doc).
+fn rebase_to_wire(spec: &EnvSpec, origin: u64) -> Result<EnvSpec, MachineError> {
+    match spec {
+        EnvSpec::Seeded { .. } => Ok(spec.clone()),
+        EnvSpec::Recorded {
+            seed,
+            policy,
+            overrides,
+            standing,
+            reseeds,
+        } => {
+            let mut absolute = BTreeMap::new();
+            for (rel, action) in overrides {
+                let at = origin
+                    .checked_add(*rel)
+                    .ok_or(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))?;
+                absolute.insert(at, action.clone());
+            }
+            // Reseed markers re-anchor exactly like overrides (task 78): the
+            // blob-frame key is relative to the blob's origin, the server's
+            // contract is absolute Moments.
+            let mut absolute_reseeds = BTreeMap::new();
+            for (rel, s) in reseeds {
+                let at = origin
+                    .checked_add(*rel)
+                    .ok_or(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))?;
+                absolute_reseeds.insert(at, *s);
+            }
+            Ok(EnvSpec::Recorded {
+                seed: *seed,
+                policy: policy.clone(),
+                overrides: absolute,
+                standing: standing.clone(),
+                reseeds: absolute_reseeds,
+            })
+        }
+    }
+}
+
 /// Normalize a spec for a compose-safe artifact: the [`EnvSpec::Seeded`]
 /// variant is promoted to [`EnvSpec::Recorded`] with no overrides (stream-wise
 /// identical), so every adapter-emitted artifact is the `Recorded` variant the
@@ -168,6 +250,7 @@ fn recorded(spec: &EnvSpec) -> EnvSpec {
             policy: policy.clone(),
             overrides: BTreeMap::new(),
             standing: Vec::new(),
+            reseeds: std::collections::BTreeMap::new(),
         },
     }
 }
@@ -218,36 +301,29 @@ impl crate::EnvCodec for SpecEnvCodec {
 
     fn mutate(&self, base: &Environment, salt: u64) -> Environment {
         let b = Self::require(base, "mutate");
-        // Coordinate-system guard (task 58/68). The slice below treats the
-        // base's override keys and `pos` as **absolute** Moments — true only
-        // for a **genesis-complete** base (`base_offset == 0`), the only kind
-        // the v1 explorer flow ever feeds here (every corpus base is rebased to
-        // genesis-complete via `compose`; `seeded` mints `base_offset == 0`). A
-        // `base_offset > 0` base is a **parent-rooted chain** whose keys are
-        // relative to its own origin — re-keying it here would silently splice
-        // in the wrong coordinate system. Chains are task-68 scope; fail loud
-        // (task-93 ruling: never silently mis-key) until it owns the relative
-        // arithmetic (`cut = b.pos - b.base_offset`, checked).
-        assert_eq!(
-            b.base_offset, 0,
-            "SpecEnvCodec::mutate: base is not genesis-complete (base_offset={}); parent-rooted \
-             chains with relative keys are task 68 — refusing to slice in the wrong coordinate \
-             system rather than silently mis-key (task-93 ruling)",
-            b.base_offset
-        );
-        // A corpus base is genesis-complete; the branch it seeds runs from the
-        // base snapshot's capture point, so slice the suffix at `pos` into a
-        // branch-local delta (keys re-based to the branch origin), preserving
-        // seed/policy so a later genesis recompose is stream-consistent.
+        // Coordinate system (task 68): the base's override keys are relative
+        // to its own `base_offset`, so the slice point is the **relative**
+        // distance from the base's root to its capture position. A capture
+        // position behind the root is a malformed blob — a defect, loud.
+        let cut = b.pos.checked_sub(b.base_offset).unwrap_or_else(|| {
+            panic!(
+                "SpecEnvCodec::mutate: base captured at pos {} BEFORE its own root offset {} — \
+                 a malformed chain blob (task-93 ruling: defect, never silently mis-key)",
+                b.pos, b.base_offset
+            )
+        });
+        // The branch this delta seeds runs from the base snapshot's capture
+        // point, so slice the suffix at `cut` into a branch-local delta (keys
+        // re-based to the branch origin), preserving seed/policy so a later
+        // recompose is stream-consistent.
         //
-        // NOTE (v1 sequencing): the underlying `environment::EnvCodec::mutate`
-        // inserts a **host-plane** `Action::Host` override, so a mutate-minted
-        // env is `Recorded` with an override. The seed-driven task-58 server
-        // rejects any override-carrying `branch` env with `Unsupported` (host-
-        // plane enforcement is task 59) — so mutate is only *usable* against the
-        // server once task 59 lands. It is exercised here for the codec/rebasing
-        // contract (compose consistency, slicing at `pos`), not as a live
-        // campaign proposal yet.
+        // NOTE: the underlying `environment::EnvCodec::mutate` inserts a
+        // **host-plane** `Action::Host` override (at a blob-frame, relative
+        // key), so a mutate-minted env is `Recorded` with an override. Task 59
+        // landed host-plane enforcement server-side, and `branch`'s wire-frame
+        // conversion (module doc, "Coordinate frames") re-anchors the relative
+        // key at the restore origin — so mutate-minted envs are live campaign
+        // proposals now, not just codec/rebasing exercises.
         let (seed, policy) = (b.spec.seed(), b.spec.policy().clone());
         if let EnvSpec::Recorded { standing, .. } = &b.spec
             && !standing.is_empty()
@@ -264,14 +340,34 @@ impl crate::EnvCodec for SpecEnvCodec {
             .spec
             .overrides()
             .iter()
-            .filter(|(m, _)| **m >= b.pos)
-            .map(|(m, a)| (m - b.pos, a.clone()))
+            .filter(|(m, _)| **m >= cut)
+            .map(|(m, a)| (m - cut, a.clone()))
             .collect();
+        // Reseed markers slice consistently (task 78): the suffix keeps the
+        // markers at-or-past the cut, re-keyed to the branch origin — and it
+        // must ALSO carry the origin marker (0 → seed) when none lands
+        // exactly at the cut (PR #62 round-2 blocking fix): a marker-carrying
+        // env's table is authoritative on the server, so a non-empty sliced
+        // table with no floor marker would make the branch CONTINUE the
+        // parent stream instead of reseeding — and `branch`'s is-empty stamp
+        // never fires on a non-empty table. A base marker exactly at the cut
+        // wins (its value IS what the stream became at that point).
+        let mut suffix_reseeds: BTreeMap<u64, u64> = b
+            .spec
+            .reseeds()
+            .iter()
+            .filter(|(m, _)| **m >= cut)
+            .map(|(m, s)| (m - cut, *s))
+            .collect();
+        if !suffix_reseeds.is_empty() {
+            suffix_reseeds.entry(0).or_insert(seed);
+        }
         let sliced = EnvSpec::Recorded {
             seed,
             policy,
             overrides: suffix,
             standing: Vec::new(),
+            reseeds: suffix_reseeds,
         };
         // One deterministic host-plane tweak via the real codec (guest
         // overrides are preserved verbatim by its contract).
@@ -287,28 +383,25 @@ impl crate::EnvCodec for SpecEnvCodec {
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment {
         let b = Self::require(base, "compose");
         let d = Self::require(branch_local, "compose");
-        // Coordinate-system guard (task 58/68), symmetric with `mutate`. The
-        // splice keeps the base's overrides where `m < at` and shifts the delta
-        // by `+at` — correct only when the base's keys are **absolute**, i.e. a
-        // **genesis-complete** base (`base_offset == 0`), the only kind the v1
-        // flow composes against (a bug is rebased onto the genesis-complete
-        // corpus base; a snapshot forked below one is rebased through it). A
-        // `base_offset > 0` base is a task-68 parent-rooted chain whose correct
-        // splice point is `d.base_offset - b.base_offset` (checked); doing the
-        // absolute arithmetic on it would silently mis-key. Fail loud until
-        // task 68 owns the relative form. (The delta's `base_offset > 0` is
-        // fine — it IS the splice point `at`.)
-        assert_eq!(
-            b.base_offset, 0,
-            "SpecEnvCodec::compose: base is not genesis-complete (base_offset={}); parent-rooted \
-             chains are task 68 — refusing to splice in the wrong coordinate system rather than \
-             silently mis-key (task-93 ruling)",
-            b.base_offset
-        );
-        // The ruling's "`at` provenance": the delta carries the absolute
-        // Moment it is keyed from, so `at` is recoverable from the delta alone.
-        let at = d.base_offset;
-        let composed = match environment::EnvCodec::compose(&b.spec, &d.spec, at) {
+        // Coordinate system (task 68), symmetric with `mutate`: the base's
+        // keys are relative to its own `base_offset`, so the splice point is
+        // the **relative** distance from the base's root to the delta's branch
+        // origin (the ruling's "`at` provenance" — the delta carries the
+        // absolute Moment it is keyed from, so the cut is recoverable from the
+        // two blobs alone). With a genesis-complete base (`base_offset == 0`)
+        // this reduces to the absolute splice the v1 flow always used; with a
+        // parent-rooted base it is the chain fold the task-68 materialization
+        // engine drives (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage), whose
+        // result stays rooted at the base's own origin. A delta branched
+        // BEFORE its base's root is a mis-ordered chain — a defect, loud.
+        let cut = d.base_offset.checked_sub(b.base_offset).unwrap_or_else(|| {
+            panic!(
+                "SpecEnvCodec::compose: delta keyed from {} BEFORE the base's root offset {} — \
+                 a mis-ordered chain (task-93 ruling: defect, never silently mis-key)",
+                d.base_offset, b.base_offset
+            )
+        });
+        let composed = match environment::EnvCodec::compose(&b.spec, &d.spec, cut) {
             Ok(spec) => spec,
             Err(e) => panic!(
                 "SpecEnvCodec::compose failed ({e}) — unreachable under the task-93 adapter \
@@ -596,17 +689,25 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
 
 impl<S: Read + Write> Machine for SocketMachine<S> {
     fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
-        // Decode the adapter blob first (a caller error must not touch the
-        // session), then ship only the inner EnvSpec bytes on the wire.
+        // Decode the adapter blob and resolve the branch origin first (a
+        // caller error must not touch the session).
         let decoded = AdapterEnv::decode(env)?;
-        let wire_env = control_proto::Environment {
-            blob_version: EnvSpec::BLOB_VERSION,
-            bytes: decoded.spec.encode(),
-        };
         let Some(meta) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         let origin = meta.vtime;
+        // The single outbound frame conversion (module doc, "Coordinate
+        // frames"): the blob's override keys are RELATIVE to its origin, the
+        // server's contract is ABSOLUTE Moments (task 59 validates against
+        // the restored floor and applies at `vns == Moment`) — re-anchor at
+        // the actual restore point before shipping. Shipping the blob-frame
+        // keys raw would mis-key every host fault under a parent-rooted fold
+        // (PR #58 round-1 blocking finding).
+        let wire_spec = rebase_to_wire(&decoded.spec, origin)?;
+        let wire_env = control_proto::Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: wire_spec.encode(),
+        };
         match self.call(&control_proto::Request::Branch {
             snap: control_proto::SnapId(snap.0),
             env: wire_env,
@@ -616,6 +717,16 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
                 // capture Moment (the blob's own base_offset is advisory — the
                 // authoritative origin is where the branch actually restored to).
                 self.current = recorded(&decoded.spec);
+                // Record the branch reseed into the blob frame (task 78): a
+                // no-marker env made the server reseed from the env's seed at
+                // the restore origin — stamp that as a marker at relative 0 so
+                // the emitted delta composes reseed-aware (a fold re-executes
+                // it at the collapsed hop's position). A marker-carrying env
+                // already names its own reseeds (the server honored exactly
+                // those); they ride through `recorded` verbatim.
+                if self.current.reseeds().is_empty() {
+                    self.current.record_reseed(0, decoded.spec.seed());
+                }
                 self.branch_offset = origin;
                 self.pos = origin;
                 self.pending_decision = None;
@@ -808,6 +919,7 @@ mod tests {
             policy: FaultPolicy::none(),
             overrides,
             standing: Vec::new(),
+            reseeds: std::collections::BTreeMap::new(),
         }
     }
 
@@ -945,39 +1057,152 @@ mod tests {
         let _ = SpecEnvCodec.compose(&junk, &junk);
     }
 
-    // The coordinate-system guard (task 58/68): `mutate`/`compose` panic on a
-    // non-genesis base (base_offset > 0 — a parent-rooted chain, task 68) rather
-    // than re-key in the wrong coordinate system. In v1 every base fed here is
-    // genesis-complete, so this never fires; the guard is the fail-loud handoff.
+    // The task-68 coordinate system: `mutate`/`compose` operate in the base's
+    // OWN coordinate system (keys relative to its `base_offset`), so a
+    // parent-rooted chain folds correctly — and a mis-ordered chain (a delta
+    // keyed before its base's root, or a capture behind the root) is a defect
+    // that panics rather than silently mis-keys (task-93 discipline).
 
     #[test]
-    #[should_panic(expected = "base is not genesis-complete")]
-    fn mutate_panics_on_a_non_genesis_base_chain_is_task_68() {
+    fn compose_folds_a_parent_rooted_chain_at_the_relative_cut() {
+        // suffix₁: rooted at 100 (keys relative to it), captured at 250.
         let base = AdapterEnv {
-            base_offset: 100, // parent-rooted, relative keys
-            pos: 200,
-            spec: spec_with_overrides(7, &[]),
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_overrides(7, &[20, 180]),
         }
         .encode();
-        let _ = SpecEnvCodec.mutate(&base, 0x1);
+        // suffix₂: branched at 250, captured at 400.
+        let delta = AdapterEnv {
+            base_offset: 250,
+            pos: 400,
+            spec: spec_with_overrides(7, &[5, 60]),
+        }
+        .encode();
+        let folded = SpecEnvCodec.compose(&base, &delta);
+        let decoded = AdapterEnv::decode(&folded).unwrap();
+        assert_eq!(
+            decoded.base_offset, 100,
+            "the fold stays rooted at the base's own origin (the retained ancestor)"
+        );
+        assert_eq!(decoded.pos, 400, "pos is the delta's capture point");
+        // Relative cut = 250 − 100 = 150: base keeps keys < 150 (20; the 180
+        // is superseded by the branch), delta re-keys by +150 (5→155, 60→210).
+        let keys: Vec<u64> = decoded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![20, 155, 210]);
+        assert_eq!(decoded.spec.seed(), 7);
     }
 
     #[test]
-    #[should_panic(expected = "base is not genesis-complete")]
-    fn compose_panics_on_a_non_genesis_base_chain_is_task_68() {
-        let base = AdapterEnv {
-            base_offset: 100, // parent-rooted, relative keys
-            pos: 200,
-            spec: spec_with_overrides(7, &[]),
+    fn compose_then_compose_folds_a_two_hop_chain_onto_genesis() {
+        // A genesis-complete base + two chain suffixes: fold(fold(b, s1), s2)
+        // must equal splicing each at its own relative cut — the exact shape
+        // the materialization engine replays from genesis in the worst case.
+        let b = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_overrides(7, &[40]),
         }
         .encode();
-        let delta = AdapterEnv {
+        let s1 = AdapterEnv {
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_overrides(7, &[20]),
+        }
+        .encode();
+        let s2 = AdapterEnv {
+            base_offset: 250,
+            pos: 300,
+            spec: spec_with_overrides(7, &[10]),
+        }
+        .encode();
+        let folded = SpecEnvCodec.compose(&SpecEnvCodec.compose(&b, &s1), &s2);
+        let decoded = AdapterEnv::decode(&folded).unwrap();
+        assert_eq!(decoded.base_offset, 0, "genesis-complete");
+        assert_eq!(decoded.pos, 300);
+        let keys: Vec<u64> = decoded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![40, 120, 260], "each suffix keyed at its own cut");
+    }
+
+    #[test]
+    fn mutate_slices_a_parent_rooted_base_at_the_relative_cut() {
+        // Guest overrides are preserved verbatim by the underlying codec's
+        // contract (only a host-plane tweak is applied), so the slice is
+        // exactly assertable. Rooted at 100, captured at 160 → relative cut
+        // 60: the pre-capture override (5) is dropped, the suffix re-keys
+        // (70→10, 90→30).
+        let mut overrides = BTreeMap::new();
+        for k in [5u64, 70, 90] {
+            overrides.insert(k, Action::Guest(environment::Answer::Nominal));
+        }
+        let base = AdapterEnv {
+            base_offset: 100,
+            pos: 160,
+            spec: EnvSpec::Recorded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+                overrides,
+                standing: Vec::new(),
+                reseeds: std::collections::BTreeMap::new(),
+            },
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        assert_eq!(
+            decoded.base_offset, 160,
+            "keyed from the base's (absolute) capture point"
+        );
+        assert_eq!(
+            decoded.spec.seed(),
+            7,
+            "seed preserved (compose-consistent)"
+        );
+        let guest_keys: Vec<u64> = decoded
+            .spec
+            .overrides()
+            .iter()
+            .filter(|(_, a)| a.guest_answer().is_some())
+            .map(|(k, _)| *k)
+            .collect();
+        assert_eq!(
+            guest_keys,
+            vec![10, 30],
+            "the suffix sliced at the RELATIVE cut (60), not the absolute pos"
+        );
+        // Deterministic: same (base, salt) ⇒ same blob.
+        assert_eq!(out, SpecEnvCodec.mutate(&base, 0x5A17));
+    }
+
+    #[test]
+    #[should_panic(expected = "mis-ordered chain")]
+    fn compose_panics_on_a_mis_ordered_chain() {
+        let base = AdapterEnv {
             base_offset: 200,
             pos: 300,
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
+        // A delta keyed BEFORE the base's root: not a suffix of it.
+        let delta = AdapterEnv {
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
         let _ = SpecEnvCodec.compose(&base, &delta);
+    }
+
+    #[test]
+    #[should_panic(expected = "BEFORE its own root offset")]
+    fn mutate_panics_on_a_capture_behind_the_root() {
+        let base = AdapterEnv {
+            base_offset: 200,
+            pos: 100, // malformed: captured before its own root
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        let _ = SpecEnvCodec.mutate(&base, 0x1);
     }
 
     #[test]
@@ -1242,6 +1467,156 @@ mod tests {
         assert!(SocketMachine::connect(stream, seeded_env(1)).is_ok());
     }
 
+    // ---- the wire-frame conversion (PR #58 round-1 blocking fix) ----------
+
+    /// A scripted stream that additionally CAPTURES the client's request
+    /// bytes, so a test can decode exactly what went on the wire.
+    struct CapturingStream {
+        replies: Cursor<Vec<u8>>,
+        written: std::rc::Rc<std::cell::RefCell<Vec<u8>>>,
+    }
+
+    impl Read for CapturingStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.replies.read(buf)
+        }
+    }
+
+    impl Write for CapturingStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Decode every request frame the client wrote.
+    fn captured_requests(bytes: &[u8]) -> Vec<control_proto::Request> {
+        let mut out = Vec::new();
+        let mut rest = bytes;
+        while let Some((_seq, req, used)) =
+            control_proto::decode_request(rest).expect("request framing")
+        {
+            out.push(req);
+            rest = &rest[used..];
+        }
+        assert!(rest.is_empty(), "no partial trailing frame");
+        out
+    }
+
+    /// The round-1 blocking fix, pinned at the exact wire bytes: `branch`
+    /// re-anchors the blob-frame (relative) override keys at the branched
+    /// snapshot's capture moment, so the server — whose task-59 contract is
+    /// ABSOLUTE Moments — sees `origin + relative`. A host fault at relative
+    /// 5 below a snapshot at 200 goes on the wire at Moment 205, never 5.
+    #[test]
+    fn branch_re_anchors_blob_frame_keys_to_absolute_wire_moments() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (seq, reply) in [
+            (1, server_caps_reply()),        // hello
+            (2, probe_reply(200)),           // connect's V-time probe → origin 200
+            (3, Reply::SnapId(WsSnapId(1))), // snapshot @ 200
+            (4, Reply::Unit),                // branch
+        ] {
+            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+
+        let fault = Action::Host(HostFault::CorruptMemory {
+            gpa: 64,
+            mask: environment::BitMask(0xFF),
+        });
+        let mut overrides = BTreeMap::new();
+        overrides.insert(5u64, fault.clone()); // blob frame: relative to 200
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec: EnvSpec::Recorded {
+                seed: 7,
+                policy: FaultPolicy::none(),
+                overrides,
+                standing: Vec::new(),
+                reseeds: std::collections::BTreeMap::new(),
+            },
+        }
+        .encode();
+        m.branch(snap, &env).unwrap();
+
+        let reqs = captured_requests(&written.borrow());
+        let wire = reqs
+            .iter()
+            .find_map(|r| match r {
+                control_proto::Request::Branch { env, .. } => Some(env.clone()),
+                _ => None,
+            })
+            .expect("a Branch request went on the wire");
+        let spec = EnvSpec::decode(&wire.bytes).expect("wire spec decodes");
+        let keys: Vec<u64> = spec.overrides().keys().copied().collect();
+        assert_eq!(
+            keys,
+            vec![205],
+            "the wire carries the ABSOLUTE Moment (origin 200 + relative 5)"
+        );
+        assert_eq!(spec.overrides().get(&205), Some(&fault), "action preserved");
+        assert_eq!(spec.seed(), 7);
+
+        // The adapter's OWN state stays in the blob frame: the recorded delta
+        // re-emits the relative key, ready for compose.
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let keys: Vec<u64> = recorded.spec.overrides().keys().copied().collect();
+        assert_eq!(keys, vec![5], "recorded_env stays blob-frame (relative)");
+        assert_eq!(recorded.base_offset, 200);
+    }
+
+    /// A rebase that would overflow the axis is a malformed blob: refused
+    /// loudly BEFORE any wire traffic (no Branch frame is ever written).
+    #[test]
+    fn branch_refuses_an_axis_overflowing_rebase_before_the_wire() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (seq, reply) in [
+            (1, server_caps_reply()),
+            (2, probe_reply(200)),
+            (3, Reply::SnapId(WsSnapId(1))),
+        ] {
+            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec: spec_with_overrides(7, &[u64::MAX]), // 200 + MAX overflows
+        }
+        .encode();
+        assert_eq!(
+            m.branch(snap, &env),
+            Err(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))
+        );
+        let reqs = captured_requests(&written.borrow());
+        assert!(
+            !reqs
+                .iter()
+                .any(|r| matches!(r, control_proto::Request::Branch { .. })),
+            "the malformed rebase never reached the wire"
+        );
+    }
+
     /// The task-93 tail-completeness fix: a `run(None)` issued **while a
     /// decision is still outstanding** (a probe/continue between the `Decision`
     /// stop and its answer) must NOT discard the pending decision, so the later
@@ -1308,5 +1683,221 @@ mod tests {
             recorded.spec.overrides().get(&100),
             Some(Action::Guest(environment::Answer::Nominal))
         ));
+    }
+
+    // ---- reseed markers (task 78) ------------------------------------------
+
+    /// A `Recorded` spec carrying only reseed markers.
+    fn spec_with_reseeds(seed: u64, markers: &[(u64, u64)]) -> EnvSpec {
+        EnvSpec::Recorded {
+            seed,
+            policy: FaultPolicy::none(),
+            overrides: BTreeMap::new(),
+            standing: Vec::new(),
+            reseeds: markers.iter().copied().collect(),
+        }
+    }
+
+    /// `branch` with a no-marker env stamps the branch reseed at relative 0,
+    /// so the emitted delta is reseed-aware (a fold re-executes it at the
+    /// collapsed hop's position); a marker-carrying env's own markers ride
+    /// through verbatim and re-anchor on the wire like overrides.
+    #[test]
+    fn branch_records_the_branch_reseed_and_re_anchors_markers_on_the_wire() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (seq, reply) in [
+            (1, server_caps_reply()),        // hello
+            (2, probe_reply(200)),           // connect probe → origin 200
+            (3, Reply::SnapId(WsSnapId(1))), // snapshot @ 200
+            (4, Reply::Unit),                // branch (no-marker env)
+            (5, Reply::Unit),                // branch (marker env)
+        ] {
+            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+
+        // (1) A no-marker env: the branch reseed is stamped at relative 0.
+        m.branch(snap, &SpecEnvCodec.seeded(0xD1CE)).unwrap();
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let got: Vec<(u64, u64)> = recorded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 0xD1CE)],
+            "the branch reseed is recorded into the blob frame at relative 0"
+        );
+
+        // (2) A marker-carrying env: markers ride verbatim (no extra stamp) and
+        // cross the wire re-anchored at the restore origin (200).
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (40, 0xBB)]),
+        }
+        .encode();
+        m.branch(snap, &env).unwrap();
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let got: Vec<(u64, u64)> = recorded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 0xAA), (40, 0xBB)],
+            "markers preserved blob-frame"
+        );
+
+        let reqs = captured_requests(&written.borrow());
+        let wire = reqs
+            .iter()
+            .filter_map(|r| match r {
+                control_proto::Request::Branch { env, .. } => Some(env.clone()),
+                _ => None,
+            })
+            .next_back()
+            .expect("the marker Branch went on the wire");
+        let spec = EnvSpec::decode(&wire.bytes).expect("wire spec decodes");
+        let keys: Vec<(u64, u64)> = spec.reseeds().iter().map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(
+            keys,
+            vec![(200, 0xAA), (240, 0xBB)],
+            "the wire carries ABSOLUTE marker Moments (origin + relative)"
+        );
+    }
+
+    /// The PR #62 round-2 blocking fix: slicing a marker-carrying base at a
+    /// NON-marker cut retains the future markers AND inserts the origin
+    /// marker (0 → env seed) — a non-empty table with no floor marker would
+    /// otherwise make the server continue the parent stream (the
+    /// authoritative-table path; `branch`'s is-empty stamp never fires), so
+    /// the branch's first draws must come from the env seed, which the
+    /// vmm-core floor-marker gate
+    /// (`branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed`)
+    /// pins server-side for exactly this marker shape.
+    #[test]
+    fn mutate_slicing_at_a_non_marker_cut_inserts_the_origin_reseed() {
+        // Base rooted at 0, captured at pos 100 (the cut — no marker there):
+        // its own branch reseed at 0 and a future marker at 140.
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (140, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 7), (40, 0xBB)],
+            "the sliced suffix carries the origin marker (0 → env seed) plus the re-keyed \
+             future marker — never a floor-markerless non-empty table"
+        );
+        // A base marker exactly at the cut wins over the synthetic origin
+        // marker (its value IS the stream at that point).
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(100, 0xCC), (140, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(got, vec![(0, 0xCC), (40, 0xBB)]);
+        // And a fully-sliced-away table stays empty (the branch stamp path).
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(0, 0xAA)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        assert!(
+            decoded.spec.reseeds().is_empty(),
+            "no future markers ⇒ empty table ⇒ branch's is-empty stamp handles the origin"
+        );
+    }
+
+    /// `mutate` slices reseed markers at the relative cut, consistently with
+    /// overrides; `compose` splices them positionally (through the underlying
+    /// codec) so a folded delta stays reseed-aware.
+    #[test]
+    fn mutate_slices_and_compose_splices_reseed_markers() {
+        // Base rooted at 100, captured at 160 → relative cut 60: the marker at
+        // 0 (the base's own branch reseed) is dropped, the suffix re-keys
+        // (70→10).
+        let base = AdapterEnv {
+            base_offset: 100,
+            pos: 160,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (70, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 7), (10, 0xBB)],
+            "reseeds sliced at the relative cut, with the origin marker inserted (round-2 fix)"
+        );
+
+        // Compose: suffix₁ rooted at 100 (marker at its own 0), suffix₂
+        // branched at 250 (marker at its own 0) → the fold carries both, the
+        // second at the relative cut 150.
+        let s1 = AdapterEnv {
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_reseeds(7, &[(0, 0xAA)]),
+        }
+        .encode();
+        let s2 = AdapterEnv {
+            base_offset: 250,
+            pos: 400,
+            spec: spec_with_reseeds(7, &[(0, 0xBB), (40, 0xCC)]),
+        }
+        .encode();
+        let folded = SpecEnvCodec.compose(&s1, &s2);
+        let decoded = AdapterEnv::decode(&folded).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 0xAA), (150, 0xBB), (190, 0xCC)],
+            "the fold carries every collapsed hop's reseed at its position"
+        );
     }
 }

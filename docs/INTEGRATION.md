@@ -223,6 +223,36 @@ doc comment ("a count of retired instructions") predates this ruling and is to b
 of this axis, not its unit" — a doc-only crate change carried by a worker PR. Task 71's
 `EnvCodec` re-keying is unaffected (plain integer arithmetic on the same axis).
 
+## 6c. Integrator rulings, 2026-07-03 (morning batch)
+
+Three rulings from the integrator; the foreman records them here (decisions the morning of
+2026-07-03, after the overnight Wave-5 push):
+
+1. **Task 67 id-stability: option D1** (the erosion-steal counterexample on PR #53, the 4th
+   sibling of the id-stability root cause). The ruled contract: **Option A aliasing stays for
+   shape convergence; re-derivation of a recorded trace is redefined as replay against the
+   recording-time codebook snapshot** — which the task-65 runtrace store already persists, so
+   re-derivation is bit-exact by construction. Cross-observe erosion-steals between live
+   species on an *evolving* codebook are **accepted clustering drift** (documented, pinned by
+   the escalated counterexample test, now a documented-behavior pin rather than a failure).
+   Cross-run species identity is therefore "canonical modulo drift", not absolute. Options D2
+   (sticky per-line memo) and D3 (freeze-on-first) remain rejected per the round-8 ruling.
+
+2. **Task 63 §9 package: current evidence ACCEPTED as-is.** No `DET_SUBSET=all` re-run, no
+   adversarial re-approach mode; the **grid-restricted GO is ratified** (SEAL-RATE-REPORT.md
+   §10 stands as the final ruling). Phase C proceeds on nearest-synchronized-boundary keying.
+
+3. **Task 68 entropy-splice (PR #58's escalated finding): store reseed points.** Defensive
+   posture — bit-identical folds are the requirement, not a documented limit. The env format
+   and `EnvCodec::compose` must learn to **express and splice reseed points** so a
+   compose-folded materialization/reproducer is bit-identical to its hop-by-hop original even
+   when an RDRAND/RDSEED draw lands inside a collapsed interval; the `ControlServer` honors
+   stored reseeds on `branch`. This is queued as `tasks/78-reseed-aware-compose.md`; on
+   landing, PR #58's documented-limit pin
+   (`sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit`) flips to a
+   positive bit-identical gate. The task-93 "Moment-keyed counter-mode entropy" option remains
+   the deeper future alternative; storing reseeds is the sanctioned near-term defense.
+
 ## 7. Guest-visible CPU/MSR contract (author before vmm-core code)
 
 Trapping RDTSC is necessary but nowhere near sufficient — Linux/KVM exposes time and other

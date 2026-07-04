@@ -1,10 +1,13 @@
 # ARM/AArch64 port — feasibility notes
 
-Status: **research note, not a commitment.** Captures what's known about porting this
-hypervisor to AArch64 (the question keeps recurring), so the conclusions and the one
-load-bearing fact-correction aren't re-derived each time. Per PLAN.md Decision 0, ARM is
-**post-v1 future work**: x86-64/KVM/VMX is the only designed target, and there is no
-arch-abstraction layer in the tree today.
+Status: **research note, not a commitment; partially superseded (2026-07-03).** The hardware
+facts, the three-mechanism analysis, the rr evidence base, and the spike gate below all stand.
+The **codebase survey** ("What a port costs, by component") and its premises — "no arch seam
+exists", "`vmm-core` unwritten" — predate Wave 4/5 and are **superseded by
+`docs/ARCH-BOUNDARY.md`**, which rules the ISA seam design from a fresh file-level audit.
+Captures what's known about porting this hypervisor to AArch64 (the question keeps recurring),
+so the conclusions and the one load-bearing fact-correction aren't re-derived each time. Per
+PLAN.md Decision 0, ARM is **post-v1 future work**: x86-64/KVM/VMX is the only designed target.
 
 The bottom line up front: **nothing fundamental precludes ARM** — Neoverse/Cortex have
 EL2 and the Arm Virtualization Extensions are a fine substrate. What precludes it *for this
@@ -13,6 +16,9 @@ equivalent (below), and that the central feasibility bet — precise retired-bra
 for V-time — is **unproven on any candidate ARM core**. The viability gate is a hardware
 measurement nobody has taken, not a code-cleanliness problem. **Do not build the arch
 abstraction pre-emptively; a clean trait boundary cannot de-risk an unmeasured PMU.**
+*(Refined 2026-07-03 by `docs/ARCH-BOUNDARY.md`: the boundary restructure is justified on
+x86-hygiene grounds and may proceed; the trait freeze and all ARM-side building stay
+spike-gated.)*
 
 ## The fact-correction that everything else hinges on
 
@@ -106,7 +112,14 @@ the **skid bound** (→ a port-specific `PlannerConfig::skid_margin`). Pin to on
 on real silicon. If this spike fails, no arch abstraction saves the port — which is the
 strongest reason not to invest in abstraction first.
 
-## What a port costs, by component (from the codebase survey)
+## What a port costs, by component (SUPERSEDED — see `docs/ARCH-BOUNDARY.md`)
+
+> **This section is superseded (2026-07-03).** It surveyed a pre-Wave-4 tree; `vmm-core`,
+> `vmm-backend`, `lapic`, `vm-state`, the task-58 control server, and all seven dissonance
+> crates have since landed. `docs/ARCH-BOUNDARY.md` replaces the estimates below with a
+> file-level audit (~85% of the tree already arch-blind; coupling concentrated in the
+> `vmm-backend` value types, five `vmm-core` modules, `lapic`, and the guest payloads) and
+> rules the seam design. Kept for archaeology:
 
 - **Ports as-is (~60%, the merged pure-logic crates):** `vtime` arithmetic, `snapshot-store`
   CoW, `hypercall-proto` wire format, `unison`. The `CpuBackend` trait

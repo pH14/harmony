@@ -373,14 +373,32 @@ fn probe_seal(vmm: &mut DynVmm) -> (CpuSnapshot, Option<FailureReason>, Option<V
         Err(e) => {
             let msg = format_err(&e);
             // Classify against the exact fail-closed messages of `Vmm::save_vm_state`.
+            // Representability is matched POSITIVELY against the `unrepresentable_state`
+            // / `cap_unrestorable_events` reason strings — an unrecognized error class
+            // (e.g. a `Backend::save` read failure) must ABORT the sweep loudly, not be
+            // silently miscounted as `Unrepresentable` (PR #50 final-pass P2, assigned
+            // to task 68 before any harness reuse).
+            let representability = [
+                "kvm_sregs2 flags",
+                "PAE PDPTRs",
+                "kvm_debugregs flags",
+                "triple_fault_pending",
+                "exception_has_payload",
+            ];
             let (synchronized, rng_mid, unrep, reason) = if msg.contains("non-synchronized") {
                 (false, false, false, FailureReason::NonSynchronized)
             } else if msg.contains("RNG mid-exit") {
                 (true, true, false, FailureReason::RngMidExit)
-            } else {
+            } else if representability.iter().any(|s| msg.contains(s)) {
                 // representability fail-closed (kvm_sregs2 flags/pdptrs, debugregs.flags,
                 // triple_fault/payload) — essentially never for the 64-bit guest.
                 (true, false, true, FailureReason::Unrepresentable)
+            } else {
+                panic!(
+                    "save_vm_state failed with an UNRECOGNIZED error class — a backend/harness \
+                     fault, not a seal-rate datum; aborting rather than misclassify it as \
+                     Unrepresentable: {msg}"
+                );
             };
             (
                 CpuSnapshot {
@@ -455,9 +473,31 @@ fn branch_and_run(
     }
 }
 
+/// Assert a §4 replay's [`Advance`] actually reached `to_vtime` (PR #50 final-pass P2,
+/// assigned to task 68): a wall/step-budget stop, a step error, or an early terminal
+/// leaves the guest **short of** the target, and hashing there would compare the two §4
+/// legs at different V-times — a silently-vacuous premise check, not a measurement.
+fn assert_reached(leg: &str, adv: &Advance, to_vtime: VTime) {
+    if let Some(e) = &adv.step_error {
+        panic!("§4 {leg} leg errored before reaching V-time {to_vtime}: {e}");
+    }
+    if let Some(r) = &adv.terminal {
+        panic!(
+            "§4 {leg} leg hit terminal {r:?} at V-time {} before the target {to_vtime}",
+            adv.landed_vtime
+        );
+    }
+    assert!(
+        adv.landed_vtime >= to_vtime,
+        "§4 {leg} leg stopped at V-time {} short of the target {to_vtime}",
+        adv.landed_vtime
+    );
+}
+
 /// Replay `snap` **verbatim** (restore, no reseed) into a fresh VM and run to `to_vtime`,
 /// returning the reached `state_hash`. Used for the §4 materialization-depth reproduction
-/// (parent-rooted suffix replay).
+/// (parent-rooted suffix replay). Panics unless the run really reached `to_vtime` — the
+/// two §4 legs must be compared at the same V-time.
 fn replay_to(
     engine: &SnapshotEngine,
     snap: SnapshotId,
@@ -471,16 +511,19 @@ fn replay_to(
     vmm.restore_snapshot(mapping.as_slice(), &vm_state)
         .expect("restore");
     let mut printed = vmm.serial().len();
-    let _ = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
+    let adv = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
+    assert_reached("parent-rooted", &adv, to_vtime);
     vmm.state_hash()
 }
 
 /// Boot a fresh VM at `BASE_SEED` and run to `to_vtime` from genesis, returning the reached
-/// `state_hash` — the from-genesis leg of §4.
+/// `state_hash` — the from-genesis leg of §4. Panics unless the run really reached
+/// `to_vtime` (same discipline as [`replay_to`]).
 fn boot_and_run_to(kernel: &[u8], initramfs: &[u8], to_vtime: VTime) -> [u8; 32] {
     let mut vmm = boot_pg(kernel, initramfs, BASE_SEED);
     let mut printed = 0usize;
-    let _ = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
+    let adv = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
+    assert_reached("genesis-rooted", &adv, to_vtime);
     vmm.state_hash()
 }
 

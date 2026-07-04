@@ -151,7 +151,7 @@ fn every_net_fault_is_netflow_class_and_admissible() {
 
 #[test]
 fn stale_v2_blob_is_rejected_not_reinterpreted() {
-    // The BLOB_VERSION bump (2 → 3) makes a task-45 `v2` blob reject with
+    // The BLOB_VERSION bumps (2 → 3 → 4) make a task-45 `v2` blob reject with
     // BadVersion rather than silently reinterpret an old per-frame net fault as a
     // new flow policy. Build a current blob, rewrite its version field to 2.
     let spec = EnvSpec::Recorded {
@@ -159,11 +159,17 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
         policy: FaultPolicy::none(),
         overrides: BTreeMap::from([(1, Action::Guest(Answer::Fault(Fault::NetReset)))]),
         standing: vec![],
+        reseeds: std::collections::BTreeMap::new(),
     };
     let mut bytes = spec.encode();
-    // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION (4,
-    // task 73's buggify-section policy bump); a stale v2 blob still rejects.
-    assert_eq!(bytes[4..6], 4u16.to_le_bytes(), "current blob is version 4");
+    // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION (4 —
+    // bumped for task 78's reseed-marker table and task 73's buggify-section policy
+    // bump); a stale v2 blob still rejects.
+    assert_eq!(
+        bytes[4..6],
+        EnvSpec::BLOB_VERSION.to_le_bytes(),
+        "current blob is at BLOB_VERSION"
+    );
     bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
     assert_eq!(
         EnvSpec::decode(&bytes),
@@ -248,7 +254,7 @@ proptest! {
             .iter()
             .map(|m| (*m, Action::Guest(Answer::Fault(Fault::NetReset))))
             .collect();
-        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![] };
+        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default() };
 
         let sched: Vec<(Moment, P)> = conns.iter().enumerate()
             .map(|(i, c)| (i as u64, flow(*c)))
@@ -278,7 +284,7 @@ proptest! {
         let mut policy = FaultPolicy::none();
         policy.set_class(DecisionClass::NetFlow, net.0, net.1, &net.2)
             .expect("net is a fault class with in-class faults");
-        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![] };
+        let spec = EnvSpec::Recorded { seed, policy, overrides, standing: vec![], reseeds: Default::default() };
 
         let bytes = spec.encode();
         let back = EnvSpec::decode(&bytes).expect("our own encoding decodes");

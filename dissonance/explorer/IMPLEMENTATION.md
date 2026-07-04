@@ -271,3 +271,134 @@ lost its compensating rescan (every operator now observable), the coverage
 feature id switched to arithmetic packing (`edge*256+bucket` — the `|` form's
 operands never overlapped, making `|`→`^` equivalent), and `FeatureSet` gained
 negative assertions.
+
+---
+
+# task 68 — lazy materialization: the engine + the spanning-ancestor retention pool
+
+Adds `src/materialize.rs` (the `Materializer`) and wires `Explorer` onto it.
+Pure logic, macOS + Linux, no `unsafe`; the live gates live in
+`dissonance/conductor` (its IMPLEMENTATION.md §task 68 has the box runbook and
+the one substantive finding).
+
+## What was built
+
+- **`Materializer`** — the mechanism between `Selector::choose` and
+  `Machine::branch` (an engine mechanism, not a trait, per the
+  `docs/EXPLORATION.md` ruling): the seal pool (stable `ExemplarRef` → live
+  `SnapId`), the **lineage table** (`SnapId → {parent, suffix, at}`,
+  `BTreeMap`, genesis-rooted, **never pruned** — the chain outlives eviction),
+  and an **owner indirection** (`SnapId → ExemplarRef`) so a chain naming an
+  original, since-evicted `SnapId` still resolves to the same entry's
+  re-minted seal (stable ids make this exact; a dead ref can never alias).
+- **Materialization**: seal-cache hit → nothing; else `branch(nearest
+  RETAINED ancestor, suffix)` → `run` to `at` under `StopMask::NONE` → seal →
+  record lineage. Dead intermediates are folded with `EnvCodec::compose`
+  (one branch + one run, never a re-seal per hop); genesis is reached only
+  when no ancestor is retained. `materialize_report` returns the depth
+  accounting (`Materialization { base, base_at, at, folded, from_genesis }`).
+- **The retention pool**: Agamotto cost/benefit. `modeled_cost(e)` = 0 if e's
+  own seal is live, else `e.at − at(nearest retained ancestor)` (the genesis
+  bound at worst). `benefit(s)` = Σ over live frontier entries of the extra
+  depth they would pay were `s` evicted. `enforce_budget` evicts the
+  minimum-benefit seal while over `SealBudget::of(live frontier)`,
+  deterministic tie-break by `SnapId`. Integer `Moment` deltas only; no
+  wall-clock anywhere near the policy.
+- **The task-63 ruling (GO, grid-restricted)**, both arms' seam: exemplars
+  key to observed synchronized boundaries structurally (`run(deadline) → seal`
+  is the only way the engine ever mints one), an identical replay must land
+  **exactly** on `at` (else `MachineError::MaterializeDivergence` — loud,
+  never a mis-keyed seal), and the injected `sealable(Moment)` predicate
+  (default always-true = the GO arm) gates every seal the engine takes: an
+  inadmissible `SnapshotPoint` is stepped past un-sealed, an inadmissible
+  materialization refuses with `MachineError::NotSealable`.
+- **Chain compose (the task-58 handoff)**: `SpecEnvCodec` (and the test
+  `ToyCodec`) now splice at the **relative** cut `d.base_offset −
+  b.base_offset` (checked; a mis-ordered chain panics per the task-93
+  never-silently-mis-key discipline) and keep the base's root, so lineage
+  suffixes fold into one delta still rooted at the retained ancestor.
+  `mutate` slices at `b.pos − b.base_offset`. Genesis-complete bases are the
+  `base_offset == 0` special case — v1 behavior byte-identical.
+
+## Deviations considered and rejected
+
+- **Folding the full lineage chain for the genesis worst case** — rejected:
+  the frontier entry's memoized genesis-complete `env` is exact by
+  construction (it was composed at admission) and cheaper; the fold is used
+  only when a *retained non-genesis* ancestor exists.
+- **Probing the machine's V-time in `Explorer::new` to learn `genesis_at`** —
+  rejected: the extra `run` would shift the toy's injected-fault counters and
+  the behavior-equivalence pins. `genesis_at` defaults to `Moment(0)` (exact
+  for the toy) and is policy-only (it scales the cost model's genesis bound,
+  never correctness); a live driver records the probed origin via
+  `set_genesis_moment` / `Materializer::new`.
+- **The RESTRICTED arm's precision-miss bookkeeping** (record, zero `Reward`,
+  drop, continue) — not implemented: the ruling was GO. The seam is kept
+  (predicate + `NotSealable`), so RESTRICTED plugs in with zero spine change;
+  under GO a seal failure at an admissible point propagates loudly for
+  escalation (a task-41/63 regression class), exactly per spec.
+- **Pruning the lineage table** — rejected: entries are kilobytes, and
+  pruning a dead intermediate would strand its descendants on the genesis
+  worst case forever.
+
+## Round-1 review fix: the wire coordinate frame (blocking, codex-found)
+
+`SocketMachine::branch` used to ship the blob's inner `EnvSpec` verbatim —
+override keys **relative** to the blob's origin — while `ControlServer`'s
+task-59 contract validates and applies host faults at **absolute** Moments;
+a host fault under a parent-rooted fold mis-keyed on the wire (the seed-only
+task-68 gates could not see it). Fixed at the single conversion point:
+`branch` re-anchors blob-frame keys at the branched snapshot's capture moment
+(`origin + relative`, checked — an overflowing rebase is refused before any
+wire traffic), and the frame convention is now settled **authoritatively in
+one place** (`adapter.rs` module doc, "Coordinate frames": blob frame =
+relative, all `EnvCodec` seams + `recorded_env`; wire frame = absolute;
+`branch` outbound / `recorded_env` inbound are the only conversions).
+Pinned three ways: the exact wire bytes (a captured-stream adapter test:
+relative 5 below a snapshot at 200 ships as Moment 205, and the recorded
+delta re-emits relative 5), a `materialize_loopback` case applying a
+`CorruptMemory` below a parent-rooted fold on the real server wire (effect
+observed + the compose-folded reproducer re-anchored from the *base's*
+origin replays bit-identically — origin-independence), and the
+rejected-behind-snapshot regression (the raw pre-fix shape is refused
+`PerturbPastMoment`, never silently mis-applied).
+
+## Known limitations / integrator notes
+
+- **`MachineError` gained `NotSealable` and `MaterializeDivergence`** —
+  additive, but exhaustive matches downstream must grow arms. The public-api
+  snapshot is refreshed (all task-68 additions, nothing removed).
+- **The default budget is `SealBudget::Unbounded`** (behavior-preserving:
+  gc/engine-pin tests count live handles). Campaigns opt in via
+  `set_seal_budget`; `progression_step` then enforces it every step.
+- **`enforce_budget` is O(seals × frontier × chain-depth) per eviction** —
+  fine at current scales; a cached-cost incremental version is a later
+  optimization, not a semantics change.
+- **The compose-fold is bit-exact on the real substrate only over
+  entropy-draw-free collapsed intervals** — the substantive live finding,
+  demonstrated and pinned portably in `dissonance/conductor`
+  (`tests/materialize_loopback.rs`, splice pin) and written up in conductor's
+  IMPLEMENTATION.md §task 68. Escalated, not patched (vmm-core is read-only
+  for this task).
+
+---
+
+# IMPLEMENTATION — task 78 (reseed markers through the adapter frames)
+
+Three additions in `src/adapter.rs`, all following the settled "Coordinate
+frames" doc (the single conversion point discipline):
+
+- **`rebase_to_wire`** re-anchors reseed markers exactly like overrides
+  (blob-frame relative key → `origin + relative`, checked overflow).
+- **`SocketMachine::branch`** records the branch reseed into the blob frame:
+  a no-marker env made the server reseed from the env's seed at the restore
+  origin, so the adapter stamps `record_reseed(0, seed)` into the new
+  Modulation — the emitted `recorded_env` delta is then reseed-aware and a
+  later fold re-executes the reseed at the collapsed hop's position. A
+  marker-carrying env's own markers ride through verbatim (the server honored
+  exactly those; no extra stamp).
+- **`SpecEnvCodec::mutate`** slices markers at the relative cut consistently
+  with overrides; `compose` splices via the underlying `environment` codec.
+
+Known limitation: the session-initial spec handed to `connect` remains
+override- and marker-free (v1 boots are), per the frame doc's deliberate edge.

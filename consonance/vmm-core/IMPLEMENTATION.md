@@ -3698,3 +3698,28 @@ task-41 gap — and is exactly why the archive addresses by *boundary*, not by a
 - **Busy-window detection is approximate** (interrupt-service via active injection; WAL-fsync /
   scheduler-tick covered incidentally by uniform samples or pinned via `BUSY_CENTERS`). **Axis:** all
   V-time figures are retired-branch ns (`effective_vns`), not the `Moment` (retired-instruction) axis.
+
+---
+
+# IMPLEMENTATION — task 78 (ControlServer honors stored reseeds on `branch`)
+
+`ControlServer` gained the **staged reseed schedule** (task 78): a branch env
+carrying reseed markers is honored marker-wise instead of the single
+`reseed_entropy(env.seed())` at the restore point:
+
+- the marker **at the restore floor** is the branch reseed (applied at
+  restore); markers **beyond the floor** are staged and re-executed by `run`
+  at their exact `Moment`s — the same exact-arrival discipline (and the same
+  `arm_arrival` seam) as the task-59 host-fault plane. At a `Moment` shared
+  with a staged fault the reseed applies first (fixed, documented order).
+- a marker **behind the floor** rejects (`PerturbPastMoment`); a marker
+  beyond the trajectory is the same loud `ScheduleUnsatisfiable` class as a
+  crossed fault (terminal-with-staged-reseed poisons; rewind clears);
+  `snapshot` with a staged reseed is `SnapshotWhileArmed`.
+- the **no-marker path is byte-for-byte the task-58/59 behavior** (all 344
+  pre-existing tests pass unchanged; the recorded reproducer stays the plain
+  `Seeded` shape for legacy branches).
+- applied reseeds are stamped into the recorded reproducer
+  (`record_reseed`), and a marker-carrying branch stamps the floor reseed, so
+  `recorded_env()` replays through the marker path bit-identically (closure
+  pinned in `mid_run_reseed_marker_applies_at_its_moment_and_recorded_env_reproduces`).

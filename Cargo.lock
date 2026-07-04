@@ -460,6 +460,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "logtmpl"
+version = "0.1.0"
+dependencies = [
+ "explorer",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "matcher"
 version = "0.1.0"
 dependencies = [

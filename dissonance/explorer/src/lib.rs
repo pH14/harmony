@@ -58,14 +58,18 @@
 //! [`MachineFactory`], and [`EnvCodec`] traits) · `spine.rs` (the search-plane
 //! vocabulary + traits — the task-64 contract) · `defaults.rs` (the
 //! behavior-equivalence default implementations) · `engine.rs` ([`Explorer`],
-//! [`Composition`], [`RunOutcome`]) · `prng.rs` (the public xorshift64\*
-//! generator the policies draw from) · [`mod@adapter`] (the R2 socket adapter:
-//! [`SocketMachine`], [`SpecEnvCodec`], and the [`AdapterEnv`] blob — task 58).
+//! [`Composition`], [`RunOutcome`]) · `materialize.rs` (the task-68 lazy
+//! materialization engine: [`Materializer`], the lineage table, and the
+//! spanning-ancestor retention pool — [`SealBudget`]) · `prng.rs` (the public
+//! xorshift64\* generator the policies draw from) · [`mod@adapter`] (the R2
+//! socket adapter: [`SocketMachine`], [`SpecEnvCodec`], and the [`AdapterEnv`]
+//! blob — task 58).
 
 pub mod adapter;
 mod defaults;
 mod engine;
 mod error;
+mod materialize;
 mod prng;
 mod seam;
 mod spine;
@@ -77,6 +81,7 @@ pub use defaults::{
 };
 pub use engine::{Composition, Explorer, RunOutcome};
 pub use error::MachineError;
+pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
 pub use prng::Prng;
 pub use seam::{EnvCodec, Machine, MachineFactory};
 pub use spine::{

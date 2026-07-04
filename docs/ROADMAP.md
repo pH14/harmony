@@ -94,7 +94,10 @@ UI, and `donate` are deliberately unspecced until the core lands.
   seed-driven loop works. The explorer's current AFL-shaped corpus gets no further investment
   before that redesign.
 - **ARM port** — deferred until the branch-count spike re-runs on candidate silicon
-  (`docs/ARM-PORT.md`); not a code refactor, a viability gate.
+  (`docs/ARM-PORT.md`); not a code refactor, a viability gate. The **ISA seam design is
+  ruled** (`docs/ARCH-BOUNDARY.md`, 2026-07-03): the boundary restructure (arch-generic
+  `Backend`, `vmm-core` engine/personality split) is x86-hygiene work that may be queued
+  post-merge-window; the trait freeze and all ARM-side building stay spike-gated.
 - **Task 92 — multi-CPU/backend characterization registry** (probe → select → validate),
   fixing the one-box bus factor on the single destructive `det-cfl-v1` baseline. Deferred behind
   Wave 4.
@@ -124,7 +127,8 @@ themselves are untouched by this task.
 ## Cross-cutting references
 
 - **ARM/AArch64 port (post-v1):** `docs/ARM-PORT.md` — the viability gate is a branch-count
-  spike on real silicon, not a trait refactor.
+  spike on real silicon, not a trait refactor. `docs/ARCH-BOUNDARY.md` (2026-07-03) rules the
+  ISA seam design and supersedes ARM-PORT.md's pre-Wave-4 codebase survey.
 - **Determinism & conformance corpus:** `docs/DETERMINISM-CORPUS.md` — the plan for verifying
   the engine is itself correct (four oracles: determinism, conformance, seed-sensitivity,
   backend-equivalence). Tasks 22/23 (host `BLOCK_WRITE` + crash-consistency) are struck; the
