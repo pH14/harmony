@@ -26,6 +26,7 @@ pub environment::BlockOp::Read = 0
 pub environment::BlockOp::Write = 1
 #[repr(u16)] pub enum environment::DecisionClass
 pub environment::DecisionClass::BlockIo = 5
+pub environment::DecisionClass::Buggify = 7
 pub environment::DecisionClass::Entropy = 1
 pub environment::DecisionClass::NetFlow = 4
 pub environment::DecisionClass::Payload = 2
@@ -39,6 +40,8 @@ pub environment::DecisionPoint::BlockIo
 pub environment::DecisionPoint::BlockIo::lba: u64
 pub environment::DecisionPoint::BlockIo::len: u32
 pub environment::DecisionPoint::BlockIo::op: environment::BlockOp
+pub environment::DecisionPoint::Buggify
+pub environment::DecisionPoint::Buggify::point: u32
 pub environment::DecisionPoint::Entropy
 pub environment::DecisionPoint::Entropy::bytes: u32
 pub environment::DecisionPoint::NetFlow
@@ -88,6 +91,7 @@ pub environment::Fault::BlockEio
 pub environment::Fault::BlockLatency(environment::VTime)
 pub environment::Fault::BlockNospc
 pub environment::Fault::BlockTorn(u32)
+pub environment::Fault::BuggifyFire
 pub environment::Fault::NetLatency(environment::VTime)
 pub environment::Fault::NetLoss
 pub environment::Fault::NetLoss::den: u16
@@ -128,7 +132,10 @@ pub fn environment::EnvCodec::seeded(u64, environment::FaultPolicy) -> environme
 pub struct environment::FaultPolicy
 impl environment::FaultPolicy
 pub fn environment::FaultPolicy::from_bytes(&[u8]) -> core::result::Result<Self, environment::EnvError>
+pub fn environment::FaultPolicy::is_buggify_only(&self) -> bool
 pub fn environment::FaultPolicy::none() -> Self
+pub fn environment::FaultPolicy::set_buggify_default(&mut self, u32, u32) -> core::result::Result<(), environment::EnvError>
+pub fn environment::FaultPolicy::set_buggify_point(&mut self, u32, u32, u32) -> core::result::Result<(), environment::EnvError>
 pub fn environment::FaultPolicy::set_class(&mut self, environment::DecisionClass, u32, u32, &[environment::Fault]) -> core::result::Result<(), environment::EnvError>
 pub fn environment::FaultPolicy::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub struct environment::NodeId(pub u32)
@@ -140,12 +147,16 @@ pub fn environment::Ratio::num(self) -> u64
 pub struct environment::RecordedEnv
 impl environment::RecordedEnv
 pub fn environment::RecordedEnv::moment(&self) -> environment::Moment
+pub fn environment::RecordedEnv::restore_stream_state(&mut self, &[u8; 16])
 pub fn environment::RecordedEnv::set_moment(&mut self, environment::Moment)
+pub fn environment::RecordedEnv::stream_state(&self) -> [u8; 16]
 impl environment::Environment for environment::RecordedEnv
 pub fn environment::RecordedEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 pub struct environment::SeededEnv
 impl environment::SeededEnv
 pub fn environment::SeededEnv::new(u64, environment::FaultPolicy) -> Self
+pub fn environment::SeededEnv::restore_stream_state(&mut self, &[u8; 16])
+pub fn environment::SeededEnv::stream_state(&self) -> [u8; 16]
 impl environment::Environment for environment::SeededEnv
 pub fn environment::SeededEnv::decide(&mut self, &environment::DecisionPoint) -> environment::Outcome
 pub struct environment::StandingFault

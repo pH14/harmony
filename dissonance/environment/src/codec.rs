@@ -57,6 +57,8 @@ const F_NET_LATENCY: u8 = 12;
 const F_NET_LOSS: u8 = 13;
 const F_NET_THROTTLE: u8 = 14;
 const F_NET_RESET: u8 = 15;
+// Buggify (task 73): a fresh tag past the per-flow net tags, additive.
+const F_BUGGIFY_FIRE: u8 = 16;
 
 /// Append a `u16` little-endian.
 pub(crate) fn put_u16(w: &mut Vec<u8>, v: u16) {
@@ -118,6 +120,7 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
         }
         Fault::ProcKill => w.push(F_PROC_KILL),
         Fault::ProcRestart => w.push(F_PROC_RESTART),
+        Fault::BuggifyFire => w.push(F_BUGGIFY_FIRE),
     }
 }
 
@@ -138,6 +141,7 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_PROC_PAUSE => Fault::ProcPause(VTime(r.u64()?)),
         F_PROC_KILL => Fault::ProcKill,
         F_PROC_RESTART => Fault::ProcRestart,
+        F_BUGGIFY_FIRE => Fault::BuggifyFire,
         _ => return Err(EnvError::Malformed),
     };
     Ok(f)

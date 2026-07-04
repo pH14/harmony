@@ -210,6 +210,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "control-proto"
 version = "0.1.0"
 dependencies = [
+ "environment",
  "proptest",
  "thiserror",
 ]
@@ -439,6 +440,18 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "link"
+version = "0.1.0"
+dependencies = [
+ "explorer",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
 
 [[package]]
 name = "linux-raw-sys"

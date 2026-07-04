@@ -73,6 +73,16 @@ fn golden_request_bytes_for_every_service_opcode() {
     event.extend_from_slice(&le32(0));
     event.extend_from_slice(&event_payload);
     assert_eq!(enc_req(ServiceId::Event, 1, 11, &event_payload), event);
+
+    // The task-73 SDK control service: a `buggify_decide` request
+    // (ServiceId::Sdk = 6, op 1) carrying the u32 catalog point id.
+    let mut sdk = b"HCP1".to_vec();
+    sdk.extend_from_slice(&[1, 0, 6, 0, 1, 0, 0, 0]); // version 1, service 6, opcode 1
+    sdk.extend_from_slice(&le32(12)); // seq
+    sdk.extend_from_slice(&le32(4)); // payload len (one u32)
+    sdk.extend_from_slice(&le32(0)); // reserved
+    sdk.extend_from_slice(&le32(50)); // point 50
+    assert_eq!(enc_req(ServiceId::Sdk, 1, 12, &le32(50)), sdk);
 }
 
 #[test]
@@ -83,6 +93,8 @@ fn golden_response_bytes_for_every_service_opcode() {
         (ServiceId::Block, 1, 3, Status::Ok, le64(99).to_vec()),
         (ServiceId::Block, 2, 4, Status::OutOfRange, Vec::new()),
         (ServiceId::Event, 1, 5, Status::Ok, Vec::new()),
+        // SDK `buggify_decide` reply: one byte, fire = 1 (task 73).
+        (ServiceId::Sdk, 1, 6, Status::Ok, vec![1]),
     ];
     for (service, opcode, seq, status, payload) in cases {
         let got = enc_resp(service, opcode, seq, status, &payload);
@@ -221,6 +233,79 @@ fn end_to_end_loopback_and_identical_transcripts() {
     let a = run_session(0xabc);
     let b = run_session(0xabc);
     assert_eq!(a, b);
+}
+
+/// A bare loopback that services one preconfigured dispatcher.
+struct DispatcherLoopback(Dispatcher);
+
+impl Transport for DispatcherLoopback {
+    type Error = ();
+    fn exchange(&mut self, req: &[u8], resp: &mut [u8]) -> Result<usize, Self::Error> {
+        Ok(self.0.dispatch(req, resp))
+    }
+}
+
+/// The task-73 SDK buggify round-trip: the guest `buggify_decide(point)` reaches
+/// the [`SdkBuggify`] service (id 6, op 1), which answers a one-byte fire flag
+/// from its per-point table (default otherwise), and records every asked point.
+#[test]
+fn buggify_decide_round_trips_the_fire_flag() {
+    let mut svc = SdkBuggify::new(false); // default: don't fire
+    svc.set_point(1, true); // point 1 fires
+    svc.set_point(2, false); // point 2 explicitly nominal
+
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Sdk, Box::new(svc));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert!(
+        !client.buggify_decide(0).unwrap(),
+        "point 0 uses the default"
+    );
+    assert!(client.buggify_decide(1).unwrap(), "point 1 fires");
+    assert!(!client.buggify_decide(2).unwrap(), "point 2 is nominal");
+    assert!(
+        !client.buggify_decide(9).unwrap(),
+        "an unmapped point uses the default"
+    );
+}
+
+/// The SDK service errors as `UnknownService` when nothing is registered at id 6,
+/// so a guest whose host lacks SDK support gets a clean status, never a panic.
+#[test]
+fn buggify_decide_without_sdk_service_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    assert_eq!(
+        client.buggify_decide(0),
+        Err(ClientError::Status(Status::UnknownService))
+    );
+}
+
+/// `SdkBuggify` snapshots and restores its table + asked log, so a buggify
+/// service survives a corpus snapshot exactly like the other reference services.
+#[test]
+fn sdk_buggify_state_round_trips() {
+    let mut svc = SdkBuggify::new(true);
+    svc.set_point(3, false);
+    // Drive op 1 directly so the asked log is populated on this very instance.
+    let mut out = [0_u8; 1];
+    for point in [3u32, 7] {
+        let (status, n) = svc.handle(1, &point.to_le_bytes(), &mut out);
+        assert_eq!(status, Status::Ok);
+        assert_eq!(n, 1);
+    }
+    assert_eq!(svc.asked(), [3, 7]);
+    let saved = svc.save_state();
+    let mut restored = SdkBuggify::new(false);
+    restored.restore_state(&saved).unwrap();
+    assert_eq!(restored, svc, "state round-trips exactly");
+    assert_eq!(
+        restored.save_state(),
+        saved,
+        "bytes are stable across restore"
+    );
 }
 
 #[test]

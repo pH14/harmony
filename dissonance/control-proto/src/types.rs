@@ -57,7 +57,9 @@ pub struct DecisionId(pub u64);
 /// (conventions rule 2 — defined locally, not imported). [`StopMask::arm`] takes
 /// one of these as its `class_bit` and sets bit `1 << class_bit`; both crates
 /// encode the identical bit so the armed-class set can never diverge. The numbers
-/// are task 24's `DecisionClass` enum (`1..=6`) and never move.
+/// are task 24's `DecisionClass` enum (`1..=6`, plus task 73's `Buggify` = `7`)
+/// and never move — the `class_bit_mirrors_decision_class` test pins them against
+/// the real enum so they cannot drift apart.
 pub mod class_bit {
     /// `DecisionClass::Entropy` — the guest pulled entropy.
     pub const ENTROPY: u16 = 1;
@@ -75,6 +77,11 @@ pub mod class_bit {
     pub const BLOCK_IO: u16 = 5;
     /// `DecisionClass::Process` — a node lifecycle point.
     pub const PROCESS: u16 = 6;
+    /// `DecisionClass::Buggify` — a buggify decision (task 73). Per-**point**, not
+    /// per-class, so it is never armed via [`StopMask::arm`] to auto-service a
+    /// whole class; the mirror exists so the discriminant is pinned against the
+    /// enum and reserved (bit `7`) alongside the standalone SDK-stop bits.
+    pub const BUGGIFY: u16 = 7;
 }
 
 /// A bitset over decision/exit **classes** that selects which non-terminal

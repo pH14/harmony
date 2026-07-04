@@ -70,8 +70,13 @@ pub use seeded::SeededEnv;
 /// per-frame `NetSend` to per-flow [`NetFlow`](DecisionClass::NetFlow) — the
 /// [`DecisionClass`] discriminant `4` is preserved, but the net [`Fault`] byte
 /// vocabulary changed incompatibly, so [`EnvSpec::BLOB_VERSION`] bumped in step to
-/// reject a stale blob rather than silently reinterpret an old net fault.
-pub const CATALOG_VERSION: u16 = 3;
+/// reject a stale blob rather than silently reinterpret an old net fault. Bumped
+/// to `4` by task 73, which **added** the [`DecisionClass::Buggify`] class
+/// (discriminant `7`) and the [`Fault::BuggifyFire`] fault (byte tag `16`) — both
+/// additive with stable discriminants, so a recorded blob whose bytes predate
+/// them still replays, while a blob that names them fails loudly on an older
+/// reader (unknown class / undefined tag).
+pub const CATALOG_VERSION: u16 = 4;
 
 /// The maximum number of bytes one [`Entropy`](DecisionPoint::Entropy) or
 /// [`Payload`](DecisionPoint::Payload) decision may supply. A faultable service

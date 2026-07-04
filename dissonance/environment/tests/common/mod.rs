@@ -57,7 +57,14 @@ pub fn arb_proc_fault() -> impl Strategy<Value = Fault> {
 }
 
 pub fn arb_fault() -> impl Strategy<Value = Fault> {
-    prop_oneof![arb_net_fault(), arb_block_fault(), arb_proc_fault()]
+    prop_oneof![
+        arb_net_fault(),
+        arb_block_fault(),
+        arb_proc_fault(),
+        // Task 73: the parameterless buggify fault — exercises tag 16 through the
+        // answer/action/codec round-trips.
+        Just(Fault::BuggifyFire),
+    ]
 }
 
 // ---- host plane -----------------------------------------------------------
@@ -119,8 +126,16 @@ pub fn arb_policy() -> impl Strategy<Value = FaultPolicy> {
             1u32..=u32::MAX,
             prop::collection::vec(arb_proc_fault(), 0..4),
         ),
+        // Task 73 buggify biasing: a default `num/den` plus a few per-point
+        // `(point, num, den)` overrides (`den >= 1`), so the buggify section of
+        // the policy codec round-trips under the same proptests.
+        (
+            any::<u32>(),
+            1u32..=u32::MAX,
+            prop::collection::vec((any::<u32>(), any::<u32>(), 1u32..=u32::MAX), 0..4),
+        ),
     )
-        .prop_map(|(net, block, proc)| {
+        .prop_map(|(net, block, proc, buggify)| {
             let mut p = FaultPolicy::none();
             p.set_class(DecisionClass::NetFlow, net.0, net.1, &net.2)
                 .expect("net class is a fault class with in-class faults");
@@ -128,6 +143,12 @@ pub fn arb_policy() -> impl Strategy<Value = FaultPolicy> {
                 .expect("block class is a fault class with in-class faults");
             p.set_class(DecisionClass::Process, proc.0, proc.1, &proc.2)
                 .expect("process class is a fault class with in-class faults");
+            p.set_buggify_default(buggify.0, buggify.1)
+                .expect("den >= 1 by strategy bound");
+            for (point, num, den) in buggify.2 {
+                p.set_buggify_point(point, num, den)
+                    .expect("den >= 1 by strategy bound");
+            }
             p
         })
 }
@@ -148,6 +169,7 @@ pub fn arb_class() -> impl Strategy<Value = DecisionClass> {
         Just(DecisionClass::NetFlow),
         Just(DecisionClass::BlockIo),
         Just(DecisionClass::Process),
+        Just(DecisionClass::Buggify),
     ]
 }
 
@@ -167,6 +189,7 @@ pub fn arb_point() -> impl Strategy<Value = DecisionPoint> {
         (arb_blockop(), any::<u64>(), any::<u32>())
             .prop_map(|(op, lba, len)| DecisionPoint::BlockIo { op, lba, len }),
         any::<u32>().prop_map(|n| DecisionPoint::Process { node: NodeId(n) }),
+        any::<u32>().prop_map(|point| DecisionPoint::Buggify { point }),
     ]
 }
 
@@ -290,7 +313,9 @@ pub fn ref_admissible(point: &DecisionPoint, ans: &Answer) -> bool {
             }
             _ => false,
         },
-        DecisionPoint::NetFlow { .. } | DecisionPoint::Process { .. } => match ans {
+        DecisionPoint::NetFlow { .. }
+        | DecisionPoint::Process { .. }
+        | DecisionPoint::Buggify { .. } => match ans {
             Answer::Nominal => true,
             Answer::Fault(f) => f.class() == point.class(),
             Answer::Supply(_) => false,

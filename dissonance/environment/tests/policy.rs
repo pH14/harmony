@@ -126,11 +126,13 @@ fn from_bytes_rejects_stale_v1_net_policy() {
     p.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetReset])
         .unwrap();
     let mut bytes = p.to_bytes();
-    // Layout: magic:u32 (0..4) then version:u16 (4..6). The current version is 2.
+    // Layout: magic:u32 (0..4) then version:u16 (4..6). The current version is 3
+    // (task 73 added the trailing buggify section; a stale v1/v2 blob must still
+    // reject rather than reinterpret an old net tag).
     assert_eq!(
         bytes[4..6],
-        2u16.to_le_bytes(),
-        "current policy is version 2"
+        3u16.to_le_bytes(),
+        "current policy is version 3"
     );
     bytes[4..6].copy_from_slice(&1u16.to_le_bytes());
     assert_eq!(
