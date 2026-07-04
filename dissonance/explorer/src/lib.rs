@@ -78,7 +78,7 @@ mod spine;
 pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
 pub use defaults::{
     COVERAGE_CHANNEL, CoverageArchive, DeclineTactic, ExploreExploitSelector, GenesisSelector,
-    IdentityCells, TerminalOracle,
+    IdentityCells, TerminalOracle, terminal_fingerprint,
 };
 pub use engine::{Composition, Explorer, RunOutcome};
 pub use error::MachineError;

@@ -1,6 +1,7 @@
 pub mod control_proto
 pub mod control_proto::class_bit
 pub const control_proto::class_bit::BLOCK_IO: u16
+pub const control_proto::class_bit::BUGGIFY: u16
 pub const control_proto::class_bit::ENTROPY: u16
 pub const control_proto::class_bit::NET_SEND: u16
 pub const control_proto::class_bit::PAYLOAD: u16

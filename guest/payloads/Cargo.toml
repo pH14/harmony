@@ -24,6 +24,7 @@ members = [
     "irq-landing",
     "irq-landing-rng",
     "pit-pic-stub",
+    "sdk-demo",
 ]
 
 [workspace.package]

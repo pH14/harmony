@@ -57,6 +57,17 @@ pub enum DecisionClass {
     BlockIo = 5,
     /// A node lifecycle point (pause/kill/restart).
     Process = 6,
+    /// A named SDK **buggify** site (task 73): the guest asks the host whether
+    /// to fire a deliberate perturbation at this catalog-registered point. A
+    /// **fault** class — answered [`Answer::Nominal`] (don't fire) or
+    /// [`Answer::Fault`]`(`[`Fault::BuggifyFire`]`)` from the domain-separated
+    /// *fault* PRNG stream, per-point biased by the [`FaultPolicy`](crate::FaultPolicy)
+    /// (the guest never sees probabilities). Unlike the other fault classes it
+    /// carries no service-specific bound: a buggify point is a bare, named,
+    /// steerable coin flip (the improvement over FoundationDB's anonymous
+    /// `get_random`). Discriminant **7** is stable across a
+    /// [`CATALOG_VERSION`](crate::CATALOG_VERSION) bump.
+    Buggify = 7,
 }
 
 impl DecisionClass {
@@ -68,8 +79,9 @@ impl DecisionClass {
     }
 
     /// Whether this is a fault class ([`NetFlow`](Self::NetFlow),
-    /// [`BlockIo`](Self::BlockIo), [`Process`](Self::Process)): the service
-    /// proceeds nominally or is perturbed, and the class never supplies.
+    /// [`BlockIo`](Self::BlockIo), [`Process`](Self::Process),
+    /// [`Buggify`](Self::Buggify)): the service proceeds nominally or is
+    /// perturbed, and the class never supplies.
     pub fn is_fault(self) -> bool {
         !self.is_supply()
     }
@@ -88,6 +100,7 @@ impl DecisionClass {
             4 => Some(Self::NetFlow),
             5 => Some(Self::BlockIo),
             6 => Some(Self::Process),
+            7 => Some(Self::Buggify),
             _ => None,
         }
     }
@@ -177,6 +190,16 @@ pub enum DecisionPoint {
         /// The node whose lifecycle is in question.
         node: NodeId,
     },
+    /// A named SDK **buggify** site (task 73). The guest asks whether to fire a
+    /// deliberate perturbation at `point`; the host answers [`Answer::Nominal`]
+    /// (don't fire) or [`Answer::Fault`]`(`[`Fault::BuggifyFire`]`)` from the
+    /// fault stream, per-point biased by the [`FaultPolicy`](crate::FaultPolicy).
+    /// The `point` is a catalog-registered site id — identity the guest owns,
+    /// steering the host owns.
+    Buggify {
+        /// The catalog-registered buggify site id.
+        point: u32,
+    },
 }
 
 impl DecisionPoint {
@@ -189,6 +212,7 @@ impl DecisionPoint {
             Self::NetFlow { .. } => DecisionClass::NetFlow,
             Self::BlockIo { .. } => DecisionClass::BlockIo,
             Self::Process { .. } => DecisionClass::Process,
+            Self::Buggify { .. } => DecisionClass::Buggify,
         }
     }
 
@@ -203,9 +227,10 @@ impl DecisionPoint {
     ///   only a [`Answer::Supply`] of the exact requested length — for
     ///   [`Scheduler`](Self::Scheduler), exactly 4 bytes decoding to a selection
     ///   `< ready`.
-    /// - Fault classes ([`NetFlow`](Self::NetFlow)/[`BlockIo`](Self::BlockIo)/[`Process`](Self::Process)):
+    /// - Fault classes ([`NetFlow`](Self::NetFlow)/[`BlockIo`](Self::BlockIo)/[`Process`](Self::Process)/[`Buggify`](Self::Buggify)):
     ///   [`Answer::Nominal`], or a [`Answer::Fault`] of the same class within
-    ///   bounds (a [`Fault::BlockTorn`] no longer than the request).
+    ///   bounds (a [`Fault::BlockTorn`] no longer than the request;
+    ///   [`Fault::BuggifyFire`] is bound-free).
     ///
     /// Total and panic-free on any pairing.
     pub fn admits(&self, ans: &Answer) -> bool {
@@ -216,11 +241,17 @@ impl DecisionPoint {
                 v.len() == 4 && u32::from_le_bytes([v[0], v[1], v[2], v[3]]) < *ready
             }
             (
-                Self::NetFlow { .. } | Self::BlockIo { .. } | Self::Process { .. },
+                Self::NetFlow { .. }
+                | Self::BlockIo { .. }
+                | Self::Process { .. }
+                | Self::Buggify { .. },
                 Answer::Nominal,
             ) => true,
             (
-                Self::NetFlow { .. } | Self::BlockIo { .. } | Self::Process { .. },
+                Self::NetFlow { .. }
+                | Self::BlockIo { .. }
+                | Self::Process { .. }
+                | Self::Buggify { .. },
                 Answer::Fault(f),
             ) => f.class() == self.class() && self.fault_bounds_ok(f),
             // Every remaining pairing is a class mismatch (a supply class with a
@@ -308,6 +339,13 @@ pub enum Fault {
     ProcKill,
     /// Restart a node.
     ProcRestart,
+    /// Fire a named SDK **buggify** site (task 73) — the guest-plane
+    /// perturbation a [`DecisionClass::Buggify`] point resolves to when the host
+    /// decides to fire. Parameterless: the site identity lives in the
+    /// [`DecisionPoint::Buggify`]'s `point`, not in the fault. The byte tag
+    /// (`16`) is disjoint from every earlier tag so a stale blob can never
+    /// reinterpret into it.
+    BuggifyFire,
 }
 
 impl Fault {
@@ -323,6 +361,7 @@ impl Fault {
                 DecisionClass::BlockIo
             }
             Self::ProcPause(_) | Self::ProcKill | Self::ProcRestart => DecisionClass::Process,
+            Self::BuggifyFire => DecisionClass::Buggify,
         }
     }
 }

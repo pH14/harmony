@@ -20,6 +20,7 @@ pub hypercall_proto::ServiceId::Block = 3
 pub hypercall_proto::ServiceId::Console = 1
 pub hypercall_proto::ServiceId::Entropy = 2
 pub hypercall_proto::ServiceId::Event = 4
+pub hypercall_proto::ServiceId::Sdk = 6
 #[repr(u16)] pub enum hypercall_proto::Status
 pub hypercall_proto::Status::BadRequest = 1
 pub hypercall_proto::Status::Internal = 5
@@ -31,6 +32,7 @@ pub struct hypercall_proto::Client<T: hypercall_proto::Transport>
 impl<T: hypercall_proto::Transport> hypercall_proto::Client<T>
 pub fn hypercall_proto::Client<T>::block_capacity(&mut self) -> core::result::Result<u64, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::block_read(&mut self, u64, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
+pub fn hypercall_proto::Client<T>::buggify_decide(&mut self, u32) -> core::result::Result<bool, hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::console_write(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::entropy_fill(&mut self, &mut [u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
 pub fn hypercall_proto::Client<T>::event_emit(&mut self, u32, &[u8]) -> core::result::Result<(), hypercall_proto::ClientError<<T as hypercall_proto::Transport>::Error>>
@@ -77,6 +79,15 @@ impl hypercall_proto::Service for hypercall_proto::MemBlockDevice
 pub fn hypercall_proto::MemBlockDevice::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::MemBlockDevice::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::MemBlockDevice::save_state(&self) -> alloc::vec::Vec<u8>
+pub struct hypercall_proto::SdkBuggify
+impl hypercall_proto::SdkBuggify
+pub fn hypercall_proto::SdkBuggify::asked(&self) -> &[u32]
+pub fn hypercall_proto::SdkBuggify::new(bool) -> Self
+pub fn hypercall_proto::SdkBuggify::set_point(&mut self, u32, bool)
+impl hypercall_proto::Service for hypercall_proto::SdkBuggify
+pub fn hypercall_proto::SdkBuggify::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
+pub fn hypercall_proto::SdkBuggify::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
+pub fn hypercall_proto::SdkBuggify::save_state(&self) -> alloc::vec::Vec<u8>
 pub struct hypercall_proto::SeededEntropy
 impl hypercall_proto::SeededEntropy
 pub fn hypercall_proto::SeededEntropy::new(u64) -> Self
@@ -103,6 +114,10 @@ impl hypercall_proto::Service for hypercall_proto::MemBlockDevice
 pub fn hypercall_proto::MemBlockDevice::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::MemBlockDevice::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
 pub fn hypercall_proto::MemBlockDevice::save_state(&self) -> alloc::vec::Vec<u8>
+impl hypercall_proto::Service for hypercall_proto::SdkBuggify
+pub fn hypercall_proto::SdkBuggify::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
+pub fn hypercall_proto::SdkBuggify::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>
+pub fn hypercall_proto::SdkBuggify::save_state(&self) -> alloc::vec::Vec<u8>
 impl hypercall_proto::Service for hypercall_proto::SeededEntropy
 pub fn hypercall_proto::SeededEntropy::handle(&mut self, u16, &[u8], &mut [u8]) -> (hypercall_proto::Status, usize)
 pub fn hypercall_proto::SeededEntropy::restore_state(&mut self, &[u8]) -> core::result::Result<(), hypercall_proto::ProtoError>

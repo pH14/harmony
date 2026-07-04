@@ -13,3 +13,7 @@ thiserror = "2"
 
 [dev-dependencies]
 proptest = "1"
+# Test-only: the `class_bit` constants are a hand-mirror of `environment::DecisionClass`
+# (the lib stays schema-blind — conventions rule 2, no lib dep). This dev-dep lets a
+# test pin the mirror against the real enum so the two cannot drift apart.
+environment = { path = "../environment", version = "0.1.0" }

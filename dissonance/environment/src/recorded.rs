@@ -115,11 +115,16 @@ impl EnvSpec {
     /// (magic, [`Action`] map, standing faults) is unchanged, but the network
     /// [`Fault`](crate::Fault) byte vocabulary was reshaped (per-frame → per-flow),
     /// so a task-45 `v2` blob carrying an old net fault must reject rather than
-    /// silently reinterpret it as a new flow policy. Bumped to `4` by task 78:
-    /// the [`Recorded`](EnvSpec::Recorded) layout gained the trailing
-    /// reseed-marker table, so a v3 blob (which has no table) must reject
-    /// rather than mis-parse.
-    pub const BLOB_VERSION: u16 = 4;
+    /// silently reinterpret it as a new flow policy. Bumped to `4` by task 78: the
+    /// [`Recorded`](EnvSpec::Recorded) layout gained a trailing **reseed-marker
+    /// table**, so a v3 blob (no table) rejects rather than mis-parse. Bumped to
+    /// `5` by task 73: the embedded [`FaultPolicy`](crate::FaultPolicy) gained a
+    /// trailing **buggify section** (its own version moved `2 → 3`). Task 78's `v4`
+    /// embeds `FaultPolicy` v2 and task 73's embeds v3 — two **incompatible** inner
+    /// encodings of the same logical policy (v3 is longer), so they must NOT share
+    /// an outer version. A `v4` blob is therefore rejected outright at the version
+    /// gate in [`decode`](EnvSpec::decode), never parsed with the v5 policy reader.
+    pub const BLOB_VERSION: u16 = 5;
 
     /// The seed every backing draws from.
     pub fn seed(&self) -> u64 {
@@ -475,6 +480,21 @@ impl RecordedEnv {
     /// The current [`Moment`].
     pub fn moment(&self) -> Moment {
         self.moment
+    }
+
+    /// Serialize the **dynamic stream state** (the seeded base's PRNG positions)
+    /// so a snapshot can resume the exact same supply and fault streams (task
+    /// 73). The `Moment`-keyed overrides are static (part of the reproducer), so
+    /// only the base stream position is captured. Delegates to
+    /// [`SeededEnv::stream_state`].
+    pub fn stream_state(&self) -> [u8; 16] {
+        self.base.stream_state()
+    }
+
+    /// Restore the dynamic stream state captured by
+    /// [`stream_state`](RecordedEnv::stream_state). Total (never panics).
+    pub fn restore_stream_state(&mut self, state: &[u8; 16]) {
+        self.base.restore_stream_state(state);
     }
 }
 

@@ -66,6 +66,31 @@ jobs:
           cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
+      # guest/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
+      # root fmt/clippy/nextest above never see it. Gate it explicitly on its own
+      # manifest — its host-side loopback tests (duplicate-coordinate rejection,
+      # emission dispositions, determinism) must stay green like any other crate.
+      - name: guest/sdk gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path guest/sdk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path guest/sdk/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path guest/sdk/Cargo.toml --all-features
+          # License-check its deps against the same allow-list (like the guest/fuzz
+          # manifests above) — the root `cargo deny` never sees this manifest.
+          cargo deny --manifest-path guest/sdk/Cargo.toml check --config deny.toml licenses
+          # no_std build proof: the crate and its deps must compile for the bare
+          # metal target the guest actually runs in (host-only tests can't catch a
+          # std leak). Fails the gate if anything pulls in std.
+          rustup target add x86_64-unknown-none
+          cargo build --manifest-path guest/sdk/Cargo.toml --lib --target x86_64-unknown-none
+      # Actually LINK the SDK-instrumented demo guest for bare metal — from its own
+      # dir, so guest/payloads/.cargo/config.toml (target + linker) applies. The
+      # guest/sdk `--lib` proof above compiles the library, but only a full payload
+      # link exercises the SDK end-to-end against the boot shim; a regression that
+      # breaks the demo (the box gate's guest) would otherwise surface only on the box.
+      - name: guest/payloads sdk-demo build (bare metal, from its dir)
+        working-directory: guest/payloads
+        run: cargo build -p sdk-demo
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
@@ -201,5 +226,9 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p flow -p matcher -p runtrace -p conductor -p tactics-regime -p logtmpl -p oracle-elle \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p link -p flow -p matcher -p runtrace -p conductor -p tactics-regime -p logtmpl -p oracle-elle \
+            --test public_api -- --ignored --nocapture
+          # guest/sdk is out-of-workspace (its own manifest), so it is not in the
+          # `-p` list above — freeze its public surface on its own manifest.
+          cargo test --manifest-path guest/sdk/Cargo.toml \
             --test public_api -- --ignored --nocapture

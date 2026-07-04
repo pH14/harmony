@@ -439,6 +439,16 @@ pub(crate) fn fingerprint(stop: &StopReason) -> [u8; 32] {
     )
 }
 
+/// The **shared** terminal-stop [`fingerprint`] (the task-75 v2 scheme
+/// `TerminalOracle` mints), exposed so another crate minting a bug for the *same*
+/// crash/assertion — the `link` SDK-assertion oracle
+/// ([`StopReason::Assertion`](crate::StopReason::Assertion)) — dedups
+/// byte-identically against an explorer-minted one instead of restating (and
+/// drifting from) the scheme.
+pub fn terminal_fingerprint(stop: &StopReason) -> [u8; 32] {
+    fingerprint(stop)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -151,7 +151,7 @@ fn every_net_fault_is_netflow_class_and_admissible() {
 
 #[test]
 fn stale_v2_blob_is_rejected_not_reinterpreted() {
-    // The BLOB_VERSION bumps (2 → 3 → 4) make a task-45 `v2` blob reject with
+    // The BLOB_VERSION bumps (2 → 3 → 4 → 5) make a task-45 `v2` blob reject with
     // BadVersion rather than silently reinterpret an old per-frame net fault as a
     // new flow policy. Build a current blob, rewrite its version field to 2.
     let spec = EnvSpec::Recorded {
@@ -162,7 +162,9 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
         reseeds: std::collections::BTreeMap::new(),
     };
     let mut bytes = spec.encode();
-    // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION.
+    // Layout: magic:u32 then version:u16. The current version is BLOB_VERSION (5 —
+    // task 73's buggify-section policy bump on top of task 78's v4 reseed table);
+    // a stale v2 blob still rejects.
     assert_eq!(
         bytes[4..6],
         EnvSpec::BLOB_VERSION.to_le_bytes(),
@@ -173,6 +175,33 @@ fn stale_v2_blob_is_rejected_not_reinterpreted() {
         EnvSpec::decode(&bytes),
         Err(environment::EnvError::BadVersion(2)),
         "a v2 blob must reject, never reinterpret an old net fault"
+    );
+}
+
+/// A `v4` blob is rejected at the version GATE, not mid-parse. Task 78 shipped
+/// `v4` (reseed table + `FaultPolicy` v2); task 73 embeds `FaultPolicy` v3, a
+/// longer, incompatible policy sub-blob, so the merged format is `v5`. Two
+/// incompatible encodings must never share an outer version — a v4 blob must fail
+/// loud at the version check, before any field is parsed.
+#[test]
+fn a_v4_blob_is_rejected_at_the_version_gate() {
+    let spec = EnvSpec::Recorded {
+        seed: 0,
+        policy: FaultPolicy::none(),
+        overrides: std::collections::BTreeMap::new(),
+        standing: vec![],
+        reseeds: std::collections::BTreeMap::new(),
+    };
+    let mut bytes = spec.encode();
+    // Rewrite the version field to 4 AND truncate to just magic+version: if the
+    // gate did not fire first, the truncated body would fail mid-parse with a
+    // different error — BadVersion(4) proves the version is checked before parse.
+    bytes[4..6].copy_from_slice(&4u16.to_le_bytes());
+    bytes.truncate(6);
+    assert_eq!(
+        EnvSpec::decode(&bytes),
+        Err(environment::EnvError::BadVersion(4)),
+        "a v4 blob rejects at the version gate, not mid-parse"
     );
 }
 

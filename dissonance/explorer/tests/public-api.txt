@@ -404,4 +404,5 @@ impl explorer::Tactic for explorer::DeclineTactic
 pub fn explorer::DeclineTactic::decide(&mut self, &explorer::DecisionPoint, &mut explorer::Prng) -> explorer::Answer
 pub fn explorer::client_caps() -> control_proto::types::Caps
 pub fn explorer::mint_fingerprint(&explorer::TerminalSig, &explorer::FaultCoord, explorer::VTimeCoord) -> [u8; 32]
+pub fn explorer::terminal_fingerprint(&explorer::StopReason) -> [u8; 32]
 pub type explorer::CellKey = alloc::vec::Vec<u8>
