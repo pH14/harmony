@@ -205,6 +205,29 @@ fn record_keys_are_byte_exact() {
     );
 }
 
+/// Round-10 P2: the `elle` tag is separated from its fields by **any** ASCII
+/// whitespace, so a **tab-delimited** record parses — matching only a literal
+/// space silently drops the line and the oracle could report a clean empty
+/// history. (`elle` alone or `elleish...` are still not records.)
+#[test]
+fn tab_delimited_record_is_not_dropped() {
+    let t = raw_record_trace(vec![
+        (1, b"elle\top\ts=1\tt=1\tk=k\tW=1".to_vec()),
+        (2, b"elle\tcommit\tt=1".to_vec()),
+    ]);
+    let h = RecordDecoder::new()
+        .decode(&t)
+        .expect("a tab-delimited record decodes");
+    let txn = h.txns.get(&1).expect("the tab-delimited txn is present");
+    assert_eq!(txn.ops.len(), 1, "its op was not silently dropped");
+    assert_eq!(txn.ops[0].key, b"k".to_vec());
+
+    // The tag itself must still be matched exactly: `elleish` is a different tag.
+    let not_ours = raw_record_trace(vec![(1, b"elleish op s=1 t=1 k=k W=1".to_vec())]);
+    let h = RecordDecoder::new().decode(&not_ours).expect("decode");
+    assert!(h.txns.is_empty(), "a non-`elle` tag contributes no ops");
+}
+
 /// Item 2: an op carrying more than one of W/A/R is ambiguous — a loud
 /// `AmbiguousOp`, never a silently-picked (mis-classified) kind. Both decoders.
 #[test]

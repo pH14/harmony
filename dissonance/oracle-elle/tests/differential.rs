@@ -64,7 +64,8 @@ struct RTxn {
     committed: bool,
 }
 
-/// All permutations of `0..n` (n small; the reference is for <= 4 committed txns).
+/// All permutations of `0..n` (n small; the reference enumerates up to six
+/// committed txns — `6! = 720`, still cheap per case).
 fn perms(n: usize) -> Vec<Vec<usize>> {
     let mut out = Vec::new();
     let mut cur: Vec<usize> = (0..n).collect();
@@ -209,7 +210,12 @@ fn build(specs: Vec<(Shape, bool)>) -> Vec<RTxn> {
 }
 
 fn arb_history() -> impl Strategy<Value = Vec<RTxn>> {
-    prop::collection::vec((arb_shape(), any::<bool>()), 2..=4).prop_map(build)
+    // Up to six transactions on two keys, so a register key can receive three or
+    // more committed writes with only a final read pinning the last version — the
+    // class where the non-final predecessors' order is unrecoverable and must not
+    // be fabricated (round 10). The reference enumerates the committed subset's
+    // permutations, which stays cheap at this size.
+    prop::collection::vec((arb_shape(), any::<bool>()), 2..=6).prop_map(build)
 }
 
 /// Convert a reference history into a `RunTrace` the oracle judges (register
@@ -377,6 +383,35 @@ fn harness_covers_anomalous_histories() {
     assert!(
         oracle.analyze(&t).expect("recoverable").is_some(),
         "the oracle flags the planted lost update, matching the reference"
+    );
+}
+
+/// Round-10 coverage: a register key with **three** committed writes and only a
+/// final read (no intermediate reads) — the class whose non-final predecessor
+/// order the checker must not fabricate. It is recoverable (the final read pins
+/// the settled version) and serializable (a serial write order reproduces the
+/// one read), so the oracle must judge it clean, agreeing with the reference.
+#[test]
+fn harness_covers_a_three_writer_register_with_only_a_final_read() {
+    let txns = build(vec![
+        (Shape::Writes(vec![0]), true), // T1: W(0,1)
+        (Shape::Writes(vec![0]), true), // T2: W(0,2)
+        (Shape::Writes(vec![0]), true), // T3: W(0,3)
+        (Shape::Read(0), true),         // T4: final read (current = 3)
+    ]);
+    assert!(
+        recoverable(&txns),
+        "the final read pins the settled version — recoverable"
+    );
+    assert!(
+        is_serializable(&txns),
+        "a serial write order reproduces the single read — serializable"
+    );
+    let t = to_trace(&txns);
+    let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
+    assert!(
+        oracle.analyze(&t).expect("recoverable").is_none(),
+        "clean: the checker must not invent a predecessor order that reads as an anomaly"
     );
 }
 

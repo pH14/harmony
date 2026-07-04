@@ -234,9 +234,19 @@ impl RecordDecoder {
     /// could collide two distinct keys and hide or fabricate an anomaly).
     fn parse_line(line: &[u8]) -> Result<Option<Marker>, DecodeError> {
         let line = line.trim_ascii();
-        let Some(rest) = line.strip_prefix(b"elle ") else {
+        // The `elle` tag is separated from its fields by **any** ASCII whitespace
+        // (the rest of the parser is whitespace-agnostic), so a tab-delimited
+        // `elle\t...` record must parse — matching only a literal space silently
+        // drops it and the oracle could report a clean empty history.
+        let Some(rest) = line.strip_prefix(b"elle") else {
             return Ok(None);
         };
+        match rest.first() {
+            // A real record: the tag is followed by whitespace then fields.
+            Some(b) if b.is_ascii_whitespace() => {}
+            // `elle` alone (no fields) or `elleish...` (a different tag): not ours.
+            _ => return Ok(None),
+        }
         let show = || String::from_utf8_lossy(line).into_owned();
         let mut fields = rest
             .split(|b: &u8| b.is_ascii_whitespace())

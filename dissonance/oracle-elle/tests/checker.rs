@@ -323,7 +323,10 @@ fn malformed_history_through_dyn_oracle_is_not_clean() {
     assert!(o.judge(&clean).is_none(), "a clean run is still clean");
 
     // A real anomaly's fingerprint is distinct from the decode-failure Bug's
-    // (the decode failure is not a consistency anomaly).
+    // (the decode failure is not a consistency anomaly). The history must be a
+    // genuine lost update — a final read pins the register order, so it does NOT
+    // itself decode-fail as `UnpinnedRegister` (which would make this assertion
+    // vacuously compare two decode failures).
     let lost_update = trace(
         vec![
             write(1, 0, 10, "k", 1),
@@ -334,9 +337,21 @@ fn malformed_history_through_dyn_oracle_is_not_clean() {
             read(6, 2, 12, "k", &[1]),
             write(7, 2, 12, "k", 3),
             commit(8, 12),
+            read(9, 3, 13, "k", &[3]), // final read pins the order (recoverable)
+            commit(10, 13),
         ],
         0,
     );
+    // Guard against the test going vacuous: this really is the lost-update
+    // *anomaly* path, not another decode failure.
+    let checked = ElleOracle::new(
+        Box::new(EventDecoder::new()),
+        IsolationLevel::SnapshotIsolation,
+    )
+    .analyze(&lost_update)
+    .expect("recoverable")
+    .expect("a lost update");
+    assert_eq!(checked.kind, AnomalyKind::LostUpdate);
     let anomaly_bug = o.judge(&lost_update).expect("a real lost update");
     assert_ne!(
         decode_bug.fingerprint, anomaly_bug.fingerprint,

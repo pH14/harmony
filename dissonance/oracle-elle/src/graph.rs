@@ -33,9 +33,19 @@ pub struct DepGraph {
     writer: BTreeMap<Elem, TxnId>,
     /// Which transactions committed.
     committed: BTreeSet<TxnId>,
-    /// Each key's recovered version order (the unique, prefix-consistent
-    /// observed list — the append order / register version sequence).
+    /// Each key's recovered version order. For an **append** key this is the full
+    /// observed list (a total order). For a **register** key it holds only what is
+    /// *witnessed*: the pinned final version last, preceded by the sole
+    /// predecessor when there is exactly one — with two or more unwitnessed
+    /// predecessors their relative order is unrecoverable, so it is **not**
+    /// fabricated (only the final appears; the predecessors are known via
+    /// [`ww_contrib`](Self::ww_contrib) and [`writer`](Self::writer), unordered).
     version_order: BTreeMap<Key, Vec<Elem>>,
+    /// A **register** key's pinned final version (its settled current value): the
+    /// value a quiesce read observed, or the lone committed write. Drives the
+    /// register rw edge (a read of any non-final version is anti-dependent on the
+    /// final writer) without appealing to a fabricated predecessor order.
+    register_final: BTreeMap<Key, Elem>,
     /// Write-read edges: writer → readers of its writes.
     wr: BTreeMap<TxnId, BTreeSet<TxnId>>,
     /// Write-write edges (committed writers only): earlier → later in version
@@ -263,11 +273,15 @@ impl DepGraph {
                 });
             }
         }
-        // Register keys: quiesce reads pin the final version; every other
-        // committed writer → the final writer (a star). A single committed write
-        // is unambiguous with no read; **two or more** committed writes with no
-        // quiesce read are unrecoverable — ordering them by value would fabricate
-        // an order (fail loud, the register twin of `UnobservedAppend`).
+        // Register keys: a quiesce read pins the final version; every other
+        // committed writer precedes it (a **star** of ww edges to the final
+        // writer). The predecessors are otherwise **unordered** — with two or
+        // more, their relative order is unrecoverable, so it is never fabricated
+        // (that fabrication would leak into `version_order` and mint rw edges to
+        // an arbitrary "next" writer chosen by numeric value). A single committed
+        // write is its own unambiguous final; two or more with no quiesce read
+        // are unrecoverable (`UnpinnedRegister`, the register twin of
+        // `UnobservedAppend`).
         for key in &register_keys {
             let committed_vals: Vec<Elem> = committed_writes
                 .get(key)
@@ -287,19 +301,30 @@ impl DepGraph {
                     writes: committed_vals.len(),
                 });
             }
-            let mut order: Vec<Elem> = committed_vals
+            // The settled final: the quiesce-pinned value, or a lone committed
+            // write (its own final). Absent only when no write committed.
+            let settled = final_v.or_else(|| committed_vals.first().copied());
+            let Some(fv) = settled else {
+                continue;
+            };
+            g.register_final.insert(key.clone(), fv);
+            let predecessors: Vec<Elem> = committed_vals
                 .iter()
                 .copied()
-                .filter(|v| Some(*v) != final_v)
+                .filter(|&v| v != fv)
                 .collect();
-            order.sort_unstable();
-            if let Some(fv) = final_v {
-                // Star: every other committed writer precedes the final writer.
-                for &v in &order {
-                    g.add_ww_edge(v, fv, key);
-                }
-                order.push(fv);
+            // Star: every predecessor precedes the final writer.
+            for &v in &predecessors {
+                g.add_ww_edge(v, fv, key);
             }
+            // version_order is witnessed only when there is at most one
+            // predecessor (a unique order); with two or more it is left partial
+            // (just the final) rather than invent one.
+            let order = match predecessors.as_slice() {
+                [] => vec![fv],
+                [pred] => vec![*pred, fv],
+                _ => vec![fv],
+            };
             g.version_order.insert(key.clone(), order);
         }
 
@@ -321,25 +346,36 @@ impl DepGraph {
                         }
                     }
                     // Read-write anti-dependency: the reader of a version is
-                    // anti-dependent on whoever overwrote it (the *next* version).
-                    // An **empty** read observed the initial/unwritten version, so
-                    // its overwriter is the key's FIRST writer — without this the
-                    // public graph would miss initial-version conflicts.
-                    if let Some(order) = self.version_order.get(&op.key) {
-                        let next = match vs.last() {
+                    // anti-dependent on whoever overwrote it.
+                    let overwriter = if let Some(&fv) = self.register_final.get(&op.key) {
+                        // A **register**: any read that did not observe the settled
+                        // final version (a non-final version, or the empty initial)
+                        // is anti-dependent on the final writer — the one witnessed
+                        // overwriter, chosen without a fabricated predecessor order.
+                        match vs.last() {
+                            Some(&tip) if tip == fv => None,
+                            _ => Some(fv),
+                        }
+                    } else if let Some(order) = self.version_order.get(&op.key) {
+                        // An **append**: the next version in the observed list. An
+                        // empty read observed the initial version, so its
+                        // overwriter is the key's first appended value.
+                        match vs.last() {
                             Some(&tip) => order
                                 .iter()
                                 .position(|&e| e == tip)
                                 .and_then(|pos| order.get(pos + 1))
                                 .copied(),
                             None => order.first().copied(),
-                        };
-                        if let Some(next) = next
-                            && let Some(&wnext) = self.writer.get(&next)
-                            && wnext != t.id
-                        {
-                            self.rw.entry(t.id).or_default().insert(wnext);
                         }
+                    } else {
+                        None
+                    };
+                    if let Some(next) = overwriter
+                        && let Some(&wnext) = self.writer.get(&next)
+                        && wnext != t.id
+                    {
+                        self.rw.entry(t.id).or_default().insert(wnext);
                     }
                 }
             }
@@ -733,6 +769,57 @@ mod tests {
         )]);
         let g = DepGraph::build(&h).expect("a single write is recoverable");
         assert_eq!(g.version_order(&b"a".to_vec()), Some(&[1][..]));
+    }
+
+    /// Round-10 P2: with **three** committed register writers and only a final
+    /// read pinning the last version, the two predecessors' relative order is
+    /// unrecoverable and must NOT be fabricated. Writers `100, 1`, final `3`: the
+    /// old code sorted `{100, 1}` by value into `[1, 100, 3]` and minted a
+    /// spurious rw `T3 -> T1` (value `1`'s "next" is `100`). Now only the star to
+    /// the final and the pinned final are witnessed.
+    #[test]
+    fn three_writer_register_does_not_fabricate_predecessor_order() {
+        let h = history(vec![
+            tx(
+                1,
+                TxnOutcome::Committed,
+                vec![op(1, 1, "k", OpKind::Write(100))],
+            ),
+            tx(
+                2,
+                TxnOutcome::Committed,
+                vec![
+                    op(2, 2, "k", OpKind::Read(vec![100])),
+                    op(3, 2, "k", OpKind::Write(1)),
+                ],
+            ),
+            tx(
+                3,
+                TxnOutcome::Committed,
+                vec![
+                    op(4, 3, "k", OpKind::Read(vec![1])),
+                    op(5, 3, "k", OpKind::Write(3)),
+                ],
+            ),
+            // The final read pins 3 as the settled version.
+            tx(
+                4,
+                TxnOutcome::Committed,
+                vec![op(6, 4, "k", OpKind::Read(vec![3]))],
+            ),
+        ]);
+        let g = DepGraph::build(&h).expect("a quiesce read pins the final");
+        // Only the final is in the public order — no fabricated `[1, 100, 3]`.
+        assert_eq!(g.version_order(&b"k".to_vec()), Some(&[3][..]));
+        // A star to the final writer (T3); no predecessor→predecessor edge.
+        assert!(g.ww_edges()[&1].contains(&3), "T1 (100) →ww T3 (final)");
+        assert!(g.ww_edges()[&2].contains(&3), "T2 (1) →ww T3 (final)");
+        assert!(g.ww_cycle().is_none(), "a star has no cycle");
+        // The value-sorted fabrication would have minted rw `T3 -> T1`; it must not.
+        assert!(
+            g.rw_edges().get(&3).is_none_or(|s| !s.contains(&1)),
+            "no rw edge fabricated from numeric predecessor value order"
+        );
     }
 
     /// An aborted writer stays out of the committed set (so its writes are
