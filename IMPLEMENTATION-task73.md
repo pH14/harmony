@@ -115,6 +115,18 @@ seam (61 reuses it).
    Final surface pass: no other advertised-vs-actual mismatch (pending_snapshot can't be captured
    mid-flight — NotQuiescent there; entropy resumes via the VM snapshot; paging always progresses).
 
+## Round-6 review (2 P2s — fixed; box A/B/C 3/3)
+
+1. **Deferred seal gates on an empty schedule (P2/1).** Round-5 drained then surfaced, but a FUTURE
+   fault (m > vns) stayed staged and `snapshot()` rejects any non-empty schedule (`SnapshotWhileArmed`).
+   Now the deferred `SnapshotPoint` surfaces only when `self.schedule.is_empty()` at a synchronized
+   boundary — else keep deferring as the run drains each fault at its Moment. Test: a future fault
+   surfaces the point at the fault's Moment (not the earlier RDTSC); `snapshot()` then `Ok`.
+2. **`Vmm::run()` stops on `SdkStop` (P2/2).** It looped to the terminal, swallowing an assertion.
+   `TerminalReason::SdkStop` + `RunResult.sdk_stop`; `run` breaks on either. Defensive `unreachable!`
+   in map_terminal + terminal serialization (SDK stop never routes/latches there). Test through `run()`.
+   Another control/stop surface pass found nothing further.
+
 ## What landed (portable, verified)
 
 - **`dissonance/environment`** (additive): `DecisionClass::Buggify = 7`,
