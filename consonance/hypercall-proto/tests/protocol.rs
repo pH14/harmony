@@ -73,6 +73,16 @@ fn golden_request_bytes_for_every_service_opcode() {
     event.extend_from_slice(&le32(0));
     event.extend_from_slice(&event_payload);
     assert_eq!(enc_req(ServiceId::Event, 1, 11, &event_payload), event);
+
+    // The task-73 SDK control service: a `buggify_decide` request
+    // (ServiceId::Sdk = 6, op 1) carrying the u32 catalog point id.
+    let mut sdk = b"HCP1".to_vec();
+    sdk.extend_from_slice(&[1, 0, 6, 0, 1, 0, 0, 0]); // version 1, service 6, opcode 1
+    sdk.extend_from_slice(&le32(12)); // seq
+    sdk.extend_from_slice(&le32(4)); // payload len (one u32)
+    sdk.extend_from_slice(&le32(0)); // reserved
+    sdk.extend_from_slice(&le32(50)); // point 50
+    assert_eq!(enc_req(ServiceId::Sdk, 1, 12, &le32(50)), sdk);
 }
 
 #[test]
@@ -83,6 +93,8 @@ fn golden_response_bytes_for_every_service_opcode() {
         (ServiceId::Block, 1, 3, Status::Ok, le64(99).to_vec()),
         (ServiceId::Block, 2, 4, Status::OutOfRange, Vec::new()),
         (ServiceId::Event, 1, 5, Status::Ok, Vec::new()),
+        // SDK `buggify_decide` reply: one byte, fire = 1 (task 73).
+        (ServiceId::Sdk, 1, 6, Status::Ok, vec![1]),
     ];
     for (service, opcode, seq, status, payload) in cases {
         let got = enc_resp(service, opcode, seq, status, &payload);

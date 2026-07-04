@@ -47,8 +47,11 @@ extern "C" fn payload_main() -> ! {
         Err(_) => common::payload::fail(NAME, "sdk-init"),
     };
 
-    // Seal the boot/setup prefix once the catalog is declared.
-    let _ = sdk.setup_complete();
+    // Seal the boot/setup prefix once the catalog is declared — loud on error
+    // (a swallowed seal failure would desync the host's setup boundary).
+    if sdk.setup_complete().is_err() {
+        common::payload::fail(NAME, "setup_complete");
+    }
 
     // A deterministic little workload. `balance` starts safely positive and
     // decrements each step; only the buggify "slow disk" path double-charges it,
@@ -73,14 +76,23 @@ extern "C" fn payload_main() -> ! {
         if balance < min_balance {
             min_balance = balance;
         }
-        // IJON: report the running minimum (as a non-negative magnitude).
-        let _ = sdk.state_max(40, min_balance.unsigned_abs());
+        // IJON: report the running minimum (as a non-negative magnitude). Loud on
+        // Err like every SDK call — a swallowed error hides a broken doorbell.
+        if sdk.state_max(40, min_balance.unsigned_abs()).is_err() {
+            common::payload::fail(NAME, "state_max");
+        }
 
         // `commit_seen` fires every iteration; `rollback_seen` never does.
-        let _ = sdk.assert_sometimes(true, 1);
+        if sdk.assert_sometimes(true, 1).is_err() {
+            common::payload::fail(NAME, "assert_sometimes");
+        }
 
-        // The planted invariant — only the buggy path can break it.
-        let _ = sdk.assert_always(balance >= 0, 20);
+        // The planted invariant — only the buggy path can break it. LOUD on Err: a
+        // swallowed emission error here would DROP the violation, so the box gate
+        // that expects the planted Bug would pass VACUOUSLY (green for no reason).
+        if sdk.assert_always(balance >= 0, 20).is_err() {
+            common::payload::fail(NAME, "assert_always");
+        }
     }
 
     common::payload::pass(NAME)
