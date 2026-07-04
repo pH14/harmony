@@ -163,6 +163,28 @@ fn init_rejects_duplicate_coordinates() {
     );
 }
 
+/// `init` also rejects a catalog with two points sharing a `name`, even at
+/// distinct `(namespace, id)` coordinates — the host never-fired report is keyed
+/// by name, so a duplicate would silently alias it.
+#[test]
+fn init_rejects_duplicate_names() {
+    let mut d = Dispatcher::new();
+    d.register(
+        ServiceId::Event,
+        Box::new(SharedEvent(Rc::new(RefCell::new(Vec::new())))),
+    );
+    // Same name, different namespaces AND ids — the coordinate check would pass;
+    // the name check must still fire.
+    let dup = [Point::always(1, "dup"), Point::state(2, "dup")];
+    assert!(
+        matches!(
+            Sdk::init(DispatcherLoopback(d), &dup),
+            Err(SdkError::DuplicateName)
+        ),
+        "a duplicate name is rejected even across namespaces and ids"
+    );
+}
+
 /// Always/sometimes/reachable/unreachable emit exactly the right disposition,
 /// and only when they should.
 #[test]
@@ -296,9 +318,15 @@ fn oversize_catalog_is_rejected() {
     let events: EventLog = Rc::new(RefCell::new(Vec::new()));
     let mut d = Dispatcher::new();
     d.register(ServiceId::Event, Box::new(SharedEvent(events.clone())));
-    // Long names × many points overflow one frame.
+    // Long names × many points overflow one frame. Names must be DISTINCT (else
+    // the duplicate-name check fires first) — leak per-point strings, a test-only
+    // way to mint `&'static str`s carrying the id.
     let big: Vec<Point> = (0..500)
-        .map(|i| Point::sometimes(i, "a-very-long-signal-name-that-eats-frame-budget"))
+        .map(|i| {
+            let name: &'static str =
+                Box::leak(format!("signal-{i:05}-that-eats-frame-budget").into_boxed_str());
+            Point::sometimes(i, name)
+        })
         .collect();
     assert_eq!(
         Sdk::init(DispatcherLoopback(d), &big).err(),

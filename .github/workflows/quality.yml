@@ -75,6 +75,14 @@ jobs:
           cargo fmt --manifest-path guest/sdk/Cargo.toml --all -- --check
           cargo clippy --manifest-path guest/sdk/Cargo.toml --all-features --all-targets -- -D warnings
           cargo test --manifest-path guest/sdk/Cargo.toml --all-features
+          # License-check its deps against the same allow-list (like the guest/fuzz
+          # manifests above) — the root `cargo deny` never sees this manifest.
+          cargo deny --manifest-path guest/sdk/Cargo.toml check --config deny.toml licenses
+          # no_std build proof: the crate and its deps must compile for the bare
+          # metal target the guest actually runs in (host-only tests can't catch a
+          # std leak). Fails the gate if anything pulls in std.
+          rustup target add x86_64-unknown-none
+          cargo build --manifest-path guest/sdk/Cargo.toml --lib --target x86_64-unknown-none
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`

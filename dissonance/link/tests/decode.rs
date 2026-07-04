@@ -107,6 +107,19 @@ fn golden_catalog_header() {
     assert_eq!(attr(&ev, "count"), &Value::UInt(3));
 }
 
+/// A catalog blob with an unrecognized wire version decodes to `unknown`, not a
+/// catalog parsed under this version's field layout (round A3: the decode path
+/// gates on `SDK_WIRE_VERSION`, matching the catalog fold in `catalog.rs`).
+#[test]
+fn catalog_with_a_future_version_is_unknown() {
+    let mut blob = b"SDKC".to_vec();
+    blob.push(2); // a future wire version — current is 1
+    blob.extend_from_slice(&3u32.to_le_bytes());
+    let ev = decode_event(0, &blob);
+    assert_eq!(ev.kind, KIND_UNKNOWN);
+    assert_ne!(ev.kind, KIND_CATALOG);
+}
+
 /// Malformed payloads for known namespaces, and unknown namespaces, fall back to
 /// `unknown` carrying the raw id + bytes — nothing is dropped or panics.
 #[test]

@@ -181,6 +181,10 @@ pub enum SdkError<E> {
     /// at the same `event_id`, aliasing the host catalog (and its never-fired
     /// report) silently. Rejected at [`init`](Sdk::init).
     DuplicateCoordinate,
+    /// Two declared points share a `name` — the host catalog's never-fired report
+    /// is keyed by name, so a duplicate silently aliases the report. Rejected at
+    /// [`init`](Sdk::init).
+    DuplicateName,
 }
 
 impl<E: fmt::Debug> fmt::Display for SdkError<E> {
@@ -192,6 +196,7 @@ impl<E: fmt::Debug> fmt::Display for SdkError<E> {
             SdkError::DuplicateCoordinate => {
                 f.write_str("two declared points share a (namespace, id) coordinate")
             }
+            SdkError::DuplicateName => f.write_str("two declared points share a name"),
         }
     }
 }
@@ -273,14 +278,18 @@ impl<T: Transport> Sdk<T> {
 
     /// Marshal and emit the catalog-declaration Event.
     fn declare(&mut self, catalog: &[Point]) -> Result<(), SdkError<T::Error>> {
-        // Reject a catalog that declares two points at the same `(namespace, id)`
-        // coordinate: they fire at one `event_id`, so the host cannot tell them
-        // apart and its never-fired report silently aliases them. O(n²) over the
-        // small declared set (no alloc — this is a `no_std` guest).
+        // Reject a catalog that declares two points colliding on either key the
+        // host indexes by: the `(namespace, id)` coordinate (they fire at one
+        // `event_id`, so the host cannot tell them apart) or the `name` (the
+        // never-fired report is keyed by name, so a duplicate silently aliases the
+        // report). O(n²) over the small declared set (no alloc — `no_std` guest).
         for (i, p) in catalog.iter().enumerate() {
             for q in &catalog[i + 1..] {
                 if p.id == q.id && p.kind.namespace() == q.kind.namespace() {
                     return Err(SdkError::DuplicateCoordinate);
+                }
+                if p.name == q.name {
+                    return Err(SdkError::DuplicateName);
                 }
             }
         }

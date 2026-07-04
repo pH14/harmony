@@ -69,7 +69,10 @@ fn decode_catalog(bytes: &[u8]) -> GuestEvent {
     let version = r.u8();
     let count = r.u32();
     match (ok, version, count) {
-        (true, Some(version), Some(count)) => event(
+        // Gate on the wire version (like the catalog fold in `catalog.rs`): a
+        // future/unknown version is `unknown`, not a catalog decoded under this
+        // version's field layout (which would mis-key the report).
+        (true, Some(version), Some(count)) if version == wire::SDK_WIRE_VERSION => event(
             KIND_CATALOG,
             [
                 ("version", Value::UInt(version as u64)),
