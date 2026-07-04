@@ -133,7 +133,18 @@ impl DepGraph {
         for t in h.iter() {
             for op in &t.ops {
                 if let OpKind::Read(vs) = &op.kind {
+                    let mut seen_in_list: BTreeSet<Elem> = BTreeSet::new();
                     for &e in vs {
+                        // A value repeated within one observed list is malformed:
+                        // written values are unique, so a repeat would fabricate a
+                        // spurious ww edge (a false dirty-write) if accepted as an
+                        // order. Fail loud.
+                        if !seen_in_list.insert(e) {
+                            return Err(DecodeError::RepeatedObservation {
+                                key: op.key.clone(),
+                                value: e,
+                            });
+                        }
                         match write_key.get(&e) {
                             None => {
                                 return Err(DecodeError::UnknownValue {
@@ -239,19 +250,39 @@ impl DepGraph {
             }
         }
 
-        // Write-write: consecutive committed writers in each key's version order.
+        // Write-write: consecutive writers in each key's **committed** version
+        // order. The committed subsequence is paired (not the raw order), so an
+        // aborted version observed between two committed writes never breaks the
+        // committed→committed edge across it (round-4: else a G0 cycle spanning
+        // the aborted gap would be judged clean).
         for order in self.version_order.values() {
-            for pair in order.windows(2) {
-                let (a, b) = (pair[0], pair[1]);
-                if let (Some(&wa), Some(&wb)) = (self.writer.get(&a), self.writer.get(&b))
+            let seq = self.committed_subseq(order);
+            for pair in seq.windows(2) {
+                if let (Some(&wa), Some(&wb)) =
+                    (self.writer.get(&pair[0]), self.writer.get(&pair[1]))
                     && wa != wb
-                    && self.committed.contains(&wa)
-                    && self.committed.contains(&wb)
                 {
                     self.ww.entry(wa).or_default().insert(wb);
                 }
             }
         }
+    }
+
+    /// The values of `order` whose writer **committed**, preserving order — the
+    /// sequence ww edges are paired over, so aborted intermediates are skipped
+    /// (never breaking a committed→committed edge). A no-op for register keys
+    /// (their order is already committed-only) and load-bearing for append keys
+    /// (whose observed order may interleave dirty-read aborted values).
+    fn committed_subseq(&self, order: &[Elem]) -> Vec<Elem> {
+        order
+            .iter()
+            .copied()
+            .filter(|v| {
+                self.writer
+                    .get(v)
+                    .is_some_and(|w| self.committed.contains(w))
+            })
+            .collect()
     }
 
     /// The transaction that wrote `value`, if any.
@@ -345,7 +376,10 @@ impl DepGraph {
     pub fn ww_keys_among(&self, set: &BTreeSet<TxnId>) -> Vec<Key> {
         let mut keys: BTreeSet<Key> = BTreeSet::new();
         for (key, order) in &self.version_order {
-            for pair in order.windows(2) {
+            // Pair the committed subsequence (round-4 twin of the ww-edge fix),
+            // so an aborted intermediate does not hide a witnessing key.
+            let seq = self.committed_subseq(order);
+            for pair in seq.windows(2) {
                 if let (Some(&wa), Some(&wb)) =
                     (self.writer.get(&pair[0]), self.writer.get(&pair[1]))
                     && wa != wb

@@ -129,6 +129,74 @@ fn register_conflicting_write_order_is_a_dirty_write() {
     assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
 }
 
+/// Round-4 P1 (aborted-gap false-clean): a G0 dirty-write cycle over two append
+/// keys where one key's committed versions are separated in the observed order
+/// by an **aborted** value (a dirty read, legal at Read Uncommitted). ww edges
+/// are paired over the *committed subsequence*, so the aborted intermediate does
+/// not break the committed→committed edge across it — the cycle is caught, not
+/// judged clean, and both keys are in the witness.
+#[test]
+fn dirty_write_across_an_aborted_gap_is_caught() {
+    let t = trace(
+        vec![
+            append(1, 1, 1, "A", 1), // T1: A<-1
+            append(2, 1, 1, "B", 2), // T1: B<-2
+            commit(3, 1),
+            append(4, 2, 2, "B", 3), // T2: B<-3
+            append(5, 2, 2, "A", 4), // T2: A<-4
+            commit(6, 2),
+            append(7, 3, 3, "A", 5), // T3: A<-5, but T3 ABORTS
+            abort(8, 3),
+            // The observer's order of A interleaves the aborted 5 between the two
+            // committed versions: [4 (T2), 5 (aborted), 1 (T1)].
+            read(9, 4, 4, "A", &[4, 5, 1]),
+            read(10, 4, 4, "B", &[2, 3]),
+            commit(11, 4),
+        ],
+        0,
+    );
+    // Read Uncommitted: the aborted read is permitted, but the dirty write is
+    // still forbidden — and must be caught across the aborted gap.
+    let a = oracle(IsolationLevel::ReadUncommitted)
+        .analyze(&t)
+        .expect("decodes")
+        .expect("the dirty-write cycle spanning the aborted gap (not a false clean)");
+    assert_eq!(a.kind, AnomalyKind::DirtyWrite);
+    assert_eq!(
+        a.txns,
+        vec![1, 2],
+        "the two committed writers, across the aborted 5"
+    );
+    assert_eq!(
+        a.keys,
+        vec![b"A".to_vec(), b"B".to_vec()],
+        "both keys witness the cycle"
+    );
+}
+
+/// Round-4 P2 (malformed history must not FABRICATE a verdict): a read list that
+/// repeats a (unique) written value is malformed; the oracle must fail loud, not
+/// report a fabricated dirty-write.
+#[test]
+fn repeated_observation_is_not_judged_a_violation() {
+    let t = trace(
+        vec![
+            append(1, 1, 1, "k", 1),
+            commit(2, 1),
+            append(3, 2, 2, "k", 2),
+            commit(4, 2),
+            read(5, 3, 3, "k", &[1, 2, 1]), // value 1 repeats — malformed
+            commit(6, 3),
+        ],
+        0,
+    );
+    let verdict = oracle(IsolationLevel::ReadUncommitted).analyze(&t);
+    assert!(
+        verdict.is_err(),
+        "a repeated observation must fail loud, never a fabricated verdict: {verdict:?}"
+    );
+}
+
 /// G1a aborted read: a committed transaction read a value an aborted transaction
 /// wrote. Caught at Read Committed and above; not at Read Uncommitted.
 #[test]

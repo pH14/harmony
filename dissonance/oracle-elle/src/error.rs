@@ -134,4 +134,18 @@ pub enum DecodeError {
         /// The key with both a `Write` and an `Append`.
         key: Key,
     },
+
+    /// A single read observed the **same value twice** in its list. Written
+    /// values are unique by construction, so a repeat is a malformed observation
+    /// — accepting it as a version order would fabricate spurious ww edges (and a
+    /// false dirty-write verdict). Fail loud instead.
+    #[error(
+        "key {key:?}: read observed value {value} more than once in one list (unique values repeat)"
+    )]
+    RepeatedObservation {
+        /// The key whose read repeats a value.
+        key: Key,
+        /// The value observed more than once.
+        value: Elem,
+    },
 }

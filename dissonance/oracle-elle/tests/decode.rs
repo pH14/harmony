@@ -325,6 +325,31 @@ fn op_at_commit_moment_is_legal() {
     }
 }
 
+/// Round-4 P2: a read list that repeats a (unique) written value is a malformed
+/// observation — a loud `RepeatedObservation`, never accepted as a version order
+/// (which would fabricate spurious ww edges / a false dirty-write).
+#[test]
+fn duplicate_value_in_read_list_fails_loud() {
+    let t = trace(
+        vec![
+            append(1, 1, 1, "k", 1),
+            commit(2, 1),
+            append(3, 2, 2, "k", 2),
+            commit(4, 2),
+            read(5, 3, 3, "k", &[1, 2, 1]), // value 1 repeats
+            commit(6, 3),
+        ],
+        0,
+    );
+    let h = EventDecoder::new()
+        .decode(&t)
+        .expect("decodes into a history");
+    match DepGraph::build(&h) {
+        Err(DecodeError::RepeatedObservation { value: 1, .. }) => {}
+        other => panic!("expected RepeatedObservation, got {other:?}"),
+    }
+}
+
 /// Round-3 P2: a key targeted by both a register write and a list append is an
 /// incompatible mixed model — a loud `MixedModel`, never a silent classification
 /// that drops one model's writes from the version order.
