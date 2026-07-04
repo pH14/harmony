@@ -119,9 +119,11 @@ impl DepGraph {
         //      *final* version; every other committed writer precedes it (a
         //      **star** of ww edges to the final writer). Write Moments are NOT
         //      order evidence (they are the issue order, which can differ from the
-        //      committed version order — the round-7 counterexample). A key with
-        //      no quiesce read has no read-forced order, so no ww edges — which is
-        //      correct: with no evidence, any serialization works (clean).
+        //      committed version order — the round-7 counterexample). A single
+        //      committed write needs no read (unambiguous); **two or more** with
+        //      no quiesce read are unrecoverable (`UnpinnedRegister`) — a real
+        //      workload ends with a final read, so a missing one is a fail-loud
+        //      recoverability gap, never an order fabricated by sorting.
         //
         //    Every observed value must have a writer, under the right key.
         let mut append_keys: BTreeSet<Key> = BTreeSet::new();
@@ -262,7 +264,10 @@ impl DepGraph {
             }
         }
         // Register keys: quiesce reads pin the final version; every other
-        // committed writer → the final writer (a star). No quiesce read → no ww.
+        // committed writer → the final writer (a star). A single committed write
+        // is unambiguous with no read; **two or more** committed writes with no
+        // quiesce read are unrecoverable — ordering them by value would fabricate
+        // an order (fail loud, the register twin of `UnobservedAppend`).
         for key in &register_keys {
             let committed_vals: Vec<Elem> = committed_writes
                 .get(key)
@@ -276,6 +281,12 @@ impl DepGraph {
                 return Err(DecodeError::InconsistentOrder { key: key.clone() });
             }
             let final_v = quiesced.and_then(|q| q.iter().next().copied());
+            if committed_vals.len() >= 2 && final_v.is_none() {
+                return Err(DecodeError::UnpinnedRegister {
+                    key: key.clone(),
+                    writes: committed_vals.len(),
+                });
+            }
             let mut order: Vec<Elem> = committed_vals
                 .iter()
                 .copied()
@@ -683,6 +694,45 @@ mod tests {
             g.ww_edges()[&2].contains(&1),
             "T2 (a=4) →ww T1 (a=1, final)"
         );
+    }
+
+    /// Round-9 P1: two committed register writes to a key with **no quiesce read**
+    /// are unrecoverable — the order can't be fabricated by sorting, so build
+    /// fails loud with `UnpinnedRegister` rather than silently ordering by value.
+    #[test]
+    fn multi_write_register_without_a_quiesce_read_is_unrecoverable() {
+        let h = history(vec![
+            tx(
+                1,
+                TxnOutcome::Committed,
+                vec![op(1, 1, "a", OpKind::Write(1))],
+            ),
+            tx(
+                2,
+                TxnOutcome::Committed,
+                vec![op(2, 2, "a", OpKind::Write(2))],
+            ),
+        ]);
+        assert_eq!(
+            DepGraph::build(&h),
+            Err(DecodeError::UnpinnedRegister {
+                key: b"a".to_vec(),
+                writes: 2,
+            })
+        );
+    }
+
+    /// A **single** committed register write needs no read — it is unambiguous, so
+    /// it is recoverable (not `UnpinnedRegister`).
+    #[test]
+    fn a_single_register_write_needs_no_quiesce_read() {
+        let h = history(vec![tx(
+            1,
+            TxnOutcome::Committed,
+            vec![op(1, 1, "a", OpKind::Write(1))],
+        )]);
+        let g = DepGraph::build(&h).expect("a single write is recoverable");
+        assert_eq!(g.version_order(&b"a".to_vec()), Some(&[1][..]));
     }
 
     /// An aborted writer stays out of the committed set (so its writes are

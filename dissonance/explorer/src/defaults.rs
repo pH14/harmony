@@ -396,17 +396,23 @@ fn terminal_class(stop: &StopReason) -> u32 {
     }
 }
 
-/// The **normalized** detail bytes for coordinate 1: the crash marker or the
-/// assertion `(id, data)`. The V-time is *not* here — it is coordinate 3
-/// (quantized). No raw addresses (the toy's `info`/`data` are opaque markers).
+/// The **normalized** detail bytes for coordinate 1 — the *class* of the bug
+/// site, never its raw per-run payload (which would split one site into a bug
+/// per reproducer):
+///
+/// - a **crash**'s class is the adapter's leading kind byte (`0` panic / `1`
+///   triple-fault / `2` shutdown; see [`stop_from_wire`](crate::adapter)). The
+///   trailing detail (panic message / register dump — addresses and values that
+///   vary run-to-run) is deliberately dropped, so every panic at one site dedups
+///   to one bug while a panic and a triple-fault still split.
+/// - an **assertion**'s class is its stable `id`. The `data` (the actual/expected
+///   payload) varies per run and is dropped for the same reason.
+///
+/// The V-time is *not* here — it is coordinate 3 (quantized).
 fn terminal_detail(stop: &StopReason) -> Vec<u8> {
     match stop {
-        StopReason::Crash { info, .. } => info.clone(),
-        StopReason::Assertion { id, data, .. } => {
-            let mut d = id.to_le_bytes().to_vec();
-            d.extend_from_slice(data);
-            d
-        }
+        StopReason::Crash { info, .. } => info.iter().take(1).copied().collect(),
+        StopReason::Assertion { id, .. } => id.to_le_bytes().to_vec(),
         _ => Vec::new(),
     }
 }
@@ -487,10 +493,12 @@ mod tests {
             info: vec![2, 4],
         };
         // The `defaults` fingerprint IS the shared mint over the terminal
-        // signature (oracle id + crash class + info detail + stop discriminant),
-        // an empty fault coordinate, and the quantized V-time.
-        let sig = fingerprint::TerminalSig::new("terminal", 0, crash.discriminant())
-            .with_detail(vec![2, 4]);
+        // signature (oracle id + crash class + normalized detail + stop
+        // discriminant), an empty fault coordinate, and the quantized V-time. The
+        // crash class is the leading kind byte (`2`); the trailing `4` is raw
+        // per-run detail and is NOT in the signature.
+        let sig =
+            fingerprint::TerminalSig::new("terminal", 0, crash.discriminant()).with_detail(vec![2]);
         let expect = fingerprint::mint(
             &sig,
             &fingerprint::FaultCoord::none(),
@@ -499,9 +507,9 @@ mod tests {
         assert_eq!(fingerprint(&crash), expect);
 
         let golden: [u8; 32] = [
-            0x93, 0x20, 0xde, 0xa2, 0x73, 0xd4, 0x15, 0x61, 0x79, 0x54, 0x9b, 0xea, 0x76, 0x4e,
-            0x66, 0x1b, 0xc6, 0xef, 0xaf, 0x01, 0xcb, 0xcd, 0x54, 0x4c, 0x50, 0xe9, 0xf2, 0xd1,
-            0x51, 0x7c, 0x62, 0x2f,
+            0x60, 0x00, 0x0c, 0x87, 0xe6, 0x91, 0x6d, 0x93, 0x35, 0x80, 0x4c, 0x91, 0x2f, 0xee,
+            0x0f, 0xa5, 0x04, 0x38, 0xff, 0x28, 0x29, 0x3b, 0xb5, 0x37, 0x4e, 0x95, 0xe3, 0x39,
+            0x2f, 0xc2, 0xe5, 0x7c,
         ];
         assert_eq!(fingerprint(&crash), golden);
         assert_ne!(fingerprint(&crash), [0u8; 32]);
@@ -538,12 +546,12 @@ mod tests {
         };
         // Different class (crash vs assertion).
         assert_ne!(fingerprint(&crash), fingerprint(&assertion));
-        // Different normalized detail (crash marker).
+        // A different crash class (leading kind byte) splits.
         assert_ne!(
             fingerprint(&crash),
             fingerprint(&StopReason::Crash {
                 vtime: VTime(80),
-                info: vec![2, 5],
+                info: vec![3, 4],
             })
         );
         // A V-time a full bracket away splits (coordinate 3).
@@ -554,7 +562,7 @@ mod tests {
                 info: vec![2, 4],
             })
         );
-        // Two assertions with different ids split on their detail.
+        // Two assertions with different ids split.
         assert_ne!(
             fingerprint(&assertion),
             fingerprint(&StopReason::Assertion {
@@ -562,6 +570,64 @@ mod tests {
                 id: 7,
                 data: vec![3],
             })
+        );
+    }
+
+    /// Round-9 P2: coordinate 1 is the **class** of the bug site, not its raw
+    /// per-run payload — so two hits of one site with different detail dedup to a
+    /// single bug (they must not fan out into a bug per reproducer), while
+    /// genuinely different classes still split.
+    #[test]
+    fn fingerprint_dedups_same_site_across_raw_detail() {
+        // Same crash class (kind byte 0 = panic), different trailing detail
+        // (register dump / panic message) → ONE bug.
+        let panic_a = StopReason::Crash {
+            vtime: VTime(80),
+            info: vec![0, 1, 2, 3],
+        };
+        let panic_b = StopReason::Crash {
+            vtime: VTime(80),
+            info: vec![0, 9, 9],
+        };
+        assert_eq!(
+            fingerprint(&panic_a),
+            fingerprint(&panic_b),
+            "one crash site dedups across raw crash detail"
+        );
+        // A different crash class (kind byte 1 = triple-fault) still splits.
+        assert_ne!(
+            fingerprint(&panic_a),
+            fingerprint(&StopReason::Crash {
+                vtime: VTime(80),
+                info: vec![1, 1, 2, 3],
+            }),
+            "distinct crash classes stay distinct"
+        );
+
+        // Same assertion id, different data (actual/expected payload) → ONE bug.
+        let assert_a = StopReason::Assertion {
+            vtime: VTime(80),
+            id: 5,
+            data: vec![3],
+        };
+        let assert_b = StopReason::Assertion {
+            vtime: VTime(80),
+            id: 5,
+            data: vec![9, 9, 9],
+        };
+        assert_eq!(
+            fingerprint(&assert_a),
+            fingerprint(&assert_b),
+            "one assertion dedups across its data payload"
+        );
+        assert_ne!(
+            fingerprint(&assert_a),
+            fingerprint(&StopReason::Assertion {
+                vtime: VTime(80),
+                id: 6,
+                data: vec![3],
+            }),
+            "distinct assertion ids stay distinct"
         );
     }
 

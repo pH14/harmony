@@ -37,6 +37,8 @@ fn lost_update_is_caught_with_its_witness() {
             read(6, 2, 12, "k", &[1]), // T12 reads the SAME version 1
             write(7, 2, 12, "k", 3),   // ...and overwrites — lost update
             commit(8, 12),
+            read(9, 3, 13, "k", &[3]), // final read at quiesce pins the order
+            commit(10, 13),
         ],
         0,
     );
@@ -146,6 +148,8 @@ fn check_all_returns_every_independent_lost_update() {
             read(6, 2, 12, "k1", &[1]),
             write(7, 2, 12, "k1", 3),
             commit(8, 12),
+            read(17, 5, 13, "k1", &[3]), // final read pins k1's order
+            commit(18, 13),
             // Independent lost update on k2: T21, T22 both read version 10.
             write(9, 0, 20, "k2", 10),
             commit(10, 20),
@@ -155,6 +159,8 @@ fn check_all_returns_every_independent_lost_update() {
             read(14, 4, 22, "k2", &[10]),
             write(15, 4, 22, "k2", 30),
             commit(16, 22),
+            read(19, 6, 23, "k2", &[30]), // final read pins k2's order
+            commit(20, 23),
         ],
         0,
     );
@@ -226,6 +232,8 @@ fn same_moment_rmw_reads_count_as_lost_update() {
             read(7, 2, 12, "k", &[1]), // T12 reads the same v1...
             write(7, 2, 12, "k", 3),   // ...and writes at the SAME Moment
             commit(8, 12),
+            read(9, 3, 13, "k", &[3]), // final read at quiesce pins the order
+            commit(10, 13),
         ],
         0,
     );
@@ -405,6 +413,8 @@ fn a_serial_history_is_clean() {
             read(6, 1, 43, "k", &[2]),
             write(7, 1, 43, "k", 3),
             commit(8, 43),
+            read(9, 1, 44, "k", &[3]), // final read at quiesce pins the order
+            commit(10, 44),
         ],
         0,
     );
@@ -470,6 +480,31 @@ fn incomplete_append_history_is_not_judged_clean() {
     );
 }
 
+/// Round-9 P1 (the register twin of the above): two committed register writes to
+/// a key with **no quiesce read** cannot have their order recovered — `analyze`
+/// must fail loud (`UnpinnedRegister`), not fabricate an order by sorting and
+/// judge clean.
+#[test]
+fn multi_write_register_without_final_read_is_not_judged_clean() {
+    let t = trace(
+        vec![
+            write(1, 1, 1, "k", 1),
+            commit(2, 1),
+            write(3, 2, 2, "k", 2), // second committed write, never read back
+            commit(4, 2),
+        ],
+        0,
+    );
+    let verdict = oracle(IsolationLevel::Serializable).analyze(&t);
+    assert!(
+        matches!(
+            verdict,
+            Err(oracle_elle::DecodeError::UnpinnedRegister { .. })
+        ),
+        "an unpinned multi-write register must fail loud: {verdict:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Property tests (>= 256 cases)
 // ---------------------------------------------------------------------------
@@ -493,12 +528,15 @@ fn planted_lost_update(v0: i64, noise: u8) -> explorer::RunTrace {
         read(6, 2, 12, "k", &[v0]),
         write(7, 2, 12, "k", vb),
         commit(8, 12),
+        read(9, 3, 13, "k", &[vb]), // final read at quiesce pins k's order
+        commit(10, 13),
     ];
     for i in 0..noise as u64 {
         // A blind write to a unique key with a globally-unique value: no read,
         // so it is never a lost-update participant; a unique key, so no ww edge.
+        // A single write needs no final read (unambiguous — not `UnpinnedRegister`).
         let key = format!("noise{i}");
-        let at = 10 + i * 2;
+        let at = 11 + i * 2;
         ev.push(write(at, 9, 100 + i, &key, 100_000 + i as i64));
         ev.push(commit(at + 1, 100 + i));
     }
@@ -541,6 +579,10 @@ proptest! {
             ev.push(commit(at + 2, txn));
             at += 3;
         }
+        // A final read at quiesce pins the last version (the recoverability
+        // contract for a multi-write register key).
+        ev.push(read(at, 1, len as u64 + 1, "k", &[len as i64]));
+        ev.push(commit(at + 1, len as u64 + 1));
         let t = trace(ev, 0);
         prop_assert!(
             oracle(IsolationLevel::Serializable)

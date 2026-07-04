@@ -79,6 +79,9 @@ pub oracle_elle::error::DecodeError::UnknownValue::value: oracle_elle::op::Elem
 pub oracle_elle::error::DecodeError::UnobservedAppend
 pub oracle_elle::error::DecodeError::UnobservedAppend::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::UnobservedAppend::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::UnpinnedRegister
+pub oracle_elle::error::DecodeError::UnpinnedRegister::key: oracle_elle::op::Key
+pub oracle_elle::error::DecodeError::UnpinnedRegister::writes: usize
 pub oracle_elle::error::DecodeError::UnterminatedTxn(oracle_elle::op::TxnId)
 impl oracle_elle::error::DecodeError
 pub fn oracle_elle::error::DecodeError::kind_tag(&self) -> &'static str
@@ -190,6 +193,9 @@ pub oracle_elle::DecodeError::UnknownValue::value: oracle_elle::op::Elem
 pub oracle_elle::DecodeError::UnobservedAppend
 pub oracle_elle::DecodeError::UnobservedAppend::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::UnobservedAppend::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::UnpinnedRegister
+pub oracle_elle::DecodeError::UnpinnedRegister::key: oracle_elle::op::Key
+pub oracle_elle::DecodeError::UnpinnedRegister::writes: usize
 pub oracle_elle::DecodeError::UnterminatedTxn(oracle_elle::op::TxnId)
 impl oracle_elle::error::DecodeError
 pub fn oracle_elle::error::DecodeError::kind_tag(&self) -> &'static str

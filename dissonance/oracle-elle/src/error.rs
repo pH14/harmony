@@ -176,6 +176,24 @@ pub enum DecodeError {
         /// How many values the read observed.
         count: usize,
     },
+
+    /// A **register** key had two or more committed writes but **no quiesce read**
+    /// (no committed read of the key after all its writes) to pin the final
+    /// version. Register writes overwrite, so with no final read the version order
+    /// is unrecoverable — ordering the writes by value would fabricate an order
+    /// the workload never witnessed (and a fabricated public `version_order`).
+    /// This is the register twin of [`UnobservedAppend`](Self::UnobservedAppend):
+    /// a real workload ends with a final read of every key. Fail loud.
+    #[error(
+        "key {key:?}: {writes} committed register writes but no quiesce read to pin the order \
+         (version order unrecoverable — missing final read)"
+    )]
+    UnpinnedRegister {
+        /// The register key whose version order cannot be pinned.
+        key: Key,
+        /// How many committed writes the key received.
+        writes: usize,
+    },
 }
 
 impl DecodeError {
@@ -200,6 +218,7 @@ impl DecodeError {
             DecodeError::RepeatedObservation { .. } => "repeated-observation",
             DecodeError::ReusedTxnId { .. } => "reused-txn-id",
             DecodeError::MultiValueRegisterRead { .. } => "multi-value-register-read",
+            DecodeError::UnpinnedRegister { .. } => "unpinned-register",
         }
     }
 }

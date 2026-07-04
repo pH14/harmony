@@ -246,6 +246,59 @@ fn key_of(op: &ROp) -> K {
     }
 }
 
+/// The checker's **register recoverability** contract, computed independently: a
+/// register key with two or more committed writes needs a *quiesce read* — a
+/// committed read of a **committed** value strictly after all the key's committed
+/// writes — to pin the final version. Without one the version order is
+/// unrecoverable (`DecodeError::UnpinnedRegister`), never fabricated by sorting.
+/// Op positions mirror [`to_trace`]'s Moment assignment (one per op, one per
+/// commit/abort marker), so a read counts as "after all writes" iff its position
+/// exceeds every committed-write position of the key.
+fn recoverable(txns: &[RTxn]) -> bool {
+    let mut committed_writer: BTreeMap<V, bool> = BTreeMap::new();
+    for t in txns {
+        for op in &t.ops {
+            if let ROp::W(_, v) = op {
+                committed_writer.insert(*v, t.committed);
+            }
+        }
+    }
+    let mut pos = 0u64;
+    let mut writes: BTreeMap<K, Vec<u64>> = BTreeMap::new();
+    let mut quiesce_reads: BTreeMap<K, Vec<u64>> = BTreeMap::new();
+    for t in txns {
+        for op in &t.ops {
+            match op {
+                ROp::W(k, _) if t.committed => writes.entry(*k).or_default().push(pos),
+                ROp::R(k, obs)
+                    if t.committed
+                        && obs
+                            .as_ref()
+                            .is_some_and(|v| committed_writer.get(v).copied().unwrap_or(false)) =>
+                {
+                    quiesce_reads.entry(*k).or_default().push(pos)
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+        pos += 1; // commit/abort marker
+    }
+    for (k, ws) in &writes {
+        if ws.len() < 2 {
+            continue; // a single committed write is unambiguous
+        }
+        let last_write = *ws.iter().max().unwrap();
+        let pinned = quiesce_reads
+            .get(k)
+            .is_some_and(|rs| rs.iter().any(|&r| r > last_write));
+        if !pinned {
+            return false;
+        }
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------
 // The differential property
 // ---------------------------------------------------------------------------
@@ -253,28 +306,36 @@ fn key_of(op: &ROp) -> K {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    /// The oracle at Serializable reports an anomaly **iff** the independent
-    /// reference finds the history non-serializable — on both clean and
-    /// anomalous inputs. (On this fragment the v1 ladder coincides with
-    /// serializability.)
+    /// On a **recoverable** history the oracle at Serializable reports an anomaly
+    /// **iff** the independent reference finds it non-serializable (on this
+    /// fragment the v1 ladder coincides with serializability); on an
+    /// **unrecoverable** one — a multi-write register key with no quiesce read —
+    /// it fails loud with a `DecodeError` instead of fabricating an order. The
+    /// oracle's Ok/Err split must match the independent `recoverable` predicate
+    /// exactly.
     #[test]
     fn oracle_matches_the_reference(txns in arb_history()) {
         let t = to_trace(&txns);
         let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
-        // The generator is always recoverable, so judging never decode-fails.
-        let verdict = oracle
-            .analyze(&t)
-            .expect("the generated history is recoverable");
-        let oracle_flags = verdict.is_some();
-        let ref_flags = !is_serializable(&txns);
-        prop_assert_eq!(
-            oracle_flags,
-            ref_flags,
-            "oracle={:?} reference_non_serializable={} for {:#?}",
-            verdict,
-            ref_flags,
-            txns
-        );
+        let result = oracle.analyze(&t);
+        if recoverable(&txns) {
+            let verdict = result.expect("a recoverable history decodes");
+            let ref_flags = !is_serializable(&txns);
+            prop_assert_eq!(
+                verdict.is_some(),
+                ref_flags,
+                "oracle={:?} reference_non_serializable={} for {:#?}",
+                verdict,
+                ref_flags,
+                txns
+            );
+        } else {
+            prop_assert!(
+                result.is_err(),
+                "multi-write register with no quiesce read must DecodeError: {:#?}",
+                txns
+            );
+        }
     }
 }
 
@@ -304,11 +365,13 @@ fn harness_covers_anomalous_histories() {
             },
             true,
         ), // T3: R(0,1 STALE) W(0,3)
+        (Shape::Read(0), true),         // T4: final read pins key 0's order (quiesce)
     ]);
     assert!(
         !is_serializable(&txns),
         "the planted lost update is not serializable"
     );
+    assert!(recoverable(&txns), "the final read makes it recoverable");
     let t = to_trace(&txns);
     let oracle = ElleOracle::new(Box::new(EventDecoder::new()), IsolationLevel::Serializable);
     assert!(

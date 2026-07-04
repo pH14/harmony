@@ -509,13 +509,12 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
 /// (stop, env) both sides already agree on. Its byte-for-byte correctness is
 /// independently pinned by the crate's own golden (`defaults::tests`).
 pub fn fingerprint(stop: &StopReason) -> [u8; 32] {
+    // Coordinate-1 detail is the *class* of the bug site, not its raw per-run
+    // payload (round 9): a crash's leading kind byte, an assertion's id — kept in
+    // lockstep with `defaults::terminal_detail`.
     let (class, detail) = match stop {
-        StopReason::Crash { info, .. } => (0u32, info.clone()),
-        StopReason::Assertion { id, data, .. } => {
-            let mut d = id.to_le_bytes().to_vec();
-            d.extend_from_slice(data);
-            (1u32, d)
-        }
+        StopReason::Crash { info, .. } => (0u32, info.iter().take(1).copied().collect()),
+        StopReason::Assertion { id, .. } => (1u32, id.to_le_bytes().to_vec()),
         StopReason::Deadline { .. } => (2, Vec::new()),
         StopReason::Quiescent { .. } => (3, Vec::new()),
         StopReason::Decision { .. } => (4, Vec::new()),

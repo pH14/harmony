@@ -29,6 +29,8 @@ fn corpus() -> Vec<RunTrace> {
             read(3, 1, 2, "k", &[1]),
             write(4, 1, 2, "k", 2),
             commit(5, 2),
+            read(6, 1, 3, "k", &[2]), // final read pins the order
+            commit(7, 3),
         ],
         0,
     );
@@ -42,6 +44,8 @@ fn corpus() -> Vec<RunTrace> {
             read(6, 2, 12, "acct", &[100]), // same version → lost update
             write(7, 2, 12, "acct", 102),
             commit(8, 12),
+            read(9, 3, 13, "acct", &[102]), // final read pins the order
+            commit(10, 13),
         ],
         1,
     );
