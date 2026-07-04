@@ -84,6 +84,21 @@ impl PointKind {
             PointKind::Buggify => wire::KIND_BUGGIFY,
         }
     }
+
+    /// The runtime event-id **namespace** a point of this kind fires in — the
+    /// coordinate the host keys on. All four assert kinds share [`wire::NS_ASSERT`]
+    /// (their role is a catalog attribute, not a separate id space), so two assert
+    /// points with the same id collide even across always/sometimes.
+    const fn namespace(self) -> u8 {
+        match self {
+            PointKind::AssertAlways
+            | PointKind::AssertSometimes
+            | PointKind::AssertReachable
+            | PointKind::AssertUnreachable => wire::NS_ASSERT,
+            PointKind::StateReg => wire::NS_STATE,
+            PointKind::Buggify => wire::NS_BUGGIFY,
+        }
+    }
 }
 
 /// One declared point: a **stable id**, a human name, and a [`PointKind`]. The id
@@ -162,6 +177,10 @@ pub enum SdkError<E> {
     CatalogTooLarge,
     /// A point/register id exceeds [`wire::LOCAL_MAX`] (the 24-bit local space).
     PointIdTooLarge,
+    /// Two declared points share a `(namespace, id)` coordinate — they would fire
+    /// at the same `event_id`, aliasing the host catalog (and its never-fired
+    /// report) silently. Rejected at [`init`](Sdk::init).
+    DuplicateCoordinate,
 }
 
 impl<E: fmt::Debug> fmt::Display for SdkError<E> {
@@ -170,6 +189,9 @@ impl<E: fmt::Debug> fmt::Display for SdkError<E> {
             SdkError::Client(e) => write!(f, "sdk client error: {e}"),
             SdkError::CatalogTooLarge => f.write_str("declared catalog exceeds one event frame"),
             SdkError::PointIdTooLarge => f.write_str("point id exceeds the 24-bit local space"),
+            SdkError::DuplicateCoordinate => {
+                f.write_str("two declared points share a (namespace, id) coordinate")
+            }
         }
     }
 }
@@ -251,6 +273,17 @@ impl<T: Transport> Sdk<T> {
 
     /// Marshal and emit the catalog-declaration Event.
     fn declare(&mut self, catalog: &[Point]) -> Result<(), SdkError<T::Error>> {
+        // Reject a catalog that declares two points at the same `(namespace, id)`
+        // coordinate: they fire at one `event_id`, so the host cannot tell them
+        // apart and its never-fired report silently aliases them. O(n²) over the
+        // small declared set (no alloc — this is a `no_std` guest).
+        for (i, p) in catalog.iter().enumerate() {
+            for q in &catalog[i + 1..] {
+                if p.id == q.id && p.kind.namespace() == q.kind.namespace() {
+                    return Err(SdkError::DuplicateCoordinate);
+                }
+            }
+        }
         let mut buf = [0_u8; CATALOG_BUF];
         let mut c = Cursor::new(&mut buf);
         c.u32(wire::CATALOG_MAGIC);

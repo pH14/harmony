@@ -66,6 +66,15 @@ jobs:
           cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
+      # guest/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
+      # root fmt/clippy/nextest above never see it. Gate it explicitly on its own
+      # manifest — its host-side loopback tests (duplicate-coordinate rejection,
+      # emission dispositions, determinism) must stay green like any other crate.
+      - name: guest/sdk gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path guest/sdk/Cargo.toml --all -- --check
+          cargo clippy --manifest-path guest/sdk/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path guest/sdk/Cargo.toml --all-features
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
@@ -201,5 +210,5 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p flow -p matcher -p runtrace -p conductor -p tactics-regime \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p link -p flow -p matcher -p runtrace -p conductor -p tactics-regime \
             --test public_api -- --ignored --nocapture

@@ -131,6 +131,38 @@ fn init_declares_the_catalog_first() {
     assert_eq!(count, 6, "six declared points");
 }
 
+/// `init` rejects a catalog declaring two points at the same `(namespace, id)`
+/// coordinate — even across assert kinds, since all assert kinds share
+/// `NS_ASSERT` and would fire at one `event_id` (silently aliasing the host
+/// catalog). The same id in a DIFFERENT namespace is not a collision.
+#[test]
+fn init_rejects_duplicate_coordinates() {
+    let fresh = || {
+        let mut d = Dispatcher::new();
+        d.register(
+            ServiceId::Event,
+            Box::new(SharedEvent(Rc::new(RefCell::new(Vec::new())))),
+        );
+        DispatcherLoopback(d)
+    };
+    // Two assert points at id 7 (always vs sometimes) collide: both are NS_ASSERT.
+    let dup = [Point::always(7, "a"), Point::sometimes(7, "b")];
+    assert!(
+        matches!(Sdk::init(fresh(), &dup), Err(SdkError::DuplicateCoordinate)),
+        "same (NS_ASSERT, id) across assert kinds is rejected"
+    );
+    // The same id in different namespaces (assert vs state vs buggify) is fine.
+    let ok = [
+        Point::always(7, "a"),
+        Point::state(7, "s"),
+        Point::buggify(7, "b"),
+    ];
+    assert!(
+        Sdk::init(fresh(), &ok).is_ok(),
+        "same id in distinct namespaces is not a collision"
+    );
+}
+
 /// Always/sometimes/reachable/unreachable emit exactly the right disposition,
 /// and only when they should.
 #[test]

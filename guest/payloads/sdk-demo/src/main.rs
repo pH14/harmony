@@ -57,7 +57,14 @@ extern "C" fn payload_main() -> ! {
     let mut balance: i64 = 100;
     let mut min_balance: i64 = balance;
     for _ in 0..8u32 {
-        let slow = sdk.buggify(50).unwrap_or(false);
+        // Fail LOUD on a buggify transport error — never `unwrap_or(false)`: a
+        // swallowed error reads as "never fired", so the buggify-gated violation
+        // could never trip and the box gate would pass VACUOUSLY (green for the
+        // wrong reason). A broken doorbell must crash the run, not hide the bug.
+        let slow = match sdk.buggify(50) {
+            Ok(b) => b,
+            Err(_) => common::payload::fail(NAME, "buggify"),
+        };
         if slow {
             balance -= 60; // the bug: the slow-disk path over-charges
         }
