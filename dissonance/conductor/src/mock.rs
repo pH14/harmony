@@ -164,7 +164,12 @@ impl Backend for CountingBackend {
                 reached: vmm_backend::Vtime(d.0),
             });
         }
-        let exit = self.inner.run()?;
+        // Far deadline: the next scripted exit lands first. Delegate to the
+        // inner mock's `run_until` — NOT `run` — so a scripted `Exit::Deadline`
+        // placeholder is rewritten to `reached = d` (PR #62 round-4 blocking
+        // fix: falling through to `run()` handed vmm-core the stale scripted
+        // value, mis-anchoring V-time and the schedule/reseed drains).
+        let exit = self.inner.run_until(d)?;
         self.work.on_exit();
         Ok(exit)
     }
@@ -327,6 +332,7 @@ mod tests {
     //! (`cargo miri test -p conductor --lib` — the unsafe⇒Miri rule).
 
     use super::*;
+    use vmm_backend::Vtime;
 
     /// Composing the mock VM exercises the unsafe `map_memory` forward
     /// (GuestRam is mapped into the backend at `Vmm::new`), and a step
@@ -383,5 +389,42 @@ mod tests {
         let exit = b.run_until(vmm_backend::Vtime(500)).unwrap();
         assert_eq!(exit, Exit::Rdtsc);
         assert_eq!(work.current(), WORK_STEP);
+    }
+
+    /// The far-deadline path delegates to the inner mock's `run_until`, so a
+    /// scripted `Exit::Deadline` placeholder is rewritten to the armed
+    /// deadline — never handed through with its stale scripted `reached`
+    /// (PR #62 round-4 blocking fix).
+    #[test]
+    fn counting_backend_far_deadline_rewrites_a_scripted_deadline() {
+        let work = Arc::new(SharedWork::default());
+        let mut inner =
+            MockBackend::with_exits(vec![Exit::Deadline { reached: Vtime(0) }, Exit::Hlt]);
+        inner
+            .set_cpuid(&vmm_backend::CpuidModel::default())
+            .unwrap();
+        inner
+            .set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut b = CountingBackend {
+            inner,
+            work: Arc::clone(&work),
+        };
+        // d = 250 is beyond natural + WORK_STEP (0 + 100): the far path must
+        // service the scripted Deadline REWRITTEN to reached = 250, not the
+        // stale scripted 0.
+        let exit = b.run_until(Vtime(250)).unwrap();
+        assert_eq!(
+            exit,
+            Exit::Deadline {
+                reached: Vtime(250)
+            },
+            "a scripted Deadline placeholder is rewritten to the armed deadline"
+        );
+        assert_eq!(
+            work.current(),
+            WORK_STEP,
+            "the serviced exit ticks the grid"
+        );
     }
 }

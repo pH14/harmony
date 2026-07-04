@@ -363,22 +363,34 @@ pub fn run_materialize<M: Machine>(
     //     values), so the probe hash differs from `leg_hash` exactly when the
     //     trailing reseed was NOT a no-op — i.e. when a draw inside the window
     //     moved the stream off its reseed point.
-    let landing = leg_stop.vtime().0;
-    let deep_at = cur_at;
-    machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing)?)?;
-    let probe_stop = machine.run(
-        &StopConditions {
-            deadline: Some(VTime(landing)),
-            on: StopMask::NONE,
-        },
-        None,
-    )?;
-    debug_assert_eq!(
-        probe_stop.vtime().0,
-        landing,
-        "timing is draw-value-independent"
-    );
-    let tail_draws = machine.hash()? != leg_hash;
+    //
+    //     **Deadline-stopped tails only (PR #62 round-4 blocking fix).** For a
+    //     Quiescent/Crash tail the probe's `deadline = landing` stops BEFORE
+    //     consuming the terminal exit, so the hashes would differ from the
+    //     skipped terminal state, not from any draw — a false positive. A
+    //     terminal tail reports `tail_draws = false` (draws-unknown; the
+    //     per-hop probes are unaffected — their legs are Deadline stops by
+    //     construction).
+    let tail_draws = if matches!(leg_stop, StopReason::Deadline { .. }) {
+        let landing = leg_stop.vtime().0;
+        let deep_at = cur_at;
+        machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing)?)?;
+        let probe_stop = machine.run(
+            &StopConditions {
+                deadline: Some(VTime(landing)),
+                on: StopMask::NONE,
+            },
+            None,
+        )?;
+        debug_assert_eq!(
+            probe_stop.vtime().0,
+            landing,
+            "timing is draw-value-independent"
+        );
+        machine.hash()? != leg_hash
+    } else {
+        false
+    };
 
     // 7. Cleanup: release every seal and the base (corpus GC over the wire).
     mat.evict_all(machine)?;

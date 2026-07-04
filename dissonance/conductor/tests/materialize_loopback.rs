@@ -276,6 +276,45 @@ fn chain_gates_pass_on_a_draw_carrying_script() {
     );
 }
 
+/// A **terminal tail** (the guest halts before the tail deadline) must report
+/// `tail_draws = false`, never a false positive (PR #62 round-4 blocking fix):
+/// the probe cannot re-run a terminal window to the same point without
+/// consuming the terminal exit, so it is skipped for non-Deadline tails.
+/// (Gate (c) itself is not asserted here: on the scripted mock the terminal
+/// V-time is a function of the branch point — the script restarts per branch
+/// — so the genesis-rooted replay halts at a different V-time than the
+/// deep-rooted leg, a restart phase artifact a real guest does not have.
+/// The probe-semantics fix is what this test pins.)
+#[test]
+fn a_terminal_tail_reports_no_draws_not_a_false_positive() {
+    // 20 intercepts fit the 3 hops (3 × ~300 ns + retries), but the tail
+    // deadline lies far beyond the script's Hlt — the tail leg ends terminal.
+    let cfg = MaterializeConfig {
+        seed: 0x1234_5678_9ABC_DEF0,
+        hops: 3,
+        hop_delta: 250,
+        tail_delta: 1_000_000,
+        snapshot_retry_step: 100,
+        snapshot_max_attempts: 16,
+    };
+    let mut server = mock::server(chain_fork_script(48, false)).unwrap();
+    let (served, report) = run_session(&mut server, move |stream| {
+        materialize_client(stream, boot_env(), cfg)
+    });
+    served.expect("server session");
+    let report = report.expect("chain protocol");
+    assert!(
+        matches!(report.leg_stop, explorer::StopReason::Quiescent { .. }),
+        "the tail leg ends at the script's terminal, got {:?}",
+        report.leg_stop
+    );
+    assert!(
+        !report.tail_draws,
+        "a terminal tail is draws-unknown and must report false — the probe would otherwise \
+         false-positive on the skipped terminal exit"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The wire coordinate-frame fix (PR #58 round-1 blocking finding): host faults
 // under a parent-rooted fold, on the real ControlServer wire.
