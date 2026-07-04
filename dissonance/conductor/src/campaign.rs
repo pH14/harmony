@@ -63,8 +63,8 @@
 
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, Bug, EnvCodec, Environment, GuestEvent, Machine, MachineError, Moment, Oracle,
-    Prng, RunTrace, StopConditions, StopMask, StopReason, TerminalOracle, VTime,
+    AdapterEnv, Bug, EnvCodec, Environment, Machine, MachineError, Oracle, Prng, RunTrace,
+    StopConditions, StopMask, StopReason, TerminalOracle, VTime,
 };
 
 use crate::{RunRow, probe_vtime};
@@ -336,8 +336,7 @@ pub fn run_campaign<M: Machine>(
         machine.branch(base, &env)?;
         let stop = machine.run(&until, None)?;
         let hash = machine.hash()?;
-        let events = machine_events(machine)?;
-        let trace = trace_of(stop.clone(), env.clone(), events);
+        let trace = trace_of(stop.clone(), env.clone());
         if let Some(bug) = oracle.judge(&trace) {
             found = Some(FoundBug {
                 branch_index: i,
@@ -368,8 +367,7 @@ pub fn run_campaign<M: Machine>(
     machine.branch(base, &nominal_env)?;
     let nominal_stop = machine.run(&until, None)?;
     let nominal_hash = machine.hash()?;
-    let nominal_events = machine_events(machine)?;
-    let nominal_trace = trace_of(nominal_stop.clone(), nominal_env, nominal_events);
+    let nominal_trace = trace_of(nominal_stop.clone(), nominal_env);
     let nominal = NominalRow {
         stop: nominal_stop,
         hash: nominal_hash,
@@ -390,31 +388,18 @@ pub fn run_campaign<M: Machine>(
     })
 }
 
-/// Build the [`RunTrace`] the oracle judges from a run's terminal + branch env +
-/// decoded SDK event stream. The env carried is the (genesis-complete) branch env
-/// — a genesis-rooted run's reproducer already is genesis-complete (the task-93
-/// compose ruling), so [`Bug::env`] is portable and replayable as-is.
-fn trace_of(stop: StopReason, env: Environment, events: Vec<(Moment, GuestEvent)>) -> RunTrace {
+/// Build the [`RunTrace`] the oracle judges from a run's terminal + branch env.
+/// The env carried is the (genesis-complete) branch env — a genesis-rooted run's
+/// reproducer already is genesis-complete (the task-93 compose ruling), so
+/// [`Bug::env`] is portable and replayable as-is.
+fn trace_of(stop: StopReason, env: Environment) -> RunTrace {
     RunTrace {
         terminal: stop,
         env,
         coverage: None,
-        events,
+        events: Vec::new(),
         records: Vec::new(),
     }
-}
-
-/// Fetch + decode the run's SDK event capture over the [`Machine`] seam (task 73):
-/// the socket machine round-trips to the server-side capture; a machine with no
-/// SDK (the toy machine) returns empty. This is what turns the link-tier oracle
-/// (`AlwaysViolation` / never-fired) live on the socket campaign path.
-fn machine_events<M: Machine>(machine: &mut M) -> Result<Vec<(Moment, GuestEvent)>, MachineError> {
-    let raw: Vec<(Moment, u32, Vec<u8>)> = machine
-        .sdk_events()?
-        .into_iter()
-        .map(|(m, id, b)| (Moment(m), id, b))
-        .collect();
-    Ok(link::decode_events(&raw))
 }
 
 /// The task-60 acceptance gates over a [`CampaignReport`]:

@@ -191,8 +191,6 @@ dependencies = [
  "control-proto",
  "environment",
  "explorer",
- "hypercall-proto",
- "link",
  "proptest",
  "runtrace",
  "sha2",

@@ -10,9 +10,7 @@
 //! `KvmBackend` on the box. [`Vmm::state_hash`] is the M2 determinism hash over
 //! all observable state.
 
-use hypercall_proto::{
-    MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_response,
-};
+use hypercall_proto::{SeededEntropy, Service, Status};
 use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
 use vtime::{IdlePlanner, VClock, VClockConfig};
@@ -65,57 +63,6 @@ pub enum TerminalReason {
     Hlt,
     /// Backend `Shutdown` (triple fault / explicit shutdown).
     Shutdown,
-    /// The run stopped at a cooperating-SDK stop (task 73) — an assertion — rather
-    /// than swallowing it (round-6): NOT a substrate terminal (the run could
-    /// resume), and never latched as [`Vmm`]'s terminal. The stop's details are in
-    /// [`RunResult::sdk_stop`].
-    SdkStop,
-}
-
-/// The hypercall **doorbell** port (task 73 / INTEGRATION.md §1): an `OUT` here
-/// is a cooperating guest SDK ringing a hypercall. Mirrors
-/// `vmcall_transport::DOORBELL_PORT` (conventions rule 2 — the guest/host
-/// protocol pattern; deliberately distinct from the task-04 report channel at
-/// `0x0CA2`). Serviced only when an SDK channel is wired ([`Vmm::enable_sdk`]);
-/// otherwise an `OUT 0x0CA1` stays the default-deny contract violation, so every
-/// non-SDK path is byte-for-byte unchanged.
-const DOORBELL_PORT: u16 = 0x0CA1;
-/// Guest-physical address of the fixed hypercall **request** page. Mirrors
-/// `vmcall_transport::REQ_GPA`.
-const REQ_GPA: usize = 0x0000_E000;
-/// Guest-physical address of the fixed hypercall **response** page. Mirrors
-/// `vmcall_transport::RESP_GPA`.
-const RESP_GPA: usize = 0x0000_F000;
-/// The hypercall shared-page size (one frame per page). Mirrors
-/// `vmcall_transport::PAGE_SIZE` == `hypercall_proto::MAX_FRAME`.
-const HC_PAGE: usize = 4096;
-
-// The SDK event-id wire layout (task 73), mirrored from `guest/sdk/src/wire.rs`
-// (the canonical source). The doorbell needs only enough to route a stop: the
-// namespace (top 8 bits of `event_id`) and the assert disposition byte.
-const SDK_NS_SHIFT: u32 = 24;
-const SDK_LOCAL_MASK: u32 = (1 << SDK_NS_SHIFT) - 1;
-const SDK_NS_ASSERT: u8 = 1;
-const SDK_NS_LIFECYCLE: u8 = 4;
-const SDK_DISP_VIOLATION: u8 = 1;
-
-/// A cooperating-SDK stop surfaced by the doorbell (task 73). The detail lives
-/// here rather than in [`Step`] so `Step` stays `Copy`; the control server drains
-/// it with [`Vmm::take_sdk_stop`] and maps it to the wire `StopReason`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SdkStop {
-    /// An `assert_always` violation (or an `assert_unreachable` reached) — a bug.
-    /// `id` is the assertion's catalog point id; `data` its detail bytes.
-    Assertion {
-        /// The assertion's catalog point id.
-        id: u32,
-        /// Opaque assertion detail bytes.
-        data: Vec<u8>,
-    },
-    // NB: `setup_complete` no longer surfaces an immediate `SnapshotPoint` stop —
-    // its doorbell OUT is unsealable, so it is **deferred** (see
-    // `SdkChannel::pending_snapshot`) to the next synchronized boundary, surfaced
-    // by the control loop as `StopReason::SnapshotPoint` there.
 }
 
 /// Errors that abort a run. A `ContractViolation` is the default-deny posture made
@@ -168,20 +115,12 @@ pub enum Step {
     Continued,
     /// The run reached a terminal state.
     Terminal(TerminalReason),
-    /// A cooperating-SDK stop surfaced (task 73): an `assert` violation stops the
-    /// run as a bug; a `setup_complete` stops it at a snapshot-fork point. The
-    /// stop detail lives in the Vmm's SDK channel — drain it with
-    /// [`Vmm::take_sdk_stop`]. Only ever produced when an SDK channel is wired.
-    SdkStop,
 }
 
 /// What a completed run produced (and what the M2 hash is taken over).
 pub struct RunResult {
     /// Why the run stopped.
     pub reason: TerminalReason,
-    /// The cooperating-SDK stop the run halted at (task 73), if `reason` is
-    /// [`TerminalReason::SdkStop`] — else `None`. `run` no longer swallows it.
-    pub sdk_stop: Option<SdkStop>,
     /// The serial capture buffer, in order.
     pub serial: Vec<u8>,
     /// Per-exit-reason counts read from the backend (R-Backend observability).
@@ -374,15 +313,6 @@ impl VtimeWiring {
         Ok(u64::from_le_bytes(buf))
     }
 
-    /// Draw the SDK `entropy_fill` bytes from the **same** `SeededEntropy` stream
-    /// RDRAND uses (round-5 P2), so a guest's RDRAND and its hypercall RNG cannot
-    /// diverge or duplicate words. `req` is the `Entropy`-service request payload
-    /// (a `u32` LE count), forwarded verbatim — the stream validates it and fills
-    /// `resp`, returning `(status, bytes written)`.
-    fn draw_entropy(&mut self, req: &[u8], resp: &mut [u8]) -> (Status, usize) {
-        self.entropy.handle(1, req, resp)
-    }
-
     /// The **guest-visible** TSC at work `work`: the base V-time TSC
     /// `VClock::tsc(work)` plus [`IA32_TSC_ADJUST`](Self::tsc_adjust), wrapping mod
     /// 2⁶⁴ as the architectural 64-bit counter does. RDTSC, RDTSCP, and
@@ -440,46 +370,6 @@ enum IdleAction {
 
 /// The deterministic VMM, generic over `B: Backend`. **No method here mentions a
 /// concrete backend.**
-/// The task-73 SDK channel: the host-side state a cooperating guest's hypercall
-/// doorbell drives. Wired per run by [`Vmm::enable_sdk`]; a guest that never
-/// rings the doorbell leaves it untouched, and it is **never folded into the
-/// state hash** (host-side observation, like the report stream), so an SDK-less
-/// run's `state_hash` is byte-for-byte unchanged.
-struct SdkChannel {
-    /// Answers buggify decisions ([`DecisionPoint::Buggify`](environment::DecisionPoint)):
-    /// materialized from the run's reproducer, so a seeded run draws from the
-    /// seeded fault stream and a replay draws from the recorded overrides.
-    env: environment::RecordedEnv,
-    /// The `Moment`-stamped raw event stream (the link-tier capture): `(moment,
-    /// event_id, data)` per SDK Event emission, in arrival order.
-    events: Vec<(u64, u32, Vec<u8>)>,
-    /// The buggify decisions this run resolved, `(moment, answer)`, for the
-    /// control server to fold into the recorded reproducer.
-    buggify: Vec<(u64, environment::Answer)>,
-    /// A pending SDK stop to surface at the next step boundary.
-    pending_stop: Option<SdkStop>,
-    /// A `setup_complete` was seen but its doorbell `OUT` is **not** a sealable
-    /// point (PMU-skid-tainted V-time — `save_vm_state` would report
-    /// `NotQuiescent`). Deferred: the run surfaces `StopReason::SnapshotPoint` at
-    /// the next V-time-synchronized boundary, where a seal actually succeeds — so
-    /// the explorer never eagerly seals an unsealable point (round-4 P1).
-    pending_snapshot: bool,
-}
-
-/// The SDK channel's **replay-relevant** state, captured with a snapshot (task
-/// 73): the seeded stream position and the emitted event log. Held by the
-/// control server keyed by snapshot handle; restored on branch/replay so a fork
-/// from a mid-run SDK snapshot reproduces (the seeded streams continue from the
-/// right position) and keeps the declared catalog. Kilobytes, not a full state.
-#[derive(Clone, Debug)]
-pub struct SdkSnapshot {
-    /// The seeded stream position (buggify fault + entropy supply), 16 bytes.
-    stream: [u8; 16],
-    /// The `Moment`-stamped event log emitted up to the snapshot (incl. the
-    /// declared catalog), which a fork carries forward.
-    events: Vec<(u64, u32, Vec<u8>)>,
-}
-
 pub struct Vmm<B: Backend> {
     backend: B,
     ram: GuestRam,
@@ -600,10 +490,6 @@ pub struct Vmm<B: Backend> {
     /// (seed-deterministic) work axis, so arrival lands at the same instruction
     /// across same-seed runs.
     arrival_deadline: Option<Vtime>,
-    /// The task-73 SDK channel, wired per run by [`Vmm::enable_sdk`]. `None` for
-    /// every non-SDK path (M1/M2/corpus/Linux-boot) — the doorbell then stays the
-    /// default-deny contract violation and this field never touches the hash.
-    sdk: Option<SdkChannel>,
 }
 
 impl<B: Backend> Vmm<B> {
@@ -630,7 +516,6 @@ impl<B: Backend> Vmm<B> {
             legacy: None,
             snapshot_hashing: false,
             arrival_deadline: None,
-            sdk: None,
         }
     }
 
@@ -1568,26 +1453,16 @@ impl<B: Backend> Vmm<B> {
         // The work counter is prepared at the first guest entry inside `step`
         // (`first_entry_done`), so a `step()`-then-`run()` consumer is handled
         // correctly — `run` itself does not touch it.
-        // Stop at a substrate terminal OR a cooperating-SDK stop (round-6): an
-        // assertion must NOT be swallowed by looping on to a later terminal.
         let reason = loop {
-            match self.step()? {
-                Step::Terminal(r) => break r,
-                Step::SdkStop => break TerminalReason::SdkStop,
-                Step::Continued => {}
+            if let Step::Terminal(r) = self.step()? {
+                break r;
             }
-        };
-        let sdk_stop = if reason == TerminalReason::SdkStop {
-            self.take_sdk_stop()
-        } else {
-            None
         };
         // Capture the final vCPU state once (propagating any save error here, so
         // the infallible `state_blob` reads a consistent snapshot).
         self.saved_state = Some(self.backend.save()?);
         Ok(RunResult {
             reason,
-            sdk_stop,
             serial: self.uart.capture().to_vec(),
             exit_counts: self.backend.exit_counts(),
         })
@@ -1634,17 +1509,6 @@ impl<B: Backend> Vmm<B> {
             let mut legy = legacy.config_address().to_le_bytes().to_vec();
             legy.extend_from_slice(&legacy.pic_imr());
             put_chunk(&mut out, b"LEGY", &legy);
-        }
-        // The task-73 SDK channel's **replay-relevant** state — present **only**
-        // when a channel is wired (`enable_sdk`), so an SDK-less run's blob
-        // (M1/M2/corpus/Linux-boot) is byte-for-byte unchanged (round-7). It folds
-        // the seeded stream positions (buggify + inert supply) and the pending stop
-        // into the hash, so two same-seed forks that diverge in their SDK stream (a
-        // different buggify draw sequence) hash differently — the SDK divergence is
-        // now IN the determinism hash, not silently outside it. The event log stays
-        // out (host-side observation, like the report stream).
-        if let Some(sdk) = &self.sdk {
-            put_chunk(&mut out, b"SDK\0", &encode_sdk_channel(sdk));
         }
         // The canonical `vm_state` blob, folded into the hash **only** when the
         // snapshot/branch path opts in (`wire_snapshot_hashing`). Default-off keeps
@@ -1957,12 +1821,6 @@ impl<B: Backend> Vmm<B> {
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
-        // Task 73: the hypercall doorbell. Serviced only when an SDK channel is
-        // wired; otherwise it falls through to the default-deny below (so no
-        // non-SDK path is affected). One `OUT` = one atomic exchange.
-        if port == DOORBELL_PORT && self.sdk.is_some() {
-            return self.service_doorbell(size, value);
-        }
         // Linux path: the curated legacy ISA/PCI ports accept-and-drop.
         if let Some(legacy) = self.legacy.as_mut()
             && LegacyPlatform::owns(port)
@@ -1973,338 +1831,6 @@ impl<B: Backend> Vmm<B> {
         Err(VmmError::ContractViolation(format!(
             "unmodeled OUT to port {port:#06x} value {value:#x} (size {size})"
         )))
-    }
-
-    /// Wire the task-73 SDK channel for the upcoming run: `env` answers buggify
-    /// decisions, and the hypercall doorbell is serviced. Resets the event /
-    /// decision capture. A guest that never rings the doorbell is unaffected (the
-    /// channel is inert and never hashed), so non-SDK runs are byte-for-byte
-    /// unchanged.
-    pub fn enable_sdk(&mut self, env: environment::RecordedEnv) -> &mut Self {
-        self.sdk = Some(SdkChannel {
-            env,
-            events: Vec::new(),
-            buggify: Vec::new(),
-            pending_stop: None,
-            pending_snapshot: false,
-        });
-        self
-    }
-
-    /// Whether an SDK channel is wired (a doorbell will be serviced, not a
-    /// contract violation). Test-only observation — the control server asserts a
-    /// kept fresh VM stays SDK-capable after a recoverable `RestoreFailed`.
-    #[cfg(test)]
-    pub(crate) fn sdk_is_enabled(&self) -> bool {
-        self.sdk.is_some()
-    }
-
-    /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
-    /// 73): the seeded stream position (buggify fault + entropy supply) and the
-    /// emitted event log. A fork from a mid-run snapshot restores this so its
-    /// seeded streams continue from the right position and it keeps the catalog
-    /// the never-fired report needs. `None` when no SDK channel is wired.
-    pub fn sdk_snapshot(&self) -> Option<SdkSnapshot> {
-        self.sdk.as_ref().map(|s| SdkSnapshot {
-            stream: s.env.stream_state(),
-            events: s.events.clone(),
-        })
-    }
-
-    /// Restore a captured [`SdkSnapshot`] **verbatim** (the replay path): the
-    /// seeded stream position **and** the event prefix. A no-op when no SDK
-    /// channel is wired (a non-SDK replay).
-    pub fn sdk_restore(&mut self, snap: &SdkSnapshot) {
-        if let Some(s) = self.sdk.as_mut() {
-            s.env.restore_stream_state(&snap.stream);
-            s.events = snap.events.clone();
-        }
-    }
-
-    /// Restore only the **event prefix** of a captured [`SdkSnapshot`] (the branch
-    /// path): a branch reseeds, so the seeded streams start fresh from the new
-    /// seed (`enable_sdk`), but the shared prefix events — the declared catalog —
-    /// carry over so the fork's never-fired report is complete.
-    pub fn sdk_restore_events(&mut self, snap: &SdkSnapshot) {
-        if let Some(s) = self.sdk.as_mut() {
-            s.events = snap.events.clone();
-        }
-    }
-
-    /// The `Moment`-stamped SDK event stream captured this run (task 73), for the
-    /// link tier to decode. Empty when no SDK channel is wired or nothing was
-    /// emitted.
-    pub fn sdk_events(&self) -> &[(u64, u32, Vec<u8>)] {
-        self.sdk
-            .as_ref()
-            .map(|s| s.events.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Take the pending SDK stop (an assertion violation / snapshot point) the
-    /// doorbell surfaced, clearing it. `None` when no SDK stop is pending.
-    pub fn take_sdk_stop(&mut self) -> Option<SdkStop> {
-        self.sdk.as_mut().and_then(|s| s.pending_stop.take())
-    }
-
-    /// The buggify decisions this run resolved, `(moment, answer)`, in order.
-    /// Evidence that a run exercised buggify (the box gate reads it); the
-    /// reproducer itself carries buggify as the seed + the buggify-only policy,
-    /// so these are **not** re-recorded as overrides (which would make a bug's
-    /// env carry guest overrides the control server rejects on branch).
-    pub fn sdk_buggify(&self) -> &[(u64, environment::Answer)] {
-        self.sdk
-            .as_ref()
-            .map(|s| s.buggify.as_slice())
-            .unwrap_or(&[])
-    }
-
-    /// Service one hypercall-doorbell `OUT` (task 73 seam 1): copy the request
-    /// frame the guest staged at [`REQ_GPA`], route the Event / SDK service,
-    /// write the response frame to [`RESP_GPA`], and — for an assertion violation
-    /// or a `setup_complete` — arm a [`SdkStop`]. One exit ⇒ the whole exchange
-    /// is serviced before the guest resumes (the single-`OUT` atomic doorbell).
-    fn service_doorbell(&mut self, size: u8, req_len: u32) -> Result<Step, VmmError> {
-        require_dword_io("OUT", DOORBELL_PORT, size)?;
-        // ABI: the request occupies exactly one page — the loopback host reads a
-        // fixed `MAX_FRAME` buffer. A `req_len` past the page is a malformed request:
-        // REJECT it with a clean `BadRequest` (round-4 P2) rather than silently
-        // clamping the read to a page and servicing a frame the guest never framed
-        // (which could mask a guest-side length bug).
-        if req_len as usize > HC_PAGE {
-            let mut resp = [0_u8; HC_PAGE];
-            let n = encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
-                .unwrap_or(0);
-            self.write_doorbell_response(&resp[..n])?;
-            return Ok(Step::Continued);
-        }
-        let req_len = req_len as usize;
-        // Copy the request out of guest RAM so the immutable borrow ends before
-        // we compute the response and write the response page.
-        let ram = self.guest_memory();
-        let Some(req) = ram.get(REQ_GPA..REQ_GPA + req_len).map(<[u8]>::to_vec) else {
-            return Err(VmmError::ContractViolation(format!(
-                "doorbell request page {REQ_GPA:#x}+{req_len} is out of guest RAM ({} bytes)",
-                ram.len()
-            )));
-        };
-        // A synchronized-or-lower-bound V-time — deterministic across same-seed
-        // runs (the axis is seed-derived), which is all the `Moment` stamp needs.
-        let moment = self.effective_vns().unwrap_or(0);
-        let mut resp = [0_u8; HC_PAGE];
-        let (resp_len, stop) = self.dispatch_doorbell(moment, &req, &mut resp);
-        self.write_doorbell_response(&resp[..resp_len])?;
-        match stop {
-            Some(s) => {
-                if let Some(sdk) = self.sdk.as_mut() {
-                    sdk.pending_stop = Some(s);
-                }
-                Ok(Step::SdkStop)
-            }
-            None => Ok(Step::Continued),
-        }
-    }
-
-    /// Write a doorbell response frame into the response page. The guest zeroed
-    /// that page before ringing, so writing only the frame leaves a clean tail.
-    fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
-        let ram = self.ram.as_mut_bytes();
-        let Some(dst) = ram.get_mut(RESP_GPA..RESP_GPA + resp.len()) else {
-            return Err(VmmError::ContractViolation(format!(
-                "doorbell response page {RESP_GPA:#x}+{} is out of guest RAM ({} bytes)",
-                resp.len(),
-                ram.len()
-            )));
-        };
-        dst.copy_from_slice(resp);
-        Ok(())
-    }
-
-    /// Route one decoded doorbell request to the Event / SDK service, writing the
-    /// response frame into `resp` and returning `(response length, optional
-    /// stop)`. Total and panic-free on any request bytes.
-    fn dispatch_doorbell(
-        &mut self,
-        moment: u64,
-        req: &[u8],
-        resp: &mut [u8],
-    ) -> (usize, Option<SdkStop>) {
-        let Ok((header, payload)) = decode(req) else {
-            // A malformed request: a clean BadRequest (service/opcode 0).
-            let n =
-                encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], resp).unwrap_or(0);
-            return (n, None);
-        };
-        // The Event service (id 4, op 1): capture the `Moment`-stamped emission
-        // and, for an assert violation / `setup_complete`, arm a stop.
-        if header.service == ServiceId::Event as u16 && header.opcode == 1 {
-            if payload.len() < 4 {
-                let n = encode_response(
-                    ServiceId::Event,
-                    1,
-                    header.seq,
-                    Status::BadRequest,
-                    &[],
-                    resp,
-                )
-                .unwrap_or(0);
-                return (n, None);
-            }
-            let id = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            let data = payload[4..].to_vec();
-            let stop = Self::sdk_event_stop(id, &data);
-            if let Some(sdk) = self.sdk.as_mut() {
-                sdk.events.push((moment, id, data));
-                // Task 73 (P1): `setup_complete` is a lifecycle milestone at a
-                // skid-tainted doorbell OUT — not sealable here. Defer a snapshot
-                // point; the control loop surfaces it at the next synchronized
-                // boundary, where a seal succeeds.
-                if Self::is_setup_complete(id) {
-                    sdk.pending_snapshot = true;
-                }
-            }
-            let n = encode_response(ServiceId::Event, 1, header.seq, Status::Ok, &[], resp)
-                .unwrap_or(0);
-            return (n, stop);
-        }
-        // The SDK service (id 6, op 1): resolve a buggify decision.
-        if header.service == ServiceId::Sdk as u16 && header.opcode == 1 {
-            if payload.len() != 4 {
-                let n =
-                    encode_response(ServiceId::Sdk, 1, header.seq, Status::BadRequest, &[], resp)
-                        .unwrap_or(0);
-                return (n, None);
-            }
-            let point = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            let fire = self.decide_buggify(moment, point);
-            let n = encode_response(
-                ServiceId::Sdk,
-                1,
-                header.seq,
-                Status::Ok,
-                &[u8::from(fire)],
-                resp,
-            )
-            .unwrap_or(0);
-            return (n, None);
-        }
-        // The Entropy service (id 2, op 1): the SDK's `entropy_fill` source. Route
-        // it through the VMM's `SeededEntropy` stream — the **same** one RDRAND
-        // draws from (round-5 P2) — so a guest's RDRAND and its hypercall RNG never
-        // duplicate words, and a fork resumes the single stream via the VM snapshot
-        // (`save_vm_state`), not a second SDK-channel stream. The stream validates
-        // the request (a `u32` count, `1..=MAX_PAYLOAD`) and fills the buffer; fail
-        // closed with a `BadRequest` if V-time — hence the stream — is unwired.
-        if header.service == ServiceId::Entropy as u16 && header.opcode == 1 {
-            let mut buf = [0_u8; MAX_PAYLOAD];
-            let (status, got) = match self.vtime.as_mut() {
-                Some(vt) => vt.draw_entropy(payload, &mut buf),
-                None => (Status::BadRequest, 0),
-            };
-            let m = encode_response(ServiceId::Entropy, 1, header.seq, status, &buf[..got], resp)
-                .unwrap_or(0);
-            return (m, None);
-        }
-        // Any other service/opcode: the SDK demo rings Event / Sdk / Entropy, so
-        // this is unreached in practice. Answer a clean UnknownOpcode for a known
-        // service, else leave the response page unwritten (the guest transport
-        // reads the absent frame magic as a host rejection). A fuller campaign
-        // wiring Console/Block registers them here.
-        if header.service == ServiceId::Event as u16 {
-            let n = encode_response(
-                ServiceId::Event,
-                header.opcode,
-                header.seq,
-                Status::UnknownOpcode,
-                &[],
-                resp,
-            )
-            .unwrap_or(0);
-            (n, None)
-        } else if header.service == ServiceId::Sdk as u16 {
-            let n = encode_response(
-                ServiceId::Sdk,
-                header.opcode,
-                header.seq,
-                Status::UnknownOpcode,
-                &[],
-                resp,
-            )
-            .unwrap_or(0);
-            (n, None)
-        } else {
-            (0, None)
-        }
-    }
-
-    /// Whether an SDK Event emission surfaces a stop (task 73 seam 3): an assert
-    /// **violation** (`always`/`unreachable`) stops as a bug; a `setup_complete`
-    /// lifecycle point stops as a snapshot fork. A `sometimes`/`reachable` hit,
-    /// a state register, a buggify result, or the catalog declaration never stop.
-    fn sdk_event_stop(id: u32, data: &[u8]) -> Option<SdkStop> {
-        let ns = (id >> SDK_NS_SHIFT) as u8;
-        let local = id & SDK_LOCAL_MASK;
-        match ns {
-            SDK_NS_ASSERT if data.first() == Some(&SDK_DISP_VIOLATION) => {
-                // assert payload = [disposition u8][detail_len u16][detail].
-                let detail = data
-                    .get(1..3)
-                    .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
-                    .and_then(|dl| data.get(3..3 + dl))
-                    .unwrap_or(&[])
-                    .to_vec();
-                Some(SdkStop::Assertion {
-                    id: local,
-                    data: detail,
-                })
-            }
-            // `setup_complete` (lifecycle, local 0) does NOT surface an immediate
-            // stop — it defers a snapshot point (see the Event handler +
-            // `pending_snapshot`), so it is intentionally absent here.
-            _ => None,
-        }
-    }
-
-    /// Whether an event id is the `setup_complete` lifecycle milestone (namespace
-    /// [`SDK_NS_LIFECYCLE`], local 0).
-    fn is_setup_complete(id: u32) -> bool {
-        (id >> SDK_NS_SHIFT) as u8 == SDK_NS_LIFECYCLE && (id & SDK_LOCAL_MASK) == 0
-    }
-
-    /// Take the deferred `setup_complete` snapshot point **iff** the VM is now at a
-    /// V-time-synchronized (sealable) boundary (round-4 P1). The control loop calls
-    /// this after a `Continued` step: `true` (and the pending flag cleared) means
-    /// surface `StopReason::SnapshotPoint` here — a point where `save_vm_state`
-    /// succeeds, so the explorer's eager seal does not fail `NotQuiescent`.
-    pub fn take_synchronized_snapshot_point(&mut self) -> bool {
-        if self.is_synchronized()
-            && let Some(sdk) = self.sdk.as_mut()
-            && sdk.pending_snapshot
-        {
-            sdk.pending_snapshot = false;
-            return true;
-        }
-        false
-    }
-
-    /// Resolve a buggify decision for `point` at `moment` (task 73 seam 3): ask
-    /// the SDK channel's `Environment` (seeded fault stream / recorded override),
-    /// capture the answer for the reproducer, and return whether to fire.
-    fn decide_buggify(&mut self, moment: u64, point: u32) -> bool {
-        use environment::{Answer, DecisionPoint, Environment, Fault, Outcome};
-        let Some(sdk) = self.sdk.as_mut() else {
-            return false;
-        };
-        // `environment::Moment` is the retired-instruction axis (a `u64`).
-        sdk.env.set_moment(moment);
-        let ans = match sdk.env.decide(&DecisionPoint::Buggify { point }) {
-            Outcome::Resolved(a) => a,
-            // A pure backing (RecordedEnv) never needs the host; be total anyway.
-            Outcome::NeedsHost => Answer::Nominal,
-        };
-        let fire = matches!(ans, Answer::Fault(Fault::BuggifyFire));
-        sdk.buggify.push((moment, ans));
-        fire
     }
 
     fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
@@ -3173,12 +2699,6 @@ impl<B: Backend> Vmm<B> {
             }
             Some(TerminalReason::Hlt) => v.push(2),
             Some(TerminalReason::Shutdown) => v.push(3),
-            // `SdkStop` is a `run` stop reason, never latched as the VM's terminal
-            // (only substrate terminals latch via `terminate`), so it is never
-            // serialized here.
-            Some(TerminalReason::SdkStop) => {
-                unreachable!("SdkStop never latches as the VM terminal")
-            }
         }
         v
     }
@@ -3378,28 +2898,6 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
     }
     v.extend_from_slice(&vt.clock.snapshot_vns(vt.last_intercept_work).to_le_bytes());
     v.extend_from_slice(&vt.entropy.save_state());
-    v
-}
-
-/// Deterministic, fixed-layout encoding of the task-73 SDK channel's
-/// **replay-relevant** state for the `SDK\0` hash chunk (round-7): the seeded
-/// stream positions (16 bytes — the buggify + inert supply PRNG states) and the
-/// pending stop. The event log is deliberately excluded (host-side observation,
-/// like the report stream). A different buggify draw sequence (a diverged fork)
-/// moves the stream state, so it hashes differently.
-fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
-    let mut v = Vec::new();
-    v.extend_from_slice(&sdk.env.stream_state());
-    match &sdk.pending_stop {
-        None => v.push(0),
-        Some(SdkStop::Assertion { id, data }) => {
-            v.push(1);
-            v.extend_from_slice(&id.to_le_bytes());
-            v.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            v.extend_from_slice(data);
-        }
-    }
-    v.push(u8::from(sdk.pending_snapshot));
     v
 }
 
@@ -3657,437 +3155,6 @@ mod tests {
         let (st, got) = e.handle(1, &(n as u32).to_le_bytes(), &mut buf[..n]);
         assert_eq!((st, got), (Status::Ok, n));
         u64::from_le_bytes(buf)
-    }
-
-    /// Task 73: the hypercall doorbell services an Event emission (captured,
-    /// `Moment`-stamped) and a buggify decision (answered from the env), and an
-    /// assert-violation event / `setup_complete` surface the right `SdkStop`.
-    #[test]
-    fn doorbell_services_events_buggify_and_surfaces_stops() {
-        use environment::{Answer, EnvSpec, Fault, FaultPolicy};
-
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-        // Point 50 always fires; the seeded base answers everything else.
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(50, 1, 1).unwrap();
-        vmm.enable_sdk(EnvSpec::Seeded { seed: 7, policy }.materialize());
-
-        // Stage `payload` as a request frame at REQ_GPA, service the doorbell,
-        // and decode the response frame — returning `(step, status, payload)`.
-        fn ring(
-            vmm: &mut Vmm<MockBackend>,
-            service: ServiceId,
-            payload: &[u8],
-        ) -> (Step, u16, Vec<u8>) {
-            let mut buf = [0u8; HC_PAGE];
-            let n = hypercall_proto::encode_request(service, 1, 1, payload, &mut buf).unwrap();
-            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
-            let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
-            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-            let (hdr, pl) = decode(&page).expect("a valid response frame");
-            (step, hdr.status, pl.to_vec())
-        }
-
-        // Buggify point 50 fires (1/1) → response byte 1.
-        let (step, status, pl) = ring(&mut vmm, ServiceId::Sdk, &50u32.to_le_bytes());
-        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
-        assert_eq!(pl, vec![1], "point 50 fires");
-
-        // A sometimes-hit event (assert ns, point 1, disposition hit): captured, continue.
-        let hit_id = (1u32 << 24) | 1;
-        let mut hit = hit_id.to_le_bytes().to_vec();
-        hit.extend_from_slice(&[0, 0, 0]); // [DISP_HIT, detail_len=0]
-        let (step, status, _) = ring(&mut vmm, ServiceId::Event, &hit);
-        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
-
-        // An always-violation event (assert ns, point 20, disposition violation): SdkStop.
-        let viol_id = (1u32 << 24) | 20;
-        let mut viol = viol_id.to_le_bytes().to_vec();
-        viol.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len=0]
-        let (step, status, _) = ring(&mut vmm, ServiceId::Event, &viol);
-        assert_eq!((step, status), (Step::SdkStop, Status::Ok as u16));
-        assert_eq!(
-            vmm.take_sdk_stop(),
-            Some(SdkStop::Assertion {
-                id: 20,
-                data: vec![]
-            })
-        );
-
-        // setup_complete (lifecycle ns, local 0): NO immediate stop — its
-        // snapshot point is deferred (P1) to the next synchronized boundary. The
-        // event is still captured; the doorbell continues.
-        let setup_id = 4u32 << 24;
-        let (step, status, _) = ring(&mut vmm, ServiceId::Event, &setup_id.to_le_bytes());
-        assert_eq!((step, status), (Step::Continued, Status::Ok as u16));
-        assert!(
-            vmm.take_sdk_stop().is_none(),
-            "setup_complete does not stop"
-        );
-
-        // All three emissions were captured (Moment 0, no vtime wired), and the
-        // buggify decision recorded a fire.
-        let ids: Vec<u32> = vmm.sdk_events().iter().map(|(_, id, _)| *id).collect();
-        assert_eq!(ids, vec![hit_id, viol_id, setup_id]);
-        assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
-    }
-
-    /// A doorbell `OUT` on a Vmm with **no** SDK channel wired stays the
-    /// default-deny contract violation (every non-SDK path is unchanged).
-    #[test]
-    fn doorbell_without_sdk_is_a_contract_violation() {
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-        assert!(matches!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, 24),
-            Err(VmmError::ContractViolation(_))
-        ));
-    }
-
-    /// `Vmm::run()` STOPS at a cooperating-SDK assertion — it does not swallow it by
-    /// looping on to the later terminal (round-6 P2). A guest rings the doorbell
-    /// with an `always` violation, then HLTs: `run` returns `reason == SdkStop` with
-    /// the assertion in `sdk_stop`, NOT `reason == Hlt`.
-    #[test]
-    fn run_stops_on_an_sdk_assertion_not_the_later_terminal() {
-        use environment::{EnvSpec, FaultPolicy};
-        let viol_id: u32 = (1 << 24) | 20; // assert namespace, point 20
-        let mut payload = viol_id.to_le_bytes().to_vec();
-        payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
-        let mut frame = [0u8; HC_PAGE];
-        let n =
-            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut frame).unwrap();
-
-        let mut vmm = Vmm::new(
-            configured_mock(vec![
-                Exit::Io {
-                    port: DOORBELL_PORT,
-                    size: 4,
-                    write: Some(n as u32),
-                },
-                Exit::Hlt,
-            ]),
-            GuestRam::new(0x2_0000).unwrap(),
-        );
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-        );
-        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
-
-        let r = vmm.run().expect("run");
-        assert_eq!(
-            r.reason,
-            TerminalReason::SdkStop,
-            "run stops at the assertion, not the HLT that follows"
-        );
-        assert_eq!(
-            r.sdk_stop,
-            Some(SdkStop::Assertion {
-                id: 20,
-                data: vec![]
-            })
-        );
-    }
-
-    /// The doorbell is **total** on edge/hostile requests (self-sweep): an empty
-    /// request, an oversize length (clamped to one page — never an OOB read), a
-    /// garbage frame, and a full-page request all return `Continued` with a clean
-    /// (error) response and never a spurious stop. The request page (`0xE000`)
-    /// abuts the response page (`0xF000`), so a page-length request reads exactly
-    /// its own page and touches neither the response page nor past guest RAM.
-    #[test]
-    fn doorbell_is_total_on_edge_requests() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-        vmm.enable_sdk(
-            EnvSpec::Seeded {
-                seed: 1,
-                policy: FaultPolicy::none(),
-            }
-            .materialize(),
-        );
-
-        // Empty request; an oversize length; a full-page request.
-        assert_eq!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, 0).unwrap(),
-            Step::Continued
-        );
-        // Oversize (> one page) is REJECTED with a clean BadRequest (P2), not
-        // clamped: no OOB read, and the response says so.
-        assert_eq!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, HC_PAGE as u32 + 1)
-                .unwrap(),
-            Step::Continued
-        );
-        let resp = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-        let (hdr, _) = decode(&resp).expect("a valid response frame");
-        assert_eq!(
-            hdr.status,
-            Status::BadRequest as u16,
-            "an oversize req_len is rejected, not clamped"
-        );
-        assert_eq!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, u32::MAX).unwrap(),
-            Step::Continued
-        );
-        assert_eq!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, HC_PAGE as u32).unwrap(),
-            Step::Continued
-        );
-
-        // A garbage (non-frame) request: decoded as a bad request, never a panic
-        // or a stop.
-        for (i, b) in vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + 96]
-            .iter_mut()
-            .enumerate()
-        {
-            *b = (i as u8).wrapping_mul(37).wrapping_add(1);
-        }
-        assert_eq!(
-            vmm.dispatch_out(DOORBELL_PORT, 4, 96).unwrap(),
-            Step::Continued
-        );
-
-        assert!(
-            vmm.take_sdk_stop().is_none(),
-            "no spurious stop from garbage"
-        );
-        assert!(
-            vmm.sdk_events().is_empty(),
-            "garbage never captures an event"
-        );
-    }
-
-    /// `entropy_fill` and RDRAND draw from **one** `SeededEntropy` stream (round-5
-    /// P2): interleaving an `entropy_fill(8)` with a guest `RDRAND` yields the SAME
-    /// two words as two plain `RDRAND`s from the same seed — i.e. `entropy_fill`
-    /// takes stream word 1 and `RDRAND` takes word 2, never a duplicate word 1 from
-    /// a second stream.
-    #[test]
-    fn entropy_fill_and_rdrand_share_one_stream() {
-        use environment::{EnvSpec, FaultPolicy};
-        // A V-time-wired VM with RAM large enough for the doorbell pages (0xE000).
-        let mk = |script: Vec<Exit>| {
-            let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(0x2_0000).unwrap());
-            vmm.wire_vtime(
-                VtimeWiring::new(
-                    contract_vclock_config(),
-                    Box::new(ScriptedWork::at(1)),
-                    0x777,
-                )
-                .unwrap(),
-            );
-            vmm.enable_sdk(
-                EnvSpec::Seeded {
-                    seed: 0x777,
-                    policy: FaultPolicy::none(),
-                }
-                .materialize(),
-            );
-            vmm
-        };
-        // One `entropy_fill(8)` via the doorbell → 8 bytes (one stream word).
-        let entropy_fill = |vmm: &mut Vmm<MockBackend>| -> Vec<u8> {
-            let mut buf = [0u8; HC_PAGE];
-            let len = hypercall_proto::encode_request(
-                ServiceId::Entropy,
-                1,
-                1,
-                &8u32.to_le_bytes(),
-                &mut buf,
-            )
-            .unwrap();
-            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + len].copy_from_slice(&buf[..len]);
-            vmm.dispatch_out(DOORBELL_PORT, 4, len as u32).unwrap();
-            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-            let (hdr, pl) = decode(&page).expect("a valid response frame");
-            assert_eq!(
-                hdr.status,
-                Status::Ok as u16,
-                "entropy is routed via the stream"
-            );
-            pl.to_vec()
-        };
-        let reads = |vmm: &Vmm<MockBackend>| -> Vec<u64> {
-            vmm.backend
-                .completions()
-                .iter()
-                .map(|c| match c {
-                    Completion::Read(v) => *v,
-                    other => panic!("expected a Read completion, got {other:?}"),
-                })
-                .collect()
-        };
-
-        // A: entropy_fill (stream word 1), then a guest RDRAND (word 2).
-        let mut a = mk(vec![Exit::Rdrand { width: 8 }, Exit::Hlt]);
-        let word1 = u64::from_le_bytes(entropy_fill(&mut a).try_into().unwrap());
-        a.run().unwrap();
-        let a_stream = vec![word1, reads(&a)[0]];
-
-        // B (same seed): two plain RDRANDs — the pure stream, words 1 then 2.
-        let mut b = mk(vec![
-            Exit::Rdrand { width: 8 },
-            Exit::Rdrand { width: 8 },
-            Exit::Hlt,
-        ]);
-        b.run().unwrap();
-
-        assert_eq!(
-            a_stream,
-            reads(&b),
-            "entropy_fill + RDRAND is ONE stream (word 1 then word 2)"
-        );
-        assert_ne!(
-            a_stream[0], a_stream[1],
-            "consecutive words differ — not two streams from one seed minting a duplicate"
-        );
-    }
-
-    /// The doorbell routes the **Entropy** service deterministically for a given
-    /// seed (finding-4 + round-5 P2): equal seeds ⇒ equal entropy.
-    #[test]
-    fn doorbell_routes_entropy_deterministically() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mk = || {
-            let mut vmm = Vmm::new(
-                configured_mock(vec![Exit::Hlt]),
-                GuestRam::new(0x2_0000).unwrap(),
-            );
-            vmm.wire_vtime(
-                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(1)), 99)
-                    .unwrap(),
-            );
-            vmm.enable_sdk(
-                EnvSpec::Seeded {
-                    seed: 99,
-                    policy: FaultPolicy::none(),
-                }
-                .materialize(),
-            );
-            vmm
-        };
-        let entropy = |vmm: &mut Vmm<MockBackend>, n: u32| -> (u16, Vec<u8>) {
-            let mut buf = [0u8; HC_PAGE];
-            let len = hypercall_proto::encode_request(
-                ServiceId::Entropy,
-                1,
-                1,
-                &n.to_le_bytes(),
-                &mut buf,
-            )
-            .unwrap();
-            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + len].copy_from_slice(&buf[..len]);
-            vmm.dispatch_out(DOORBELL_PORT, 4, len as u32).unwrap();
-            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
-            let (hdr, pl) = decode(&page).expect("a valid response frame");
-            (hdr.status, pl.to_vec())
-        };
-        let mut a = mk();
-        let (status, bytes_a) = entropy(&mut a, 16);
-        assert_eq!(status, Status::Ok as u16, "entropy is routed, not rejected");
-        assert_eq!(bytes_a.len(), 16);
-        let mut b = mk();
-        assert_eq!(
-            entropy(&mut b, 16).1,
-            bytes_a,
-            "entropy is deterministic per seed"
-        );
-    }
-
-    /// The SDK channel snapshot/restore continues the seeded **buggify (fault)**
-    /// stream from the captured position (finding-1 fix): a fork resumed at a
-    /// snapshot produces the identical buggify continuation, while a fresh channel
-    /// (the old reset-on-restore bug) diverges. (Entropy no longer rides the SDK
-    /// channel — round-5 P2 routes `entropy_fill` through the VMM `SeededEntropy`
-    /// stream, captured by the VM snapshot, not `SdkSnapshot`.)
-    #[test]
-    fn sdk_snapshot_restore_resumes_the_seeded_streams() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(1, 1, 2).unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-
-        let mut base = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-        base.enable_sdk(spec.materialize());
-        for i in 0..5 {
-            let _ = base.decide_buggify(i, 1);
-        }
-        let snap = base.sdk_snapshot().expect("a wired channel snapshots");
-
-        // The buggify continuation from the snapshot position.
-        let cont = |vmm: &mut Vmm<MockBackend>| -> Vec<bool> {
-            (5..10).map(|i| vmm.decide_buggify(i, 1)).collect()
-        };
-        let expected = cont(&mut base);
-
-        // A fresh channel RESTORED to the snapshot reproduces the continuation.
-        let mut fork = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-        fork.enable_sdk(spec.materialize());
-        fork.sdk_restore(&snap);
-        assert_eq!(
-            cont(&mut fork),
-            expected,
-            "restored fault stream resumes exactly"
-        );
-
-        // A fresh channel WITHOUT restore (the old bug) diverges.
-        let mut broken = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-        broken.enable_sdk(spec.materialize());
-        assert_ne!(
-            cont(&mut broken),
-            expected,
-            "a fresh (position-0) channel is NOT the mid-run continuation"
-        );
-    }
-
-    /// The `state_hash` folds the wired SDK channel's replay-relevant state
-    /// (round-7): two same-seed VMs whose SDK buggify streams diverge hash
-    /// **differently**; and a VM with NO SDK channel carries no `SDK\0` chunk, so
-    /// an SDK-less golden (M1/M2/corpus/Linux) is byte-for-byte unchanged.
-    #[test]
-    fn state_hash_folds_the_sdk_stream_and_is_absent_when_unwired() {
-        use environment::{EnvSpec, FaultPolicy};
-        let mut policy = FaultPolicy::none();
-        policy.set_buggify_point(1, 1, 2).unwrap();
-        let spec = EnvSpec::Seeded { seed: 7, policy };
-        let mk = || Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
-
-        // Same seed + same stream position ⇒ equal hash; a diverged buggify draw
-        // sequence ⇒ DIFFERENT hash (the SDK divergence is IN the determinism hash).
-        let mut a = mk();
-        a.enable_sdk(spec.materialize());
-        let mut b = mk();
-        b.enable_sdk(spec.materialize());
-        assert_eq!(
-            a.state_hash(),
-            b.state_hash(),
-            "same SDK stream position hashes equal"
-        );
-        for i in 0..3 {
-            let _ = b.decide_buggify(i, 1);
-        }
-        assert_ne!(
-            a.state_hash(),
-            b.state_hash(),
-            "a diverged SDK stream hashes differently"
-        );
-
-        // No SDK channel ⇒ no `SDK\0` chunk in the blob (the golden does not move).
-        let has_sdk_chunk = |blob: &[u8]| blob.windows(4).any(|w| w == b"SDK\0");
-        assert!(
-            !has_sdk_chunk(&mk().state_blob()),
-            "no SDK chunk when unwired"
-        );
-        let mut wired = mk();
-        wired.enable_sdk(spec.materialize());
-        assert!(
-            has_sdk_chunk(&wired.state_blob()),
-            "SDK chunk present when wired"
-        );
     }
 
     #[test]

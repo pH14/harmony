@@ -195,13 +195,7 @@ fn seal_base<B: Backend>(
         attempts += 1;
         match server.handle(&Request::Snapshot)? {
             Ok(Reply::SnapId(id)) => return Ok((id, vt)),
-            Ok(
-                Reply::Unit
-                | Reply::Hello(_)
-                | Reply::Hash(_)
-                | Reply::Stop(_)
-                | Reply::SdkEvents(_),
-            ) => {
+            Ok(Reply::Unit | Reply::Hello(_) | Reply::Hash(_) | Reply::Stop(_)) => {
                 return Err(RecordError::Protocol("snapshot: unexpected reply".into()));
             }
             Err(ControlError::NotQuiescent) => {
@@ -314,10 +308,7 @@ pub fn run_recording<B: Backend>(
                 terminal: stop.clone(),
                 env: run_env,
                 coverage: None, // zero-width negotiated geometry; a terminal signal, never a key
-                // Task 73: the link tier decodes the raw SDK event capture (the
-                // catalog + assert/state/buggify emissions) into the typed,
-                // Moment-stamped event stream — non-empty for an SDK guest.
-                events: link::decode_events(&sdk_events_raw(server)),
+                events: vec![], // link tier — empty until task 73
                 records,
             };
             // Encode once, up front — the source of the journal length, digest,
@@ -382,23 +373,6 @@ fn drained_serial<B: Backend>(
     // A fresh fork's serial can only grow past `cursor`; guard defensively so a
     // shorter buffer never panics on the slice.
     Ok(serial.get(cursor..).unwrap_or(&[]).to_vec())
-}
-
-/// The link-tier SDK event capture of the current run, remapped onto the
-/// [`Moment`] axis for [`link::decode_events`] (task 73). In-process, straight
-/// off the live VM — the SDK-channel mirror of [`drained_serial`]. No cursor is
-/// needed: the per-run `branch` resets the SDK channel, so the capture already
-/// holds exactly this run's events.
-fn sdk_events_raw<B: Backend>(server: &ControlServer<B>) -> Vec<(Moment, u32, Vec<u8>)> {
-    server
-        .vmm()
-        .map(|v| {
-            v.sdk_events()
-                .iter()
-                .map(|(m, id, b)| (Moment(*m), *id, b.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn is_monotone(records: &[(Moment, explorer::Record)]) -> bool {

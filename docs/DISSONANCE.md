@@ -334,9 +334,8 @@ Two rules carry the safety properties:
   (reseed — the explore path), so the reproduce-vs-diverge choice is explicit at every call site.
 - **Two result categories, fail-loud.** A guest-observable outcome is a `StopReason`
   (`Crash`/`Quiescent`/`Deadline` always present; `Decision`/`Assertion`/`SnapshotPoint` present
-  with a cooperating SDK **and only when their `StopMask` class bit is armed** — task 73 round-7, so
-  `StopMask::NONE` runs an SDK guest straight through to the terminal). A VM/transport failure is a
-  `ControlError`. Never report one as the other.
+  with a cooperating SDK). A VM/transport failure is a `ControlError`. Never report one as the
+  other.
 
 Single-vCPU determinism makes the reactive path trivial: the lone vCPU parks on a decision, so
 **exactly one decision is ever outstanding** — `run` surfaces it, `run(resolve)` answers it and

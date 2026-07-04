@@ -30,9 +30,6 @@ environment = { path = "../environment", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
 # The task-65 replay-plane journal/store the recording session populates.
 runtrace = { path = "../runtrace", version = "0.1.0" }
-# Task 73: the link tier that decodes the raw SDK event capture into
-# `RunTrace.events` (both the in-process recording path and the socket campaign).
-link = { path = "../link", version = "0.1.0" }
 # Typed recording-session errors (rule-5 whitelist).
 thiserror = "2"
 # Per-row journal digest for the divergence + reload gates (rule-5 whitelist;
@@ -54,6 +51,3 @@ sha2 = "0.10"
 proptest = "1"
 # The recording gate records into a throwaway store dir per test.
 tempfile = "3"
-# The loopback SDK-events gate encodes an Event doorbell frame to stage in guest
-# RAM (task 73); the guest-side hypercall codec, dev-only.
-hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0" }
