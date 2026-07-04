@@ -115,16 +115,16 @@ impl EnvSpec {
     /// (magic, [`Action`] map, standing faults) is unchanged, but the network
     /// [`Fault`](crate::Fault) byte vocabulary was reshaped (per-frame → per-flow),
     /// so a task-45 `v2` blob carrying an old net fault must reject rather than
-    /// silently reinterpret it as a new flow policy. Bumped to `4` by **two**
-    /// inner-format changes that landed together (tasks 78 + 73), each of which a
-    /// `v3` reader must reject rather than mis-parse: task 78 gave the
-    /// [`Recorded`](EnvSpec::Recorded) layout a trailing **reseed-marker table** (a
-    /// v3 blob has no table), and task 73 gave the embedded
-    /// [`FaultPolicy`](crate::FaultPolicy) a trailing **buggify section** (its own
-    /// version moved `2 → 3`; a v3 blob's policy has none). A `v4` blob carries
-    /// both; the policy is self-versioned (`FPL1` + its own `VERSION`), so the two
-    /// changes coexist under one container version.
-    pub const BLOB_VERSION: u16 = 4;
+    /// silently reinterpret it as a new flow policy. Bumped to `4` by task 78: the
+    /// [`Recorded`](EnvSpec::Recorded) layout gained a trailing **reseed-marker
+    /// table**, so a v3 blob (no table) rejects rather than mis-parse. Bumped to
+    /// `5` by task 73: the embedded [`FaultPolicy`](crate::FaultPolicy) gained a
+    /// trailing **buggify section** (its own version moved `2 → 3`). Task 78's `v4`
+    /// embeds `FaultPolicy` v2 and task 73's embeds v3 — two **incompatible** inner
+    /// encodings of the same logical policy (v3 is longer), so they must NOT share
+    /// an outer version. A `v4` blob is therefore rejected outright at the version
+    /// gate in [`decode`](EnvSpec::decode), never parsed with the v5 policy reader.
+    pub const BLOB_VERSION: u16 = 5;
 
     /// The seed every backing draws from.
     pub fn seed(&self) -> u64 {

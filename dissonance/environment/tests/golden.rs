@@ -273,7 +273,8 @@ fn golden_recorded_blob_with_host_overrides() {
     } else {
         assert_eq!(
             hex,
-            // "DEV2"(44455632) + version(0400) + variant(01) + seed(00 x8) +
+            // "DEV2"(44455632) + version(0500, task 73 over task 78's v4) +
+            // variant(01) + seed(00 x8) +
             // length-prefixed policy(FPL1 magic + version 0300, baseline, len 0x36=54:
             //   three empty classes 0x2a=42 + trailing buggify section
             //   [default_num 0, default_den 1, per_point count 0] = 12, task 73) +
@@ -282,7 +283,7 @@ fn golden_recorded_blob_with_host_overrides() {
             //   Moment 2 + len-prefixed Action::Guest(Nominal) = [01 00] +
             // standing count(00000000) +
             // reseed count(01000000) + Moment 3 + seed 0xD1CE (both u64 LE, task 78).
-            "4445563204000100000000000000003600000046504c31030000000000010000000000000000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000010000000300000000000000ced1000000000000",
+            "4445563205000100000000000000003600000046504c31030000000000010000000000000000000000010000000000000000000000010000000000000000000000010000000000000002000000010000000000000003000000000380020000000000000002000000010000000000010000000300000000000000ced1000000000000",
             "recorded blob wire format drifted; regenerate with GOLDEN_CAPTURE=1"
         );
         assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);
