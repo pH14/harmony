@@ -84,6 +84,16 @@ fn golden_setup_complete() {
     assert!(ev.attrs.is_empty());
 }
 
+/// A `setup_complete` id with a **non-empty** payload is NOT a setup_complete —
+/// it decodes to `unknown` (round A1: the event carries no payload, so stray
+/// bytes are a malformed emission, not silently accepted).
+#[test]
+fn setup_complete_with_a_payload_is_unknown() {
+    let ev = decode_event(id(NS_LIFECYCLE, 0), &[0xAB, 0xCD]);
+    assert_eq!(ev.kind, KIND_UNKNOWN);
+    assert_ne!(ev.kind, KIND_SETUP_COMPLETE);
+}
+
 /// The catalog declaration: `SDKC` magic + version + count.
 #[test]
 fn golden_catalog_header() {

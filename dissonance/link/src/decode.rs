@@ -50,7 +50,10 @@ pub fn decode_event(event_id: u32, bytes: &[u8]) -> GuestEvent {
         wire::NS_ASSERT => decode_assert(local, bytes),
         wire::NS_STATE => decode_state(local, bytes),
         wire::NS_BUGGIFY => decode_buggify(local, bytes),
-        wire::NS_LIFECYCLE if local == wire::LIFECYCLE_SETUP_COMPLETE => {
+        // `setup_complete` carries NO payload; require it empty (like the other
+        // arms' `at_end` check), else a stray-payload id is `unknown`, not a
+        // silently-accepted setup_complete (round A1).
+        wire::NS_LIFECYCLE if local == wire::LIFECYCLE_SETUP_COMPLETE && bytes.is_empty() => {
             event(KIND_SETUP_COMPLETE, [])
         }
         _ => unknown(event_id, bytes),
