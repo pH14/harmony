@@ -36,3 +36,10 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
+      # conductor's unsafe is the mock composition's `map_memory` forward
+      # (task 78's CountingBackend); the lib tests compose the VM so it is
+      # reachable under the interpreter. `--lib` only: the integration suites
+      # drive socket servers with full VMs per proptest case — interpreted,
+      # they blow the job ceiling without touching any additional unsafe.
+      - name: miri — conductor (lib)
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib

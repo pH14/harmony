@@ -35,6 +35,7 @@ fn recorded_with(overrides: BTreeMap<Moment, Action>, standing: Vec<StandingFaul
         policy: FaultPolicy::none(),
         overrides,
         standing,
+        reseeds: Default::default(),
     }
 }
 
@@ -76,10 +77,10 @@ proptest! {
         at in 0u64..BOUND,
     ) {
         let base = EnvSpec::Recorded {
-            seed, policy: policy.clone(), overrides: base_ov.clone(), standing: vec![],
+            seed, policy: policy.clone(), overrides: base_ov.clone(), standing: vec![], reseeds: Default::default(),
         };
         let tail = EnvSpec::Recorded {
-            seed, policy: policy.clone(), overrides: tail_ov.clone(), standing: vec![],
+            seed, policy: policy.clone(), overrides: tail_ov.clone(), standing: vec![], reseeds: Default::default(),
         };
         let composed = EnvCodec::compose(&base, &tail, at).expect("override-only, same seed/policy");
         let out = composed.overrides();
@@ -119,10 +120,10 @@ proptest! {
         let tail_ov: BTreeMap<Moment, Action> =
             moments.iter().map(|m| (*m, Action::Guest(Answer::Nominal))).collect();
         let tail = EnvSpec::Recorded {
-            seed, policy: FaultPolicy::none(), overrides: tail_ov, standing: vec![],
+            seed, policy: FaultPolicy::none(), overrides: tail_ov, standing: vec![], reseeds: Default::default(),
         };
         let base = EnvSpec::Recorded {
-            seed, policy: FaultPolicy::none(), overrides: BTreeMap::new(), standing: vec![],
+            seed, policy: FaultPolicy::none(), overrides: BTreeMap::new(), standing: vec![], reseeds: Default::default(),
         };
         let composed = EnvCodec::compose(&base, &tail, at).expect("override-only");
 
@@ -213,6 +214,7 @@ fn compose_rekeys_at_nonzero_concrete() {
             (20, Action::Guest(Answer::Supply(vec![1]))), // >= at → dropped
         ]),
         standing: vec![],
+        reseeds: Default::default(),
     };
     let tail = EnvSpec::Recorded {
         seed: 0xABCD,
@@ -225,6 +227,7 @@ fn compose_rekeys_at_nonzero_concrete() {
             (3, Action::Guest(Answer::Nominal)),
         ]),
         standing: vec![],
+        reseeds: Default::default(),
     };
     let composed = EnvCodec::compose(&base, &tail, 10).unwrap();
     let out = composed.overrides();
@@ -318,6 +321,7 @@ fn compose_fails_closed_on_standing_seed_or_policy_mismatch() {
         policy,
         overrides: BTreeMap::new(),
         standing: vec![],
+        reseeds: Default::default(),
     };
     assert_eq!(
         EnvCodec::compose(
@@ -484,4 +488,85 @@ fn set_moment_is_reflected_by_moment_accessor() {
     assert_eq!(env.moment(), 0xDEAD_BEEF_0000_1234);
     env.set_moment(7);
     assert_eq!(env.moment(), 7, "tracks the most recent set_moment");
+}
+
+// ---- reseed-marker splicing (task 78) ---------------------------------------
+
+/// A `Recorded` spec with only a reseed table (no overrides/standing).
+fn reseed_spec(seed: u64, reseeds: &[(Moment, u64)]) -> EnvSpec {
+    EnvSpec::Recorded {
+        seed,
+        policy: FaultPolicy::none(),
+        overrides: BTreeMap::new(),
+        standing: vec![],
+        reseeds: reseeds.iter().copied().collect(),
+    }
+}
+
+#[test]
+fn compose_splices_reseed_markers_positionally_like_overrides() {
+    // base: markers at 0 (its own branch reseed) and 300 (past the cut —
+    // superseded by the tail's branch); tail: marker at 0 (its branch reseed)
+    // and a mid-window one at 40.
+    let base = reseed_spec(7, &[(0, 111), (300, 222)]);
+    let tail = reseed_spec(7, &[(0, 333), (40, 444)]);
+    let composed = EnvCodec::compose(&base, &tail, 250).expect("override-free, same seed/policy");
+    let got: Vec<(Moment, u64)> = composed.reseeds().iter().map(|(m, s)| (*m, *s)).collect();
+    assert_eq!(
+        got,
+        vec![(0, 111), (250, 333), (290, 444)],
+        "base keeps markers < at; tail markers re-key by + at"
+    );
+}
+
+#[test]
+fn compose_rejects_reseed_rekey_overflow() {
+    let base = reseed_spec(7, &[]);
+    let tail = reseed_spec(7, &[(10, 1)]);
+    assert_eq!(
+        EnvCodec::compose(&base, &tail, u64::MAX - 5),
+        Err(environment::EnvError::Overflow),
+        "a wrapping marker re-key must reject, never collapse"
+    );
+}
+
+#[test]
+fn mutate_preserves_reseed_markers_verbatim() {
+    let spec = reseed_spec(7, &[(0, 111), (500, 222)]);
+    for salt in 0u64..32 {
+        let out = EnvCodec::mutate(&spec, salt);
+        assert_eq!(
+            out.reseeds(),
+            spec.reseeds(),
+            "reseed markers are timeline facts — never mutated (salt {salt})"
+        );
+    }
+}
+
+#[test]
+fn record_reseed_promotes_and_round_trips() {
+    let mut spec = EnvCodec::seeded(9, FaultPolicy::none());
+    spec.record_reseed(100, 0xAB);
+    spec.record_reseed(40, 0xCD);
+    assert!(matches!(spec, EnvSpec::Recorded { .. }));
+    let got: Vec<(Moment, u64)> = spec.reseeds().iter().map(|(m, s)| (*m, *s)).collect();
+    assert_eq!(got, vec![(40, 0xCD), (100, 0xAB)]);
+    assert_eq!(EnvSpec::decode(&spec.encode()).unwrap(), spec);
+}
+
+#[test]
+fn non_ascending_reseed_table_is_rejected_on_decode() {
+    // Encode a two-marker spec, then swap the marker records (each is 16
+    // bytes: moment u64 + seed u64) so the table is descending — Malformed.
+    let spec = reseed_spec(0, &[(1, 10), (2, 20)]);
+    let bytes = spec.encode();
+    let n = bytes.len();
+    let mut swapped = bytes.clone();
+    swapped[n - 32..n - 16].copy_from_slice(&bytes[n - 16..]);
+    swapped[n - 16..].copy_from_slice(&bytes[n - 32..n - 16]);
+    assert_eq!(
+        EnvSpec::decode(&swapped),
+        Err(environment::EnvError::Malformed),
+        "a non-ascending reseed table must reject"
+    );
 }

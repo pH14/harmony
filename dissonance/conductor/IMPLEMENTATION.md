@@ -657,3 +657,100 @@ the 3-deep chain to an identical stop + `state_hash` — the task-93
 end-to-end gate on the production codec and real `recorded_env`. The grid
 restriction is visible live (overshoots 242,447 / 345 / 17,361 ns; every
 exemplar keyed by its landed boundary).
+
+---
+
+# IMPLEMENTATION — task 78 (reseed-aware compose: bit-identical folds under entropy draws)
+
+The ruled fix for the task-68 escalated **sequential-entropy-splice** finding
+(`docs/INTEGRATION.md` §6c ruling 3): the env format stores **reseed markers**
+(`environment` — blob v4), `compose` splices them positionally, the adapter
+records each branch reseed at relative 0 and re-anchors markers on the wire
+(`explorer`), and the `ControlServer` re-executes each collapsed hop's reseed
+at its exact recorded `Moment` (`vmm-core`, the task-59 exact-arrival plane).
+Per-crate details in each crate's IMPLEMENTATION.md.
+
+## The pin flips
+
+Task 68's documented-limit pin
+`sequential_entropy_splice_diverges_a_collapsed_fold_documented_limit` is
+replaced by its positive twin
+`sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin`
+(`tests/materialize_loopback.rs`): on the draw-carrying script the
+compose-folded leg is now **bit-identical** to the hop-by-hop original, over
+the real wire. The escalation note in this file's task-68 section and in
+`live_materialization.rs` is retired with it (this section supersedes both).
+
+## Portable gates
+
+- `tests/reseed_fold_proptest.rs` — 256 random chains (depth 2–4, off-grid
+  per-hop spans, random seeds) with RDRAND draws inside every collapsed
+  interval: fold == hop-by-hop, always, over `SocketMachine` +
+  `ControlServer` (the production codec + real `recorded_env`).
+- `chain_gates_pass_on_a_draw_carrying_script` — the full task-68 chain
+  protocol (gates a/b/c) green on a draw-carrying script, `bug_env` carrying
+  one reseed marker per collapsed leg, all draw probes reading DRAWS.
+- **Mock constraint:** the scripted mock restarts its exit script at every
+  branch (script position is not in `VcpuState`), so portable draw-carrying
+  comparisons need restart-phase-invariant shapes (the proptest's period-400
+  script / the pin's alternating script; documented in the proptest module
+  doc). A real guest has no such restart — unconstrained shapes are the box
+  gate's job.
+- **Mock work model rework (`src/mock.rs`):** `TickingWork` (tick on every
+  read) made V-time advance on host-side bookkeeping reads, so an armed
+  (exact-arrival) run had a different V-time cadence than an unarmed one —
+  no schedule-carrying mock run could be compared against a plain one. The
+  composition now uses `SharedWork` (a counter advanced only per serviced
+  scripted exit — the box's guest-branches-only semantics) + a
+  `CountingBackend` wrapper implementing exact arrival between exits.
+  `TickingWork` remains for the one loopback test that composes its own VM.
+
+## Draw probes (measured, never assumed)
+
+`run_materialize` gained self-normalizing **draw probes**: each hop window
+(and the tail) is re-run with a trailing reseed marker back to the same seed
+at the landed boundary — a no-op iff no draw moved the stream, so the probe
+hash differs from the plain leg's exactly when the window drew
+(`MaterializeReport::{hop_draws, tail_draws}`). The live gate requires a
+draw inside a collapsed window (`REQUIRE_DRAWS=0` waives).
+
+## Box gate (FRONTIER) — PASSED 2026-07-03, determinism box
+
+Runs 2/3 (HOPS=4, identical results — deterministic), leased core 2 via
+`scripts/box-window.sh`, patched KVM 1400832, release build, gate wall
+~135 s; stock 1396736 re-verified after, 0 leases:
+
+- draw probes: **hops [false, false, false, true]; tail DRAWS** — hop 3's
+  collapsed window and the tail both draw entropy (RDRAND via the guest CRNG
+  path), measured on real KVM.
+- gate (b): folded (1 fold) AND from-genesis worst case — the latter
+  collapsing the draw-carrying hop-3 window — bit-identical to the hot seal
+  (state_hash 8fa042da…); hot ratio 4 504 ppm beats the 15 463 baseline.
+- gate (c): the 175-byte genesis-complete `bug_env` (5 reseed markers)
+  collapses a reseed point that sits AFTER hop 3's draws — the exact shape
+  the pre-task-78 code provably diverged on — and replays with identical
+  stop + state_hash (725387df…).
+- Run 1 (HOPS=3, default config) also passed with the tail drawing — the
+  same seals/hashes as task-68's run (c4ad3e01…), confirming the no-marker
+  compatibility surface live.
+
+Runbook (foreman re-run): `/root/harmony-t78` on the box (branch pushed via
+`ssh://hetzner/root/harmony-t78`, guest/build symlinked to harmony-pr44's
+image), driver `/root/task78/gate.sh` (acquires the box-window lease, re-pins
+it to the long-lived driver PID — the command-substitution PPID gotcha —
+runs `HOPS=4 taskset -c $CORE timeout 7200 cargo test --release -p conductor
+--test live_materialization -- --ignored --nocapture --test-threads=1`,
+releases on EXIT). Logs: `/root/task78/gate{1,2,3}.log`.
+
+## Known limitations / integrator notes
+
+- Marker seeds are recorded at branch time from the env's seed (adapter) or
+  the marker table (server); the server-side recorded reproducer stamps the
+  floor reseed only for marker-carrying branches, so the no-marker
+  `recorded_env()` byte shape is unchanged from task 59 (modulo the blob v4
+  trailing empty table).
+- Moment-keyed counter-mode entropy (task 93's deeper option) remains out of
+  scope — this makes the *sequential* scheme compose-safe, per the ruling.
+- Miri: run clean on `conductor --lib` (17 tests, `-Zmiri-disable-isolation`)
+  after the mock gained the (delegating, SAFETY-commented) `map_memory`
+  forward in `CountingBackend`.

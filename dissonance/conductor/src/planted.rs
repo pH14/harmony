@@ -574,8 +574,19 @@ mod tests {
         assert_eq!(m.drop_snap(b), Err(MachineError::UnknownSnapshot(b.0)));
     }
 
+    /// Miri runs the lib suite (the unsafe⇒Miri rule, via the mock's
+    /// `CountingBackend`): fewer cases and no failure-persistence file I/O
+    /// (`getcwd` is unavailable under Miri's isolation).
+    fn cases() -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 256 });
+        if cfg!(miri) {
+            cfg.failure_persistence = None;
+        }
+        cfg
+    }
+
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
+        #![proptest_config(cases())]
 
         /// **Exact-arrival fidelity (the round-2 blocking fix).** A fault staged
         /// at a `Moment` *beyond the run's traversed terminal* is unreachable by

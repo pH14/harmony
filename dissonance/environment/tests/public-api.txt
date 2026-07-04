@@ -64,6 +64,7 @@ pub enum environment::EnvSpec
 pub environment::EnvSpec::Recorded
 pub environment::EnvSpec::Recorded::overrides: alloc::collections::btree::map::BTreeMap<environment::Moment, environment::Action>
 pub environment::EnvSpec::Recorded::policy: environment::FaultPolicy
+pub environment::EnvSpec::Recorded::reseeds: alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
 pub environment::EnvSpec::Recorded::seed: u64
 pub environment::EnvSpec::Recorded::standing: alloc::vec::Vec<environment::StandingFault>
 pub environment::EnvSpec::Seeded
@@ -79,6 +80,8 @@ pub fn environment::EnvSpec::overrides(&self) -> &alloc::collections::btree::map
 pub fn environment::EnvSpec::perturb(&mut self, environment::HostFault, environment::Moment)
 pub fn environment::EnvSpec::policy(&self) -> &environment::FaultPolicy
 pub fn environment::EnvSpec::record(&mut self, environment::Moment, environment::Action)
+pub fn environment::EnvSpec::record_reseed(&mut self, environment::Moment, u64)
+pub fn environment::EnvSpec::reseeds(&self) -> &alloc::collections::btree::map::BTreeMap<environment::Moment, u64>
 pub fn environment::EnvSpec::seed(&self) -> u64
 pub enum environment::Fault
 pub environment::Fault::BlockEio

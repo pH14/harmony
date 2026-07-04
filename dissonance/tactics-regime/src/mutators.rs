@@ -198,14 +198,17 @@ fn host_keys(map: &BTreeMap<Moment, Action>) -> Vec<Moment> {
 }
 
 /// Rebuild an [`EnvSpec::Recorded`] from a base's seed/policy/standing and a new
-/// override map. Standing faults are carried through **verbatim** — never added
-/// to, so no [`StandingFault`] is ever introduced.
+/// override map. Standing faults and reseed markers are carried through
+/// **verbatim** — never added to or moved, so no [`StandingFault`] is ever
+/// introduced and no reseed point is ever desynced (task 78: markers are
+/// timeline facts, not proposals).
 fn rebuild(env: &EnvSpec, overrides: BTreeMap<Moment, Action>) -> EnvSpec {
     EnvSpec::Recorded {
         seed: env.seed(),
         policy: env.policy().clone(),
         overrides,
         standing: standing_of(env),
+        reseeds: env.reseeds().clone(),
     }
 }
 

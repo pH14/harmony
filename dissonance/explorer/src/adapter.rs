@@ -208,6 +208,7 @@ fn rebase_to_wire(spec: &EnvSpec, origin: u64) -> Result<EnvSpec, MachineError> 
             policy,
             overrides,
             standing,
+            reseeds,
         } => {
             let mut absolute = BTreeMap::new();
             for (rel, action) in overrides {
@@ -216,11 +217,22 @@ fn rebase_to_wire(spec: &EnvSpec, origin: u64) -> Result<EnvSpec, MachineError> 
                     .ok_or(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))?;
                 absolute.insert(at, action.clone());
             }
+            // Reseed markers re-anchor exactly like overrides (task 78): the
+            // blob-frame key is relative to the blob's origin, the server's
+            // contract is absolute Moments.
+            let mut absolute_reseeds = BTreeMap::new();
+            for (rel, s) in reseeds {
+                let at = origin
+                    .checked_add(*rel)
+                    .ok_or(MachineError::BadEnvironment(ADAPTER_BLOB_VERSION))?;
+                absolute_reseeds.insert(at, *s);
+            }
             Ok(EnvSpec::Recorded {
                 seed: *seed,
                 policy: policy.clone(),
                 overrides: absolute,
                 standing: standing.clone(),
+                reseeds: absolute_reseeds,
             })
         }
     }
@@ -238,6 +250,7 @@ fn recorded(spec: &EnvSpec) -> EnvSpec {
             policy: policy.clone(),
             overrides: BTreeMap::new(),
             standing: Vec::new(),
+            reseeds: std::collections::BTreeMap::new(),
         },
     }
 }
@@ -330,11 +343,31 @@ impl crate::EnvCodec for SpecEnvCodec {
             .filter(|(m, _)| **m >= cut)
             .map(|(m, a)| (m - cut, a.clone()))
             .collect();
+        // Reseed markers slice consistently (task 78): the suffix keeps the
+        // markers at-or-past the cut, re-keyed to the branch origin — and it
+        // must ALSO carry the origin marker (0 → seed) when none lands
+        // exactly at the cut (PR #62 round-2 blocking fix): a marker-carrying
+        // env's table is authoritative on the server, so a non-empty sliced
+        // table with no floor marker would make the branch CONTINUE the
+        // parent stream instead of reseeding — and `branch`'s is-empty stamp
+        // never fires on a non-empty table. A base marker exactly at the cut
+        // wins (its value IS what the stream became at that point).
+        let mut suffix_reseeds: BTreeMap<u64, u64> = b
+            .spec
+            .reseeds()
+            .iter()
+            .filter(|(m, _)| **m >= cut)
+            .map(|(m, s)| (m - cut, *s))
+            .collect();
+        if !suffix_reseeds.is_empty() {
+            suffix_reseeds.entry(0).or_insert(seed);
+        }
         let sliced = EnvSpec::Recorded {
             seed,
             policy,
             overrides: suffix,
             standing: Vec::new(),
+            reseeds: suffix_reseeds,
         };
         // One deterministic host-plane tweak via the real codec (guest
         // overrides are preserved verbatim by its contract).
@@ -684,6 +717,16 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
                 // capture Moment (the blob's own base_offset is advisory — the
                 // authoritative origin is where the branch actually restored to).
                 self.current = recorded(&decoded.spec);
+                // Record the branch reseed into the blob frame (task 78): a
+                // no-marker env made the server reseed from the env's seed at
+                // the restore origin — stamp that as a marker at relative 0 so
+                // the emitted delta composes reseed-aware (a fold re-executes
+                // it at the collapsed hop's position). A marker-carrying env
+                // already names its own reseeds (the server honored exactly
+                // those); they ride through `recorded` verbatim.
+                if self.current.reseeds().is_empty() {
+                    self.current.record_reseed(0, decoded.spec.seed());
+                }
                 self.branch_offset = origin;
                 self.pos = origin;
                 self.pending_decision = None;
@@ -876,6 +919,7 @@ mod tests {
             policy: FaultPolicy::none(),
             overrides,
             standing: Vec::new(),
+            reseeds: std::collections::BTreeMap::new(),
         }
     }
 
@@ -1099,6 +1143,7 @@ mod tests {
                 policy: FaultPolicy::none(),
                 overrides,
                 standing: Vec::new(),
+                reseeds: std::collections::BTreeMap::new(),
             },
         }
         .encode();
@@ -1500,6 +1545,7 @@ mod tests {
                 policy: FaultPolicy::none(),
                 overrides,
                 standing: Vec::new(),
+                reseeds: std::collections::BTreeMap::new(),
             },
         }
         .encode();
@@ -1637,5 +1683,221 @@ mod tests {
             recorded.spec.overrides().get(&100),
             Some(Action::Guest(environment::Answer::Nominal))
         ));
+    }
+
+    // ---- reseed markers (task 78) ------------------------------------------
+
+    /// A `Recorded` spec carrying only reseed markers.
+    fn spec_with_reseeds(seed: u64, markers: &[(u64, u64)]) -> EnvSpec {
+        EnvSpec::Recorded {
+            seed,
+            policy: FaultPolicy::none(),
+            overrides: BTreeMap::new(),
+            standing: Vec::new(),
+            reseeds: markers.iter().copied().collect(),
+        }
+    }
+
+    /// `branch` with a no-marker env stamps the branch reseed at relative 0,
+    /// so the emitted delta is reseed-aware (a fold re-executes it at the
+    /// collapsed hop's position); a marker-carrying env's own markers ride
+    /// through verbatim and re-anchor on the wire like overrides.
+    #[test]
+    fn branch_records_the_branch_reseed_and_re_anchors_markers_on_the_wire() {
+        use control_proto::{Reply, SnapId as WsSnapId};
+        let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut reply_bytes = Vec::new();
+        for (seq, reply) in [
+            (1, server_caps_reply()),        // hello
+            (2, probe_reply(200)),           // connect probe → origin 200
+            (3, Reply::SnapId(WsSnapId(1))), // snapshot @ 200
+            (4, Reply::Unit),                // branch (no-marker env)
+            (5, Reply::Unit),                // branch (marker env)
+        ] {
+            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        }
+        let stream = CapturingStream {
+            replies: Cursor::new(reply_bytes),
+            written: std::rc::Rc::clone(&written),
+        };
+        let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
+        let snap = m.snapshot().unwrap();
+
+        // (1) A no-marker env: the branch reseed is stamped at relative 0.
+        m.branch(snap, &SpecEnvCodec.seeded(0xD1CE)).unwrap();
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let got: Vec<(u64, u64)> = recorded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 0xD1CE)],
+            "the branch reseed is recorded into the blob frame at relative 0"
+        );
+
+        // (2) A marker-carrying env: markers ride verbatim (no extra stamp) and
+        // cross the wire re-anchored at the restore origin (200).
+        let env = AdapterEnv {
+            base_offset: 200,
+            pos: 260,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (40, 0xBB)]),
+        }
+        .encode();
+        m.branch(snap, &env).unwrap();
+        let recorded = AdapterEnv::decode(&m.recorded_env().unwrap()).unwrap();
+        let got: Vec<(u64, u64)> = recorded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 0xAA), (40, 0xBB)],
+            "markers preserved blob-frame"
+        );
+
+        let reqs = captured_requests(&written.borrow());
+        let wire = reqs
+            .iter()
+            .filter_map(|r| match r {
+                control_proto::Request::Branch { env, .. } => Some(env.clone()),
+                _ => None,
+            })
+            .next_back()
+            .expect("the marker Branch went on the wire");
+        let spec = EnvSpec::decode(&wire.bytes).expect("wire spec decodes");
+        let keys: Vec<(u64, u64)> = spec.reseeds().iter().map(|(k, v)| (*k, *v)).collect();
+        assert_eq!(
+            keys,
+            vec![(200, 0xAA), (240, 0xBB)],
+            "the wire carries ABSOLUTE marker Moments (origin + relative)"
+        );
+    }
+
+    /// The PR #62 round-2 blocking fix: slicing a marker-carrying base at a
+    /// NON-marker cut retains the future markers AND inserts the origin
+    /// marker (0 → env seed) — a non-empty table with no floor marker would
+    /// otherwise make the server continue the parent stream (the
+    /// authoritative-table path; `branch`'s is-empty stamp never fires), so
+    /// the branch's first draws must come from the env seed, which the
+    /// vmm-core floor-marker gate
+    /// (`branch_with_a_floor_marker_reseeds_from_the_marker_not_the_env_seed`)
+    /// pins server-side for exactly this marker shape.
+    #[test]
+    fn mutate_slicing_at_a_non_marker_cut_inserts_the_origin_reseed() {
+        // Base rooted at 0, captured at pos 100 (the cut — no marker there):
+        // its own branch reseed at 0 and a future marker at 140.
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (140, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 7), (40, 0xBB)],
+            "the sliced suffix carries the origin marker (0 → env seed) plus the re-keyed \
+             future marker — never a floor-markerless non-empty table"
+        );
+        // A base marker exactly at the cut wins over the synthetic origin
+        // marker (its value IS the stream at that point).
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(100, 0xCC), (140, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(got, vec![(0, 0xCC), (40, 0xBB)]);
+        // And a fully-sliced-away table stays empty (the branch stamp path).
+        let base = AdapterEnv {
+            base_offset: 0,
+            pos: 100,
+            spec: spec_with_reseeds(7, &[(0, 0xAA)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        assert!(
+            decoded.spec.reseeds().is_empty(),
+            "no future markers ⇒ empty table ⇒ branch's is-empty stamp handles the origin"
+        );
+    }
+
+    /// `mutate` slices reseed markers at the relative cut, consistently with
+    /// overrides; `compose` splices them positionally (through the underlying
+    /// codec) so a folded delta stays reseed-aware.
+    #[test]
+    fn mutate_slices_and_compose_splices_reseed_markers() {
+        // Base rooted at 100, captured at 160 → relative cut 60: the marker at
+        // 0 (the base's own branch reseed) is dropped, the suffix re-keys
+        // (70→10).
+        let base = AdapterEnv {
+            base_offset: 100,
+            pos: 160,
+            spec: spec_with_reseeds(7, &[(0, 0xAA), (70, 0xBB)]),
+        }
+        .encode();
+        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let decoded = AdapterEnv::decode(&out).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 7), (10, 0xBB)],
+            "reseeds sliced at the relative cut, with the origin marker inserted (round-2 fix)"
+        );
+
+        // Compose: suffix₁ rooted at 100 (marker at its own 0), suffix₂
+        // branched at 250 (marker at its own 0) → the fold carries both, the
+        // second at the relative cut 150.
+        let s1 = AdapterEnv {
+            base_offset: 100,
+            pos: 250,
+            spec: spec_with_reseeds(7, &[(0, 0xAA)]),
+        }
+        .encode();
+        let s2 = AdapterEnv {
+            base_offset: 250,
+            pos: 400,
+            spec: spec_with_reseeds(7, &[(0, 0xBB), (40, 0xCC)]),
+        }
+        .encode();
+        let folded = SpecEnvCodec.compose(&s1, &s2);
+        let decoded = AdapterEnv::decode(&folded).unwrap();
+        let got: Vec<(u64, u64)> = decoded
+            .spec
+            .reseeds()
+            .iter()
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        assert_eq!(
+            got,
+            vec![(0, 0xAA), (150, 0xBB), (190, 0xCC)],
+            "the fold carries every collapsed hop's reseed at its position"
+        );
     }
 }

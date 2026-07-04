@@ -66,6 +66,7 @@ pub conductor::materialize::MaterializeReport::folded: explorer::materialize::Ma
 pub conductor::materialize::MaterializeReport::folded_hash: [u8; 32]
 pub conductor::materialize::MaterializeReport::genesis_at: u64
 pub conductor::materialize::MaterializeReport::genesis_attempts: usize
+pub conductor::materialize::MaterializeReport::hop_draws: alloc::vec::Vec<bool>
 pub conductor::materialize::MaterializeReport::hops: alloc::vec::Vec<conductor::materialize::HopRow>
 pub conductor::materialize::MaterializeReport::hot: explorer::materialize::Materialization
 pub conductor::materialize::MaterializeReport::hot_hash: [u8; 32]
@@ -73,6 +74,7 @@ pub conductor::materialize::MaterializeReport::leg_hash: [u8; 32]
 pub conductor::materialize::MaterializeReport::leg_stop: explorer::StopReason
 pub conductor::materialize::MaterializeReport::replay_hash: [u8; 32]
 pub conductor::materialize::MaterializeReport::replay_stop: explorer::StopReason
+pub conductor::materialize::MaterializeReport::tail_draws: bool
 pub conductor::materialize::MaterializeReport::worst: explorer::materialize::Materialization
 pub conductor::materialize::MaterializeReport::worst_hash: [u8; 32]
 pub const conductor::materialize::TASK63_BASELINE_PPM: u64
@@ -81,6 +83,31 @@ pub fn conductor::materialize::render_materialize_table(&conductor::materialize:
 pub fn conductor::materialize::run_materialize<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::materialize::MaterializeConfig) -> core::result::Result<conductor::materialize::MaterializeReport, explorer::error::MachineError>
 pub fn conductor::materialize::verify_materialize(&conductor::materialize::MaterializeReport, core::option::Option<u64>) -> alloc::vec::Vec<alloc::string::String>
 pub mod conductor::mock
+pub struct conductor::mock::CountedWork(_)
+impl vmm_core::work::WorkSource for conductor::mock::CountedWork
+pub fn conductor::mock::CountedWork::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn conductor::mock::CountedWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+pub struct conductor::mock::CountingBackend
+impl vmm_backend::backend::Backend for conductor::mock::CountingBackend
+pub fn conductor::mock::CountingBackend::capabilities(&self) -> vmm_backend::exit::Capabilities
+pub fn conductor::mock::CountingBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::complete_fault(&mut self) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::complete_hypercall(&mut self, u64) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::complete_ok(&mut self) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::complete_read(&mut self, u64) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::exit_counts(&self) -> vmm_backend::exit::ExitCounts
+pub fn conductor::mock::CountingBackend::inject(&mut self, vmm_backend::exit::Event) -> vmm_backend::error::Result<()>
+pub unsafe fn conductor::mock::CountingBackend::map_memory(&mut self, vmm_backend::types::Gpa, &mut [u8]) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::reset_exit_counts(&mut self)
+pub fn conductor::mock::CountingBackend::restore(&mut self, &vmm_backend::state::VcpuState) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::run(&mut self) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
+pub fn conductor::mock::CountingBackend::run_until(&mut self, vmm_backend::types::Vtime) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
+pub fn conductor::mock::CountingBackend::save(&self) -> vmm_backend::error::Result<vmm_backend::state::VcpuState>
+pub fn conductor::mock::CountingBackend::set_cpuid(&mut self, &vmm_backend::config::CpuidModel) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::set_msr_filter(&mut self, &vmm_backend::config::MsrFilter) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub struct conductor::mock::SharedWork
 pub struct conductor::mock::TickingWork
 impl conductor::mock::TickingWork
 pub fn conductor::mock::TickingWork::new(u64) -> Self
@@ -93,8 +120,8 @@ pub const conductor::mock::WORK_STEP: u64
 pub fn conductor::mock::chain_fork_script(usize, bool) -> alloc::vec::Vec<vmm_backend::exit::Exit>
 pub fn conductor::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
 pub fn conductor::mock::recording_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
-pub fn conductor::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
-pub fn conductor::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<vmm_backend::mock::MockBackend>, vmm_core::vmm::VmmError>
+pub fn conductor::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<conductor::mock::CountingBackend>, vmm_core::vmm::VmmError>
+pub fn conductor::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<conductor::mock::CountingBackend>, vmm_core::vmm::VmmError>
 pub mod conductor::planted
 pub struct conductor::planted::ToyPlantedMachine
 impl conductor::planted::ToyPlantedMachine

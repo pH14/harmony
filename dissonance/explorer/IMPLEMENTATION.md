@@ -380,3 +380,25 @@ rejected-behind-snapshot regression (the raw pre-fix shape is refused
   (`tests/materialize_loopback.rs`, splice pin) and written up in conductor's
   IMPLEMENTATION.md §task 68. Escalated, not patched (vmm-core is read-only
   for this task).
+
+---
+
+# IMPLEMENTATION — task 78 (reseed markers through the adapter frames)
+
+Three additions in `src/adapter.rs`, all following the settled "Coordinate
+frames" doc (the single conversion point discipline):
+
+- **`rebase_to_wire`** re-anchors reseed markers exactly like overrides
+  (blob-frame relative key → `origin + relative`, checked overflow).
+- **`SocketMachine::branch`** records the branch reseed into the blob frame:
+  a no-marker env made the server reseed from the env's seed at the restore
+  origin, so the adapter stamps `record_reseed(0, seed)` into the new
+  Modulation — the emitted `recorded_env` delta is then reseed-aware and a
+  later fold re-executes the reseed at the collapsed hop's position. A
+  marker-carrying env's own markers ride through verbatim (the server honored
+  exactly those; no extra stamp).
+- **`SpecEnvCodec::mutate`** slices markers at the relative cut consistently
+  with overrides; `compose` splices via the underlying `environment` codec.
+
+Known limitation: the session-initial spec handed to `connect` remains
+override- and marker-free (v1 boots are), per the frame doc's deliberate edge.

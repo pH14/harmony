@@ -120,6 +120,7 @@ fn truncations_of_a_valid_blob_never_panic() {
             target: vec![0, 1, 2, 3],
             window: (environment::VTime(10), environment::VTime(20)),
         }],
+        reseeds: BTreeMap::from([(3, 0xFEED_5EED), (7, 42)]),
     };
     let bytes = spec.encode();
     for n in 0..bytes.len() {
@@ -201,6 +202,7 @@ fn decode_rejects_non_ascending_moments() {
             (sentinel, Action::Guest(Answer::Nominal)),
         ]),
         standing: vec![],
+        reseeds: std::collections::BTreeMap::new(),
     };
     let mut bytes = spec.encode();
     let pat = sentinel.to_le_bytes();
