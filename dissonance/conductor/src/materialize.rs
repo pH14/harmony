@@ -449,11 +449,7 @@ fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Result<Environment, 
 
 /// Integer parts-per-million of `num / den` (`den == 0` reports 0).
 fn ppm(num: u64, den: u64) -> u64 {
-    if den == 0 {
-        0
-    } else {
-        num.saturating_mul(1_000_000) / den
-    }
+    num.saturating_mul(1_000_000).checked_div(den).unwrap_or(0)
 }
 
 /// The depth ratio gate (a) quotes: the issued replay depth against a **full

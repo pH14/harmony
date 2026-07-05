@@ -125,6 +125,13 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
                     "guest reached a terminal ({r:?}) at step {steps} before the readiness marker"
                 ));
             }
+            // A cooperating-SDK stop (task 73) — an assertion violation — is a
+            // premature stop here, just like a terminal.
+            Ok(Step::SdkStop) => {
+                return Err(format!(
+                    "guest hit an SDK stop (assertion) at step {steps} before the readiness marker"
+                ));
+            }
             Err(e) => return Err(format!("step error at {steps}: {e}")),
         }
         steps += 1;

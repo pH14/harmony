@@ -382,6 +382,12 @@ fn run_bounded<B: vmm_backend::Backend>(
                 reason = Some(r);
                 break;
             }
+            // A cooperating-SDK stop (task 73) is a terminal here — mirror
+            // vmm.rs's own run loop, which maps it to `TerminalReason::SdkStop`.
+            Ok(Step::SdkStop) => {
+                reason = Some(TerminalReason::SdkStop);
+                break;
+            }
             Err(e) => {
                 eprintln!("\n[k3s] step error after {steps} steps: {e}  | debug={e:?}");
                 let mut msg = format!("{e}");

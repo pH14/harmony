@@ -228,6 +228,12 @@ fn drive_to_terminal(vmm: &mut DynVmm) -> RunOutcome {
                 reason = Some(r);
                 break;
             }
+            // A cooperating-SDK stop (task 73) is a terminal here — mirror
+            // vmm.rs's own run loop, which maps it to `TerminalReason::SdkStop`.
+            Ok(Step::SdkStop) => {
+                reason = Some(TerminalReason::SdkStop);
+                break;
+            }
             Err(e) => {
                 step_error = Some(format!("{e}"));
                 eprintln!("\n[nq] step error after {steps} steps: {e}");
@@ -389,6 +395,14 @@ fn seal_first_nonquiescent(live: &mut DynVmm, marker: &[u8], post_seal_scan: u64
                      {rejections:#?})"
                 );
             }
+            // This non-SDK workload never emits an SDK stop (task 73) — a terminal
+            // before the boundary is a gate failure, same as the arm above.
+            Ok(Step::SdkStop) => {
+                panic!(
+                    "unexpected SDK stop at step {steps} while hunting a non-quiescent \
+                     snapshot boundary (this workload declares no SDK points)"
+                );
+            }
             Err(e) => panic!("step while hunting a non-quiescent snapshot boundary failed: {e}"),
         }
     }
@@ -476,6 +490,8 @@ fn assert_run_reaches_genuine_inflight(kernel: &[u8], initramfs: &[u8], marker: 
         match live.step() {
             Ok(Step::Continued) => steps += 1,
             Ok(Step::Terminal(_)) => break,
+            // A cooperating-SDK stop (task 73) ends the drive here, like a terminal.
+            Ok(Step::SdkStop) => break,
             Err(e) => panic!("step while checking genuine in-flight presence failed: {e}"),
         }
     }

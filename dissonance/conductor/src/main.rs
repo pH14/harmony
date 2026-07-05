@@ -679,6 +679,15 @@ mod boxrun {
                          marker appeared"
                     ));
                 }
+                // A cooperating-SDK stop (task 73) — an assertion violation — is a
+                // premature stop here, just like a terminal: the readiness marker
+                // never appeared.
+                Ok(Step::SdkStop) => {
+                    return Err(format!(
+                        "guest hit an SDK stop (assertion) at step {steps} before the readiness \
+                         marker appeared"
+                    ));
+                }
                 Err(e) => return Err(format!("step error at {steps}: {e}")),
             }
             steps += 1;
