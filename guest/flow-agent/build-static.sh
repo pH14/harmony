@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the flow agent as a static x86-64 Linux binary for baking into a workload
 # initramfs (task 61). Emits the binary path on stdout (last line) so the image
 # builder can `install` it:

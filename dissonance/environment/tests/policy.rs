@@ -149,6 +149,69 @@ fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
     assert!(!proc.is_enforceable_only());
 }
 
+/// Fractional `NetLoss` (`0 < num < den`) is NOT enforceable by the in-kernel
+/// prototype (it needs the deferred 61b proxy), so a policy whose net class could
+/// sample it is rejected fail-loud — while the binary net faults (full drop,
+/// reset, latency, throttle) stay enforceable.
+#[test]
+fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
+    // Fractional loss 1/3 in the eligible set → not enforceable.
+    let mut frac = FaultPolicy::none();
+    frac.set_class(
+        DecisionClass::NetFlow,
+        1,
+        1,
+        &[Fault::NetLoss { num: 1, den: 3 }],
+    )
+    .unwrap();
+    assert!(
+        !frac.is_enforceable_only(),
+        "a fractional NetLoss is not in-kernel enforceable"
+    );
+
+    // A fractional loss anywhere in a multi-fault eligible set still taints it.
+    let mut mixed = FaultPolicy::none();
+    mixed
+        .set_class(
+            DecisionClass::NetFlow,
+            1,
+            2,
+            &[Fault::NetReset, Fault::NetLoss { num: 2, den: 5 }],
+        )
+        .unwrap();
+    assert!(!mixed.is_enforceable_only());
+
+    // Full drop (num >= den) is a binary drop → enforceable.
+    let mut full = FaultPolicy::none();
+    full.set_class(
+        DecisionClass::NetFlow,
+        1,
+        1,
+        &[Fault::NetLoss { num: 1, den: 1 }],
+    )
+    .unwrap();
+    assert!(
+        full.is_enforceable_only(),
+        "a full drop is enforceable (nft drop)"
+    );
+
+    // Reset / latency / throttle are all binary → enforceable.
+    let mut binary = FaultPolicy::none();
+    binary
+        .set_class(
+            DecisionClass::NetFlow,
+            1,
+            3,
+            &[
+                Fault::NetReset,
+                Fault::NetLatency(VTime(5)),
+                Fault::NetThrottle { bps: 1000 },
+            ],
+        )
+        .unwrap();
+    assert!(binary.is_enforceable_only());
+}
+
 #[test]
 fn from_bytes_rejects_off_version() {
     let mut bytes = FaultPolicy::none().to_bytes();

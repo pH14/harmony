@@ -43,3 +43,12 @@ jobs:
       # they blow the job ceiling without touching any additional unsafe.
       - name: miri — conductor (lib)
         run: cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib
+      # guest/flow-agent (task 61) is out-of-workspace (its own manifest). Its ONLY
+      # unsafe is the binary's `cfg(all(target_os="linux", target_arch="x86_64"))`
+      # doorbell FFI (mmap /dev/mem + iopl + clock_gettime) — which Miri cannot
+      # execute AND which does not compile on this aarch64/linux Miri host anyway
+      # (the non-target stubs are used). So the library is unsafe-free and Miri here
+      # is a UB safety net over the pure brain (answer→policy, enforcement plan,
+      # decider) + the loopback decode/dispatch, not the FFI. `--lib --test decider`.
+      - name: miri — guest/flow-agent (lib + decider, out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/flow-agent/Cargo.toml --lib --test decider
