@@ -472,6 +472,9 @@ pub fn run_bench_campaign<M: Machine>(
 
         machine.branch(base, &env)?;
         let stop = machine.run(&until, None)?;
+        // The finding run's state_hash, captured before any replay disturbs the
+        // machine — a certified find must replay N/N identical to THIS.
+        let run_hash = machine.hash()?;
         let trace = trace_of(machine, stop, env.clone())?;
         let touched = cells_of(&sensor, &cells, &trace);
 
@@ -506,7 +509,8 @@ pub fn run_bench_campaign<M: Machine>(
         // console (per-bug attribution), and (b) the emitted reproducer replays
         // the IDENTICAL crash `cfg.replay_n` (25/25) times.
         if !found && oracle.judge(&trace).is_some() && marker_attributed(&trace, spec) {
-            let certified = certify_replays(machine, base, &env, &trace.terminal, cfg.replay_n)?;
+            let certified =
+                certify_replays(machine, base, &env, &trace.terminal, run_hash, cfg.replay_n)?;
             if certified {
                 finds.push(FindRecord {
                     bug: spec.id,
@@ -545,25 +549,27 @@ fn marker_attributed(trace: &RunTrace, spec: &BugSpec) -> bool {
 
 /// Certify a candidate find by **N/N replay**: replay the reproducer `n` times
 /// and require every run to reproduce the identical bug-bearing
-/// `(stop, state_hash)` as the finding run. A flaky/non-deterministic crash fails
-/// this (its replays diverge), so it is never logged as a find. `n == 0` never
-/// certifies (a find must be replay-verified).
+/// `(stop, state_hash)` **of the finding run** (box gate 2 — N/N identical to the
+/// FINDING, not merely to each other). A flaky/non-deterministic crash whose
+/// replays are self-consistent but differ from the finding run fails this, so it
+/// is never logged as a find. `n == 0` never certifies.
 fn certify_replays<M: Machine>(
     machine: &mut M,
     base: SnapId,
     env: &Environment,
     found_stop: &StopReason,
+    found_hash: [u8; 32],
     n: usize,
 ) -> Result<bool, MachineError> {
     if n == 0 || !found_stop.is_bug() {
         return Ok(false);
     }
     let replays = verify_replays(machine, base, env, n)?;
+    // Every replay must reproduce the FINDING run's exact (stop, state_hash).
     Ok(replays.len() == n
         && replays
             .iter()
-            .all(|(stop, _)| stop == found_stop && stop.is_bug())
-        && replays.iter().all(|(_, h)| *h == replays[0].1))
+            .all(|(stop, h)| stop == found_stop && stop.is_bug() && *h == found_hash))
 }
 
 /// Replay a found reproducer `n` times, returning the `(stop, state_hash)` seen —
@@ -776,6 +782,90 @@ mod tests {
         assert!(
             log.finds.is_empty(),
             "an unmarked crash must not be certified as a find"
+        );
+    }
+
+    /// A crash whose replays agree with EACH OTHER but differ from the FINDING
+    /// run's state_hash is NOT certified (box gate 2 = N/N identical to the
+    /// finding, round-4 P1). The machine emits the marker (so attribution passes)
+    /// and crashes every run, but its state_hash is one value on the first run and
+    /// a different — self-consistent — value on every later run.
+    #[test]
+    fn replays_must_match_the_finding_hash() {
+        struct DriftingHashMachine {
+            marker: Vec<u8>,
+            runs: u64,
+            current: Environment,
+            snaps: std::collections::BTreeMap<u64, Environment>,
+            next: u64,
+        }
+        impl Machine for DriftingHashMachine {
+            fn branch(&mut self, s: SnapId, e: &Environment) -> Result<(), MachineError> {
+                if !self.snaps.contains_key(&s.0) {
+                    return Err(MachineError::UnknownSnapshot(s.0));
+                }
+                self.current = e.clone();
+                Ok(())
+            }
+            fn replay(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.current = self.snaps[&s.0].clone();
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                self.runs += 1;
+                Ok(StopReason::Crash {
+                    vtime: VTime(BASE_VTIME + 1),
+                    info: vec![0, 1],
+                })
+            }
+            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+                let id = self.next;
+                self.next += 1;
+                self.snaps.insert(id, self.current.clone());
+                Ok(SnapId(id))
+            }
+            fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.snaps.remove(&s.0);
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                // First run → one hash; every later (replay) run → a DIFFERENT but
+                // self-consistent hash. Replays agree with each other, not the find.
+                Ok(if self.runs <= 1 { [1u8; 32] } else { [2u8; 32] })
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(self.current.clone())
+            }
+            fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+                Ok(vec![(BASE_VTIME, self.marker.clone())])
+            }
+        }
+        let bench = Benchmark::wave5();
+        let bug = bench.get(BugId(1)).unwrap().clone();
+        let mut m = DriftingHashMachine {
+            marker: bug.serial_marker.as_bytes().to_vec(),
+            runs: 0,
+            current: mint_scenario_env(0, &bug),
+            snaps: std::collections::BTreeMap::new(),
+            next: 1,
+        };
+        // One branch only, so exactly one finding-vs-replay comparison happens.
+        let cfg = BenchConfig {
+            max_branches: 1,
+            ..BenchConfig::smoke(1)
+        };
+        let log =
+            run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        assert!(
+            log.finds.is_empty(),
+            "replays that differ from the finding hash must not certify a find"
         );
     }
 

@@ -243,6 +243,21 @@ pub struct CorrelationReport {
 
 /// Fold a configuration's logs (in seed order) into one pooled species
 /// accumulator, one branch = one sample.
+/// A stable content digest of a log — the final tie-breaker for the STADS fold
+/// sort, so two logs with the same `(seed, config)` still order canonically by
+/// their contents (never by input position). An order-independent FNV-1a fold of
+/// the canonical JSON encoding (a `BTreeMap`-free struct, so its serialization is
+/// itself canonical).
+fn content_digest(log: &CampaignLog) -> u64 {
+    let bytes = serde_json::to_vec(log).unwrap_or_default();
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 fn pooled_accumulator(logs: &[&CampaignLog]) -> SpeciesAccumulator {
     let mut acc = SpeciesAccumulator::new();
     for log in logs {
@@ -430,7 +445,12 @@ impl CorrelationReport {
                     .copied()
                     .filter(|l| l.config == cfg)
                     .collect();
-                these.sort_by_key(|l| l.seed);
+                // Sort by a TOTAL key: seed, then config, then a content digest —
+                // so even two logs sharing a seed (e.g. different bugs, same seed)
+                // fold in a canonical order and the report never depends on input
+                // ordering (round-4 P2). `sort_by_cached_key` computes each digest
+                // once.
+                these.sort_by_cached_key(|l| (l.seed, l.config, content_digest(l)));
                 let acc = pooled_accumulator(&these);
                 StadsMeasure {
                     config: cfg,
@@ -848,6 +868,28 @@ mod tests {
             dup.render_markdown(),
             "duplicate trials must not change the report"
         );
+    }
+
+    #[test]
+    fn report_order_independent_with_colliding_seeds() {
+        // Bugs share the SAME seed values across configs — so `(seed, config)`
+        // alone does not uniquely order the logs; the content tie-breaker must
+        // still make the report input-order-independent (round-4 P2).
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for spec in &bench.bugs {
+            for k in 0..20u64 {
+                // Identical seed `k` for every bug (collisions within a config).
+                logs.push(signal_log(k, 20 - k, 50 + k * 5, spec.id));
+                logs.push(baseline_log(k, 200 + k * 5, spec.id));
+            }
+        }
+        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).render_markdown();
+        let mut shuffled = logs.clone();
+        shuffled.reverse();
+        let b =
+            CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000)).render_markdown();
+        assert_eq!(a, b, "colliding-seed report must not depend on input order");
     }
 
     #[test]
