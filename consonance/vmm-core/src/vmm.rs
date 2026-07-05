@@ -2163,11 +2163,15 @@ impl<B: Backend> Vmm<B> {
                 encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], resp).unwrap_or(0);
             return (n, None);
         };
-        // `decode` accepts BOTH request and response frames, but the doorbell
-        // services only REQUESTS: a response-typed frame in the guest's request
-        // bytes must NOT be routed as a request (it would mis-service on the raw
-        // service/opcode). Reject it with a clean BadRequest echoing the raw
-        // fields, before any routing.
+        // Validate EVERY request-header invariant `decode` does not already
+        // enforce, in ONE step, before any routing (`is_request`: kind == request,
+        // status == 0, reserved == 0). `decode` accepts both request and response
+        // frames and a request's `status` is a response-only field, so a
+        // response-typed OR non-zero-status frame in the guest's request bytes must
+        // NOT be serviced (it would mis-service on the raw service/opcode). Reject
+        // with a clean BadRequest echoing the raw fields. (Service/opcode validity
+        // is a routing outcome below — UnknownService / UnknownOpcode, not
+        // BadRequest.)
         if !header.is_request() {
             let n = encode_error(
                 header.service,
@@ -3945,6 +3949,102 @@ mod tests {
         );
         assert_eq!(hdr.opcode, 2, "echoes the bad opcode");
         assert_eq!(hdr.seq, 7);
+    }
+
+    /// Comprehensive request-header validation matrix (round-11 P2): each
+    /// malformed-header field maps to the right response status in ONE place, so
+    /// the whole header is validated at the decode boundary rather than one field
+    /// per review round. Header byte layout (`write_header`): magic[0..4],
+    /// kind[4..6], service[6..8], opcode[8..10], status[10..12], seq[12..16],
+    /// payload_len[16..20], reserved[20..24].
+    #[test]
+    fn doorbell_request_header_validation_matrix() {
+        use environment::{EnvSpec, FaultPolicy};
+
+        // Dispatch a base valid Event(op1) request after `mutate`, returning the
+        // decoded response header. Fresh VM per case (dispatch mutates state).
+        fn dispatch_header(mutate: impl FnOnce(&mut [u8])) -> hypercall_proto::FrameHeader {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            vmm.enable_sdk(
+                EnvSpec::Seeded {
+                    seed: 1,
+                    policy: FaultPolicy::none(),
+                }
+                .materialize(),
+                &FaultPolicy::none(),
+            );
+            let mut buf = [0u8; HC_PAGE];
+            // Event service, op 1, seq 5, a benign 4-byte event id (ns 0, local 7).
+            let n = hypercall_proto::encode_request(
+                ServiceId::Event,
+                1,
+                5,
+                &7u32.to_le_bytes(),
+                &mut buf,
+            )
+            .unwrap();
+            mutate(&mut buf);
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+            vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+            decode(&page).expect("a response frame is always written").0
+        }
+        let ev = ServiceId::Event as u16;
+
+        // Baseline: a well-formed request is serviced (Ok, echoes Event/op1/seq).
+        let h = dispatch_header(|_| {});
+        assert_eq!(h.status, Status::Ok as u16, "valid request is serviced");
+        assert_eq!((h.service, h.opcode, h.seq), (ev, 1, 5));
+
+        // kind == response (2): not a request → BadRequest, echoes the raw fields.
+        let h = dispatch_header(|b| b[4..6].copy_from_slice(&2u16.to_le_bytes()));
+        assert_eq!(
+            h.status,
+            Status::BadRequest as u16,
+            "response-typed rejected"
+        );
+        assert_eq!((h.service, h.seq), (ev, 5), "BadRequest echoes raw fields");
+
+        // Non-zero STATUS on a request (status is response-only) → BadRequest.
+        let h = dispatch_header(|b| b[10..12].copy_from_slice(&1u16.to_le_bytes()));
+        assert_eq!(
+            h.status,
+            Status::BadRequest as u16,
+            "non-zero-status request rejected (round-11 P2)"
+        );
+        assert_eq!(h.service, ev);
+
+        // Non-zero RESERVED → `decode` itself rejects (InvalidHeader) → the
+        // decode-fail BadRequest path (service/opcode 0, header unparsed).
+        let h = dispatch_header(|b| b[20..24].copy_from_slice(&1u32.to_le_bytes()));
+        assert_eq!(
+            h.status,
+            Status::BadRequest as u16,
+            "non-zero reserved rejected"
+        );
+
+        // Unrecognized kind (3, not request or response) → `decode` rejects →
+        // BadRequest.
+        let h = dispatch_header(|b| b[4..6].copy_from_slice(&3u16.to_le_bytes()));
+        assert_eq!(
+            h.status,
+            Status::BadRequest as u16,
+            "unrecognized message kind rejected"
+        );
+
+        // Unknown SERVICE id (no `ServiceId`) → UnknownService, echoing the raw id.
+        let h = dispatch_header(|b| b[6..8].copy_from_slice(&0xABCDu16.to_le_bytes()));
+        assert_eq!(h.status, Status::UnknownService as u16, "unknown service");
+        assert_eq!(h.service, 0xABCD, "echoes the raw service id");
+
+        // Unknown OPCODE on a known service → UnknownOpcode, echoing the service.
+        let h = dispatch_header(|b| b[8..10].copy_from_slice(&9u16.to_le_bytes()));
+        assert_eq!(h.status, Status::UnknownOpcode as u16, "unknown opcode");
+        assert_eq!(
+            (h.service, h.opcode),
+            (ev, 9),
+            "echoes service + bad opcode"
+        );
     }
 
     /// `pending_snapshot` (the deferred `setup_complete` point) is folded into the

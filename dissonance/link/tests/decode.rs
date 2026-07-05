@@ -198,6 +198,31 @@ fn a_supported_catalog_version_does_not_taint_the_stream() {
     assert_eq!(decoded[1].1.kind, KIND_ASSERT_HIT);
 }
 
+/// A TRUNCATED catalog (a future-version byte but an incomplete header — the
+/// `count` u32 is missing) does NOT taint the stream as a version mismatch: a
+/// truncated frame is malformed, not a trustworthy "future version" claim. It
+/// decodes to a lone `unknown` catalog event and the following assert still
+/// decodes as v1 (round-11 P3).
+#[test]
+fn a_truncated_catalog_does_not_taint_the_stream() {
+    let mut catalog = b"SDKC".to_vec();
+    catalog.push(2); // a future wire version...
+    // ...but the header is truncated here: no `count` u32 follows.
+    let raw = vec![
+        (Moment(1), 0, catalog),
+        (Moment(2), id(NS_ASSERT, 5), vec![0, 0, 0]), // a v1-valid assert hit
+    ];
+    let decoded = decode_events(&raw);
+    assert_eq!(
+        decoded[0].1.kind, KIND_UNKNOWN,
+        "the truncated catalog itself is unknown"
+    );
+    assert_eq!(
+        decoded[1].1.kind, KIND_ASSERT_HIT,
+        "a truncated catalog does not taint later events — they still decode as v1"
+    );
+}
+
 /// decode_events preserves order and stamps.
 #[test]
 fn decode_events_preserves_order_and_stamps() {

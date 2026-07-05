@@ -54,19 +54,27 @@ pub fn decode_events(raw: &[(Moment, u32, Vec<u8>)]) -> Vec<(Moment, GuestEvent)
         .collect()
 }
 
-/// Whether the stream carries a catalog declaration that parses cleanly (correct
-/// magic) but names a wire version other than [`wire::SDK_WIRE_VERSION`]. A
-/// malformed catalog (bad magic / truncated) does NOT taint the stream — it has
-/// said nothing trustworthy about the layout, so it decodes to a single `unknown`
-/// catalog event via [`decode_catalog`] and the rest of the stream is unaffected.
+/// Whether the stream carries a catalog declaration with a **complete, parseable
+/// header** (magic + version + count) that names a wire version other than
+/// [`wire::SDK_WIRE_VERSION`]. A malformed catalog — bad magic OR a **truncated**
+/// header (version or count missing) — does NOT taint the stream: a truncated
+/// frame has said nothing trustworthy about the layout, so it decodes to a single
+/// `unknown` catalog event via [`decode_catalog`] and the rest of the stream is
+/// unaffected. Requiring the full header (mirroring `decode_catalog`'s own parse)
+/// keeps the version-taint a deliberate, complete "future version" claim rather
+/// than a byte-count accident.
 fn stream_declares_unsupported_version(raw: &[(Moment, u32, Vec<u8>)]) -> bool {
     raw.iter().any(|(_, id, bytes)| {
         if *id != wire::CATALOG_EVENT_ID {
             return false;
         }
         let mut r = Reader::new(bytes);
-        r.u32() == Some(wire::CATALOG_MAGIC)
-            && matches!(r.u8(), Some(v) if v != wire::SDK_WIRE_VERSION)
+        let magic = r.u32();
+        let version = r.u8();
+        let count = r.u32();
+        magic == Some(wire::CATALOG_MAGIC)
+            && count.is_some() // a complete header — not a truncated frame
+            && matches!(version, Some(v) if v != wire::SDK_WIRE_VERSION)
     })
 }
 

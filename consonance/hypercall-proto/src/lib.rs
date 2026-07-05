@@ -134,12 +134,27 @@ pub struct FrameHeader {
 // its hashed memory image — byte-identical.
 #[cfg(feature = "host")]
 impl FrameHeader {
-    /// Whether this is a **request** frame (`kind == 1`). [`decode`] accepts both
-    /// request and response frames, so a dispatcher servicing guest bytes must
-    /// gate on this before routing — a response-typed frame is not a valid
-    /// request and must be rejected, not serviced as one.
+    /// Whether this header is a **structurally valid request** — every
+    /// request-header invariant [`decode`] does NOT already enforce, checked in
+    /// one step so a dispatcher servicing guest bytes validates the whole header
+    /// before routing (not one field per bug report):
+    ///
+    /// - `kind == 1` (request): [`decode`] accepts BOTH request and response
+    ///   frames (the guest client decodes responses), so a response-typed frame
+    ///   is not a valid request.
+    /// - `status == 0`: `status` is a **response-only** field; a request carrying
+    ///   a non-zero status is malformed and must not be serviced.
+    /// - `reserved == 0`: defense in depth — [`decode`] already rejects a
+    ///   non-zero reserved, but re-checking makes this a total request predicate
+    ///   independent of that guarantee.
+    ///
+    /// `magic` and `reserved`/`payload_len` bounds are validated by [`decode`]
+    /// itself, and `seq` is an arbitrary caller value (no invariant). **Service /
+    /// opcode validity is deliberately NOT here** — an unknown service or opcode
+    /// is a routing outcome with its own correlatable status
+    /// ([`Status::UnknownService`] / [`Status::UnknownOpcode`]), not a `BadRequest`.
     pub fn is_request(&self) -> bool {
-        self.kind == KIND_REQUEST
+        self.kind == KIND_REQUEST && self.status == 0 && self.reserved == 0
     }
 }
 
