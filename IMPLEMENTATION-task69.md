@@ -76,7 +76,15 @@ The box gate (spec gates 2–4) is **not** started. It needs:
   serial marker and the terminal convention `campaign-init.sh` already documents.
 - **The campaign driver** that runs both configurations and emits `CampaignLog`s.
 
-### RULING NEEDED #1 — driver location (hard-rule-1 boundary)
+> **RULINGS (integrator, this session):** #1 → **build in `dissonance/conductor`**
+> (extend the real task-60 bin; no duplicate vmm-core bin). #2 → **YES, task 69
+> owns the signal-configured driver** — a signal→bug correlation is vacuous
+> without a signal config, and the components (Archive/CellFn v1/Selector/
+> materialization, tasks 64/66/67/68) are all merged, so this is integration
+> wiring, not from-scratch. The box GO/NO-GO campaign is run **in this session**
+> over ssh (not handed off). Surface list amended to include `dissonance/conductor`.
+
+### RULING (was #1) — driver location (hard-rule-1 boundary)
 
 The spec's surface list names **`consonance/vmm-core`** to "extend the task-60
 campaign bin". **That bin does not live there** — task 60 landed the campaign in
@@ -101,7 +109,33 @@ Confirm task 69 owns building it (vs. it being assumed to already exist / being
 task-70 territory). It is buildable from the landed 64/67/68 spine, but it is real
 integration work, not a thin extension of the task-60 bin.
 
-### Box run plan (once the rulings land)
+### The signal-driver blocker (discovered while wiring)
+
+The signal cells come from **task-67 `logtmpl`** (`LogSensor` + `CellFnV1`), which
+scrapes **`RunTrace.records`** (guest console log lines) — *not* a hardware
+coverage bitmap (the toy exposes none; the socket machine's is "zero-width").
+**But neither driving loop populates `records`:** `conductor::campaign::trace_of`
+hard-codes `records: Vec::new()` (`campaign.rs:409`), and
+`Explorer::progression_step` likewise builds its trace with `records: Vec::new()`
+(`engine.rs:435`). Only the standalone recording loop (`conductor::record::
+run_recording`) captures console → `records` (via `runtrace::decode_chunks`).
+
+Consequence: a `LogSensor` wired into the existing campaign or into `Explorer`
+sees **zero records and emits zero features → the signal has no cells.** So the
+signal-configured driver cannot reuse `run_campaign`/`Explorer` as-is; it must be
+a **bespoke search driver** that, per branch: runs the machine, **captures the
+guest console into `RunTrace.records`** (as `record.rs` does), runs
+`LogSensor::observe` → features → `CellFnV1::key` → the per-branch cell set,
+admits to a cell-keyed `Archive`, selects the next base (frontier vs genesis =
+signal vs baseline), and judges with the oracle — emitting a
+`benchmark::report::CampaignLog` per `(config, seed)`. This is the substantive
+integration this task owns (ruling #2), and it is larger than "extend the task-60
+bin": it is a new record-capturing dual-config search loop. The toy path needs a
+record-emitting toy machine (whose console lines vary with proximity to the
+trigger, so cells genuinely correlate with progress) to gate it portably; the box
+path swaps in the socket machine + real guest images.
+
+### Box run plan (once the driver + images are built)
 
 1. Build 3 campaign images (bugs 1/2/3) via `guest/linux/build-campaign-image.sh`
    analogues; distinct serial markers.
