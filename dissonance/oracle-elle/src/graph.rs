@@ -217,18 +217,35 @@ impl DepGraph {
                             .entry(op.key.clone())
                             .or_default()
                             .push(vs.clone());
-                    } else if let Some(&tip) = vs.last() {
+                    } else {
                         // A register read is a quiesce (final-version) read iff it
-                        // observes a committed value AFTER **every committed writer
-                        // has committed** — not merely after their write ops. A
-                        // read stamped between the writes and a late commit saw a
-                        // not-yet-settled state and pins nothing.
+                        // is stamped AFTER **every committed writer has committed**
+                        // — not merely after their write ops. A read between the
+                        // writes and a late commit saw a not-yet-settled state and
+                        // pins nothing.
                         let after_all_commits =
                             last_commit_moment.get(&op.key).is_none_or(|&lc| op.at > lc);
-                        if after_all_commits
-                            && g.writer.get(&tip).is_some_and(|w| g.committed.contains(w))
-                        {
-                            reg_quiesce.entry(op.key.clone()).or_default().insert(tip);
+                        match vs.last() {
+                            // Observes a committed value at quiesce → pins the final.
+                            Some(&tip) => {
+                                if after_all_commits
+                                    && g.writer.get(&tip).is_some_and(|w| g.committed.contains(w))
+                                {
+                                    reg_quiesce.entry(op.key.clone()).or_default().insert(tip);
+                                }
+                            }
+                            // The **empty** initial version at quiesce, while the
+                            // key has a committed writer, contradicts that write —
+                            // a committed value cannot be unwritten at quiesce.
+                            // Never drop it (which settles on the write and judges
+                            // the lost write clean); fail loud.
+                            None => {
+                                if after_all_commits && last_commit_moment.contains_key(&op.key) {
+                                    return Err(DecodeError::EmptyFinalRead {
+                                        key: op.key.clone(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -896,20 +913,23 @@ mod tests {
     #[test]
     fn empty_read_mints_rw_to_first_writer() {
         // T1 reads a (initial) then writes b; T2 reads b (initial) then writes a.
+        // Both empty reads (@1,@2) are BEFORE either writer's commit (@3,@4), so
+        // they legitimately saw the initial version (not the round-13 post-commit
+        // contradiction) and are anti-dependent on the overwriter.
         let h = history(vec![
             tx(
                 1,
                 TxnOutcome::Committed,
                 vec![
                     op(1, 1, "a", OpKind::Read(vec![])), // initial version of a
-                    op(2, 1, "b", OpKind::Write(10)),
+                    op(3, 1, "b", OpKind::Write(10)),
                 ],
             ),
             tx(
                 2,
                 TxnOutcome::Committed,
                 vec![
-                    op(3, 2, "b", OpKind::Read(vec![])), // initial version of b
+                    op(2, 2, "b", OpKind::Read(vec![])), // initial version of b
                     op(4, 2, "a", OpKind::Write(20)),
                 ],
             ),

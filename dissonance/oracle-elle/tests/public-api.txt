@@ -50,6 +50,8 @@ pub oracle_elle::error::DecodeError::DuplicateValue
 pub oracle_elle::error::DecodeError::DuplicateValue::first: oracle_elle::op::TxnId
 pub oracle_elle::error::DecodeError::DuplicateValue::second: oracle_elle::op::TxnId
 pub oracle_elle::error::DecodeError::DuplicateValue::value: oracle_elle::op::Elem
+pub oracle_elle::error::DecodeError::EmptyFinalRead
+pub oracle_elle::error::DecodeError::EmptyFinalRead::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::InconsistentOrder
 pub oracle_elle::error::DecodeError::InconsistentOrder::key: oracle_elle::op::Key
 pub oracle_elle::error::DecodeError::Malformed(alloc::string::String)
@@ -164,6 +166,8 @@ pub oracle_elle::DecodeError::DuplicateValue
 pub oracle_elle::DecodeError::DuplicateValue::first: oracle_elle::op::TxnId
 pub oracle_elle::DecodeError::DuplicateValue::second: oracle_elle::op::TxnId
 pub oracle_elle::DecodeError::DuplicateValue::value: oracle_elle::op::Elem
+pub oracle_elle::DecodeError::EmptyFinalRead
+pub oracle_elle::DecodeError::EmptyFinalRead::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::InconsistentOrder
 pub oracle_elle::DecodeError::InconsistentOrder::key: oracle_elle::op::Key
 pub oracle_elle::DecodeError::Malformed(alloc::string::String)

@@ -194,6 +194,22 @@ pub enum DecodeError {
         /// How many committed writes the key received.
         writes: usize,
     },
+
+    /// A committed **quiesce** read of a register key (a read after every
+    /// committed writer of the key has committed) observed the **empty/initial**
+    /// version, even though the key HAS a committed write — the final read
+    /// contradicts that write (a committed value cannot be unwritten at quiesce).
+    /// Silently dropping the observation would let the graph settle on the write
+    /// and judge the lost write clean, so this is a fail-loud unrecoverable
+    /// history.
+    #[error(
+        "key {key:?}: a committed final read observed the empty/initial version after all \
+         committed writers committed (contradicts a committed write)"
+    )]
+    EmptyFinalRead {
+        /// The register key whose final read contradicts its committed writes.
+        key: Key,
+    },
 }
 
 impl DecodeError {
@@ -219,6 +235,7 @@ impl DecodeError {
             DecodeError::ReusedTxnId { .. } => "reused-txn-id",
             DecodeError::MultiValueRegisterRead { .. } => "multi-value-register-read",
             DecodeError::UnpinnedRegister { .. } => "unpinned-register",
+            DecodeError::EmptyFinalRead { .. } => "empty-final-read",
         }
     }
 }

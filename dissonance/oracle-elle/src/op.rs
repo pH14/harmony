@@ -155,14 +155,18 @@ impl History {
         self.txns.values()
     }
 
-    /// Every op across all transactions, ascending by `(Moment, txn, kind)` — a
-    /// canonical global order independent of decode order.
+    /// Every op across all transactions, ascending by `(Moment, txn, kind)` then
+    /// a **total** tie-break on the whole [`Op`] — so the canonical global order
+    /// is a pure function of content (two ops equal on `(Moment, txn, kind)` but
+    /// differing in key/session can never reorder non-deterministically across
+    /// runs), independent of decode order.
     pub fn ops_in_time_order(&self) -> Vec<&Op> {
         let mut ops: Vec<&Op> = self.txns.values().flat_map(|t| t.ops.iter()).collect();
         ops.sort_by(|a, b| {
             a.at.cmp(&b.at)
                 .then(a.txn.cmp(&b.txn))
                 .then(a.kind.cmp(&b.kind))
+                .then_with(|| a.cmp(b))
         });
         ops
     }
@@ -240,5 +244,44 @@ mod tests {
         assert_eq!(h.len(), 2);
         let ordered: Vec<Moment> = h.ops_in_time_order().iter().map(|o| o.at).collect();
         assert_eq!(ordered, vec![Moment(10), Moment(30)], "sorted by moment");
+    }
+
+    /// Round-13 P3: the global op order has a **total** tie-break, so ops equal on
+    /// `(Moment, txn, kind)` but differing in key still sort deterministically —
+    /// a pure function of content, independent of which transaction they came
+    /// from (map iteration order can't leak in).
+    #[test]
+    fn global_op_order_is_total() {
+        // Two reads of `[]` at the same Moment in the same txn on different keys —
+        // equal on (at, txn, kind), distinguished only by key.
+        let on = |key: &str| Op {
+            session: 1,
+            txn: 7,
+            kind: OpKind::Read(vec![]),
+            key: key.as_bytes().to_vec(),
+            at: Moment(5),
+        };
+        let order = |ops: Vec<Op>| {
+            let t = Transaction {
+                id: 7,
+                session: 1,
+                ops,
+                outcome: TxnOutcome::Committed,
+                at: Moment(9),
+            };
+            let mut h = History::new();
+            h.txns.insert(7, t);
+            h.ops_in_time_order()
+                .iter()
+                .map(|o| o.key.clone())
+                .collect::<Vec<_>>()
+        };
+        // Insertion order does not decide the tie: both orderings canonicalize the
+        // same way (by key).
+        assert_eq!(order(vec![on("b"), on("a")]), order(vec![on("a"), on("b")]));
+        assert_eq!(
+            order(vec![on("b"), on("a")]),
+            vec![b"a".to_vec(), b"b".to_vec()]
+        );
     }
 }

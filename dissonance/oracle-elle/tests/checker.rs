@@ -520,6 +520,49 @@ fn multi_write_register_without_final_read_is_not_judged_clean() {
     );
 }
 
+/// Round-13 P2: a committed register write, then a **final read observing the
+/// empty/initial version** after the commit — the read contradicts the committed
+/// write (a committed value cannot be unwritten at quiesce). It must fail loud
+/// (`EmptyFinalRead`), never be silently dropped so the graph settles on the
+/// write and judges the lost write clean.
+#[test]
+fn empty_final_read_over_a_committed_write_is_not_judged_clean() {
+    let t = trace(
+        vec![
+            write(1, 1, 1, "k", 1),
+            commit(2, 1),
+            read(3, 2, 2, "k", &[]), // final read sees k unwritten AFTER the commit
+            commit(4, 2),
+        ],
+        0,
+    );
+    let verdict = oracle(IsolationLevel::Serializable).analyze(&t);
+    assert!(
+        matches!(
+            verdict,
+            Err(oracle_elle::DecodeError::EmptyFinalRead { .. })
+        ),
+        "an empty final read contradicting a committed write must fail loud: {verdict:?}"
+    );
+
+    // Contrast: the SAME empty read *before* the commit legitimately saw the
+    // initial version — recoverable (and clean, the write is never read back so
+    // it needs no final read... it is a single write, unambiguous).
+    let ok = trace(
+        vec![
+            read(1, 2, 2, "k", &[]), // reads initial BEFORE the write commits
+            commit(2, 2),
+            write(3, 1, 1, "k", 1),
+            commit(4, 1),
+        ],
+        0,
+    );
+    assert!(
+        oracle(IsolationLevel::Serializable).analyze(&ok).is_ok(),
+        "a pre-commit empty read is recoverable"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Property tests (>= 256 cases)
 // ---------------------------------------------------------------------------

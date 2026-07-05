@@ -21,15 +21,20 @@
 //!   a multi-key read (no fractured read), never an intra-txn overwrite (no
 //!   intermediate read);
 //! - **read-only observations are the current value** — a quiesce read honoring
-//!   the recoverability contract (a read at quiesce sees the final version);
-//!   only an **RMW** may read an older version (a stale read → a lost update if
+//!   the recoverability contract (a read at quiesce sees the final version) —
+//!   **or the empty/initial version** (`ReadEmpty`), whose legitimacy depends on
+//!   the read-vs-commit timing the commit schedule spans (empty before the
+//!   writers commit is fine; after is the round-13 `EmptyFinalRead`); only an
+//!   **RMW** may read an older non-empty version (a stale read → a lost update if
 //!   two coincide), which is safe because an RMW read is never a quiesce read.
 //!
-//! This is exactly the space where the checker is sound. The harness found the
-//! abort-read order bug (aborted transactions' reads must not fix version order)
-//! as a shrunk 3-txn counterexample; register-order-from-final-reads (round 7)
-//! and the append G0 cases are pinned by the named tests in `checker.rs`, which
-//! use the consistent multi-key snapshot reads a real G0 witness requires.
+//! This is exactly the space where the checker is sound (the `recoverable`
+//! predicate mirrors its fail-loud contract). The harness found the abort-read
+//! order bug as a shrunk 3-txn counterexample; the whole register-read edge space
+//! (empty/single/multi × timing × contradictory finals) is enumerated
+//! exhaustively in `register_read_space.rs`, and the append G0 cases are pinned by
+//! the named `checker.rs` tests (which use the consistent multi-key snapshot reads
+//! a real G0 witness requires).
 
 mod common;
 
@@ -136,6 +141,10 @@ enum Shape {
     Writes(Vec<K>),
     /// Read one key — a *current* observation (a final/quiesce read).
     Read(K),
+    /// Read one key observing the **empty/initial** version — legitimate before
+    /// the key's writers commit, a contradiction (`EmptyFinalRead`) after (round
+    /// 13). The commit schedule + this shape span the read-vs-commit timing.
+    ReadEmpty(K),
 }
 
 fn arb_shape() -> impl Strategy<Value = Shape> {
@@ -143,6 +152,7 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
         (0u8..2, any::<bool>()).prop_map(|(key, stale)| Shape::Rmw { key, stale }),
         prop::collection::vec(0u8..2, 1..=2).prop_map(Shape::Writes),
         (0u8..2).prop_map(Shape::Read),
+        (0u8..2).prop_map(Shape::ReadEmpty),
     ]
 }
 
@@ -198,6 +208,9 @@ fn build(specs: Vec<(Shape, bool)>) -> Vec<RTxn> {
             }
             Shape::Read(k) => {
                 ops.push(ROp::R(*k, state.get(k).copied()));
+            }
+            Shape::ReadEmpty(k) => {
+                ops.push(ROp::R(*k, None));
             }
         }
         txns.push(RTxn {
@@ -310,6 +323,7 @@ fn recoverable(txns: &[RTxn], delays: &[bool]) -> bool {
     let mut writes: BTreeMap<K, usize> = BTreeMap::new();
     let mut last_commit: BTreeMap<K, u64> = BTreeMap::new();
     let mut quiesce_reads: BTreeMap<K, Vec<u64>> = BTreeMap::new();
+    let mut empty_reads: BTreeMap<K, Vec<u64>> = BTreeMap::new();
     for (i, t) in txns.iter().enumerate() {
         for (j, op) in t.ops.iter().enumerate() {
             match op {
@@ -321,18 +335,33 @@ fn recoverable(txns: &[RTxn], delays: &[bool]) -> bool {
                         .and_modify(|m| *m = (*m).max(c))
                         .or_insert(c);
                 }
-                ROp::R(k, obs)
-                    if t.committed
-                        && obs
-                            .as_ref()
-                            .is_some_and(|v| committed_writer.get(v).copied().unwrap_or(false)) =>
-                {
-                    quiesce_reads.entry(*k).or_default().push(op_moments[i][j])
-                }
+                ROp::R(k, obs) if t.committed => match obs {
+                    // A committed value observed at a read → a pin candidate.
+                    Some(v) if committed_writer.get(v).copied().unwrap_or(false) => {
+                        quiesce_reads.entry(*k).or_default().push(op_moments[i][j]);
+                    }
+                    // The empty/initial version.
+                    None => {
+                        empty_reads.entry(*k).or_default().push(op_moments[i][j]);
+                    }
+                    // An aborted value → a dirty read (G1a), not an order pin.
+                    _ => {}
+                },
                 _ => {}
             }
         }
     }
+    // (round 13) An empty committed read after every committed writer's commit,
+    // on a key that HAS a committed writer, contradicts it — `EmptyFinalRead`.
+    for (k, positions) in &empty_reads {
+        if let Some(&lc) = last_commit.get(k)
+            && positions.iter().any(|&r| r > lc)
+        {
+            return false;
+        }
+    }
+    // (rounds 9/11) Two or more committed writes with no committed-value quiesce
+    // read cannot pin the order — `UnpinnedRegister`.
     for (k, &n) in &writes {
         if n < 2 {
             continue; // a single committed write is unambiguous
