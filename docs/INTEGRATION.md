@@ -125,14 +125,24 @@ its module doc):
 | `Entropy` | 2 | `1` = fill from the run's seeded entropy stream |
 | `Block`   | 3 | `1` = capacity, `2` = read sectors |
 | `Event`   | 4 | `1` = emit `(event_id, bytes)` — fire-and-forget (the link-tier SDK stream) |
-| `Net`     | 5 | *reserved for task 61's network vertical* |
+| `Net`     | 5 | `1` = `net_decide` — round-trips a per-flow policy answer (task 61) |
 | `Sdk`     | 6 | `1` = `buggify_decide` — round-trips a one-byte fire / no-fire answer |
 
+- **`Net = 5` (task 61).** The guest flow agent's `net_decide` verb asks the host what to do with a
+  flow — **once per flow/connection, never per frame** (the host is on the control path only). One
+  request carries the fixed **18-byte little-endian** `NetFlow { src:u32, dst:u32, conn:u64,
+  event:u16 }` decision point; the response carries the **opaque, environment-encoded** flow-policy
+  answer (a `Nominal`, or a `NetLatency`/`NetLoss`/`NetThrottle`/`NetReset` policy) the guest enforces
+  on the intra-guest CNI. `hypercall-proto` is `consonance` substrate: it frames the request fields
+  and ferries the answer bytes verbatim (bounding their length, never interpreting them). The host
+  (`consonance/vmm-core`) decodes the request into an `environment::DecisionPoint::NetFlow`, resolves
+  it through `Environment::decide`, records the answer at the surfacing `Moment`, and writes back
+  `Answer::encode()` — one wire shape whether answered by the reference `NetDecider` or the live host.
 - **`Sdk = 6` (task 73).** The guest SDK's buggify verb asks the host to resolve a decision at a
   named point; unlike the fire-and-forget `Event` service it **round-trips** a one-byte answer, which
   the host resolves through its `Environment::decide` seam and records at the surfacing `Moment` (so a
-  replay reproduces it). Id **5** is reserved for the `Net` vertical, so the SDK control service is
-  **6** — the numbering never moves (a released wire ABI).
+  replay reproduces it). Id **5** is the `Net` vertical, so the SDK control service is **6** — the
+  numbering never moves (a released wire ABI).
 - An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
   `Status::UnknownOpcode` — never a silent drop.
 

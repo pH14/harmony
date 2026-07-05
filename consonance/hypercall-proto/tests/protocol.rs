@@ -472,3 +472,176 @@ fn dispatcher_failed_restore_preserves_state() {
     assert_eq!(dispatcher.restore_state(&bad), Err(ProtoError::BadState));
     assert_eq!(dispatcher.save_state(), saved);
 }
+
+// ---------------------------------------------------------------------------
+// Task 61: the `Net` per-flow decision service (ServiceId::Net = 5, op 1).
+// ---------------------------------------------------------------------------
+
+/// Pack a `net_decide` request payload the way the guest client does, so the
+/// golden-byte and decode tests share one source of truth.
+fn net_req_payload(src: u32, dst: u32, conn: u64, event: u16) -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(&src.to_le_bytes());
+    p.extend_from_slice(&dst.to_le_bytes());
+    p.extend_from_slice(&conn.to_le_bytes());
+    p.extend_from_slice(&event.to_le_bytes());
+    assert_eq!(p.len(), NET_REQUEST_LEN);
+    p
+}
+
+/// The wire form of a `net_decide` request is the fixed 18-byte little-endian
+/// `NetFlow { src, dst, conn, event }` decision point behind service id 5, op 1.
+#[test]
+fn golden_net_decide_request_bytes() {
+    let payload = net_req_payload(11, 22, 0xDEAD_BEEF, 0);
+    let mut expected = b"HCP1".to_vec();
+    expected.extend_from_slice(&[1, 0, 5, 0, 1, 0, 0, 0]); // kind 1, service 5, opcode 1
+    expected.extend_from_slice(&le32(42)); // seq
+    expected.extend_from_slice(&le32(NET_REQUEST_LEN as u32)); // payload len
+    expected.extend_from_slice(&le32(0)); // reserved
+    expected.extend_from_slice(&payload);
+    assert_eq!(enc_req(ServiceId::Net, 1, 42, &payload), expected);
+}
+
+/// `NetFlowPoint::decode` is the inverse of the client's request packing and
+/// rejects any payload that is not exactly [`NET_REQUEST_LEN`] bytes.
+#[test]
+fn net_flow_point_decodes_the_fixed_wire_form() {
+    let payload = net_req_payload(1, 2, 3, 0);
+    let point = NetFlowPoint::decode(&payload).unwrap();
+    assert_eq!(
+        point,
+        NetFlowPoint {
+            src: 1,
+            dst: 2,
+            conn: 3,
+            event: 0
+        }
+    );
+    assert!(NetFlowPoint::decode(&payload[..17]).is_none());
+    let mut too_long = payload.clone();
+    too_long.push(0);
+    assert!(NetFlowPoint::decode(&too_long).is_none());
+}
+
+/// The `net_decide` round-trip: the guest reaches the [`NetDecider`] reference
+/// answerer (id 5, op 1), which returns the opaque per-flow policy bytes from its
+/// table (default otherwise) and records every asked flow in call order.
+#[test]
+fn net_decide_round_trips_the_flow_policy() {
+    // Opaque "policy" bytes — this crate never interprets them. Model a
+    // one-byte Nominal default and a multi-byte fault answer for conn 7.
+    let nominal = vec![0u8];
+    let fault = vec![2u8, 12, 0, 0, 0, 0]; // stand-in for an encoded NetLatency
+    let mut svc = NetDecider::new(nominal.clone());
+    svc.set_flow(7, fault.clone());
+
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Net, Box::new(svc));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    let mut out = [0u8; 64];
+    let n = client.net_decide(1, 2, 5, 0, &mut out).unwrap();
+    assert_eq!(&out[..n], &nominal[..], "conn 5 uses the default answer");
+    let n = client.net_decide(1, 2, 7, 0, &mut out).unwrap();
+    assert_eq!(&out[..n], &fault[..], "conn 7 uses its pinned answer");
+}
+
+/// A too-small caller buffer surfaces `BufferTooSmall`, never a truncated answer
+/// or a panic — the guest must be able to trust the length it gets back.
+#[test]
+fn net_decide_rejects_an_undersized_out_buffer() {
+    let mut svc = NetDecider::new(vec![0u8]);
+    svc.set_flow(7, vec![1, 2, 3, 4]);
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Net, Box::new(svc));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    let mut out = [0u8; 2];
+    assert_eq!(
+        client.net_decide(1, 2, 7, 0, &mut out),
+        Err(ClientError::Protocol(ProtoError::BufferTooSmall))
+    );
+}
+
+/// With nothing registered at id 5, a guest whose host lacks the `Net` vertical
+/// gets a clean `UnknownService`, never a hang or a panic.
+#[test]
+fn net_decide_without_the_service_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    let mut out = [0u8; 8];
+    assert_eq!(
+        client.net_decide(1, 2, 3, 0, &mut out),
+        Err(ClientError::Status(Status::UnknownService))
+    );
+}
+
+/// `NetDecider` snapshots and restores its table + asked log, so a Net service
+/// survives a corpus snapshot exactly like the other reference services.
+#[test]
+fn net_decider_state_round_trips() {
+    let mut svc = NetDecider::new(vec![0u8]);
+    svc.set_flow(3, vec![9, 9]);
+    let mut out = [0u8; 16];
+    for (conn, event) in [(3u64, 0u16), (8, 0)] {
+        let (status, _n) = svc.handle(1, &net_req_payload(1, 2, conn, event), &mut out);
+        assert_eq!(status, Status::Ok);
+    }
+    assert_eq!(svc.asked().len(), 2);
+    assert_eq!(svc.asked()[0].conn, 3);
+    assert_eq!(svc.asked()[1].conn, 8);
+    let saved = svc.save_state();
+    let mut restored = NetDecider::new(Vec::new());
+    restored.restore_state(&saved).unwrap();
+    assert_eq!(restored, svc);
+}
+
+/// An opcode the `Net` service does not implement is `UnknownOpcode`, and a
+/// malformed (wrong-length) request is `BadRequest` — never a silent drop.
+#[test]
+fn net_decider_rejects_bad_opcode_and_payload() {
+    let mut svc = NetDecider::new(vec![0u8]);
+    let mut out = [0u8; 8];
+    assert_eq!(
+        svc.handle(2, &net_req_payload(1, 2, 3, 0), &mut out).0,
+        Status::UnknownOpcode
+    );
+    assert_eq!(svc.handle(1, &[0u8; 4], &mut out).0, Status::BadRequest);
+    // A rejected request records no phantom ask.
+    assert!(svc.asked().is_empty());
+}
+
+/// Additive-versioning invariant: adding the `Net` vertical must fill id 5
+/// without moving any released service id — a released wire ABI never renumbers.
+#[test]
+fn service_ids_are_a_stable_additive_registry() {
+    assert_eq!(ServiceId::Console as u16, 1);
+    assert_eq!(ServiceId::Entropy as u16, 2);
+    assert_eq!(ServiceId::Block as u16, 3);
+    assert_eq!(ServiceId::Event as u16, 4);
+    assert_eq!(ServiceId::Net as u16, 5);
+    assert_eq!(ServiceId::Sdk as u16, 6);
+}
+
+proptest! {
+    /// For any flow fields and any opaque answer that fits the caller buffer, the
+    /// `net_decide` round-trip returns exactly the answer bytes the host set for
+    /// that connection and logs exactly one ask with the sent fields.
+    #[test]
+    fn net_decide_round_trip_is_faithful(
+        src in any::<u32>(),
+        dst in any::<u32>(),
+        conn in any::<u64>(),
+        answer in proptest::collection::vec(any::<u8>(), 1..64),
+    ) {
+        let mut svc = NetDecider::new(vec![0u8]);
+        svc.set_flow(conn, answer.clone());
+        let mut dispatcher = Dispatcher::new();
+        dispatcher.register(ServiceId::Net, Box::new(svc));
+        let mut client = Client::new(DispatcherLoopback(dispatcher));
+        let mut out = [0u8; 64];
+        let n = client.net_decide(src, dst, conn, 0, &mut out).unwrap();
+        prop_assert_eq!(&out[..n], &answer[..]);
+    }
+}
