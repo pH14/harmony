@@ -214,6 +214,20 @@ fn encode_response_raw(
     )
 }
 
+/// Encode an **empty error response** echoing a **raw** `service`/`opcode` (task
+/// 73). A doorbell dispatcher answers an unrecognized `service` id — which no
+/// [`ServiceId`] variant represents, so [`encode_response`] cannot express it —
+/// with a clean [`Status::UnknownService`] frame that echoes the request's raw
+/// `service`/`opcode`/`seq`. The guest transport validates that echo (service +
+/// opcode + seq must match its request), so echoing the raw fields lets it
+/// correlate the frame and surface `ClientError::Status(UnknownService)` instead
+/// of hanging on a missing reply — honoring the module contract ("never a silent
+/// drop"). Mirrors the reference server's dispatch. Returns `0` if `buf` is too
+/// small (the doorbell reads that as "no reply written").
+pub fn encode_error(service: u16, opcode: u16, seq: u32, status: Status, buf: &mut [u8]) -> usize {
+    encode_response_raw(service, opcode, seq, status, &[], buf).unwrap_or(0)
+}
+
 fn encode_frame(
     kind: u16,
     service: u16,

@@ -1059,7 +1059,15 @@ impl<B: Backend> ControlServer<B> {
             //     just the return), so an unarmed run does NOT consume the pending
             //     point — it stays deferred and the run continues to the terminal
             //     (`StopMask::NONE` runs straight through setup_complete).
-            if until.on.armed(control_proto::class_bit::SNAPSHOT_POINT) && self.schedule.is_empty()
+            //     Gate on BOTH staged structures being empty (task 78): `snapshot`
+            //     (control.rs:604) rejects a seal while EITHER `schedule` OR
+            //     `reseed_schedule` is non-empty, so surfacing the point with a
+            //     future reseed still staged would advertise a seal the explorer's
+            //     eager `snapshot()` then fails on — or seal a point missing its
+            //     pending reseeds (replay diverges). Keep deferring until both drain.
+            if until.on.armed(control_proto::class_bit::SNAPSHOT_POINT)
+                && self.schedule.is_empty()
+                && self.reseed_schedule.is_empty()
             {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
                 if vmm.take_synchronized_snapshot_point() {
@@ -1125,7 +1133,19 @@ impl<B: Backend> ControlServer<B> {
                     // the client rewinds via `branch`/`replay`. (Buggify decisions
                     // reproduce from the reproducer's seed + policy, so nothing is
                     // recorded here.)
-                    if let Some((&m, _)) = self.schedule.iter().next() {
+                    // Any staged host fault OR staged reseed (task 78) poisons — a
+                    // crossed reseed marker (guest ran past its `Moment` in the skid
+                    // window) is the same non-reproducing class as a crossed fault:
+                    // a later replay from the reseed re-derives a different stream.
+                    // Mirror the terminal arm below (both staged structures).
+                    let staged = [
+                        self.schedule.keys().next().copied(),
+                        self.reseed_schedule.keys().next().copied(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                    if let Some(m) = staged {
                         self.schedule_poisoned = Some((m, vns));
                         return Ok(Err(ControlError::ScheduleUnsatisfiable {
                             moment: m,
@@ -2576,6 +2596,156 @@ mod tests {
             Ok(Reply::SnapId(_)) => {}
             other => panic!("seal failed with a future fault mishandled: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_future_reseed_keeps_deferring_the_snapshot_point_until_it_drains() {
+        // Round-9 P1 (task 78 seam): the deferred `setup_complete` point must NOT
+        // surface while a FUTURE reseed (m > vns) is still staged — `snapshot()`
+        // rejects a non-empty `reseed_schedule` too (`SnapshotWhileArmed`, mirrored
+        // at control.rs:604), so surfacing early would advertise a seal that fails,
+        // or seal a point missing its pending reseeds (replay diverges). The reseed
+        // is the exact analogue of the future-fault case above. Ring
+        // `setup_complete`, hit a synchronized RDTSC boundary (vns 0, the reseed
+        // still future) where the old gate would surface early, then land the
+        // reseed's arrival at M — the point surfaces ONLY at M, and a seal SUCCEEDS.
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+        let m: u64 = 4_000;
+
+        let setup_id: u32 = 4 << 24;
+        let mut frame = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            1,
+            &setup_id.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+
+        // setup_complete → an RDTSC (synchronized boundary at vns 0, reseed still
+        // future) → the reseed's arrival at M.
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Rdtsc,
+            Exit::Deadline { reached: Vtime(0) },
+            Exit::Hlt,
+        ]);
+        mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9).unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+
+        // Stage a FUTURE reseed at M. No public verb stages a reseed without a
+        // branch env, so insert directly — the test module shares the crate.
+        s.reseed_schedule.insert(m, 9);
+
+        // The point surfaces only after the reseed drains (at M), NOT at the RDTSC
+        // (vns 0), proving the gate honors `reseed_schedule` (arm SNAPSHOT_POINT).
+        match run_seeking_snapshot(&mut s) {
+            StopReason::SnapshotPoint { vtime } => assert_eq!(
+                vtime.0, m,
+                "surfaced after the future reseed drained, not at the earlier RDTSC"
+            ),
+            other => panic!("expected a deferred SnapshotPoint, got {other:?}"),
+        }
+        // The reseed drained, so the eager seal SUCCEEDS (not SnapshotWhileArmed).
+        match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(_)) => {}
+            other => panic!("seal failed with a staged reseed mishandled: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_sdk_stop_with_a_staged_reseed_poisons_loud() {
+        // Round-9 P1 (task 78 seam): an SDK stop (an assert violation at a doorbell
+        // OUT) is NOT a V-time intercept, so `effective_vns` there is only a lower
+        // bound — a staged reseed at-or-above it may already be crossed (the guest
+        // ran past its Moment in the skid window). Poison loud — the same
+        // ScheduleUnsatisfiable class as a crossed fault, mirroring the terminal
+        // arm — else a later replay from the reseed re-derives a different stream.
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+
+        // An assert *violation* Event frame (point 20) → Step::SdkStop.
+        let viol_id: u32 = (1 << 24) | 20;
+        let mut payload = viol_id.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
+        let mut frame = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            1,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Hlt,
+        ]);
+        mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9).unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+
+        // Stage a reseed beyond the trajectory (direct, as above).
+        let reseed_moment: u64 = 1_000_000;
+        s.reseed_schedule.insert(reseed_moment, 9);
+
+        // The SDK stop surfaces with the reseed staged → poison loud. (ASSERTION is
+        // armed so the stop is a real surfaced stop; the poison precedes that gate.)
+        let req = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+            },
+            resolve: None,
+        };
+        assert!(
+            matches!(
+                s.handle(&req).unwrap(),
+                Err(ControlError::ScheduleUnsatisfiable { moment, .. }) if moment == reseed_moment
+            ),
+            "an SDK stop with a staged reseed must poison loud"
+        );
+        // Latched until a rewind (a subsequent run keeps failing loud).
+        assert!(matches!(
+            s.handle(&req).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable { .. })
+        ));
     }
 
     #[test]

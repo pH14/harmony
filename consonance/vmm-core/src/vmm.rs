@@ -11,7 +11,7 @@
 //! all observable state.
 
 use hypercall_proto::{
-    MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_response,
+    MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
 };
 use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
@@ -485,6 +485,14 @@ pub struct SdkSnapshot {
     /// The `Moment`-stamped event log emitted up to the snapshot (incl. the
     /// declared catalog), which a fork carries forward.
     events: Vec<(u64, u32, Vec<u8>)>,
+    /// The deferred `setup_complete` snapshot-point flag
+    /// ([`SdkChannel::pending_snapshot`]). Round-8 folds this into `state_blob`
+    /// (the hash), so a verbatim replay MUST restore it — a snapshot sealed while
+    /// it is `true` (an unarmed run that ran past `setup_complete` to a later
+    /// sealable boundary) would otherwise restore to a state that hashes
+    /// differently (the deferred point silently lost), breaking replay's
+    /// round-trip hash equality.
+    pending_snapshot: bool,
 }
 
 pub struct Vmm<B: Backend> {
@@ -2020,6 +2028,7 @@ impl<B: Backend> Vmm<B> {
         self.sdk.as_ref().map(|s| SdkSnapshot {
             stream: s.env.stream_state(),
             events: s.events.clone(),
+            pending_snapshot: s.pending_snapshot,
         })
     }
 
@@ -2030,6 +2039,13 @@ impl<B: Backend> Vmm<B> {
         if let Some(s) = self.sdk.as_mut() {
             s.env.restore_stream_state(&snap.stream);
             s.events = snap.events.clone();
+            // Restore the deferred snapshot-point flag: it is hash-folded
+            // (round-8), so a verbatim replay must reproduce it exactly. The
+            // branch path (`sdk_restore_events`) deliberately leaves it at the
+            // fresh `false` from `enable_sdk` — a reseeded fork re-runs from the
+            // restored image (where `setup_complete` is already past) and must not
+            // re-surface an already-sealed deferred point.
+            s.pending_snapshot = snap.pending_snapshot;
         }
     }
 
@@ -2219,9 +2235,11 @@ impl<B: Backend> Vmm<B> {
         }
         // Any other service/opcode: the SDK demo rings Event / Sdk / Entropy, so
         // this is unreached in practice. Answer a clean UnknownOpcode for a known
-        // service, else leave the response page unwritten (the guest transport
-        // reads the absent frame magic as a host rejection). A fuller campaign
-        // wiring Console/Block registers them here.
+        // service, and a clean UnknownService (echoing the raw service id) for an
+        // unrecognized one — never a silent drop (the guest transport reads an
+        // unwritten response page as a host rejection and hangs, violating the
+        // hypercall error contract). A fuller campaign wiring Console/Block
+        // registers them here.
         if header.service == ServiceId::Event as u16 {
             let n = encode_response(
                 ServiceId::Event,
@@ -2245,7 +2263,17 @@ impl<B: Backend> Vmm<B> {
             .unwrap_or(0);
             (n, None)
         } else {
-            (0, None)
+            // An unrecognized service id: no `ServiceId` variant represents it, so
+            // echo the raw fields via `encode_error` (round-9 P2) — the guest gets
+            // a correlatable `UnknownService` frame instead of a hang.
+            let n = encode_error(
+                header.service,
+                header.opcode,
+                header.seq,
+                Status::UnknownService,
+                resp,
+            );
+            (n, None)
         }
     }
 
@@ -3759,6 +3787,104 @@ mod tests {
             vmm.dispatch_out(DOORBELL_PORT, 4, 24),
             Err(VmmError::ContractViolation(_))
         ));
+    }
+
+    /// An unrecognized doorbell **service** id is answered with a clean
+    /// `UnknownService` frame echoing the raw service/opcode/seq — never a silent
+    /// drop that leaves the guest transport hanging on a missing reply (round-9
+    /// P2). No `ServiceId` variant names the id, so the request is crafted by
+    /// patching the encoded frame's 2-byte service field.
+    #[test]
+    fn doorbell_unknown_service_returns_an_unknown_service_frame() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(
+            EnvSpec::Seeded {
+                seed: 1,
+                policy: FaultPolicy::none(),
+            }
+            .materialize(),
+            &FaultPolicy::none(),
+        );
+        // Encode a well-formed request, then patch the service field (bytes 6..8)
+        // to an id no `ServiceId` represents. opcode 7 / seq 99 are distinct so the
+        // echo is observable.
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Sdk, 7, 99, &[], &mut buf).unwrap();
+        let unknown: u16 = 0xABCD;
+        buf[6..8].copy_from_slice(&unknown.to_le_bytes());
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+
+        let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        assert_eq!(step, Step::Continued);
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, pl) = decode(&page).expect("a response frame is written, not a silent drop");
+        assert_eq!(
+            hdr.status,
+            Status::UnknownService as u16,
+            "clean UnknownService"
+        );
+        assert_eq!(
+            hdr.service, unknown,
+            "echoes the raw service id so the guest correlates the reply"
+        );
+        assert_eq!(hdr.opcode, 7, "echoes the request opcode");
+        assert_eq!(hdr.seq, 99, "echoes the request seq");
+        assert!(pl.is_empty(), "an error frame carries no payload");
+    }
+
+    /// `pending_snapshot` (the deferred `setup_complete` point) is folded into the
+    /// state hash (round-8), so a snapshot/restore round-trip MUST preserve it —
+    /// else a state sealed with a pending point restores to a DIFFERENT hash (the
+    /// point silently lost), diverging on replay (round-9 P1). The flag is toggled
+    /// directly (not via the doorbell, whose response write would also dirty guest
+    /// RAM and mask the SDK-channel-only difference) so the hash delta is
+    /// attributable to `pending_snapshot` alone.
+    #[test]
+    fn sdk_snapshot_round_trips_the_pending_deferred_point_hash() {
+        use environment::{EnvSpec, FaultPolicy};
+        let spec = EnvSpec::Seeded {
+            seed: 7,
+            policy: FaultPolicy::none(),
+        };
+        let mk = || {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            v.enable_sdk(spec.materialize(), spec.policy());
+            v
+        };
+
+        // A base whose only mutation is the deferred flag → h_true; a fresh channel
+        // (flag `false`) → h_false. Same RAM, same stream, same (empty) events.
+        let mut base = mk();
+        let h_false = base.state_hash();
+        base.sdk.as_mut().unwrap().pending_snapshot = true;
+        let h_true = base.state_hash();
+        assert_ne!(
+            h_false, h_true,
+            "pending_snapshot is hash-relevant (round-8 folds it in)"
+        );
+        let snap = base.sdk_snapshot().expect("a wired channel snapshots");
+        assert!(snap.pending_snapshot, "the deferred point is captured");
+
+        // The full verbatim restore carries the flag → reproduces h_true exactly.
+        let mut fork = mk();
+        fork.sdk_restore(&snap);
+        assert_eq!(
+            fork.state_hash(),
+            h_true,
+            "restore round-trips the deferred point → replay hash equality"
+        );
+
+        // The branch path (`sdk_restore_events`) deliberately leaves the flag at the
+        // fresh `false`, so a reseeded fork does NOT re-surface an already-sealed
+        // point — it hashes as h_false, not h_true.
+        let mut events_only = mk();
+        events_only.sdk_restore_events(&snap);
+        assert_eq!(
+            events_only.state_hash(),
+            h_false,
+            "branch restore leaves the deferred flag fresh"
+        );
     }
 
     /// `Vmm::run()` STOPS at a cooperating-SDK assertion — it does not swallow it by
