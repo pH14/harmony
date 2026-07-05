@@ -216,6 +216,63 @@ fn register_g0_from_final_reads_contradicting_write_moments() {
     assert_eq!(a.keys, vec![b"a".to_vec(), b"b".to_vec()]);
 }
 
+/// Round-15 P2: the G0 `at` (→ the fingerprint's quantized V-time) is the
+/// **cycle-evidence** time — the writes forming the ww cycle — not `first_moment`
+/// over the SCC. So the SAME cycle with different UNRELATED activity (an early
+/// read on a non-cycle key, in a *different* V-time bracket) dedups to ONE bug,
+/// instead of the same violation splitting on a shifted V-time.
+#[test]
+fn identical_dirty_write_cycles_dedup_despite_unrelated_activity() {
+    // T1 writes a,b; T2 writes b,a; final reads pin a-from-T1 and b-from-T2
+    // (conflicting orders → a ww cycle). The writes are at a HIGH V-time so an
+    // unrelated early read lands in a different quantization bracket.
+    let cycle = || {
+        vec![
+            write(100, 1, 1, "a", 1),
+            write(101, 1, 1, "b", 2),
+            commit(102, 1),
+            write(103, 2, 2, "b", 3),
+            write(104, 2, 2, "a", 4),
+            commit(105, 2),
+            read(106, 3, 3, "a", &[1]),
+            read(107, 3, 3, "b", &[3]),
+            commit(108, 3),
+        ]
+    };
+    let just_cycle = trace(cycle(), 0);
+    // The SAME cycle, plus an unrelated early read on a non-cycle key `c` by T1 —
+    // which pulls first_moment(T1) from 100 down to 5 (a different bracket).
+    let mut noisy = vec![read(5, 1, 1, "c", &[])];
+    noisy.extend(cycle());
+    let with_noise = trace(noisy, 0);
+
+    // The G0 is keyed at the cycle-evidence write @100, not the unrelated read @5.
+    let a = oracle(IsolationLevel::ReadUncommitted)
+        .analyze(&with_noise)
+        .expect("decodes")
+        .expect("a dirty write");
+    assert_eq!(a.kind, AnomalyKind::DirtyWrite);
+    assert_eq!(
+        a.at,
+        Moment(100),
+        "the cycle-evidence write, not the unrelated read @5"
+    );
+
+    // ...so the two identical cycles share a fingerprint (dedup does not split).
+    let f_cycle = oracle(IsolationLevel::ReadUncommitted)
+        .judge(&just_cycle)
+        .expect("G0")
+        .fingerprint;
+    let f_noise = oracle(IsolationLevel::ReadUncommitted)
+        .judge(&with_noise)
+        .expect("G0")
+        .fingerprint;
+    assert_eq!(
+        f_cycle, f_noise,
+        "identical G0 cycles dedup despite unrelated SCC activity"
+    );
+}
+
 /// Round-7 P2 (same-Moment RMW): each transaction's read and write of `k` share
 /// one Moment. The read-before-write must still be counted (via canonical op
 /// order, not a strict `read.at < write.at`), so both RMWs are recognized as

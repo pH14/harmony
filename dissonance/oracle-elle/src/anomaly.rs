@@ -148,9 +148,18 @@ fn detect_dirty_writes(h: &History, g: &DepGraph) -> Vec<Anomaly> {
         .map(|scc| {
             let set: BTreeSet<TxnId> = scc.iter().copied().collect();
             let keys = g.ww_keys_among(&set);
-            let at = set
+            // `at` is the **cycle-evidence** time: the earliest committed write to
+            // a witnessing key by a cycle transaction — the writes whose version
+            // order *forms* the ww cycle. Not `first_moment` over the SCC (which an
+            // unrelated op — an early read on some other key — would pull earlier,
+            // shifting the fingerprint's V-time so two IDENTICAL violations dedup
+            // apart).
+            let at = scc
                 .iter()
-                .filter_map(|t| h.txns.get(t).map(|t| t.first_moment()))
+                .filter_map(|t| h.txns.get(t))
+                .flat_map(|t| t.ops.iter())
+                .filter(|op| op.written().is_some() && keys.contains(&op.key))
+                .map(|op| op.at)
                 .min()
                 .unwrap_or_default();
             Anomaly {
