@@ -1,8 +1,45 @@
 # Task 69 — seeded-bug benchmark + signal→bug correlation harness (GO/NO-GO #2)
 
-Status at handoff: **portable core complete and fully gated (PR-ready)**; **box gate
-+ committed CORRELATION-REPORT.md pending two integrator rulings** (below) and a
-multi-hour box campaign run. This file is the map the foreman/integrator needs.
+## ⚠️ Milestone boundary — the GO/NO-GO is NOT decided in this PR
+
+This is **milestone 1**: it lands the *mechanism* (the portable harness + the
+engine records-capture fix + the signal-configured dual-config driver + the guest
+payloads) and a **determinism smoke test**. **It does not decide GO/NO-GO #2.** The
+actual ruling requires the **milestone-2** full ≥20-seed × 2-config × 3-bug
+real-KVM campaign that emits `dissonance/benchmark/CORRELATION-REPORT.md`. Until
+that runs, **the Phase-F gate is PENDING** — do not read anything here as a GO.
+
+Status: **milestone-1 deliverables complete and gated** (portable suite green on
+mac + on the box toolchain; determinism-twice proven; engine fix proven
+determinism-neutral). Milestone 2 is the tracked follow-up.
+
+### Milestone-1 box smoke evidence (real box, `ssh hetzner`, 2026-07-05)
+
+Worktree `~/harmony-t69` at HEAD, built + tested **pinned to core 2** (`taskset -c
+2`), box `rustc 1.96.0`:
+
+- `cargo test -p explorer stads` → **10 passed**; `-p benchmark` → **19 passed**;
+  `-p conductor --lib benchcampaign` → **3 passed** incl.
+  `dual_config_runs_and_is_deterministic_twice` (the box determinism smoke: same
+  `(seed, config)` ⇒ identical discovery-event log, for both configs) and
+  `signal_accumulates_cells`.
+- **KVM untouched** (only cargo build/test — no patched module loaded); verified
+  stock **1396736** before and after. No `box-window` lease needed.
+
+**Real-KVM campaign is blocked for milestone 1 by two things, both milestone-2
+scope:** (a) the socket-console capture the signal config needs (the driver reads
+`Machine::console()`; the socket machine does not yet capture guest serial → the
+engine fix gives it a home, wiring it is M2); (b) a **pre-existing** bin-build
+break — `conductor/src/main.rs:674` has a non-exhaustive match on
+`vmm_core::vmm::Step` (`SdkStop` not covered) that the box's newer `rustc 1.96`
+rejects (local `1.94` does not). It is **not** task-69 code (untouched task-58-era
+main), but it blocks building the `conductor` *binary* on the box, so the existing
+`conductor campaign box` path can't be driven under 1.96 without that one-line fix.
+Flagged for the integrator; out of this task's surface.
+
+---
+
+Original handoff notes (pre-ruling) follow.
 
 ## What is done (portable, load-bearing, gated on macOS)
 
