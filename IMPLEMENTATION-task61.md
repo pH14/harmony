@@ -5,6 +5,44 @@
 *enforces* it on the intra-guest CNI. This document is the design + gate evidence
 + box-gate handoff.
 
+## Box cfg(linux) build + clippy evidence (mandatory gate — 2026-07-05)
+
+Run **natively on the determinism box** (Linux i9-9900K, `rustc 1.96.0`) on the
+rebased head, because macOS per-crate gates cannot see `cfg(target_os = "linux")`
+breakage (the exact gap that red-mained via `Step::SdkStop`). The task's
+cfg(linux)-sensitive paths — the vmm-core Net dispatch, conductor, and the
+flow-agent doorbell — compile and lint clean:
+
+```text
+### HOST: Linux 6.12.90+deb13.1-amd64 x86_64  rustc 1.96.0 (ac68faa20 2026-05-25)
+
+### CMD1: cargo build -p vmm-core -p conductor --all-features
+    Finished `dev` profile [unoptimized + debuginfo] target(s)
+CMD1_EXIT=0
+
+### CMD2: cargo clippy -p vmm-core -p conductor --all-features --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s)
+CMD2_EXIT=0
+
+### CMD3: cargo clippy --manifest-path guest/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s)
+CMD3_EXIT=0
+```
+
+Exit `0` under `-D warnings` = clean. (clippy also emits three `clippy.toml`
+config notes — disallowed-method paths that don't resolve on this toolchain, e.g.
+`rand::random`; those are pre-existing config warnings, not lint findings, and do
+not affect the exit code.) A full from-scratch compile of the same head also ran
+green: `cargo build --workspace --all-features` + `cargo nextest run -p vmm-core -p
+hypercall-proto --all-features` → **410 passed** (all Net tests, incl.
+`net_snapshot_restore_resumes_the_flow_policy_stream`), and the flow-agent static
+musl build (`--target x86_64-unknown-linux-musl`) linked clean.
+
+**KVM left stock (verified, fresh ssh):** this task ran only `cargo build`/`clippy`/
+`test` — no patched-KVM module was loaded and no `box-window` lease was taken.
+Confirmed: `lsmod` `kvm` size = **1396736** (stock), `kvm_intel` users = 0,
+`box-window-leases` = **0 entries**. Nothing to revert.
+
 ## Surfaces touched (frontier surface list)
 
 | Surface | What changed | Gates |
