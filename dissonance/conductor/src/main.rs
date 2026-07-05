@@ -956,3 +956,344 @@ mod boxrun {
         finish_campaign("box", &report, n)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use explorer::{EnvCodec, Oracle};
+
+    // --- parse_u64_flexible -------------------------------------------------
+
+    #[test]
+    fn parse_u64_flexible_accepts_decimal_hex_and_underscored() {
+        assert_eq!(parse_u64_flexible("1234"), Ok(1234));
+        assert_eq!(parse_u64_flexible("0x3ff9a000"), Ok(0x3ff9a000));
+        assert_eq!(parse_u64_flexible("0X3FF"), Ok(0x3ff));
+        assert_eq!(parse_u64_flexible("1_000_000"), Ok(1_000_000));
+        assert_eq!(parse_u64_flexible("0x1_000"), Ok(0x1000));
+        assert_eq!(
+            parse_u64_flexible("  42  "),
+            Ok(42),
+            "trims surrounding whitespace"
+        );
+    }
+
+    #[test]
+    fn parse_u64_flexible_rejects_garbage() {
+        assert!(parse_u64_flexible("not-a-number").is_err());
+        assert!(parse_u64_flexible("0xzz").is_err());
+        assert!(parse_u64_flexible("").is_err());
+    }
+
+    // --- seeds / seeds_ok ----------------------------------------------------
+
+    #[test]
+    fn seeds_are_distinct_and_deterministic() {
+        let a = seeds(8);
+        let b = seeds(8);
+        assert_eq!(a, b, "the same n always mints the same seeds");
+        assert_eq!(a.len(), 8);
+        let distinct: std::collections::BTreeSet<u64> = a.iter().copied().collect();
+        assert_eq!(distinct.len(), 8, "every seed is distinct");
+    }
+
+    #[test]
+    fn seeds_ok_enforces_the_floor() {
+        assert!(!seeds_ok(1, 2), "below the floor must fail");
+        assert!(seeds_ok(2, 2), "exactly the floor must pass");
+        assert!(seeds_ok(8, 2), "above the floor must pass");
+        assert!(
+            !seeds_ok(7, 8),
+            "the box milestone's stricter floor (8) rejects 7"
+        );
+    }
+
+    // --- parse_retain --------------------------------------------------------
+
+    #[test]
+    fn parse_retain_parses_known_values_and_rejects_unknown() {
+        assert_eq!(parse_retain("all"), Some(RetentionPolicy::All));
+        assert_eq!(
+            parse_retain("interesting"),
+            Some(RetentionPolicy::Interesting)
+        );
+        assert_eq!(parse_retain("env-only"), Some(RetentionPolicy::EnvOnly));
+        assert_eq!(parse_retain("bogus"), None);
+    }
+
+    // --- run_mock / run_campaign_mock / run_mock_materialize ----------------
+
+    fn sweep_args(seeds: usize, record: Option<PathBuf>, retain: &str) -> SweepArgs {
+        SweepArgs {
+            seeds,
+            runs: 2,
+            record,
+            retain: retain.to_string(),
+        }
+    }
+
+    #[test]
+    fn run_mock_reports_gates_pass_for_a_valid_sweep() {
+        assert_eq!(
+            run_mock(sweep_args(8, None, "interesting")),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn run_mock_rejects_too_few_seeds_before_running_anything() {
+        assert_eq!(
+            run_mock(sweep_args(1, None, "interesting")),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn run_mock_with_record_persists_a_trace_store_and_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_mock(sweep_args(8, Some(dir.path().to_path_buf()), "all"));
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_some(),
+            "the recording session must have written into the store dir"
+        );
+    }
+
+    #[test]
+    fn run_mock_rejects_an_unknown_retain_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_mock(sweep_args(8, Some(dir.path().to_path_buf()), "bogus"));
+        assert_eq!(code, ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn run_campaign_mock_finds_the_planted_bug_and_reports_gates_pass() {
+        let args = CampaignArgs {
+            max_branches: CampaignConfig::toy().max_branches,
+            replay_n: REPLAY_BAR,
+            campaign_seed: None,
+        };
+        assert_eq!(run_campaign_mock(args), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn run_mock_materialize_rejects_too_few_hops() {
+        let args = MatArgs {
+            hops: 2,
+            hop_delta: 250,
+            tail_delta: 250,
+            seed: 0x1234_5678_9ABC_DEF0,
+        };
+        assert_eq!(run_mock_materialize(args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn run_mock_materialize_reports_gates_pass_for_a_valid_chain() {
+        let args = MatArgs {
+            hops: 3,
+            hop_delta: 250,
+            tail_delta: 250,
+            seed: 0x1234_5678_9ABC_DEF0,
+        };
+        assert_eq!(run_mock_materialize(args), ExitCode::SUCCESS);
+    }
+
+    // --- finish / finish_campaign / finish_recording -------------------------
+
+    fn sweep_report_of(hash_a: [u8; 32], hash_b: [u8; 32]) -> conductor::SweepReport {
+        use conductor::{RunRow, SeedRow, SweepReport};
+        let run = |hash: [u8; 32]| RunRow {
+            stop: explorer::StopReason::Quiescent {
+                vtime: explorer::VTime(10),
+            },
+            hash,
+        };
+        SweepReport {
+            snapshot_vtime: 0,
+            snapshot_attempts: 1,
+            base_hash: [0; 32],
+            rows: vec![
+                SeedRow {
+                    seed: 1,
+                    runs: vec![run(hash_a), run(hash_a)],
+                },
+                SeedRow {
+                    seed: 2,
+                    runs: vec![run(hash_b), run(hash_b)],
+                },
+            ],
+            replay_hash: [0; 32],
+        }
+    }
+
+    #[test]
+    fn finish_reports_pass_when_served_ok_and_gates_pass() {
+        let report = sweep_report_of([1; 32], [2; 32]); // 2 distinct hashes
+        assert_eq!(finish("test", Ok(()), Ok(report)), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn finish_reports_failure_when_the_gates_fail() {
+        let report = sweep_report_of([1; 32], [1; 32]); // no divergence
+        assert_eq!(finish("test", Ok(()), Ok(report)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn finish_reports_failure_when_the_client_errored() {
+        let served: Result<(), vmm_core::control::ServeError> = Ok(());
+        let client: Result<conductor::SweepReport, explorer::MachineError> =
+            Err(explorer::MachineError::Transport("boom".into()));
+        assert_eq!(finish("test", served, client), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn finish_reports_failure_when_the_server_session_errored_even_if_the_client_ok() {
+        let report = sweep_report_of([1; 32], [2; 32]);
+        let served: Result<(), vmm_core::control::ServeError> =
+            Err(vmm_core::control::ServeError::Poisoned);
+        assert_eq!(finish("test", served, Ok(report)), ExitCode::FAILURE);
+    }
+
+    fn campaign_report_of(found: bool, nominal_is_bug: bool) -> CampaignReport {
+        use conductor::campaign::{CRASH_KIND_SHUTDOWN, FoundBug, NominalRow};
+        let stop = explorer::StopReason::Crash {
+            vtime: explorer::VTime(5),
+            info: vec![CRASH_KIND_SHUTDOWN],
+        };
+        let bug = explorer::TerminalOracle::new()
+            .judge(&explorer::RunTrace {
+                terminal: stop.clone(),
+                env: explorer::SpecEnvCodec.seeded(1),
+                coverage: None,
+                events: Vec::new(),
+                records: Vec::new(),
+            })
+            .unwrap();
+        CampaignReport {
+            base_vtime: 0,
+            snapshot_attempts: 1,
+            base_hash: [0; 32],
+            branches_explored: 1,
+            found: found.then(|| FoundBug {
+                branch_index: 0,
+                seed: 1,
+                env: explorer::SpecEnvCodec.seeded(1),
+                stop: stop.clone(),
+                hash: [7; 32],
+                bug,
+            }),
+            replays: if found {
+                (0..REPLAY_BAR)
+                    .map(|_| conductor::RunRow {
+                        stop: stop.clone(),
+                        hash: [7; 32],
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            nominal: NominalRow {
+                stop: explorer::StopReason::Quiescent {
+                    vtime: explorer::VTime(1),
+                },
+                hash: [0; 32],
+                is_bug: nominal_is_bug,
+            },
+        }
+    }
+
+    #[test]
+    fn finish_campaign_reports_pass_when_the_gates_pass() {
+        let report = campaign_report_of(true, false);
+        assert_eq!(
+            finish_campaign("test", &report, REPLAY_BAR),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn finish_campaign_reports_failure_when_no_bug_was_found() {
+        let report = campaign_report_of(false, false);
+        assert_eq!(
+            finish_campaign("test", &report, REPLAY_BAR),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn finish_recording_reports_pass_then_failure_on_a_broken_gate() {
+        use conductor::record::run_recording;
+        let dir = tempfile::tempdir().unwrap();
+        let store = TraceStore::open(dir.path()).unwrap();
+        let mut server = conductor::mock::server(conductor::mock::recording_fork_script())
+            .expect("compose mock recording server");
+        let cfg = RecordConfig {
+            sweep: SweepConfig {
+                seeds: seeds(4),
+                runs_per_seed: 2,
+                deadline_delta: None,
+                ..SweepConfig::default()
+            },
+            retain: RetentionPolicy::All,
+            stream: StreamId(0),
+        };
+        let report = run_recording(&mut server, &store, &cfg).expect("mock recording runs");
+        assert_eq!(
+            finish_recording("test", &report, 2, &store, dir.path()),
+            ExitCode::SUCCESS
+        );
+
+        // Break a gate behind finish_recording's back (delete a retained
+        // journal) and confirm it reports failure, not a silent pass.
+        let victim = report.rows[0].trace_id;
+        std::fs::remove_file(dir.path().join(format!("{victim}.trace"))).unwrap();
+        assert_eq!(
+            finish_recording("test", &report, 2, &store, dir.path()),
+            ExitCode::FAILURE
+        );
+    }
+
+    // --- off-Linux stubs ------------------------------------------------------
+    //
+    // `run_box`/`run_campaign_box` resolve to a DIFFERENT function per platform
+    // (`#[cfg(target_os = "linux")]` picks the real `boxrun`-backed one, which
+    // needs `/dev/kvm` + the built guest images + a CPU-pinned host — never
+    // something a portable coverage run should invoke). These two tests only
+    // exist to pin the non-Linux stub's "loud refusal" contract, so they are
+    // gated identically to it — on Linux they simply do not compile/run.
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn run_box_refuses_to_run_off_linux() {
+        let args = BoxArgs {
+            sweep: sweep_args(8, None, "interesting"),
+            deadline_delta: 5_000_000_000,
+            kernel: "bzImage".to_string(),
+            initramfs: "initramfs-postgres.cpio.gz".to_string(),
+            ready_marker: "ready".to_string(),
+        };
+        assert_eq!(run_box(args), ExitCode::FAILURE);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn run_campaign_box_refuses_to_run_off_linux() {
+        let args = CampaignBoxArgs {
+            campaign: CampaignArgs {
+                max_branches: 4096,
+                replay_n: REPLAY_BAR,
+                campaign_seed: None,
+            },
+            deadline_delta: 5_000_000_000,
+            gpa_base: 0x0100_0000,
+            gpa_count: 8,
+            gpa_stride: 0x1000,
+            window_lo: 0,
+            window_hi: 1_000_000,
+            kernel: "bzImage".to_string(),
+            initramfs: "initramfs-campaign.cpio.gz".to_string(),
+            ready_marker: "CAMPAIGN_READY".to_string(),
+        };
+        assert_eq!(run_campaign_box(args), ExitCode::FAILURE);
+    }
+}
