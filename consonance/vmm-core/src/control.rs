@@ -112,7 +112,7 @@ use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 /// Boots a fresh, equivalently-composed VM — the restore target for every
 /// `branch`/`replay` (see the module doc's fresh-VM discipline). On the box
@@ -251,6 +251,24 @@ pub struct ControlServer<B: Backend> {
     /// Removed with its snapshot on `drop`; ephemeral pool state, like the
     /// snapshot handles themselves.
     sdk_snaps: BTreeMap<u64, SdkSnap>,
+    /// Per-snapshot `Net` channel state (task 61), same discipline as
+    /// [`sdk_snaps`](Self::sdk_snaps): a `branch`/`replay` from a mid-run snapshot
+    /// restores the flow-policy stream position (and, for a replay, the decision
+    /// prefix) so a fork's `net_decide` answers do not diverge from the sequential
+    /// run. Ephemeral, removed with its snapshot on `drop`.
+    net_snaps: BTreeMap<u64, NetSnap>,
+}
+
+/// The per-snapshot `Net` state the control server retains (task 61): the
+/// VM-level channel snapshot (seeded flow-policy stream position + decision log)
+/// **and** the [`FaultPolicy`] active when sealed — captured for the same reason
+/// as [`SdkSnap`]: a **replay** resets the recorded reproducer to `none()`, so the
+/// seal-time policy must be restored before materializing the Net env, else the
+/// restored stream would draw all-`Nominal`.
+#[derive(Clone)]
+struct NetSnap {
+    channel: NetSnapshot,
+    policy: FaultPolicy,
 }
 
 /// The per-snapshot SDK state the control server retains (task 73): the VM-level
@@ -289,6 +307,10 @@ impl<B: Backend> ControlServer<B> {
         // unconditionally, so the capability must be honored from construction.
         // Inert (and unhashed) for a non-SDK guest.
         vmm.enable_sdk(recorded.materialize(), recorded.policy());
+        // Task 61: wire the Net channel on the live VM too, so a guest flow agent
+        // that rings `net_decide` before its first branch/replay is serviced. Inert
+        // (and unhashed) for a guest that never asks about a flow.
+        vmm.enable_net(recorded.materialize());
         ControlServer {
             vmm: Some(vmm),
             factory,
@@ -304,6 +326,7 @@ impl<B: Backend> ControlServer<B> {
             },
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
+            net_snaps: BTreeMap::new(),
         }
     }
 
@@ -621,6 +644,9 @@ impl<B: Backend> ControlServer<B> {
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
         let sdk_channel = vmm.sdk_snapshot();
+        // Task 61: capture the Net channel's flow-policy stream position + decision
+        // log the same way (owned, so the borrow ends before touching self).
+        let net_channel = vmm.net_snapshot();
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
@@ -629,6 +655,12 @@ impl<B: Backend> ControlServer<B> {
             // biasing (the restore path resets `recorded` to `none()`).
             let policy = self.recorded.policy().clone();
             self.sdk_snaps.insert(id, SdkSnap { channel, policy });
+        }
+        if let Some(channel) = net_channel {
+            // Same reason as SdkSnap: a replay resets `recorded` to `none()`, so
+            // the seal-time policy must be restored before the Net env materializes.
+            let policy = self.recorded.policy().clone();
+            self.net_snaps.insert(id, NetSnap { channel, policy });
         }
         Ok(Ok(Reply::SnapId(SnapId(id))))
     }
@@ -641,6 +673,8 @@ impl<B: Backend> ControlServer<B> {
         // Task 73: drop the SDK channel snapshot with its handle (ephemeral pool
         // state, released alongside the guest snapshot).
         self.sdk_snaps.remove(&snap.0);
+        // Task 61: drop the Net channel snapshot with its handle too.
+        self.net_snaps.remove(&snap.0);
         // The handle was minted by `snapshot`, which retains exactly one ref;
         // releasing it can only fail if the store lost the layer — an
         // invariant failure we still answer on the wire (the handle is gone
@@ -802,6 +836,13 @@ impl<B: Backend> ControlServer<B> {
                 if let Some(vmm) = self.vmm.as_mut() {
                     vmm.enable_sdk(sdk_env, &sdk_policy);
                 }
+                // Task 61: the kept fresh VM must carry a Net channel too (same
+                // reason — the doorbell is serviced when net is wired), from the
+                // reset reproducer, mirroring `new` + the success path.
+                let net_env = self.recorded.materialize();
+                if let Some(vmm) = self.vmm.as_mut() {
+                    vmm.enable_net(net_env);
+                }
                 return Ok(Err(ControlError::RestoreFailed));
             }
             // Post-validation substrate breakage — the VM is unvouched; tear down.
@@ -847,7 +888,14 @@ impl<B: Backend> ControlServer<B> {
         // is `Some` iff branching, so `or_else` picks the snapshot's policy only on
         // a replay.
         let sdk_snap = self.sdk_snaps.get(&snap.0).cloned();
-        let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
+        let net_snap = self.net_snaps.get(&snap.0).cloned();
+        // On a replay, restore the seal-time policy from whichever channel snapshot
+        // carries it (SDK or Net capture the same reproducer policy); a branch uses
+        // its own `env_policy`. Without this the reset-to-`none` above makes a
+        // restored stream draw all-`Nominal` — including a Net-only run (P1).
+        let restore_policy = env_policy
+            .or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()))
+            .or_else(|| net_snap.as_ref().map(|s| s.policy.clone()));
         if let Some(policy) = restore_policy {
             self.set_recorded_policy(policy);
         }
@@ -857,6 +905,15 @@ impl<B: Backend> ControlServer<B> {
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env, &sdk_policy);
+        // Task 61: wire the Net channel from the same now-final reproducer (a fresh
+        // materialize = a fresh flow-policy stream from the restored seed), so a
+        // seeded run draws flow policy from the seeded fault stream and a replay
+        // from the recorded overrides. Inert/unhashed for a flow-agent-less guest.
+        let net_env = self.recorded.materialize();
+        self.vmm
+            .as_mut()
+            .ok_or(ServeError::Poisoned)?
+            .enable_net(net_env);
         // Restore the SDK channel snapshot for this handle, if any. A verbatim
         // **replay** (`seed` is `None`) continues the seeded streams from the
         // snapshot's position AND keeps the event prefix — so a fork from a mid-run
@@ -870,6 +927,19 @@ impl<B: Backend> ControlServer<B> {
                 vmm.sdk_restore_events(&s.channel);
             } else {
                 vmm.sdk_restore(&s.channel);
+            }
+        }
+        // Task 61: restore the Net channel the same way — a **replay** continues
+        // the flow-policy stream from the snapshot position AND keeps the decision
+        // prefix (so a fork's net_decide answers are bit-identical to the
+        // sequential run); a **branch** reseeds (enable_net just set a fresh
+        // stream), so it takes only the decision prefix and lets the new seed drive.
+        if let Some(n) = net_snap {
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+            if seed.is_some() {
+                vmm.net_restore_decisions(&n.channel);
+            } else {
+                vmm.net_restore(&n.channel);
             }
         }
         for (m, fault) in host {
