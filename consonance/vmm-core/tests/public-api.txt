@@ -458,7 +458,7 @@ pub fn vmm_core::vmm::Vmm<B>::arm_arrival(&mut self, environment::host::Moment) 
 pub fn vmm_core::vmm::Vmm<B>::can_arm_arrival(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::clear_arrival(&mut self)
 pub fn vmm_core::vmm::Vmm<B>::effective_vns(&self) -> core::option::Option<u64>
-pub fn vmm_core::vmm::Vmm<B>::enable_net(&mut self, environment::recorded::RecordedEnv) -> &mut Self
+pub fn vmm_core::vmm::Vmm<B>::enable_net(&mut self) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::enable_sdk(&mut self, environment::recorded::RecordedEnv, &environment::policy::FaultPolicy) -> &mut Self
 pub fn vmm_core::vmm::Vmm<B>::entropy_state(&self) -> core::option::Option<u64>
 pub fn vmm_core::vmm::Vmm<B>::exit_counts(&self) -> vmm_backend::exit::ExitCounts
@@ -471,7 +471,6 @@ pub fn vmm_core::vmm::Vmm<B>::is_synchronized(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::net_decisions(&self) -> &[(u64, u64, environment::catalog::Answer)]
 pub fn vmm_core::vmm::Vmm<B>::net_restore(&mut self, &vmm_core::vmm::NetSnapshot)
-pub fn vmm_core::vmm::Vmm<B>::net_restore_decisions(&mut self, &vmm_core::vmm::NetSnapshot)
 pub fn vmm_core::vmm::Vmm<B>::net_snapshot(&self) -> core::option::Option<vmm_core::vmm::NetSnapshot>
 pub fn vmm_core::vmm::Vmm<B>::new(B, vmm_core::vmm::GuestRam) -> Self
 pub fn vmm_core::vmm::Vmm<B>::observable_digest(&self) -> [u8; 32]
