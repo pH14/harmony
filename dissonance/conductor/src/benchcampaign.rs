@@ -495,28 +495,75 @@ pub fn run_bench_campaign<M: Machine>(
         }
         events.push(BranchEvent { branch, touched });
 
-        // Record the FIRST find (its time-to-bug + full ancestor-chain
-        // trajectory) but do NOT break — keep running/logging to the measurement
-        // budget so measure 1 (discovery at equal budget) is comparable, not
-        // driven by early termination (round-2 P1).
-        if !found && oracle.judge(&trace).is_some() {
-            finds.push(FindRecord {
-                bug: spec.id,
-                branch,
-                path_len,
-                novel_on_path,
-            });
-            found = true;
+        // Record the FIRST **certified** find (its time-to-bug + full
+        // ancestor-chain trajectory) but do NOT break — keep running/logging to
+        // the measurement budget so measure 1 (discovery at equal budget) is
+        // comparable, not driven by early termination (round-2 P1).
+        //
+        // A find must be a REAL find (round-3 gate-integrity P1): an incidental /
+        // flaky / unrelated crash must NOT count. Certify it two ways before
+        // logging: (a) the bug's distinctive serial MARKER appears in the run's
+        // console (per-bug attribution), and (b) the emitted reproducer replays
+        // the IDENTICAL crash `cfg.replay_n` (25/25) times.
+        if !found && oracle.judge(&trace).is_some() && marker_attributed(&trace, spec) {
+            let certified = certify_replays(machine, base, &env, &trace.terminal, cfg.replay_n)?;
+            if certified {
+                finds.push(FindRecord {
+                    bug: spec.id,
+                    branch,
+                    path_len,
+                    novel_on_path,
+                });
+                found = true;
+            }
         }
     }
 
     machine.drop_snap(base)?;
     Ok(CampaignLog {
+        bug: spec.id,
         config,
         seed: cfg.campaign_seed,
         events,
         finds,
     })
+}
+
+/// Whether the run's console carries the bug's distinctive serial marker — the
+/// per-bug crash attribution (so an unrelated crash is not mis-credited to this
+/// bug). Scans the scrape records for the marker as a byte substring.
+fn marker_attributed(trace: &RunTrace, spec: &BugSpec) -> bool {
+    let marker = spec.serial_marker.as_bytes();
+    if marker.is_empty() {
+        return false;
+    }
+    trace
+        .records
+        .iter()
+        .any(|(_, r)| r.line.windows(marker.len()).any(|w| w == marker))
+}
+
+/// Certify a candidate find by **N/N replay**: replay the reproducer `n` times
+/// and require every run to reproduce the identical bug-bearing
+/// `(stop, state_hash)` as the finding run. A flaky/non-deterministic crash fails
+/// this (its replays diverge), so it is never logged as a find. `n == 0` never
+/// certifies (a find must be replay-verified).
+fn certify_replays<M: Machine>(
+    machine: &mut M,
+    base: SnapId,
+    env: &Environment,
+    found_stop: &StopReason,
+    n: usize,
+) -> Result<bool, MachineError> {
+    if n == 0 || !found_stop.is_bug() {
+        return Ok(false);
+    }
+    let replays = verify_replays(machine, base, env, n)?;
+    Ok(replays.len() == n
+        && replays
+            .iter()
+            .all(|(stop, _)| stop == found_stop && stop.is_bug())
+        && replays.iter().all(|(_, h)| *h == replays[0].1))
 }
 
 /// Replay a found reproducer `n` times, returning the `(stop, state_hash)` seen —
@@ -654,6 +701,81 @@ mod tests {
         assert!(
             log.events.len() as u64 > find.branch + 1,
             "logging continues past the find branch"
+        );
+    }
+
+    /// An incidental crash that carries **no serial marker** is NOT logged as a
+    /// find — the marker-attribution gate rejects it (round-3 gate integrity).
+    #[test]
+    fn unmarked_crash_is_not_a_find() {
+        // A machine that always crashes but emits an EMPTY console (no marker).
+        struct SilentCrashMachine {
+            current: Environment,
+            snaps: std::collections::BTreeMap<u64, Environment>,
+            next: u64,
+        }
+        impl Machine for SilentCrashMachine {
+            fn branch(&mut self, s: SnapId, e: &Environment) -> Result<(), MachineError> {
+                if !self.snaps.contains_key(&s.0) {
+                    return Err(MachineError::UnknownSnapshot(s.0));
+                }
+                self.current = e.clone();
+                Ok(())
+            }
+            fn replay(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.current = self.snaps[&s.0].clone();
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                // Always a crash — but no console line is emitted, so no marker.
+                Ok(StopReason::Crash {
+                    vtime: VTime(BASE_VTIME + 1),
+                    info: vec![0, 0],
+                })
+            }
+            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+                let id = self.next;
+                self.next += 1;
+                self.snaps.insert(id, self.current.clone());
+                Ok(SnapId(id))
+            }
+            fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.snaps.remove(&s.0);
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([7u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(self.current.clone())
+            }
+            fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+                Ok(Vec::new()) // no marker ever
+            }
+        }
+        let bench = Benchmark::wave5();
+        let bug = bench.get(BugId(1)).unwrap().clone();
+        let mut m = SilentCrashMachine {
+            current: mint_scenario_env(0, &bug),
+            snaps: std::collections::BTreeMap::new(),
+            next: 1,
+        };
+        let cfg = BenchConfig {
+            max_branches: 8,
+            ..BenchConfig::smoke(1)
+        };
+        let log =
+            run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        assert!(
+            log.finds.is_empty(),
+            "an unmarked crash must not be certified as a find"
         );
     }
 

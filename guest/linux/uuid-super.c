@@ -15,14 +15,17 @@
 //   * the seed-derived draw's top PREFIX_BITS bits == TARGET_PREFIX's top bits.
 //   * PREFIX_BITS dials the expected time-to-find: 8 bits ⇒ ~256 branches.
 //
-// Determinism: the draw is a FIXED integer hash (splitmix64, identical to
-// dissonance/benchmark's `entropy_draw`) of a run value read from **RDRAND**,
-// which the determinism hypervisor intercepts and answers with the per-branch
-// campaign seed — NOT host randomness. So a fixed branch draws identically every
-// replay (the crash reproduces N/N) while different branches (different EnvSpec
-// seeds) draw different values, which is what makes the rare-entropy search work.
-// The RDRAND draw happens AFTER the snapshot so the sealed base does not capture
-// a fixed value. Build: static (`cc -static -O2`), like campaign-super.c.
+// Determinism: the run value is read from **RDRAND**, which the determinism
+// hypervisor intercepts and answers with the first word of
+// `SeededEntropy::new(EnvSpec.seed)` (the reference xorshift64* stream in
+// consonance/hypercall-proto) — NOT host randomness. That word IS the draw (no
+// extra hashing); dissonance/benchmark's `entropy_draw` replicates the identical
+// function, so the guest and the offline model agree bit-for-bit on which seeds
+// fire. A fixed branch draws identically every replay (the crash reproduces N/N)
+// while different branches (different EnvSpec seeds) draw different values, which
+// is what makes the rare-entropy search work. The RDRAND draw happens AFTER the
+// snapshot so the sealed base does not capture a fixed value. Build: static
+// (`cc -static -O2`), like campaign-super.c.
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -39,16 +42,6 @@
 // isa-debug-exit terminal. FAIL_CODE 0x63 tags "benchmark bug 3".
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x63
-
-// splitmix64 — the exact fixed hash dissonance/benchmark::trigger::entropy_draw
-// uses, so the guest's ground truth and the offline manifest agree bit-for-bit.
-static uint64_t entropy_draw(uint64_t seed)
-{
-    uint64_t z = seed + 0x9E3779B97F4A7C15ULL;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
 
 static int prefix_matches(uint64_t draw)
 {
@@ -127,11 +120,16 @@ int main(void)
 
     // Draw the seeded entropy AFTER the snapshot point, from the VMM's RDRAND
     // intercept (per-branch, campaign-controlled) — NOT a pre-snapshot env var.
-    uint64_t seed = draw_campaign_entropy();
-    uint64_t draw = entropy_draw(seed);
+    // The RDRAND word IS the seeded-entropy draw (the first word of
+    // `SeededEntropy::new(EnvSpec.seed)`), so it is checked DIRECTLY — no extra
+    // hashing. `dissonance/benchmark::trigger::entropy_draw` replicates the exact
+    // same value, so the guest and the offline model agree on which seeds fire
+    // (the round-3 stream-matching fix — an earlier draft re-hashed with a
+    // splitmix64 the model did not share, so they disagreed).
+    uint64_t draw = draw_campaign_entropy();
     if (getenv("UUID_DEBUG")) {
-        printf("UUID_DRAW: seed=0x%llx prefix_bits=%d\n",
-               (unsigned long long)seed, PREFIX_BITS);
+        printf("UUID_DRAW: draw=0x%llx prefix_bits=%d\n",
+               (unsigned long long)draw, PREFIX_BITS);
         fflush(stdout);
     }
 

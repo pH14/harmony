@@ -918,10 +918,13 @@ terminal with the same kernel-terminal fallback `campaign-init.sh` documents):
   pre-snapshot `getenv("SEED")`: an env var is baked into the process before the
   base seal, so branching could never vary it and the search was a no-op (the
   round-2 review's deeper P1 — moving the *draw* after the marker was not enough,
-  the *source* had to be post-snapshot and campaign-controlled). The value is then
-  hashed with the **exact** `splitmix64`
-  `dissonance/benchmark::trigger::entropy_draw` uses (guest ground truth == offline
-  manifest, bit-for-bit). A branch taken only when the draw's top `PREFIX_BITS = 8`
+  the *source* had to be post-snapshot and campaign-controlled). The RDRAND word
+  **is** the draw (the first word of `SeededEntropy::new(EnvSpec.seed)`, the
+  xorshift64* stream in `consonance/hypercall-proto`); `benchmark::trigger::
+  entropy_draw` replicates that **exact** function so the guest and the model agree
+  bit-for-bit on which seeds fire (the round-3 stream-matching fix — an earlier
+  draft re-hashed with a splitmix64 the model did not share). A branch taken only
+  when the draw's top `PREFIX_BITS = 8`
   bits match `0xA5` emits **`UUID_BUG:`** (crash code `0x63`) **before** poisoning a
   pointer and dereferencing it (so the attribution gate always sees the marker for
   the bug the deref then crashes on). Fire probability `2^-8` ⇒ ~256 branches.

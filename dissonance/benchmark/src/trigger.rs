@@ -9,8 +9,10 @@
 //! the ground-truth predicate the correlation report is validated against is the
 //! exact contract the guest C payloads implement.
 //!
-//! None of this is randomness: the rare-entropy draw is a fixed integer hash of
-//! the seed (`splitmix64`), so a fixed scenario fires identically every time.
+//! None of this is randomness: the rare-entropy draw is the `SeededEntropy`
+//! xorshift64* stream (the exact function the guest's RDRAND returns — see
+//! [`entropy_draw`]), so a fixed scenario fires identically every time and the
+//! guest and this model agree on which seeds fire.
 
 use crate::manifest::{BugSpec, TriggerParams};
 use serde::{Deserialize, Serialize};
@@ -53,13 +55,29 @@ pub struct Scenario {
 }
 
 /// The deterministic entropy draw a run derives from its seed — the toy model of
-/// the guest's `gen_random_uuid()` (task 42). `splitmix64`, a fixed integer hash:
-/// no randomness, so a fixed seed draws identically every replay.
+/// the guest's `gen_random_uuid()` (task 42).
+///
+/// **This MUST be the identical function the guest sees.** The guest reads its
+/// entropy from the VMM's `RDRAND` intercept, which returns the first word of
+/// `SeededEntropy::new(EnvSpec.seed)` — the reference **xorshift64\*** stream in
+/// `consonance/hypercall-proto` (`ENTROPY_MUL = 0x2545_F491_4F6C_DD1D`, zero-seed
+/// fallback `0x9E37_79B9_7F4A_7C15`). This function replicates exactly that first
+/// word, so `guest RDRAND == entropy_draw(seed)` and the guest and the model agree
+/// on which seeds fire bug 3 (the round-3 review's stream-matching fix — an
+/// earlier `splitmix64` model disagreed with the guest's stream). The pinned
+/// known-answer test guards the replication against drift.
 pub fn entropy_draw(seed: u64) -> u64 {
-    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
+    // xorshift64* over the normalized seed — byte-for-byte the hypercall-proto
+    // `SeededEntropy::next()` first word (the value the guest's RDRAND returns).
+    let mut state = if seed == 0 {
+        0x9E37_79B9_7F4A_7C15
+    } else {
+        seed
+    };
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    state.wrapping_mul(0x2545_F491_4F6C_DD1D)
 }
 
 /// Whether `scenario` fires `spec`'s planted bug. Pure, total, panic-free.
@@ -184,6 +202,18 @@ mod tests {
                 .unwrap(),
             _ => 0,
         }
+    }
+
+    /// Pinned known-answer: `entropy_draw` reproduces the `hypercall-proto`
+    /// `SeededEntropy::new(seed).next()` first word exactly (guest RDRAND ==
+    /// model). Values computed from that reference xorshift64* stream; a drift in
+    /// either constant or shift changes them.
+    #[test]
+    fn entropy_draw_matches_seeded_entropy_reference() {
+        assert_eq!(entropy_draw(0), 0x0d83_b3e2_9a21_487a); // zero-seed fallback
+        assert_eq!(entropy_draw(1), 0x47e4_ce4b_896c_dd1d);
+        assert_eq!(entropy_draw(2), 0x8fc9_9c97_12d9_ba3a);
+        assert_eq!(entropy_draw(42), 0x56ce_4ab7_719b_a3a0);
     }
 
     /// Near-misses on the fault-timing bug are inert: wrong gpa, wrong bit, and

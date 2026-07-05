@@ -37,7 +37,7 @@ use std::fmt::Write as _;
 pub const MIN_SEEDS: u64 = 20;
 
 /// Which of the two identical-budget configurations a campaign ran under.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub enum Configuration {
     /// The Phase-D signal stack (65 RunTraces → 67 sensors + CellFn v1 → 64
     /// Archive with the default v1 Selector → 68 materialization).
@@ -79,6 +79,11 @@ pub struct FindRecord {
 /// these; the report analyses them offline.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CampaignLog {
+    /// The bug this campaign **attempted** — recorded whether or not it was found,
+    /// so the report can count attempts per `(bug, config)` and enforce the seed
+    /// floor **per bug/config**, not globally (a no-find attempt for bug 2 must be
+    /// distinguishable from a bug-1 log — round-3 gate integrity).
+    pub bug: BugId,
     /// The configuration this campaign ran under.
     pub config: Configuration,
     /// The campaign seed (Klees-style: ≥20 distinct seeds per configuration).
@@ -156,6 +161,11 @@ pub struct BugMeasure {
     pub bug: BugId,
     /// Human name (report heading).
     pub name: String,
+    /// Independent seeds ATTEMPTED for this bug under the signal config (the
+    /// per-bug/config trial count the seed floor is enforced against).
+    pub signal_attempts: u64,
+    /// Independent seeds attempted for this bug under the baseline config.
+    pub baseline_attempts: u64,
     /// Seeds (of the signal config) that found this bug — the paired-sample count
     /// for the novelty↔progress correlation.
     pub signal_finders: u64,
@@ -273,25 +283,51 @@ impl CorrelationReport {
         effect_floor: (i128, i128),
         stop_eps: (u64, u64),
     ) -> Self {
-        let signal: Vec<&CampaignLog> = logs
+        // Deduplicate by (bug, config, seed), keeping the first occurrence — a
+        // duplicate log for the same trial must not inflate the sample or the seed
+        // floor (round-3 P2). Everything downstream reads `deduped`.
+        let mut seen_trials = BTreeSet::new();
+        let deduped: Vec<&CampaignLog> = logs
             .iter()
+            .filter(|l| seen_trials.insert((l.bug, l.config, l.seed)))
+            .collect();
+
+        let signal: Vec<&CampaignLog> = deduped
+            .iter()
+            .copied()
             .filter(|l| l.config == Configuration::Signal)
             .collect();
-        let baseline: Vec<&CampaignLog> = logs
+        let baseline: Vec<&CampaignLog> = deduped
             .iter()
+            .copied()
             .filter(|l| l.config == Configuration::Baseline)
             .collect();
+
+        // Distinct seeds ATTEMPTED for a given bug under a given config — the
+        // per-bug/config trial count the seed floor is enforced against.
+        let attempts = |these: &[&CampaignLog], id: BugId| -> u64 {
+            these
+                .iter()
+                .filter(|l| l.bug == id)
+                .map(|l| l.seed)
+                .collect::<BTreeSet<_>>()
+                .len() as u64
+        };
 
         let mut bugs = Vec::new();
         for spec in &benchmark.bugs {
             let id = spec.id;
+            let signal_attempts = attempts(&signal, id);
+            let baseline_attempts = attempts(&baseline, id);
 
             // Measure 1: novelty↔progress over signal seeds that found this bug.
             let mut cells = Vec::new();
             let mut ttb = Vec::new();
             let mut finder_seeds = BTreeSet::new();
             for log in &signal {
-                if let Some(b) = log.find_branch(id) {
+                if log.bug == id
+                    && let Some(b) = log.find_branch(id)
+                {
                     cells.push(log.distinct_cells_at(budget));
                     ttb.push(b);
                     finder_seeds.insert(log.seed);
@@ -305,7 +341,11 @@ impl CorrelationReport {
             // Measure 4: medians + IQR.
             let signal_median = median(&ttb);
             let signal_iqr = iqr(&ttb);
-            let base_ttb: Vec<u64> = baseline.iter().filter_map(|l| l.find_branch(id)).collect();
+            let base_ttb: Vec<u64> = baseline
+                .iter()
+                .filter(|l| l.bug == id)
+                .filter_map(|l| l.find_branch(id))
+                .collect();
             let baseline_median = median(&base_ttb);
             let baseline_iqr = iqr(&base_ttb);
 
@@ -321,7 +361,7 @@ impl CorrelationReport {
             // Measure 2: trajectory (signal config), pooled over finding runs.
             let (mut novel_on_path, mut path_total) = (0u64, 0u64);
             let (mut base_num, mut base_den) = (0u64, 0u64);
-            for log in &signal {
+            for log in signal.iter().filter(|l| l.bug == id) {
                 let (bn, bd) = log.novel_admission_rate();
                 base_num += bn;
                 base_den += bd;
@@ -346,10 +386,15 @@ impl CorrelationReport {
             };
 
             // correlates: right direction (negative) AND |ρ| ≥ floor ⟺ ρ ≤ −floor,
-            // AND enough independent finders to trust the correlation (the seed
-            // floor — a 2-finder perfect ρ must not count toward a GO).
+            // AND the seed floor is met PER bug/config — ≥MIN_SEEDS independent
+            // seeds ATTEMPTED under both configs (so a bug that never got the
+            // trials cannot count toward a GO via other bugs — round-3), and
+            // ≥MIN_SEEDS independent finders (so the correlation itself is not
+            // undersampled — round-1).
             let (fnum, fden) = effect_floor;
-            let correlates = signal_finders >= MIN_SEEDS
+            let correlates = signal_attempts >= MIN_SEEDS
+                && baseline_attempts >= MIN_SEEDS
+                && signal_finders >= MIN_SEEDS
                 && novelty_progress
                     .map(|c| c.is_defined() && c.at_most(-fnum, fden))
                     .unwrap_or(false);
@@ -357,6 +402,8 @@ impl CorrelationReport {
             bugs.push(BugMeasure {
                 bug: id,
                 name: spec.name.clone(),
+                signal_attempts,
+                baseline_attempts,
                 signal_finders,
                 novelty_progress,
                 trajectory,
@@ -378,8 +425,11 @@ impl CorrelationReport {
                 // folded, so a canonical (seed) order makes the rendered report
                 // byte-identical regardless of the caller's log-concatenation
                 // order (a determinism leak otherwise — round-2 P2).
-                let mut these: Vec<&CampaignLog> =
-                    logs.iter().filter(|l| l.config == cfg).collect();
+                let mut these: Vec<&CampaignLog> = deduped
+                    .iter()
+                    .copied()
+                    .filter(|l| l.config == cfg)
+                    .collect();
                 these.sort_by_key(|l| l.seed);
                 let acc = pooled_accumulator(&these);
                 StadsMeasure {
@@ -457,9 +507,9 @@ impl CorrelationReport {
         let _ = writeln!(s, "## Per-bug measures\n");
         let _ = writeln!(
             s,
-            "| Bug | Signal finders | 1: novelty↔progress ρ | correlates? | 2: trajectory (on-path vs base) | 4: signal median (IQR) | baseline median (IQR) | not worse? |"
+            "| Bug | Attempts (sig/base) | Signal finders | 1: novelty↔progress ρ | correlates? | 2: trajectory (on-path vs base) | 4: signal median (IQR) | baseline median (IQR) | not worse? |"
         );
-        let _ = writeln!(s, "|---|---|---|---|---|---|---|---|");
+        let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|");
         for b in &self.bugs {
             let rho = match b.novelty_progress {
                 Some(c) if c.is_defined() => format!("{:+.3} (n={})", c.rho_f64(), c.n),
@@ -479,9 +529,11 @@ impl CorrelationReport {
             );
             let _ = writeln!(
                 s,
-                "| {} ({}) | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} ({}) | {}/{} | {} | {} | {} | {} | {} | {} | {} |",
                 b.bug.0,
                 b.name,
+                b.signal_attempts,
+                b.baseline_attempts,
                 b.signal_finders,
                 rho,
                 if b.correlates { "✅" } else { "❌" },
@@ -605,6 +657,7 @@ mod tests {
             events.push(BranchEvent { branch, touched });
         }
         CampaignLog {
+            bug,
             config: Configuration::Signal,
             seed,
             events,
@@ -619,6 +672,7 @@ mod tests {
 
     fn baseline_log(seed: u64, ttb: u64, bug: BugId) -> CampaignLog {
         CampaignLog {
+            bug,
             config: Configuration::Baseline,
             seed,
             events: (0..=ttb)
@@ -728,6 +782,75 @@ mod tests {
     }
 
     #[test]
+    fn per_bug_config_attempt_floor_enforced() {
+        // Bug 1 has 20 signal finders (passes the finder floor) but only 5
+        // BASELINE attempts — the comparison is ungrounded, so it must NOT count
+        // toward a GO even though the global seed floor is met via other bugs.
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        // Bugs 2 & 3: full, GO-shaped (so the global floor is comfortably met).
+        for id in [BugId(2), BugId(3)] {
+            for k in 0..20u64 {
+                logs.push(signal_log(id.0 as u64 * 1000 + k, 20 - k, 50 + k * 5, id));
+                logs.push(baseline_log(id.0 as u64 * 2000 + k, 200 + k * 5, id));
+            }
+        }
+        // Bug 1: 20 signal finders, but only 5 baseline attempts.
+        for k in 0..20u64 {
+            logs.push(signal_log(1000 + k, 20 - k, 50 + k * 5, BugId(1)));
+        }
+        for k in 0..5u64 {
+            logs.push(baseline_log(2000 + k, 200 + k, BugId(1)));
+        }
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let b1 = rep.bugs.iter().find(|b| b.bug == BugId(1)).unwrap();
+        assert_eq!(b1.baseline_attempts, 5);
+        assert!(
+            !b1.correlates,
+            "bug 1 with <20 baseline attempts cannot count toward GO"
+        );
+        // Bugs 2 & 3 still correlate → the ruling can still be GO on those two,
+        // but bug 1's incomplete coverage is correctly excluded.
+        assert!(rep.bugs.iter().filter(|b| b.correlates).count() >= 2);
+    }
+
+    #[test]
+    fn duplicate_trials_are_deduped() {
+        // Duplicating a (bug, config, seed) log must not change the report.
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for spec in &bench.bugs {
+            for k in 0..20u64 {
+                logs.push(signal_log(
+                    spec.id.0 as u64 * 1000 + k,
+                    20 - k,
+                    50 + k * 5,
+                    spec.id,
+                ));
+                logs.push(baseline_log(
+                    spec.id.0 as u64 * 2000 + k,
+                    200 + k * 5,
+                    spec.id,
+                ));
+            }
+        }
+        let clean = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        // Append exact duplicates of every log.
+        let mut with_dups = logs.clone();
+        with_dups.extend(logs.iter().cloned());
+        let dup = CorrelationReport::compute(&bench, &with_dups, 30, (3, 10), (1, 1000));
+        assert_eq!(
+            clean.signal_seeds, dup.signal_seeds,
+            "dedup keeps seed counts"
+        );
+        assert_eq!(
+            clean.render_markdown(),
+            dup.render_markdown(),
+            "duplicate trials must not change the report"
+        );
+    }
+
+    #[test]
     fn report_is_order_independent() {
         // The rendered report (incl. the STADS species curves + stopping sample)
         // must be byte-identical regardless of the caller's log order.
@@ -820,6 +943,7 @@ mod tests {
             touched: vec![0],
         });
         let log = CampaignLog {
+            bug,
             config: Configuration::Signal,
             seed: 1,
             events,
