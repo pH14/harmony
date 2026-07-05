@@ -91,6 +91,23 @@ jobs:
       - name: guest/payloads sdk-demo build (bare metal, from its dir)
         working-directory: guest/payloads
         run: cargo build -p sdk-demo
+      # guest/flow-agent (task 61) is out-of-workspace (its own manifest), like
+      # guest/sdk, so the root fmt/clippy/nextest/deny above never see it. Gate it
+      # explicitly on its own manifest — the flow-agent brain (answer→policy,
+      # enforcement plan, decider) + its cfg(linux) doorbell must stay green like any
+      # other crate, or the crate rots green (the gap that just red-mained us).
+      - name: guest/flow-agent gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path guest/flow-agent/Cargo.toml --all -- --check
+          cargo clippy --manifest-path guest/flow-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path guest/flow-agent/Cargo.toml --all-features
+          cargo deny --manifest-path guest/flow-agent/Cargo.toml check --config deny.toml licenses
+          # Build the static musl target it actually ships as (a std-leak or a
+          # cfg(linux) doorbell regression only surfaces on a real Linux target —
+          # this box runs Linux, so the cfg(target_os="linux") FFI is compiled here,
+          # which the macOS dev host and codex both skip).
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --manifest-path guest/flow-agent/Cargo.toml --bin flow-agent --target x86_64-unknown-linux-musl
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
@@ -179,6 +196,11 @@ jobs:
       # auto-discovers, else the run is config-free.
       - name: cargo mutants --in-diff (guest/sdk, out-of-workspace manifest)
         run: cargo mutants --manifest-path guest/sdk/Cargo.toml --no-shuffle --in-diff pr.diff
+      # guest/flow-agent (task 61) is out-of-workspace too — mutate its diffed lines
+      # on its own manifest so the flow-agent brain (answer→policy / enforcement plan
+      # / decider) is gated like guest/sdk, not left ungated by the root run.
+      - name: cargo mutants --in-diff (guest/flow-agent, out-of-workspace manifest)
+        run: cargo mutants --manifest-path guest/flow-agent/Cargo.toml --no-shuffle --in-diff pr.diff
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in

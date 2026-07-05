@@ -11,7 +11,8 @@
 //! all observable state.
 
 use hypercall_proto::{
-    MAX_PAYLOAD, SeededEntropy, Service, ServiceId, Status, decode, encode_error, encode_response,
+    MAX_PAYLOAD, NetFlowPoint, SeededEntropy, Service, ServiceId, Status, decode, encode_error,
+    encode_response,
 };
 use sha2::{Digest, Sha256};
 use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
@@ -488,6 +489,29 @@ struct SdkChannel {
     policy: Vec<u8>,
 }
 
+/// The task-61 `Net` channel: the host-side state the guest flow agent's
+/// `net_decide` doorbell drives — the **decision log only**. Wired per run by
+/// [`Vmm::enable_net`].
+///
+/// **Single decide-stream (the integrator ruling).** A `net_decide` answer is a
+/// fault-schedule **input** the guest acts on (it enforces the per-flow policy on
+/// the CNI) — the same category as a buggify decision, not a passive observation.
+/// So a net decision draws from the **one** shared fault-decision stream the SDK
+/// channel owns (materialized once, folded into `state_hash` via the `SDK\0`
+/// chunk), exactly like buggify — the task-78 single-stream contract. The Net
+/// channel therefore holds **no `env` of its own**; it only records the decisions.
+/// The "inert guest" property is preserved: a flow-agent-less guest makes zero
+/// `net_decide` calls, so it never advances the stream and its `state_hash` is
+/// byte-for-byte unchanged (there is no `NET` hash chunk).
+struct NetChannel {
+    /// The per-flow decisions this run resolved: `(moment, conn, answer)`, in
+    /// arrival order. Evidence the box gate reads (a flow decision appears at a
+    /// stable `Moment` across two runs) and the control server folds into the
+    /// recorded reproducer. Host-side capture (not itself hashed — the *stream
+    /// advance* the decision caused is what the shared SDK stream position folds).
+    decisions: Vec<(u64, u64, environment::Answer)>,
+}
+
 /// The SDK channel's **replay-relevant** state, captured with a snapshot (task
 /// 73): the seeded stream position and the emitted event log. Held by the
 /// control server keyed by snapshot handle; restored on branch/replay so a fork
@@ -508,6 +532,20 @@ pub struct SdkSnapshot {
     /// differently (the deferred point silently lost), breaking replay's
     /// round-trip hash equality.
     pending_snapshot: bool,
+}
+
+/// The task-61 `Net` channel's **replay-relevant** state, captured with a
+/// snapshot: the **decision log only**. The flow-policy stream position is NOT
+/// here — a net decision draws from the one shared fault stream the SDK channel
+/// owns (the single-stream ruling), so that position is captured/restored exactly
+/// once by [`SdkSnapshot`] and a fork's `net_decide` answers continue from it. The
+/// Net snapshot just carries the decision log forward so a fork's decision
+/// evidence is complete.
+#[derive(Clone, Debug)]
+pub struct NetSnapshot {
+    /// The `(moment, conn, answer)` decision log up to the snapshot, carried
+    /// forward so a fork's decision evidence is complete.
+    decisions: Vec<(u64, u64, environment::Answer)>,
 }
 
 pub struct Vmm<B: Backend> {
@@ -634,6 +672,10 @@ pub struct Vmm<B: Backend> {
     /// every non-SDK path (M1/M2/corpus/Linux-boot) — the doorbell then stays the
     /// default-deny contract violation and this field never touches the hash.
     sdk: Option<SdkChannel>,
+    /// The task-61 `Net` channel, wired per run by [`Vmm::enable_net`]. `None` for
+    /// every path without a flow agent — the doorbell then behaves exactly as
+    /// before and this field never touches the hash.
+    net: Option<NetChannel>,
 }
 
 impl<B: Backend> Vmm<B> {
@@ -661,6 +703,7 @@ impl<B: Backend> Vmm<B> {
             snapshot_hashing: false,
             arrival_deadline: None,
             sdk: None,
+            net: None,
         }
     }
 
@@ -2017,7 +2060,7 @@ impl<B: Backend> Vmm<B> {
         // Task 73: the hypercall doorbell. Serviced only when an SDK channel is
         // wired; otherwise it falls through to the default-deny below (so no
         // non-SDK path is affected). One `OUT` = one atomic exchange.
-        if port == DOORBELL_PORT && self.sdk.is_some() {
+        if port == DOORBELL_PORT && (self.sdk.is_some() || self.net.is_some()) {
             return self.service_doorbell(size, value);
         }
         // Linux path: the curated legacy ISA/PCI ports accept-and-drop.
@@ -2059,6 +2102,55 @@ impl<B: Backend> Vmm<B> {
     #[cfg(test)]
     pub(crate) fn sdk_is_enabled(&self) -> bool {
         self.sdk.is_some()
+    }
+
+    /// Wire the task-61 `Net` channel for the upcoming run: the hypercall doorbell
+    /// is serviced and `net_decide` decisions are captured. Takes **no env** — a
+    /// net decision draws from the one shared fault stream the SDK channel owns
+    /// (the single-stream ruling), so [`enable_sdk`] must also be wired for a net
+    /// decision to resolve a non-nominal policy (the control server always wires
+    /// both). Resets the decision capture. A guest that never asks about a flow is
+    /// unaffected — the channel is inert, and since a net decision only advances
+    /// the shared SDK stream, a run without net decisions is byte-for-byte
+    /// unchanged (there is no `NET` hash chunk).
+    pub fn enable_net(&mut self) -> &mut Self {
+        self.net = Some(NetChannel {
+            decisions: Vec::new(),
+        });
+        self
+    }
+
+    /// The per-flow decisions this run resolved, `(moment, conn, answer)`, in
+    /// order. Evidence that a run exercised the net vertical (the box gate reads
+    /// it): every flow decision appears at a stable `Moment` across two same-seed
+    /// runs. The decision log itself is host-side capture; the *stream advance*
+    /// each decision caused is folded into `state_hash` via the shared SDK stream.
+    pub fn net_decisions(&self) -> &[(u64, u64, environment::Answer)] {
+        self.net
+            .as_ref()
+            .map(|n| n.decisions.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Capture the `Net` channel's **replay-relevant** state for a snapshot: the
+    /// decision log only. The flow-policy stream position rides the shared SDK
+    /// stream ([`sdk_snapshot`](Self::sdk_snapshot)), so it is not captured here.
+    /// `None` when no Net channel is wired.
+    pub fn net_snapshot(&self) -> Option<NetSnapshot> {
+        self.net.as_ref().map(|n| NetSnapshot {
+            decisions: n.decisions.clone(),
+        })
+    }
+
+    /// Restore a captured [`NetSnapshot`]'s decision prefix. The flow-policy stream
+    /// position is restored by [`sdk_restore`](Self::sdk_restore) /
+    /// [`sdk_restore_events`](Self::sdk_restore_events) (the shared stream), so both
+    /// the verbatim-replay and the branch paths restore the same thing here — just
+    /// the decision log carried forward. A no-op when no Net channel is wired.
+    pub fn net_restore(&mut self, snap: &NetSnapshot) {
+        if let Some(n) = self.net.as_mut() {
+            n.decisions = snap.decisions.clone();
+        }
     }
 
     /// Capture the SDK channel's **replay-relevant** state for a snapshot (task
@@ -2299,6 +2391,47 @@ impl<B: Backend> Vmm<B> {
             .unwrap_or(0);
             return (n, None);
         }
+        // The Net service (id 5, op 1): resolve one per-flow decision. Decode the
+        // fixed 18-byte `NetFlow` decision point, ask the reproducer, and answer
+        // the opaque encoded flow policy the guest enforces. One decision per
+        // flow/connection — the host stays on the control path.
+        if header.service == ServiceId::Net as u16 && header.opcode == 1 {
+            // Gate on the Net channel being wired. The doorbell is serviced whenever
+            // EITHER sdk or net is enabled, so a guest that rings `net_decide` on a
+            // run with only the SDK channel wired reaches here with `self.net` unset.
+            // Answer a clean `UnknownService` — NOT out-of-gate behavior: without
+            // this guard `decide_net` would draw a NetFlow answer from the shared SDK
+            // stream (advancing it, perturbing buggify) for a service the run never
+            // offered. With the guard, an unwired-Net guest never touches the stream,
+            // so the inert-guest `state_hash` is unchanged (there is no draw).
+            if self.net.is_none() {
+                let n = encode_response(
+                    ServiceId::Net,
+                    1,
+                    header.seq,
+                    Status::UnknownService,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
+            let Some(point) = NetFlowPoint::decode(payload) else {
+                let n =
+                    encode_response(ServiceId::Net, 1, header.seq, Status::BadRequest, &[], resp)
+                        .unwrap_or(0);
+                return (n, None);
+            };
+            let answer = self.decide_net(moment, point.src, point.dst, point.conn, point.event);
+            // The encoded answer is a handful of bytes (a `Nominal` tag or a small
+            // net fault), always well within a frame payload; fail closed if not.
+            let n = encode_response(ServiceId::Net, 1, header.seq, Status::Ok, &answer, resp)
+                .unwrap_or_else(|_| {
+                    encode_response(ServiceId::Net, 1, header.seq, Status::Internal, &[], resp)
+                        .unwrap_or(0)
+                });
+            return (n, None);
+        }
         // The Entropy service (id 2, op 1): the SDK's `entropy_fill` source. Route
         // it through the VMM's `SeededEntropy` stream — the **same** one RDRAND
         // draws from (round-5 P2) — so a guest's RDRAND and its hypercall RNG never
@@ -2337,6 +2470,20 @@ impl<B: Backend> Vmm<B> {
         } else if header.service == ServiceId::Sdk as u16 {
             let n = encode_response(
                 ServiceId::Sdk,
+                header.opcode,
+                header.seq,
+                Status::UnknownOpcode,
+                &[],
+                resp,
+            )
+            .unwrap_or(0);
+            (n, None)
+        } else if header.service == ServiceId::Net as u16 {
+            // Net is a KNOWN service (op 1 handled above), so a bad opcode is
+            // `UnknownOpcode`, not the `UnknownService` fall-through — consistent
+            // with the Event/Sdk/Entropy arms (task 61).
+            let n = encode_response(
+                ServiceId::Net,
                 header.opcode,
                 header.seq,
                 Status::UnknownOpcode,
@@ -2471,6 +2618,50 @@ impl<B: Backend> Vmm<B> {
         let fire = matches!(ans, Answer::Fault(Fault::BuggifyFire));
         sdk.buggify.push((moment, ans));
         fire
+    }
+
+    /// Resolve one `net_decide` flow decision (task 61): stamp the surfacing
+    /// `Moment`, ask the reproducer's `Environment::decide` for the flow's policy,
+    /// capture `(moment, conn, answer)`, and return the **encoded** answer bytes
+    /// the guest decodes and enforces. Mirrors [`decide_buggify`] exactly — one
+    /// wire shape whether the flow is answered from the seeded fault stream or a
+    /// recorded override — swapping the `Buggify` point for a `NetFlow` one.
+    /// Returns a one-byte encoded `Nominal` if no net channel is wired.
+    fn decide_net(&mut self, moment: u64, src: u32, dst: u32, conn: u64, event: u16) -> Vec<u8> {
+        use environment::{Answer, ConnId, DecisionPoint, Environment, FlowEvent, NodeId, Outcome};
+        // Today the flow agent only surfaces flow-open; any event id maps to
+        // `Open` (the catalog's sole `FlowEvent` — deliberately extensible) rather
+        // than being rejected, so a newer agent asking about a not-yet-modeled
+        // transition still gets a (nominal-or-policy) answer instead of a hang.
+        let _ = event;
+        let point = DecisionPoint::NetFlow {
+            src: NodeId(src),
+            dst: NodeId(dst),
+            conn: ConnId(conn),
+            event: FlowEvent::Open,
+        };
+        // Draw from the ONE shared fault-decision stream the SDK channel owns (the
+        // single-stream ruling): a net decision advances the same hash-folded
+        // stream buggify draws from, so buggify answers after a net draw match the
+        // canonical one-stream reproducer. Without an SDK channel there is no shared
+        // stream to draw from (not a production path — the control server always
+        // wires SDK), so answer a nominal policy rather than opening a second stream.
+        let Some(sdk) = self.sdk.as_mut() else {
+            return Answer::Nominal.encode();
+        };
+        // `environment::Moment` is the retired-instruction axis (a `u64`).
+        sdk.env.set_moment(moment);
+        let ans = match sdk.env.decide(&point) {
+            Outcome::Resolved(a) => a,
+            // A pure backing (RecordedEnv) never needs the host; be total anyway.
+            Outcome::NeedsHost => Answer::Nominal,
+        };
+        let bytes = ans.encode();
+        // Capture the decision in the Net channel's log (host-side evidence).
+        if let Some(net) = self.net.as_mut() {
+            net.decisions.push((moment, conn, ans));
+        }
+        bytes
     }
 
     fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
@@ -3904,6 +4095,148 @@ mod tests {
         assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
     }
 
+    /// Task 61: the `Net` doorbell decodes a flow decision point, resolves it
+    /// through the reproducer, answers the encoded flow policy, captures the
+    /// decision at its `Moment`, and — the load-bearing property — a fresh replay
+    /// from the same reproducer reproduces the identical answer at the identical
+    /// `Moment`. This is the host half of the record→replay closure the box gates
+    /// exercise end-to-end.
+    #[test]
+    fn net_doorbell_decides_records_and_replays() {
+        use environment::{Answer, DecisionClass, EnvSpec, Fault, FaultPolicy};
+
+        // Stage a `net_decide` request for one flow and return the decoded answer.
+        fn ask_flow(vmm: &mut Vmm<MockBackend>, src: u32, dst: u32, conn: u64) -> (u16, Answer) {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&src.to_le_bytes());
+            payload.extend_from_slice(&dst.to_le_bytes());
+            payload.extend_from_slice(&conn.to_le_bytes());
+            payload.extend_from_slice(&0u16.to_le_bytes()); // FlowEvent::Open
+            let mut buf = [0u8; HC_PAGE];
+            let n =
+                hypercall_proto::encode_request(ServiceId::Net, 1, 1, &payload, &mut buf).unwrap();
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+            let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+            assert_eq!(step, Step::Continued);
+            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+            let (hdr, pl) = decode(&page).expect("a valid response frame");
+            (
+                hdr.status,
+                Answer::decode(pl).expect("a valid encoded answer"),
+            )
+        }
+
+        // A fault policy that faults every flow with a `NetReset` (1/1), so the
+        // seeded answer for the `NetFlow` class is deterministic from the seed.
+        let mut policy = FaultPolicy::none();
+        policy
+            .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
+            .unwrap();
+        let spec = EnvSpec::Seeded { seed: 7, policy };
+
+        // First run: the doorbell answers the flow and records it at Moment 0. The
+        // net decision draws from the SHARED SDK stream (the single-stream ruling),
+        // so the SDK channel is wired with the same reproducer + policy.
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+        vmm.enable_net();
+        let (status, ans) = ask_flow(&mut vmm, 1, 2, 42);
+        assert_eq!(status, Status::Ok as u16);
+        assert_eq!(ans, Answer::Fault(Fault::NetReset), "seeded flow policy");
+        assert_eq!(
+            vmm.net_decisions(),
+            &[(0, 42, Answer::Fault(Fault::NetReset))],
+            "the decision is captured at its Moment/conn"
+        );
+
+        // Replay: a fresh VM materialized from the SAME reproducer reproduces the
+        // identical answer at the identical Moment — bit-identical decision.
+        let mut replay = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        replay.enable_sdk(spec.materialize(), spec.policy());
+        replay.enable_net();
+        let (rstatus, rans) = ask_flow(&mut replay, 1, 2, 42);
+        assert_eq!((rstatus, &rans), (Status::Ok as u16, &ans));
+        assert_eq!(replay.net_decisions(), vmm.net_decisions());
+    }
+
+    /// Task 61: a `Net` doorbell without a wired channel is impossible (the gate
+    /// requires it), but a wrong-length payload and a wrong opcode both fail
+    /// closed with a clean status — never a hang or a phantom decision.
+    #[test]
+    fn net_doorbell_rejects_malformed_requests() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        // A malformed request is rejected before any decide, so no shared stream is
+        // needed — enable Net alone (the doorbell is serviced when net is wired).
+        vmm.enable_net();
+
+        // A short (non-18-byte) payload → BadRequest, no decision recorded.
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Net, 1, 1, &[0u8; 4], &mut buf).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, _) = decode(&page).unwrap();
+        assert_eq!(hdr.status, Status::BadRequest as u16);
+        assert!(vmm.net_decisions().is_empty());
+
+        // A wrong opcode on the known Net service → UnknownOpcode.
+        let n =
+            hypercall_proto::encode_request(ServiceId::Net, 9, 1, &[0u8; 18], &mut buf).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, _) = decode(&page).unwrap();
+        assert_eq!(hdr.status, Status::UnknownOpcode as u16);
+    }
+
+    /// Task 61 (R4): a `net_decide` on a run where **Net was never enabled** (only
+    /// the SDK channel is wired, so the doorbell is still serviced) gets a clean
+    /// `UnknownService` — NOT out-of-gate behavior — and, critically, does NOT draw
+    /// from the shared SDK stream: a following buggify answer is identical to one on
+    /// a VM that never saw the net_decide. So an unwired-Net guest cannot perturb
+    /// the SDK stream / `state_hash` through the Net service.
+    #[test]
+    fn net_decide_without_enable_net_is_unknown_service_and_leaves_the_stream() {
+        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy};
+        let mut policy = FaultPolicy::none();
+        policy
+            .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
+            .unwrap();
+        policy.set_buggify_point(1, 1, 2).unwrap();
+        let spec = EnvSpec::Seeded { seed: 9, policy };
+
+        // SDK wired, Net NOT wired.
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+
+        // Ring net_decide → UnknownService (the doorbell is serviced because SDK is
+        // wired), no decision captured.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Net, 1, 1, &payload, &mut buf).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, _) = decode(&page).unwrap();
+        assert_eq!(hdr.status, Status::UnknownService as u16);
+        assert!(vmm.net_decisions().is_empty());
+
+        // The rejected net_decide left the shared stream untouched: buggify draws the
+        // stream's FIRST word, exactly as on a VM that never rang net_decide.
+        let fired = vmm.decide_buggify(1, 1);
+        let mut fresh = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        fresh.enable_sdk(spec.materialize(), spec.policy());
+        assert_eq!(
+            fired,
+            fresh.decide_buggify(1, 1),
+            "the rejected net_decide did not advance the shared SDK stream"
+        );
+    }
+
     /// Round-14 malformed-SDK-event-payload MATRIX: `classify_sdk_event` validates
     /// every payload the host acts on, so a bug (assert violation) or a snapshot
     /// deferral (setup_complete) is never synthesized from garbage. One place, the
@@ -4718,6 +5051,156 @@ mod tests {
             cont(&mut broken),
             expected,
             "a fresh (position-0) channel is NOT the mid-run continuation"
+        );
+    }
+
+    /// Task 61: a mid-net-decisions snapshot, restored, reproduces the `net_decide`
+    /// continuation BIT-IDENTICALLY. Under the single-stream ruling the flow-policy
+    /// stream position rides the **shared SDK stream** (restored by `sdk_restore`),
+    /// and the decision log rides `net_restore`; a fresh (position-0) channel
+    /// diverges. Uses a multi-fault NetFlow policy so the sampled fault VALUE varies
+    /// with the stream position (else divergence could not be witnessed).
+    #[test]
+    fn net_continuation_resumes_via_the_shared_sdk_stream() {
+        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy, VTime};
+        let mut policy = FaultPolicy::none();
+        policy
+            .set_class(
+                DecisionClass::NetFlow,
+                1,
+                1,
+                &[
+                    Fault::NetReset,
+                    Fault::NetLatency(VTime(10)),
+                    Fault::NetThrottle { bps: 5 },
+                ],
+            )
+            .unwrap();
+        let spec = EnvSpec::Seeded { seed: 7, policy };
+
+        // Wire BOTH channels — a net decision draws from the shared SDK stream.
+        let wire = |spec: &EnvSpec| -> Vmm<MockBackend> {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            v.enable_sdk(spec.materialize(), spec.policy());
+            v.enable_net();
+            v
+        };
+
+        let mut base = wire(&spec);
+        for i in 0..5 {
+            let _ = base.decide_net(i, 1, 2, i, 0);
+        }
+        // Capture the shared stream (SDK) + the net decision log.
+        let sdk_snap = base.sdk_snapshot().expect("a wired SDK channel snapshots");
+        let net_snap = base.net_snapshot().expect("a wired Net channel snapshots");
+
+        let cont = |vmm: &mut Vmm<MockBackend>| -> Vec<Vec<u8>> {
+            (5..10).map(|i| vmm.decide_net(i, 1, 2, i, 0)).collect()
+        };
+        let expected = cont(&mut base);
+
+        // RESTORED (shared stream via sdk_restore + decision log via net_restore) →
+        // reproduces the continuation bit-identically.
+        let mut fork = wire(&spec);
+        fork.sdk_restore(&sdk_snap);
+        fork.net_restore(&net_snap);
+        assert_eq!(
+            cont(&mut fork),
+            expected,
+            "restored shared stream resumes the net continuation exactly"
+        );
+        assert_eq!(
+            fork.net_decisions().len(),
+            10,
+            "the decision prefix carried over"
+        );
+
+        // WITHOUT restore (position 0) → diverges.
+        let mut broken = wire(&spec);
+        assert_ne!(
+            cont(&mut broken),
+            expected,
+            "a fresh (position-0) shared stream is NOT the mid-run continuation"
+        );
+    }
+
+    /// Task 61 (R3, the single-stream contract): a `net_decide` draw **advances the
+    /// one shared fault stream** that buggify also draws from, so a buggify answer
+    /// that follows a net decision matches the canonical one-stream reproducer (net
+    /// then buggify from a single `RecordedEnv`), and DIFFERS from a buggify with no
+    /// preceding net draw. Under the (fixed) two-stream bug, the net draw would not
+    /// shift the buggify sequence and buggify-after-net would equal buggify-first.
+    #[test]
+    fn a_net_draw_advances_the_shared_stream_seen_by_buggify() {
+        use environment::{
+            Answer, DecisionClass, DecisionPoint, EnvSpec, Environment, Fault, FaultPolicy,
+        };
+
+        // Compute, purely in the environment crate, the canonical one-stream
+        // buggify answer with vs. without a preceding net draw for a seed.
+        let net_point = DecisionPoint::NetFlow {
+            src: environment::NodeId(1),
+            dst: environment::NodeId(2),
+            conn: environment::ConnId(7),
+            event: environment::FlowEvent::Open,
+        };
+        let fires = |ans: environment::Outcome| {
+            matches!(
+                ans,
+                environment::Outcome::Resolved(Answer::Fault(Fault::BuggifyFire))
+            )
+        };
+        let make_spec = |seed: u64| {
+            let mut policy = FaultPolicy::none();
+            policy
+                .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
+                .unwrap();
+            policy.set_buggify_point(1, 1, 2).unwrap();
+            EnvSpec::Seeded { seed, policy }
+        };
+        // Pick a seed where the two stream positions give DIFFERENT buggify
+        // outcomes, so the test genuinely witnesses the stream advance (a fixed
+        // constant could hit a parity collision where word 0 and word 1 agree).
+        let (spec, ref_net, ref_bug_after_net, bug_first) = (0u64..64)
+            .find_map(|seed| {
+                let spec = make_spec(seed);
+                let mut e1 = spec.materialize();
+                let net = e1.decide(&net_point);
+                let bug_after = fires(e1.decide(&DecisionPoint::Buggify { point: 1 }));
+                let mut e2 = spec.materialize();
+                let bug_first = fires(e2.decide(&DecisionPoint::Buggify { point: 1 }));
+                (bug_after != bug_first).then(|| {
+                    let net = match net {
+                        environment::Outcome::Resolved(a) => a,
+                        _ => Answer::Nominal,
+                    };
+                    (spec, net, bug_after, bug_first)
+                })
+            })
+            .expect("a seed where the net draw shifts the buggify outcome exists");
+
+        // The VMM: net_decide then decide_buggify share ONE stream, so the buggify
+        // answer matches the canonical net-then-buggify reference (the net draw
+        // shifted the stream) and NOT the buggify-first reference.
+        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        v.enable_sdk(spec.materialize(), spec.policy());
+        v.enable_net();
+        let net_bytes = v.decide_net(0, 1, 2, 7, 0);
+        assert_eq!(
+            Answer::decode(&net_bytes).unwrap(),
+            ref_net,
+            "net answer matches the canonical stream position 0"
+        );
+        let fired = v.decide_buggify(1, 1);
+        assert_eq!(
+            fired, ref_bug_after_net,
+            "buggify-after-net matches the canonical one-stream reproducer \
+             (the net draw advanced the shared stream)"
+        );
+        assert_ne!(
+            fired, bug_first,
+            "buggify-after-net differs from buggify-first — the net draw genuinely \
+             advanced the shared stream (would be equal under the two-stream bug)"
         );
     }
 

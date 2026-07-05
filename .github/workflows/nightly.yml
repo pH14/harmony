@@ -43,3 +43,19 @@ jobs:
       # they blow the job ceiling without touching any additional unsafe.
       - name: miri — conductor (lib)
         run: cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib
+      # guest/flow-agent (task 61) is out-of-workspace (its own manifest). Its ONLY
+      # unsafe is the binary's `cfg(target_os="linux")` FFI — `clock_gettime`, and
+      # (under `cfg(all(linux, x86_64))`) `mmap /dev/mem` + `iopl` +
+      # `VmcallTransport::with_doorbell`'s `OUT` asm. Miri CANNOT execute real
+      # syscalls / asm, and this FFI is `cfg`-gated off the aarch64-darwin Miri host
+      # anyway (the non-target stubs compile there) — the same exclusion this
+      # workflow applies to the vmcall-transport asm doorbell and the KVM/perf FFI.
+      # So there is no `unsafe` in the compiled Miri target: this run is a UB safety
+      # net over the crate's ONLY non-FFI logic — the unsafe-free brain (lib.rs:
+      # answer→policy, enforcement plan, decider) + the real hypercall-proto
+      # decode/dispatch driven through the loopback in tests/decider.rs. The FFI's
+      # own soundness is documented at its `// SAFETY:` blocks + the doorbell module
+      # doc; the pointer/bounds logic it relies on lives in (Miri-covered)
+      # vmcall-transport. `--lib --test decider`.
+      - name: miri — guest/flow-agent (lib + decider, out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/flow-agent/Cargo.toml --lib --test decider

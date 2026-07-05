@@ -184,6 +184,33 @@ wait_for 600 "pod/postgres Ready" \
     || { kc describe pod postgres 2>/dev/null | $BB tail -30; tail_k3s; finish 1; }
 log "POSTGRES_READY the postgres pod is Running and accepting connections"
 
+# 3b. (task 61) start the in-guest flow agent for the client->postgres flow,
+# BEFORE the client pod exists, while the CNI is up. The agent asks the host
+# `net_decide` once for this flow and enforces the answer on the intra-guest CNI
+# (cni0), targeting the postgres pod IP:5432. The nominal path installs nothing
+# (agent presence stays deterministic — box gate A); a NetLatency/full-drop policy
+# installs a `tc netem`/`nft drop` rule the client then observes (gate B). Guarded:
+# a missing binary (agent-absent image) or a fail-closed-to-nominal decision (no
+# Net channel wired) never aborts the workload — the agent is additive. `PG_IP` is
+# the deterministic sequential-IPAM pod IP resolved above (the workload's server).
+if command -v flow-agent >/dev/null 2>&1; then
+    PG_IP=$(kc get pod postgres -o jsonpath='{.status.podIP}' 2>/dev/null)
+    log "FLOWAGENT starting for client->postgres flow (dst=$PG_IP:5432 on cni0)"
+    # The agent enforces on the FORWARD path (cni0) filtered to the postgres pod
+    # IP:5432. If the host did not enable_net the agent no-ops cleanly (nominal),
+    # so this never aborts the workload. Capture the agent's OWN exit status (not
+    # the log pipe's — busybox ash has no PIPESTATUS, so a bare `cmd | sed || log`
+    # would swallow a non-zero agent exit): write to a file, echo it prefixed, then
+    # branch on the real rc so a BROKEN agent is loudly observable on the box.
+    flow-agent --src 1 --dst 2 --conn 1 --iface cni0 \
+        --dst-ip "$PG_IP" --dport 5432 >/tmp/flowagent.log 2>&1
+    FA_RC=$?
+    $BB sed 's/^/K8S61: /' /tmp/flowagent.log
+    if [ "$FA_RC" -ne 0 ]; then
+        log "FLOWAGENT FAILED rc=$FA_RC (additive — continuing, but a broken agent is observable)"
+    fi
+fi
+
 # 4. apply the client Pod and let it call the postgres pod over the CNI.
 kc apply -f /k8s/client.yaml >/dev/null 2>&1
 wait_for 600 "pod/client scheduled" \

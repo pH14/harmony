@@ -112,7 +112,7 @@ use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 /// Boots a fresh, equivalently-composed VM — the restore target for every
 /// `branch`/`replay` (see the module doc's fresh-VM discipline). On the box
@@ -251,6 +251,24 @@ pub struct ControlServer<B: Backend> {
     /// Removed with its snapshot on `drop`; ephemeral pool state, like the
     /// snapshot handles themselves.
     sdk_snaps: BTreeMap<u64, SdkSnap>,
+    /// Per-snapshot `Net` channel state (task 61), same discipline as
+    /// [`sdk_snaps`](Self::sdk_snaps): a `branch`/`replay` from a mid-run snapshot
+    /// restores the flow-policy stream position (and, for a replay, the decision
+    /// prefix) so a fork's `net_decide` answers do not diverge from the sequential
+    /// run. Ephemeral, removed with its snapshot on `drop`.
+    net_snaps: BTreeMap<u64, NetSnap>,
+}
+
+/// The per-snapshot `Net` state the control server retains (task 61): the
+/// VM-level channel snapshot (seeded flow-policy stream position + decision log)
+/// **and** the [`FaultPolicy`] active when sealed — captured for the same reason
+/// as [`SdkSnap`]: a **replay** resets the recorded reproducer to `none()`, so the
+/// seal-time policy must be restored before materializing the Net env, else the
+/// restored stream would draw all-`Nominal`.
+#[derive(Clone)]
+struct NetSnap {
+    channel: NetSnapshot,
+    policy: FaultPolicy,
 }
 
 /// The per-snapshot SDK state the control server retains (task 73): the VM-level
@@ -289,6 +307,10 @@ impl<B: Backend> ControlServer<B> {
         // unconditionally, so the capability must be honored from construction.
         // Inert (and unhashed) for a non-SDK guest.
         vmm.enable_sdk(recorded.materialize(), recorded.policy());
+        // Task 61: wire the Net channel on the live VM too, so a guest flow agent
+        // that rings `net_decide` before its first branch/replay is serviced. Inert
+        // (and unhashed) for a guest that never asks about a flow.
+        vmm.enable_net();
         ControlServer {
             vmm: Some(vmm),
             factory,
@@ -304,6 +326,7 @@ impl<B: Backend> ControlServer<B> {
             },
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
+            net_snaps: BTreeMap::new(),
         }
     }
 
@@ -621,6 +644,9 @@ impl<B: Backend> ControlServer<B> {
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
         let sdk_channel = vmm.sdk_snapshot();
+        // Task 61: capture the Net channel's flow-policy stream position + decision
+        // log the same way (owned, so the borrow ends before touching self).
+        let net_channel = vmm.net_snapshot();
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
@@ -629,6 +655,12 @@ impl<B: Backend> ControlServer<B> {
             // biasing (the restore path resets `recorded` to `none()`).
             let policy = self.recorded.policy().clone();
             self.sdk_snaps.insert(id, SdkSnap { channel, policy });
+        }
+        if let Some(channel) = net_channel {
+            // Same reason as SdkSnap: a replay resets `recorded` to `none()`, so
+            // the seal-time policy must be restored before the Net env materializes.
+            let policy = self.recorded.policy().clone();
+            self.net_snaps.insert(id, NetSnap { channel, policy });
         }
         Ok(Ok(Reply::SnapId(SnapId(id))))
     }
@@ -641,6 +673,8 @@ impl<B: Backend> ControlServer<B> {
         // Task 73: drop the SDK channel snapshot with its handle (ephemeral pool
         // state, released alongside the guest snapshot).
         self.sdk_snaps.remove(&snap.0);
+        // Task 61: drop the Net channel snapshot with its handle too.
+        self.net_snaps.remove(&snap.0);
         // The handle was minted by `snapshot`, which retains exactly one ref;
         // releasing it can only fail if the store lost the layer — an
         // invariant failure we still answer on the wire (the handle is gone
@@ -694,6 +728,19 @@ impl<B: Backend> ControlServer<B> {
                 // `Environment::decide`) answers `DecisionClass::Buggify`, so a
                 // reproducer whose only faults are buggify biasing is accepted
                 // (its buggify decisions replay from the seeded fault stream).
+                //
+                // **Task 61 widening:** the in-guest **flow agent** is the
+                // `NetFlow` decide-seam (the doorbell's `Net` service →
+                // `Environment::decide` → the guest enforces the per-flow policy on
+                // the CNI), so a policy that faults the **net** class is now
+                // enforceable too. Accept a policy that faults **only** the
+                // enforceable classes (buggify and/or net) — its per-flow decisions
+                // replay from the seeded fault stream exactly like buggify (no guest
+                // overrides, so the reproducer still round-trips a later
+                // branch/replay). A block/process fault (no decide-seam yet) is
+                // still rejected. A **guest override** (a pinned per-Moment answer)
+                // and a **standing** fault remain unsupported — the net path is
+                // driven by the seeded policy, not by pinned overrides.
                 let has_standing = matches!(
                     &spec,
                     EnvSpec::Recorded { standing, .. } if !standing.is_empty()
@@ -702,7 +749,7 @@ impl<B: Backend> ControlServer<B> {
                     .overrides()
                     .values()
                     .any(|a| a.guest_answer().is_some());
-                if has_guest || has_standing || !spec.policy().is_buggify_only() {
+                if has_guest || has_standing || !spec.policy().is_enforceable_only() {
                     return Ok(Err(ControlError::Unsupported));
                 }
                 host = spec.host_faults().collect();
@@ -802,6 +849,13 @@ impl<B: Backend> ControlServer<B> {
                 if let Some(vmm) = self.vmm.as_mut() {
                     vmm.enable_sdk(sdk_env, &sdk_policy);
                 }
+                // Task 61: the kept fresh VM must carry a Net channel too (same
+                // reason — the doorbell is serviced when net is wired), mirroring
+                // `new` + the success path. No env: a net decision draws from the
+                // shared SDK stream wired just above (the single-stream ruling).
+                if let Some(vmm) = self.vmm.as_mut() {
+                    vmm.enable_net();
+                }
                 return Ok(Err(ControlError::RestoreFailed));
             }
             // Post-validation substrate breakage — the VM is unvouched; tear down.
@@ -847,7 +901,14 @@ impl<B: Backend> ControlServer<B> {
         // is `Some` iff branching, so `or_else` picks the snapshot's policy only on
         // a replay.
         let sdk_snap = self.sdk_snaps.get(&snap.0).cloned();
-        let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
+        let net_snap = self.net_snaps.get(&snap.0).cloned();
+        // On a replay, restore the seal-time policy from whichever channel snapshot
+        // carries it (SDK or Net capture the same reproducer policy); a branch uses
+        // its own `env_policy`. Without this the reset-to-`none` above makes a
+        // restored stream draw all-`Nominal` — including a Net-only run (P1).
+        let restore_policy = env_policy
+            .or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()))
+            .or_else(|| net_snap.as_ref().map(|s| s.policy.clone()));
         if let Some(policy) = restore_policy {
             self.set_recorded_policy(policy);
         }
@@ -857,6 +918,11 @@ impl<B: Backend> ControlServer<B> {
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env, &sdk_policy);
+        // Task 61: wire the Net channel (capture only, no env). A net decision
+        // draws from the shared SDK stream wired just above (the single-stream
+        // ruling), so a seeded run draws the flow policy from that one seeded fault
+        // stream and a replay continues it from the restored position.
+        self.vmm.as_mut().ok_or(ServeError::Poisoned)?.enable_net();
         // Restore the SDK channel snapshot for this handle, if any. A verbatim
         // **replay** (`seed` is `None`) continues the seeded streams from the
         // snapshot's position AND keeps the event prefix — so a fork from a mid-run
@@ -871,6 +937,15 @@ impl<B: Backend> ControlServer<B> {
             } else {
                 vmm.sdk_restore(&s.channel);
             }
+        }
+        // Task 61: restore the Net channel's decision prefix. The flow-policy
+        // stream position rides the shared SDK stream, restored by
+        // sdk_restore/sdk_restore_events above (so a replay's net_decide answers are
+        // bit-identical and a branch reseeds), so both paths restore the same thing
+        // here — just the decision log carried forward for the fork's evidence.
+        if let Some(n) = net_snap {
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+            vmm.net_restore(&n.channel);
         }
         for (m, fault) in host {
             self.schedule.insert(m, fault);
@@ -4502,6 +4577,168 @@ mod tests {
             h_seq,
             "the folded reproducer replays bit-identically to the sequential branch \
              (buggify-after-reseed is coherent)"
+        );
+    }
+
+    /// Task 61 (review R2): the control plane can now **decide a non-nominal
+    /// per-flow policy**. A branch env that faults the `NetFlow` class is ACCEPTED
+    /// (the task-73 buggify-only gate widened to the enforceable net decide-seam —
+    /// `is_enforceable_only`), the guest's `net_decide` returns the fault from the
+    /// seeded stream at a **stable Moment**, and the recorded reproducer replays
+    /// bit-identically. This is the record→replay closure for a host-decided net
+    /// fault — the mechanism the deferred live gate B drives.
+    #[test]
+    fn a_net_flow_fault_branch_is_accepted_and_replays_at_a_stable_moment() {
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+        let conn: u64 = 42;
+
+        // A `net_decide` request frame (flow 1->2, conn 42, event Open), carried in
+        // the genesis snapshot so every restored fork's doorbell resolves a flow
+        // decision from the branch env's seeded net policy.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // src
+        payload.extend_from_slice(&2u32.to_le_bytes()); // dst
+        payload.extend_from_slice(&conn.to_le_bytes()); // conn
+        payload.extend_from_slice(&0u16.to_le_bytes()); // event Open
+        let mut buf = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Net,
+            1,
+            1,
+            &payload,
+            &mut buf,
+        )
+        .unwrap();
+        let net_frame = buf[..n].to_vec();
+
+        fn wire(script: Vec<Exit>, frame: &[u8], req_gpa: usize, ram: usize) -> Vmm<MockBackend> {
+            let mut mb = MockBackend::with_exits(script);
+            mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            let mut v = Vmm::new(mb, GuestRam::new(ram).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9)
+                    .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            let mut mem = vec![0u8; ram];
+            mem[req_gpa..req_gpa + frame.len()].copy_from_slice(frame);
+            v.restore_guest_memory(&mem).unwrap();
+            v
+        }
+
+        // Forks run: Rdtsc (synchronize) → net doorbell (decides the flow) → HLT.
+        let fork_exits = vec![
+            Exit::Rdtsc,
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Hlt,
+        ];
+
+        // The branch env: a seed + a policy that faults every NetFlow with a
+        // `NetReset` (1/1). Non-buggify — the OLD gate would reject this `Unsupported`.
+        let net_env = || -> Environment {
+            let mut policy = FaultPolicy::none();
+            policy
+                .set_class(
+                    environment::DecisionClass::NetFlow,
+                    1,
+                    1,
+                    &[environment::Fault::NetReset],
+                )
+                .unwrap();
+            let spec = EnvSpec::Seeded {
+                seed: 0x51EED,
+                policy,
+            };
+            Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            }
+        };
+
+        let build_server = {
+            let net_frame = net_frame.clone();
+            move || -> ControlServer<MockBackend> {
+                let frame = net_frame.clone();
+                let exits = fork_exits.clone();
+                let mut live = wire(vec![Exit::Rdtsc, Exit::Hlt], &frame, REQ_GPA, BIG_RAM);
+                live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
+                let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
+                ControlServer::new(live, factory)
+            }
+        };
+
+        // Sequential branch with the net-fault env — must be ACCEPTED (the widened
+        // gate), not rejected `Unsupported`.
+        let mut s = build_server();
+        hello(&mut s);
+        let base = snap(&mut s);
+        let branched = s
+            .handle(&Request::Branch {
+                snap: base,
+                env: net_env(),
+            })
+            .unwrap();
+        assert!(
+            branched.is_ok(),
+            "a NetFlow-faulting branch env is now accepted (was Unsupported): {branched:?}"
+        );
+        assert!(matches!(
+            run_all(&mut s),
+            StopReason::Crash { .. } | StopReason::Quiescent { .. }
+        ));
+        let h_seq = hash(&mut s);
+
+        // The reproducer carries the net policy (enforceable, not buggify-only), and
+        // a non-nominal flow decision was resolved at a stable Moment.
+        let rec = s.recorded_env().clone();
+        assert!(
+            rec.policy().is_enforceable_only() && !rec.policy().is_buggify_only(),
+            "the net policy is recorded (enforceable, non-buggify)"
+        );
+        let decisions = s.vmm().unwrap().net_decisions().to_vec();
+        assert_eq!(decisions.len(), 1, "one flow decision resolved");
+        let (moment0, conn0, ans0) = decisions[0].clone();
+        assert_eq!(conn0, conn);
+        assert_eq!(
+            ans0,
+            environment::Answer::Fault(environment::Fault::NetReset),
+            "the host decided a non-nominal per-flow policy"
+        );
+
+        // Replay the reproducer — bit-identical hash AND the same non-nominal
+        // decision at the SAME Moment (stable across the round-trip).
+        let mut r = build_server();
+        hello(&mut r);
+        let base_r = snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: rec.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            run_all(&mut r),
+            StopReason::Crash { .. } | StopReason::Quiescent { .. }
+        ));
+        assert_eq!(
+            hash(&mut r),
+            h_seq,
+            "the net-fault reproducer replays bit-identically"
+        );
+        assert_eq!(
+            r.vmm().unwrap().net_decisions(),
+            &[(moment0, conn0, ans0)],
+            "the same non-nominal flow decision surfaces at the same stable Moment on replay"
         );
     }
 

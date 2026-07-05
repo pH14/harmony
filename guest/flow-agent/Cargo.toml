@@ -1,0 +1,57 @@
+# The harmony in-guest flow agent (task 61): the first real consumer of the
+# `vmcall-transport` doorbell. A static Linux binary baked into a workload
+# initramfs and started before the workload; it asks the host `net_decide` once
+# per flow and enforces the answered policy on the intra-guest CNI with Linux's
+# own mechanisms (tc netem / tbf, nftables drop/reject) — every input taken from
+# a determinized source (guest clock = V-time, the answered policy), never a host
+# wall-clock or unseeded RNG.
+#
+# Standalone workspace (like `guest/sdk` and `guest/payloads`): the root
+# Cargo.toml excludes `guest/`, so this crate declares its own `[workspace]` and
+# carries its own lockfile. It is a **guest-resident harmony-linux artifact** —
+# the no-`cfg(target_os)` portability rule does not apply to it (conventions
+# "Environment"); the pure *brain* (answer→policy mapping, enforcement-plan
+# synthesis, the decider seam) is nonetheless target-agnostic so it builds and is
+# unit-tested on the macOS dev host, and only command *execution* is Linux.
+[package]
+name = "harmony-flow-agent"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "The harmony in-guest flow agent (task 61): asks net_decide and enforces the per-flow policy on the intra-guest CNI"
+
+# Own workspace root so cargo does not fold this into the excluded guest/ tree or
+# the repo root workspace.
+[workspace]
+
+[lib]
+name = "harmony_flow_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flow-agent"
+path = "src/main.rs"
+
+# Explicit `version` alongside `path` for `cargo deny`'s wildcard ban, mirroring
+# the other guest crates.
+[dependencies]
+# The guest-side hypercall client + Transport trait.
+hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", default-features = false, features = ["guest"] }
+# The real doorbell transport this agent is the first true consumer of.
+vmcall-transport = { path = "../../consonance/vmcall-transport", version = "0.1.0" }
+# The Answer/Fault catalog the agent decodes the host's flow-policy answer with.
+environment = { path = "../../dissonance/environment", version = "0.1.0" }
+# The enforcer brain's vocabulary + decider seam (FlowPolicy / FlowDecider).
+flow = { path = "../../dissonance/flow", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+# Guest-resident Linux glue: /dev/mem mmap of the fixed doorbell pages + port
+# access for the `OUT` doorbell. Only referenced under `cfg(target_os = "linux")`
+# (this is guest harmony-linux code — the no-cfg(target_os) rule is waived per the
+# task's Environment note); on the macOS dev host the bin builds without it.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { version = "0.2" }
+
+[dev-dependencies]
+# The host Dispatcher + reference NetDecider drive the loopback decider gate.
+hypercall-proto = { path = "../../consonance/hypercall-proto", version = "0.1.0", features = ["host", "guest"] }
+proptest = "1"

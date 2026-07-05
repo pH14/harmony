@@ -318,6 +318,37 @@ impl FaultPolicy {
             && self.process == ClassPolicy::none()
     }
 
+    /// Whether this policy faults **only** via classes that have a live
+    /// **decide-seam enforcer** — [`Buggify`](DecisionClass::Buggify) (the task-73
+    /// SDK service) and [`NetFlow`](DecisionClass::NetFlow) (the task-61 in-guest
+    /// flow agent) — with the still-unenforced [`BlockIo`](DecisionClass::BlockIo)
+    /// and [`Process`](DecisionClass::Process) classes at the never-fault baseline.
+    ///
+    /// This is the [`is_buggify_only`](Self::is_buggify_only) predicate widened by
+    /// the task-61 net vertical: now that the guest flow agent asks `net_decide`
+    /// over [`ServiceId::Net`](../../hypercall_proto/enum.ServiceId.html) and the
+    /// host answers a per-flow policy via [`decide`](crate::Environment::decide),
+    /// a control server can **accept** a reproducer whose faults are buggify and/or
+    /// per-flow net — its decisions replay from the seeded fault stream, exactly
+    /// like buggify. A block/process fault, which no decide-seam yet enforces, is
+    /// still rejected (a follow-on lights those up).
+    ///
+    /// **Fractional [`NetLoss`](Fault::NetLoss) is NOT enforceable (task 61a).** The
+    /// in-kernel flow-agent prototype enforces the *binary* net faults —
+    /// [`NetReset`](Fault::NetReset), [`NetLatency`](Fault::NetLatency),
+    /// [`NetThrottle`](Fault::NetThrottle), and a full-drop / no-op
+    /// [`NetLoss`](Fault::NetLoss) — but a **fractional** drop (`0 < num < den`)
+    /// needs the seeded-PRNG userspace proxy that is deferred to 61b (issue #70).
+    /// A policy whose net class could sample a fractional loss is therefore
+    /// rejected here **fail-loud** (rather than accepted and silently left nominal
+    /// by the agent — an unenforced fault that would mint a non-reproducing
+    /// reproducer). Every eligible net fault must be in-kernel enforceable.
+    pub fn is_enforceable_only(&self) -> bool {
+        self.block == ClassPolicy::none()
+            && self.process == ClassPolicy::none()
+            && self.net.eligible.iter().all(|f| !is_fractional_loss(f))
+    }
+
     /// Mutable access to a fault class's policy. The caller guarantees `class` is
     /// a fault class (checked in [`set_class`](FaultPolicy::set_class)).
     fn class_mut(&mut self, class: DecisionClass) -> &mut ClassPolicy {
@@ -331,6 +362,17 @@ impl FaultPolicy {
             _ => &mut self.net,
         }
     }
+}
+
+/// Whether `fault` is a **fractional** [`NetLoss`](Fault::NetLoss) — a drop of
+/// `num/den` with `0 < num < den`, i.e. neither a full drop (`num ≥ den`) nor the
+/// deterministic no-op (`den == 0`). Fractional loss is the one net fault the
+/// in-kernel flow-agent prototype cannot enforce deterministically (it needs the
+/// seeded-PRNG userspace proxy deferred to 61b / issue #70), so
+/// [`is_enforceable_only`](FaultPolicy::is_enforceable_only) rejects a policy that
+/// could sample it.
+fn is_fractional_loss(fault: &Fault) -> bool {
+    matches!(fault, Fault::NetLoss { num, den } if *den > 0 && num < den)
 }
 
 /// Decode one [`ClassPolicy`], enforcing `den ≥ 1`, every fault in `class`, and
