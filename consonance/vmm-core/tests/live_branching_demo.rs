@@ -280,6 +280,12 @@ fn drive(vmm: &mut DynVmm, stop_marker: Option<&[u8]>) -> (RunOutcome, bool) {
                 reason = Some(r);
                 break;
             }
+            // A cooperating-SDK stop (task 73) is a terminal here — mirror
+            // vmm.rs's own run loop, which maps it to `TerminalReason::SdkStop`.
+            Ok(Step::SdkStop) => {
+                reason = Some(TerminalReason::SdkStop);
+                break;
+            }
             Err(e) => {
                 let mut msg = format!("{e}");
                 let mut src = std::error::Error::source(&e);
@@ -434,6 +440,12 @@ fn seal_first_clean(live: &mut DynVmm, earliest: &[u8]) -> LiveSnapshot {
                  boundary (armed={armed}, {attempts} save attempts). save_vm_state rejection tally: \
                  {reasons:#?}"
             ),
+            // This non-SDK workload never emits an SDK stop (task 73) — a stop
+            // before the boundary is a gate failure, same as the terminal arm.
+            Ok(Step::SdkStop) => panic!(
+                "unexpected SDK stop at step {steps} while hunting a clean snapshot boundary \
+                 (this workload declares no SDK points)"
+            ),
             Err(e) => panic!("step while hunting a clean snapshot boundary failed: {e}"),
         }
     }
@@ -575,6 +587,11 @@ fn scan_snapshot_points() {
             Ok(Step::Continued) => {}
             Ok(Step::Terminal(r)) => {
                 eprintln!("[scan] terminal {r:?} after {steps} steps");
+                break;
+            }
+            // A cooperating-SDK stop (task 73) ends the scan, like a terminal.
+            Ok(Step::SdkStop) => {
+                eprintln!("[scan] SDK stop after {steps} steps");
                 break;
             }
             Err(e) => {

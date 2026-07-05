@@ -38,6 +38,9 @@ use vmm_core::control::{ControlServer, VmmFactory, server_caps};
 
 type DynServer = ControlServer<Box<dyn Backend>>;
 
+/// A captured raw SDK event stream: `(Moment, event_id, detail bytes)` triples.
+type SdkEvents = Vec<(u64, u32, Vec<u8>)>;
+
 /// 128 MiB is ample for the tiny bare-metal `sdk-demo` (multiboot, no initramfs).
 const GUEST_RAM_LEN: usize = 128 << 20;
 const SEED: u64 = 0x5DC0_FFEE_1234_5678;
@@ -202,7 +205,7 @@ fn branch_env(seed: u64, buggify_fires: bool) -> Environment {
     }
 }
 
-fn events(s: &DynServer) -> Vec<(u64, u32, Vec<u8>)> {
+fn events(s: &DynServer) -> SdkEvents {
     s.vmm().map(|v| v.sdk_events().to_vec()).unwrap_or_default()
 }
 
@@ -218,7 +221,7 @@ fn box_gate_a_sdk_run_is_deterministic() {
     require_kvm();
     require_host_baseline();
 
-    let once = |seed: u64| -> (Vec<(u64, u32, Vec<u8>)>, [u8; 32]) {
+    let once = |seed: u64| -> (SdkEvents, [u8; 32]) {
         let mut s = server(seed);
         hello(&mut s);
         let genesis = snapshot(&mut s);

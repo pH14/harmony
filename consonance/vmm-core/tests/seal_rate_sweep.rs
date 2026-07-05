@@ -274,6 +274,16 @@ fn run_to_vtime(vmm: &mut DynVmm, target: VTime, printed: &mut usize, start: Ins
                     steps,
                 };
             }
+            // A cooperating-SDK stop (task 73) is a terminal here — mirror
+            // vmm.rs's own run loop, which maps it to `TerminalReason::SdkStop`.
+            Ok(Step::SdkStop) => {
+                return Advance {
+                    landed_vtime: vmm.effective_vns().unwrap_or(0),
+                    terminal: Some(TerminalReason::SdkStop),
+                    step_error: None,
+                    steps,
+                };
+            }
             Err(e) => {
                 return Advance {
                     landed_vtime: vmm.effective_vns().unwrap_or(0),
@@ -308,6 +318,16 @@ fn perturb(vmm: &mut DynVmm, n: u64, printed: &mut usize) -> Advance {
                 return Advance {
                     landed_vtime: vmm.effective_vns().unwrap_or(0),
                     terminal: Some(r),
+                    step_error: None,
+                    steps,
+                };
+            }
+            // A cooperating-SDK stop (task 73) is a terminal here — mirror
+            // vmm.rs's own run loop, which maps it to `TerminalReason::SdkStop`.
+            Ok(Step::SdkStop) => {
+                return Advance {
+                    landed_vtime: vmm.effective_vns().unwrap_or(0),
+                    terminal: Some(TerminalReason::SdkStop),
                     step_error: None,
                     steps,
                 };
@@ -592,6 +612,12 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
                 eprintln!(
                     "[profile] terminal {r:?} at V-time {terminal_vtime} after {steps} steps"
                 );
+                break;
+            }
+            // A cooperating-SDK stop (task 73) ends the profiled span, like a terminal.
+            Ok(Step::SdkStop) => {
+                terminal_vtime = vmm.effective_vns().unwrap_or(0);
+                eprintln!("[profile] SDK stop at V-time {terminal_vtime} after {steps} steps");
                 break;
             }
             Err(e) => {
