@@ -166,6 +166,43 @@ enforcement + `state_hash` determinism.
 - **`tc netem loss` for fractional drop** — rejected: its PRNG is unseeded/
   non-deterministic. Refused explicitly rather than silently mis-enforced.
 
+## `unsafe` and the Miri review bar (review question (a))
+
+**Did task 61 add `unsafe`? Yes — in exactly one place, and NOT in
+`vmcall-transport`.** `consonance/vmcall-transport` is **untouched** by this task
+(`git diff main..HEAD -- consonance/vmcall-transport` is empty); its existing
+`asm!` doorbell + pointer logic keep their own Miri setup. `hypercall-proto` and
+`vmm-core` add **no** `unsafe` (the `Net` service is pure byte handling). The only
+new `unsafe` is in **`guest/flow-agent/src/main.rs`** — four FFI blocks:
+`clock_gettime` (self-check), and the doorbell module's `mmap(/dev/mem)`,
+`iopl(3)`, and `VmcallTransport::with_doorbell`. The flow-agent **library**
+(`src/lib.rs`, the whole brain) is `unsafe`-free.
+
+**Why the new `unsafe` is not Miri-reachable, and why that is correct:**
+
+1. **It is `cfg`-gated off the Miri host.** `read_determinized_sources`'s
+   `clock_gettime` is `#[cfg(target_os = "linux")]`; the doorbell module is
+   `#[cfg(all(target_os = "linux", target_arch = "x86_64"))]`. Miri runs on the
+   `aarch64-apple-darwin` dev host, where **none of it compiles** — the non-Linux
+   stubs are used instead.
+2. **It is pure privileged FFI Miri cannot execute by construction** — `mmap` of
+   `/dev/mem`, `iopl`, `clock_gettime`. This is the *same seam* `vmcall-transport`
+   uses for its `asm!` doorbell (`#[cfg(not(miri))]`-excluded, driven by a loopback
+   in its own Miri suite). There is **no `unsafe` pointer arithmetic or bounds
+   logic in task-61 code** to check: `map_page` `mmap`s a page and hands the raw
+   pointer straight to `VmcallTransport::with_doorbell`; the load-bearing
+   pointer/bounds safety (the attacker-controlled response-length checks in
+   `VmcallTransport::exchange`) lives in `vmcall-transport` and is already
+   Miri-covered there.
+
+**Miri was run** on the flow-agent regardless — `cargo +nightly miri test --lib
+--test decider` → **11 passed, 0 failed** (the brain + the decider loopback,
+exercising the real `hypercall-proto` encode/decode/dispatch under the
+interpreter). So the crate is clean under Miri; the box-only FFI is out of Miri's
+scope exactly as the unsafe⇒Miri rule's `asm!` carve-out intends. If you'd prefer
+the doorbell FFI moved behind an even thinner seam or the crate added to a Linux
+Miri job, that's a small follow-up — flagging rather than assuming.
+
 ## Known limitations / integrator notes
 
 - **`unsafe`.** The library (`src/lib.rs`) is **unsafe-free**. The only `unsafe` is
