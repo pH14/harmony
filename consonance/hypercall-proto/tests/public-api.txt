@@ -71,6 +71,8 @@ pub hypercall_proto::FrameHeader::reserved: u32
 pub hypercall_proto::FrameHeader::seq: u32
 pub hypercall_proto::FrameHeader::service: u16
 pub hypercall_proto::FrameHeader::status: u16
+impl hypercall_proto::FrameHeader
+pub fn hypercall_proto::FrameHeader::is_request(&self) -> bool
 pub struct hypercall_proto::MemBlockDevice
 impl hypercall_proto::MemBlockDevice
 pub fn hypercall_proto::MemBlockDevice::new(alloc::vec::Vec<u8>) -> core::result::Result<Self, hypercall_proto::ProtoError>

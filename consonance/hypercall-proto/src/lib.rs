@@ -129,6 +129,20 @@ pub struct FrameHeader {
     pub reserved: u32,
 }
 
+// Host-only (a dispatcher concern): the guest is a client, never routes frames,
+// so gating this keeps the `no_std` guest build — hence the SDK-demo binary and
+// its hashed memory image — byte-identical.
+#[cfg(feature = "host")]
+impl FrameHeader {
+    /// Whether this is a **request** frame (`kind == 1`). [`decode`] accepts both
+    /// request and response frames, so a dispatcher servicing guest bytes must
+    /// gate on this before routing — a response-typed frame is not a valid
+    /// request and must be rejected, not serviced as one.
+    pub fn is_request(&self) -> bool {
+        self.kind == KIND_REQUEST
+    }
+}
+
 /// Protocol errors produced by frame, client, and snapshot handling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "host", derive(thiserror::Error))]

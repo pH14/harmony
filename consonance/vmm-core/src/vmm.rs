@@ -2163,6 +2163,21 @@ impl<B: Backend> Vmm<B> {
                 encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], resp).unwrap_or(0);
             return (n, None);
         };
+        // `decode` accepts BOTH request and response frames, but the doorbell
+        // services only REQUESTS: a response-typed frame in the guest's request
+        // bytes must NOT be routed as a request (it would mis-service on the raw
+        // service/opcode). Reject it with a clean BadRequest echoing the raw
+        // fields, before any routing.
+        if !header.is_request() {
+            let n = encode_error(
+                header.service,
+                header.opcode,
+                header.seq,
+                Status::BadRequest,
+                resp,
+            );
+            return (n, None);
+        }
         // The Event service (id 4, op 1): capture the `Moment`-stamped emission
         // and, for an assert violation / `setup_complete`, arm a stop.
         if header.service == ServiceId::Event as u16 && header.opcode == 1 {
@@ -2254,6 +2269,20 @@ impl<B: Backend> Vmm<B> {
         } else if header.service == ServiceId::Sdk as u16 {
             let n = encode_response(
                 ServiceId::Sdk,
+                header.opcode,
+                header.seq,
+                Status::UnknownOpcode,
+                &[],
+                resp,
+            )
+            .unwrap_or(0);
+            (n, None)
+        } else if header.service == ServiceId::Entropy as u16 {
+            // Entropy is a KNOWN service (op 1 handled above), so a bad opcode is
+            // `UnknownOpcode`, not the `UnknownService` fall-through below (round-10
+            // P3 — consistent with the Event/Sdk arms).
+            let n = encode_response(
+                ServiceId::Entropy,
                 header.opcode,
                 header.seq,
                 Status::UnknownOpcode,
@@ -3831,6 +3860,91 @@ mod tests {
         assert_eq!(hdr.opcode, 7, "echoes the request opcode");
         assert_eq!(hdr.seq, 99, "echoes the request seq");
         assert!(pl.is_empty(), "an error frame carries no payload");
+    }
+
+    /// A **response-typed** frame in the guest's request bytes is rejected with a
+    /// clean `BadRequest` (echoing the raw service/opcode/seq), NOT routed as a
+    /// request (round-10 P2). `decode` accepts both kinds, so the doorbell must
+    /// gate on `is_request()` before routing.
+    #[test]
+    fn doorbell_rejects_a_non_request_frame() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(
+            EnvSpec::Seeded {
+                seed: 1,
+                policy: FaultPolicy::none(),
+            }
+            .materialize(),
+            &FaultPolicy::none(),
+        );
+        // A well-formed RESPONSE frame (kind == 2) for a real service — it must be
+        // rejected as not-a-request rather than serviced (here: the Sdk service,
+        // which would otherwise resolve a buggify decision).
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_response(ServiceId::Sdk, 1, 42, Status::Ok, &[], &mut buf)
+            .unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+
+        let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        assert_eq!(
+            step,
+            Step::Continued,
+            "a rejected frame does not stop the run"
+        );
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, pl) = decode(&page).expect("a response frame is written");
+        assert_eq!(
+            hdr.status,
+            Status::BadRequest as u16,
+            "non-request → BadRequest"
+        );
+        assert_eq!(hdr.service, ServiceId::Sdk as u16, "echoes the raw service");
+        assert_eq!(hdr.seq, 42, "echoes the raw seq");
+        // No buggify decision was resolved (the frame never reached the Sdk arm).
+        assert!(
+            vmm.sdk_buggify().is_empty(),
+            "a non-request frame is not serviced as a buggify request"
+        );
+        assert!(pl.is_empty());
+    }
+
+    /// A bad **opcode** on the KNOWN Entropy service returns `UnknownOpcode`
+    /// (echoing the service), consistent with the Event/Sdk arms — not the
+    /// `UnknownService` fall-through reserved for unregistered service ids
+    /// (round-10 P3).
+    #[test]
+    fn doorbell_bad_entropy_opcode_is_unknown_opcode() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(
+            EnvSpec::Seeded {
+                seed: 1,
+                policy: FaultPolicy::none(),
+            }
+            .materialize(),
+            &FaultPolicy::none(),
+        );
+        // Entropy service, opcode 2 (only op 1 is the entropy_fill source).
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Entropy, 2, 7, &[], &mut buf).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+
+        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, _) = decode(&page).expect("a response frame is written");
+        assert_eq!(
+            hdr.status,
+            Status::UnknownOpcode as u16,
+            "a known service with a bad opcode → UnknownOpcode, not UnknownService"
+        );
+        assert_eq!(
+            hdr.service,
+            ServiceId::Entropy as u16,
+            "echoes the Entropy service"
+        );
+        assert_eq!(hdr.opcode, 2, "echoes the bad opcode");
+        assert_eq!(hdr.seq, 7);
     }
 
     /// `pending_snapshot` (the deferred `setup_complete` point) is folded into the
