@@ -15,13 +15,14 @@
 //   * the seed-derived draw's top PREFIX_BITS bits == TARGET_PREFIX's top bits.
 //   * PREFIX_BITS dials the expected time-to-find: 8 bits ⇒ ~256 branches.
 //
-// Determinism: the draw is a FIXED integer hash of the run seed (splitmix64,
-// identical to dissonance/benchmark's `entropy_draw`), NOT host randomness — so a
-// fixed seed draws identically every replay and the crash reproduces N/N. On the
-// box the seed is the campaign's per-branch seed, read here from the VMM-seeded
-// source (a hypercall/`/dev/hwrng`-style channel the image wires to the run
-// seed); this portable model reads it from the SEED env the init exports.
-// Build: static (`cc -static -O2`), like campaign-super.c.
+// Determinism: the draw is a FIXED integer hash (splitmix64, identical to
+// dissonance/benchmark's `entropy_draw`) of a run value read from **RDRAND**,
+// which the determinism hypervisor intercepts and answers with the per-branch
+// campaign seed — NOT host randomness. So a fixed branch draws identically every
+// replay (the crash reproduces N/N) while different branches (different EnvSpec
+// seeds) draw different values, which is what makes the rare-entropy search work.
+// The RDRAND draw happens AFTER the snapshot so the sealed base does not capture
+// a fixed value. Build: static (`cc -static -O2`), like campaign-super.c.
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -84,16 +85,28 @@ static void announce_bug(void)
     }
 }
 
-// Read the run seed from the VMM-controlled channel. On the box this is the
-// per-branch campaign seed the image exposes; portably it is the SEED env the
-// init exports. A missing/blank seed is 0 (a definite non-hitting default).
-static uint64_t read_seed(void)
+// Draw the run's entropy from the VMM seeded-entropy service via **RDRAND**,
+// which the determinism hypervisor intercepts and answers with the per-branch
+// campaign seed (task 42's `gen_random_uuid()` path). This MUST be drawn *after*
+// the snapshot (see `main`): a value baked into the process before the base seal
+// — e.g. `getenv("SEED")`, which an earlier draft used — is captured by the
+// snapshot, so branching with different EnvSpec seeds could never vary it and the
+// rare-entropy search was a no-op (the milestone-1 round-2 review's P1). RDRAND is
+// re-executed on every branch's run, so each branch's EnvSpec seed actually varies
+// the draw. Retries per Intel's RDRAND guidance; falls back to 0 (a definite
+// non-hit) only if the instruction never succeeds.
+static uint64_t draw_campaign_entropy(void)
 {
-    const char *s = getenv("SEED");
-    if (!s || !*s) {
-        return 0;
+    for (int i = 0; i < 10; i++) {
+        uint64_t v = 0;
+        unsigned char ok = 0;
+        // Inline asm (no -mrdrnd needed): rdrand into v, carry flag → ok.
+        __asm__ volatile("rdrand %0; setc %1" : "=r"(v), "=qm"(ok)::"cc");
+        if (ok) {
+            return v;
+        }
     }
-    return strtoull(s, NULL, 0);
+    return 0;
 }
 
 int main(void)
@@ -112,8 +125,9 @@ int main(void)
     printf("UUID_READY\n");
     fflush(stdout);
 
-    // Draw the seeded entropy value AFTER the snapshot point.
-    uint64_t seed = read_seed();
+    // Draw the seeded entropy AFTER the snapshot point, from the VMM's RDRAND
+    // intercept (per-branch, campaign-controlled) — NOT a pre-snapshot env var.
+    uint64_t seed = draw_campaign_entropy();
     uint64_t draw = entropy_draw(seed);
     if (getenv("UUID_DEBUG")) {
         printf("UUID_DRAW: seed=0x%llx prefix_bits=%d\n",

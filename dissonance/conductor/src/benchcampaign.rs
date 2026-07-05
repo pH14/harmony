@@ -95,9 +95,14 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec) -> Environment {
             );
         }
         TriggerParams::OrderingInterrupt { vector, window } => {
+            // Match the documented ~1/256 rate (10²–10³ branches): 16 candidate
+            // vectors (P(right vector) = 1/16) × a 64-wide offset range over a
+            // 4-wide window (P(in window) = 4/64 = 1/16) ⇒ 1/256. An earlier
+            // 4-vector × 16-offset space fired at ~1/16 (too easy — round-2 P2).
             let v = vector as u64;
-            let vec_pick = one_of(&[v, v ^ 1, v ^ 2, 0x20], &mut p) as u8;
-            let at = window.0.saturating_sub(4) + p.next_u64() % 16;
+            let vectors: Vec<u64> = (0..16).map(|k| v ^ k).collect();
+            let vec_pick = one_of(&vectors, &mut p) as u8;
+            let at = window.0.saturating_sub(4) + p.next_u64() % 64;
             env_spec.perturb(HostFault::InjectInterrupt { vector: vec_pick }, at);
         }
         // Rare-entropy fires on the seed alone — no fault schedule.
@@ -347,6 +352,16 @@ impl Machine for BenchToyMachine {
 // The dual-config driver.
 // ---------------------------------------------------------------------------
 
+/// A novelty-frontier entry: the genesis-complete exemplar env plus its
+/// ancestor-chain metadata (how long the chain is, and how many of its links were
+/// novel-cell admissions), so a find that exploits this exemplar attributes the
+/// whole chain's novelty to measure 2 — not just the finding branch's.
+struct Exemplar {
+    env: Environment,
+    path_len: u64,
+    novel_on_path: u64,
+}
+
 /// A small order-independent 64-bit fold of a cell key → an opaque id for the
 /// discovery-event log (the report never interprets it).
 fn cell_id(key: &[u8]) -> u64 {
@@ -431,22 +446,28 @@ pub fn run_bench_campaign<M: Machine>(
 
     let mut prng = Prng::new(cfg.campaign_seed);
     let mut seen: BTreeSet<u64> = BTreeSet::new();
-    let mut frontier: Vec<Environment> = Vec::new();
+    // The novelty frontier carries per-exemplar ancestor-chain metadata so a
+    // find that exploits a novel parent counts that parent's novelty (measure 2).
+    let mut frontier: Vec<Exemplar> = Vec::new();
     let mut events = Vec::new();
     let mut finds = Vec::new();
+    let mut found = false;
     let mut step = 0u64;
 
     for branch in 0..cfg.max_branches {
         step += 1;
-        // Pick the branch env.
+        // Pick the branch env, carrying the selected parent's path metadata so
+        // the ancestor chain's novelty is attributed (not just this branch's).
         let exploit = matches!(config, Configuration::Signal)
             && !frontier.is_empty()
             && !step.is_multiple_of(cfg.explore_period);
-        let env = if exploit {
+        let (env, parent_path_len, parent_novel) = if exploit {
             let pick = (prng.next_u64() % frontier.len() as u64) as usize;
-            codec.mutate(&frontier[pick], prng.next_u64())
+            let parent = &frontier[pick];
+            let e = codec.mutate(&parent.env, prng.next_u64());
+            (e, parent.path_len, parent.novel_on_path)
         } else {
-            mint_scenario_env(prng.next_u64(), spec)
+            (mint_scenario_env(prng.next_u64(), spec), 0, 0)
         };
 
         machine.branch(base, &env)?;
@@ -461,21 +482,31 @@ pub fn run_bench_campaign<M: Machine>(
                 novel = true;
             }
         }
+        // Ancestor-chain metadata: this branch extends its parent's chain (or
+        // starts a fresh one on an explore step).
+        let path_len = parent_path_len + 1;
+        let novel_on_path = parent_novel + u64::from(novel);
         if novel {
-            frontier.push(trace.env.clone());
+            frontier.push(Exemplar {
+                env: trace.env.clone(),
+                path_len,
+                novel_on_path,
+            });
         }
         events.push(BranchEvent { branch, touched });
 
-        if let Some(bug) = oracle.judge(&trace) {
-            // First find of this bug: record time-to-bug + a coarse trajectory.
-            let _ = bug;
+        // Record the FIRST find (its time-to-bug + full ancestor-chain
+        // trajectory) but do NOT break — keep running/logging to the measurement
+        // budget so measure 1 (discovery at equal budget) is comparable, not
+        // driven by early termination (round-2 P1).
+        if !found && oracle.judge(&trace).is_some() {
             finds.push(FindRecord {
                 bug: spec.id,
                 branch,
-                path_len: if exploit { 2 } else { 1 },
-                novel_on_path: u64::from(novel),
+                path_len,
+                novel_on_path,
             });
-            break;
+            found = true;
         }
     }
 
@@ -582,6 +613,48 @@ mod tests {
             assert_eq!(log1, log2, "{config:?} must be deterministic-twice");
             assert!(!log1.finds.is_empty(), "{config:?} should find bug 1");
         }
+    }
+
+    /// The rare-entropy bug (bug 3, no host faults — fires on the seed alone) IS
+    /// searchable: distinct branch seeds produce distinct entropy draws, so a
+    /// campaign finds it. This is the portable analog of the guest's post-snapshot
+    /// RDRAND draw varying per branch (the round-2 seed-source fix).
+    #[test]
+    fn rare_entropy_bug_is_searchable() {
+        let bench = Benchmark::wave5();
+        let bug = bench.get(BugId(3)).unwrap().clone();
+        let cfg = BenchConfig::smoke(0x0033_1D69);
+        for config in [Configuration::Signal, Configuration::Baseline] {
+            let mut m = BenchToyMachine::new(bug.clone());
+            let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, config).unwrap();
+            assert!(
+                !log.finds.is_empty(),
+                "{config:?} must find the rare-entropy bug by seed search"
+            );
+        }
+    }
+
+    /// The events stream runs to the measurement budget even after a find (round-2
+    /// P1): the first find is recorded but the campaign keeps logging, so measure
+    /// 1 (discovery at equal budget) is not truncated by early termination.
+    #[test]
+    fn events_run_to_budget_after_find() {
+        let bench = Benchmark::wave5();
+        let bug = bench.get(BugId(1)).unwrap().clone();
+        let cfg = BenchConfig::smoke(0xBEEF_0069);
+        let mut m = BenchToyMachine::new(bug.clone());
+        let log =
+            run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        let find = log.finds.first().expect("bug 1 found");
+        assert_eq!(
+            log.events.len() as u64,
+            cfg.max_branches,
+            "events must run to the full budget, not stop at the find"
+        );
+        assert!(
+            log.events.len() as u64 > find.branch + 1,
+            "logging continues past the find branch"
+        );
     }
 
     /// The signal configuration discovers cells (the log-template signal is

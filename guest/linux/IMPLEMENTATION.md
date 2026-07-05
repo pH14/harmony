@@ -911,10 +911,15 @@ terminal with the same kernel-terminal fallback `campaign-init.sh` documents):
   Manifest: `benchmark` `BugId(2)`. *(An earlier draft modeled the injected
   interrupt as a POSIX `SIGUSR1` handler — wrong, since KVM never turns an IDT
   interrupt into a userspace signal; the milestone-1 review caught it.)*
-- **`uuid-super.c` — bug (iii), rare-entropy-value.** Draws a value from the seeded
-  entropy source **after the `UUID_READY` snapshot marker** (so each branch re-runs
-  the draw with its own seed — the draw must *not* be baked into the sealed base, or
-  seed search is a no-op) with the **exact** `splitmix64`
+- **`uuid-super.c` — bug (iii), rare-entropy-value.** Draws its run value from the
+  VMM's **RDRAND intercept** (the seeded-entropy service — task 42's
+  `gen_random_uuid()` path), executed **after the `UUID_READY` snapshot marker** so
+  each branch's EnvSpec seed actually varies it. The source must be RDRAND, not a
+  pre-snapshot `getenv("SEED")`: an env var is baked into the process before the
+  base seal, so branching could never vary it and the search was a no-op (the
+  round-2 review's deeper P1 — moving the *draw* after the marker was not enough,
+  the *source* had to be post-snapshot and campaign-controlled). The value is then
+  hashed with the **exact** `splitmix64`
   `dissonance/benchmark::trigger::entropy_draw` uses (guest ground truth == offline
   manifest, bit-for-bit). A branch taken only when the draw's top `PREFIX_BITS = 8`
   bits match `0xA5` emits **`UUID_BUG:`** (crash code `0x63`) **before** poisoning a

@@ -373,7 +373,14 @@ impl CorrelationReport {
         let stads = [Configuration::Signal, Configuration::Baseline]
             .into_iter()
             .map(|cfg| {
-                let these: Vec<&CampaignLog> = logs.iter().filter(|l| l.config == cfg).collect();
+                // Sort by seed before folding: the species-accumulation curve and
+                // the stopping-rule sample both depend on the order branches are
+                // folded, so a canonical (seed) order makes the rendered report
+                // byte-identical regardless of the caller's log-concatenation
+                // order (a determinism leak otherwise — round-2 P2).
+                let mut these: Vec<&CampaignLog> =
+                    logs.iter().filter(|l| l.config == cfg).collect();
+                these.sort_by_key(|l| l.seed);
                 let acc = pooled_accumulator(&these);
                 StadsMeasure {
                     config: cfg,
@@ -718,6 +725,36 @@ mod tests {
         let m = rep.bugs.iter().find(|b| b.bug == bug).unwrap();
         assert_eq!(m.signal_finders, 5);
         assert!(!m.correlates, "5 finders is below the seed floor");
+    }
+
+    #[test]
+    fn report_is_order_independent() {
+        // The rendered report (incl. the STADS species curves + stopping sample)
+        // must be byte-identical regardless of the caller's log order.
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for spec in &bench.bugs {
+            for k in 0..20u64 {
+                logs.push(signal_log(
+                    spec.id.0 as u64 * 1000 + k,
+                    20 - k,
+                    50 + k * 5,
+                    spec.id,
+                ));
+                logs.push(baseline_log(
+                    spec.id.0 as u64 * 2000 + k,
+                    200 + k * 5,
+                    spec.id,
+                ));
+            }
+        }
+        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).render_markdown();
+        // A different concatenation order (reversed) must render identically.
+        let mut shuffled = logs.clone();
+        shuffled.reverse();
+        let b =
+            CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000)).render_markdown();
+        assert_eq!(a, b, "report must not depend on input log order");
     }
 
     #[test]
