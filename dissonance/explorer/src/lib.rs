@@ -73,6 +73,7 @@ mod materialize;
 mod prng;
 mod seam;
 mod spine;
+pub mod stads;
 
 pub use adapter::{ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, client_caps};
 pub use defaults::{
