@@ -799,4 +799,25 @@ mod tests {
             "the synthetic report reaches (and fails) the substantive gates"
         );
     }
+
+    /// `depth_ratio_ppm` pins an EXACT parts-per-million value: `depth / at` in
+    /// millionths, `at == 0` reporting 0. A known input → known ppm nails down
+    /// the integer arithmetic (so a mutated `ppm` that returns a constant 0 or 1
+    /// cannot survive).
+    #[test]
+    fn depth_ratio_ppm_is_exact() {
+        let m = |base_at: u64, at: u64| Materialization {
+            base: SnapId(1),
+            base_at: Moment(base_at),
+            at: Moment(at),
+            folded: 0,
+            from_genesis: false,
+        };
+        // depth = 10 - 2 = 8, den = 10 ⇒ 8 * 1_000_000 / 10 = 800_000.
+        assert_eq!(depth_ratio_ppm(&m(2, 10)), 800_000);
+        // depth == den ⇒ a full 1_000_000 (100%).
+        assert_eq!(depth_ratio_ppm(&m(0, 7)), 1_000_000);
+        // A zero denominator (`at == 0`) reports 0, never divides.
+        assert_eq!(depth_ratio_ppm(&m(0, 0)), 0);
+    }
 }
