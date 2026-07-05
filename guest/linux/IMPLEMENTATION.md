@@ -887,3 +887,43 @@ Bring-up aid: boot with `CAMPAIGN_DEBUG=1` in the environment and `campaign-supe
 `CAMPAIGN_LEDGER_GPA:` (read via `/proc/self/pagemap`, needs root/CAP_SYS_ADMIN), so the operator can
 scope `conductor campaign box --gpa-*` tightly. This is box-built and box-validated by the foreman
 (the C is Linux-only; the shell is shellcheck-clean).
+
+## Task 69 — the benchmark bugs (ii) ordering-interrupt and (iii) rare-entropy
+
+Task 69 extends task 60's single planted bug into a **benchmark** of three bugs of
+distinct classes (the shared fixture tasks 71/72/75 extend). Bug (i) is task 60's
+`campaign-super` above, **reused verbatim**. Two new supervised processes, built to
+the same conventions (static `cc -static -O2`; fixed-address, `volatile`
+bookkeeping; `ORDER_READY`/`UUID_READY` base-snapshot markers; the isa-debug-exit
+terminal with the same kernel-terminal fallback `campaign-init.sh` documents):
+
+- **`order-super.c` — bug (ii), ordering / interrupt-timing.** A two-word invariant
+  `mirror == ~primary` updated **non-atomically** inside a fixed per-iteration
+  window. A handler for the injected interrupt vector observes the pair; if the
+  campaign lands an `InjectInterrupt { vector = 0x81 }` (task-59 vocabulary) at a
+  `Moment` inside the vulnerable window `[BASE+8, BASE+12)`, the handler sees the
+  pair inconsistent, trips the invariant, and aborts with **`ORDER_BUG:`** (crash
+  code `0x62`). Outside the window the same interrupt is inert. Window width is the
+  time-to-find dial (~256 branches). Manifest: `benchmark` `BugId(2)`.
+- **`uuid-super.c` — bug (iii), rare-entropy-value.** Draws a value from the seeded
+  entropy source with the **exact** `splitmix64` `dissonance/benchmark::trigger::
+  entropy_draw` uses (guest ground truth == offline manifest, bit-for-bit). A branch
+  taken only when the draw's top `PREFIX_BITS = 8` bits match `0xA5` poisons a
+  pointer and dereferences it → **`UUID_BUG:`** (crash code `0x63`). Fire
+  probability `2^-8` ⇒ ~256 branches. `PREFIX_BITS` is the dial. Manifest:
+  `benchmark` `BugId(3)`.
+
+Each bug has a **distinct serial marker** (`CAMPAIGN_BUG` / `ORDER_BUG` /
+`UUID_BUG`) and crash code (`0x60`/`0x62`/`0x63`) so fingerprints attribute finds
+per-bug (spec gate 2). The portable **toy** stand-in for all three — the trigger
+predicates, unit-tested to fire 100% / nominal never — lives in
+`dissonance/benchmark/src/trigger.rs`, and the record-emitting toy machine that
+drives the signal-configured campaign portably is
+`dissonance/conductor/src/benchcampaign.rs::BenchToyMachine`.
+
+**Status (task 69 milestone 1):** the C payloads are committed **source**; their
+box images (`build-campaign-image.sh` analogues) and the full ≥20-seed real-KVM
+campaign that produces the GO/NO-GO ruling are **milestone 2** — these two files are
+Linux-only and are box-built/box-validated by the foreman there. The trigger logic
+they implement is already validated portably (the `benchmark` toy predicates +
+`conductor::benchcampaign` gates).
