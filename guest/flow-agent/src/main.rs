@@ -183,6 +183,11 @@ fn read_determinized_sources() -> Result<([u8; 16], u64), String> {
         .map_err(|e| format!("/dev/urandom: {e}"))?;
     // SAFETY: `clock_gettime` writes a fully-initialized `timespec` into the local
     // `ts` on success; we read it only when the call returns 0. No aliasing.
+    // MIRI: this is a real libc FFI syscall Miri cannot execute, and it is
+    // `cfg(target_os = "linux")`-gated off the non-Linux Miri host (the stub below
+    // is compiled there) — the same exclusion the codebase applies to `asm!`/KVM
+    // FFI. The crate's Miri run therefore exercises only the safe brain (`lib.rs` +
+    // the loopback decoder in `tests/decider.rs`), which is `unsafe`-free.
     let ns = unsafe {
         let mut ts: libc::timespec = std::mem::zeroed();
         if libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) != 0 {
@@ -208,6 +213,20 @@ fn read_determinized_sources() -> Result<([u8; 16], u64), String> {
 /// linear addresses of the pages). This is the box-only path; it necessarily uses
 /// `unsafe` FFI for the named purpose of the hypercall doorbell (mmap + port I/O),
 /// isolated to this module so the library and the rest of the binary stay safe.
+///
+/// **MIRI (unsafe⇒Miri bar).** Every `unsafe` here is a real FFI syscall —
+/// `mmap(/dev/mem)`, `iopl`, and `VmcallTransport::with_doorbell` (whose eventual
+/// `OUT` is inline `asm!`) — which **Miri cannot execute**. It is also
+/// `cfg(all(target_os = "linux", target_arch = "x86_64"))`-gated, so it does not
+/// even compile on the `aarch64-apple-darwin` Miri host (the [`doorbell`] stub
+/// below is used there). This is the same exclusion the codebase applies to the
+/// `vmcall-transport` `asm!` doorbell and the KVM/perf FFI: the privileged
+/// instruction/syscall is out of Miri's scope by construction, and the pointer/
+/// bounds logic it *depends on* (`VmcallTransport::exchange`'s response-length
+/// checks) is Miri-covered in `vmcall-transport`'s own suite via a loopback. The
+/// flow-agent's Miri run (`nightly.yml`) therefore covers the `unsafe`-free brain
+/// (`lib.rs`) + the loopback decode/dispatch (`tests/decider.rs`) — the crate's
+/// only non-FFI logic.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod doorbell {
     use vmcall_transport::{

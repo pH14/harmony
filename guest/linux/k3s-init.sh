@@ -198,10 +198,17 @@ if command -v flow-agent >/dev/null 2>&1; then
     log "FLOWAGENT starting for client->postgres flow (dst=$PG_IP:5432 on cni0)"
     # The agent enforces on the FORWARD path (cni0) filtered to the postgres pod
     # IP:5432. If the host did not enable_net the agent no-ops cleanly (nominal),
-    # so this never aborts the workload.
+    # so this never aborts the workload. Capture the agent's OWN exit status (not
+    # the log pipe's — busybox ash has no PIPESTATUS, so a bare `cmd | sed || log`
+    # would swallow a non-zero agent exit): write to a file, echo it prefixed, then
+    # branch on the real rc so a BROKEN agent is loudly observable on the box.
     flow-agent --src 1 --dst 2 --conn 1 --iface cni0 \
-        --dst-ip "$PG_IP" --dport 5432 2>&1 | $BB sed 's/^/K8S61: /' \
-        || log "FLOWAGENT exited non-zero (additive; continuing)"
+        --dst-ip "$PG_IP" --dport 5432 >/tmp/flowagent.log 2>&1
+    FA_RC=$?
+    $BB sed 's/^/K8S61: /' /tmp/flowagent.log
+    if [ "$FA_RC" -ne 0 ]; then
+        log "FLOWAGENT FAILED rc=$FA_RC (additive — continuing, but a broken agent is observable)"
+    fi
 fi
 
 # 4. apply the client Pod and let it call the postgres pod over the CNI.

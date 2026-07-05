@@ -2396,6 +2396,26 @@ impl<B: Backend> Vmm<B> {
         // the opaque encoded flow policy the guest enforces. One decision per
         // flow/connection — the host stays on the control path.
         if header.service == ServiceId::Net as u16 && header.opcode == 1 {
+            // Gate on the Net channel being wired. The doorbell is serviced whenever
+            // EITHER sdk or net is enabled, so a guest that rings `net_decide` on a
+            // run with only the SDK channel wired reaches here with `self.net` unset.
+            // Answer a clean `UnknownService` — NOT out-of-gate behavior: without
+            // this guard `decide_net` would draw a NetFlow answer from the shared SDK
+            // stream (advancing it, perturbing buggify) for a service the run never
+            // offered. With the guard, an unwired-Net guest never touches the stream,
+            // so the inert-guest `state_hash` is unchanged (there is no draw).
+            if self.net.is_none() {
+                let n = encode_response(
+                    ServiceId::Net,
+                    1,
+                    header.seq,
+                    Status::UnknownService,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
             let Some(point) = NetFlowPoint::decode(payload) else {
                 let n =
                     encode_response(ServiceId::Net, 1, header.seq, Status::BadRequest, &[], resp)
@@ -4167,6 +4187,54 @@ mod tests {
         let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
         let (hdr, _) = decode(&page).unwrap();
         assert_eq!(hdr.status, Status::UnknownOpcode as u16);
+    }
+
+    /// Task 61 (R4): a `net_decide` on a run where **Net was never enabled** (only
+    /// the SDK channel is wired, so the doorbell is still serviced) gets a clean
+    /// `UnknownService` — NOT out-of-gate behavior — and, critically, does NOT draw
+    /// from the shared SDK stream: a following buggify answer is identical to one on
+    /// a VM that never saw the net_decide. So an unwired-Net guest cannot perturb
+    /// the SDK stream / `state_hash` through the Net service.
+    #[test]
+    fn net_decide_without_enable_net_is_unknown_service_and_leaves_the_stream() {
+        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy};
+        let mut policy = FaultPolicy::none();
+        policy
+            .set_class(DecisionClass::NetFlow, 1, 1, &[Fault::NetReset])
+            .unwrap();
+        policy.set_buggify_point(1, 1, 2).unwrap();
+        let spec = EnvSpec::Seeded { seed: 9, policy };
+
+        // SDK wired, Net NOT wired.
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(spec.materialize(), spec.policy());
+
+        // Ring net_decide → UnknownService (the doorbell is serviced because SDK is
+        // wired), no decision captured.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&2u32.to_le_bytes());
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        let mut buf = [0u8; HC_PAGE];
+        let n = hypercall_proto::encode_request(ServiceId::Net, 1, 1, &payload, &mut buf).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+        vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+        let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+        let (hdr, _) = decode(&page).unwrap();
+        assert_eq!(hdr.status, Status::UnknownService as u16);
+        assert!(vmm.net_decisions().is_empty());
+
+        // The rejected net_decide left the shared stream untouched: buggify draws the
+        // stream's FIRST word, exactly as on a VM that never rang net_decide.
+        let fired = vmm.decide_buggify(1, 1);
+        let mut fresh = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        fresh.enable_sdk(spec.materialize(), spec.policy());
+        assert_eq!(
+            fired,
+            fresh.decide_buggify(1, 1),
+            "the rejected net_decide did not advance the shared SDK stream"
+        );
     }
 
     /// Round-14 malformed-SDK-event-payload MATRIX: `classify_sdk_event` validates
