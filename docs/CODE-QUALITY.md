@@ -210,6 +210,23 @@ The floor tracks the *workspace* number. `hypercall-proto` (decode-heavy, many u
 malformed-frame branches) is the main drag; raising its coverage is organic test work, out
 of scope for this gating task.
 
+### Ratchet: 93% → 94.5% (2026-07-05, issue #69)
+
+A CI compile break (`Step::SdkStop`, #63→#68) had failed the coverage job *before it could
+measure* for several merges, letting `dissonance/conductor`'s `record.rs`/`campaign.rs`/
+`lib.rs`/`main.rs` accumulate thin coverage undetected (68–83% region, `main.rs` 0%). #71
+added targeted gate-branch and CLI-dispatch tests to those four files (see
+`dissonance/conductor/IMPLEMENTATION.md`'s "Coverage recovery" section for what was added),
+and split `main.rs`'s Linux-only `mod boxrun` (needs real `/dev/kvm` + patched KVM + a built
+guest image — uncoverable by this job, same reasoning as the `kvm.rs`/`patched_kvm.rs`/
+`pmu_sys.rs`/`work_perf.rs` exclusions above) into its own `src/boxrun.rs`, added to
+`--ignore-filename-regex`. Measured workspace region total after: **94.76%**
+(`cargo llvm-cov nextest --all-features`, on the determinism box — Linux, so every
+`cfg(target_os = "linux")` line compiles and counts). Floor moved to **94.5%** — a hair
+below, not the measured number itself (leaves room for ordinary cross-run noise without
+inviting the floor to silently drift back down). Reproduce on the box (a Mac-local run
+understates anything `cfg(target_os = "linux")`, since it doesn't even compile there).
+
 ---
 
 ## Public-API snapshots (2026-06-17)

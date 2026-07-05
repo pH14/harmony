@@ -410,6 +410,7 @@ pub fn materialize_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use explorer::EnvCodec;
 
     /// Build a report with the given per-seed run counts, all runs of a seed
     /// identical (so only the run-count check can fail). Distinct seeds get
@@ -465,5 +466,249 @@ mod tests {
         let failures = verify(&r, 2);
         assert!(failures.iter().any(|f| f.contains("no runs recorded")));
         assert!(failures.iter().any(|f| f.contains("replay")));
+    }
+
+    /// [`fmt_stop`] renders every [`StopReason`] variant in the compact form
+    /// the run tables print — pin the exact shape for each, since a rendering
+    /// regression here would silently corrupt every box-gate table.
+    #[test]
+    fn fmt_stop_renders_every_stop_reason_variant() {
+        assert_eq!(
+            fmt_stop(&StopReason::Deadline { vtime: VTime(7) }),
+            "Deadline@7"
+        );
+        assert_eq!(
+            fmt_stop(&StopReason::Quiescent { vtime: VTime(7) }),
+            "Quiescent@7"
+        );
+        assert_eq!(
+            fmt_stop(&StopReason::Crash {
+                vtime: VTime(7),
+                info: vec![1, 2, 3]
+            }),
+            "Crash@7[3B]"
+        );
+        assert_eq!(
+            fmt_stop(&StopReason::Decision {
+                vtime: VTime(7),
+                id: 9,
+                ctx: vec![]
+            }),
+            "Decision#9@7"
+        );
+        assert_eq!(
+            fmt_stop(&StopReason::SnapshotPoint { vtime: VTime(7) }),
+            "SnapshotPoint@7"
+        );
+        assert_eq!(
+            fmt_stop(&StopReason::Assertion {
+                vtime: VTime(7),
+                id: 4,
+                data: vec![]
+            }),
+            "Assertion#4@7"
+        );
+    }
+
+    /// [`hex`] lowercases every byte independently — pin against a
+    /// hand-constructed expected string (not built by calling `hex` itself).
+    #[test]
+    fn hex_lowercases_every_byte_independently() {
+        let mut digest = [0u8; 32];
+        digest[0] = 0xAB;
+        digest[31] = 0xCD;
+        let expected = format!("ab{}cd", "00".repeat(30));
+        assert_eq!(hex(&digest), expected);
+    }
+
+    /// [`render_table`] pins the exact run-table shape — the artifact the
+    /// box gate records verbatim in IMPLEMENTATION.md.
+    #[test]
+    fn render_table_pins_the_run_table_format() {
+        let rep = SweepReport {
+            snapshot_vtime: 10,
+            snapshot_attempts: 1,
+            base_hash: [0xAA; 32],
+            rows: vec![SeedRow {
+                seed: 0x1111,
+                runs: vec![
+                    RunRow {
+                        stop: StopReason::Quiescent { vtime: VTime(50) },
+                        hash: [0x22; 32],
+                    },
+                    RunRow {
+                        stop: StopReason::Quiescent { vtime: VTime(50) },
+                        hash: [0x22; 32],
+                    },
+                ],
+            }],
+            replay_hash: [0xAA; 32],
+        };
+        let expected = "base snapshot: sealed at V-time 10 (1 attempt), capture state_hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+seed                  run  stop                     state_hash\n\
+0x0000000000001111      0  Quiescent@50             2222222222222222222222222222222222222222222222222222222222222222\n\
+0x0000000000001111      1  Quiescent@50             2222222222222222222222222222222222222222222222222222222222222222\n\
+replay(base): state_hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (== capture)\n";
+        assert_eq!(render_table(&rep), expected);
+    }
+
+    /// A `Machine` whose `snapshot()` refuses `NotQuiescent` a fixed number
+    /// of times before succeeding, and whose first `run()` may fail outright
+    /// — an abstract double for [`run_sweep`]'s base-seal retry loop and
+    /// [`probe_vtime`]'s error propagation (the real `NotQuiescent` semantics
+    /// live at the vmm-core layer this crate does not own).
+    struct RetryingMachine {
+        first_run_fails: bool,
+        refusals_left: usize,
+        halts_before_boundary: bool,
+        vtime: u64,
+    }
+
+    impl Machine for RetryingMachine {
+        fn branch(
+            &mut self,
+            _snap: explorer::SnapId,
+            _env: &explorer::Environment,
+        ) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn replay(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            until: &StopConditions,
+            _resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            if self.first_run_fails {
+                self.first_run_fails = false;
+                return Err(MachineError::Transport(
+                    "simulated transport failure".into(),
+                ));
+            }
+            match until.deadline {
+                Some(d) => {
+                    self.vtime = d.0;
+                    if self.halts_before_boundary {
+                        Ok(StopReason::Quiescent {
+                            vtime: VTime(self.vtime),
+                        })
+                    } else {
+                        Ok(StopReason::Deadline {
+                            vtime: VTime(self.vtime),
+                        })
+                    }
+                }
+                None => {
+                    self.vtime += 1;
+                    Ok(StopReason::Quiescent {
+                        vtime: VTime(self.vtime),
+                    })
+                }
+            }
+        }
+        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            if self.refusals_left > 0 {
+                self.refusals_left -= 1;
+                Err(MachineError::NotQuiescent)
+            } else {
+                Ok(explorer::SnapId(1))
+            }
+        }
+        fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            Ok([0x42; 32])
+        }
+        fn coverage(&self) -> &[u8] {
+            &[]
+        }
+        fn recorded_env(&self) -> Result<explorer::Environment, MachineError> {
+            Ok(explorer::SpecEnvCodec.seeded(0))
+        }
+    }
+
+    fn retry_cfg(snapshot_retry_step: u64, snapshot_max_attempts: usize) -> SweepConfig {
+        SweepConfig {
+            seeds: Vec::new(), // no per-seed sweep — this test is about the base seal only
+            snapshot_retry_step,
+            snapshot_max_attempts,
+            ..SweepConfig::default()
+        }
+    }
+
+    /// [`probe_vtime`]'s error propagation: a transport failure on the very
+    /// first `run` call must surface, not be swallowed.
+    #[test]
+    fn probe_vtime_propagates_a_machine_error() {
+        let mut m = RetryingMachine {
+            first_run_fails: true,
+            refusals_left: 0,
+            halts_before_boundary: false,
+            vtime: 0,
+        };
+        let err = probe_vtime(&mut m).expect_err("a transport failure must propagate");
+        assert!(matches!(err, MachineError::Transport(_)));
+    }
+
+    /// A base seal that refuses `NotQuiescent` a few times, then succeeds:
+    /// `run_sweep` retries at `snapshot_retry_step` increments and seals at
+    /// the V-time the last successful retry reached.
+    #[test]
+    fn run_sweep_retries_past_non_quiescent_points_then_seals() {
+        let mut m = RetryingMachine {
+            first_run_fails: false,
+            refusals_left: 2,
+            halts_before_boundary: false,
+            vtime: 0,
+        };
+        let cfg = retry_cfg(100, 5);
+        let report = run_sweep(&mut m, &explorer::SpecEnvCodec, &cfg).expect("seals after retries");
+        assert_eq!(
+            report.snapshot_attempts, 3,
+            "2 refusals + 1 success = 3 attempts"
+        );
+        assert_eq!(
+            report.snapshot_vtime, 200,
+            "sealed at 2 retries x 100 V-time each"
+        );
+        assert_eq!(
+            report.replay_hash, report.base_hash,
+            "replay(base) reproduces the capture hash"
+        );
+    }
+
+    /// Exceeding `snapshot_max_attempts` without ever sealing is a loud
+    /// `NotQuiescent` error, never a silent partial result.
+    #[test]
+    fn run_sweep_gives_up_after_exceeding_max_snapshot_attempts() {
+        let mut m = RetryingMachine {
+            first_run_fails: false,
+            refusals_left: 10,
+            halts_before_boundary: false,
+            vtime: 0,
+        };
+        let cfg = retry_cfg(100, 3);
+        let err = run_sweep(&mut m, &explorer::SpecEnvCodec, &cfg)
+            .expect_err("must give up loudly, not loop forever or seal on garbage");
+        assert!(matches!(err, MachineError::NotQuiescent));
+    }
+
+    /// If the guest halts before a sealable boundary is found mid-retry (a
+    /// non-`Deadline` stop), the seal fails loudly rather than proceeding on
+    /// a point it never actually verified was quiescent.
+    #[test]
+    fn run_sweep_fails_if_the_guest_halts_before_a_sealable_boundary() {
+        let mut m = RetryingMachine {
+            first_run_fails: false,
+            refusals_left: 1,
+            halts_before_boundary: true,
+            vtime: 0,
+        };
+        let cfg = retry_cfg(100, 5);
+        let err = run_sweep(&mut m, &explorer::SpecEnvCodec, &cfg)
+            .expect_err("a non-Deadline stop mid-retry must not be treated as sealable");
+        assert!(matches!(err, MachineError::NotQuiescent));
     }
 }

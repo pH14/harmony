@@ -268,6 +268,101 @@ fn verify_record_flags_folded_reproducers() {
     );
 }
 
+/// Non-vacuity of the per-run gates `verify_record_flags_non_diverging_guest_state`
+/// and `verify_record_flags_folded_reproducers` don't reach: a lone run per
+/// seed, empty records, non-monotone stamps, and a journal that drifted from
+/// the seed's first run — each must fail on its own, even when every other
+/// gate in the report passes.
+#[test]
+fn verify_record_flags_each_per_run_gate_independently() {
+    use conductor::record::{RecordReport, RecordedRun};
+    use explorer::{StopReason, VTime};
+    let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
+        seed,
+        run,
+        trace_id: runtrace::TraceId([id_byte; 32]),
+        stop: StopReason::Quiescent { vtime: VTime(1) },
+        state_hash: [id_byte; 32],
+        records_len: 1,
+        journal_len: 10,
+        journal_digest: [id_byte; 32],
+        retained: true,
+        stamps_monotone: true,
+        journal_matches_first_run: true,
+        console_head: vec![],
+    };
+    let clean = || {
+        vec![
+            row(0x1111, 0, 1),
+            row(0x1111, 1, 1),
+            row(0x2222, 0, 2),
+            row(0x2222, 1, 2),
+        ]
+    };
+
+    // A lone run per seed cannot demonstrate reproducibility.
+    let mut rows = clean();
+    rows.truncate(1); // only seed 0x1111 run 0 remains
+    let failures = verify_record(
+        &RecordReport {
+            snapshot_vtime: 0,
+            rows,
+        },
+        1,
+    );
+    assert!(
+        failures.iter().any(|f| f.contains("only 1 run")),
+        "a seed with a single run must fail reproducibility, got {failures:?}"
+    );
+
+    // Empty records.
+    let mut rows = clean();
+    rows[0].records_len = 0;
+    let failures = verify_record(
+        &RecordReport {
+            snapshot_vtime: 0,
+            rows,
+        },
+        2,
+    );
+    assert!(
+        failures.iter().any(|f| f.contains("no records")),
+        "a run with no records must be flagged, got {failures:?}"
+    );
+
+    // Non-monotone stamps.
+    let mut rows = clean();
+    rows[0].stamps_monotone = false;
+    let failures = verify_record(
+        &RecordReport {
+            snapshot_vtime: 0,
+            rows,
+        },
+        2,
+    );
+    assert!(
+        failures.iter().any(|f| f.contains("stamps not monotone")),
+        "a non-monotone run must be flagged, got {failures:?}"
+    );
+
+    // A journal that drifted from the seed's first run.
+    let mut rows = clean();
+    rows[1].journal_matches_first_run = false;
+    let failures = verify_record(
+        &RecordReport {
+            snapshot_vtime: 0,
+            rows,
+        },
+        2,
+    );
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("journal bytes differ from run 0")),
+        "a journal mismatch within a seed must be flagged, got {failures:?}"
+    );
+}
+
 #[test]
 fn verify_store_reload_catches_a_missing_retained_journal() {
     // Non-vacuity: the reload gate must actually LOAD each retained journal, not
@@ -289,6 +384,110 @@ fn verify_store_reload_catches_a_missing_retained_journal() {
     assert!(
         failures.iter().any(|f| f.contains("did not load")),
         "a deleted retained journal must fail the reload gate, got {failures:?}"
+    );
+}
+
+#[test]
+fn verify_store_reload_catches_a_report_row_that_drifted_from_the_stored_trace() {
+    // Non-vacuity: the reload gate compares the RELOADED trace against the
+    // report row field-by-field, not merely that *something* reloads. Perturb
+    // each field the report claims independently (leaving the store itself
+    // untouched) and confirm each one is its own failure.
+    let dir = tempfile::tempdir().unwrap();
+    let store = TraceStore::open(dir.path()).unwrap();
+    let mut server = server();
+    let report = run_recording(&mut server, &store, &cfg(RetentionPolicy::All)).unwrap();
+    assert!(
+        verify_store_reload(&store, &report).is_empty(),
+        "the clean report reloads"
+    );
+
+    let mut terminal_mismatch = report.clone();
+    terminal_mismatch.rows[0].stop = explorer::StopReason::Deadline {
+        vtime: explorer::VTime(u64::MAX),
+    };
+    let failures = verify_store_reload(&store, &terminal_mismatch);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("reloaded terminal != recorded stop")),
+        "a terminal claimed by the report but not by the store must fail, got {failures:?}"
+    );
+
+    let mut records_mismatch = report.clone();
+    records_mismatch.rows[0].records_len += 1;
+    let failures = verify_store_reload(&store, &records_mismatch);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("reloaded records") && f.contains("!=")),
+        "a record-count claim that disagrees with the store must fail, got {failures:?}"
+    );
+
+    let mut journal_len_mismatch = report.clone();
+    journal_len_mismatch.rows[0].journal_len += 1;
+    let failures = verify_store_reload(&store, &journal_len_mismatch);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("reloaded journal") && f.contains("bytes !=")),
+        "a journal-length claim that disagrees with the store must fail, got {failures:?}"
+    );
+
+    let mut digest_mismatch = report.clone();
+    digest_mismatch.rows[0].journal_digest = [0xFF; 32];
+    let failures = verify_store_reload(&store, &digest_mismatch);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("reloaded journal digest != recorded digest")),
+        "a digest claim that disagrees with the store must fail, got {failures:?}"
+    );
+
+    // A row the report claims is NOT retained, but whose journal the store
+    // actually holds (a stale/inconsistent report), must also fail.
+    let mut retained_flag_flipped = report.clone();
+    retained_flag_flipped.rows[0].retained = false;
+    let failures = verify_store_reload(&store, &retained_flag_flipped);
+    assert!(
+        failures
+            .iter()
+            .any(|f| f.contains("retained=false but a journal is present")),
+        "retained=false while the store holds a journal must fail, got {failures:?}"
+    );
+}
+
+#[test]
+fn verify_store_reload_catches_an_id_the_store_never_recorded() {
+    // A report referencing a TraceId the store never saw (a construction bug
+    // that mints report rows disconnected from what was actually stored) must
+    // fail to reload the env sidecar, rather than silently passing.
+    use conductor::record::{RecordReport, RecordedRun};
+    let dir = tempfile::tempdir().unwrap();
+    let store = TraceStore::open(dir.path()).unwrap();
+    let report = RecordReport {
+        snapshot_vtime: 0,
+        rows: vec![RecordedRun {
+            seed: 0x1111,
+            run: 0,
+            trace_id: runtrace::TraceId([0xAB; 32]),
+            stop: explorer::StopReason::Quiescent {
+                vtime: explorer::VTime(1),
+            },
+            state_hash: [1; 32],
+            records_len: 1,
+            journal_len: 10,
+            journal_digest: [1; 32],
+            retained: true,
+            stamps_monotone: true,
+            journal_matches_first_run: true,
+            console_head: vec![],
+        }],
+    };
+    let failures = verify_store_reload(&store, &report);
+    assert!(
+        failures.iter().any(|f| f.contains("env did not reload")),
+        "an unknown TraceId must fail the env-reload check, got {failures:?}"
     );
 }
 

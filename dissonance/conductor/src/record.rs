@@ -668,3 +668,143 @@ pub fn render_record_table(report: &RecordReport) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use control_proto::{CrashInfo, CrashKind, DecisionId, EventRef, StopReason as Ws};
+    use explorer::StreamId as ExplorerStreamId;
+
+    /// `is_monotone` is true for non-decreasing stamps (including a single or
+    /// empty record) and false as soon as any adjacent pair goes backward.
+    #[test]
+    fn is_monotone_true_for_sorted_false_for_out_of_order() {
+        let rec = |m: u64| {
+            (
+                Moment(m),
+                explorer::Record {
+                    stream: ExplorerStreamId(0),
+                    line: vec![],
+                },
+            )
+        };
+        assert!(is_monotone(&[]), "no records is trivially monotone");
+        assert!(
+            is_monotone(&[rec(5)]),
+            "a single record is trivially monotone"
+        );
+        assert!(
+            is_monotone(&[rec(1), rec(1), rec(3)]),
+            "equal stamps are non-decreasing"
+        );
+        assert!(
+            !is_monotone(&[rec(3), rec(1)]),
+            "a decrease must be flagged"
+        );
+        assert!(
+            !is_monotone(&[rec(1), rec(5), rec(2)]),
+            "a decrease anywhere in the sequence must be flagged"
+        );
+    }
+
+    /// `stop_from_wire` mirrors every wire [`control_proto::StopReason`]
+    /// variant onto the spine's `StopReason` byte-for-byte, including the
+    /// `Crash` info's `kind`-byte-prefix encoding (mirrors the R2 adapter's
+    /// `stop_from_wire`, so a recorded terminal is identical to what the
+    /// explorer would observe over the wire).
+    #[test]
+    fn stop_from_wire_maps_every_variant() {
+        assert_eq!(
+            stop_from_wire(Ws::Deadline {
+                vtime: WireVTime(10)
+            }),
+            StopReason::Deadline { vtime: VTime(10) }
+        );
+        assert_eq!(
+            stop_from_wire(Ws::Quiescent {
+                vtime: WireVTime(11)
+            }),
+            StopReason::Quiescent { vtime: VTime(11) }
+        );
+        assert_eq!(
+            stop_from_wire(Ws::SnapshotPoint {
+                vtime: WireVTime(12)
+            }),
+            StopReason::SnapshotPoint { vtime: VTime(12) }
+        );
+        assert_eq!(
+            stop_from_wire(Ws::Decision {
+                vtime: WireVTime(13),
+                id: DecisionId(7),
+                ctx: vec![9, 9]
+            }),
+            StopReason::Decision {
+                vtime: VTime(13),
+                id: 7,
+                ctx: vec![9, 9]
+            }
+        );
+        assert_eq!(
+            stop_from_wire(Ws::Assertion {
+                vtime: WireVTime(14),
+                ev: EventRef {
+                    id: 3,
+                    data: vec![1, 2]
+                }
+            }),
+            StopReason::Assertion {
+                vtime: VTime(14),
+                id: 3,
+                data: vec![1, 2]
+            }
+        );
+        for (kind, byte) in [
+            (CrashKind::Panic, 0u8),
+            (CrashKind::TripleFault, 1u8),
+            (CrashKind::Shutdown, 2u8),
+        ] {
+            let got = stop_from_wire(Ws::Crash {
+                vtime: WireVTime(15),
+                info: CrashInfo {
+                    kind,
+                    detail: vec![0xAA, 0xBB],
+                },
+            });
+            assert_eq!(
+                got,
+                StopReason::Crash {
+                    vtime: VTime(15),
+                    info: [&[byte][..], &[0xAA, 0xBB]].concat(),
+                },
+                "the kind byte is prepended to the detail bytes"
+            );
+        }
+    }
+
+    /// [`render_record_table`] pins the exact rendered shape — the artifact
+    /// the box gate records verbatim in IMPLEMENTATION.md.
+    #[test]
+    fn render_record_table_pins_the_format() {
+        let report = RecordReport {
+            snapshot_vtime: 5,
+            rows: vec![RecordedRun {
+                seed: 0x1111,
+                run: 0,
+                trace_id: runtrace::TraceId([0x11; 32]),
+                stop: StopReason::Quiescent { vtime: VTime(50) },
+                state_hash: [0x22; 32],
+                records_len: 3,
+                journal_len: 40,
+                journal_digest: [0; 32],
+                retained: true,
+                stamps_monotone: true,
+                journal_matches_first_run: true,
+                console_head: vec![],
+            }],
+        };
+        let expected = "base snapshot sealed at V-time 5\n\
+seed                 run  stop                   recs journal  retain  state_hash      trace_id      \n\
+0x0000000000001111   0  Quiescent@50              3      40  full    222222222222    111111111111  \n";
+        assert_eq!(render_record_table(&report), expected);
+    }
+}

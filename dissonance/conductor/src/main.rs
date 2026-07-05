@@ -585,374 +585,351 @@ fn finish(
     }
 }
 
-/// The box composition root. Linux-only (`boot_linux_selected` + `perf_event`).
-///
-/// The one piece of **workload-aware policy** in the whole path lives here (the
-/// server and adapter stay workload-blind): the live guest is driven to a
-/// readiness marker on its serial *before* the sweep seals the base, so the
-/// snapshot lands **mid-workload, post-readiness** (the gate's point) rather
-/// than at boot entry. Choosing *where* to snapshot is a property of the guest;
-/// the snapshot *mechanism* (the verb) is not.
+/// The box composition root (`src/boxrun.rs`, Linux-only). Split into its own
+/// file (issue #69) so the coverage job can exclude it by name — every
+/// function in it needs a real `/dev/kvm` + patched KVM + a built guest
+/// image, which no portable test (or the coverage job's own runner) can
+/// provide.
 #[cfg(target_os = "linux")]
-mod boxrun {
-    use std::io::Write;
-    use std::process::ExitCode;
+mod boxrun;
 
-    // Aliased: the module's own `pub fn run_campaign` (the box entry point)
-    // would otherwise collide with the imported campaign loop (E0255), and the
-    // call below would silently resolve to the 1-arg local fn (E0061). This code
-    // is `cfg(target_os = "linux")`, so the collision is invisible to a Mac
-    // `cargo check` — the Linux-target check in the gate list catches it.
-    use conductor::campaign::{CampaignConfig, run_campaign as run_campaign_loop};
-    use conductor::record::{RecordConfig, run_recording};
-    use conductor::{SweepConfig, run_session, sweep_client};
-    use environment::{EnvSpec, FaultPolicy};
-    use explorer::adapter::SocketMachine;
-    use explorer::{SpecEnvCodec, StreamId};
-    use runtrace::TraceStore;
-    use vmm_backend::Backend;
-    use vmm_core::bringup::{BackendKind, boot_linux_selected};
-    use vmm_core::control::{ControlServer, VmmFactory};
-    use vmm_core::vmm::{Step, Vmm};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use explorer::{EnvCodec, Oracle};
 
-    use super::{
-        BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording, parse_retain, seeds,
-    };
+    // --- parse_u64_flexible -------------------------------------------------
 
-    /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
-    const GUEST_RAM_LEN: usize = 2 << 30;
-    /// The boot seed the live VM runs under (matches the branching demo).
-    const BOOT_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-    /// The determinism command line (identical to the branching demo).
-    const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check \
-                           lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
-    /// A safety cap on the boot-to-marker drive (the external `timeout` is the
-    /// real bound; this stops a wedged guest from looping forever).
-    const MAX_BOOT_STEPS: u64 = 50_000_000_000;
-
-    fn repo_root() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
+    #[test]
+    fn parse_u64_flexible_accepts_decimal_hex_and_underscored() {
+        assert_eq!(parse_u64_flexible("1234"), Ok(1234));
+        assert_eq!(parse_u64_flexible("0x3ff9a000"), Ok(0x3ff9a000));
+        assert_eq!(parse_u64_flexible("0X3FF"), Ok(0x3ff));
+        assert_eq!(parse_u64_flexible("1_000_000"), Ok(1_000_000));
+        assert_eq!(parse_u64_flexible("0x1_000"), Ok(0x1000));
+        assert_eq!(
+            parse_u64_flexible("  42  "),
+            Ok(42),
+            "trims surrounding whitespace"
+        );
     }
 
-    fn artifact(name: &str) -> Option<Vec<u8>> {
-        for p in [
-            repo_root().join("guest/build").join(name),
-            repo_root().join("guest/linux").join(name),
-        ] {
-            if let Ok(bytes) = std::fs::read(&p) {
-                return Some(bytes);
-            }
-        }
-        None
+    #[test]
+    fn parse_u64_flexible_rejects_garbage() {
+        assert!(parse_u64_flexible("not-a-number").is_err());
+        assert!(parse_u64_flexible("0xzz").is_err());
+        assert!(parse_u64_flexible("").is_err());
     }
 
-    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+    // --- seeds / seeds_ok ----------------------------------------------------
+
+    #[test]
+    fn seeds_are_distinct_and_deterministic() {
+        let a = seeds(8);
+        let b = seeds(8);
+        assert_eq!(a, b, "the same n always mints the same seeds");
+        assert_eq!(a.len(), 8);
+        let distinct: std::collections::BTreeSet<u64> = a.iter().copied().collect();
+        assert_eq!(distinct.len(), 8, "every seed is distinct");
     }
 
-    /// Drive the live guest until `marker` appears on the serial, streaming new
-    /// serial bytes to stderr so a hang shows the last line reached. Returns the
-    /// number of steps taken, or an error string if the guest terminated first.
-    ///
-    /// The marker is scanned **only over newly-emitted bytes** (with a
-    /// `marker.len()-1` overlap so a match straddling the boundary is not
-    /// missed), gated on the serial actually growing. Rescanning the whole
-    /// ever-growing buffer every step would be `O(steps × serial_len)` — on a
-    /// real Postgres boot (millions of steps, a large console) that alone can
-    /// make the drive look hung.
-    fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
-        let stderr = std::io::stderr();
-        let mut printed = vmm.serial().len();
-        // Where the next marker scan starts: keep a marker-1 overlap behind
-        // `printed` so a match split across two batches of new bytes is seen.
-        let overlap = marker.len().saturating_sub(1);
-        let mut scan_from = printed.saturating_sub(overlap);
-        let mut steps = 0u64;
-        while steps < MAX_BOOT_STEPS {
-            match vmm.step() {
-                Ok(Step::Continued) => {}
-                Ok(Step::Terminal(r)) => {
-                    return Err(format!(
-                        "guest reached a terminal ({r:?}) at step {steps} before the readiness \
-                         marker appeared"
-                    ));
-                }
-                // A cooperating-SDK stop (task 73) — an assertion violation — is a
-                // premature stop here, just like a terminal: the readiness marker
-                // never appeared.
-                Ok(Step::SdkStop) => {
-                    return Err(format!(
-                        "guest hit an SDK stop (assertion) at step {steps} before the readiness \
-                         marker appeared"
-                    ));
-                }
-                Err(e) => return Err(format!("step error at {steps}: {e}")),
-            }
-            steps += 1;
-            let serial = vmm.serial();
-            if serial.len() > printed {
-                let mut h = stderr.lock();
-                let _ = h.write_all(&serial[printed..]);
-                let _ = h.flush();
-                printed = serial.len();
-                // Only scan the fresh tail (plus the overlap) — not the whole buffer.
-                if contains(&serial[scan_from..], marker) {
-                    return Ok(steps);
-                }
-                scan_from = serial.len().saturating_sub(overlap);
-            }
-        }
-        Err(format!("marker not seen within {MAX_BOOT_STEPS} steps"))
+    #[test]
+    fn seeds_ok_enforces_the_floor() {
+        assert!(!seeds_ok(1, 2), "below the floor must fail");
+        assert!(seeds_ok(2, 2), "exactly the floor must pass");
+        assert!(seeds_ok(8, 2), "above the floor must pass");
+        assert!(
+            !seeds_ok(7, 8),
+            "the box milestone's stricter floor (8) rejects 7"
+        );
     }
 
-    /// Boot the live guest on patched KVM and drive it to `ready_marker`, so the
-    /// base snapshot a later sweep/campaign seals lands **mid-workload,
-    /// post-readiness** (the gate's point) — the one workload-aware step; the
-    /// server and adapter after it stay workload-blind. Returns the composed
-    /// [`ControlServer`] ready to serve, or a failing [`ExitCode`] with a loud
-    /// reason (never a vacuous success). Shared verbatim by the sweep
-    /// ([`run`](run)) and the campaign ([`run_campaign`](run_campaign)) so both
-    /// boot the guest identically.
-    fn boot_server(
-        kernel_name: &str,
-        initramfs_name: &str,
-        ready_marker: &str,
-    ) -> Result<ControlServer<Box<dyn Backend>>, ExitCode> {
-        if !std::path::Path::new("/dev/kvm").exists() {
-            eprintln!(
-                "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
-                 KVM modules, CPU-pinned per docs/BOX-PINNING.md."
-            );
-            return Err(ExitCode::FAILURE);
+    // --- parse_retain --------------------------------------------------------
+
+    #[test]
+    fn parse_retain_parses_known_values_and_rejects_unknown() {
+        assert_eq!(parse_retain("all"), Some(RetentionPolicy::All));
+        assert_eq!(
+            parse_retain("interesting"),
+            Some(RetentionPolicy::Interesting)
+        );
+        assert_eq!(parse_retain("env-only"), Some(RetentionPolicy::EnvOnly));
+        assert_eq!(parse_retain("bogus"), None);
+    }
+
+    // --- run_mock / run_campaign_mock / run_mock_materialize ----------------
+
+    fn sweep_args(seeds: usize, record: Option<PathBuf>, retain: &str) -> SweepArgs {
+        SweepArgs {
+            seeds,
+            runs: 2,
+            record,
+            retain: retain.to_string(),
         }
-        // The frozen contract cannot run off the det-cfl-v1 baseline.
-        let report = vmm_core::hostassert::report();
-        if let Some(bad) = report.iter().find(|o| !o.pass) {
-            eprintln!(
-                "[conductor] host is not the det-cfl-v1 baseline (first failing assertion: {} \
-                 expected {}, observed {}). Run on the box.",
-                bad.key, bad.expected, bad.actual
-            );
-            return Err(ExitCode::FAILURE);
-        }
-        let (Some(kernel), Some(initramfs)) = (artifact(kernel_name), artifact(initramfs_name))
-        else {
-            eprintln!(
-                "[conductor] guest image missing ({kernel_name} / {initramfs_name}) — build it \
-                 first: `make -C guest fetch && make -C guest/linux campaign-image` (or \
-                 `postgres-image`), or pass --initramfs for an image already on the box."
-            );
-            return Err(ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn run_mock_reports_gates_pass_for_a_valid_sweep() {
+        assert_eq!(
+            run_mock(sweep_args(8, None, "interesting")),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn run_mock_rejects_too_few_seeds_before_running_anything() {
+        assert_eq!(
+            run_mock(sweep_args(1, None, "interesting")),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn run_mock_with_record_persists_a_trace_store_and_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_mock(sweep_args(8, Some(dir.path().to_path_buf()), "all"));
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_some(),
+            "the recording session must have written into the store dir"
+        );
+    }
+
+    #[test]
+    fn run_mock_rejects_an_unknown_retain_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_mock(sweep_args(8, Some(dir.path().to_path_buf()), "bogus"));
+        assert_eq!(code, ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn run_campaign_mock_finds_the_planted_bug_and_reports_gates_pass() {
+        let args = CampaignArgs {
+            max_branches: CampaignConfig::toy().max_branches,
+            replay_n: REPLAY_BAR,
+            campaign_seed: None,
         };
-
-        let mut live = match boot_linux_selected(
-            BackendKind::Patched,
-            &kernel,
-            &initramfs,
-            GUEST_RAM_LEN,
-            CMDLINE,
-            BOOT_SEED,
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[conductor] boot_linux_selected (patched) failed: {e}");
-                return Err(ExitCode::FAILURE);
-            }
-        };
-        println!("[conductor] box: booting the guest to the readiness marker {ready_marker:?} …");
-        match drive_to_marker(&mut live, ready_marker.as_bytes()) {
-            Ok(steps) => println!(
-                "\n[conductor] readiness marker reached at step {steps}; the base snapshot will be \
-                 sealed at the next snapshottable boundary at/after this point.\n"
-            ),
-            Err(e) => {
-                eprintln!("\n[conductor] failed to reach the readiness marker: {e}");
-                return Err(ExitCode::FAILURE);
-            }
-        }
-
-        // The fork factory: fresh, equivalently-composed patched VMs whose
-        // boot-loaded image the restore immediately overwrites. `live` is
-        // already booted (it owns its guest RAM), so **move** the sole
-        // kernel/initramfs copies into the closure rather than cloning them —
-        // an initramfs is tens/hundreds of MB, and cloning would keep two
-        // copies resident for the whole run.
-        let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
-            boot_linux_selected(
-                BackendKind::Patched,
-                &kernel,
-                &initramfs,
-                GUEST_RAM_LEN,
-                CMDLINE,
-                BOOT_SEED,
-            )
-        });
-        Ok(ControlServer::new(live, factory))
+        assert_eq!(run_campaign_mock(args), ExitCode::SUCCESS);
     }
 
-    /// The initial environment the box's live VM boots under (the seed/policy the
-    /// adapter reports as its starting environment).
-    fn boot_env() -> EnvSpec {
-        EnvSpec::Seeded {
-            seed: BOOT_SEED,
-            policy: FaultPolicy::none(),
-        }
+    #[test]
+    fn run_mock_materialize_rejects_too_few_hops() {
+        let args = MatArgs {
+            hops: 2,
+            hop_delta: 250,
+            tail_delta: 250,
+            seed: 0x1234_5678_9ABC_DEF0,
+        };
+        assert_eq!(run_mock_materialize(args), ExitCode::FAILURE);
     }
 
-    pub fn run(args: BoxArgs) -> ExitCode {
-        // The box milestone gate is N >= 8 — enforce it so a smaller box run
-        // can never print a milestone PASS below the bar.
-        if !super::seeds_ok(args.sweep.seeds, 8) {
-            return ExitCode::FAILURE;
-        }
-        let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
-            Ok(s) => s,
-            Err(code) => return code,
+    #[test]
+    fn run_mock_materialize_reports_gates_pass_for_a_valid_chain() {
+        let args = MatArgs {
+            hops: 3,
+            hop_delta: 250,
+            tail_delta: 250,
+            seed: 0x1234_5678_9ABC_DEF0,
         };
+        assert_eq!(run_mock_materialize(args), ExitCode::SUCCESS);
+    }
 
-        // Postgres is interrupt-driven; the snapshot search may need many steps
-        // to find a sealable boundary at/after readiness. Generous retry budget
-        // (task 41 made mid-workload points snapshottable).
-        let (snapshot_retry_step, snapshot_max_attempts) = (1_000_000u64, 100_000usize);
+    // --- finish / finish_campaign / finish_recording -------------------------
 
-        // The task-65 box gate: record each run's RunTrace and check byte-
-        // stability. The readiness banner is already confirmed present above (the
-        // boot drive only returns Ok once the marker is seen), so the recorded
-        // per-run console is the post-snapshot workload.
-        if let Some(dir) = args.sweep.record.clone() {
-            let Some(retain) = parse_retain(&args.sweep.retain) else {
-                return ExitCode::FAILURE;
-            };
-            let store = match TraceStore::open(&dir) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("[conductor] cannot open trace store {}: {e}", dir.display());
-                    return ExitCode::FAILURE;
-                }
-            };
-            let cfg = RecordConfig {
-                sweep: SweepConfig {
-                    seeds: seeds(args.sweep.seeds),
-                    runs_per_seed: args.sweep.runs.max(2),
-                    deadline_delta: Some(args.deadline_delta),
-                    snapshot_retry_step,
-                    snapshot_max_attempts,
+    fn sweep_report_of(hash_a: [u8; 32], hash_b: [u8; 32]) -> conductor::SweepReport {
+        use conductor::{RunRow, SeedRow, SweepReport};
+        let run = |hash: [u8; 32]| RunRow {
+            stop: explorer::StopReason::Quiescent {
+                vtime: explorer::VTime(10),
+            },
+            hash,
+        };
+        SweepReport {
+            snapshot_vtime: 0,
+            snapshot_attempts: 1,
+            base_hash: [0; 32],
+            rows: vec![
+                SeedRow {
+                    seed: 1,
+                    runs: vec![run(hash_a), run(hash_a)],
                 },
-                retain,
-                stream: StreamId(0),
-            };
-            println!(
-                "[conductor] box recording: {} seeds x {} runs, retain={}, into {}\n",
-                cfg.sweep.seeds.len(),
-                cfg.sweep.runs_per_seed,
-                retain.as_str(),
-                dir.display()
-            );
-            return match run_recording(&mut server, &store, &cfg) {
-                Ok(report) => finish_recording("box", &report, 2, &store, &dir),
-                Err(e) => {
-                    eprintln!("[conductor] box recording failed: {e}");
-                    ExitCode::FAILURE
-                }
-            };
+                SeedRow {
+                    seed: 2,
+                    runs: vec![run(hash_b), run(hash_b)],
+                },
+            ],
+            replay_hash: [0; 32],
         }
-
-        let cfg = SweepConfig {
-            seeds: seeds(args.sweep.seeds),
-            runs_per_seed: args.sweep.runs.max(2),
-            deadline_delta: Some(args.deadline_delta),
-            snapshot_retry_step,
-            snapshot_max_attempts,
-        };
-        let initial = boot_env();
-        println!(
-            "[conductor] box mode: {} seeds x {} runs; each branch runs {} ns of V-time past the \
-             snapshot.\n",
-            cfg.seeds.len(),
-            cfg.runs_per_seed,
-            args.deadline_delta
-        );
-        let (served, client) = run_session(&mut server, move |stream| {
-            sweep_client(stream, initial, cfg)
-        });
-        finish("box", served, client)
     }
 
-    /// The task-60 box milestone: boot the Postgres-**campaign** image (the
-    /// planted-bug workload), seal a mid-workload base, and run the seed-driven
-    /// fault campaign against it — the **identical** [`run_campaign`] loop the
-    /// portable gate drives against the toy, only the backing guest swapped.
-    ///
-    /// The host-fault schedule the campaign mints rides the branch env and is
-    /// enforced by task-59's server between instructions at the fault's `Moment`;
-    /// the emitted `Bug`'s env replays it bit-for-bit (the record → replay
-    /// closure). The search space is CLI-scoped — the operator narrows `--gpa-*`
-    /// once the supervisor's ledger gpa is pinned (see `CampaignBoxArgs`).
-    pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
-        let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
+    #[test]
+    fn finish_reports_pass_when_served_ok_and_gates_pass() {
+        let report = sweep_report_of([1; 32], [2; 32]); // 2 distinct hashes
+        assert_eq!(finish("test", Ok(()), Ok(report)), ExitCode::SUCCESS);
+    }
 
-        let gpa_candidates: Vec<u64> = (0..args.gpa_count)
-            .map(|i| {
-                args.gpa_base
-                    .saturating_add(i.saturating_mul(args.gpa_stride))
+    #[test]
+    fn finish_reports_failure_when_the_gates_fail() {
+        let report = sweep_report_of([1; 32], [1; 32]); // no divergence
+        assert_eq!(finish("test", Ok(()), Ok(report)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn finish_reports_failure_when_the_client_errored() {
+        let served: Result<(), vmm_core::control::ServeError> = Ok(());
+        let client: Result<conductor::SweepReport, explorer::MachineError> =
+            Err(explorer::MachineError::Transport("boom".into()));
+        assert_eq!(finish("test", served, client), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn finish_reports_failure_when_the_server_session_errored_even_if_the_client_ok() {
+        let report = sweep_report_of([1; 32], [2; 32]);
+        let served: Result<(), vmm_core::control::ServeError> =
+            Err(vmm_core::control::ServeError::Poisoned);
+        assert_eq!(finish("test", served, Ok(report)), ExitCode::FAILURE);
+    }
+
+    fn campaign_report_of(found: bool, nominal_is_bug: bool) -> CampaignReport {
+        use conductor::campaign::{CRASH_KIND_SHUTDOWN, FoundBug, NominalRow};
+        let stop = explorer::StopReason::Crash {
+            vtime: explorer::VTime(5),
+            info: vec![CRASH_KIND_SHUTDOWN],
+        };
+        let bug = explorer::TerminalOracle::new()
+            .judge(&explorer::RunTrace {
+                terminal: stop.clone(),
+                env: explorer::SpecEnvCodec.seeded(1),
+                coverage: None,
+                events: Vec::new(),
+                records: Vec::new(),
             })
-            .collect();
-        let cfg = CampaignConfig {
-            campaign_seed: args
-                .campaign
-                .campaign_seed
-                .unwrap_or(CampaignConfig::toy().campaign_seed),
-            max_branches: args.campaign.max_branches,
-            // Floor at the spec bar (25/25): the flag can raise it, never lower it.
-            replay_n: args.campaign.replay_n.max(super::REPLAY_BAR),
-            deadline_delta: Some(args.deadline_delta),
-            gpa_candidates,
-            moment_window: (args.window_lo, args.window_hi),
-            // Single-event upsets on byte boundaries (the naive upset alphabet).
-            mask_bits: vec![7, 15, 23, 31, 39, 47, 55, 63],
-            // A fine retry step so the base seals *close to* CAMPAIGN_READY (early
-            // in the supervisor loop), maximizing the remaining fault window — a
-            // coarse step overshoots a short loop into the halt tail (the base
-            // gate proved a coarse step + short loop leaves the loop unreachable).
-            snapshot_retry_step: 10_000,
-            snapshot_max_attempts: 200_000,
-            nominal_seed: CampaignConfig::toy().nominal_seed,
-        };
-        let n = cfg.replay_n;
-        let initial = boot_env();
-        println!(
-            "[conductor] campaign box: searching {} branches over {} gpa candidates × window \
-             [{}, {}) ns × {} mask bits; each branch runs {} ns past the base.\n",
-            cfg.max_branches,
-            cfg.gpa_candidates.len(),
-            cfg.moment_window.0,
-            cfg.moment_window.1,
-            cfg.mask_bits.len(),
-            args.deadline_delta,
-        );
-        let (served, client) = run_session(&mut server, move |stream| {
-            let mut machine = SocketMachine::connect(stream, initial)?;
-            run_campaign_loop(&mut machine, &SpecEnvCodec, &cfg)
-        });
-        let report = match client {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("[conductor] campaign box: the campaign failed (transport/backend): {e}");
-                if let Err(se) = served {
-                    eprintln!("[conductor] campaign box: server session ended with: {se}");
-                }
-                return ExitCode::FAILURE;
-            }
-        };
-        if let Err(se) = served {
-            eprintln!("[conductor] campaign box: server session ended with a fatal error: {se}");
-            return ExitCode::FAILURE;
+            .unwrap();
+        CampaignReport {
+            base_vtime: 0,
+            snapshot_attempts: 1,
+            base_hash: [0; 32],
+            branches_explored: 1,
+            found: found.then(|| FoundBug {
+                branch_index: 0,
+                seed: 1,
+                env: explorer::SpecEnvCodec.seeded(1),
+                stop: stop.clone(),
+                hash: [7; 32],
+                bug,
+            }),
+            replays: if found {
+                (0..REPLAY_BAR)
+                    .map(|_| conductor::RunRow {
+                        stop: stop.clone(),
+                        hash: [7; 32],
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            nominal: NominalRow {
+                stop: explorer::StopReason::Quiescent {
+                    vtime: explorer::VTime(1),
+                },
+                hash: [0; 32],
+                is_bug: nominal_is_bug,
+            },
         }
-        finish_campaign("box", &report, n)
+    }
+
+    #[test]
+    fn finish_campaign_reports_pass_when_the_gates_pass() {
+        let report = campaign_report_of(true, false);
+        assert_eq!(
+            finish_campaign("test", &report, REPLAY_BAR),
+            ExitCode::SUCCESS
+        );
+    }
+
+    #[test]
+    fn finish_campaign_reports_failure_when_no_bug_was_found() {
+        let report = campaign_report_of(false, false);
+        assert_eq!(
+            finish_campaign("test", &report, REPLAY_BAR),
+            ExitCode::FAILURE
+        );
+    }
+
+    #[test]
+    fn finish_recording_reports_pass_then_failure_on_a_broken_gate() {
+        use conductor::record::run_recording;
+        let dir = tempfile::tempdir().unwrap();
+        let store = TraceStore::open(dir.path()).unwrap();
+        let mut server = conductor::mock::server(conductor::mock::recording_fork_script())
+            .expect("compose mock recording server");
+        let cfg = RecordConfig {
+            sweep: SweepConfig {
+                seeds: seeds(4),
+                runs_per_seed: 2,
+                deadline_delta: None,
+                ..SweepConfig::default()
+            },
+            retain: RetentionPolicy::All,
+            stream: StreamId(0),
+        };
+        let report = run_recording(&mut server, &store, &cfg).expect("mock recording runs");
+        assert_eq!(
+            finish_recording("test", &report, 2, &store, dir.path()),
+            ExitCode::SUCCESS
+        );
+
+        // Break a gate behind finish_recording's back (delete a retained
+        // journal) and confirm it reports failure, not a silent pass.
+        let victim = report.rows[0].trace_id;
+        std::fs::remove_file(dir.path().join(format!("{victim}.trace"))).unwrap();
+        assert_eq!(
+            finish_recording("test", &report, 2, &store, dir.path()),
+            ExitCode::FAILURE
+        );
+    }
+
+    // --- off-Linux stubs ------------------------------------------------------
+    //
+    // `run_box`/`run_campaign_box` resolve to a DIFFERENT function per platform
+    // (`#[cfg(target_os = "linux")]` picks the real `boxrun`-backed one, which
+    // needs `/dev/kvm` + the built guest images + a CPU-pinned host — never
+    // something a portable coverage run should invoke). These two tests only
+    // exist to pin the non-Linux stub's "loud refusal" contract, so they are
+    // gated identically to it — on Linux they simply do not compile/run.
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn run_box_refuses_to_run_off_linux() {
+        let args = BoxArgs {
+            sweep: sweep_args(8, None, "interesting"),
+            deadline_delta: 5_000_000_000,
+            kernel: "bzImage".to_string(),
+            initramfs: "initramfs-postgres.cpio.gz".to_string(),
+            ready_marker: "ready".to_string(),
+        };
+        assert_eq!(run_box(args), ExitCode::FAILURE);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn run_campaign_box_refuses_to_run_off_linux() {
+        let args = CampaignBoxArgs {
+            campaign: CampaignArgs {
+                max_branches: 4096,
+                replay_n: REPLAY_BAR,
+                campaign_seed: None,
+            },
+            deadline_delta: 5_000_000_000,
+            gpa_base: 0x0100_0000,
+            gpa_count: 8,
+            gpa_stride: 0x1000,
+            window_lo: 0,
+            window_hi: 1_000_000,
+            kernel: "bzImage".to_string(),
+            initramfs: "initramfs-campaign.cpio.gz".to_string(),
+            ready_marker: "CAMPAIGN_READY".to_string(),
+        };
+        assert_eq!(run_campaign_box(args), ExitCode::FAILURE);
     }
 }

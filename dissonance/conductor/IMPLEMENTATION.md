@@ -754,3 +754,136 @@ releases on EXIT). Logs: `/root/task78/gate{1,2,3}.log`.
 - Miri: run clean on `conductor --lib` (17 tests, `-Zmiri-disable-isolation`)
   after the mock gained the (delegating, SAFETY-commented) `map_memory`
   forward in `CountingBackend`.
+
+---
+
+# Coverage recovery (GitHub issue #69 / PR #71)
+
+The CI compile break (`Step::SdkStop`, fixed in #68) had failed the
+coverage/mutants/nextest jobs *before they could measure* since #63, so tasks
+73/78/69 merged without their coverage gates actually running. #68 restored
+the region floor to 93.27% by pinning `materialize.rs`, but the underlying
+per-file coverage in `record.rs`/`campaign.rs`/`lib.rs`/`main.rs` stayed
+thin. This pass adds real, behavior-pinning tests to ratchet it back up — no
+coverage-padding (a test that executes a line without asserting on it).
+
+## Region coverage, before → after (measured with CI's exact command, on the
+determinism box — Linux, so `main.rs`'s `cfg(target_os = "linux")` code
+compiles and counts, unlike a Mac-local run)
+
+| File | Before | After (new tests) | After (+ `boxrun.rs` split) |
+|---|---|---|---|
+| `record.rs` | 68.00% | 87.66% | 87.66% |
+| `campaign.rs` | 82.72% | 91.27% | 91.27% |
+| `lib.rs` | 73.03% | 90.40% | 90.40% |
+| `main.rs` | 0.00% | 61.14% (incl. box-only `mod boxrun`) | **89.69%** (portable dispatch only; `boxrun.rs` excluded, see below) |
+| **Workspace TOTAL region** (`--fail-under-regions`) | **93.31%** | 94.25% | **94.76%** |
+
+The floor moved from **93% → 94.5%** (a hair below 94.76%, not the measured
+number itself) in `.github/workflows/quality.yml`; see "`main.rs`'s remaining
+gap" below for why. `cargo llvm-cov nextest --all-features --lcov
+--ignore-filename-regex '...' --fail-under-regions 94.5` passes (1445/1445
+tests green on the box: 1409 previously green portable + the 21 new
+`main.rs` bin unit tests + additions to `lib`/`campaign`/`record`/
+`tests/recording.rs`). `clippy -D warnings`, `fmt --check`, and `cargo build
+--all-features` all green on the box (Linux, `cfg(target_os = "linux")`
+compiled, including a `--target x86_64-unknown-linux-gnu` cross-check from
+the Mac); `cargo deny check` green on the Mac.
+
+## What was added
+
+- **Retry-loop coverage for the base-seal `NotQuiescent` mechanism.**
+  `run_sweep` (`lib.rs`) and `run_campaign` (`campaign.rs`) both retry a
+  `snapshot()` refusal by running further and re-sealing — previously
+  untested (the mock composition never actually produces `NotQuiescent`, so
+  the existing mock-backed integration tests never touched this path). Both
+  are generic over the abstract `Machine` trait, so each got a small
+  self-contained `Machine` test double (`RetryingMachine`) that refuses a
+  configurable number of times, then succeeds, or reports a non-`Deadline`
+  stop mid-retry — pinning the three real behaviors: retries-then-seals
+  (attempts/vtime accounted for), gives up loudly past
+  `snapshot_max_attempts`, and gives up loudly if the guest halts before a
+  sealable boundary is found. `record.rs`'s analogous `seal_base` retry loop
+  operates over the concrete `ControlServer<B: Backend>` (not the `Machine`
+  seam), so it isn't fakeable the same way — see Known limitations below.
+- **Golden-format tests for every `render_*_table` function**
+  (`render_table`, `render_record_table`, `render_campaign_table`) — each
+  pins the exact printed shape (the artifact IMPLEMENTATION.md/box gates
+  quote verbatim) against a hand-built report, including the previously
+  untouched `Crash`/`Decision`/`SnapshotPoint`/`Assertion` `fmt_stop` arms.
+- **Per-gate failure-branch tests for `verify_record`, `verify_store_reload`,
+  `verify_campaign`.** Each of these returns a list of independent failure
+  strings, but only a couple of the ~10 branches were exercised (the "does
+  this gate actually catch a broken invariant" question — AGENTS.md's
+  "gate vacuity" criterion). Added one assertion per previously-untested
+  branch: a lone run per seed, empty records, non-monotone stamps, a
+  within-seed journal mismatch (`verify_record`); a terminal/record-count/
+  journal-length/digest mismatch between the report and the reloaded trace,
+  a `retained=false` row whose journal the store actually holds, and an
+  unknown `TraceId` (`verify_store_reload`); a replay with a mismatched
+  `StopReason` despite a matching hash (`verify_campaign`).
+- **`main.rs`'s portable logic, previously 0% covered.** The CLI dispatch
+  functions (`run_mock`, `run_campaign_mock`, `run_mock_materialize`,
+  `finish`/`finish_campaign`/`finish_recording`) and free functions
+  (`parse_u64_flexible`, `seeds`, `seeds_ok`, `parse_retain`) are plain,
+  portable Rust — they were simply never unit-tested, not "trapped" in a way
+  that needed extraction to the lib (a `bin` crate's `#[cfg(test)] mod tests`
+  runs and is coverage-instrumented exactly like a lib's). Added 21 tests
+  driving them directly (pass/fail exit codes via the real mock harness,
+  plus `parse`/`seeds` edge cases). The two `#[cfg(not(target_os = "linux"))]`
+  "refuses off Linux" stub tests are themselves gated identically to the
+  functions they test, so they never resolve to the real `boxrun`-backed
+  `run_box`/`run_campaign_box` on a Linux CI runner (which would attempt a
+  real `/dev/kvm` boot — never something a coverage job should trigger).
+
+## `main.rs`'s remaining gap: `mod boxrun` split into `src/boxrun.rs` (ruled)
+
+The ~260 uncovered regions left in `main.rs` after the new tests (0.00% →
+61.14%, not higher) were almost entirely `mod boxrun` (`#[cfg(target_os =
+"linux")]`): the real `boot_server`/`run`/`run_campaign` that need
+`/dev/kvm`, patched KVM, and the built guest images. This is genuinely
+box-only glue — no portable test can drive it without a real boot, and the
+coverage job's own self-hosted runner does not do live KVM boots
+(`quality.yml`'s coverage-job comment: it deliberately runs without
+`--ignored`, so box-gated tests never execute there).
+
+**Ruling: split, don't leave in place.** `mod boxrun` was already a
+self-contained block (its only seam into the parent module was `use
+super::{BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording,
+parse_retain, seeds}`, no entanglement with the portable dispatch logic
+around it) — mechanically clean to lift into `dissonance/conductor/src/
+boxrun.rs` verbatim, with `main.rs`'s `mod boxrun { ... }` replaced by
+`#[cfg(target_os = "linux")] mod boxrun;`. Added
+`dissonance/conductor/src/boxrun\.rs` to `.github/workflows/quality.yml`'s
+`--ignore-filename-regex`, exactly like the existing
+`kvm.rs`/`patched_kvm.rs`/`pmu_sys.rs`/`work_perf.rs` exclusions. Result:
+`main.rs`'s reported % now reflects only the portable dispatch logic this
+pass tested (89.69%, up from the 61.14% that was diluted by boxrun's
+permanent 0%), so a future regression in that portable logic is no longer
+maskable behind boxrun's floor. The floor itself moved **93% → 94.5%** in the
+same file — see `docs/CODE-QUALITY.md`'s "Ratchet: 93% → 94.5%" entry for
+the full before/after and reasoning.
+
+Verified: `cargo build`/`clippy -D warnings --target x86_64-unknown-linux-gnu`
+from the Mac (cross-check, matching this crate's existing Linux-target-check
+convention from the task-60 section above) and the full Linux build/clippy/
+fmt/coverage run on the box, all green; no behavior change (the module's
+code is untouched, only its file location).
+
+## Known limitations
+
+- **`record.rs`'s `seal_base` retry loop is not directly unit-tested.**
+  Unlike `run_sweep`/`run_campaign` (generic over the `Machine` trait, so a
+  test double can inject `NotQuiescent`), `record.rs`'s `run_recording`
+  drives `seal_base` over the concrete `ControlServer<B: Backend>` — real
+  `NotQuiescent` there comes from `vmm.save_vm_state()` failing with a
+  `ContractViolation` (an RNG mid-exit completion, a non-V-time-synchronized
+  point), which needs orchestrating real backend/exit state, not a trait
+  fake. This is vmm-core-layer behavior the crate does not own; the retry
+  loop's happy path is exercised (every `tests/recording.rs` run seals a
+  base), but the "attempts exceeded" / "halted before a sealable boundary"
+  arms stay uncovered. Left as a residual gap rather than forcing a fragile
+  fake of vmm-core internals.
+- Same discipline as the rest of this file: every new test asserts a real
+  input → real output (a table's exact bytes, a gate's exact failure
+  message, an `ExitCode`), never just "the line executed."
