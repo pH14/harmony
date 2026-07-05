@@ -771,20 +771,24 @@ coverage-padding (a test that executes a line without asserting on it).
 determinism box — Linux, so `main.rs`'s `cfg(target_os = "linux")` code
 compiles and counts, unlike a Mac-local run)
 
-| File | Before | After |
-|---|---|---|
-| `record.rs` | 68.00% | 87.66% |
-| `campaign.rs` | 82.72% | 91.27% |
-| `lib.rs` | 73.03% | 90.40% |
-| `main.rs` | 0.00% | 61.14% |
-| **Workspace TOTAL region** (the `--fail-under-regions 93` gate) | **93.31%** | **94.25%** |
+| File | Before | After (new tests) | After (+ `boxrun.rs` split) |
+|---|---|---|---|
+| `record.rs` | 68.00% | 87.66% | 87.66% |
+| `campaign.rs` | 82.72% | 91.27% | 91.27% |
+| `lib.rs` | 73.03% | 90.40% | 90.40% |
+| `main.rs` | 0.00% | 61.14% (incl. box-only `mod boxrun`) | **89.69%** (portable dispatch only; `boxrun.rs` excluded, see below) |
+| **Workspace TOTAL region** (`--fail-under-regions`) | **93.31%** | 94.25% | **94.76%** |
 
-`cargo llvm-cov nextest --all-features --lcov --ignore-filename-regex '...' --fail-under-regions 93`
-passes with room (1445/1445 tests green on the box, plus 1409 previously
-green portable + the 21 new `main.rs` bin unit tests + additions to `lib`/
-`campaign`/`record`/`tests/recording.rs`). `clippy -D warnings`, `fmt
---check`, and `cargo build --all-features` all green on the box (Linux,
-`cfg(target_os = "linux")` compiled); `cargo deny check` green on the Mac.
+The floor moved from **93% → 94.5%** (a hair below 94.76%, not the measured
+number itself) in `.github/workflows/quality.yml`; see "`main.rs`'s remaining
+gap" below for why. `cargo llvm-cov nextest --all-features --lcov
+--ignore-filename-regex '...' --fail-under-regions 94.5` passes (1445/1445
+tests green on the box: 1409 previously green portable + the 21 new
+`main.rs` bin unit tests + additions to `lib`/`campaign`/`record`/
+`tests/recording.rs`). `clippy -D warnings`, `fmt --check`, and `cargo build
+--all-features` all green on the box (Linux, `cfg(target_os = "linux")`
+compiled, including a `--target x86_64-unknown-linux-gnu` cross-check from
+the Mac); `cargo deny check` green on the Mac.
 
 ## What was added
 
@@ -832,34 +836,39 @@ green portable + the 21 new `main.rs` bin unit tests + additions to `lib`/
   `run_box`/`run_campaign_box` on a Linux CI runner (which would attempt a
   real `/dev/kvm` boot — never something a coverage job should trigger).
 
-## `main.rs`'s remaining gap: `mod boxrun` (proposal for the integrator to
-rule on, per the issue)
+## `main.rs`'s remaining gap: `mod boxrun` split into `src/boxrun.rs` (ruled)
 
-The ~260 uncovered regions left in `main.rs` (0.00% → 61.14%, not higher) are
-almost entirely `mod boxrun` (`#[cfg(target_os = "linux")]`): the real
-`boot_server`/`run`/`run_campaign` that need `/dev/kvm`, patched KVM, and the
-built guest images. This is genuinely box-only glue — no portable test can
-drive it without a real boot, and the coverage job's own self-hosted runner
-does not do live KVM boots (`quality.yml`'s coverage-job comment: it
-deliberately runs without `--ignored`, so box-gated tests never execute
-there). Two options, either acceptable:
+The ~260 uncovered regions left in `main.rs` after the new tests (0.00% →
+61.14%, not higher) were almost entirely `mod boxrun` (`#[cfg(target_os =
+"linux")]`): the real `boot_server`/`run`/`run_campaign` that need
+`/dev/kvm`, patched KVM, and the built guest images. This is genuinely
+box-only glue — no portable test can drive it without a real boot, and the
+coverage job's own self-hosted runner does not do live KVM boots
+(`quality.yml`'s coverage-job comment: it deliberately runs without
+`--ignored`, so box-gated tests never execute there).
 
-1. **Do nothing.** `main.rs`'s 61% is an honest reflection of "the portable
-   90% is tested, the box-only 10% needs the box" and does not threaten the
-   93% workspace floor (confirmed above: 94.25% with it counted as-is).
-2. **Split `mod boxrun` into its own `src/boxrun.rs`** (mechanical, same
-   crate/dir, no behavior change) and add
-   `dissonance/conductor/src/boxrun\.rs` to the coverage job's
-   `--ignore-filename-regex` in `.github/workflows/quality.yml`, exactly like
-   the existing `kvm.rs`/`patched_kvm.rs`/`pmu_sys.rs`/`work_perf.rs`
-   exclusions — so `main.rs`'s reported % reflects only the portable logic
-   this pass actually tested, and a future regression in that portable logic
-   isn't masked by boxrun's permanent 0%.
+**Ruling: split, don't leave in place.** `mod boxrun` was already a
+self-contained block (its only seam into the parent module was `use
+super::{BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording,
+parse_retain, seeds}`, no entanglement with the portable dispatch logic
+around it) — mechanically clean to lift into `dissonance/conductor/src/
+boxrun.rs` verbatim, with `main.rs`'s `mod boxrun { ... }` replaced by
+`#[cfg(target_os = "linux")] mod boxrun;`. Added
+`dissonance/conductor/src/boxrun\.rs` to `.github/workflows/quality.yml`'s
+`--ignore-filename-regex`, exactly like the existing
+`kvm.rs`/`patched_kvm.rs`/`pmu_sys.rs`/`work_perf.rs` exclusions. Result:
+`main.rs`'s reported % now reflects only the portable dispatch logic this
+pass tested (89.69%, up from the 61.14% that was diluted by boxrun's
+permanent 0%), so a future regression in that portable logic is no longer
+maskable behind boxrun's floor. The floor itself moved **93% → 94.5%** in the
+same file — see `docs/CODE-QUALITY.md`'s "Ratchet: 93% → 94.5%" entry for
+the full before/after and reasoning.
 
-Not done here (touches `.github/workflows/quality.yml`, outside this pass's
-"ratchet coverage" scope, and the CI job comment convention is to name
-*why* each exclusion is safe before adding one) — flagging for a ruling
-rather than deciding unilaterally.
+Verified: `cargo build`/`clippy -D warnings --target x86_64-unknown-linux-gnu`
+from the Mac (cross-check, matching this crate's existing Linux-target-check
+convention from the task-60 section above) and the full Linux build/clippy/
+fmt/coverage run on the box, all green; no behavior change (the module's
+code is untouched, only its file location).
 
 ## Known limitations
 

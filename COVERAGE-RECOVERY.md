@@ -24,8 +24,17 @@ run understates `main.rs` since `mod boxrun` doesn't even compile there):
 | `record.rs` | 68.00% | 87.66% |
 | `campaign.rs` | 82.72% | 91.27% |
 | `lib.rs` | 73.03% | 90.40% |
-| `main.rs` | 0.00% | 61.14% (the remainder is `mod boxrun` — genuinely box-only; see `dissonance/conductor/IMPLEMENTATION.md` for the ignore-filename-regex proposal) |
-| **Workspace region floor** | **93.31%** | **94.25%** |
+| `main.rs` | 0.00% | **89.69%** (portable CLI dispatch — `mod boxrun` split into its own `src/boxrun.rs` and excluded, see below) |
+| **Workspace region floor** | **93.31%** | **94.76%** |
+
+`main.rs`'s `mod boxrun` (needs real `/dev/kvm` + patched KVM + a built guest
+image — uncoverable by the coverage job) was split into
+`dissonance/conductor/src/boxrun.rs` and added to
+`.github/workflows/quality.yml`'s `--ignore-filename-regex`, exactly like the
+existing `kvm.rs`/`patched_kvm.rs`/`pmu_sys.rs`/`work_perf.rs` exclusions.
+The gate itself ratcheted: `--fail-under-regions` moved **93 → 94.5** (a hair
+below the measured 94.76%, per `docs/CODE-QUALITY.md`'s "Ratchet: 93% →
+94.5%" entry).
 
 All added tests assert real behavior (a table's exact bytes, a gate's exact
 failure message, an `ExitCode`) — see
