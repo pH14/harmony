@@ -905,6 +905,21 @@ impl<B: Backend> Vmm<B> {
         self.vtime.is_some() && self.vtime_synchronized
     }
 
+    /// The **boundary** preconditions [`Vmm::save_vm_state`] requires to seal a
+    /// snapshot: no staged RNG completion (`rng_completion_staged`), and — when
+    /// V-time is wired — at a `vtime_synchronized` intercept. This is the SINGLE
+    /// source of truth both `save_vm_state` and the deferred SDK snapshot-point
+    /// gate ([`Vmm::take_synchronized_snapshot_point`]) consult, so "can I seal
+    /// here?" can never drift from what `save_vm_state` actually accepts (round-4
+    /// P1: the snapshot point used to gate on `is_synchronized()` alone, which
+    /// does NOT exclude a staged RNG completion, so it surfaced points the seal
+    /// then rejected). NOT included here: the vCPU-state representability check
+    /// (`unrepresentable_state`) — that is a property of the captured state, not
+    /// the boundary.
+    fn can_snapshot(&self) -> bool {
+        !self.rng_completion_staged && (self.vtime.is_none() || self.vtime_synchronized)
+    }
+
     /// Restore the V-time + entropy state captured by [`Vmm::save_vtime`]: rebuild
     /// the clock with `vns_base = snap.vns`, **reset the hardware work counter to
     /// 0**, re-apply `IA32_TSC_ADJUST` from the snapshot, and restore the entropy
@@ -1132,15 +1147,18 @@ impl<B: Backend> Vmm<B> {
     /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
     /// lossy vCPU).
     pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
-        if self.rng_completion_staged {
-            return Err(VmmError::ContractViolation(
-                "save_vm_state at an RNG mid-exit boundary: the seeded RDRAND/RDSEED draw advanced \
-                 the stream but its completion is staged, not committed — snapshot only at a clean \
-                 boundary (step once more first)."
-                    .to_string(),
-            ));
-        }
-        if self.vtime.is_some() && !self.vtime_synchronized {
+        // The boundary gate is the shared `can_snapshot()` predicate (so the SDK
+        // snapshot-point surface can never advertise a point this rejects); when
+        // it fails, report WHICH precondition failed for a precise diagnostic.
+        if !self.can_snapshot() {
+            if self.rng_completion_staged {
+                return Err(VmmError::ContractViolation(
+                    "save_vm_state at an RNG mid-exit boundary: the seeded RDRAND/RDSEED draw \
+                     advanced the stream but its completion is staged, not committed — snapshot \
+                     only at a clean boundary (step once more first)."
+                        .to_string(),
+                ));
+            }
             return Err(VmmError::ContractViolation(
                 "save_vm_state at a non-synchronized point: the exact V-time (which a restored TSC \
                  resumes from) is known only at a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a \
@@ -2345,12 +2363,22 @@ impl<B: Backend> Vmm<B> {
     }
 
     /// Take the deferred `setup_complete` snapshot point **iff** the VM is now at a
-    /// V-time-synchronized (sealable) boundary (round-4 P1). The control loop calls
-    /// this after a `Continued` step: `true` (and the pending flag cleared) means
-    /// surface `StopReason::SnapshotPoint` here — a point where `save_vm_state`
-    /// succeeds, so the explorer's eager seal does not fail `NotQuiescent`.
+    /// **sealable** boundary — the FULL `save_vm_state` precondition
+    /// ([`Vmm::can_snapshot`]: synchronized AND no staged RNG completion), plus an
+    /// exact V-time ([`Vmm::is_synchronized`]) to stamp the point. The control loop
+    /// calls this after a `Continued` step; `true` means surface
+    /// `StopReason::SnapshotPoint` here — a point where the explorer's eager
+    /// `save_vm_state` seal succeeds, not `NotQuiescent`.
+    ///
+    /// **Round-4 P1:** gating on `is_synchronized()` alone surfaced a point at the
+    /// first synchronized exit after `setup_complete` even when that exit was an
+    /// RDRAND/RDSEED (a staged RNG completion), which `save_vm_state` rejects — and
+    /// clearing `pending_snapshot` on that unsealable surface LOST the point. Now
+    /// `pending_snapshot` is cleared ONLY when the point is actually surfaced (a
+    /// sealable boundary), so an RNG boundary defers it to the next clean one.
     pub fn take_synchronized_snapshot_point(&mut self) -> bool {
-        if self.is_synchronized()
+        if self.can_snapshot()
+            && self.is_synchronized()
             && let Some(sdk) = self.sdk.as_mut()
             && sdk.pending_snapshot
         {

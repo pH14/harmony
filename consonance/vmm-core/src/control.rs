@@ -2673,6 +2673,73 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_point_defers_past_an_rng_boundary_to_the_next_clean_seal() {
+        // Round-4 P1: the first V-time-synchronized exit after `setup_complete` is
+        // an RDRAND — synchronized, but with a STAGED RNG completion, so
+        // `save_vm_state` fails closed there. The deferred snapshot point must NOT
+        // surface at that RNG boundary (gating on `is_synchronized()` alone did, and
+        // cleared `pending_snapshot` before the failed seal → the point was LOST);
+        // it must defer to the next CLEAN synchronized boundary (the RDTSC), where a
+        // seal succeeds. Exits: doorbell(setup_complete) → RDRAND (unsealable) →
+        // RDTSC (clean) → HLT.
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+
+        let setup_id: u32 = 4 << 24;
+        let mut frame = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            1,
+            &setup_id.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+
+        let mut mb = MockBackend::with_exits(vec![
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Rdrand { width: 8 }, // synchronized BUT rng_completion_staged
+            Exit::Rdtsc,               // the next clean, sealable boundary
+            Exit::Hlt,
+        ]);
+        mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+        mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+            .unwrap();
+        let mut live = Vmm::new(mb, GuestRam::new(BIG_RAM).unwrap());
+        live.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9).unwrap(),
+        );
+        live.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        live.restore_guest_memory(&ram).unwrap();
+
+        let factory = Box::new(|| Err(VmmError::ContractViolation("unused".into())));
+        let mut s = ControlServer::new(live, factory);
+        hello(&mut s);
+
+        // The point surfaces (only at the clean RDTSC — never at the RDRAND, which
+        // `save_vm_state` would reject), so the eager seal SUCCEEDS.
+        assert!(
+            matches!(
+                run_seeking_snapshot(&mut s),
+                StopReason::SnapshotPoint { .. }
+            ),
+            "the deferred point surfaced at a sealable boundary"
+        );
+        match s.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(_)) => {}
+            other => panic!(
+                "seal failed — the point surfaced at an unsealable (RNG) boundary: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
     fn an_sdk_stop_with_a_staged_reseed_poisons_loud() {
         // Round-9 P1 (task 78 seam): an SDK stop (an assert violation at a doorbell
         // OUT) is NOT a V-time intercept, so `effective_vns` there is only a lower
