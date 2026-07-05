@@ -184,6 +184,23 @@ wait_for 600 "pod/postgres Ready" \
     || { kc describe pod postgres 2>/dev/null | $BB tail -30; tail_k3s; finish 1; }
 log "POSTGRES_READY the postgres pod is Running and accepting connections"
 
+# 3b. (task 61) start the in-guest flow agent for the client->postgres flow,
+# BEFORE the client pod exists, while the CNI is up. The agent asks the host
+# `net_decide` once for this flow and enforces the answer on the intra-guest CNI
+# (cni0), targeting the postgres pod IP:5432. The nominal path installs nothing
+# (agent presence stays deterministic — box gate A); a NetLatency/full-drop policy
+# installs a `tc netem`/`nft drop` rule the client then observes (gate B). Guarded:
+# a missing binary (agent-absent image) or a fail-closed-to-nominal decision (no
+# Net channel wired) never aborts the workload — the agent is additive. `PG_IP` is
+# the deterministic sequential-IPAM pod IP resolved above (the workload's server).
+if command -v flow-agent >/dev/null 2>&1; then
+    PG_IP=$(kc get pod postgres -o jsonpath='{.status.podIP}' 2>/dev/null)
+    log "FLOWAGENT starting for client->postgres flow (dst=$PG_IP:5432 on cni0)"
+    flow-agent --src 1 --dst 2 --conn 1 --iface cni0 \
+        --nft-match "ip daddr $PG_IP tcp dport 5432" 2>&1 | $BB sed 's/^/K8S61: /' \
+        || log "FLOWAGENT exited non-zero (additive; continuing)"
+fi
+
 # 4. apply the client Pod and let it call the postgres pod over the CNI.
 kc apply -f /k8s/client.yaml >/dev/null 2>&1
 wait_for 600 "pod/client scheduled" \
