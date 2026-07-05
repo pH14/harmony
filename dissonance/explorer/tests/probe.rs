@@ -722,3 +722,74 @@ fn probe_rejects_an_unbounded_plan() {
     );
     assert!(ok.is_ok(), "a bounded probe runs: {ok:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Round-14: the reproducer preserves the fault so the finding replays.
+// ---------------------------------------------------------------------------
+
+/// Round-14 P2: a liveness finding's terminal is reached by the original fault
+/// (here the fault masks a latent poison). The Bug's reproducer must **preserve**
+/// the fault — a dropped-policy (fault-cleared) reproducer would replay a clean
+/// run and the finding would vanish. Preserving it, a replay reaches the same
+/// poisoned terminal and re-probing it re-derives the non-convergence.
+#[test]
+fn a_policy_fault_liveness_finding_reproduces() {
+    let oracle = LivenessProbe {
+        budget: 1000,
+        active: true,
+    };
+    let fault = 0x5A;
+    let (mut ex, original, terminal) = setup(fault);
+    let bug = ex
+        .probe(&oracle, &original, terminal)
+        .expect("probe")
+        .expect("a liveness non-convergence bug");
+
+    // The reproducer carries the original fault (the round-14 fix) — non-zero
+    // (active), not the quiesced (nominal, fault-0) forward run's. (The ConvMachine
+    // records the fault as an active/nominal flag, not the raw byte.)
+    let _ = fault;
+    assert_ne!(
+        dec(&bug.env).expect("decode reproducer").fault,
+        0,
+        "the reproducer preserves the original fault (a dropped policy would be 0)"
+    );
+
+    // Replay the reproducer from genesis: the fault reaches the poisoned quiescent
+    // terminal (the fault masks the poison, so it re-quiesces).
+    let genesis = ex.genesis();
+    let m = ex.machine_mut();
+    m.branch(genesis, &bug.env).expect("branch the reproducer");
+    let replayed_stop = m
+        .run(
+            &StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            None,
+        )
+        .expect("replay the reproducer");
+    assert!(
+        matches!(replayed_stop, StopReason::Quiescent { .. }),
+        "the faulted reproducer reaches the poisoned terminal, got {replayed_stop:?}"
+    );
+    let replayed_terminal = m.snapshot().expect("snapshot the replayed terminal");
+    let replayed_env = m.recorded_env().expect("recorded env");
+    let replayed = RunTrace {
+        terminal: replayed_stop,
+        env: replayed_env,
+        coverage: None,
+        events: Vec::new(),
+        records: Vec::new(),
+    };
+
+    // Re-probe the replayed terminal (faults stopped): the non-convergence returns
+    // — the finding reproduced end-to-end from its own reproducer.
+    let reproduced = ex
+        .probe(&oracle, &replayed, replayed_terminal)
+        .expect("re-probe");
+    assert!(
+        reproduced.is_some(),
+        "the liveness finding reproduces from the preserved-fault reproducer"
+    );
+}

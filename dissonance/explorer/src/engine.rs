@@ -565,8 +565,10 @@ impl<M: Machine> Explorer<M> {
     ///    each decision locally, none surfaces, and the engine never stages a
     ///    resolve — the probe mints no snapshot and admits no exemplar.
     /// 4. Record the probe's [`RunTrace`], its `env` folded onto `original.env`
-    ///    via [`EnvCodec::compose`] — genesis-complete, replaying the original
-    ///    run *and* the failed convergence window.
+    ///    via [`EnvCodec::compose`] (after [`EnvCodec::rebase_probe_delta`] gives
+    ///    the nominal delta the original's policy) — genesis-complete and
+    ///    **policy-preserving**, so it replays the original faults to the terminal
+    ///    *and* the failed convergence window.
     /// 5. Hand it to [`ProbeOracle::judge_probe`] (pure) and return the verdict.
     ///
     /// The probe run is **never** admitted to the [`Archive`], and this method
@@ -607,15 +609,19 @@ impl<M: Machine> Explorer<M> {
         let probe_delta = self.machine.recorded_env()?;
         let probe_trace = RunTrace {
             terminal: stop,
-            // Fold the nominal forward window onto a **fault-stopped** view of the
-            // original (its recorded schedule kept, policy set to none) — so the
-            // reproducer replays the original faults to the terminal then quiesces
-            // nominally, and its policy matches the (nominal) probe delta so
-            // `compose` accepts it (a policy-P base would reject the policy-none
-            // delta the quiesced probe records).
-            env: self
-                .codec
-                .compose(&self.codec.without_faults(&original.env), &probe_delta),
+            // Fold the nominal forward window onto the **original** env — PRESERVING
+            // its fault policy — so the reproducer replays the original faults
+            // (often policy-sampled, not concrete overrides) to reach the terminal
+            // the finding is about. The nominal delta carries no policy (it came
+            // from the policy-none quiesced branch), so re-key it onto the
+            // original's policy first (`rebase_probe_delta`) — otherwise `compose`,
+            // which keys on a matching policy, would reject it. (The *branch* env
+            // above is `quiesce`d — faults stopped; the reproducer is the distinct
+            // preserve-policy path.)
+            env: self.codec.compose(
+                &original.env,
+                &self.codec.rebase_probe_delta(&probe_delta, &original.env),
+            ),
             coverage: Some(CoverageView {
                 map: self.machine.coverage().to_vec(),
             }),

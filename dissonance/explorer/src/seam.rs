@@ -110,8 +110,9 @@ pub trait EnvCodec {
     /// `base` — same seed and fault *policy* — or a schema-aware codec rejects it
     /// loudly rather than mint a reproducer that does not replay
     /// ([`SpecEnvCodec`](crate::SpecEnvCodec) panics on a seed/policy mismatch).
-    /// [`quiesce`](Self::quiesce)/[`without_faults`](Self::without_faults) exist so
-    /// a forward probe honors this.
+    /// [`quiesce`](Self::quiesce) (the probe *branch* env) and
+    /// [`rebase_probe_delta`](Self::rebase_probe_delta) (the probe *reproducer*
+    /// delta) exist so a forward probe honors this.
     fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment;
 
     /// A **quiesced** view of `base`: the same *seed* (so a branch-local delta
@@ -125,17 +126,22 @@ pub trait EnvCodec {
     /// state. Genesis-frame, deterministic.
     fn quiesce(&self, base: &Environment) -> Environment;
 
-    /// `base` with fault **injection stopped but its recorded schedule kept**: the
-    /// fault policy set to none (no fresh sampling on replay) while the concrete
-    /// per-`Moment` overrides and frame are preserved. It is the compose base for
-    /// a probe reproducer: folding the nominal forward window onto it yields a
-    /// genesis-complete env that replays the original faults up to the terminal
-    /// and then **no faults** — the "faults stop" the probe explored — and whose
-    /// policy matches the (nominal) probe delta so [`compose`](Self::compose)
-    /// accepts it. The default is the identity, correct for a codec whose faults
-    /// are not policy-sampled (a fixed schedule); a policy-driven codec overrides
-    /// it. Deterministic.
-    fn without_faults(&self, base: &Environment) -> Environment {
-        base.clone()
+    /// Re-key the **nominal probe delta** onto `original`'s fault regime so a probe
+    /// reproducer [`compose`](Self::compose)s cleanly AND **preserves the original
+    /// policy**. The delta was recorded from a policy-none [`quiesce`](Self::quiesce)
+    /// branch, so it carries no policy; the reproducer, however, must replay the
+    /// *original* faults to reach the terminal state the finding is about — and
+    /// those faults are frequently **policy-sampled** (declined decisions, seed +
+    /// policy answer), not concrete overrides, so dropping the policy would make
+    /// the reproducer never reach the terminal. This gives the delta `original`'s
+    /// fault policy (its own recorded schedule untouched) so
+    /// `compose(original, rebase_probe_delta(delta, original))` keeps `original`'s
+    /// policy in the result. The **branch** env stays [`quiesce`](Self::quiesce)d
+    /// (faults stopped) — the two paths differ: quiesce → none, reproducer →
+    /// preserve. The default is the identity (a codec whose `compose` does not key
+    /// on the policy, e.g. seed-only); a policy-driven codec overrides it.
+    fn rebase_probe_delta(&self, delta: &Environment, original: &Environment) -> Environment {
+        let _ = original;
+        delta.clone()
     }
 }

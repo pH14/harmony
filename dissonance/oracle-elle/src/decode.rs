@@ -241,13 +241,23 @@ impl RecordDecoder {
         let Some(rest) = line.strip_prefix(b"elle") else {
             return Ok(None);
         };
-        match rest.first() {
-            // A real record: the tag is followed by whitespace then fields.
-            Some(b) if b.is_ascii_whitespace() => {}
-            // `elle` alone (no fields) or `elleish...` (a different tag): not ours.
-            _ => return Ok(None),
-        }
         let show = || String::from_utf8_lossy(line).into_owned();
+        match rest.first() {
+            // A real record: the tag is followed by whitespace then its fields.
+            Some(b) if b.is_ascii_whitespace() => {}
+            // A **different** tag (`elleish…`): the byte after `elle` is not a
+            // separator, so this line is not ours — skip it.
+            Some(_) => return Ok(None),
+            // The **bare** `elle` tag with no fields: a record that IS ours but is
+            // empty — malformed, not foreign. Fail loud rather than silently skip
+            // a tagged-yet-fieldless line (which could hide a truncated stream).
+            None => {
+                return Err(DecodeError::Malformed(format!(
+                    "bare `elle` tag with no fields: {:?}",
+                    show()
+                )));
+            }
+        }
         let mut fields = rest
             .split(|b: &u8| b.is_ascii_whitespace())
             .filter(|f| !f.is_empty());

@@ -208,7 +208,7 @@ fn record_keys_are_byte_exact() {
 /// Round-10 P2: the `elle` tag is separated from its fields by **any** ASCII
 /// whitespace, so a **tab-delimited** record parses — matching only a literal
 /// space silently drops the line and the oracle could report a clean empty
-/// history. (`elle` alone or `elleish...` are still not records.)
+/// history.
 #[test]
 fn tab_delimited_record_is_not_dropped() {
     let t = raw_record_trace(vec![
@@ -222,10 +222,38 @@ fn tab_delimited_record_is_not_dropped() {
     assert_eq!(txn.ops.len(), 1, "its op was not silently dropped");
     assert_eq!(txn.ops[0].key, b"k".to_vec());
 
-    // The tag itself must still be matched exactly: `elleish` is a different tag.
+    // The tag itself must still be matched exactly: `elleish` is a DIFFERENT tag
+    // (the byte after `elle` is not a separator) → a foreign line, skipped.
     let not_ours = raw_record_trace(vec![(1, b"elleish op s=1 t=1 k=k W=1".to_vec())]);
     let h = RecordDecoder::new().decode(&not_ours).expect("decode");
     assert!(h.txns.is_empty(), "a non-`elle` tag contributes no ops");
+}
+
+/// Round-14 P2: a **bare** `elle` tag with no fields is a record that IS ours but
+/// is empty — malformed, not foreign. It fails loud rather than being silently
+/// skipped (which could hide a truncated stream), while `elleish` (a foreign tag)
+/// is still skipped.
+#[test]
+fn bare_elle_tag_with_no_fields_fails_loud() {
+    // Trailing whitespace is trimmed, so `elle` / `elle   ` both reduce to the
+    // bare tag.
+    for line in [b"elle".to_vec(), b"elle   ".to_vec()] {
+        let t = raw_record_trace(vec![(1, line.clone())]);
+        assert!(
+            matches!(
+                RecordDecoder::new().decode(&t),
+                Err(DecodeError::Malformed(_))
+            ),
+            "bare `elle` ({:?}) must fail loud, not skip",
+            String::from_utf8_lossy(&line)
+        );
+    }
+    // `elleish` remains a foreign tag (skipped, no error).
+    let foreign = raw_record_trace(vec![(1, b"elleish".to_vec())]);
+    assert!(
+        RecordDecoder::new().decode(&foreign).is_ok(),
+        "a foreign tag is skipped, not an error"
+    );
 }
 
 /// Item 2: an op carrying more than one of W/A/R is ambiguous — a loud

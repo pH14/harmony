@@ -441,25 +441,43 @@ impl crate::EnvCodec for SpecEnvCodec {
         .encode()
     }
 
-    fn without_faults(&self, base: &Environment) -> Environment {
-        let b = Self::require(base, "without_faults");
-        // Keep the recorded schedule that reached this point — the concrete
-        // per-Moment overrides (and seed, frame, reseeds) — but set the policy to
-        // none() and drop standing faults, so a replay applies exactly those
-        // recorded faults and then samples **no** fresh ones. This is the probe
-        // reproducer's compose base: its policy is none(), matching the nominal
-        // (policy-none) probe delta, so `compose` accepts it and the folded env
-        // replays the original faults up to the terminal, then quiesces nominally.
-        AdapterEnv {
-            base_offset: b.base_offset,
-            pos: b.pos,
-            spec: EnvSpec::Recorded {
-                seed: b.spec.seed(),
-                policy: FaultPolicy::none(),
-                overrides: b.spec.overrides().clone(),
-                standing: Vec::new(),
-                reseeds: b.spec.reseeds().clone(),
+    fn rebase_probe_delta(&self, delta: &Environment, original: &Environment) -> Environment {
+        let d = Self::require(delta, "rebase_probe_delta");
+        let base = Self::require(original, "rebase_probe_delta");
+        // The nominal probe delta was recorded from a policy-none quiesced branch.
+        // Give it the ORIGINAL's fault policy — nothing else (its own recorded
+        // schedule, seed, and frame stay put) — so `compose(original, this)` keeps
+        // `original`'s policy in the reproducer. A liveness finding's terminal is
+        // reached by the original faults, which are frequently policy-sampled
+        // (declined decisions), so the reproducer must carry that policy or it
+        // never reaches the terminal. The seed already matches (`quiesce`
+        // preserves it), so `compose` accepts the re-policied delta.
+        let spec = match &d.spec {
+            EnvSpec::Recorded {
+                seed,
+                overrides,
+                standing,
+                reseeds,
+                ..
+            } => EnvSpec::Recorded {
+                seed: *seed,
+                policy: base.spec.policy().clone(),
+                overrides: overrides.clone(),
+                standing: standing.clone(),
+                reseeds: reseeds.clone(),
             },
+            EnvSpec::Seeded { seed, .. } => EnvSpec::Recorded {
+                seed: *seed,
+                policy: base.spec.policy().clone(),
+                overrides: BTreeMap::new(),
+                standing: Vec::new(),
+                reseeds: BTreeMap::new(),
+            },
+        };
+        AdapterEnv {
+            base_offset: d.base_offset,
+            pos: d.pos,
+            spec,
         }
         .encode()
     }
@@ -1083,15 +1101,20 @@ mod tests {
         p
     }
 
-    /// Round-12 P2: on a base with a **non-none** `FaultPolicy`, `quiesce` must
-    /// stop fault injection — a copied policy would sample fresh faults during the
-    /// probe under `StopMask::NONE`, so a liveness probe could report
-    /// non-convergence caused by new faults, not the terminal. `without_faults`
-    /// stops injection too but keeps the recorded schedule, and — being policy
-    /// `none()` like the nominal probe delta — is the compose base a probe folds
-    /// onto without tripping the policy guard.
+    /// Round-12/14 P2: the two probe env paths handle a **non-none** `FaultPolicy`
+    /// oppositely, and each correctly.
+    ///
+    /// - **`quiesce`** (the forward-run *branch* env): fault injection **stopped**
+    ///   (policy `none()`, schedule stripped) — a copied policy would sample fresh
+    ///   faults under `StopMask::NONE`, so the probe could report non-convergence
+    ///   caused by new faults, not the terminal.
+    /// - **`rebase_probe_delta`** + `compose` (the *reproducer*): the base policy
+    ///   **preserved** — the terminal a liveness finding is about is reached by the
+    ///   original faults (often policy-sampled, not overrides), so the reproducer
+    ///   must carry that policy to replay it. The nominal delta is re-policied onto
+    ///   the original so `compose` (which keys on a matching policy) accepts it.
     #[test]
-    fn quiesce_and_without_faults_stop_a_faulty_policy() {
+    fn quiesce_stops_faults_but_the_reproducer_preserves_the_policy() {
         let original = AdapterEnv {
             base_offset: 0,
             pos: 100,
@@ -1108,30 +1131,17 @@ mod tests {
         }
         .encode();
 
-        // quiesce: the forward-run branch env — policy none, schedule stripped.
+        // quiesce: the branch env — faults STOPPED (policy none, schedule stripped).
         let q = AdapterEnv::decode(&SpecEnvCodec.quiesce(&original)).unwrap();
         assert_eq!(
             q.spec.policy(),
             &FaultPolicy::none(),
-            "the quiesced probe env injects no fresh faults"
+            "the quiesced branch env injects no fresh faults"
         );
         assert!(q.spec.overrides().is_empty(), "schedule stripped");
         assert_eq!(q.spec.seed(), 0xABCD_1234, "seed preserved");
 
-        // without_faults: the compose base — policy none, schedule KEPT.
-        let wf = AdapterEnv::decode(&SpecEnvCodec.without_faults(&original)).unwrap();
-        assert_eq!(
-            wf.spec.policy(),
-            &FaultPolicy::none(),
-            "the reproducer base samples no fresh faults on replay"
-        );
-        assert!(
-            wf.spec.overrides().contains_key(&40),
-            "the recorded schedule that reached the terminal is kept"
-        );
-
-        // The exact probe fold: the nominal (policy-none) delta composes onto the
-        // fault-stopped base without tripping the policy guard.
+        // The nominal probe delta the quiesced branch records (policy none, empty).
         let probe_delta = AdapterEnv {
             base_offset: 100,
             pos: 200,
@@ -1144,18 +1154,31 @@ mod tests {
             },
         }
         .encode();
-        let composed = AdapterEnv::decode(
-            &SpecEnvCodec.compose(&SpecEnvCodec.without_faults(&original), &probe_delta),
-        )
+
+        // rebase_probe_delta: re-key the delta onto the original's policy.
+        let rebased =
+            AdapterEnv::decode(&SpecEnvCodec.rebase_probe_delta(&probe_delta, &original)).unwrap();
+        assert_eq!(
+            rebased.spec.policy(),
+            &faulty_policy(),
+            "the delta adopts the original policy so the reproducer preserves it"
+        );
+
+        // The exact probe fold: compose the re-policied delta onto the original —
+        // the reproducer PRESERVES the policy AND replays the original faults.
+        let composed = AdapterEnv::decode(&SpecEnvCodec.compose(
+            &original,
+            &SpecEnvCodec.rebase_probe_delta(&probe_delta, &original),
+        ))
         .unwrap();
         assert_eq!(
             composed.spec.policy(),
-            &FaultPolicy::none(),
-            "reproducer is fault-stopped"
+            &faulty_policy(),
+            "reproducer preserves the base policy (a policy-fault finding replays)"
         );
         assert!(
             composed.spec.overrides().contains_key(&40),
-            "reproducer still replays the original faults to the terminal"
+            "reproducer still replays the recorded faults to the terminal"
         );
     }
 

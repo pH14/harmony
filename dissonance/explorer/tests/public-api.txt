@@ -24,8 +24,8 @@ impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::quiesce(&self, &explorer::Environment) -> explorer::Environment
+pub fn explorer::adapter::SpecEnvCodec::rebase_probe_delta(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::without_faults(&self, &explorer::Environment) -> explorer::Environment
 pub const explorer::adapter::ADAPTER_BLOB_VERSION: u16
 pub fn explorer::adapter::client_caps() -> control_proto::types::Caps
 pub enum explorer::MachineError
@@ -293,8 +293,8 @@ impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::quiesce(&self, &explorer::Environment) -> explorer::Environment
+pub fn explorer::adapter::SpecEnvCodec::rebase_probe_delta(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::without_faults(&self, &explorer::Environment) -> explorer::Environment
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::VTime>
 pub explorer::StopConditions::on: explorer::StopMask
@@ -347,14 +347,14 @@ pub trait explorer::EnvCodec
 pub fn explorer::EnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::EnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
 pub fn explorer::EnvCodec::quiesce(&self, &explorer::Environment) -> explorer::Environment
+pub fn explorer::EnvCodec::rebase_probe_delta(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::EnvCodec::seeded(&self, u64) -> explorer::Environment
-pub fn explorer::EnvCodec::without_faults(&self, &explorer::Environment) -> explorer::Environment
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
 pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::quiesce(&self, &explorer::Environment) -> explorer::Environment
+pub fn explorer::adapter::SpecEnvCodec::rebase_probe_delta(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::without_faults(&self, &explorer::Environment) -> explorer::Environment
 pub trait explorer::Machine
 pub fn explorer::Machine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::coverage(&self) -> &[u8]
