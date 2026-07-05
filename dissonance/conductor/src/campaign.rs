@@ -318,11 +318,17 @@ pub fn run_campaign<M: Machine>(
     let base_vtime = vt;
     let base_hash = machine.hash()?;
 
+    // Arm the SDK **assertion** class (round-14): a cooperating guest's
+    // `assert_always` violation surfaces as [`StopReason::Assertion`] — a [`Bug`]
+    // the oracle judges. Under `StopMask::NONE` the run would sail PAST the
+    // assertion to a clean terminal, and a real bug would go unjudged (a MISSED
+    // detection, the worst campaign outcome). The deadline still bounds the run;
+    // whichever comes first stops it.
     let until = StopConditions {
         deadline: cfg
             .deadline_delta
             .map(|d| VTime(base_vtime.saturating_add(d))),
-        on: StopMask::NONE,
+        on: StopMask::ASSERTION,
     };
 
     // 2. The search: seed-driven fault schedules until the oracle calls a crash.
@@ -718,6 +724,208 @@ mod tests {
             verify_campaign(&nom, 3)
                 .iter()
                 .any(|f| f.contains("adversity-gated"))
+        );
+    }
+
+    /// A toy [`Machine`] with a planted **SDK-assertion** bug, modeling the round-7
+    /// StopMask gating exactly: an `assert_always` violation surfaces as
+    /// [`StopReason::Assertion`] ONLY when the ASSERTION class is armed in
+    /// `until.on`; unarmed, the run sails PAST it to a clean [`Quiescent`] (the
+    /// guest continues) — a MISSED bug. The trigger is [`Trigger::toy`]'s
+    /// `(gpa, mask, window)`, matched by [`CampaignConfig::toy`]'s search space.
+    struct AssertMachine {
+        trigger: crate::planted::Trigger,
+        current: Environment,
+        vtime: u64,
+        snaps: std::collections::BTreeMap<u64, (u64, Environment)>,
+        next: u64,
+    }
+
+    impl AssertMachine {
+        fn new() -> Self {
+            Self {
+                trigger: crate::planted::Trigger::toy(),
+                current: SpecEnvCodec.seeded(0),
+                vtime: crate::planted::BASE_VTIME,
+                snaps: std::collections::BTreeMap::new(),
+                next: 1,
+            }
+        }
+        /// Whether the active env carries the exact planted single-event upset.
+        fn fires(&self) -> bool {
+            let Ok(dec) = AdapterEnv::decode(&self.current) else {
+                return false;
+            };
+            dec.spec.host_faults().any(|(m, f)| {
+                matches!(f, HostFault::CorruptMemory { gpa, mask }
+                    if gpa == self.trigger.gpa
+                        && mask.0 == self.trigger.mask
+                        && m >= self.trigger.window.0
+                        && m < self.trigger.window.1)
+            })
+        }
+    }
+
+    impl Machine for AssertMachine {
+        fn branch(
+            &mut self,
+            snap: explorer::SnapId,
+            env: &Environment,
+        ) -> Result<(), MachineError> {
+            let (vt, _) = self
+                .snaps
+                .get(&snap.0)
+                .ok_or(MachineError::UnknownSnapshot(snap.0))?;
+            AdapterEnv::decode(env)?;
+            self.vtime = *vt;
+            self.current = env.clone();
+            Ok(())
+        }
+        fn replay(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+            let (vt, env) = self
+                .snaps
+                .get(&snap.0)
+                .ok_or(MachineError::UnknownSnapshot(snap.0))?;
+            self.vtime = *vt;
+            self.current = env.clone();
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            until: &StopConditions,
+            _resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            // Already-met deadline → the `probe_vtime` idiom (report current time).
+            if let Some(d) = until.deadline
+                && d.0 <= self.vtime
+            {
+                return Ok(StopReason::Deadline {
+                    vtime: VTime(self.vtime),
+                });
+            }
+            let vt = self.vtime.saturating_add(10);
+            self.vtime = vt;
+            let armed = until.on.0 & StopMask::ASSERTION.0 != 0;
+            if self.fires() && armed {
+                Ok(StopReason::Assertion {
+                    vtime: VTime(vt),
+                    id: 7,
+                    data: vec![1],
+                })
+            } else {
+                // Not triggered, OR the assertion class is unarmed (the guest runs
+                // straight through the violation to its clean terminal).
+                Ok(StopReason::Quiescent { vtime: VTime(vt) })
+            }
+        }
+        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            let id = self.next;
+            self.next += 1;
+            self.snaps.insert(id, (self.vtime, self.current.clone()));
+            Ok(explorer::SnapId(id))
+        }
+        fn drop_snap(&mut self, snap: explorer::SnapId) -> Result<(), MachineError> {
+            self.snaps
+                .remove(&snap.0)
+                .map(|_| ())
+                .ok_or(MachineError::UnknownSnapshot(snap.0))
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(b"conductor.campaign.assertmachine.v1");
+            h.update(&self.current.bytes);
+            Ok(h.finalize().into())
+        }
+        fn coverage(&self) -> &[u8] {
+            &[]
+        }
+        fn recorded_env(&self) -> Result<Environment, MachineError> {
+            Ok(self.current.clone())
+        }
+    }
+
+    /// Round-14 P2(3): a planted SDK **assertion** IS reported by a campaign run —
+    /// the campaign arms the ASSERTION class, so a cooperating guest's violation
+    /// surfaces as a judged bug instead of going unnoticed. The same machine under
+    /// `StopMask::NONE` runs straight past the violation (a clean `Quiescent`),
+    /// demonstrating that the arming is exactly what makes the assertion
+    /// discoverable.
+    #[test]
+    fn a_planted_sdk_assertion_is_reported_by_a_campaign_run() {
+        // The gating the fix depends on: the SAME triggering env surfaces the
+        // assertion ONLY when the class is armed.
+        let mut g = AssertMachine::new();
+        let b = g.snapshot().unwrap();
+        // Craft the exact planted trigger env (gpa 0x3000, guard bit 31, in window).
+        let mut spec = EnvSpec::Seeded {
+            seed: 1,
+            policy: FaultPolicy::none(),
+        };
+        spec.perturb(
+            HostFault::CorruptMemory {
+                gpa: 0x3000,
+                mask: BitMask(1 << 31),
+            },
+            crate::planted::BASE_VTIME + 3,
+        );
+        let trigger_env = AdapterEnv {
+            base_offset: 0,
+            pos: 0,
+            spec,
+        }
+        .encode();
+        g.branch(b, &trigger_env).unwrap();
+        assert!(
+            matches!(
+                g.run(
+                    &StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE
+                    },
+                    None
+                )
+                .unwrap(),
+                StopReason::Quiescent { .. }
+            ),
+            "unarmed: the assertion is NOT surfaced (would be a missed bug)"
+        );
+        g.branch(b, &trigger_env).unwrap();
+        assert!(
+            matches!(
+                g.run(
+                    &StopConditions {
+                        deadline: None,
+                        on: StopMask::ASSERTION
+                    },
+                    None
+                )
+                .unwrap(),
+                StopReason::Assertion { .. }
+            ),
+            "armed: the assertion surfaces as a judged bug"
+        );
+
+        // The full campaign (which arms ASSERTION) finds + reports the planted
+        // assertion, replays it N/N, and the nominal control stays clean.
+        let mut machine = AssertMachine::new();
+        let cfg = CampaignConfig {
+            replay_n: 3,
+            ..CampaignConfig::toy()
+        };
+        let report = run_campaign(&mut machine, &SpecEnvCodec, &cfg).expect("campaign runs");
+        let found = report
+            .found
+            .as_ref()
+            .expect("the planted SDK assertion is reported");
+        assert!(
+            matches!(found.stop, StopReason::Assertion { .. }),
+            "the reported bug is the SDK assertion, got {:?}",
+            found.stop
+        );
+        assert!(
+            verify_campaign(&report, cfg.replay_n).is_empty(),
+            "all campaign gates pass (found + N/N reproduced + nominal clean)"
         );
     }
 }

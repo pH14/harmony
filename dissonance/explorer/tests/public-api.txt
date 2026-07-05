@@ -287,6 +287,7 @@ pub explorer::StopConditions::on: explorer::StopMask
 pub struct explorer::StopMask(pub u32)
 impl explorer::StopMask
 pub const explorer::StopMask::ALL: explorer::StopMask
+pub const explorer::StopMask::ASSERTION: explorer::StopMask
 pub const explorer::StopMask::NONE: explorer::StopMask
 pub struct explorer::StreamId(pub u16)
 pub struct explorer::TerminalOracle

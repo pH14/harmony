@@ -159,6 +159,13 @@ impl StopMask {
     /// coverage-guided default, so the [`Tactic`] answers each interesting
     /// decision and the explorer can fork a snapshot mid-run.
     pub const ALL: StopMask = StopMask(u32::MAX);
+    /// Surface SDK **assertion** violations (task 73). A campaign arms this so a
+    /// cooperating guest's `assert_always`/`assert_unreachable` violation stops as
+    /// [`StopReason::Assertion`] (a [`Bug`]) instead of running past, unjudged, to
+    /// the terminal. The bit is single-sourced from `control_proto::class_bit::
+    /// ASSERTION` (the adapter passes `.0` straight through to the control plane),
+    /// so it can never drift from the surfacing gate.
+    pub const ASSERTION: StopMask = StopMask(1u32 << control_proto::class_bit::ASSERTION as u32);
 }
 
 /// The conditions that bound one `run`: an optional V-time `deadline` and the

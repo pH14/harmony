@@ -118,6 +118,21 @@ pub enum SdkStop {
     // by the control loop as `StopReason::SnapshotPoint` there.
 }
 
+/// The host-side action a captured SDK Event emission drives, after
+/// [`Vmm::classify_sdk_event`] validates its payload (task 73 seam 3, round-14).
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SdkEventAction {
+    /// Surface a cooperating-SDK stop (an assert violation) as a bug.
+    Stop(SdkStop),
+    /// `setup_complete` (empty payload): arm the deferred snapshot point.
+    DeferSnapshot,
+    /// A well-formed non-stop emission: capture raw, take no host action.
+    Capture,
+    /// A malformed payload for an inspected namespace: reject, capture nothing —
+    /// never synthesize a bug or a snapshot deferral from garbage.
+    Malformed,
+}
+
 /// Errors that abort a run. A `ContractViolation` is the default-deny posture made
 /// loud: an exit the skeleton does not model fails closed here — never silently.
 #[derive(Debug, thiserror::Error)]
@@ -2225,15 +2240,37 @@ impl<B: Backend> Vmm<B> {
                 return (n, None);
             }
             let id = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            let data = payload[4..].to_vec();
-            let stop = Self::sdk_event_stop(id, &data);
+            let data = &payload[4..];
+            // Validate the SDK event payload BEFORE acting on it (round-14): a
+            // malformed frame for a namespace the host inspects — an assert
+            // VIOLATION whose declared detail length does not fit the frame, or a
+            // `setup_complete` carrying bytes — is rejected with BadRequest and NOT
+            // captured/armed/surfaced, so a bug or a snapshot deferral is never
+            // synthesized from garbage guest bytes.
+            let (stop, defer) = match Self::classify_sdk_event(id, data) {
+                SdkEventAction::Malformed => {
+                    let n = encode_response(
+                        ServiceId::Event,
+                        1,
+                        header.seq,
+                        Status::BadRequest,
+                        &[],
+                        resp,
+                    )
+                    .unwrap_or(0);
+                    return (n, None);
+                }
+                SdkEventAction::Stop(s) => (Some(s), false),
+                SdkEventAction::DeferSnapshot => (None, true),
+                SdkEventAction::Capture => (None, false),
+            };
             if let Some(sdk) = self.sdk.as_mut() {
-                sdk.events.push((moment, id, data));
+                sdk.events.push((moment, id, data.to_vec()));
                 // Task 73 (P1): `setup_complete` is a lifecycle milestone at a
                 // skid-tainted doorbell OUT — not sealable here. Defer a snapshot
                 // point; the control loop surfaces it at the next synchronized
                 // boundary, where a seal succeeds.
-                if Self::is_setup_complete(id) {
+                if defer {
                     sdk.pending_snapshot = true;
                 }
             }
@@ -2337,38 +2374,57 @@ impl<B: Backend> Vmm<B> {
         }
     }
 
-    /// Whether an SDK Event emission surfaces a stop (task 73 seam 3): an assert
-    /// **violation** (`always`/`unreachable`) stops as a bug; a `setup_complete`
-    /// lifecycle point stops as a snapshot fork. A `sometimes`/`reachable` hit,
-    /// a state register, a buggify result, or the catalog declaration never stop.
-    fn sdk_event_stop(id: u32, data: &[u8]) -> Option<SdkStop> {
+    /// Classify a captured SDK Event emission (`id` + `data`) at the doorbell,
+    /// **validating** the payload for the namespaces the host acts on (task 73 seam
+    /// 3, round-14). The host inspects exactly two:
+    ///
+    /// - **assert VIOLATION** (`SDK_NS_ASSERT`, disposition `1`): surfaces a bug
+    ///   ([`SdkStop::Assertion`]). Payload `[disposition u8][detail_len u16][detail]`;
+    ///   the declared `detail_len` must match the remaining bytes EXACTLY (no
+    ///   truncation, no trailing bytes) or the frame is [`Malformed`](SdkEventAction::Malformed).
+    /// - **`setup_complete`** (`SDK_NS_LIFECYCLE`, local 0): arms the deferred
+    ///   snapshot point ([`DeferSnapshot`](SdkEventAction::DeferSnapshot)). It carries
+    ///   NO payload; a nonempty one is [`Malformed`](SdkEventAction::Malformed).
+    ///
+    /// A `Malformed` frame is rejected (BadRequest) and never captured/armed/
+    /// surfaced, so a bug or a snapshot deferral is never synthesized from garbage.
+    /// Every OTHER emission (a hit, an unknown assert disposition, a state register,
+    /// a buggify result, the catalog, an unknown namespace) is
+    /// [`Capture`](SdkEventAction::Capture): captured raw for the **total** link-tier
+    /// decode, which owns their validation — the host takes no action on them.
+    fn classify_sdk_event(id: u32, data: &[u8]) -> SdkEventAction {
         let ns = (id >> SDK_NS_SHIFT) as u8;
         let local = id & SDK_LOCAL_MASK;
         match ns {
             SDK_NS_ASSERT if data.first() == Some(&SDK_DISP_VIOLATION) => {
-                // assert payload = [disposition u8][detail_len u16][detail].
-                let detail = data
-                    .get(1..3)
-                    .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
-                    .and_then(|dl| data.get(3..3 + dl))
-                    .unwrap_or(&[])
-                    .to_vec();
-                Some(SdkStop::Assertion {
-                    id: local,
-                    data: detail,
-                })
+                // assert payload = [disposition u8][detail_len u16][detail]. The
+                // declared detail length must fit the frame EXACTLY.
+                let Some(len_bytes) = data.get(1..3) else {
+                    return SdkEventAction::Malformed;
+                };
+                let dl = u16::from_le_bytes([len_bytes[0], len_bytes[1]]) as usize;
+                match data.get(3..) {
+                    Some(detail) if detail.len() == dl => {
+                        SdkEventAction::Stop(SdkStop::Assertion {
+                            id: local,
+                            data: detail.to_vec(),
+                        })
+                    }
+                    // detail_len overflows the frame, or trailing bytes remain.
+                    _ => SdkEventAction::Malformed,
+                }
             }
-            // `setup_complete` (lifecycle, local 0) does NOT surface an immediate
-            // stop — it defers a snapshot point (see the Event handler +
-            // `pending_snapshot`), so it is intentionally absent here.
-            _ => None,
+            // `setup_complete` carries no payload; a nonempty one is malformed.
+            SDK_NS_LIFECYCLE if local == 0 => {
+                if data.is_empty() {
+                    SdkEventAction::DeferSnapshot
+                } else {
+                    SdkEventAction::Malformed
+                }
+            }
+            // Everything else is captured raw; the link tier validates it.
+            _ => SdkEventAction::Capture,
         }
-    }
-
-    /// Whether an event id is the `setup_complete` lifecycle milestone (namespace
-    /// [`SDK_NS_LIFECYCLE`], local 0).
-    fn is_setup_complete(id: u32) -> bool {
-        (id >> SDK_NS_SHIFT) as u8 == SDK_NS_LIFECYCLE && (id & SDK_LOCAL_MASK) == 0
     }
 
     /// Take the deferred `setup_complete` snapshot point **iff** the VM is now at a
@@ -3846,6 +3902,117 @@ mod tests {
         let ids: Vec<u32> = vmm.sdk_events().iter().map(|(_, id, _)| *id).collect();
         assert_eq!(ids, vec![hit_id, viol_id, setup_id]);
         assert_eq!(vmm.sdk_buggify(), &[(0, Answer::Fault(Fault::BuggifyFire))]);
+    }
+
+    /// Round-14 malformed-SDK-event-payload MATRIX: `classify_sdk_event` validates
+    /// every payload the host acts on, so a bug (assert violation) or a snapshot
+    /// deferral (setup_complete) is never synthesized from garbage. One place, the
+    /// whole table — no more one-field-per-round.
+    #[test]
+    fn classify_sdk_event_payload_matrix() {
+        type C = SdkEventAction;
+        let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
+        let setup_id = u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT;
+        let state_id = (2u32 << SDK_NS_SHIFT) | 3; // a state register (link-owned)
+        let classify = Vmm::<MockBackend>::classify_sdk_event;
+
+        // --- assert VIOLATION (disposition 1): detail_len must fit EXACTLY. ---
+        // Well-formed: no detail (len 0).
+        assert_eq!(
+            classify(assert_id, &[1, 0, 0]),
+            C::Stop(SdkStop::Assertion {
+                id: 20,
+                data: vec![]
+            })
+        );
+        // Well-formed: 2 detail bytes declared and present.
+        assert_eq!(
+            classify(assert_id, &[1, 2, 0, 0xAB, 0xCD]),
+            C::Stop(SdkStop::Assertion {
+                id: 20,
+                data: vec![0xAB, 0xCD]
+            })
+        );
+        // Malformed: detail_len (2) OVERFLOWS the frame (0 detail bytes present).
+        assert_eq!(classify(assert_id, &[1, 2, 0]), C::Malformed);
+        // Malformed: TRAILING bytes past the declared detail_len (0).
+        assert_eq!(classify(assert_id, &[1, 0, 0, 0x99]), C::Malformed);
+        // Malformed: truncated header (no detail_len u16).
+        assert_eq!(classify(assert_id, &[1]), C::Malformed);
+        assert_eq!(classify(assert_id, &[1, 0]), C::Malformed);
+        // A non-violation disposition (a hit / unknown) is captured raw, no stop —
+        // the link tier validates it.
+        assert_eq!(classify(assert_id, &[0, 0, 0]), C::Capture); // DISP_HIT
+        assert_eq!(classify(assert_id, &[9, 0, 0]), C::Capture); // unknown disposition
+
+        // --- setup_complete: EMPTY payload only. ---
+        assert_eq!(classify(setup_id, &[]), C::DeferSnapshot);
+        assert_eq!(classify(setup_id, &[0xAB]), C::Malformed); // garbage payload
+        assert_eq!(classify(setup_id, &[0; 4]), C::Malformed);
+
+        // --- everything else is captured raw (the link tier owns its validation). ---
+        assert_eq!(classify(state_id, &[0, 1, 2, 3]), C::Capture);
+        assert_eq!(classify((9u32 << SDK_NS_SHIFT) | 7, &[1, 2, 3]), C::Capture); // unknown ns
+    }
+
+    /// End-to-end: a malformed SDK event frame at the doorbell is REJECTED with
+    /// BadRequest and is NOT captured, does NOT arm the deferred snapshot point,
+    /// and does NOT surface a stop (round-14). A well-formed setup_complete IS
+    /// captured (and would arm the deferral).
+    #[test]
+    fn doorbell_rejects_malformed_sdk_event_payloads() {
+        use environment::{EnvSpec, FaultPolicy};
+
+        // Ring an Event(op1) frame carrying `[event_id][data]`; return (status,
+        // whether a stop surfaced, sdk_events len after).
+        fn ring(vmm: &mut Vmm<MockBackend>, event_id: u32, data: &[u8]) -> (u16, bool, usize) {
+            let mut payload = event_id.to_le_bytes().to_vec();
+            payload.extend_from_slice(data);
+            let mut buf = [0u8; HC_PAGE];
+            let n = hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut buf)
+                .unwrap();
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&buf[..n]);
+            let step = vmm.dispatch_out(DOORBELL_PORT, 4, n as u32).unwrap();
+            let page = vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE].to_vec();
+            let (hdr, _) = decode(&page).expect("a response frame");
+            (hdr.status, step == Step::SdkStop, vmm.sdk_events().len())
+        }
+        let mk = || {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            v.enable_sdk(
+                EnvSpec::Seeded {
+                    seed: 1,
+                    policy: FaultPolicy::none(),
+                }
+                .materialize(),
+                &FaultPolicy::none(),
+            );
+            v
+        };
+        let assert_id = (u32::from(SDK_NS_ASSERT) << SDK_NS_SHIFT) | 20;
+        let setup_id = u32::from(SDK_NS_LIFECYCLE) << SDK_NS_SHIFT;
+
+        // Malformed assert violation (detail_len overflows) → BadRequest, no stop,
+        // NOT captured.
+        let mut v = mk();
+        assert_eq!(
+            ring(&mut v, assert_id, &[1, 2, 0]),
+            (Status::BadRequest as u16, false, 0),
+            "a malformed assert violation is rejected, never a bug from garbage"
+        );
+
+        // Malformed setup_complete (carries bytes) → BadRequest, not captured (so
+        // it can never arm the deferred snapshot point).
+        let mut v = mk();
+        assert_eq!(
+            ring(&mut v, setup_id, &[0xAB]),
+            (Status::BadRequest as u16, false, 0),
+            "a non-empty setup_complete is rejected, never arms the deferral"
+        );
+
+        // A well-formed setup_complete IS captured (Ok) — the valid path still works.
+        let mut v = mk();
+        assert_eq!(ring(&mut v, setup_id, &[]), (Status::Ok as u16, false, 1));
     }
 
     /// A doorbell `OUT` on a Vmm with **no** SDK channel wired stays the
