@@ -170,6 +170,15 @@ jobs:
         run: git diff "origin/${{ github.base_ref }}"...HEAD > pr.diff
       - name: cargo mutants --in-diff
         run: cargo mutants --no-shuffle --in-diff pr.diff
+      # guest/sdk is out-of-workspace (its own manifest), so the root run above
+      # never mutates it even when the PR diff touches its files — leaving the SDK
+      # harness (assert/buggify/state hooks + wire encode) ungated. Mutate its
+      # diffed lines on their own manifest, mirroring the fmt/clippy/test/public-api
+      # split the `gates` job already applies to guest/sdk. `--in-diff` filters to
+      # the PR's changed guest/sdk lines; its own `.cargo/mutants.toml` (if any)
+      # auto-discovers, else the run is config-free.
+      - name: cargo mutants --in-diff (guest/sdk, out-of-workspace manifest)
+        run: cargo mutants --manifest-path guest/sdk/Cargo.toml --no-shuffle --in-diff pr.diff
 
   # Gating (quality-f): formal proofs on saturating/bounded integer arithmetic
   # via Kani (bounded model checking). The `#[cfg(kani)]` harnesses in

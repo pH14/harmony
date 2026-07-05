@@ -83,6 +83,10 @@ impl StubServer {
                 }
             }
             Request::Hash { .. } => Ok(Reply::Hash([0x42; 32])),
+            Request::SdkEvents { .. } => Ok(Reply::SdkEvents(vec![
+                (10, 0x0100_0001, vec![1, 2, 3]),
+                (20, 0x0000_0000, vec![]),
+            ])),
         }
     }
 }

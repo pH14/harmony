@@ -129,6 +129,35 @@ pub struct FrameHeader {
     pub reserved: u32,
 }
 
+// Host-only (a dispatcher concern): the guest is a client, never routes frames,
+// so gating this keeps the `no_std` guest build — hence the SDK-demo binary and
+// its hashed memory image — byte-identical.
+#[cfg(feature = "host")]
+impl FrameHeader {
+    /// Whether this header is a **structurally valid request** — every
+    /// request-header invariant [`decode`] does NOT already enforce, checked in
+    /// one step so a dispatcher servicing guest bytes validates the whole header
+    /// before routing (not one field per bug report):
+    ///
+    /// - `kind == 1` (request): [`decode`] accepts BOTH request and response
+    ///   frames (the guest client decodes responses), so a response-typed frame
+    ///   is not a valid request.
+    /// - `status == 0`: `status` is a **response-only** field; a request carrying
+    ///   a non-zero status is malformed and must not be serviced.
+    /// - `reserved == 0`: defense in depth — [`decode`] already rejects a
+    ///   non-zero reserved, but re-checking makes this a total request predicate
+    ///   independent of that guarantee.
+    ///
+    /// `magic` and `reserved`/`payload_len` bounds are validated by [`decode`]
+    /// itself, and `seq` is an arbitrary caller value (no invariant). **Service /
+    /// opcode validity is deliberately NOT here** — an unknown service or opcode
+    /// is a routing outcome with its own correlatable status
+    /// ([`Status::UnknownService`] / [`Status::UnknownOpcode`]), not a `BadRequest`.
+    pub fn is_request(&self) -> bool {
+        self.kind == KIND_REQUEST && self.status == 0 && self.reserved == 0
+    }
+}
+
 /// Protocol errors produced by frame, client, and snapshot handling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "host", derive(thiserror::Error))]
@@ -212,6 +241,20 @@ fn encode_response_raw(
         payload,
         buf,
     )
+}
+
+/// Encode an **empty error response** echoing a **raw** `service`/`opcode` (task
+/// 73). A doorbell dispatcher answers an unrecognized `service` id — which no
+/// [`ServiceId`] variant represents, so [`encode_response`] cannot express it —
+/// with a clean [`Status::UnknownService`] frame that echoes the request's raw
+/// `service`/`opcode`/`seq`. The guest transport validates that echo (service +
+/// opcode + seq must match its request), so echoing the raw fields lets it
+/// correlate the frame and surface `ClientError::Status(UnknownService)` instead
+/// of hanging on a missing reply — honoring the module contract ("never a silent
+/// drop"). Mirrors the reference server's dispatch. Returns `0` if `buf` is too
+/// small (the doorbell reads that as "no reply written").
+pub fn encode_error(service: u16, opcode: u16, seq: u32, status: Status, buf: &mut [u8]) -> usize {
+    encode_response_raw(service, opcode, seq, status, &[], buf).unwrap_or(0)
 }
 
 fn encode_frame(

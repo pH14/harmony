@@ -347,6 +347,14 @@ pub fn server(fork_script: Vec<Exit>) -> Result<ControlServer<CountingBackend>, 
                 "mock live VM terminated at its sync step ({reason:?})"
             )));
         }
+        // The mock VM wires no SDK channel (task 73), so the leading-RDTSC sync
+        // step can never surface an SDK stop; treat it as a contract violation
+        // rather than silently continuing.
+        Step::SdkStop => {
+            return Err(VmmError::ContractViolation(
+                "mock live VM surfaced an unexpected SDK stop at its sync step".to_string(),
+            ));
+        }
     }
     let factory: VmmFactory<CountingBackend> = Box::new(move || vmm(fork_script.clone(), 0));
     Ok(ControlServer::new(live, factory))
