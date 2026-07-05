@@ -928,4 +928,298 @@ mod tests {
             "all campaign gates pass (found + N/N reproduced + nominal clean)"
         );
     }
+
+    /// `is_planted_bug` (the public, stateless predicate `judge` delegates to
+    /// via `TerminalOracle`) agrees with the oracle's classification: `Crash`/
+    /// `Assertion` are the bug, `Quiescent`/`Deadline` are not.
+    #[test]
+    fn is_planted_bug_matches_the_oracle_classification() {
+        let o = CampaignOracle::new();
+        assert!(o.is_planted_bug(&StopReason::Crash {
+            vtime: VTime(1),
+            info: vec![CRASH_KIND_SHUTDOWN],
+        }));
+        assert!(o.is_planted_bug(&StopReason::Assertion {
+            vtime: VTime(1),
+            id: 1,
+            data: vec![],
+        }));
+        assert!(!o.is_planted_bug(&StopReason::Quiescent { vtime: VTime(1) }));
+        assert!(!o.is_planted_bug(&StopReason::Deadline { vtime: VTime(1) }));
+    }
+
+    /// `pick` returns `None` on an empty search dimension (a mis-configured
+    /// empty space), rather than panicking or indexing out of bounds — the
+    /// documented fallback `mint_fault_env` relies on via `unwrap_or`.
+    #[test]
+    fn pick_returns_none_on_an_empty_slice() {
+        let mut p = Prng::new(1);
+        assert_eq!(pick(&[], &mut p), None);
+    }
+
+    /// `verify_campaign` also flags a replay whose terminal `StopReason`
+    /// differs from the finding's, even when the `state_hash` matches — a
+    /// replay that reproduces the hash but stops for a different reason (e.g.
+    /// `Quiescent` vs `Crash`) is still not a faithful reproduction.
+    #[test]
+    fn verify_flags_a_replay_with_a_mismatched_stop_reason() {
+        let found = FoundBug {
+            branch_index: 5,
+            seed: 1,
+            env: SpecEnvCodec.seeded(1),
+            stop: StopReason::Crash {
+                vtime: VTime(100),
+                info: vec![CRASH_KIND_SHUTDOWN],
+            },
+            hash: [0xAB; 32],
+            bug: TerminalOracle::new()
+                .judge(&crash_trace(CRASH_KIND_SHUTDOWN))
+                .unwrap(),
+        };
+        let mut replays: Vec<RunRow> = (0..3)
+            .map(|_| RunRow {
+                stop: found.stop.clone(),
+                hash: found.hash,
+            })
+            .collect();
+        // Same hash, but a different terminal StopReason.
+        replays[1].stop = StopReason::Quiescent { vtime: VTime(100) };
+        let report = CampaignReport {
+            base_vtime: 10,
+            snapshot_attempts: 1,
+            base_hash: [0; 32],
+            branches_explored: 6,
+            found: Some(found),
+            replays,
+            nominal: NominalRow {
+                stop: StopReason::Quiescent { vtime: VTime(50) },
+                hash: [1; 32],
+                is_bug: false,
+            },
+        };
+        let failures = verify_campaign(&report, 3);
+        assert!(
+            failures.iter().any(|f| f.contains("replay 1")
+                && f.contains("stop")
+                && f.contains("NOT reproducible")),
+            "a stop-reason mismatch (same hash) must fail reproduction, got {failures:?}"
+        );
+    }
+
+    /// [`render_campaign_table`] pins the exact rendered shape for a found
+    /// bug, its replay verification, and a clean nominal control — the
+    /// artifact the box gate records verbatim in IMPLEMENTATION.md.
+    #[test]
+    fn render_campaign_table_pins_the_found_bug_format() {
+        let found = FoundBug {
+            branch_index: 3,
+            seed: 0xAA,
+            env: SpecEnvCodec.seeded(1),
+            stop: StopReason::Crash {
+                vtime: VTime(200),
+                info: vec![CRASH_KIND_SHUTDOWN, 0x60],
+            },
+            hash: [0x11; 32],
+            bug: TerminalOracle::new()
+                .judge(&crash_trace(CRASH_KIND_SHUTDOWN))
+                .unwrap(),
+        };
+        let replays: Vec<RunRow> = (0..2)
+            .map(|_| RunRow {
+                stop: found.stop.clone(),
+                hash: found.hash,
+            })
+            .collect();
+        let fingerprint = found.bug.fingerprint;
+        let report = CampaignReport {
+            base_vtime: 42,
+            snapshot_attempts: 1,
+            base_hash: [0; 32],
+            branches_explored: 4,
+            found: Some(found),
+            replays,
+            nominal: NominalRow {
+                stop: StopReason::Quiescent { vtime: VTime(50) },
+                hash: [1; 32],
+                is_bug: false,
+            },
+        };
+        let out = render_campaign_table(&report, 2);
+        let expected = format!(
+            "base snapshot: sealed at V-time 42 (1 attempt), capture state_hash {}\n\
+             planted bug found at branch 3 (seed 0x00000000000000aa) after exploring 4 branches\n\
+             \x20 finding stop Crash@200[2B], state_hash {}\n\
+             \x20 fingerprint {}\n\
+             \x20 replay verification: 2/2 identical (crash reproduced bit-for-bit)\n\
+             nominal control (seed only, no faults): Quiescent@50 — no bug (adversity-gated, as required)\n",
+            hex32(&[0u8; 32]),
+            hex32(&[0x11u8; 32]),
+            hex32(&fingerprint),
+        );
+        assert_eq!(out, expected);
+    }
+
+    /// The no-find and nominal-crashed-as-bug branches of the render — the
+    /// two cases the found-bug test above cannot exercise.
+    #[test]
+    fn render_campaign_table_pins_the_no_find_and_nominal_bug_format() {
+        let report = CampaignReport {
+            base_vtime: 7,
+            snapshot_attempts: 2,
+            base_hash: [0xCC; 32],
+            branches_explored: 10,
+            found: None,
+            replays: Vec::new(),
+            nominal: NominalRow {
+                stop: StopReason::Crash {
+                    vtime: VTime(9),
+                    info: vec![CRASH_KIND_SHUTDOWN, 0x60],
+                },
+                hash: [2; 32],
+                is_bug: true,
+            },
+        };
+        let out = render_campaign_table(&report, 5);
+        let expected = format!(
+            "base snapshot: sealed at V-time 7 (2 attempts), capture state_hash {}\n\
+             NO BUG FOUND in 10 branches\n\
+             nominal control (seed only, no faults): Crash@9[2B] — REPORTED A BUG (trigger not adversity-gated!)\n",
+            hex32(&[0xCCu8; 32]),
+        );
+        assert_eq!(out, expected);
+    }
+
+    /// A `Machine` whose `snapshot()` refuses `NotQuiescent` a fixed number of
+    /// times before succeeding — an abstract (backend-independent) double for
+    /// [`run_campaign`]'s base-seal retry loop (mirrors
+    /// `ControlServer::snapshot`'s real NotQuiescent semantics, which live at
+    /// the vmm-core layer this crate does not own).
+    struct RetryingMachine {
+        refusals_left: usize,
+        /// If true, a retry `run` reports `Quiescent` instead of `Deadline` —
+        /// modeling a guest that halts before a sealable boundary is found.
+        halts_before_boundary: bool,
+        vtime: u64,
+    }
+
+    impl Machine for RetryingMachine {
+        fn branch(
+            &mut self,
+            _snap: explorer::SnapId,
+            _env: &Environment,
+        ) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn replay(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            until: &StopConditions,
+            _resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            match until.deadline {
+                Some(d) => {
+                    self.vtime = d.0;
+                    if self.halts_before_boundary {
+                        Ok(StopReason::Quiescent {
+                            vtime: VTime(self.vtime),
+                        })
+                    } else {
+                        Ok(StopReason::Deadline {
+                            vtime: VTime(self.vtime),
+                        })
+                    }
+                }
+                None => {
+                    self.vtime += 1;
+                    Ok(StopReason::Quiescent {
+                        vtime: VTime(self.vtime),
+                    })
+                }
+            }
+        }
+        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            if self.refusals_left > 0 {
+                self.refusals_left -= 1;
+                Err(MachineError::NotQuiescent)
+            } else {
+                Ok(explorer::SnapId(1))
+            }
+        }
+        fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            Ok([0x42; 32])
+        }
+        fn coverage(&self) -> &[u8] {
+            &[]
+        }
+        fn recorded_env(&self) -> Result<Environment, MachineError> {
+            Ok(SpecEnvCodec.seeded(0))
+        }
+    }
+
+    fn retry_cfg(snapshot_retry_step: u64, snapshot_max_attempts: usize) -> CampaignConfig {
+        CampaignConfig {
+            max_branches: 0, // no search — this test is about the base seal only
+            snapshot_retry_step,
+            snapshot_max_attempts,
+            ..CampaignConfig::toy()
+        }
+    }
+
+    /// A base seal that refuses `NotQuiescent` a few times, then succeeds:
+    /// `run_campaign` retries at `snapshot_retry_step` increments and seals at
+    /// the V-time the last successful retry reached.
+    #[test]
+    fn run_campaign_retries_past_non_quiescent_points_then_seals() {
+        let mut machine = RetryingMachine {
+            refusals_left: 2,
+            halts_before_boundary: false,
+            vtime: 0,
+        };
+        let cfg = retry_cfg(100, 5);
+        let report = run_campaign(&mut machine, &SpecEnvCodec, &cfg).expect("seals after retries");
+        assert_eq!(
+            report.snapshot_attempts, 3,
+            "2 refusals + 1 success = 3 attempts"
+        );
+        assert_eq!(
+            report.base_vtime, 200,
+            "sealed at 2 retries × 100 V-time each"
+        );
+    }
+
+    /// Exceeding `snapshot_max_attempts` without ever sealing is a loud
+    /// `NotQuiescent` error, never a silent partial result.
+    #[test]
+    fn run_campaign_gives_up_after_exceeding_max_snapshot_attempts() {
+        let mut machine = RetryingMachine {
+            refusals_left: 10,
+            halts_before_boundary: false,
+            vtime: 0,
+        };
+        let cfg = retry_cfg(100, 3);
+        let err = run_campaign(&mut machine, &SpecEnvCodec, &cfg)
+            .expect_err("must give up loudly, not loop forever or seal on garbage");
+        assert!(matches!(err, MachineError::NotQuiescent));
+    }
+
+    /// If the guest halts before a sealable boundary is found mid-retry (a
+    /// non-`Deadline` stop), the seal fails loudly rather than proceeding on a
+    /// point it never actually verified was quiescent.
+    #[test]
+    fn run_campaign_fails_if_the_guest_halts_before_a_sealable_boundary() {
+        let mut machine = RetryingMachine {
+            refusals_left: 1,
+            halts_before_boundary: true,
+            vtime: 0,
+        };
+        let cfg = retry_cfg(100, 5);
+        let err = run_campaign(&mut machine, &SpecEnvCodec, &cfg)
+            .expect_err("a non-Deadline stop mid-retry must not be treated as sealable");
+        assert!(matches!(err, MachineError::NotQuiescent));
+    }
 }
