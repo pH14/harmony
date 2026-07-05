@@ -25,7 +25,7 @@ use crate::manifest::{Benchmark, BugId};
 use crate::stats::{RankCorr, frac_f64, iqr, median, spearman};
 use explorer::stads::{Frac, SpeciesAccumulator, SpeciesStats};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 /// The Klees trial-discipline floor: a `Ruling::Go` requires at least this many
@@ -169,6 +169,9 @@ pub struct BugMeasure {
     /// Seeds (of the signal config) that found this bug — the paired-sample count
     /// for the novelty↔progress correlation.
     pub signal_finders: u64,
+    /// Independent seeds (of the baseline config) that found this bug — a bug the
+    /// baseline never found has no grounded comparison.
+    pub baseline_finders: u64,
     /// Measure 1: novelty↔progress Spearman (signal config), if ≥2 finders.
     pub novelty_progress: Option<RankCorr>,
     /// Measure 2: trajectory (signal config).
@@ -298,14 +301,24 @@ impl CorrelationReport {
         effect_floor: (i128, i128),
         stop_eps: (u64, u64),
     ) -> Self {
-        // Deduplicate by (bug, config, seed), keeping the first occurrence — a
-        // duplicate log for the same trial must not inflate the sample or the seed
-        // floor (round-3 P2). Everything downstream reads `deduped`.
-        let mut seen_trials = BTreeSet::new();
-        let deduped: Vec<&CampaignLog> = logs
-            .iter()
-            .filter(|l| seen_trials.insert((l.bug, l.config, l.seed)))
-            .collect();
+        // Deduplicate by (bug, config, seed) **canonically** — a duplicate log for
+        // the same trial must not inflate the sample or the seed floor (round-3
+        // P2). Keeping the "first occurrence" would be input-order-dependent when
+        // two same-key logs differ in content; instead keep the content-minimal
+        // one (round-5 P2). A `BTreeMap` yields the survivors in canonical key
+        // order, so `deduped` — and everything downstream — is order-independent.
+        let mut by_trial: BTreeMap<(BugId, Configuration, u64), &CampaignLog> = BTreeMap::new();
+        for l in logs {
+            by_trial
+                .entry((l.bug, l.config, l.seed))
+                .and_modify(|cur| {
+                    if content_digest(l) < content_digest(cur) {
+                        *cur = l;
+                    }
+                })
+                .or_insert(l);
+        }
+        let deduped: Vec<&CampaignLog> = by_trial.into_values().collect();
 
         let signal: Vec<&CampaignLog> = deduped
             .iter()
@@ -356,11 +369,17 @@ impl CorrelationReport {
             // Measure 4: medians + IQR.
             let signal_median = median(&ttb);
             let signal_iqr = iqr(&ttb);
+            let mut base_finder_seeds = BTreeSet::new();
             let base_ttb: Vec<u64> = baseline
                 .iter()
                 .filter(|l| l.bug == id)
-                .filter_map(|l| l.find_branch(id))
+                .filter_map(|l| {
+                    l.find_branch(id).inspect(|_| {
+                        base_finder_seeds.insert(l.seed);
+                    })
+                })
                 .collect();
+            let baseline_finders = base_finder_seeds.len() as u64;
             let baseline_median = median(&base_ttb);
             let baseline_iqr = iqr(&base_ttb);
 
@@ -420,6 +439,7 @@ impl CorrelationReport {
                 signal_attempts,
                 baseline_attempts,
                 signal_finders,
+                baseline_finders,
                 novelty_progress,
                 trajectory,
                 signal_median,
@@ -472,16 +492,24 @@ impl CorrelationReport {
             .collect::<BTreeSet<_>>()
             .len() as u64;
 
-        // The ruling. GO requires: cell novelty correlates with progress on ≥2 of
-        // 3 bugs (each over ≥MIN_SEEDS independent finders, enforced in
-        // `correlates`), the signal median is not worse than baseline on any bug,
-        // AND the Klees trial-discipline floor — ≥MIN_SEEDS independent seeds per
-        // configuration — is met. The seed floor is a HARD precondition: a GO can
-        // never be returned on undersampled/duplicated data.
+        // The ruling. **Hard per-bug precondition (round-5):** EVERY bug in the
+        // benchmark must have real data under BOTH configurations — ≥MIN_SEEDS
+        // independent seeds attempted AND ≥1 certified find, per config. This is
+        // checked before the ≥2-of-3 rule so a GO can never fire while the third
+        // bug was never attempted or never found: an aggregate seed count can be
+        // met via other bugs, and `not_worse_all` is vacuously true for a bug with
+        // no data, so neither alone is sufficient.
+        let every_bug_covered = bugs.iter().all(|b| {
+            b.signal_attempts >= MIN_SEEDS
+                && b.baseline_attempts >= MIN_SEEDS
+                && b.signal_finders >= 1
+                && b.baseline_finders >= 1
+        });
+        // Given full coverage: novelty correlates with progress on ≥2 of 3 bugs,
+        // and the signal median is not worse than baseline on any bug.
         let correlating = bugs.iter().filter(|b| b.correlates).count();
         let not_worse_all = bugs.iter().all(|b| b.signal_not_worse);
-        let seed_floor_met = signal_seeds >= MIN_SEEDS && baseline_seeds >= MIN_SEEDS;
-        let ruling = if correlating >= 2 && not_worse_all && seed_floor_met {
+        let ruling = if every_bug_covered && correlating >= 2 && not_worse_all {
             Ruling::Go
         } else {
             Ruling::NoGo
@@ -835,6 +863,63 @@ mod tests {
     }
 
     #[test]
+    fn two_of_three_bugs_with_data_cannot_rule_go() {
+        // Bugs 1 & 2 have full, GO-shaped data (they correlate) but bug 3 has NO
+        // data at all — never attempted/found. A GO must NOT fire: the third bug's
+        // absence makes `not_worse_all` vacuously true and the aggregate seed floor
+        // is met via bugs 1 & 2, yet coverage is incomplete (round-5 P1).
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for id in [BugId(1), BugId(2)] {
+            for k in 0..20u64 {
+                logs.push(signal_log(id.0 as u64 * 1000 + k, 20 - k, 50 + k * 5, id));
+                logs.push(baseline_log(id.0 as u64 * 2000 + k, 200 + k * 5, id));
+            }
+        }
+        // Bug 3: no logs.
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        assert!(rep.bugs.iter().filter(|b| b.correlates).count() >= 2);
+        let b3 = rep.bugs.iter().find(|b| b.bug == BugId(3)).unwrap();
+        assert_eq!(b3.signal_attempts, 0);
+        assert_eq!(b3.baseline_finders, 0);
+        assert_eq!(
+            rep.ruling,
+            Ruling::NoGo,
+            "GO must require every bug to have data under both configs"
+        );
+    }
+
+    /// A find under signal but never under baseline also blocks GO (no grounded
+    /// comparison for that bug).
+    #[test]
+    fn a_bug_never_found_by_baseline_blocks_go() {
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for spec in &bench.bugs {
+            for k in 0..20u64 {
+                logs.push(signal_log(
+                    spec.id.0 as u64 * 1000 + k,
+                    20 - k,
+                    50 + k * 5,
+                    spec.id,
+                ));
+                // Baseline attempts exist for every bug, but bug 3's baseline
+                // never FINDS it (clear the finds) — so baseline_finders == 0.
+                let mut b = baseline_log(spec.id.0 as u64 * 2000 + k, 200 + k * 5, spec.id);
+                if spec.id == BugId(3) {
+                    b.finds.clear();
+                }
+                logs.push(b);
+            }
+        }
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let b3 = rep.bugs.iter().find(|b| b.bug == BugId(3)).unwrap();
+        assert_eq!(b3.baseline_attempts, 20);
+        assert_eq!(b3.baseline_finders, 0);
+        assert_eq!(rep.ruling, Ruling::NoGo);
+    }
+
+    #[test]
     fn duplicate_trials_are_deduped() {
         // Duplicating a (bug, config, seed) log must not change the report.
         let bench = Benchmark::wave5();
@@ -868,6 +953,34 @@ mod tests {
             dup.render_markdown(),
             "duplicate trials must not change the report"
         );
+    }
+
+    #[test]
+    fn canonical_dedup_is_order_independent() {
+        // Two logs share the SAME (bug, config, seed) but DIFFER in content. The
+        // canonical dedup keeps the content-minimal one regardless of input order,
+        // so the report is identical however the collisions are ordered (round-5).
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for spec in &bench.bugs {
+            for k in 0..20u64 {
+                let seed = spec.id.0 as u64 * 1000 + k;
+                logs.push(signal_log(seed, 20 - k, 50 + k * 5, spec.id));
+                // A conflicting duplicate for the same trial with different content.
+                logs.push(signal_log(seed, 20 - k, 60 + k * 5, spec.id));
+                logs.push(baseline_log(
+                    spec.id.0 as u64 * 2000 + k,
+                    200 + k * 5,
+                    spec.id,
+                ));
+            }
+        }
+        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).render_markdown();
+        let mut shuffled = logs.clone();
+        shuffled.reverse();
+        let b =
+            CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000)).render_markdown();
+        assert_eq!(a, b, "canonical dedup must be input-order-independent");
     }
 
     #[test]

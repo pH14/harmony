@@ -13,16 +13,34 @@ Status: **milestone-1 deliverables complete and gated** (portable suite green on
 mac + on the box toolchain; determinism-twice proven; engine fix proven
 determinism-neutral). Milestone 2 is the tracked follow-up.
 
+### What the M1 smoke DOES and does NOT validate (the sharp boundary)
+
+The milestone-1 box smoke validates that the dual-config mechanism **runs and is
+deterministic** on the box toolchain (same `(seed, config)` ⇒ bit-identical
+discovery-event log, for both configs). It does **NOT** validate the signal
+configuration's **discriminating power** — i.e. that the log-template signal
+actually steers the search better than the blind baseline on the *real* guest.
+That requires the signal config to see real guest console logs, which means
+**socket console capture** (`explorer::adapter::SocketMachine` populating
+`Machine::console()` from the server-side serial capture). That capture is
+deliberately **milestone 2** — it is the real-box campaign path, not M1 mechanism
+— and is intentionally **not implemented in M1** (`seam.rs` ships only the
+default-empty `console()`; the toy machine overrides it so the mechanism is
+exercised portably). So: M1 proves the machinery is correct and deterministic;
+M2's socket-console-capture + the ≥20-seed real-KVM campaign proves the signal
+discriminates and produces the GO/NO-GO ruling.
+
 ### Milestone-1 box smoke evidence (real box, `ssh hetzner`, 2026-07-05)
 
 Worktree `~/harmony-t69` at HEAD, built + tested **pinned to core 2** (`taskset -c
 2`), box `rustc 1.96.0`:
 
-- `cargo test -p explorer stads` → **10 passed**; `-p benchmark` → **19 passed**;
-  `-p conductor --lib benchcampaign` → **3 passed** incl.
+- `cargo test -p explorer stads` → **10 passed**; `-p benchmark` → **29 passed**;
+  `-p conductor --lib benchcampaign` → **7 passed** incl.
   `dual_config_runs_and_is_deterministic_twice` (the box determinism smoke: same
-  `(seed, config)` ⇒ identical discovery-event log, for both configs) and
-  `signal_accumulates_cells`.
+  `(seed, config)` ⇒ identical discovery-event log, for both configs),
+  `replays_must_match_the_finding_hash`, `unmarked_crash_is_not_a_find`, and
+  `rare_entropy_bug_is_searchable`. (Counts as of the round-5 head.)
 - **KVM untouched** (only cargo build/test — no patched module loaded); verified
   stock **1396736** before and after. No `box-window` lease needed.
 
