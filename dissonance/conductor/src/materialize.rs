@@ -800,6 +800,117 @@ mod tests {
         );
     }
 
+    /// A fully-valid 3-hop report: every gate in [`verify_materialize`] passes
+    /// (so `failures` is empty). V-times are large enough that the hot suffix
+    /// ratio (1%) beats the task-63 §4 baseline. Reused to exercise the gate
+    /// pass-branches and the table renderer.
+    fn valid_report() -> MaterializeReport {
+        let mat = |base_at: u64, at: u64, folded: u64, from_genesis: bool| Materialization {
+            base: SnapId(1),
+            base_at: Moment(base_at),
+            at: Moment(at),
+            folded,
+            from_genesis,
+        };
+        MaterializeReport {
+            genesis_at: 0,
+            genesis_attempts: 2,
+            // grandparent 98e6, parent 99e6, deep 100e6.
+            hops: [98_000_000u64, 99_000_000, 100_000_000]
+                .iter()
+                .map(|&at| HopRow {
+                    requested: at,
+                    at,
+                    attempts: 1,
+                })
+                .collect(),
+            // hot: direct-parent suffix 99e6..100e6 (depth 1e6, ratio 10_000 ppm).
+            hot: mat(99_000_000, 100_000_000, 0, false),
+            hot_hash: [7; 32],
+            // folded: grandparent-rooted, exactly one fold (depth 2e6).
+            folded: mat(98_000_000, 100_000_000, 1, false),
+            folded_hash: [7; 32],
+            // worst: from-genesis (depth 100e6).
+            worst: mat(0, 100_000_000, 0, true),
+            worst_hash: [7; 32],
+            leg_stop: StopReason::Deadline { vtime: VTime(100) },
+            leg_hash: [9; 32],
+            bug_env: Environment {
+                blob_version: 1,
+                bytes: vec![1, 2, 3],
+            },
+            replay_stop: StopReason::Deadline { vtime: VTime(100) },
+            replay_hash: [9; 32],
+            hop_draws: vec![true],
+            tail_draws: true,
+        }
+    }
+
+    /// A valid report clears every gate (including the baseline ratio gate) and
+    /// renders a table naming the round-trip equalities. Covers the pass-branch
+    /// of each gate and the whole renderer.
+    #[test]
+    fn valid_report_passes_all_gates_and_renders() {
+        let r = valid_report();
+        assert!(
+            verify_materialize(&r, Some(TASK63_BASELINE_PPM)).is_empty(),
+            "a fully-valid report clears every gate: {:?}",
+            verify_materialize(&r, Some(TASK63_BASELINE_PPM))
+        );
+        assert!(verify_materialize(&r, None).is_empty());
+
+        let table = render_materialize_table(&r);
+        assert!(table.contains("2 attempts"));
+        assert!(table.contains("round-trip: folded == hot, worst == hot"));
+        assert!(table.contains("measured hot = 10000 ppm"));
+        assert!(table.contains("hops [true]; tail window DRAWS"));
+    }
+
+    /// A report tripping every gate failure yields the expected diagnostics.
+    /// Covers each failure-push arm and the `!=` table branches.
+    #[test]
+    fn every_gate_failure_is_reported() {
+        let bad = |base_at: u64, at: u64, folded: u64, from_genesis: bool| Materialization {
+            base: SnapId(1),
+            base_at: Moment(base_at),
+            at: Moment(at),
+            folded,
+            from_genesis,
+        };
+        let mut r = valid_report();
+        // hop 0 lands before its requested deadline (grid-keying failure).
+        r.hops[0].requested = r.hops[0].at + 5;
+        // gate (a): hot replayed genesis, wrong span, non-zero folds, and its
+        // ratio (now 50%) does not beat the baseline.
+        r.hot = bad(50_000_000, 100_000_000, 3, true);
+        // gate (b): folded replayed genesis, wrong base/fold-count, hash mismatch.
+        r.folded = bad(0, 100_000_000, 9, true);
+        r.folded_hash = [1; 32];
+        // worst not from-genesis + hash mismatch.
+        r.worst = bad(5, 100_000_000, 0, false);
+        r.worst_hash = [2; 32];
+        // degradation no longer monotone (hot depth now 50e6 == folded 100e6? make
+        // hot deeper than folded to break the chain).
+        // gate (c): reproducer disagrees on stop and hash.
+        r.replay_stop = StopReason::Deadline { vtime: VTime(999) };
+        r.replay_hash = [3; 32];
+
+        let f = verify_materialize(&r, Some(TASK63_BASELINE_PPM));
+        assert!(
+            f.iter()
+                .any(|m| m.contains("BEFORE the requested deadline"))
+        );
+        assert!(f.iter().any(|m| m.contains("replayed GENESIS")));
+        assert!(f.iter().any(|m| m.contains("does not beat the task-63")));
+        assert!(f.iter().any(|m| m.contains("NOT bit-identical")));
+        assert!(f.iter().any(|m| m.contains("worst case")));
+        assert!(f.iter().any(|m| m.contains("does not reproduce the run")));
+
+        // The renderer flags the broken round-trips.
+        let table = render_materialize_table(&r);
+        assert!(table.contains("round-trip: folded != hot, worst != hot"));
+    }
+
     /// `depth_ratio_ppm` pins an EXACT parts-per-million value: `depth / at` in
     /// millionths, `at == 0` reporting 0. A known input → known ppm nails down
     /// the integer arithmetic (so a mutated `ppm` that returns a constant 0 or 1
