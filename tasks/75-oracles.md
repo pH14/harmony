@@ -1,5 +1,16 @@
 # Task 75 — Phase J1: the oracle layer — trace/probe bifurcation + the Elle-shaped checker
 
+> **⛔ DEFERRED / SHELVED (integrator decision, 2026-07-05).** The in-house **Elle-shaped
+> reimplementation** (PR #60, ~2,400 lines of Adya/Elle dependency-graph cycle detection over
+> 16 review rounds) was **not merged** — owning a from-scratch serializability checker is too
+> much correctness liability (every bug is a false verdict about the DB under test). The work is
+> archived at git tag **`archive/task-75-elle-inhouse`** (commit e067f207; `git checkout` it to
+> retrieve). **When this phase resumes, write a WRAPPER around the real Elle**, not a reimpl. The
+> probe/trace *framework* (the `Oracle` trait in explorer, the fingerprint) is sound and stays a
+> valid target; only the in-house consistency-checker is shelved. Do not re-spawn this task as-is.
+
+
+
 > **FRONTIER · Phase J1 of `docs/EXPLORATION.md`.** Two surfaces, dispatched separately (task-63
 > style): **`dissonance/oracle-elle`** is a delegable pure crate, laptop-gated; the **probe-oracle
 > mechanism** is explorer engine work with a **frontier box gate**. Portable surface depends on
