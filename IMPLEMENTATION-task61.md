@@ -59,10 +59,16 @@ Every input the agent acts on comes from a determinized source **by construction
 — the guest clock (V-time-backed), the host-answered policy — and consonance
 denies it any other source. Concretely:
 
-- `NetLatency` → `tc netem delay <µs>` in the guest's own (V-time-backed) time.
-- full `NetLoss` (`num ≥ den`) / partition → a standing `nft drop` (no RNG).
-- `NetReset` → `nft reject with tcp reset` (no RNG).
-- `NetThrottle` → `tbf rate` (deterministic pacing).
+All enforcement lands on the **FORWARD path** the intra-guest pod→pod traffic
+actually traverses (bridged/forwarded across the CNI, never locally output) and is
+**filtered to the decided flow** (`dst_ip:dport`), never the whole bridge:
+
+- `NetLatency` → a `tc prio` root + `netem delay <µs>` child band + a `u32` filter
+  matching `dst_ip:dport` into it, in the guest's own (V-time-backed) time.
+- full `NetLoss` (`num ≥ den`) / partition → a standing `nft` **forward-hook** `drop`
+  rule matching the flow (no RNG).
+- `NetReset` → `nft` forward-hook `reject with tcp reset` matching the flow.
+- `NetThrottle` → the same filtered `tc` chain with a `tbf rate` band.
 - **fractional `NetLoss` (`den > 1`) is refused** (`EnfError::FractionalLossUnsupported`),
   because `tc netem loss` draws from the kernel's own **unseeded** PRNG — exactly
   the non-determinism this project eliminates. The seeded-PRNG path lives in the
@@ -80,6 +86,17 @@ into the `state_hash`**, so an agent-absent workload is byte-for-byte unchanged
 (acceptance gate 4). Net decisions are host-side observation; the reproducer
 carries the flow policy as seed + `FaultPolicy` (a seeded run) or as recorded
 overrides (a replay).
+
+**Snapshot/branch/replay stream discipline (review P1).** Hash-neutrality is *not*
+replay-neutrality: the `NetChannel`'s seeded flow-policy **stream position** is
+captured on snapshot (`NetSnapshot`, mirroring `SdkSnapshot`) and restored on
+branch/replay, or a fork's `net_decide` answers would diverge from the sequential
+run (the task-73 SDK×reseed bug). The control server wires `enable_net` on the live
+VM and every restore path, captures `NetSnap { channel, policy }` at the snapshot
+verb, and restores it with the same `seed.is_some()` branch/replay split as SDK
+(replay: stream + decision prefix; branch: prefix only, reseeded stream). Proven by
+`net_snapshot_restore_resumes_the_flow_policy_stream` (snapshot mid-decisions →
+restore → bit-identical continuation; a position-0 channel diverges).
 
 ## Divergence from task-51's abstractions (recorded per the spec)
 
@@ -130,8 +147,19 @@ Build the image with the agent baked in:
 
 ```sh
 FLOW_AGENT_BIN="$(guest/flow-agent/build-static.sh)" sudo guest/linux/build-k3s-image.sh
-# gate B additionally needs `nft` + `tc` binaries baked into the image.
+# gate B additionally needs `nft` + `tc` binaries baked into the image (the agent
+# installs forward-hook nft rules / a flow-filtered tc qdisc on cni0).
 ```
+
+**Box-only regen (do before the final push):** `vmm-core`'s `public-api.txt` test
+is Linux-gated (skips on the macOS dev host — `work_perf`/`boot_selected` are
+Linux-only), so the `Net` additions to its surface (`enable_net`, `net_decisions`,
+`NetSnapshot` + its methods) must be regenerated on the box:
+`UPDATE_PUBLIC_API=1 cargo test -p vmm-core --test public_api -- --ignored`. The
+`hypercall-proto` snapshot is platform-neutral and already regenerated. Also run,
+on the box, the cfg(linux) build + `clippy --all-targets -D warnings` for
+`vmm-core`/`conductor`/`flow-agent` (musl target) — the macOS host cannot see
+cfg(linux) breakage.
 
 - **Gate A (nominal).** Run the k3s workload with the agent active and the Net
   channel answering `Nominal` for every flow. Assert: deterministic-twice with
