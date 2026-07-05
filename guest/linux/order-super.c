@@ -6,63 +6,85 @@
 //
 // The bug in one sentence: a supervised process maintains a two-word invariant
 // `mirror == ~primary` that it updates NON-ATOMICALLY inside a small, fixed
-// window each iteration; a handler for the injected interrupt vector reads that
-// pair and, if it observes the pair mid-update (the ordering assumption the code
-// relies on — that the pair is never observed inconsistent — is false only then),
-// corrupts shared bookkeeping and aborts with a distinctive serial marker. The
-// campaign lands an `InjectInterrupt` (task-59 host-fault vocabulary) at a Moment
-// inside the vulnerable window; nominally (no interrupt, or an interrupt outside
-// the window) the invariant always holds and the branch is dead code.
+// window each iteration; if the guest kernel PREEMPTS the process (an involuntary
+// context switch) while it is mid-update — i.e. the injected interrupt landed in
+// the window and drove the scheduler — the invariant is observably torn while the
+// process is descheduled, corrupting shared bookkeeping, which the process
+// detects on resume and aborts with a distinctive serial marker. Outside the
+// window the same preemption is harmless (the pair is settled), so the ordering
+// assumption ("the pair is never observed inconsistent") holds on every nominal
+// run and the guarded branch is dead code.
+//
+// WHY NOT A POSIX SIGNAL (the milestone-1 review's P1): KVM delivers a task-59
+// `InjectInterrupt { vector }` to the guest **kernel IDT**, NOT as a userspace
+// signal to this process — an earlier draft that installed a SIGUSR1 handler was
+// wrong, the handler would never run. The reachable, userspace-observable effect
+// of an injected external interrupt on this single-vCPU guest is a **kernel
+// reschedule**: the interrupt (a timer/reschedule-class vector the kernel acts
+// on — the manifest's vector is wired to one at box bring-up) makes the kernel
+// preempt the running process, an **involuntary context switch** the kernel
+// counts in `rusage.ru_nivcsw`. The process samples that counter across the
+// update window; a change means a preemption landed inside it. This is the
+// mechanism the injected vector actually reaches, observed without any IDT/signal
+// plumbing in userspace.
 //
 // Trigger (tunable — matches dissonance/benchmark manifest BugId(2)):
-//   * fault kind:  InjectInterrupt { vector = INTERRUPT_VECTOR }
-//   * Moment:      inside [WINDOW_LO, WINDOW_HI) offsets past the base snapshot
-//   * window width HI-LO is the dial on expected time-to-find (~256 branches).
+//   * fault kind:  InjectInterrupt { vector = INTERRUPT_VECTOR } (a reschedule-
+//                  class vector the guest kernel acts on; wired at box bring-up).
+//   * Moment:      inside [WINDOW_LO, WINDOW_HI) offsets past the base snapshot,
+//                  landing in a per-iteration non-atomic update window.
+//   * window width is the dial on expected time-to-find (~256 branches).
 //
-// Determinism: pure integer arithmetic, fixed-address bookkeeping, no wall-clock
-// / host entropy; the run is a pure function of (base snapshot, injected
-// schedule). Build: static (`cc -static -O2`), like campaign-super.c.
+// Determinism: pure integer bookkeeping; scheduling is deterministic under the
+// harness, so a fixed (base snapshot, injected schedule) reproduces the torn
+// preemption — and thus the crash — every replay. Build: static (`cc -static
+// -O2`), like campaign-super.c.
 
 #include <fcntl.h>
-#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/io.h>
-#include <sys/mman.h>
+#include <sys/resource.h>
 
-// The interrupt the guest kernel routes to SIGUSR1 for this process. On the box
-// the campaign's `InjectInterrupt { vector }` is delivered to the vCPU and the
-// guest's IDT/signal plumbing surfaces it here; the vector value is the manifest
-// dial (BugId(2) uses 0x81). The self-delivery path below models it portably.
-#define INTERRUPT_SIGNAL SIGUSR1
+// The interrupt vector the campaign injects (BugId(2) uses 0x81). Documented
+// here for the operator; the value is a manifest dial and is wired to a
+// reschedule-class vector at box bring-up (see the header note).
+#define INTERRUPT_VECTOR 0x81
 // Loop length — long enough (in V-time) that the base snapshot (sealed at
-// ORDER_READY) lands well inside it, leaving a wide window for the injected
-// interrupt (same reasoning as campaign-super.c's ITERS).
-#define ITERS 200000000L
+// ORDER_READY) lands well inside it, so the injected interrupt's Moment falls in
+// the loop. Box bring-up (milestone 2) tunes this so the base seals inside, the
+// same way campaign-super.c's ITERS was tuned.
+#define ITERS 20000000L
 // isa-debug-exit terminal (same convention as campaign-super.c). FAIL_CODE 0x62
 // tags "benchmark bug 2".
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x62
 
-// The shared bookkeeping the handler and the loop both touch. `primary` and
-// `mirror` must always satisfy `mirror == ~primary`; `updating` is 1 exactly
-// during the non-atomic window the ordering bug lives in.
-struct book {
-    volatile uint64_t primary;
-    volatile uint64_t mirror;
-    volatile int updating;
-    volatile int violated;
-};
-static struct book book;
+// The shared bookkeeping. `primary` and `mirror` must always satisfy
+// `mirror == ~primary`; `updating` is 1 exactly during the non-atomic window.
+static volatile uint64_t primary;
+static volatile uint64_t mirror;
 
-// Report the planted bug and terminate through isa-debug-exit (Crash{Panic}), or
-// fall back to a nonzero exit /init turns into a forced reboot (Crash{Shutdown}).
+// Involuntary context switches so far — the observable a preemption increments.
+static uint64_t involuntary_ctxsw(void)
+{
+    struct rusage r;
+    if (getrusage(RUSAGE_SELF, &r) != 0) {
+        return 0;
+    }
+    return (uint64_t)r.ru_nivcsw;
+}
+
+// Announce the planted bug: print the distinctive `ORDER_BUG:` marker and write
+// the terminal FAIL code to isa-debug-exit (Crash{Panic} where the kernel allows
+// it; on the container kernel the routes fail and /init maps the non-zero exit to
+// a reboot → Crash{Shutdown}). Never returns.
 static void report_and_die(void)
 {
-    printf("ORDER_BUG: interrupt-ordering invariant violated (mirror != ~primary)\n");
+    printf("ORDER_BUG: interrupt-ordering invariant violated (torn mid-update preemption)\n");
     fflush(stdout);
     if (ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0) {
         outb(FAIL_CODE, ISA_DEBUG_EXIT_PORT);
@@ -80,37 +102,14 @@ static void report_and_die(void)
     _exit(FAIL_CODE);
 }
 
-// The injected-interrupt handler: reads the (primary, mirror) pair. If it lands
-// while `updating` is set — i.e. the interrupt arrived inside the non-atomic
-// window (the campaign's Moment fell in [WINDOW_LO, WINDOW_HI)) — it observes the
-// pair inconsistent and trips the bug. Outside the window `updating` is 0 and the
-// pair is always consistent, so the same interrupt is inert (the ordering
-// assumption holds).
-static void on_interrupt(int sig)
-{
-    (void)sig;
-    if (book.updating && book.mirror != ~book.primary) {
-        book.violated = 1;
-    }
-}
-
 int main(void)
 {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = on_interrupt;
-    sigaction(INTERRUPT_SIGNAL, &sa, NULL);
-
-    book.primary = 0;
-    book.mirror = ~0ULL;
-    book.updating = 0;
-    book.violated = 0;
+    primary = 0;
+    mirror = ~0ULL;
 
     if (getenv("ORDER_DEBUG")) {
-        // Crash-channel self-test (does not write FAIL) + the interrupt vector
-        // this process expects, so the boot serial documents the wiring.
         printf("ORDER_IOPERM: %s\n", ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0 ? "ok" : "FAILED");
-        printf("ORDER_VECTOR: signal=%d\n", INTERRUPT_SIGNAL);
+        printf("ORDER_VECTOR: injected=0x%x (reschedule-class)\n", INTERRUPT_VECTOR);
         fflush(stdout);
     }
 
@@ -120,17 +119,24 @@ int main(void)
     fflush(stdout);
 
     for (long i = 0; i < ITERS; i++) {
-        // The non-atomic update window: for a few instructions `mirror` is stale
-        // w.r.t. `primary`. A well-ordered execution never observes this; an
-        // interrupt delivered HERE does. `updating` brackets the window so the
-        // handler can tell "mid-update" from "settled".
-        book.updating = 1;
-        book.primary = book.primary + 1;   // (1) primary advances
-        // --- vulnerable window: mirror not yet restored ---
-        book.mirror = ~book.primary;       // (2) mirror catches up
-        book.updating = 0;
+        uint64_t sw_before = involuntary_ctxsw();
 
-        if (book.violated) {
+        // The non-atomic update window: for a few instructions `mirror` is stale
+        // w.r.t. `primary`. A preemption HERE leaves the pair observably torn
+        // while the process is descheduled.
+        primary = primary + 1;   // (1) primary advances — mirror now stale
+        // --- vulnerable window: mirror not yet restored ---
+        uint64_t sw_after = involuntary_ctxsw();
+        mirror = ~primary;       // (2) mirror catches up — window closed
+
+        // A change in the involuntary-context-switch count across the window
+        // means the kernel preempted us *inside* it — the injected interrupt drove
+        // a reschedule at the vulnerable Moment, so the pair was left observably
+        // torn while this process was descheduled. That is the ordering violation
+        // the planted bug encodes; nominally (no injected interrupt) a
+        // deterministic single-vCPU run takes no involuntary preemption here, so
+        // the branch is dead code.
+        if (sw_after != sw_before) {
             report_and_die();
         }
     }

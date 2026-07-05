@@ -899,19 +899,28 @@ terminal with the same kernel-terminal fallback `campaign-init.sh` documents):
 
 - **`order-super.c` — bug (ii), ordering / interrupt-timing.** A two-word invariant
   `mirror == ~primary` updated **non-atomically** inside a fixed per-iteration
-  window. A handler for the injected interrupt vector observes the pair; if the
-  campaign lands an `InjectInterrupt { vector = 0x81 }` (task-59 vocabulary) at a
-  `Moment` inside the vulnerable window `[BASE+8, BASE+12)`, the handler sees the
-  pair inconsistent, trips the invariant, and aborts with **`ORDER_BUG:`** (crash
-  code `0x62`). Outside the window the same interrupt is inert. Window width is the
-  time-to-find dial (~256 branches). Manifest: `benchmark` `BugId(2)`.
+  window. KVM delivers a task-59 `InjectInterrupt { vector }` to the guest **kernel
+  IDT**, not as a userspace signal, so the reachable, userspace-observable effect is
+  a **kernel reschedule**: an injected reschedule-class interrupt landing in the
+  window preempts the process mid-update (an **involuntary context switch**, counted
+  in `rusage.ru_nivcsw`), leaving the pair torn while descheduled. The process
+  samples `ru_nivcsw` across the window; a change means it was preempted inside it →
+  it aborts with **`ORDER_BUG:`** (crash code `0x62`). Outside the window the same
+  preemption is harmless. Window width is the time-to-find dial (~256 branches); the
+  manifest vector `0x81` is wired to a reschedule-class vector at box bring-up.
+  Manifest: `benchmark` `BugId(2)`. *(An earlier draft modeled the injected
+  interrupt as a POSIX `SIGUSR1` handler — wrong, since KVM never turns an IDT
+  interrupt into a userspace signal; the milestone-1 review caught it.)*
 - **`uuid-super.c` — bug (iii), rare-entropy-value.** Draws a value from the seeded
-  entropy source with the **exact** `splitmix64` `dissonance/benchmark::trigger::
-  entropy_draw` uses (guest ground truth == offline manifest, bit-for-bit). A branch
-  taken only when the draw's top `PREFIX_BITS = 8` bits match `0xA5` poisons a
-  pointer and dereferences it → **`UUID_BUG:`** (crash code `0x63`). Fire
-  probability `2^-8` ⇒ ~256 branches. `PREFIX_BITS` is the dial. Manifest:
-  `benchmark` `BugId(3)`.
+  entropy source **after the `UUID_READY` snapshot marker** (so each branch re-runs
+  the draw with its own seed — the draw must *not* be baked into the sealed base, or
+  seed search is a no-op) with the **exact** `splitmix64`
+  `dissonance/benchmark::trigger::entropy_draw` uses (guest ground truth == offline
+  manifest, bit-for-bit). A branch taken only when the draw's top `PREFIX_BITS = 8`
+  bits match `0xA5` emits **`UUID_BUG:`** (crash code `0x63`) **before** poisoning a
+  pointer and dereferencing it (so the attribution gate always sees the marker for
+  the bug the deref then crashes on). Fire probability `2^-8` ⇒ ~256 branches.
+  `PREFIX_BITS` is the dial. Manifest: `benchmark` `BugId(3)`.
 
 Each bug has a **distinct serial marker** (`CAMPAIGN_BUG` / `ORDER_BUG` /
 `UUID_BUG`) and crash code (`0x60`/`0x62`/`0x63`) so fingerprints attribute finds

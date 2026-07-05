@@ -28,6 +28,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+/// The Klees trial-discipline floor: a `Ruling::Go` requires at least this many
+/// **independent** seeds per configuration, and this many distinct finding seeds
+/// on any bug that counts toward the correlation. A GO/NO-GO gate must never rule
+/// GO on undersampled/duplicated data — that is the exact failure this gate
+/// exists to prevent — so the floor is a **hard precondition** of GO, not just a
+/// rendered warning.
+pub const MIN_SEEDS: u64 = 20;
+
 /// Which of the two identical-budget configurations a campaign ran under.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Configuration {
@@ -281,13 +289,17 @@ impl CorrelationReport {
             // Measure 1: novelty↔progress over signal seeds that found this bug.
             let mut cells = Vec::new();
             let mut ttb = Vec::new();
+            let mut finder_seeds = BTreeSet::new();
             for log in &signal {
                 if let Some(b) = log.find_branch(id) {
                     cells.push(log.distinct_cells_at(budget));
                     ttb.push(b);
+                    finder_seeds.insert(log.seed);
                 }
             }
-            let signal_finders = ttb.len() as u64;
+            // Count **independent** finders (distinct seeds), so duplicated logs
+            // cannot inflate the sample toward the GO floor.
+            let signal_finders = finder_seeds.len() as u64;
             let novelty_progress = spearman(&cells, &ttb);
 
             // Measure 4: medians + IQR.
@@ -333,11 +345,14 @@ impl CorrelationReport {
                 above_chance,
             };
 
-            // correlates: right direction (negative) AND |ρ| ≥ floor ⟺ ρ ≤ −floor.
+            // correlates: right direction (negative) AND |ρ| ≥ floor ⟺ ρ ≤ −floor,
+            // AND enough independent finders to trust the correlation (the seed
+            // floor — a 2-finder perfect ρ must not count toward a GO).
             let (fnum, fden) = effect_floor;
-            let correlates = novelty_progress
-                .map(|c| c.is_defined() && c.at_most(-fnum, fden))
-                .unwrap_or(false);
+            let correlates = signal_finders >= MIN_SEEDS
+                && novelty_progress
+                    .map(|c| c.is_defined() && c.at_most(-fnum, fden))
+                    .unwrap_or(false);
 
             bugs.push(BugMeasure {
                 bug: id,
@@ -371,10 +386,25 @@ impl CorrelationReport {
             })
             .collect();
 
-        // The ruling.
+        // Independent-seed counts (distinct seeds, not log counts — duplicated
+        // logs cannot inflate the sample toward the floor).
+        let signal_seeds = signal.iter().map(|l| l.seed).collect::<BTreeSet<_>>().len() as u64;
+        let baseline_seeds = baseline
+            .iter()
+            .map(|l| l.seed)
+            .collect::<BTreeSet<_>>()
+            .len() as u64;
+
+        // The ruling. GO requires: cell novelty correlates with progress on ≥2 of
+        // 3 bugs (each over ≥MIN_SEEDS independent finders, enforced in
+        // `correlates`), the signal median is not worse than baseline on any bug,
+        // AND the Klees trial-discipline floor — ≥MIN_SEEDS independent seeds per
+        // configuration — is met. The seed floor is a HARD precondition: a GO can
+        // never be returned on undersampled/duplicated data.
         let correlating = bugs.iter().filter(|b| b.correlates).count();
         let not_worse_all = bugs.iter().all(|b| b.signal_not_worse);
-        let ruling = if correlating >= 2 && not_worse_all {
+        let seed_floor_met = signal_seeds >= MIN_SEEDS && baseline_seeds >= MIN_SEEDS;
+        let ruling = if correlating >= 2 && not_worse_all && seed_floor_met {
             Ruling::Go
         } else {
             Ruling::NoGo
@@ -384,8 +414,8 @@ impl CorrelationReport {
             budget,
             effect_floor,
             stop_eps,
-            signal_seeds: signal.len() as u64,
-            baseline_seeds: baseline.len() as u64,
+            signal_seeds,
+            baseline_seeds,
             bugs,
             stads,
             ruling,
@@ -632,6 +662,62 @@ mod tests {
         let md = rep.render_markdown();
         assert!(md.contains("**GO.**"));
         assert!(md.contains("Chao1"));
+    }
+
+    #[test]
+    fn undersampled_data_cannot_rule_go() {
+        // Perfect GO-shaped correlation but only a FEW seeds — below the ≥20
+        // independent-seed floor. A GO here would be exactly the failure the gate
+        // exists to prevent, so it must rule NO-GO.
+        let bench = Benchmark::wave5();
+        let mut logs = Vec::new();
+        for spec in &bench.bugs {
+            for k in 0..3u64 {
+                let cells = 3 - k;
+                let ttb = 50 + k * 5;
+                logs.push(signal_log(spec.id.0 as u64 * 1000 + k, cells, ttb, spec.id));
+                logs.push(baseline_log(
+                    spec.id.0 as u64 * 2000 + k,
+                    200 + k * 5,
+                    spec.id,
+                ));
+            }
+        }
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        assert_eq!(rep.signal_seeds, 9); // 3 bugs × 3 seeds — well under 20
+        // No bug counts as correlating (each has <20 finders), and the per-config
+        // seed floor is unmet — either alone forces NO-GO.
+        assert!(rep.bugs.iter().all(|b| !b.correlates));
+        assert_eq!(rep.ruling, Ruling::NoGo);
+        // The rendered report still surfaces the ⚠️ trial-discipline note.
+        assert!(rep.render_markdown().contains("Trial discipline"));
+    }
+
+    /// Even at ≥20 seeds per config, a bug found by fewer than 20 independent
+    /// finders cannot count toward the GO (its correlation is undersampled).
+    #[test]
+    fn a_bug_with_too_few_finders_does_not_count() {
+        let bench = Benchmark::wave5();
+        let bug = bench.bugs[0].id;
+        let mut logs = Vec::new();
+        // 25 signal + 25 baseline seeds per config, but bug 1 is found by only 5
+        // of them (a perfect anti-correlation among those 5).
+        for k in 0..25u64 {
+            let finds_bug = k < 5;
+            let cells = if finds_bug { 25 - k } else { 0 };
+            let ttb = 50 + k * 5;
+            let mut slog = signal_log(1000 + k, cells, ttb, bug);
+            if !finds_bug {
+                slog.finds.clear();
+            }
+            logs.push(slog);
+            logs.push(baseline_log(2000 + k, 200 + k, bug));
+        }
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        assert_eq!(rep.signal_seeds, 25);
+        let m = rep.bugs.iter().find(|b| b.bug == bug).unwrap();
+        assert_eq!(m.signal_finders, 5);
+        assert!(!m.correlates, "5 finders is below the seed floor");
     }
 
     #[test]

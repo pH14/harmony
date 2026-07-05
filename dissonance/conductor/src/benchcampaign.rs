@@ -130,10 +130,11 @@ fn scenario_of(env: &Environment) -> Scenario {
     let Ok(decoded) = AdapterEnv::decode(env) else {
         return Scenario::default();
     };
-    let seed = match &decoded.spec {
-        EnvSpec::Seeded { seed, .. } => *seed,
-        other => seed_of(other),
-    };
+    // Every spec variant carries the base seed (`EnvSpec::seed()`) — including a
+    // `Recorded` env minted by `SpecEnvCodec::mutate` on an exploited exemplar.
+    // Reading it here (rather than zeroing non-`Seeded` specs) keeps the
+    // rare-entropy bug searchable under the signal config's exploit branches.
+    let seed = decoded.spec.seed();
     let faults = decoded
         .spec
         .host_faults()
@@ -151,12 +152,6 @@ fn scenario_of(env: &Environment) -> Scenario {
         })
         .collect();
     Scenario { seed, faults }
-}
-
-/// A non-`Seeded` spec carries its seed in its base; the codec keeps it stable
-/// under `mutate`. Fall back to 0 if unreadable (never panics).
-fn seed_of(_spec: &EnvSpec) -> u64 {
-    0
 }
 
 // ---------------------------------------------------------------------------

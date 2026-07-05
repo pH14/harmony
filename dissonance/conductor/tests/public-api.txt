@@ -1,4 +1,29 @@
 pub mod conductor
+pub mod conductor::benchcampaign
+pub struct conductor::benchcampaign::BenchConfig
+pub conductor::benchcampaign::BenchConfig::campaign_seed: u64
+pub conductor::benchcampaign::BenchConfig::explore_period: u64
+pub conductor::benchcampaign::BenchConfig::max_branches: u64
+pub conductor::benchcampaign::BenchConfig::replay_n: usize
+impl conductor::benchcampaign::BenchConfig
+pub fn conductor::benchcampaign::BenchConfig::smoke(u64) -> Self
+pub struct conductor::benchcampaign::BenchToyMachine
+impl conductor::benchcampaign::BenchToyMachine
+pub fn conductor::benchcampaign::BenchToyMachine::new(benchmark::manifest::BugSpec) -> Self
+impl explorer::seam::Machine for conductor::benchcampaign::BenchToyMachine
+pub fn conductor::benchcampaign::BenchToyMachine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::coverage(&self) -> &[u8]
+pub fn conductor::benchcampaign::BenchToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub const conductor::benchcampaign::BASE_VTIME: u64
+pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec) -> explorer::Environment
+pub fn conductor::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &benchmark::manifest::BugSpec, &conductor::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<benchmark::report::CampaignLog, explorer::error::MachineError>
+pub fn conductor::benchcampaign::verify_replays<M: explorer::seam::Machine>(&mut M, explorer::SnapId, &explorer::Environment, usize) -> core::result::Result<alloc::vec::Vec<(explorer::StopReason, [u8; 32])>, explorer::error::MachineError>
 pub mod conductor::campaign
 pub struct conductor::campaign::CampaignConfig
 pub conductor::campaign::CampaignConfig::campaign_seed: u64

@@ -58,9 +58,16 @@ static int prefix_matches(uint64_t draw)
     return (draw >> shift) == (TARGET_PREFIX >> shift);
 }
 
-static void report_and_die(void)
+// Announce the planted bug: print the distinctive `UUID_BUG:` serial marker
+// (fingerprint attribution) and write the terminal FAIL code to isa-debug-exit.
+// **Does not return via `_exit`** — the caller emits the marker BEFORE the
+// faulting dereference (the crash-attribution gate must see the marker for the
+// bug it identifies, and on this container kernel isa-debug-exit is unreachable
+// so the deref is the actual crash mechanism /init reports). On a kernel that
+// grants port access, the `outb` terminates the guest here (Crash{Panic}).
+static void announce_bug(void)
 {
-    printf("UUID_BUG: rare-entropy prefix matched; poisoned pointer dereferenced\n");
+    printf("UUID_BUG: rare-entropy prefix matched; poisoning pointer\n");
     fflush(stdout);
     if (ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0) {
         outb(FAIL_CODE, ISA_DEBUG_EXIT_PORT);
@@ -75,7 +82,6 @@ static void report_and_die(void)
         close(fd);
         (void)n;
     }
-    _exit(FAIL_CODE);
 }
 
 // Read the run seed from the VMM-controlled channel. On the box this is the
@@ -92,32 +98,41 @@ static uint64_t read_seed(void)
 
 int main(void)
 {
+    if (getenv("UUID_DEBUG")) {
+        // The crash-channel self-test only (no seed here — it is not drawn yet).
+        printf("UUID_IOPERM: %s\n", ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0 ? "ok" : "FAILED");
+        fflush(stdout);
+    }
+
+    // The base snapshot is sealed here — BEFORE the seed-dependent draw, so each
+    // branch re-runs the draw with ITS OWN seed. (If the draw ran before this
+    // marker it would be baked into the sealed base and every branch would
+    // inherit the same value, making the seed search a no-op — the milestone-1
+    // review's P1.)
+    printf("UUID_READY\n");
+    fflush(stdout);
+
+    // Draw the seeded entropy value AFTER the snapshot point.
     uint64_t seed = read_seed();
     uint64_t draw = entropy_draw(seed);
-
     if (getenv("UUID_DEBUG")) {
-        printf("UUID_IOPERM: %s\n", ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0 ? "ok" : "FAILED");
         printf("UUID_DRAW: seed=0x%llx prefix_bits=%d\n",
                (unsigned long long)seed, PREFIX_BITS);
         fflush(stdout);
     }
 
-    // The base snapshot is sealed here (post-readiness, pre-decision) so every
-    // branch re-runs the seeded draw from the same point.
-    printf("UUID_READY\n");
-    fflush(stdout);
-
     // The rare branch: taken only when the seeded draw matches the target prefix.
     // Nominally dead code; the campaign searches seeds until one hits.
     if (prefix_matches(draw)) {
-        // Poison a pointer and dereference — the planted defect the rare value
-        // reaches. `volatile` so the store/load is not optimized away.
+        // Emit the marker + terminal code BEFORE the faulting access, so the
+        // per-bug attribution gate always sees `UUID_BUG:` for this bug.
+        announce_bug();
+        // The planted defect: poison a pointer and dereference it — the crash
+        // mechanism /init's reboot terminal reports on the container kernel (where
+        // isa-debug-exit above was unreachable). `volatile` so it is not elided.
         volatile uint64_t *poisoned = (volatile uint64_t *)(uintptr_t)0xdead000000000000ULL;
-        if (*poisoned == 0) {
-            // Unreachable in practice (the deref faults first); keep it live.
-            report_and_die();
-        }
-        report_and_die();
+        (void)*poisoned;
+        _exit(FAIL_CODE); // fallback if the deref somehow did not fault
     }
 
     printf("UUID_DONE\n");
