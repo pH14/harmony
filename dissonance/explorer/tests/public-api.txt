@@ -12,6 +12,7 @@ impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::coverage(&self) -> &[u8]
 pub fn explorer::adapter::SocketMachine<S>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
@@ -27,6 +28,38 @@ pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u6
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub const explorer::adapter::ADAPTER_BLOB_VERSION: u16
 pub fn explorer::adapter::client_caps() -> control_proto::types::Caps
+pub mod explorer::stads
+pub struct explorer::stads::Frac
+impl explorer::stads::Frac
+pub fn explorer::stads::Frac::den(&self) -> u128
+pub fn explorer::stads::Frac::new(u128, u128) -> Self
+pub fn explorer::stads::Frac::num(&self) -> u128
+pub fn explorer::stads::Frac::whole(u128) -> Self
+impl core::cmp::Ord for explorer::stads::Frac
+pub fn explorer::stads::Frac::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialOrd for explorer::stads::Frac
+pub fn explorer::stads::Frac::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+pub struct explorer::stads::SpeciesAccumulator
+impl explorer::stads::SpeciesAccumulator
+pub fn explorer::stads::SpeciesAccumulator::chao1(&self) -> explorer::stads::Frac
+pub fn explorer::stads::SpeciesAccumulator::curve(&self) -> &[u64]
+pub fn explorer::stads::SpeciesAccumulator::discovery_probability(&self) -> explorer::stads::Frac
+pub fn explorer::stads::SpeciesAccumulator::end_sample(&mut self)
+pub fn explorer::stads::SpeciesAccumulator::new() -> Self
+pub fn explorer::stads::SpeciesAccumulator::observe(&mut self, explorer::CellKey)
+pub fn explorer::stads::SpeciesAccumulator::observe_branch(&mut self, impl core::iter::traits::collect::IntoIterator<Item = explorer::CellKey>)
+pub fn explorer::stads::SpeciesAccumulator::s_obs(&self) -> u64
+pub fn explorer::stads::SpeciesAccumulator::stats(&self) -> explorer::stads::SpeciesStats
+pub struct explorer::stads::SpeciesStats
+pub explorer::stads::SpeciesStats::f1: u64
+pub explorer::stads::SpeciesStats::f2: u64
+pub explorer::stads::SpeciesStats::individuals: u64
+pub explorer::stads::SpeciesStats::s_obs: u64
+pub explorer::stads::SpeciesStats::samples: u64
+impl explorer::stads::SpeciesStats
+pub fn explorer::stads::SpeciesStats::chao1(&self) -> explorer::stads::Frac
+pub fn explorer::stads::SpeciesStats::discovery_below(&self, u64, u64) -> bool
+pub fn explorer::stads::SpeciesStats::discovery_probability(&self) -> explorer::stads::Frac
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
 pub explorer::MachineError::MaterializeDivergence
@@ -268,6 +301,7 @@ impl<S: std::io::Read + std::io::Write> explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::connect(S, environment::recorded::EnvSpec) -> core::result::Result<Self, explorer::MachineError>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::coverage(&self) -> &[u8]
 pub fn explorer::adapter::SocketMachine<S>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
@@ -327,6 +361,7 @@ pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u6
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub trait explorer::Machine
 pub fn explorer::Machine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::Machine::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
 pub fn explorer::Machine::coverage(&self) -> &[u8]
 pub fn explorer::Machine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::Machine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>
@@ -337,6 +372,7 @@ pub fn explorer::Machine::sdk_events(&mut self) -> core::result::Result<alloc::v
 pub fn explorer::Machine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
 impl<S: std::io::Read + std::io::Write> explorer::Machine for explorer::adapter::SocketMachine<S>
 pub fn explorer::adapter::SocketMachine<S>::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
+pub fn explorer::adapter::SocketMachine<S>::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::coverage(&self) -> &[u8]
 pub fn explorer::adapter::SocketMachine<S>::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::MachineError>
 pub fn explorer::adapter::SocketMachine<S>::hash(&mut self) -> core::result::Result<[u8; 32], explorer::MachineError>

@@ -887,3 +887,60 @@ Bring-up aid: boot with `CAMPAIGN_DEBUG=1` in the environment and `campaign-supe
 `CAMPAIGN_LEDGER_GPA:` (read via `/proc/self/pagemap`, needs root/CAP_SYS_ADMIN), so the operator can
 scope `conductor campaign box --gpa-*` tightly. This is box-built and box-validated by the foreman
 (the C is Linux-only; the shell is shellcheck-clean).
+
+## Task 69 — the benchmark bugs (ii) ordering-interrupt and (iii) rare-entropy
+
+Task 69 extends task 60's single planted bug into a **benchmark** of three bugs of
+distinct classes (the shared fixture tasks 71/72/75 extend). Bug (i) is task 60's
+`campaign-super` above, **reused verbatim**. Two new supervised processes, built to
+the same conventions (static `cc -static -O2`; fixed-address, `volatile`
+bookkeeping; `ORDER_READY`/`UUID_READY` base-snapshot markers; the isa-debug-exit
+terminal with the same kernel-terminal fallback `campaign-init.sh` documents):
+
+- **`order-super.c` — bug (ii), ordering / interrupt-timing.** A two-word invariant
+  `mirror == ~primary` updated **non-atomically** inside a fixed per-iteration
+  window. KVM delivers a task-59 `InjectInterrupt { vector }` to the guest **kernel
+  IDT**, not as a userspace signal, so the reachable, userspace-observable effect is
+  a **kernel reschedule**: an injected reschedule-class interrupt landing in the
+  window preempts the process mid-update (an **involuntary context switch**, counted
+  in `rusage.ru_nivcsw`), leaving the pair torn while descheduled. The process
+  samples `ru_nivcsw` across the window; a change means it was preempted inside it →
+  it aborts with **`ORDER_BUG:`** (crash code `0x62`). Outside the window the same
+  preemption is harmless. Window width is the time-to-find dial (~256 branches); the
+  manifest vector `0x81` is wired to a reschedule-class vector at box bring-up.
+  Manifest: `benchmark` `BugId(2)`. *(An earlier draft modeled the injected
+  interrupt as a POSIX `SIGUSR1` handler — wrong, since KVM never turns an IDT
+  interrupt into a userspace signal; the milestone-1 review caught it.)*
+- **`uuid-super.c` — bug (iii), rare-entropy-value.** Draws its run value from the
+  VMM's **RDRAND intercept** (the seeded-entropy service — task 42's
+  `gen_random_uuid()` path), executed **after the `UUID_READY` snapshot marker** so
+  each branch's EnvSpec seed actually varies it. The source must be RDRAND, not a
+  pre-snapshot `getenv("SEED")`: an env var is baked into the process before the
+  base seal, so branching could never vary it and the search was a no-op (the
+  round-2 review's deeper P1 — moving the *draw* after the marker was not enough,
+  the *source* had to be post-snapshot and campaign-controlled). The RDRAND word
+  **is** the draw (the first word of `SeededEntropy::new(EnvSpec.seed)`, the
+  xorshift64* stream in `consonance/hypercall-proto`); `benchmark::trigger::
+  entropy_draw` replicates that **exact** function so the guest and the model agree
+  bit-for-bit on which seeds fire (the round-3 stream-matching fix — an earlier
+  draft re-hashed with a splitmix64 the model did not share). A branch taken only
+  when the draw's top `PREFIX_BITS = 8`
+  bits match `0xA5` emits **`UUID_BUG:`** (crash code `0x63`) **before** poisoning a
+  pointer and dereferencing it (so the attribution gate always sees the marker for
+  the bug the deref then crashes on). Fire probability `2^-8` ⇒ ~256 branches.
+  `PREFIX_BITS` is the dial. Manifest: `benchmark` `BugId(3)`.
+
+Each bug has a **distinct serial marker** (`CAMPAIGN_BUG` / `ORDER_BUG` /
+`UUID_BUG`) and crash code (`0x60`/`0x62`/`0x63`) so fingerprints attribute finds
+per-bug (spec gate 2). The portable **toy** stand-in for all three — the trigger
+predicates, unit-tested to fire 100% / nominal never — lives in
+`dissonance/benchmark/src/trigger.rs`, and the record-emitting toy machine that
+drives the signal-configured campaign portably is
+`dissonance/conductor/src/benchcampaign.rs::BenchToyMachine`.
+
+**Status (task 69 milestone 1):** the C payloads are committed **source**; their
+box images (`build-campaign-image.sh` analogues) and the full ≥20-seed real-KVM
+campaign that produces the GO/NO-GO ruling are **milestone 2** — these two files are
+Linux-only and are box-built/box-validated by the foreman there. The trigger logic
+they implement is already validated portably (the `benchmark` toy predicates +
+`conductor::benchcampaign` gates).

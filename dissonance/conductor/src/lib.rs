@@ -43,6 +43,7 @@ use explorer::{Machine, MachineError, StopConditions, StopMask, StopReason, VTim
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError};
 
+pub mod benchcampaign;
 pub mod campaign;
 pub mod materialize;
 pub mod mock;

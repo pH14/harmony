@@ -28,6 +28,11 @@ required-features = ["cli"]
 explorer = { path = "../explorer", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
+# Task 69: the benchmark manifest + correlation-log schema this driver emits. The
+# M1 toy path content-keys log-template species directly (stable across logs); the
+# M2 SocketMachine path wires the real task-67 `logtmpl` LogSensor/CellFnV1 with a
+# persisted codebook (added in the M2 follow-up).
+benchmark = { path = "../benchmark", version = "0.1.0" }
 # The task-65 replay-plane journal/store the recording session populates.
 runtrace = { path = "../runtrace", version = "0.1.0" }
 # Task 73: the link tier that decodes the raw SDK event capture into

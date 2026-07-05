@@ -77,6 +77,21 @@ pub trait Machine {
     fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
         Ok(Vec::new())
     }
+
+    /// The guest **console** capture of the current run: `Moment`-stamped log
+    /// lines (one entry per line, raw bytes, no terminator required) the scrape
+    /// tier reads. This is what populates `RunTrace.records`, the input the
+    /// log-template sensor (task 67 `logtmpl`) clusters into the primary signal
+    /// channel. **Default: empty** — a machine whose guest emits no console
+    /// (or a driver that does not want the scrape signal) reports nothing, and
+    /// `RunTrace.records` stays empty exactly as before (so this is
+    /// determinism-neutral for every existing machine — the toy and mock return
+    /// `&[]`/empty, the socket machine overrides it with the server-side console
+    /// capture). Task 69 introduces it so the signal-configured campaign has a
+    /// scrape channel without a bespoke recording loop.
+    fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Spawns fresh [`Machine`]s at their quiescent boot point. The R2 adapter spawns

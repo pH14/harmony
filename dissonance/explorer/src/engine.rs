@@ -37,7 +37,7 @@ use crate::prng::Prng;
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{
     Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment, Oracle,
-    RunTrace, Selector, Sensor, Tactic, VirtualExemplar,
+    Record, RunTrace, Selector, Sensor, StreamId, Tactic, VirtualExemplar,
 };
 use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason};
 
@@ -425,6 +425,24 @@ impl<M: Machine> Explorer<M> {
             None => outcome.env.clone(),
             Some(base) => self.codec.compose(base, &outcome.env),
         };
+        // The guest console capture → scrape records, the log-template sensor's
+        // input (task 67). Empty for a machine that overrides nothing (the toy),
+        // so this is determinism-neutral: `records` stays `Vec::new()` exactly as
+        // before unless a machine reports console lines.
+        let records: Vec<(Moment, Record)> = self
+            .machine
+            .console()?
+            .into_iter()
+            .map(|(m, line)| {
+                (
+                    Moment(m),
+                    Record {
+                        stream: StreamId(0),
+                        line,
+                    },
+                )
+            })
+            .collect();
         let trace = RunTrace {
             terminal: outcome.stop.clone(),
             env: genesis_env,
@@ -432,7 +450,7 @@ impl<M: Machine> Explorer<M> {
                 map: self.machine.coverage().to_vec(),
             }),
             events: Vec::new(),
-            records: Vec::new(),
+            records,
         };
 
         // 4. Build the fork candidates: parent-rooted exemplars plus their
