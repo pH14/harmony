@@ -1615,9 +1615,18 @@ impl<B: Backend> Vmm<B> {
         } else {
             None
         };
-        // Capture the final vCPU state once (propagating any save error here, so
-        // the infallible `state_blob` reads a consistent snapshot).
-        self.saved_state = Some(self.backend.save()?);
+        // Cache the final vCPU **only for a genuine terminal** (propagating any
+        // save error here, so the infallible `state_blob` reads a consistent
+        // snapshot post-terminal, where the backend may not be re-savable). A
+        // `Step::SdkStop` (an assertion) is **resumable**, not terminal: caching
+        // here would make `state_blob`/`save_vm_state` read a STALE vCPU after the
+        // caller resumes past the stop. So invalidate the cache on an SDK stop and
+        // let `current_vcpu` do a fresh live save reflecting the resumed state.
+        if reason == TerminalReason::SdkStop {
+            self.saved_state = None;
+        } else {
+            self.saved_state = Some(self.backend.save()?);
+        }
         Ok(RunResult {
             reason,
             sdk_stop,
@@ -4176,6 +4185,117 @@ mod tests {
                 id: 20,
                 data: vec![]
             })
+        );
+    }
+
+    /// A `run()` that stops at a **resumable** SDK assertion must NOT cache the
+    /// vCPU snapshot (round-5 P2): caching it would make `state_blob` /
+    /// `save_vm_state` read the STALE stop-time vCPU after the caller resumes past
+    /// the stop. Only a genuine terminal caches. Here: run to the SDK stop, then
+    /// model the resumed guest advancing its registers, and assert `state_blob`'s
+    /// vCPU reads the live (resumed) state, not the stop's.
+    #[test]
+    fn run_does_not_cache_the_vcpu_on_a_resumable_sdk_stop() {
+        use environment::{EnvSpec, FaultPolicy};
+        let viol_id: u32 = (1 << 24) | 20; // assert violation, point 20
+        let mut payload = viol_id.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[1, 0, 0]); // [DISP_VIOLATION, detail_len = 0]
+        let mut frame = [0u8; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut frame).unwrap();
+
+        // The mock reports STOP-time registers `stop_state` when the SDK stop
+        // surfaces; the caller then resumes and the guest advances to `resumed_state`.
+        let mut stop_state = nonzero_state();
+        stop_state.regs.rip = 0x1000;
+        let mut resumed_state = nonzero_state();
+        resumed_state.regs.rip = 0x2000;
+
+        let mut mock = configured_mock(vec![Exit::Io {
+            port: DOORBELL_PORT,
+            size: 4,
+            write: Some(n as u32),
+        }]);
+        mock.set_state(stop_state.clone());
+        let mut vmm = Vmm::new(mock, GuestRam::new(0x2_0000).unwrap());
+        vmm.enable_sdk(
+            EnvSpec::Seeded {
+                seed: 1,
+                policy: FaultPolicy::none(),
+            }
+            .materialize(),
+            &FaultPolicy::none(),
+        );
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+
+        let r = vmm.run().expect("run");
+        assert_eq!(r.reason, TerminalReason::SdkStop);
+        assert!(
+            vmm.saved_state.is_none(),
+            "a resumable SDK stop must NOT cache the vCPU (it would go stale on resume)"
+        );
+
+        // Model the resume: the guest advanced its registers past the stop.
+        vmm.backend.set_state(resumed_state.clone());
+        assert_eq!(
+            vmm.current_vcpu(),
+            resumed_state,
+            "state_blob reads the live resumed vCPU, not the stale stop snapshot"
+        );
+        assert_ne!(vmm.current_vcpu(), stop_state, "not the stop-time vCPU");
+    }
+
+    /// Round-5 P1 (semantics, SETTLED): a task-78 reseed marker reseeds ONLY the
+    /// entropy stream (`reseed_entropy` → `vt.entropy`), never the buggify/fault
+    /// PRNG (`SdkChannel.env`, a separate `RecordedEnv`). So a mid-run reseed cannot
+    /// perturb the buggify sequence — the fold (which reseeds entropy only) and the
+    /// sequential branch agree. Direct proof: the buggify answers are bit-identical
+    /// whether or not the entropy stream is reseeded between decisions — and the
+    /// reseed provably DID take effect (distinct reseeds ⇒ distinct RNG draws), so
+    /// the invariance is not vacuous.
+    #[test]
+    fn buggify_decisions_are_independent_of_an_entropy_reseed() {
+        use environment::{EnvSpec, FaultPolicy};
+        let mut policy = FaultPolicy::none();
+        policy.set_buggify_point(1, 1, 2).unwrap(); // ~half fire → seed-sensitive
+        let spec = EnvSpec::Seeded { seed: 7, policy };
+
+        let build = || {
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9)
+                    .unwrap(),
+            );
+            v.enable_sdk(spec.materialize(), spec.policy());
+            v
+        };
+
+        // A: buggify at moments 0..6, no reseed.
+        let mut a = build();
+        let ans_a: Vec<bool> = (0..6).map(|m| a.decide_buggify(m, 1)).collect();
+
+        // B: buggify at 0..2, reseed the ENTROPY stream to a different seed, 2..6.
+        let mut b = build();
+        let mut ans_b: Vec<bool> = (0..2).map(|m| b.decide_buggify(m, 1)).collect();
+        b.reseed_entropy(0xDEAD_BEEF).unwrap();
+        ans_b.extend((2..6).map(|m| b.decide_buggify(m, 1)));
+
+        assert_eq!(
+            ans_a, ans_b,
+            "buggify answers are invariant under an entropy reseed (buggify ⊥ entropy)"
+        );
+
+        // Vacuity guard: distinct entropy reseeds really DO change the entropy-
+        // bearing state (the `VTIM` seed/position folded into the hash), so the
+        // invariance above is a real independence, not an inert entropy path.
+        let mut e1 = build();
+        let mut e2 = build();
+        e1.reseed_entropy(0xAAAA).unwrap();
+        e2.reseed_entropy(0xBBBB).unwrap();
+        assert_ne!(
+            e1.state_hash(),
+            e2.state_hash(),
+            "distinct reseeds ⇒ distinct entropy state (the reseed is not a no-op)"
         );
     }
 

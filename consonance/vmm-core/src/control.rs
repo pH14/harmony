@@ -4363,6 +4363,149 @@ mod tests {
     }
 
     #[test]
+    fn a_buggify_decision_after_a_mid_run_reseed_folds_to_the_sequential_branch() {
+        // Round-5 P1 — the DECISIVE fold-vs-sequential test. A run that takes a
+        // mid-run reseed marker AND then resolves a buggify decision past it records
+        // a reproducer that must replay bit-identically. A task-78 marker reseeds
+        // ONLY entropy (`reseed_entropy` → `vt.entropy`), never the buggify PRNG
+        // (`SdkChannel.env`); BOTH the sequential branch and the fold do exactly
+        // that, so buggify-after-reseed is coherent and the record→replay closure
+        // holds. (The buggify⊥entropy independence itself is pinned in vmm.rs's
+        // `buggify_decisions_are_independent_of_an_entropy_reseed`.)
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+        let m: u64 = 4_000; // the mid-run reseed marker Moment
+        let point: u32 = 1;
+
+        // A buggify request frame (point 1), carried in the genesis snapshot so
+        // every restored fork's doorbell resolves a buggify decision.
+        let mut bug = [0u8; 4096];
+        let bn = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            1,
+            1,
+            &point.to_le_bytes(),
+            &mut bug,
+        )
+        .unwrap();
+        let bug_frame = bug[..bn].to_vec();
+
+        // A wired SDK VM with the buggify frame in RAM. Forks restore genesis's
+        // memory (which carries the frame), so their doorbell resolves buggify.
+        fn wire(script: Vec<Exit>, frame: &[u8], req_gpa: usize, ram: usize) -> Vmm<MockBackend> {
+            let mut mb = MockBackend::with_exits(script);
+            mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            let mut v = Vmm::new(mb, GuestRam::new(ram).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9)
+                    .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            let mut mem = vec![0u8; ram];
+            mem[req_gpa..req_gpa + frame.len()].copy_from_slice(frame);
+            v.restore_guest_memory(&mem).unwrap();
+            v
+        }
+
+        // Forks run: Rdtsc (synchronize) → arrival at m (the reseed drains) →
+        // buggify doorbell (decides AFTER the reseed) → HLT.
+        let fork_exits = vec![
+            Exit::Rdtsc,
+            Exit::Deadline { reached: Vtime(0) },
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(bn as u32),
+            },
+            Exit::Hlt,
+        ];
+
+        // The env: seed + an always-firing buggify policy + a mid-run reseed marker.
+        let env_with = |mid_seed: u64| -> Environment {
+            let mut policy = FaultPolicy::none();
+            policy.set_buggify_point(point, 1, 1).unwrap();
+            let mut spec = EnvSpec::Seeded {
+                seed: 0x51EED,
+                policy,
+            };
+            spec.record_reseed(m, mid_seed);
+            Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            }
+        };
+
+        let build_server = {
+            let bug_frame = bug_frame.clone();
+            move || -> ControlServer<MockBackend> {
+                let frame = bug_frame.clone();
+                let exits = fork_exits.clone();
+                let mut live = wire(vec![Exit::Rdtsc, Exit::Hlt], &frame, REQ_GPA, BIG_RAM);
+                live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
+                let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
+                ControlServer::new(live, factory)
+            }
+        };
+
+        // Sequential branch: run through the reseed to the buggify decision.
+        let mut s = build_server();
+        hello(&mut s);
+        let base = snap(&mut s);
+        s.handle(&Request::Branch {
+            snap: base,
+            env: env_with(0xABCD),
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            run_all(&mut s),
+            StopReason::Crash { .. } | StopReason::Quiescent { .. }
+        ));
+        let h_seq = hash(&mut s);
+        let rec = s.recorded_env().clone();
+        // The reproducer carries BOTH the mid-run reseed marker and the buggify
+        // policy, and a buggify decision was actually resolved after the reseed.
+        assert!(
+            !rec.reseeds().is_empty(),
+            "the mid-run reseed marker is recorded"
+        );
+        assert!(
+            rec.policy().is_buggify_only(),
+            "the buggify policy is recorded"
+        );
+        assert!(
+            !s.vmm().unwrap().sdk_buggify().is_empty(),
+            "a buggify decision was resolved during the run"
+        );
+
+        // Fold: replay the recorded reproducer — bit-identical to the sequential run.
+        let mut r = build_server();
+        hello(&mut r);
+        let base_r = snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: rec.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            run_all(&mut r),
+            StopReason::Crash { .. } | StopReason::Quiescent { .. }
+        ));
+        assert_eq!(
+            hash(&mut r),
+            h_seq,
+            "the folded reproducer replays bit-identically to the sequential branch \
+             (buggify-after-reseed is coherent)"
+        );
+    }
+
+    #[test]
     fn reseed_marker_behind_the_restore_floor_is_rejected() {
         // Advance the live V-time to 100 (a perturb-armed deadline run lands
         // exactly there), seal, then try to branch with a marker behind it.
