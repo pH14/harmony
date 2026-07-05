@@ -310,7 +310,7 @@ impl<B: Backend> ControlServer<B> {
         // Task 61: wire the Net channel on the live VM too, so a guest flow agent
         // that rings `net_decide` before its first branch/replay is serviced. Inert
         // (and unhashed) for a guest that never asks about a flow.
-        vmm.enable_net(recorded.materialize());
+        vmm.enable_net();
         ControlServer {
             vmm: Some(vmm),
             factory,
@@ -850,11 +850,11 @@ impl<B: Backend> ControlServer<B> {
                     vmm.enable_sdk(sdk_env, &sdk_policy);
                 }
                 // Task 61: the kept fresh VM must carry a Net channel too (same
-                // reason — the doorbell is serviced when net is wired), from the
-                // reset reproducer, mirroring `new` + the success path.
-                let net_env = self.recorded.materialize();
+                // reason — the doorbell is serviced when net is wired), mirroring
+                // `new` + the success path. No env: a net decision draws from the
+                // shared SDK stream wired just above (the single-stream ruling).
                 if let Some(vmm) = self.vmm.as_mut() {
-                    vmm.enable_net(net_env);
+                    vmm.enable_net();
                 }
                 return Ok(Err(ControlError::RestoreFailed));
             }
@@ -918,15 +918,11 @@ impl<B: Backend> ControlServer<B> {
             .as_mut()
             .ok_or(ServeError::Poisoned)?
             .enable_sdk(sdk_env, &sdk_policy);
-        // Task 61: wire the Net channel from the same now-final reproducer (a fresh
-        // materialize = a fresh flow-policy stream from the restored seed), so a
-        // seeded run draws flow policy from the seeded fault stream and a replay
-        // from the recorded overrides. Inert/unhashed for a flow-agent-less guest.
-        let net_env = self.recorded.materialize();
-        self.vmm
-            .as_mut()
-            .ok_or(ServeError::Poisoned)?
-            .enable_net(net_env);
+        // Task 61: wire the Net channel (capture only, no env). A net decision
+        // draws from the shared SDK stream wired just above (the single-stream
+        // ruling), so a seeded run draws the flow policy from that one seeded fault
+        // stream and a replay continues it from the restored position.
+        self.vmm.as_mut().ok_or(ServeError::Poisoned)?.enable_net();
         // Restore the SDK channel snapshot for this handle, if any. A verbatim
         // **replay** (`seed` is `None`) continues the seeded streams from the
         // snapshot's position AND keeps the event prefix — so a fork from a mid-run
@@ -942,18 +938,14 @@ impl<B: Backend> ControlServer<B> {
                 vmm.sdk_restore(&s.channel);
             }
         }
-        // Task 61: restore the Net channel the same way — a **replay** continues
-        // the flow-policy stream from the snapshot position AND keeps the decision
-        // prefix (so a fork's net_decide answers are bit-identical to the
-        // sequential run); a **branch** reseeds (enable_net just set a fresh
-        // stream), so it takes only the decision prefix and lets the new seed drive.
+        // Task 61: restore the Net channel's decision prefix. The flow-policy
+        // stream position rides the shared SDK stream, restored by
+        // sdk_restore/sdk_restore_events above (so a replay's net_decide answers are
+        // bit-identical and a branch reseeds), so both paths restore the same thing
+        // here — just the decision log carried forward for the fork's evidence.
         if let Some(n) = net_snap {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            if seed.is_some() {
-                vmm.net_restore_decisions(&n.channel);
-            } else {
-                vmm.net_restore(&n.channel);
-            }
+            vmm.net_restore(&n.channel);
         }
         for (m, fault) in host {
             self.schedule.insert(m, fault);

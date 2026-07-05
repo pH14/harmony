@@ -125,16 +125,26 @@ into the `state_hash`**, so an agent-absent workload is byte-for-byte unchanged
 carries the flow policy as seed + `FaultPolicy` (a seeded run) or as recorded
 overrides (a replay).
 
-**Snapshot/branch/replay stream discipline (review P1).** Hash-neutrality is *not*
-replay-neutrality: the `NetChannel`'s seeded flow-policy **stream position** is
-captured on snapshot (`NetSnapshot`, mirroring `SdkSnapshot`) and restored on
-branch/replay, or a fork's `net_decide` answers would diverge from the sequential
-run (the task-73 SDK×reseed bug). The control server wires `enable_net` on the live
-VM and every restore path, captures `NetSnap { channel, policy }` at the snapshot
-verb, and restores it with the same `seed.is_some()` branch/replay split as SDK
-(replay: stream + decision prefix; branch: prefix only, reseeded stream). Proven by
-`net_snapshot_restore_resumes_the_flow_policy_stream` (snapshot mid-decisions →
-restore → bit-identical continuation; a position-0 channel diverges).
+**Single decide-stream (integrator ruling, review R3).** A `net_decide` answer is a
+fault-schedule **input** the guest acts on (it enforces the per-flow policy on the
+CNI) — the same category as a buggify decision, *not* a passive observation. So a
+net decision draws from the **one shared fault-decision stream the SDK channel
+owns** — materialized once, folded into `state_hash` via the `SDK\0` chunk — exactly
+like buggify (the task-78 single-stream contract). The `NetChannel` holds **no env
+of its own**; only the decision log. Consequences:
+
+- **Hash:** a net decision advances the shared, hash-folded stream, so it *is*
+  reflected in `state_hash` (via the shared position) — hash-relevant like buggify.
+  The "inert guest" property is preserved exactly: a flow-agent-less guest makes
+  zero `net_decide` calls, so it never advances the stream and its hash is
+  byte-for-byte unchanged (there is no `NET` hash chunk).
+- **Snapshot/replay:** the shared stream position is captured/restored once by
+  `sdk_snapshot`/`sdk_restore`; `NetSnapshot` carries only the decision log. A fork
+  therefore reproduces net answers via the same restored stream buggify uses.
+- Proven by `a_net_draw_advances_the_shared_stream_seen_by_buggify` (buggify after a
+  net draw matches the canonical one-stream reproducer and differs from
+  buggify-first) and `net_continuation_resumes_via_the_shared_sdk_stream` (snapshot
+  → restore → bit-identical net continuation; a position-0 stream diverges).
 
 ## Divergence from task-51's abstractions (recorded per the spec)
 
