@@ -28,6 +28,10 @@ required-features = ["cli"]
 explorer = { path = "../explorer", version = "0.1.0" }
 environment = { path = "../environment", version = "0.1.0" }
 control-proto = { path = "../control-proto", version = "0.1.0" }
+# Task 69: the benchmark manifest + correlation-log schema this driver emits, and
+# the log-template signal (task 67) it feeds — the signal configuration under test.
+benchmark = { path = "../benchmark", version = "0.1.0" }
+logtmpl = { path = "../logtmpl", version = "0.1.0" }
 # The task-65 replay-plane journal/store the recording session populates.
 runtrace = { path = "../runtrace", version = "0.1.0" }
 # Task 73: the link tier that decodes the raw SDK event capture into
