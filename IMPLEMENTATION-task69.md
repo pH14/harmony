@@ -36,11 +36,12 @@ Worktree `~/harmony-t69` at HEAD, built + tested **pinned to core 2** (`taskset 
 2`), box `rustc 1.96.0`:
 
 - `cargo test -p explorer stads` → **10 passed**; `-p benchmark` → **29 passed**;
-  `-p conductor --lib benchcampaign` → **7 passed** incl.
+  `-p conductor --lib benchcampaign` → **9 passed** incl.
   `dual_config_runs_and_is_deterministic_twice` (the box determinism smoke: same
   `(seed, config)` ⇒ identical discovery-event log, for both configs),
-  `replays_must_match_the_finding_hash`, `unmarked_crash_is_not_a_find`, and
-  `rare_entropy_bug_is_searchable`. (Counts as of the round-5 head.)
+  `replays_must_match_the_finding_hash`, `unmarked_crash_is_not_a_find`,
+  `terminal_marker_excluded_from_cells`, and `cell_ids_are_content_stable_across_logs`.
+  (Counts as of the round-6 head.)
 - **KVM untouched** (only cargo build/test — no patched module loaded); verified
   stock **1396736** before and after. No `box-window` lease needed.
 
@@ -207,6 +208,33 @@ path swaps in the socket machine + real guest images.
 
 Box reachability was confirmed this session (`ssh hetzner` OK, kvm on stock,
 users=0) but the full campaign is a multi-hour run not completed here.
+
+### Milestone-2 prerequisites (deferred from M1 — the review is tracking these)
+
+The following are **intentionally not implemented in M1** (they are the real-box
+campaign path, not the M1 mechanism); each is a prerequisite for the M2 GO/NO-GO
+campaign:
+
+1. **Socket console capture** — `explorer::adapter::SocketMachine` must populate
+   `Machine::console()` from the server-side serial capture (the `conductor::
+   record::run_recording` path already captures console via
+   `runtrace::decode_chunks`). Until then the signal config sees no real guest logs
+   on the box, so M1 validates the mechanism's determinism but not the signal's
+   discriminating power (see "the sharp boundary" above).
+2. **Real `logtmpl` cells** — swap the M1 toy's content-keyed line templates
+   (`benchcampaign::cells_of`) for the real task-67 `LogSensor` + `CellFnV1` over
+   the captured console, with a **persisted campaign codebook** (`codebook_bytes`
+   / `with_codebook_bytes`) so cell ids stay stable across the independent logs the
+   report pools.
+3. **Fault-moment rebasing on the SocketMachine path** — `benchcampaign::
+   mint_scenario_env` (≈ line 88) offsets a fault's `Moment` from a fixed base;
+   against the real backend the fault Moment must be rebased onto the sealed base's
+   V-time (the exact-arrival window `conductor::planted` documents). The **toy path
+   does not hit this** (it decodes the scenario directly), so it is **not fixed in
+   M1** — it is a SocketMachine-only concern for the M2 driver. *(Flagged by the
+   round-6 review; tracked in the M2 follow-up.)*
+4. **Three real guest images** (`campaign-super.c` + `order-super.c` +
+   `uuid-super.c`) built and validated on the box, per the run plan above.
 
 ## Deviations considered & rejected
 

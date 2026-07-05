@@ -37,7 +37,8 @@ pub mod trigger;
 
 pub use manifest::{Benchmark, BugClass, BugId, BugSpec, CrashKind, TriggerParams};
 pub use report::{
-    BranchEvent, CampaignLog, Configuration, CorrelationReport, Ruling, TrajectoryMeasure,
+    BranchEvent, CampaignLog, Configuration, CorrelationReport, ReportError, Ruling,
+    TrajectoryMeasure,
 };
 pub use stats::{RankCorr, iqr, median, spearman};
 pub use trigger::{FaultKind, Perturbation, Scenario};

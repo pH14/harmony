@@ -28,6 +28,27 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+/// A report cannot be computed from inconsistent inputs.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReportError {
+    /// Two logs share a `(bug, config, seed)` trial but diverge in content — the
+    /// **same seed produced different outcomes**, which is a determinism
+    /// violation. This is surfaced loudly, never silently deduped: a benchmark
+    /// whose trials are non-reproducible cannot yield a trustworthy GO/NO-GO.
+    #[error(
+        "conflicting trials for bug {bug:?} / {config:?} / seed {seed}: the same seed produced \
+         divergent logs (a determinism violation — the campaign is non-reproducible)"
+    )]
+    ConflictingTrial {
+        /// The bug attempted.
+        bug: BugId,
+        /// The configuration.
+        config: Configuration,
+        /// The seed whose two logs diverged.
+        seed: u64,
+    },
+}
+
 /// The Klees trial-discipline floor: a `Ruling::Go` requires at least this many
 /// **independent** seeds per configuration, and this many distinct finding seeds
 /// on any bug that counts toward the correlation. A GO/NO-GO gate must never rule
@@ -300,23 +321,28 @@ impl CorrelationReport {
         budget: u64,
         effect_floor: (i128, i128),
         stop_eps: (u64, u64),
-    ) -> Self {
-        // Deduplicate by (bug, config, seed) **canonically** — a duplicate log for
-        // the same trial must not inflate the sample or the seed floor (round-3
-        // P2). Keeping the "first occurrence" would be input-order-dependent when
-        // two same-key logs differ in content; instead keep the content-minimal
-        // one (round-5 P2). A `BTreeMap` yields the survivors in canonical key
-        // order, so `deduped` — and everything downstream — is order-independent.
+    ) -> Result<Self, ReportError> {
+        // Fold trials keyed by (bug, config, seed). An **exact** duplicate (the
+        // same trial logged twice) collapses silently; a **conflicting** duplicate
+        // — the same seed with a DIFFERENT outcome — is a determinism violation and
+        // is REJECTED loudly (round-6 P2), never silently deduped. A `BTreeMap`
+        // yields the survivors in canonical key order, so everything downstream is
+        // input-order-independent.
         let mut by_trial: BTreeMap<(BugId, Configuration, u64), &CampaignLog> = BTreeMap::new();
         for l in logs {
-            by_trial
-                .entry((l.bug, l.config, l.seed))
-                .and_modify(|cur| {
-                    if content_digest(l) < content_digest(cur) {
-                        *cur = l;
-                    }
-                })
-                .or_insert(l);
+            match by_trial.get(&(l.bug, l.config, l.seed)) {
+                Some(existing) if *existing != l => {
+                    return Err(ReportError::ConflictingTrial {
+                        bug: l.bug,
+                        config: l.config,
+                        seed: l.seed,
+                    });
+                }
+                Some(_) => {} // exact duplicate — collapse
+                None => {
+                    by_trial.insert((l.bug, l.config, l.seed), l);
+                }
+            }
         }
         let deduped: Vec<&CampaignLog> = by_trial.into_values().collect();
 
@@ -515,7 +541,7 @@ impl CorrelationReport {
             Ruling::NoGo
         };
 
-        CorrelationReport {
+        Ok(CorrelationReport {
             budget,
             effect_floor,
             stop_eps,
@@ -524,7 +550,7 @@ impl CorrelationReport {
             bugs,
             stads,
             ruling,
-        }
+        })
     }
 
     /// Render `CORRELATION-REPORT.md`.
@@ -757,7 +783,7 @@ mod tests {
                 ));
             }
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         assert_eq!(rep.signal_seeds, 60); // 3 bugs × 20 (all signal logs)
         // Each bug: perfect negative rank corr ⇒ correlates; signal median 55-ish
         // ≪ baseline 250-ish ⇒ not worse.
@@ -792,7 +818,7 @@ mod tests {
                 ));
             }
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         assert_eq!(rep.signal_seeds, 9); // 3 bugs × 3 seeds — well under 20
         // No bug counts as correlating (each has <20 finders), and the per-config
         // seed floor is unmet — either alone forces NO-GO.
@@ -822,7 +848,7 @@ mod tests {
             logs.push(slog);
             logs.push(baseline_log(2000 + k, 200 + k, bug));
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         assert_eq!(rep.signal_seeds, 25);
         let m = rep.bugs.iter().find(|b| b.bug == bug).unwrap();
         assert_eq!(m.signal_finders, 5);
@@ -850,7 +876,7 @@ mod tests {
         for k in 0..5u64 {
             logs.push(baseline_log(2000 + k, 200 + k, BugId(1)));
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         let b1 = rep.bugs.iter().find(|b| b.bug == BugId(1)).unwrap();
         assert_eq!(b1.baseline_attempts, 5);
         assert!(
@@ -877,7 +903,7 @@ mod tests {
             }
         }
         // Bug 3: no logs.
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         assert!(rep.bugs.iter().filter(|b| b.correlates).count() >= 2);
         let b3 = rep.bugs.iter().find(|b| b.bug == BugId(3)).unwrap();
         assert_eq!(b3.signal_attempts, 0);
@@ -912,7 +938,7 @@ mod tests {
                 logs.push(b);
             }
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         let b3 = rep.bugs.iter().find(|b| b.bug == BugId(3)).unwrap();
         assert_eq!(b3.baseline_attempts, 20);
         assert_eq!(b3.baseline_finders, 0);
@@ -939,11 +965,11 @@ mod tests {
                 ));
             }
         }
-        let clean = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let clean = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         // Append exact duplicates of every log.
         let mut with_dups = logs.clone();
         with_dups.extend(logs.iter().cloned());
-        let dup = CorrelationReport::compute(&bench, &with_dups, 30, (3, 10), (1, 1000));
+        let dup = CorrelationReport::compute(&bench, &with_dups, 30, (3, 10), (1, 1000)).unwrap();
         assert_eq!(
             clean.signal_seeds, dup.signal_seeds,
             "dedup keeps seed counts"
@@ -956,31 +982,29 @@ mod tests {
     }
 
     #[test]
-    fn canonical_dedup_is_order_independent() {
-        // Two logs share the SAME (bug, config, seed) but DIFFER in content. The
-        // canonical dedup keeps the content-minimal one regardless of input order,
-        // so the report is identical however the collisions are ordered (round-5).
+    fn conflicting_trials_are_rejected() {
+        // Two logs share the SAME (bug, config, seed) but DIFFER in content — the
+        // same seed produced divergent outcomes, a determinism violation. This must
+        // be REJECTED loudly, not silently deduped (round-6 P2). Order-independent:
+        // whichever conflicting log comes first, the error is the same.
         let bench = Benchmark::wave5();
-        let mut logs = Vec::new();
-        for spec in &bench.bugs {
-            for k in 0..20u64 {
-                let seed = spec.id.0 as u64 * 1000 + k;
-                logs.push(signal_log(seed, 20 - k, 50 + k * 5, spec.id));
-                // A conflicting duplicate for the same trial with different content.
-                logs.push(signal_log(seed, 20 - k, 60 + k * 5, spec.id));
-                logs.push(baseline_log(
-                    spec.id.0 as u64 * 2000 + k,
-                    200 + k * 5,
-                    spec.id,
-                ));
+        let bug = BugId(1);
+        let a = signal_log(7, 5, 50, bug);
+        let b = signal_log(7, 5, 60, bug); // same (bug, config, seed), different ttb
+        let err =
+            CorrelationReport::compute(&bench, &[a.clone(), b.clone()], 30, (3, 10), (1, 1000))
+                .unwrap_err();
+        assert_eq!(
+            err,
+            ReportError::ConflictingTrial {
+                bug,
+                config: Configuration::Signal,
+                seed: 7,
             }
-        }
-        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).render_markdown();
-        let mut shuffled = logs.clone();
-        shuffled.reverse();
-        let b =
-            CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000)).render_markdown();
-        assert_eq!(a, b, "canonical dedup must be input-order-independent");
+        );
+        // Reversed input rejects identically.
+        let err2 = CorrelationReport::compute(&bench, &[b, a], 30, (3, 10), (1, 1000)).unwrap_err();
+        assert_eq!(err, err2);
     }
 
     #[test]
@@ -997,11 +1021,14 @@ mod tests {
                 logs.push(baseline_log(k, 200 + k * 5, spec.id));
             }
         }
-        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).render_markdown();
+        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000))
+            .unwrap()
+            .render_markdown();
         let mut shuffled = logs.clone();
         shuffled.reverse();
-        let b =
-            CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000)).render_markdown();
+        let b = CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000))
+            .unwrap()
+            .render_markdown();
         assert_eq!(a, b, "colliding-seed report must not depend on input order");
     }
 
@@ -1026,12 +1053,15 @@ mod tests {
                 ));
             }
         }
-        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).render_markdown();
+        let a = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000))
+            .unwrap()
+            .render_markdown();
         // A different concatenation order (reversed) must render identically.
         let mut shuffled = logs.clone();
         shuffled.reverse();
-        let b =
-            CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000)).render_markdown();
+        let b = CorrelationReport::compute(&bench, &shuffled, 30, (3, 10), (1, 1000))
+            .unwrap()
+            .render_markdown();
         assert_eq!(a, b, "report must not depend on input log order");
     }
 
@@ -1052,7 +1082,7 @@ mod tests {
                 ));
             }
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         for b in &rep.bugs {
             assert!(!b.correlates, "{} inverted must not correlate", b.name);
         }
@@ -1073,7 +1103,7 @@ mod tests {
                 logs.push(baseline_log(spec.id.0 as u64 * 2000 + k, 100 + k, spec.id));
             }
         }
-        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &logs, 30, (3, 10), (1, 1000)).unwrap();
         // Correlation is right, but signal median ≫ baseline ⇒ worse ⇒ NO-GO.
         assert!(rep.bugs.iter().all(|b| b.correlates));
         assert!(rep.bugs.iter().all(|b| !b.signal_not_worse));
@@ -1109,7 +1139,7 @@ mod tests {
                 novel_on_path: 4,
             }],
         };
-        let rep = CorrelationReport::compute(&bench, &[log], 50, (3, 10), (1, 1000));
+        let rep = CorrelationReport::compute(&bench, &[log], 50, (3, 10), (1, 1000)).unwrap();
         let m = rep.bugs.iter().find(|b| b.bug == bug).unwrap();
         // 4/4 on-path novel = 1.0 > base 10/101 ⇒ above chance.
         assert!(m.trajectory.above_chance);

@@ -57,13 +57,21 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let report = CorrelationReport::compute(
+    let report = match CorrelationReport::compute(
         &Benchmark::wave5(),
         &logs,
         cli.budget,
         (cli.effect_num, cli.effect_den),
         (cli.eps_num, cli.eps_den),
-    );
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            // A conflicting-trial (same-seed divergence) is a determinism
+            // violation — fail loudly, never emit a report on non-reproducible data.
+            eprintln!("cannot compute report: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let md = report.render_markdown();
     match cli.out {
         Some(p) => {
