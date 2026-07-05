@@ -728,6 +728,19 @@ impl<B: Backend> ControlServer<B> {
                 // `Environment::decide`) answers `DecisionClass::Buggify`, so a
                 // reproducer whose only faults are buggify biasing is accepted
                 // (its buggify decisions replay from the seeded fault stream).
+                //
+                // **Task 61 widening:** the in-guest **flow agent** is the
+                // `NetFlow` decide-seam (the doorbell's `Net` service →
+                // `Environment::decide` → the guest enforces the per-flow policy on
+                // the CNI), so a policy that faults the **net** class is now
+                // enforceable too. Accept a policy that faults **only** the
+                // enforceable classes (buggify and/or net) — its per-flow decisions
+                // replay from the seeded fault stream exactly like buggify (no guest
+                // overrides, so the reproducer still round-trips a later
+                // branch/replay). A block/process fault (no decide-seam yet) is
+                // still rejected. A **guest override** (a pinned per-Moment answer)
+                // and a **standing** fault remain unsupported — the net path is
+                // driven by the seeded policy, not by pinned overrides.
                 let has_standing = matches!(
                     &spec,
                     EnvSpec::Recorded { standing, .. } if !standing.is_empty()
@@ -736,7 +749,7 @@ impl<B: Backend> ControlServer<B> {
                     .overrides()
                     .values()
                     .any(|a| a.guest_answer().is_some());
-                if has_guest || has_standing || !spec.policy().is_buggify_only() {
+                if has_guest || has_standing || !spec.policy().is_enforceable_only() {
                     return Ok(Err(ControlError::Unsupported));
                 }
                 host = spec.host_faults().collect();
@@ -4572,6 +4585,168 @@ mod tests {
             h_seq,
             "the folded reproducer replays bit-identically to the sequential branch \
              (buggify-after-reseed is coherent)"
+        );
+    }
+
+    /// Task 61 (review R2): the control plane can now **decide a non-nominal
+    /// per-flow policy**. A branch env that faults the `NetFlow` class is ACCEPTED
+    /// (the task-73 buggify-only gate widened to the enforceable net decide-seam —
+    /// `is_enforceable_only`), the guest's `net_decide` returns the fault from the
+    /// seeded stream at a **stable Moment**, and the recorded reproducer replays
+    /// bit-identically. This is the record→replay closure for a host-decided net
+    /// fault — the mechanism the deferred live gate B drives.
+    #[test]
+    fn a_net_flow_fault_branch_is_accepted_and_replays_at_a_stable_moment() {
+        const REQ_GPA: usize = 0xE000;
+        const BIG_RAM: usize = 0x2_0000;
+        let conn: u64 = 42;
+
+        // A `net_decide` request frame (flow 1->2, conn 42, event Open), carried in
+        // the genesis snapshot so every restored fork's doorbell resolves a flow
+        // decision from the branch env's seeded net policy.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_le_bytes()); // src
+        payload.extend_from_slice(&2u32.to_le_bytes()); // dst
+        payload.extend_from_slice(&conn.to_le_bytes()); // conn
+        payload.extend_from_slice(&0u16.to_le_bytes()); // event Open
+        let mut buf = [0u8; 4096];
+        let n = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Net,
+            1,
+            1,
+            &payload,
+            &mut buf,
+        )
+        .unwrap();
+        let net_frame = buf[..n].to_vec();
+
+        fn wire(script: Vec<Exit>, frame: &[u8], req_gpa: usize, ram: usize) -> Vmm<MockBackend> {
+            let mut mb = MockBackend::with_exits(script);
+            mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            mb.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            let mut v = Vmm::new(mb, GuestRam::new(ram).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9)
+                    .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            let mut mem = vec![0u8; ram];
+            mem[req_gpa..req_gpa + frame.len()].copy_from_slice(frame);
+            v.restore_guest_memory(&mem).unwrap();
+            v
+        }
+
+        // Forks run: Rdtsc (synchronize) → net doorbell (decides the flow) → HLT.
+        let fork_exits = vec![
+            Exit::Rdtsc,
+            Exit::Io {
+                port: 0x0CA1,
+                size: 4,
+                write: Some(n as u32),
+            },
+            Exit::Hlt,
+        ];
+
+        // The branch env: a seed + a policy that faults every NetFlow with a
+        // `NetReset` (1/1). Non-buggify — the OLD gate would reject this `Unsupported`.
+        let net_env = || -> Environment {
+            let mut policy = FaultPolicy::none();
+            policy
+                .set_class(
+                    environment::DecisionClass::NetFlow,
+                    1,
+                    1,
+                    &[environment::Fault::NetReset],
+                )
+                .unwrap();
+            let spec = EnvSpec::Seeded {
+                seed: 0x51EED,
+                policy,
+            };
+            Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            }
+        };
+
+        let build_server = {
+            let net_frame = net_frame.clone();
+            move || -> ControlServer<MockBackend> {
+                let frame = net_frame.clone();
+                let exits = fork_exits.clone();
+                let mut live = wire(vec![Exit::Rdtsc, Exit::Hlt], &frame, REQ_GPA, BIG_RAM);
+                live.step().unwrap(); // Rdtsc → synchronized, so genesis seals
+                let factory = Box::new(move || Ok(wire(exits.clone(), &frame, REQ_GPA, BIG_RAM)));
+                ControlServer::new(live, factory)
+            }
+        };
+
+        // Sequential branch with the net-fault env — must be ACCEPTED (the widened
+        // gate), not rejected `Unsupported`.
+        let mut s = build_server();
+        hello(&mut s);
+        let base = snap(&mut s);
+        let branched = s
+            .handle(&Request::Branch {
+                snap: base,
+                env: net_env(),
+            })
+            .unwrap();
+        assert!(
+            branched.is_ok(),
+            "a NetFlow-faulting branch env is now accepted (was Unsupported): {branched:?}"
+        );
+        assert!(matches!(
+            run_all(&mut s),
+            StopReason::Crash { .. } | StopReason::Quiescent { .. }
+        ));
+        let h_seq = hash(&mut s);
+
+        // The reproducer carries the net policy (enforceable, not buggify-only), and
+        // a non-nominal flow decision was resolved at a stable Moment.
+        let rec = s.recorded_env().clone();
+        assert!(
+            rec.policy().is_enforceable_only() && !rec.policy().is_buggify_only(),
+            "the net policy is recorded (enforceable, non-buggify)"
+        );
+        let decisions = s.vmm().unwrap().net_decisions().to_vec();
+        assert_eq!(decisions.len(), 1, "one flow decision resolved");
+        let (moment0, conn0, ans0) = decisions[0].clone();
+        assert_eq!(conn0, conn);
+        assert_eq!(
+            ans0,
+            environment::Answer::Fault(environment::Fault::NetReset),
+            "the host decided a non-nominal per-flow policy"
+        );
+
+        // Replay the reproducer — bit-identical hash AND the same non-nominal
+        // decision at the SAME Moment (stable across the round-trip).
+        let mut r = build_server();
+        hello(&mut r);
+        let base_r = snap(&mut r);
+        r.handle(&Request::Branch {
+            snap: base_r,
+            env: Environment {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: rec.encode(),
+            },
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            run_all(&mut r),
+            StopReason::Crash { .. } | StopReason::Quiescent { .. }
+        ));
+        assert_eq!(
+            hash(&mut r),
+            h_seq,
+            "the net-fault reproducer replays bit-identically"
+        );
+        assert_eq!(
+            r.vmm().unwrap().net_decisions(),
+            &[(moment0, conn0, ans0)],
+            "the same non-nominal flow decision surfaces at the same stable Moment on replay"
         );
     }
 

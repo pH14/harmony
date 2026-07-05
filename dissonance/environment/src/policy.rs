@@ -318,6 +318,24 @@ impl FaultPolicy {
             && self.process == ClassPolicy::none()
     }
 
+    /// Whether this policy faults **only** via classes that have a live
+    /// **decide-seam enforcer** — [`Buggify`](DecisionClass::Buggify) (the task-73
+    /// SDK service) and [`NetFlow`](DecisionClass::NetFlow) (the task-61 in-guest
+    /// flow agent) — with the still-unenforced [`BlockIo`](DecisionClass::BlockIo)
+    /// and [`Process`](DecisionClass::Process) classes at the never-fault baseline.
+    ///
+    /// This is the [`is_buggify_only`](Self::is_buggify_only) predicate widened by
+    /// the task-61 net vertical: now that the guest flow agent asks `net_decide`
+    /// over [`ServiceId::Net`](../../hypercall_proto/enum.ServiceId.html) and the
+    /// host answers a per-flow policy via [`decide`](crate::Environment::decide),
+    /// a control server can **accept** a reproducer whose faults are buggify and/or
+    /// per-flow net — its decisions replay from the seeded fault stream, exactly
+    /// like buggify. A block/process fault, which no decide-seam yet enforces, is
+    /// still rejected (a follow-on lights those up).
+    pub fn is_enforceable_only(&self) -> bool {
+        self.block == ClassPolicy::none() && self.process == ClassPolicy::none()
+    }
+
     /// Mutable access to a fault class's policy. The caller guarantees `class` is
     /// a fault class (checked in [`set_class`](FaultPolicy::set_class)).
     fn class_mut(&mut self, class: DecisionClass) -> &mut ClassPolicy {
