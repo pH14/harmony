@@ -196,8 +196,11 @@ log "POSTGRES_READY the postgres pod is Running and accepting connections"
 if command -v flow-agent >/dev/null 2>&1; then
     PG_IP=$(kc get pod postgres -o jsonpath='{.status.podIP}' 2>/dev/null)
     log "FLOWAGENT starting for client->postgres flow (dst=$PG_IP:5432 on cni0)"
+    # The agent enforces on the FORWARD path (cni0) filtered to the postgres pod
+    # IP:5432. If the host did not enable_net the agent no-ops cleanly (nominal),
+    # so this never aborts the workload.
     flow-agent --src 1 --dst 2 --conn 1 --iface cni0 \
-        --nft-match "ip daddr $PG_IP tcp dport 5432" 2>&1 | $BB sed 's/^/K8S61: /' \
+        --dst-ip "$PG_IP" --dport 5432 2>&1 | $BB sed 's/^/K8S61: /' \
         || log "FLOWAGENT exited non-zero (additive; continuing)"
 fi
 

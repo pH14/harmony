@@ -57,7 +57,7 @@
 
 use environment::{Answer, Fault};
 use flow::{ConnId, FlowDecider, FlowPolicy, NodeId, VTime};
-use hypercall_proto::{Client, ClientError, Transport};
+use hypercall_proto::{Client, ClientError, Status, Transport};
 
 /// The fixed `nftables` table + chain the agent installs its verdict rules into.
 /// A single named table keeps enforcement idempotent and easy to flush on exit.
@@ -143,17 +143,24 @@ impl core::fmt::Display for EnfError {
 
 impl std::error::Error for EnfError {}
 
-/// The concrete flow whose enforcement the agent programs: the egress interface
-/// the `tc` qdisc attaches to, and the `nftables` match expression selecting the
-/// flow's packets (e.g. `ip daddr 10.0.0.3 tcp dport 5432`). Both are supplied by
-/// the init script that knows the CNI layout, never derived from a nondeterministic
-/// source.
+/// The concrete flow whose enforcement the agent programs, as a **structured
+/// tuple** so both `nft` and `tc` can build a precise per-flow match (never shape
+/// or drop more than the decided flow). Supplied by the init script that knows the
+/// CNI layout — the bridge the pod→pod traffic is *forwarded* across plus the
+/// server's pod IP and port — never derived from a nondeterministic source.
+///
+/// Intra-guest pod→pod traffic is **forwarded** across the CNI bridge, not locally
+/// output, so the enforcement lands on the FORWARD path (`nft` `forward` hook, `tc`
+/// on the bridge with a dst-matched filter), not `output`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowTarget {
-    /// The egress interface the `tc` qdisc attaches to (e.g. `cni0`).
+    /// The CNI bridge the pod→pod flow is forwarded across (e.g. `cni0`) — where
+    /// the `tc` qdisc attaches.
     pub iface: String,
-    /// The `nftables` match expression selecting this flow's packets.
-    pub nft_match: String,
+    /// The destination (server) pod IPv4 the flow addresses (e.g. `10.42.0.3`).
+    pub dst_ip: String,
+    /// The destination TCP port (e.g. `5432`).
+    pub dport: u16,
 }
 
 /// One enforcement command the agent executes (`program` + `args`). Kept as data
@@ -189,54 +196,43 @@ fn vtime_to_micros(d: VTime) -> u64 {
 /// presence is inert). Ordering is fixed and total; the caller runs the commands
 /// in order.
 ///
+/// Every mechanism is **filtered to the decided flow** (`dst_ip:dport`), on the
+/// **FORWARD path** the intra-guest pod→pod traffic actually traverses — not a
+/// broad qdisc that would shape every flow on the bridge, and not `output` (which
+/// bridged forward traffic never hits):
+///
 /// - [`FlowPolicy::Nominal`] → `[]`.
-/// - [`FlowPolicy::Latency`] → `tc qdisc add dev <iface> root netem delay <µs>us`.
-/// - [`FlowPolicy::Throttle`] → `tc qdisc add dev <iface> root tbf rate <bps>bps …`.
-/// - [`FlowPolicy::Reset`] → an `nft` rule rejecting the flow with a TCP reset.
+/// - [`FlowPolicy::Latency`] → a `tc prio` root + a `netem delay <µs>` child band +
+///   a `u32` filter matching `dst_ip:dport` into that band (other flows: band 0,
+///   unshaped).
+/// - [`FlowPolicy::Throttle`] → the same filtered `tc` chain with a `tbf rate` band.
+/// - [`FlowPolicy::Reset`] → an `nft` `forward`-hook rule rejecting the flow with a
+///   TCP reset.
 /// - [`FlowPolicy::Loss`] full drop (`num >= den`, or `den == 0` ⇒ no-op guard) →
-///   an `nft drop` rule; **fractional** loss → [`EnfError::FractionalLossUnsupported`].
+///   an `nft` `forward`-hook `drop` rule; **fractional** loss →
+///   [`EnfError::FractionalLossUnsupported`].
 pub fn enforcement_commands(
     policy: &FlowPolicy,
     target: &FlowTarget,
 ) -> Result<Vec<EnfCommand>, EnfError> {
     match policy {
         FlowPolicy::Nominal => Ok(Vec::new()),
-        FlowPolicy::Latency(d) => {
-            let delay = format!("{}us", vtime_to_micros(*d));
-            Ok(vec![EnfCommand::new(
-                "tc",
-                &[
-                    "qdisc",
-                    "add",
-                    "dev",
-                    &target.iface,
-                    "root",
-                    "netem",
-                    "delay",
-                    &delay,
-                ],
-            )])
-        }
-        FlowPolicy::Throttle { bps } => {
-            let rate = format!("{bps}bps");
-            Ok(vec![EnfCommand::new(
-                "tc",
-                &[
-                    "qdisc",
-                    "add",
-                    "dev",
-                    &target.iface,
-                    "root",
-                    "tbf",
-                    "rate",
-                    &rate,
-                    "burst",
-                    "1540",
-                    "latency",
-                    "50ms",
-                ],
-            )])
-        }
+        FlowPolicy::Latency(d) => Ok(tc_filtered_qdisc(
+            target,
+            &["netem", "delay", &format!("{}us", vtime_to_micros(*d))],
+        )),
+        FlowPolicy::Throttle { bps } => Ok(tc_filtered_qdisc(
+            target,
+            &[
+                "tbf",
+                "rate",
+                &format!("{bps}bps"),
+                "burst",
+                "1540",
+                "latency",
+                "50ms",
+            ],
+        )),
         FlowPolicy::Reset => Ok(nft_verdict(target, "reject with tcp reset")),
         FlowPolicy::Loss { num, den, .. } => {
             // `den == 0` is a deterministic no-op (deliver) by the catalog's
@@ -256,12 +252,16 @@ pub fn enforcement_commands(
     }
 }
 
-/// Build the `nft` command sequence installing a standing `<verdict>` rule for
-/// `target` in the agent's dedicated table/chain: create the table + an output
-/// chain, then append the match+verdict rule. Idempotent table/chain creation
-/// keeps re-runs clean.
+/// Build the `nft` command sequence installing a standing `<verdict>` rule matching
+/// the decided flow on the **FORWARD hook** (intra-guest pod→pod traffic is
+/// forwarded across the CNI bridge, never locally output; `br_netfilter` /
+/// `bridge-nf-call-iptables=1`, set by the init script, makes the `inet` forward
+/// hook see bridged frames). Idempotent table/chain creation keeps re-runs clean.
 fn nft_verdict(target: &FlowTarget, verdict: &str) -> Vec<EnfCommand> {
-    let rule = format!("{} {}", target.nft_match, verdict);
+    let rule = format!(
+        "ip daddr {} tcp dport {} {}",
+        target.dst_ip, target.dport, verdict
+    );
     vec![
         EnfCommand::new("nft", &["add", "table", "inet", NFT_TABLE]),
         EnfCommand::new(
@@ -272,11 +272,66 @@ fn nft_verdict(target: &FlowTarget, verdict: &str) -> Vec<EnfCommand> {
                 "inet",
                 NFT_TABLE,
                 NFT_CHAIN,
-                "{ type filter hook output priority 0 ; }",
+                "{ type filter hook forward priority 0 ; }",
             ],
         ),
         EnfCommand::new("nft", &["add", "rule", "inet", NFT_TABLE, NFT_CHAIN, &rule]),
     ]
+}
+
+/// Build a `tc` chain that shapes **only the decided flow**: a `prio` root qdisc,
+/// the shaping qdisc (`netem`/`tbf`, given as `child_args`) as a child band, and a
+/// `u32` filter classifying `dst_ip:dport` TCP packets into that band. Unmatched
+/// flows fall to the default band and are delivered unshaped, so a broad "shape the
+/// whole bridge" side effect never happens. Attached to the CNI bridge (`iface`),
+/// on whose forwarded egress the pod→pod packets appear.
+fn tc_filtered_qdisc(target: &FlowTarget, child_args: &[&str]) -> Vec<EnfCommand> {
+    let dev = target.iface.as_str();
+    let dport = target.dport.to_string();
+    // prio root (handle 1:), a shaping child on band 1:3 (handle 30:), then a u32
+    // filter matching dst ip + tcp dport into 1:3.
+    let mut cmds = vec![
+        EnfCommand::new(
+            "tc",
+            &["qdisc", "add", "dev", dev, "root", "handle", "1:", "prio"],
+        ),
+        EnfCommand::new(
+            "tc",
+            &[
+                &["qdisc", "add", "dev", dev, "parent", "1:3", "handle", "30:"][..],
+                child_args,
+            ]
+            .concat(),
+        ),
+    ];
+    cmds.push(EnfCommand::new(
+        "tc",
+        &[
+            "filter",
+            "add",
+            "dev",
+            dev,
+            "parent",
+            "1:0",
+            "protocol",
+            "ip",
+            "prio",
+            "1",
+            "u32",
+            "match",
+            "ip",
+            "dst",
+            &target.dst_ip,
+            "match",
+            "ip",
+            "dport",
+            &dport,
+            "0xffff",
+            "flowid",
+            "1:3",
+        ],
+    ));
+    cmds
 }
 
 /// A [`FlowDecider`] that resolves each flow by asking the host `net_decide` over
@@ -299,7 +354,13 @@ pub struct HostFlowDecider<'a, T: Transport, F: FnMut(ConnId, NodeId, NodeId) ->
 /// Why a [`HostFlowDecider`] fell back to `Nominal` for a flow.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DecideError {
-    /// The `net_decide` hypercall itself failed (transport/protocol/status).
+    /// The host has **no Net service wired** (an `UnknownService` status, or a
+    /// `HostRejected`/transport outcome — the doorbell was not serviced). This is
+    /// the *expected* case for a guest whose host did not `enable_net`: the agent
+    /// no-ops cleanly (delivers normally, installs nothing), never errors or hangs.
+    DoorbellUnwired,
+    /// The `net_decide` hypercall failed for another reason (a non-`Ok` status
+    /// other than `UnknownService`, a protocol/framing error).
     Hypercall(String),
     /// The answer bytes did not decode as an [`Answer`].
     Decode,
@@ -355,7 +416,7 @@ impl<T: Transport, F: FnMut(ConnId, NodeId, NodeId) -> u64> FlowDecider
                 }
             },
             Err(e) => {
-                self.last_error = Some(DecideError::Hypercall(describe_client_error(&e)));
+                self.last_error = Some(classify_client_error(&e));
                 FlowPolicy::Nominal
             }
         };
@@ -364,13 +425,18 @@ impl<T: Transport, F: FnMut(ConnId, NodeId, NodeId) -> u64> FlowDecider
     }
 }
 
-fn describe_client_error<E>(e: &ClientError<E>) -> String {
+/// Classify a hypercall error: an `UnknownService` status or any transport-level
+/// failure (`HostRejected` — the doorbell wasn't serviced) means the host has no
+/// Net service wired, which the agent treats as a clean [`DecideError::DoorbellUnwired`]
+/// no-op; anything else is a genuine [`DecideError::Hypercall`].
+fn classify_client_error<E>(e: &ClientError<E>) -> DecideError {
     match e {
-        ClientError::Transport(_) => "transport".to_string(),
-        ClientError::Protocol(p) => format!("protocol: {p}"),
-        ClientError::SeqMismatch => "seq-mismatch".to_string(),
-        ClientError::Status(s) => format!("status: {s:?}"),
-        ClientError::InvalidLength => "invalid-length".to_string(),
+        ClientError::Transport(_) => DecideError::DoorbellUnwired,
+        ClientError::Status(Status::UnknownService) => DecideError::DoorbellUnwired,
+        ClientError::Protocol(p) => DecideError::Hypercall(format!("protocol: {p}")),
+        ClientError::SeqMismatch => DecideError::Hypercall("seq-mismatch".to_string()),
+        ClientError::Status(s) => DecideError::Hypercall(format!("status: {s:?}")),
+        ClientError::InvalidLength => DecideError::Hypercall("invalid-length".to_string()),
     }
 }
 
@@ -397,7 +463,8 @@ mod tests {
     fn target() -> FlowTarget {
         FlowTarget {
             iface: "cni0".to_string(),
-            nft_match: "ip daddr 10.0.0.3 tcp dport 5432".to_string(),
+            dst_ip: "10.42.0.3".to_string(),
+            dport: 5432,
         }
     }
 
@@ -445,28 +512,33 @@ mod tests {
     }
 
     #[test]
-    fn latency_plan_is_a_netem_delay_in_guest_micros() {
+    fn latency_plan_is_a_flow_filtered_netem_delay() {
         let cmds = enforcement_commands(&FlowPolicy::Latency(VTime(2500)), &target()).unwrap();
-        assert_eq!(cmds.len(), 1);
-        assert_eq!(cmds[0].program, "tc");
-        assert_eq!(
-            cmds[0].args,
-            vec![
-                "qdisc", "add", "dev", "cni0", "root", "netem", "delay", "2500us"
-            ]
-        );
+        // prio root, netem child on band 1:3, and a u32 filter to the flow.
+        assert_eq!(cmds.len(), 3);
+        assert!(cmds.iter().all(|c| c.program == "tc"));
+        assert!(cmds[0].args.contains(&"prio".to_string()));
+        assert_eq!(cmds[1].args.last().unwrap(), "2500us");
+        assert!(cmds[1].args.contains(&"netem".to_string()));
+        // The classifier filters to the decided flow, not the whole bridge.
+        let filt = &cmds[2].args;
+        assert_eq!(filt[0], "filter");
+        assert!(filt.windows(2).any(|w| w == ["dst", "10.42.0.3"]));
+        assert!(filt.contains(&"dport".to_string()) && filt.contains(&"5432".to_string()));
+        assert_eq!(filt.last().unwrap(), "1:3");
     }
 
     #[test]
-    fn throttle_plan_is_a_tbf_rate() {
+    fn throttle_plan_is_a_flow_filtered_tbf_rate() {
         let cmds = enforcement_commands(&FlowPolicy::Throttle { bps: 4096 }, &target()).unwrap();
-        assert_eq!(cmds[0].program, "tc");
-        assert!(cmds[0].args.contains(&"tbf".to_string()));
-        assert!(cmds[0].args.contains(&"4096bps".to_string()));
+        assert_eq!(cmds.len(), 3);
+        assert!(cmds[1].args.contains(&"tbf".to_string()));
+        assert!(cmds[1].args.contains(&"4096bps".to_string()));
+        assert!(cmds[2].args.windows(2).any(|w| w == ["dst", "10.42.0.3"]));
     }
 
     #[test]
-    fn full_drop_and_reset_are_nft_verdicts() {
+    fn full_drop_and_reset_are_flow_matched_forward_nft_verdicts() {
         let drop = enforcement_commands(
             &FlowPolicy::Loss {
                 seed: 0,
@@ -477,7 +549,15 @@ mod tests {
         )
         .unwrap();
         assert!(drop.iter().all(|c| c.program == "nft"));
-        assert!(drop.last().unwrap().args.last().unwrap().ends_with("drop"));
+        // The chain hooks FORWARD (not output — bridged pod→pod is forwarded).
+        assert!(
+            drop.iter()
+                .any(|c| c.args.iter().any(|a| a.contains("hook forward")))
+        );
+        // The rule matches the specific flow and drops it.
+        let rule = drop.last().unwrap().args.last().unwrap();
+        assert!(rule.contains("ip daddr 10.42.0.3") && rule.contains("tcp dport 5432"));
+        assert!(rule.ends_with("drop"));
 
         let reset = enforcement_commands(&FlowPolicy::Reset, &target()).unwrap();
         assert!(

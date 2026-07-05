@@ -76,10 +76,8 @@ fn a_missing_service_falls_back_to_nominal_not_a_hang() {
         decider.decide_flow(ConnId(1), NodeId(1), NodeId(2)),
         FlowPolicy::Nominal
     );
-    assert!(matches!(
-        decider.last_error(),
-        Some(DecideError::Hypercall(_))
-    ));
+    // An unwired host (UnknownService) is the clean no-op case, not a failure.
+    assert_eq!(decider.last_error(), Some(&DecideError::DoorbellUnwired));
 }
 
 #[test]

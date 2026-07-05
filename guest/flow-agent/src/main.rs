@@ -38,13 +38,16 @@ struct Args {
     /// hash), per the flow-crate frontier invariant. Also the loss-seed source.
     #[arg(long)]
     conn: u64,
-    /// Egress interface the `tc` qdisc attaches to (e.g. `cni0`).
+    /// The CNI bridge the pod→pod flow is forwarded across (e.g. `cni0`) — where
+    /// the `tc` qdisc attaches.
     #[arg(long)]
     iface: String,
-    /// `nftables` match expression selecting this flow's packets (e.g.
-    /// `ip daddr 10.0.0.3 tcp dport 5432`).
+    /// Destination (server) pod IPv4 the flow addresses (e.g. `10.42.0.3`).
     #[arg(long)]
-    nft_match: String,
+    dst_ip: String,
+    /// Destination TCP port (e.g. `5432`).
+    #[arg(long)]
+    dport: u16,
     /// Print the decision + enforcement plan but do not execute it (nominal smoke).
     #[arg(long)]
     dry_run: bool,
@@ -80,7 +83,8 @@ fn run(args: &Args) -> Result<(), String> {
     // (2) Decide the flow's policy.
     let target = FlowTarget {
         iface: args.iface.clone(),
-        nft_match: args.nft_match.clone(),
+        dst_ip: args.dst_ip.clone(),
+        dport: args.dport,
     };
     let policy = if args.assume_nominal {
         println!("flow-agent: --assume-nominal, skipping the doorbell");
@@ -126,9 +130,14 @@ fn decide_over_doorbell(args: &Args) -> Result<flow::FlowPolicy, String> {
     let mut decider = HostFlowDecider::new(&mut client, |c: ConnId, _s, _d| c.0);
     let policy = decider.decide_flow(ConnId(args.conn), NodeId(args.src), NodeId(args.dst));
     if let Some(err) = decider.last_error() {
-        // A transport/decode/map failure fell back to Nominal deterministically;
-        // surface why so a mis-wired host is visible, not silently nominal.
         match err {
+            // The expected no-host case: a guest whose host did not enable_net.
+            // Clean skip — an info line, not an error (the flow stays nominal).
+            DecideError::DoorbellUnwired => {
+                println!("flow-agent: Net doorbell unwired (host has no Net service) -> nominal")
+            }
+            // A genuine failure fell back to Nominal deterministically; surface why
+            // so a mis-wired host is visible, not silently nominal.
             DecideError::Hypercall(m) => {
                 eprintln!("flow-agent: net_decide failed ({m}) -> Nominal")
             }
