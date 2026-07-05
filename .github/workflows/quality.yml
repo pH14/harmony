@@ -139,8 +139,12 @@ jobs:
       # (`consonance/vmm-backend/src/kvm.rs`, `…/src/kvm/`, `…/src/kvm_sys.rs`), the
       # task-21 determinism backend (`…/src/patched_kvm.rs`), the task-47 run_until
       # PMU syscall orchestration (`…/src/pmu_sys.rs` — its PURE config `pmu.rs`
-      # stays covered), and vmm-core's `perf_event` work counter
-      # (`consonance/vmm-core/src/work_perf.rs`). This
+      # stays covered), vmm-core's `perf_event` work counter
+      # (`consonance/vmm-core/src/work_perf.rs`), and conductor's box composition
+      # root (`dissonance/conductor/src/boxrun.rs`, issue #69 — every function in
+      # it needs a real `/dev/kvm` + patched KVM + a built guest image; split out
+      # of `main.rs` so the portable CLI dispatch logic around it stays
+      # coverage-*counted* — see `dissonance/conductor/IMPLEMENTATION.md`). This
       # coverage job runs **without `--ignored`** (and on every crate's matrix), so
       # the box-only `#[ignore]` integration tests that exercise the FFI / perf
       # orchestration end-to-end never run here — counting those paths would only
@@ -153,11 +157,11 @@ jobs:
       # value types, the run-loop contract (`mock`/`run_loop`), and vmm-core's
       # `work::WorkSource`/`ScriptedWork` + V-time completion. See the crates'
       # IMPLEMENTATION.md.
-      - name: cargo llvm-cov (region floor 93%)
+      - name: cargo llvm-cov (region floor 94.5%)
         run: |
           cargo llvm-cov nextest --all-features --lcov --output-path lcov.info \
-            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/work_perf\.rs' \
-            --fail-under-regions 93
+            --ignore-filename-regex 'consonance/vmm-backend/src/(kvm(\.rs|_sys\.rs|/)|patched_kvm\.rs|pmu_sys\.rs)|consonance/vmm-core/src/work_perf\.rs|dissonance/conductor/src/boxrun\.rs' \
+            --fail-under-regions 94.5
       - uses: actions/upload-artifact@v4
         if: always()
         with:
