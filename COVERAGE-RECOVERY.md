@@ -12,3 +12,24 @@ Targets (per #69):
 - dissonance/conductor/src/main.rs     ~0%  (cfg(linux) live-drive bin — box-only)
 
 Goal: the region floor should RATCHET UP past 93.27%, not just sit at it.
+
+## Result
+
+Measured with CI's exact command on the determinism box (Linux, so
+`main.rs`'s `cfg(target_os = "linux")` code compiles and counts — a Mac-local
+run understates `main.rs` since `mod boxrun` doesn't even compile there):
+
+| File | Before | After |
+|---|---|---|
+| `record.rs` | 68.00% | 87.66% |
+| `campaign.rs` | 82.72% | 91.27% |
+| `lib.rs` | 73.03% | 90.40% |
+| `main.rs` | 0.00% | 61.14% (the remainder is `mod boxrun` — genuinely box-only; see `dissonance/conductor/IMPLEMENTATION.md` for the ignore-filename-regex proposal) |
+| **Workspace region floor** | **93.31%** | **94.25%** |
+
+All added tests assert real behavior (a table's exact bytes, a gate's exact
+failure message, an `ExitCode`) — see
+`dissonance/conductor/IMPLEMENTATION.md`'s "Coverage recovery" section for
+the full breakdown, what was added, and the known residual gap
+(`record.rs`'s `seal_base` retry-loop error arms, which need real
+vmm-core/backend state to trigger and are not directly unit-tested).
