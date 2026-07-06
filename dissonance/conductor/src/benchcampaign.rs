@@ -90,6 +90,15 @@ pub struct BenchConfig {
     /// triggering branch still crashes *before* the deadline, so the deadline never
     /// perturbs a find's `(stop, state_hash)`.
     pub deadline_delta: Option<u64>,
+    /// Box path: V-time to advance on each `NotQuiescent` snapshot retry when
+    /// sealing the base (the guest is mid-workload at its readiness marker, not
+    /// necessarily on a snapshottable boundary — task 41 / task 60). A fine step
+    /// seals the base close to the marker, maximizing the fault window. Unused on
+    /// the toy path (quiescent at boot, snapshots first-try).
+    pub snapshot_retry_step: u64,
+    /// Box path: give up sealing the base after this many `NotQuiescent` retries
+    /// (a loud failure, never a silent no-seal).
+    pub snapshot_max_attempts: usize,
 }
 
 impl BenchConfig {
@@ -103,6 +112,8 @@ impl BenchConfig {
             explore_period: 4,
             fault_rebase: 0,
             deadline_delta: None,
+            snapshot_retry_step: 0,
+            snapshot_max_attempts: 0,
         }
     }
 
@@ -125,6 +136,10 @@ impl BenchConfig {
             explore_period: 4,
             fault_rebase: BASE_VTIME,
             deadline_delta: Some(deadline_delta),
+            // Task-60's box defaults: a fine 10k-V-time retry step seals close to
+            // the marker; up to 200k attempts before a loud give-up.
+            snapshot_retry_step: 10_000,
+            snapshot_max_attempts: 200_000,
         }
     }
 }
@@ -571,6 +586,53 @@ pub struct BenchOutcome {
     pub certs: Vec<FindCert>,
 }
 
+/// Seal the campaign base and return `(snapshot, base_vtime)`. On the **toy** path
+/// (`deadline_delta == None`) the guest is quiescent at boot, so it snapshots
+/// first-try and needs no V-time probe (which would *advance* the toy — its `run`
+/// ignores the deadline). On the **box** path the guest is mid-workload at its
+/// readiness marker and may not be on a snapshottable boundary, so retry past
+/// `NotQuiescent` by advancing a fine `snapshot_retry_step` each time until it
+/// seals — task 41 / task 60's discipline — giving up loudly after
+/// `snapshot_max_attempts`. `base_vtime` is the effective V-time at the seal (the
+/// deadline anchor).
+fn seal_base<M: Machine>(
+    machine: &mut M,
+    cfg: &BenchConfig,
+) -> Result<(SnapId, u64), MachineError> {
+    if cfg.deadline_delta.is_none() {
+        return Ok((machine.snapshot()?, 0));
+    }
+    let mut vt = crate::probe_vtime(machine)?;
+    let mut attempts = 0usize;
+    let base = loop {
+        attempts += 1;
+        match machine.snapshot() {
+            Ok(snap) => break snap,
+            Err(MachineError::NotQuiescent) => {
+                if attempts >= cfg.snapshot_max_attempts {
+                    return Err(MachineError::NotQuiescent);
+                }
+                let stop = machine.run(
+                    &StopConditions {
+                        deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
+                        on: StopMask::NONE,
+                    },
+                    None,
+                )?;
+                // The nudge must land on the deadline (a snapshottable boundary
+                // candidate); any other stop before the base is sealed is a loud
+                // failure, never a silent seal at the wrong point.
+                if !matches!(stop, StopReason::Deadline { .. }) {
+                    return Err(MachineError::NotQuiescent);
+                }
+                vt = stop.vtime().0;
+            }
+            Err(e) => return Err(e),
+        }
+    };
+    Ok((base, vt))
+}
+
 /// Drive one benchmark campaign against `machine` under `config` and return its
 /// discovery-event log plus per-find determinism certificates. Seals a base, then
 /// per branch: pick a base env (signal exploits novel exemplars; baseline explores
@@ -590,18 +652,11 @@ pub fn run_bench_campaign<M: Machine>(
     // seeds parallelize and still pool (see [`cells_of`] / [`SignalCells`]).
     let signal = SignalCells::new();
 
-    // Probe the seal V-time for the deadline anchor — box path only. The toy runs
-    // to an instant terminal (no deadline), and probing it would *advance* it
-    // (`BenchToyMachine::run` ignores the deadline), so probe only when a deadline
-    // is actually configured; the SocketMachine's deadline-0 probe returns the
-    // effective V-time without advancing the VM.
-    let base_vtime = if cfg.deadline_delta.is_some() {
-        crate::probe_vtime(machine)?
-    } else {
-        0
-    };
-    // Seal the base (the toy is quiescent at boot).
-    let base = machine.snapshot()?;
+    // Seal the base + learn its V-time (the deadline anchor). The box guest is
+    // mid-workload at its readiness marker, not necessarily on a snapshottable
+    // boundary, so it may need retries past `NotQuiescent`; the toy is quiescent at
+    // boot and seals first-try.
+    let (base, base_vtime) = seal_base(machine, cfg)?;
     let until = StopConditions {
         deadline: cfg
             .deadline_delta
