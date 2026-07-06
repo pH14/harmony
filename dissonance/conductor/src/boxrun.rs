@@ -465,6 +465,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
         args.seed,
         args.max_branches,
         args.replay_n.max(super::REPLAY_BAR),
+        args.deadline_delta,
     );
     println!(
         "[conductor] benchcampaign box: bug {} ({}) / {config:?} / seed {} — {} branches, \

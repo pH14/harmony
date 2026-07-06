@@ -97,6 +97,12 @@ struct BenchBoxArgs {
     /// [`REPLAY_BAR`] (25) — the flag may raise it, never lower it.
     #[arg(long, default_value_t = REPLAY_BAR)]
     replay_n: usize,
+    /// V-time each branch runs past the sealed base before its deadline — far
+    /// enough for the fault to land and the guest to react, but bounded so a
+    /// non-triggering / hung branch cannot wedge the campaign. Scope it to the
+    /// workload's fault-sensitive loop, well under any real hang.
+    #[arg(long, default_value_t = 5_000_000_000)]
+    deadline_delta: u64,
     /// Optional **box-calibrated** manifest JSON (a serialized `Benchmark` whose
     /// per-bug trigger params are the pinned real gpa / window-offset / prefix).
     /// Absent = the `wave5()` fixture, whose windows are toy stand-ins — calibrate

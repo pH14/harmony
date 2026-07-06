@@ -82,6 +82,14 @@ pub struct BenchConfig {
     /// `+ seal` restores the correct absolute window on the box. Pure and
     /// per-seed-deterministic (a constant subtraction; the PRNG draw is unchanged).
     pub fault_rebase: u64,
+    /// Per-branch run bound (V-time past the sealed base), or `None` to run each
+    /// branch to its natural terminal. The toy runs to an instant terminal so it
+    /// wants `None`; the box path sets a deadline so a **non-triggering** branch
+    /// stops at the bound instead of running the guest's whole loop, and a hung
+    /// guest can never wedge a multi-hour campaign (task 60's discipline). A
+    /// triggering branch still crashes *before* the deadline, so the deadline never
+    /// perturbs a find's `(stop, state_hash)`.
+    pub deadline_delta: Option<u64>,
 }
 
 impl BenchConfig {
@@ -94,20 +102,29 @@ impl BenchConfig {
             replay_n: 25,
             explore_period: 4,
             fault_rebase: 0,
+            deadline_delta: None,
         }
     }
 
     /// A **box** campaign configuration driving a real [`SocketMachine`]: the same
     /// search knobs, but fault moments are rebased by [`BASE_VTIME`] so the
     /// adapter's `+ seal` re-anchoring lands them in the guest's real window
-    /// ([`fault_rebase`](Self::fault_rebase)).
-    pub fn box_campaign(campaign_seed: u64, max_branches: u64, replay_n: usize) -> Self {
+    /// ([`fault_rebase`](Self::fault_rebase)), and each branch is bounded by
+    /// `deadline_delta` V-time past the base so a non-triggering / hung branch can
+    /// never wedge the run.
+    pub fn box_campaign(
+        campaign_seed: u64,
+        max_branches: u64,
+        replay_n: usize,
+        deadline_delta: u64,
+    ) -> Self {
         Self {
             campaign_seed,
             max_branches,
             replay_n,
             explore_period: 4,
             fault_rebase: BASE_VTIME,
+            deadline_delta: Some(deadline_delta),
         }
     }
 }
@@ -573,10 +590,22 @@ pub fn run_bench_campaign<M: Machine>(
     // seeds parallelize and still pool (see [`cells_of`] / [`SignalCells`]).
     let signal = SignalCells::new();
 
+    // Probe the seal V-time for the deadline anchor — box path only. The toy runs
+    // to an instant terminal (no deadline), and probing it would *advance* it
+    // (`BenchToyMachine::run` ignores the deadline), so probe only when a deadline
+    // is actually configured; the SocketMachine's deadline-0 probe returns the
+    // effective V-time without advancing the VM.
+    let base_vtime = if cfg.deadline_delta.is_some() {
+        crate::probe_vtime(machine)?
+    } else {
+        0
+    };
     // Seal the base (the toy is quiescent at boot).
     let base = machine.snapshot()?;
     let until = StopConditions {
-        deadline: None,
+        deadline: cfg
+            .deadline_delta
+            .map(|d| VTime(base_vtime.saturating_add(d))),
         on: StopMask::NONE,
     };
 
