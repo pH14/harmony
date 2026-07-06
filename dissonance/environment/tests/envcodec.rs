@@ -67,7 +67,10 @@ proptest! {
     /// `compose(base, tail, at)` keeps `base`'s prefix `[0, at)` at its `Moment`s
     /// and re-keys every `tail` entry to `m + at` — collision-free, genesis prefix
     /// + shifted tail, base seed/policy carried, no standing faults. `at` is
-    /// bounded so `m + at` never overflows.
+    /// bounded so `m + at` never overflows. The `base` *suffix* `[at, ∞)` is
+    /// discarded and governed entirely by the tail's re-keyed timeline: at any
+    /// `m >= at`, `out[m]` is the tail's entry at `m - at` (or absent) — never the
+    /// dropped base entry, even when a tail Moment aligns exactly onto it.
     #[test]
     fn compose_rekeys_overrides_at_any_offset(
         base_ov in arb_bounded_overrides(),
@@ -92,7 +95,18 @@ proptest! {
             if *m < at {
                 prop_assert_eq!(out.get(m), Some(a), "base prefix entry kept at its Moment");
             } else {
-                prop_assert!(!out.contains_key(m), "base entry >= at is dropped");
+                // A base entry at m >= at is in the discarded suffix: the tail's
+                // spliced-in timeline governs [at, ∞), so out[m] is whatever the
+                // *tail* re-keys there (its entry at m - at), never the base's
+                // dropped entry. Usually that is nothing (out has no key m); when
+                // a tail Moment aligns to m - at it legitimately re-keys onto m —
+                // the rare coincidence that made this test flaky (issue #72) when
+                // the assertion was the too-strong `!out.contains_key(m)`.
+                prop_assert_eq!(
+                    out.get(m),
+                    tail_ov.get(&(m - at)),
+                    "dropped base suffix entry is replaced by the tail's re-keyed timeline"
+                );
             }
         }
         for (m, a) in &tail_ov {
@@ -249,6 +263,50 @@ fn compose_rekeys_at_nonzero_concrete() {
         "tail 3 → 13"
     );
     assert_eq!(out.len(), 3);
+}
+
+#[test]
+fn compose_tail_rekeys_onto_dropped_base_moment() {
+    // The issue-#72 intermittent-flake counterexample, pinned deterministic. A
+    // base override sits at a suffix Moment (>= at) and a *tail* override re-keys
+    // exactly onto that same Moment (677_257 + 172_752 == 850_009). `compose` is
+    // correct: the base suffix is discarded and the tail's timeline governs
+    // [at, ∞), so out[850_009] carries the TAIL's override, not the base's.
+    //
+    // This is the case the proptest's old `!out.contains_key(m)` assertion could
+    // not tolerate; distinct SkewTime values here (base 0, tail 7) also pin that
+    // the tail — not the base — wins the aligned Moment.
+    let at: Moment = 172_752;
+    assert_eq!(
+        677_257 + at,
+        850_009,
+        "the tail Moment re-keys onto the base's"
+    );
+    let base = recorded(BTreeMap::from([(
+        850_009,
+        Action::Host(environment::HostFault::SkewTime(VTime(0))),
+    )]));
+    let tail = recorded(BTreeMap::from([(
+        677_257,
+        Action::Host(environment::HostFault::SkewTime(VTime(7))),
+    )]));
+    let out = EnvCodec::compose(&base, &tail, at).unwrap();
+    let m = out.overrides();
+    assert_eq!(
+        m.len(),
+        1,
+        "base suffix dropped; only the tail's entry remains"
+    );
+    assert_eq!(
+        m.get(&850_009),
+        Some(&Action::Host(environment::HostFault::SkewTime(VTime(7)))),
+        "the aligned Moment carries the TAIL's re-keyed override, not the base's"
+    );
+    assert_ne!(
+        m.get(&850_009),
+        Some(&Action::Host(environment::HostFault::SkewTime(VTime(0)))),
+        "the base's dropped suffix value must not leak through"
+    );
 }
 
 #[test]

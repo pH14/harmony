@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 77240c9c2e306b8f9fe011fa0e2420141f0774201d67eecd6cd2ce159f6b89dc # shrinks to base_ov = {850009: Host(SkewTime(VTime(0)))}, tail_ov = {677257: Host(SkewTime(VTime(0)))}, seed = 0, policy = FaultPolicy { net: ClassPolicy { num: 0, den: 1, eligible: [] }, block: ClassPolicy { num: 0, den: 1, eligible: [] }, process: ClassPolicy { num: 0, den: 1, eligible: [] }, buggify: BuggifyPolicy { default_num: 0, default_den: 1, per_point: {} } }, at = 172752
