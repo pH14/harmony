@@ -89,9 +89,20 @@ and the number task 70 must beat.
 - **Klees et al., "Evaluating Fuzz Testing"** (CCS 2018) [eng] — the trial discipline: measure
   against ground truth, run enough trials, report medians + variance, never single-run anecdotes.
 
-## The workload — a deterministic maze (sub-question 1, ruled here)
+## The workload — recommendation: a deterministic maze (sub-question 1, **left open**)
 
-**LAYERS R-L1 leaves the workload choice to this spec. Ruled: a small deterministic grid maze.**
+**LAYERS R-L1 leaves the workload choice to this spec; per the integrator (2026-07-06), the final
+choice is the implementing worker's.** This section is the spec's *recommendation* — a small
+deterministic grid maze — plus the requirements ANY alternative must also satisfy: fully
+deterministic (state a pure function of the campaign seed via `Sdk::entropy_fill`; no wall-clock or
+input-timing dependence), a state space that rewards *search* over luck (deep states behind
+sequential-decision structure — the non-vacuity property below must hold), position/progress
+naturally expressible through the SDK state registers (a tuple `CellFn` can key on), and cheap to
+implement in the guest image. An implementer choosing differently documents the choice + rationale
+in the workload's `IMPLEMENTATION.md` and shows the non-vacuity property empirically; the gate
+definition below is workload-agnostic.
+
+The recommended maze, concretely:
 
 A single supervised process in the Linux guest image walks an `H×W` integer grid from a fixed
 start toward a goal. Each step it draws one byte of decision entropy via `Sdk::entropy_fill` (the
