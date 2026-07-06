@@ -250,3 +250,61 @@ VM isn't being dropped (OOM risk) → investigate/kill+revert; (b) `progress.log
 - `BENCH_DIAG=1` env-gated per-branch diagnostics added to `run_bench_campaign` (stderr
   only, never touches state/hash — a golden run is bit-identical). Keep it; it's how you
   watch a long campaign + calibrate a bug.
+
+---
+
+## 2026-07-07 P0 CAMPAIGN FINDING (fresh session, ~8 min into the launched run) — SIGNAL ARM ABORTS
+
+**Symptom:** `b1-signal-1` finished `rc=1` after ~6.5 min (progress.log). Baseline
+campaigns (seeds 1/2/3) run cleanly with the correct canary gpa `0x7fbe2000`. NOT a
+determinism divergence — a signal-path abort. All 20 signal campaigns will die the same
+way ⇒ **zero signal data ⇒ no correlation ⇒ no GO/NO-GO**.
+
+**Root cause (fully traced, static):**
+- `b1-signal-1.log` tail: `campaign failed (transport/backend): ... control error:
+  perturb CorruptMemory gpa 0xad05141fa80d1582 + 8 is out of range (guest RAM is
+  2147483648 bytes)`. `0xad05141fa80d1582` ≈ 1.2e19 — a raw `rng.next_u64()`.
+- `environment/src/envcodec.rs:246` `host_fault_from` arm 2 mints `CorruptMemory { gpa:
+  rng.next_u64(), mask: .. }` — a **uniformly-random 64-bit gpa, unclamped to guest RAM**.
+- Signal exploit path `benchcampaign.rs:686` `codec.mutate(&parent.env, ..)` →
+  `SpecEnvCodec::mutate` → `environment::EnvCodec::mutate`; op "insert" (~1/3 of exploits)
+  ADDS a fresh `host_fault_from` fault. Its gpa is ~always out of the 2 GB range.
+- Server rejects it via the **distinct, structured** `ControlError::PerturbOutOfRange`
+  (control-proto/src/error.rs:127; task-59 "never mint a reproducer that doesn't reproduce").
+- BUT `explorer/src/adapter.rs:668` `control_error_to_machine` collapses `PerturbOutOfRange`
+  (and `Unsupported`) into an **opaque `MachineError::Transport(String)`** — type-
+  indistinguishable from a real torn transport — so `benchcampaign.rs:696`
+  `machine.branch(base, &env)?` treats a **recoverable proposal-rejection as a fatal machine
+  death** and aborts the campaign.
+- Baseline is IMMUNE: `mint_scenario_env` (benchcampaign.rs:165) only picks
+  `one_of(&[gpa, gpa^0x1000, gpa+0x2000, 0x1000])` — all in-range near-canary.
+- Same abort awaits insert-of-`SkewTime`/`SetClockRate` (rejected `Unsupported` on this
+  backend — out-of-scope perturbs).
+
+**Why "validated" launch still failed:** the box calibration found bug 1 at seed 1 **branch
+1** — before the frontier populates, so NO exploit-mutate step ran. The exploit path was
+never exercised in validation. The bug only fires once `!frontier.is_empty()` and an exploit
+draws op=insert of a rejectable fault (≈1/4 per exploit).
+
+**TWO distinct problems:**
+- **(A) Robustness (unambiguous, in-surface):** an inadmissible/unsupported proposal must be
+  a per-branch SKIP (empty cells, not a find, continue), NOT a fatal abort. Real explorer
+  loops discard rejected proposals. Fix = distinguish `PerturbOutOfRange`/`Unsupported`
+  (add a `MachineError::Inadmissible`-style variant + map it in `control_error_to_machine`)
+  and skip in the campaign loop. Must NOT swallow genuine `Transport` (would mask real
+  failures/determinism).
+- **(B) Benchmark validity (semantics — foreman/Paul ruling):** even with (A), the signal
+  EXPLOIT mutation draws a *uniform-random big* host fault (`host_fault_from`), so
+  exploitation is mostly wasted/defanged (insert→~3/4 rejected+skipped; remove→drops the
+  parent's good fault; only move preserves it). Exploitation ≠ exploitation. The benchmark
+  would then measure the mutation operator, not cell-novelty — a confound that could produce
+  a misleading NO-GO. Faithful fix = make the exploit a SMALL scenario-valid perturbation of
+  the parent's fault (jitter timing / near gpa/bit), in-surface in benchcampaign.rs, NOT the
+  shared `environment` crate. This is a non-trivial semantics change → per the ruling
+  framework, checkpoint + escalate rather than build unilaterally.
+
+**ACTION TAKEN:** campaign left running for now (baseline data valid; not a divergence).
+Escalating to Paul: (1) stop the run now vs let baselines finish (recommend STOP — 0
+completed, fix doesn't touch baseline code path so a clean unified relaunch is apples-to-
+apples); (2) fix scope A vs A+B (recommend A+B + re-validate the EXPLOIT path specifically
+before relaunch). Pending decision.
