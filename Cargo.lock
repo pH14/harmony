@@ -206,6 +206,7 @@ dependencies = [
  "explorer",
  "hypercall-proto",
  "link",
+ "logtmpl",
  "proptest",
  "runtrace",
  "sha2",

@@ -10,28 +10,34 @@
 //! branch — which `benchmark`'s offline report analyses for signal→bug
 //! correlation (GO/NO-GO #2).
 //!
-//! On the M1 toy path the cells are **content-keyed log-template species** (see
-//! [`cells_of`] — Drain-style clustering keyed by content, so ids are stable
-//! across independent logs). The M2 SocketMachine path swaps in the real task-67
-//! `logtmpl` `LogSensor`/`CellFnV1` over the guest's captured console, with a
-//! persisted campaign codebook for the same cross-log id stability.
+//! The cells are the **real task-67 signal under test** (GO/NO-GO #2 ruling, user
+//! 2026-07-06 — the gate must measure the actual CellFn the selectors get built on,
+//! never a stand-in): a campaign-persistent [`LogSensor`] clusters the guest console
+//! into template species, and [`CellFnV1`] keys the accumulating species slice into
+//! bounded cells (see [`cells_of`] / [`SignalCells`]). One sensor per `(config, seed)`
+//! campaign — independent across seeds, so the seeds parallelize, which is safe
+//! because `CellFnV1`'s default key is a function of the distinct-species *count*
+//! (species-progress + last-new-species), not of which template got which id, so two
+//! seeds keying the same abstract slice still agree and the report can pool them.
 //!
 //! ## Why a bespoke loop (not `Explorer`)
 //!
 //! The log-template signal is **point-in-time over a whole run's console**, not a
 //! per-fork coverage bitmap; the toy guest surfaces no sealable fork points, so
 //! [`explorer::CoverageArchive`]'s fork-time admission has nothing to key on.
-//! This driver therefore owns the cell function directly: per branch it builds the
-//! [`RunTrace`] (with the console captured through the new [`Machine::console`]
-//! seam — the task-69 engine fix), content-keys the console lines into the
-//! branch's **cell set** ([`cells_of`]), and admits an exemplar to a thin novelty
-//! archive. Signal exploits novel exemplars; baseline always explores from
-//! genesis. Everything is a pure function of `(campaign_seed, spec, config)`, so a
-//! rerun is bit-identical (the box determinism smoke test).
+//! This driver therefore owns the signal directly: per branch it builds the
+//! [`RunTrace`] (with the console captured through the [`Machine::console`] seam —
+//! the task-69 socket-console-capture prereq), runs the `LogSensor`/`CellFnV1`
+//! over it into the branch's **cell set** ([`cells_of`]), and admits an exemplar to
+//! a thin novelty archive. Signal exploits novel exemplars; baseline always explores
+//! from genesis. Everything is a pure function of `(campaign_seed, spec, config)`, so
+//! a rerun is bit-identical (the determinism property the box campaign stress-tests
+//! by comparing solo vs co-tenant state hashes).
 //!
-//! **Milestone boundary (task 69):** this is the *mechanism* + a determinism
-//! smoke test. The full ≥20-seed campaign that produces the actual GO/NO-GO
-//! ruling is milestone 2. Nothing here decides the gate.
+//! The toy path (portable gates) and the box `SocketMachine` path run the identical
+//! signal code — the toy guest emits a proximity-graded console so the same
+//! `LogSensor`/`CellFnV1` has a species ladder to key, making the portable suite a
+//! faithful proxy of the box campaign.
 
 use std::collections::BTreeSet;
 
@@ -40,9 +46,11 @@ use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, EnvCodec, Environment, Machine, MachineError, Moment, Oracle, Prng, Record,
-    RunTrace, SnapId, StopConditions, StopMask, StopReason, StreamId, TerminalOracle, VTime,
+    AdapterEnv, CellFn, EnvCodec, Environment, FeatureSet, Machine, MachineError, Moment, Oracle,
+    Prng, Record, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId,
+    TerminalOracle, VTime,
 };
+use logtmpl::{CellFnV1, LogSensor};
 
 /// The base V-time the benchmark toy guest is quiescent at when snapshotted —
 /// mirrors `crate::planted::BASE_VTIME` and the manifest's window anchors.
@@ -402,18 +410,17 @@ struct Exemplar {
     novel_on_path: u64,
 }
 
-/// A **content-keyed** log-template species id, STABLE across logs (round-6 P2).
-/// Each console line is clustered Drain-style — variable tokens (ASCII digits)
-/// are collapsed to `#` so numeric parameters don't fragment a template — then
-/// content-hashed (FNV-1a). The same template therefore gets the same id in every
-/// campaign, so the report can pool species across independent logs (a
-/// per-campaign codebook counter could not — it assigns ids first-come, so the
-/// same template drifts to different ids across logs).
-fn content_cell_id(line: &[u8]) -> u64 {
+/// Fold a [`CellKey`](explorer::CellKey) (the encoded channel-value tuple) to the
+/// opaque `u64` the [`CampaignLog`] carries — FNV-1a over the key bytes. Deterministic
+/// and injective enough for the report's discovery-event stream (the report never
+/// interprets a cell id; it only counts distinct ones and folds the STADS spectrum).
+/// Because [`CellFnV1`]'s key is count-based (species-progress + last-new-species),
+/// the same abstract slice folds to the same `u64` regardless of which seed produced
+/// it — the cross-campaign comparability the report's pooled STADS wants.
+fn cell_id_of(key: &[u8]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for &b in line {
-        let tok = if b.is_ascii_digit() { b'#' } else { b };
-        h ^= tok as u64;
+    for &b in key {
+        h ^= b as u64;
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
@@ -422,6 +429,30 @@ fn content_cell_id(line: &[u8]) -> u64 {
 /// Whether `hay` contains `needle` as a byte substring.
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The real task-67 signal under test (GO/NO-GO #2 ruling, user 2026-07-06): a
+/// campaign-persistent [`LogSensor`] clusters the guest console into template
+/// species, and [`CellFnV1`] keys the **accumulating** species slice into bounded
+/// cells. One instance per `(config, seed)` campaign — the codebook accumulates
+/// across that campaign's branches (ids stable within a seed) but is independent
+/// across seeds, which is safe because `CellFnV1`'s default key is a function of
+/// the distinct-species *count* (species-progress `log2_bucket(k)` + last-new-species
+/// `max_id mod k`), not of which template got which id — so two seeds keying the
+/// same abstract slice agree, and the seeds parallelize.
+struct SignalCells {
+    sensor: LogSensor,
+    cellfn: CellFnV1,
+}
+
+impl SignalCells {
+    /// A fresh campaign signal (empty codebook, default `CellFnV1` knobs).
+    fn new() -> Self {
+        Self {
+            sensor: LogSensor::new(),
+            cellfn: CellFnV1::new(),
+        }
+    }
 }
 
 /// Build the `RunTrace` for a finished branch, capturing the console into
@@ -453,27 +484,47 @@ fn trace_of<M: Machine>(
     })
 }
 
-/// The per-branch cell set — content-keyed log-template species (with recurrence,
-/// the STADS abundance stream). The bug's terminal serial MARKER is filtered OUT
-/// (round-6 P1): the marker is *attribution*, not a behavioural cell, and letting
-/// it into the novelty stream would make novelty correlate with bug discovery
-/// **spuriously** (the signal measuring its own attribution marker). The full,
-/// unfiltered trace is still used by [`marker_attributed`] for attribution.
+/// The per-branch cell set — the **real** Phase-D `logtmpl` signal (`LogSensor` →
+/// `CellFnV1`), the actual CellFn the selectors get built on (GO/NO-GO #2 ruling,
+/// user 2026-07-06 — measure the real signal, never a stand-in). The campaign
+/// [`LogSensor`] clusters this branch's console into template species (advancing
+/// the codebook), and [`CellFnV1`] keys the **accumulating** species slice at each
+/// arrival — the distinct bounded cells this branch's run passes through as its
+/// log-template diversity grows.
 ///
-/// This is the toy path's stable stand-in for the Phase-D `logtmpl` signal
-/// (`LogSensor` → `CellFnV1`): identical clustering (strip params, cluster by
-/// template) but keyed by content so ids are stable across independent logs. The
-/// M2 SocketMachine path runs the real `LogSensor`/`CellFnV1` with a **persisted
-/// campaign codebook** (`codebook_bytes`), which gives the same cross-log id
-/// stability on the box.
-fn cells_of(spec: &BugSpec, trace: &RunTrace) -> Vec<u64> {
+/// The bug's terminal serial MARKER is filtered OUT of the console **before**
+/// clustering (round-6 P1): the marker is *attribution*, not a behavioural cell,
+/// and letting it mint a template species would make novelty correlate with bug
+/// discovery **spuriously** (the signal keying its own attribution marker). The
+/// full, unfiltered trace is still used by [`marker_attributed`] for attribution.
+fn cells_of(spec: &BugSpec, signal: &SignalCells, trace: &RunTrace) -> Vec<u64> {
     let marker = spec.serial_marker.as_bytes();
-    trace
-        .records
-        .iter()
-        .filter(|(_, r)| !contains(&r.line, marker))
-        .map(|(_, r)| content_cell_id(&r.line))
-        .collect()
+    // Filter the attribution marker out of the console before it reaches the
+    // clusterer (so it never becomes a template species).
+    let filtered = RunTrace {
+        terminal: trace.terminal.clone(),
+        env: trace.env.clone(),
+        coverage: trace.coverage.clone(),
+        events: trace.events.clone(),
+        records: trace
+            .records
+            .iter()
+            .filter(|(_, r)| !contains(&r.line, marker))
+            .cloned()
+            .collect(),
+    };
+    // Advance the campaign codebook over this branch's lines, then key the
+    // accumulating template slice at each species arrival — the cells the run
+    // visits as its distinct-template count grows. A recurring line re-keys to
+    // the same cell (already in the set); the STADS abundance stream keeps every
+    // arrival, so a report can fold recurrence.
+    let mut acc = FeatureSet::new();
+    let mut touched = Vec::new();
+    for (at, feat) in signal.sensor.observe(&filtered) {
+        acc.insert(feat);
+        touched.push(cell_id_of(&signal.cellfn.key(at, &acc)));
+    }
+    touched
 }
 
 /// Drive one benchmark campaign against `machine` under `config` and return its
@@ -489,6 +540,11 @@ pub fn run_bench_campaign<M: Machine>(
     config: Configuration,
 ) -> Result<CampaignLog, MachineError> {
     let oracle = TerminalOracle::new();
+    // The real task-67 signal for THIS campaign: a fresh LogSensor+CellFnV1 whose
+    // codebook accumulates across this (config, seed)'s branches but is independent
+    // of every other seed's — safe because the cell key is count-based, so the
+    // seeds parallelize and still pool (see [`cells_of`] / [`SignalCells`]).
+    let signal = SignalCells::new();
 
     // Seal the base (the toy is quiescent at boot).
     let base = machine.snapshot()?;
@@ -533,7 +589,7 @@ pub fn run_bench_campaign<M: Machine>(
         // machine — a certified find must replay N/N identical to THIS.
         let run_hash = machine.hash()?;
         let trace = trace_of(machine, stop, env.clone())?;
-        let touched = cells_of(spec, &trace);
+        let touched = cells_of(spec, &signal, &trace);
 
         // Admit an exemplar iff it claimed a fresh cell (novelty archive).
         let mut novel = false;
@@ -988,10 +1044,16 @@ mod tests {
                 })
                 .collect(),
         };
-        let without = cells_of(&spec, &mk(&["supervisor boot", "uuid drawn"]));
-        // The same run plus the terminal marker line.
+        // Fresh signal per call: the marker is filtered before clustering, so the
+        // "with" trace's filtered console equals the "without" one → identical cells.
+        let without = cells_of(
+            &spec,
+            &SignalCells::new(),
+            &mk(&["supervisor boot", "uuid drawn"]),
+        );
         let with = cells_of(
             &spec,
+            &SignalCells::new(),
             &mk(&["supervisor boot", "uuid drawn", "UUID_BUG: matched"]),
         );
         assert_eq!(
@@ -1001,42 +1063,69 @@ mod tests {
         assert!(!without.is_empty());
     }
 
-    /// Cell ids are **content-keyed and stable across logs** (round-6 P2): the same
-    /// console line yields the same cell id in two unrelated traces, and numeric
-    /// parameters are clustered away (Drain-style).
+    /// The cells are the **real CellFnV1** signal — count-based (species-progress),
+    /// so (a) a run touches MORE distinct cells the more distinct log-template
+    /// species it emits (the ladder toward the bug), (b) two INDEPENDENT campaigns
+    /// keying runs of the same species-count agree (cross-campaign comparability
+    /// with no shared codebook — what makes the seeds parallelize and still pool),
+    /// and (c) numeric parameters are clustered away (Drain-style), so lines
+    /// differing only in digits are one species.
     #[test]
-    fn cell_ids_are_content_stable_across_logs() {
+    fn cells_track_species_count_and_pool_across_campaigns() {
         let bench = Benchmark::wave5();
         let spec = bench.get(BugId(1)).unwrap().clone();
-        let line = |s: &str| RunTrace {
-            terminal: StopReason::Quiescent {
-                vtime: VTime(BASE_VTIME),
-            },
-            env: mint_scenario_env(0, &spec, 0),
-            coverage: None,
-            events: Vec::new(),
-            records: vec![(
-                Moment(BASE_VTIME),
-                Record {
-                    stream: StreamId(0),
-                    line: s.as_bytes().to_vec(),
+        let run = |lines: &[&str]| -> Vec<u64> {
+            let t = RunTrace {
+                terminal: StopReason::Quiescent {
+                    vtime: VTime(BASE_VTIME),
                 },
-            )],
+                env: mint_scenario_env(0, &spec, 0),
+                coverage: None,
+                events: Vec::new(),
+                records: lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        (
+                            Moment(BASE_VTIME + i as u64),
+                            Record {
+                                stream: StreamId(0),
+                                line: l.as_bytes().to_vec(),
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            // A FRESH campaign each call (independent codebook) — the cross-campaign
+            // comparability below relies on the key being codebook-order-independent.
+            cells_of(&spec, &SignalCells::new(), &t)
         };
-        // Same template in two different "logs" → identical id.
-        assert_eq!(
-            cells_of(&spec, &line("ledger mapped")),
-            cells_of(&spec, &line("ledger mapped"))
+        let distinct = |lines: &[&str]| -> BTreeSet<u64> { run(lines).into_iter().collect() };
+        // (a) More distinct species ⇒ more distinct cells (the species ladder).
+        let one = distinct(&["ledger mapped"]);
+        let three = distinct(&[
+            "ledger mapped",
+            "guard bit aligned",
+            "sensitive window entered",
+        ]);
+        assert!(
+            three.len() > one.len(),
+            "more species ⇒ more distinct cells ({} vs {})",
+            three.len(),
+            one.len()
         );
-        // Numeric params are clustered away: same template, different numbers.
+        // (b) Two independent campaigns keying the same species-count sequence agree.
         assert_eq!(
-            cells_of(&spec, &line("phase gpa=1000 at=3")),
-            cells_of(&spec, &line("phase gpa=2000 at=9")),
+            run(&["a alpha", "b beta"]),
+            run(&["c gamma", "d delta"]),
+            "same species-count sequence ⇒ same cells across independent campaigns"
         );
-        // Distinct templates → distinct ids.
-        assert_ne!(
-            cells_of(&spec, &line("ledger mapped")),
-            cells_of(&spec, &line("guard bit aligned"))
+        // (c) Numeric params cluster to one species (Drain-style), so two
+        // digit-only-varying lines key the same DISTINCT cell as a single one.
+        assert_eq!(
+            distinct(&["phase gpa=1000 at=3", "phase gpa=2000 at=9"]),
+            distinct(&["phase gpa=5 at=7"]),
+            "numeric params cluster to one species"
         );
     }
 
