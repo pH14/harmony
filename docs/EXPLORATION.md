@@ -97,8 +97,10 @@ lives entirely behind Scoring.
 
 The run stops being opaque and becomes a versioned, serializable bundle so the replay plane can work
 offline. (The sketches below are illustrative; **the task-64 spine is authoritative for exact
-field/method names and time units** — it keys these on `Moment`/`moment()`, and the
-`Moment`-vs-`VTime` unit ruling is escalated to the foreman per task 65, not decided here.)
+field/method names and time units** — it keys these on `Moment`/`moment()`. The
+`Moment`-vs-`VTime` unit question, escalated per task 65, is RULED in `docs/GLOSSARY.md`:
+one axis, `Moment` for a point on it, `Span` for a duration; existing `VTime` uses are
+audited into one or the other as each crate is next touched.)
 
 ```rust
 struct RunTrace {
