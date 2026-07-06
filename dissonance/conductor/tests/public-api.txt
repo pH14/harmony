@@ -23,7 +23,6 @@ pub fn conductor::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::r
 pub const conductor::benchcampaign::BASE_VTIME: u64
 pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec) -> explorer::Environment
 pub fn conductor::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &benchmark::manifest::BugSpec, &conductor::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<benchmark::report::CampaignLog, explorer::error::MachineError>
-pub fn conductor::benchcampaign::verify_replays<M: explorer::seam::Machine>(&mut M, explorer::SnapId, &explorer::Environment, usize) -> core::result::Result<alloc::vec::Vec<(explorer::StopReason, [u8; 32])>, explorer::error::MachineError>
 pub mod conductor::campaign
 pub struct conductor::campaign::CampaignConfig
 pub conductor::campaign::CampaignConfig::campaign_seed: u64

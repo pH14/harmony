@@ -46,9 +46,8 @@ use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, CellFn, EnvCodec, Environment, FeatureSet, Machine, MachineError, Moment, Oracle,
-    Prng, Record, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId,
-    TerminalOracle, VTime,
+    AdapterEnv, CellFn, EnvCodec, Environment, FeatureSet, Machine, MachineError, Moment, Prng,
+    Record, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId, VTime,
 };
 use logtmpl::{CellFnV1, LogSensor};
 
@@ -645,7 +644,6 @@ pub fn run_bench_campaign<M: Machine>(
     cfg: &BenchConfig,
     config: Configuration,
 ) -> Result<BenchOutcome, MachineError> {
-    let oracle = TerminalOracle::new();
     // The real task-67 signal for THIS campaign: a fresh LogSensor+CellFnV1 whose
     // codebook accumulates across this (config, seed)'s branches but is independent
     // of every other seed's — safe because the cell key is count-based, so the
@@ -724,10 +722,10 @@ pub fn run_bench_campaign<M: Machine>(
                 })
                 .collect();
             let marker = marker_attributed(&trace, spec);
-            let judged = oracle.judge(&trace).is_some();
+            let is_bug = trace.terminal.is_bug();
             let n_records = trace.records.len();
             eprintln!(
-                "[bench-diag] branch {branch} {config:?} seed={} faults=[{}] stop={:?} marker={marker} judge={judged} cells={} records={n_records}",
+                "[bench-diag] branch {branch} {config:?} seed={} faults=[{}] stop={:?} marker={marker} is_bug={is_bug} cells={} records={n_records}",
                 cfg.campaign_seed,
                 faults.join(", "),
                 trace.terminal,
@@ -763,11 +761,30 @@ pub fn run_bench_campaign<M: Machine>(
         // A find must be a REAL find (round-3 gate-integrity P1): an incidental /
         // flaky / unrelated crash must NOT count. Certify it two ways before
         // logging: (a) the bug's distinctive serial MARKER appears in the run's
-        // console (per-bug attribution), and (b) the emitted reproducer replays
-        // the IDENTICAL crash `cfg.replay_n` (25/25) times.
-        if !found && oracle.judge(&trace).is_some() && marker_attributed(&trace, spec) {
-            let certified =
-                certify_replays(machine, base, &env, &trace.terminal, run_hash, cfg.replay_n)?;
+        // console (per-bug attribution — only the planted bug prints it), and
+        // (b) the emitted reproducer replays the IDENTICAL `(stop, state_hash)`
+        // **and** marker `cfg.replay_n` (25/25) times. This is **terminal-
+        // agnostic** (M2, 2026-07-07): the marker is the bug signal, so a find is
+        // certified whether the run reached the real reboot->`Crash` (a large
+        // deadline — gate-2 benchmark validity) or was cut off at a `Deadline`
+        // right after the marker (a small deadline — the fast correlation runs).
+        // On this kernel the isa-debug-exit crash channels all fail, so the
+        // `Crash{Shutdown}` terminal is ~4.8M V-time of `reboot -f`; requiring
+        // it per find would make the ≥20-seed suite take weeks. The marker (at
+        // ~seal+500) + 25/25 determinism is the rigorous, feasible certification;
+        // gate-2 validity (a real `Crash`) is proven separately per bug with one
+        // large-deadline run.
+        if !found && marker_attributed(&trace, spec) {
+            let certified = certify_replays(
+                machine,
+                base,
+                &env,
+                spec.serial_marker.as_bytes(),
+                &until,
+                &trace.terminal,
+                run_hash,
+                cfg.replay_n,
+            )?;
             if certified {
                 finds.push(FindRecord {
                     bug: spec.id,
@@ -813,51 +830,53 @@ fn marker_attributed(trace: &RunTrace, spec: &BugSpec) -> bool {
         .any(|(_, r)| r.line.windows(marker.len()).any(|w| w == marker))
 }
 
-/// Certify a candidate find by **N/N replay**: replay the reproducer `n` times
-/// and require every run to reproduce the identical bug-bearing
-/// `(stop, state_hash)` **of the finding run** (box gate 2 — N/N identical to the
-/// FINDING, not merely to each other). A flaky/non-deterministic crash whose
-/// replays are self-consistent but differ from the finding run fails this, so it
-/// is never logged as a find. `n == 0` never certifies.
+/// Certify a candidate find by **N/N replay** — the terminal-agnostic,
+/// marker-based certification (M2, 2026-07-07). Replay the reproducer `n` times
+/// **under the same stop conditions `until` as the finding run** and require
+/// every replay to reproduce (a) the finding run's exact `(stop, state_hash)`
+/// (box gate 2 — N/N identical to the FINDING, not merely to each other — the
+/// round-4 determinism gate) and (b) the bug's per-bug serial `marker` in its
+/// console (round-3 attribution — only the planted bug prints it).
+///
+/// It is decoupled from **which** terminal the run reaches: at a large deadline
+/// the finding stops at the real reboot->`Crash{Shutdown}` (gate-2 benchmark
+/// validity), at a small deadline it stops at a `Deadline` right after the
+/// marker (the fast ≥20-seed correlation runs). Both are rigorous — the marker
+/// proves the planted bug fired and `(stop, state_hash)` identity proves
+/// bit-for-bit determinism. The replays use `until` (not a natural terminal) so
+/// they reproduce the finding's exact stop; a natural-terminal replay would run
+/// the ~4.8M-V-time reboot and diverge from a small-deadline `Deadline` finding.
+/// A flaky/non-deterministic run, or one whose marker does not reproduce, fails
+/// — never logged as a find. `n == 0` or an empty marker never certifies.
 fn certify_replays<M: Machine>(
     machine: &mut M,
     base: SnapId,
     env: &Environment,
+    marker: &[u8],
+    until: &StopConditions,
     found_stop: &StopReason,
     found_hash: [u8; 32],
     n: usize,
 ) -> Result<bool, MachineError> {
-    if n == 0 || !found_stop.is_bug() {
+    if n == 0 || marker.is_empty() {
         return Ok(false);
     }
-    let replays = verify_replays(machine, base, env, n)?;
-    // Every replay must reproduce the FINDING run's exact (stop, state_hash).
-    Ok(replays.len() == n
-        && replays
-            .iter()
-            .all(|(stop, h)| stop == found_stop && stop.is_bug() && *h == found_hash))
-}
-
-/// Replay a found reproducer `n` times, returning the `(stop, state_hash)` seen —
-/// the N/N verification (box gate 2). All must be identical.
-pub fn verify_replays<M: Machine>(
-    machine: &mut M,
-    base: SnapId,
-    env: &Environment,
-    n: usize,
-) -> Result<Vec<(StopReason, [u8; 32])>, MachineError> {
-    let until = StopConditions {
-        deadline: None,
-        on: StopMask::NONE,
-    };
-    let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         machine.branch(base, env)?;
-        let stop = machine.run(&until, None)?;
+        let stop = machine.run(until, None)?;
         let hash = machine.hash()?;
-        out.push((stop, hash));
+        let has_marker = machine
+            .console()?
+            .iter()
+            .any(|(_, line)| contains(line, marker));
+        // Every replay must reproduce the FINDING run's exact (stop, state_hash)
+        // AND carry the marker — a divergent hash, a different stop, or a missing
+        // marker fails certification (so a flaky find is never logged).
+        if stop != *found_stop || hash != found_hash || !has_marker {
+            return Ok(false);
+        }
     }
-    Ok(out)
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1091,6 +1110,89 @@ mod tests {
             log.finds.is_empty(),
             "an unmarked crash must not be certified as a find"
         );
+    }
+
+    /// A firing branch cut off at a `Deadline` AFTER the marker printed (the
+    /// small-deadline correlation path — the real reboot->`Crash` is ~4.8M V-time
+    /// away and never reached) IS a certified find: the terminal-agnostic
+    /// marker-based certification (M2, 2026-07-07). The marker proves the planted
+    /// bug fired and the 25/25 identical `(Deadline, hash, marker)` proves
+    /// determinism — the crash terminal is not required. Contrast
+    /// `unmarked_crash_is_not_a_find` (a Crash with NO marker is NOT a find).
+    #[test]
+    fn marker_bearing_deadline_stop_is_a_find() {
+        struct DeadlineMarkerMachine {
+            marker: Vec<u8>,
+            current: Environment,
+            snaps: std::collections::BTreeMap<u64, Environment>,
+            next: u64,
+        }
+        impl Machine for DeadlineMarkerMachine {
+            fn branch(&mut self, s: SnapId, e: &Environment) -> Result<(), MachineError> {
+                if !self.snaps.contains_key(&s.0) {
+                    return Err(MachineError::UnknownSnapshot(s.0));
+                }
+                self.current = e.clone();
+                Ok(())
+            }
+            fn replay(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.current = self.snaps[&s.0].clone();
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                // The bug fired (the marker is on the console below) but the run
+                // is cut off at the deadline before the slow reboot->Crash — a
+                // Deadline stop, NOT a bug terminal.
+                Ok(StopReason::Deadline {
+                    vtime: VTime(BASE_VTIME + 100),
+                })
+            }
+            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+                let id = self.next;
+                self.next += 1;
+                self.snaps.insert(id, self.current.clone());
+                Ok(SnapId(id))
+            }
+            fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.snaps.remove(&s.0);
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([9u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(self.current.clone())
+            }
+            fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+                Ok(vec![(BASE_VTIME, self.marker.clone())])
+            }
+        }
+        let bench = Benchmark::wave5();
+        let bug = bench.get(BugId(1)).unwrap().clone();
+        let mut m = DeadlineMarkerMachine {
+            marker: bug.serial_marker.as_bytes().to_vec(),
+            current: mint_scenario_env(0, &bug, 0),
+            snaps: std::collections::BTreeMap::new(),
+            next: 1,
+        };
+        let cfg = BenchConfig {
+            max_branches: 1,
+            ..BenchConfig::smoke(1)
+        };
+        let out = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        assert_eq!(
+            out.log.finds.len(),
+            1,
+            "a marker-bearing Deadline stop must certify as a find (terminal-agnostic)"
+        );
+        assert_eq!(out.certs.len(), 1, "the find emits a determinism certificate");
     }
 
     /// A crash whose replays agree with EACH OTHER but differ from the FINDING
