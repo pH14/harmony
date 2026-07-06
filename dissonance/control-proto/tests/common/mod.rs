@@ -84,6 +84,7 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
             fault: HostFault(fault),
             at: Moment(at),
         }),
+        any::<u32>().prop_map(|offset| Request::Console { offset }),
     ]
 }
 
@@ -158,6 +159,7 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
         Just(Reply::Unit),
         arb_stop_reason().prop_map(Reply::Stop),
         proptest::array::uniform32(any::<u8>()).prop_map(Reply::Hash),
+        (any::<u32>(), arb_bytes()).prop_map(|(total, chunk)| Reply::Console { total, chunk }),
     ]
 }
 

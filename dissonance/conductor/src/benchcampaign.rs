@@ -60,24 +60,61 @@ pub struct BenchConfig {
     /// Signal only: every Nth step explores fresh from genesis; the rest exploit
     /// a novel frontier exemplar. Ignored by the baseline (always explores).
     pub explore_period: u64,
+    /// The manifest-frame base V-time to **subtract** from a fault's `Moment` when
+    /// minting an env, so it is keyed **relative to the sealed base** (task 69 M2).
+    ///
+    /// The manifest windows are absolute in the toy's frame (`BASE_VTIME + offset`).
+    /// The toy [`Machine`] reads that `Moment` verbatim, so it wants `0` here (no
+    /// rebase — absolute frame). The [`SocketMachine`](explorer::SocketMachine) box
+    /// path, however, re-anchors a branch env's override keys by **adding the
+    /// snapshot's real seal V-time** (`adapter::rebase_to_wire`); an absolute
+    /// manifest `Moment` would then land at `seal + BASE + offset`, past the real
+    /// vulnerable window (`seal + offset`), so the bug never fires. Subtracting
+    /// [`BASE_VTIME`] here keys the fault at the bare `offset`, and the adapter's
+    /// `+ seal` restores the correct absolute window on the box. Pure and
+    /// per-seed-deterministic (a constant subtraction; the PRNG draw is unchanged).
+    pub fault_rebase: u64,
 }
 
 impl BenchConfig {
-    /// A small portable/smoke configuration.
+    /// A small portable/smoke configuration for the **toy** path (absolute frame,
+    /// no fault rebase).
     pub fn smoke(campaign_seed: u64) -> Self {
         Self {
             campaign_seed,
             max_branches: 2048,
             replay_n: 25,
             explore_period: 4,
+            fault_rebase: 0,
+        }
+    }
+
+    /// A **box** campaign configuration driving a real [`SocketMachine`]: the same
+    /// search knobs, but fault moments are rebased by [`BASE_VTIME`] so the
+    /// adapter's `+ seal` re-anchoring lands them in the guest's real window
+    /// ([`fault_rebase`](Self::fault_rebase)).
+    pub fn box_campaign(campaign_seed: u64, max_branches: u64, replay_n: usize) -> Self {
+        Self {
+            campaign_seed,
+            max_branches,
+            replay_n,
+            explore_period: 4,
+            fault_rebase: BASE_VTIME,
         }
     }
 }
 
 /// Mint one branch's environment for `spec`'s bug: a seeded base plus (for the
 /// fault-triggered classes) a single host-fault schedule drawn from `seed` over a
-/// search space that brackets the trigger. Pure in `seed`.
-pub fn mint_scenario_env(seed: u64, spec: &BugSpec) -> Environment {
+/// search space that brackets the trigger. Pure in `(seed, rebase)`.
+///
+/// `rebase` is subtracted from each fault's window-derived `Moment` so it is keyed
+/// relative to the sealed base (see [`BenchConfig::fault_rebase`]): `0` on the toy
+/// path (absolute manifest frame), [`BASE_VTIME`] on the box `SocketMachine` path
+/// (the adapter re-adds the real seal V-time). The subtraction is a constant, so
+/// the PRNG draw sequence — and thus which schedules the search visits — is
+/// identical across frames.
+pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64) -> Environment {
     let mut p = Prng::new(seed);
     let mut env_spec = EnvSpec::Seeded {
         seed,
@@ -88,7 +125,7 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec) -> Environment {
             // Search space brackets the trigger so it is findable within budget.
             let gpa_pick = one_of(&[gpa, gpa ^ 0x1000, gpa + 0x2000, 0x1000], &mut p);
             let bit = one_of(&mask_bits(mask), &mut p) % 64;
-            let at = window.0.saturating_sub(4) + p.next_u64() % 16;
+            let at = window.0.saturating_sub(rebase).saturating_sub(4) + p.next_u64() % 16;
             env_spec.perturb(
                 HostFault::CorruptMemory {
                     gpa: gpa_pick,
@@ -105,7 +142,7 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec) -> Environment {
             let v = vector as u64;
             let vectors: Vec<u64> = (0..16).map(|k| v ^ k).collect();
             let vec_pick = one_of(&vectors, &mut p) as u8;
-            let at = window.0.saturating_sub(4) + p.next_u64() % 64;
+            let at = window.0.saturating_sub(rebase).saturating_sub(4) + p.next_u64() % 64;
             env_spec.perturb(HostFault::InjectInterrupt { vector: vec_pick }, at);
         }
         // Rare-entropy fires on the seed alone — no fault schedule.
@@ -185,7 +222,7 @@ impl BenchToyMachine {
     pub fn new(spec: BugSpec) -> Self {
         Self {
             spec,
-            current: mint_scenario_env(0, &spec_placeholder()),
+            current: mint_scenario_env(0, &spec_placeholder(), 0),
             vtime: BASE_VTIME,
             snaps: std::collections::BTreeMap::new(),
             next_snap: 1,
@@ -483,7 +520,11 @@ pub fn run_bench_campaign<M: Machine>(
             let e = codec.mutate(&parent.env, prng.next_u64());
             (e, parent.path_len, parent.novel_on_path)
         } else {
-            (mint_scenario_env(prng.next_u64(), spec), 0, 0)
+            (
+                mint_scenario_env(prng.next_u64(), spec, cfg.fault_rebase),
+                0,
+                0,
+            )
         };
 
         machine.branch(base, &env)?;
@@ -642,6 +683,40 @@ mod tests {
         }
     }
 
+    /// The box-frame rebase (M2 prereq 2): minting a fault-carrying bug with
+    /// `rebase = BASE_VTIME` keys the fault at a **bare offset** (well under
+    /// `BASE_VTIME`), not the absolute manifest `Moment` (~`BASE_VTIME + offset`) —
+    /// so the `SocketMachine` adapter's `+ seal` re-anchoring lands it in the
+    /// guest's real vulnerable window instead of `seal + BASE + offset` (past it).
+    /// The absolute (toy) frame keeps the manifest `Moment`, and the fault kind is
+    /// frame-independent.
+    #[test]
+    fn box_frame_keys_faults_at_bare_offsets_not_absolute() {
+        let bench = Benchmark::wave5();
+        for id in [BugId(1), BugId(2)] {
+            // The two fault-carrying classes; bug 3 (rare-entropy) mints no fault.
+            let spec = bench.get(id).unwrap().clone();
+            for seed in 0..64u64 {
+                let abs = scenario_of(&mint_scenario_env(seed, &spec, 0));
+                let boxed = scenario_of(&mint_scenario_env(seed, &spec, BASE_VTIME));
+                assert_eq!(abs.faults.len(), 1, "{} mints one fault", spec.name);
+                assert_eq!(boxed.faults.len(), 1);
+                assert_eq!(
+                    boxed.faults[0].kind, abs.faults[0].kind,
+                    "same fault, different frame"
+                );
+                assert!(
+                    abs.faults[0].at >= BASE_VTIME.saturating_sub(4),
+                    "absolute frame keys near the manifest window (~BASE+offset)"
+                );
+                assert!(
+                    boxed.faults[0].at < BASE_VTIME,
+                    "box frame keys a bare offset (the adapter re-adds the seal V-time)"
+                );
+            }
+        }
+    }
+
     /// Build an env directly from a benchmark Scenario (test helper).
     fn env_of_scenario(sc: &Scenario, _spec: &BugSpec) -> Environment {
         let mut es = EnvSpec::Seeded {
@@ -785,7 +860,7 @@ mod tests {
         let bench = Benchmark::wave5();
         let bug = bench.get(BugId(1)).unwrap().clone();
         let mut m = SilentCrashMachine {
-            current: mint_scenario_env(0, &bug),
+            current: mint_scenario_env(0, &bug, 0),
             snaps: std::collections::BTreeMap::new(),
             next: 1,
         };
@@ -868,7 +943,7 @@ mod tests {
         let mut m = DriftingHashMachine {
             marker: bug.serial_marker.as_bytes().to_vec(),
             runs: 0,
-            current: mint_scenario_env(0, &bug),
+            current: mint_scenario_env(0, &bug, 0),
             snaps: std::collections::BTreeMap::new(),
             next: 1,
         };
@@ -896,7 +971,7 @@ mod tests {
             terminal: StopReason::Quiescent {
                 vtime: VTime(BASE_VTIME),
             },
-            env: mint_scenario_env(0, &spec),
+            env: mint_scenario_env(0, &spec, 0),
             coverage: None,
             events: Vec::new(),
             records: lines
@@ -937,7 +1012,7 @@ mod tests {
             terminal: StopReason::Quiescent {
                 vtime: VTime(BASE_VTIME),
             },
-            env: mint_scenario_env(0, &spec),
+            env: mint_scenario_env(0, &spec, 0),
             coverage: None,
             events: Vec::new(),
             records: vec![(

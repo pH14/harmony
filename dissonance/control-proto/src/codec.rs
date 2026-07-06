@@ -40,6 +40,7 @@ const REQ_RUN: u8 = 6;
 const REQ_HASH: u8 = 7;
 const REQ_PERTURB: u8 = 8;
 const REQ_SDK_EVENTS: u8 = 9;
+const REQ_CONSOLE: u8 = 10;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -52,6 +53,7 @@ const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
 const REPLY_SDK_EVENTS: u8 = 6;
+const REPLY_CONSOLE: u8 = 7;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -249,6 +251,10 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             w.push(REQ_SDK_EVENTS);
             put_u32(w, *offset);
         }
+        Request::Console { offset } => {
+            w.push(REQ_CONSOLE);
+            put_u32(w, *offset);
+        }
     }
 }
 
@@ -274,6 +280,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             at: Moment(r.u64()?),
         },
         REQ_SDK_EVENTS => Request::SdkEvents { offset: r.u32()? },
+        REQ_CONSOLE => Request::Console { offset: r.u32()? },
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -331,6 +338,11 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
                 put_bytes(w, bytes);
             }
         }
+        Reply::Console { total, chunk } => {
+            w.push(REPLY_CONSOLE);
+            put_u32(w, *total);
+            put_bytes(w, chunk);
+        }
     }
 }
 
@@ -355,6 +367,10 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
             }
             Reply::SdkEvents(events)
         }
+        REPLY_CONSOLE => Reply::Console {
+            total: r.u32()?,
+            chunk: r.bytes()?.to_vec(),
+        },
         _ => return Err(ProtocolError::ShortFrame),
     })
 }

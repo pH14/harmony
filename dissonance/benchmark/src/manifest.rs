@@ -159,7 +159,12 @@ impl Benchmark {
                     name: "ordering-interrupt-window".to_string(),
                     class: BugClass::OrderingInterrupt,
                     serial_marker: "ORDER_BUG".to_string(),
-                    crash_kind: CrashKind::TripleFault,
+                    // The guest aborts via isa-debug-exit → non-zero exit → /init
+                    // reboot → backend `Shutdown` → `Crash{Shutdown}` (identical
+                    // terminal path to bug 1's campaign-super.c). The manifest is
+                    // the attribution ground truth, so it names the *real* box
+                    // terminal, not the aspirational triple-fault (round-7 P2).
+                    crash_kind: CrashKind::Shutdown,
                     // A vulnerable window 4 Moments wide; the campaign must land
                     // an InjectInterrupt of vector 0x81 inside it.
                     trigger: TriggerParams::OrderingInterrupt {

@@ -50,6 +50,9 @@ pub control_proto::ProtocolError::BadMagic
 pub control_proto::ProtocolError::BadVersion
 pub control_proto::ProtocolError::ShortFrame
 pub enum control_proto::Reply
+pub control_proto::Reply::Console
+pub control_proto::Reply::Console::chunk: alloc::vec::Vec<u8>
+pub control_proto::Reply::Console::total: u32
 pub control_proto::Reply::Hash([u8; 32])
 pub control_proto::Reply::Hello(control_proto::Caps)
 pub control_proto::Reply::SdkEvents(alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>)
@@ -60,6 +63,8 @@ pub enum control_proto::Request
 pub control_proto::Request::Branch
 pub control_proto::Request::Branch::env: control_proto::Environment
 pub control_proto::Request::Branch::snap: control_proto::SnapId
+pub control_proto::Request::Console
+pub control_proto::Request::Console::offset: u32
 pub control_proto::Request::Drop(control_proto::SnapId)
 pub control_proto::Request::Hash
 pub control_proto::Request::Hash::scope: control_proto::HashScope

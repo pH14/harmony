@@ -126,8 +126,14 @@ int main(void)
         // while the process is descheduled.
         primary = primary + 1;   // (1) primary advances — mirror now stale
         // --- vulnerable window: mirror not yet restored ---
-        uint64_t sw_after = involuntary_ctxsw();
         mirror = ~primary;       // (2) mirror catches up — window closed
+        // Sample AFTER the window fully closes so the [sw_before, sw_after]
+        // interval brackets the ENTIRE torn window (round-7 P2). Sampling before
+        // the `mirror = ~primary` store (the earlier draft) left the last sliver
+        // of the window — a preemption landing between the sample and the store,
+        // still torn — uncounted, so a valid trigger-window interrupt could be
+        // missed and the crash would not fire on a genuinely-triggering schedule.
+        uint64_t sw_after = involuntary_ctxsw();
 
         // A change in the involuntary-context-switch count across the window
         // means the kernel preempted us *inside* it — the injected interrupt drove

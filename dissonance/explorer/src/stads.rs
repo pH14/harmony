@@ -71,9 +71,52 @@ impl PartialOrd for Frac {
 
 impl Ord for Frac {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // a/b ? c/d  ⟺  a·d ? c·b  (all non-negative; u128 headroom is ample for
-        // campaign magnitudes — cells ≲ 10⁴, counts ≲ 10⁶).
-        (self.num * other.den).cmp(&(other.num * self.den))
+        // a/b ? c/d  ⟺  a·d ? c·b. The fast path is the direct cross-multiply
+        // (campaign magnitudes — cells ≲ 10⁴, counts ≲ 10⁶ — never come close to
+        // the u128 ceiling). But a `Frac` is only bounded by its *inputs*, and a
+        // hostile / pathological spectrum could hand the estimator num/den near
+        // `u128::MAX`, where `a·d` overflows and wraps to a wrong ordering
+        // (round-7 P2). So cross-multiply under `checked_mul` and fall back to an
+        // exact continued-fraction comparison that uses only division/modulo and
+        // therefore cannot overflow.
+        match (
+            self.num.checked_mul(other.den),
+            other.num.checked_mul(self.den),
+        ) {
+            (Some(l), Some(r)) => l.cmp(&r),
+            _ => cmp_ratio(self.num, self.den, other.num, other.den),
+        }
+    }
+}
+
+/// Compare `a/b` vs `c/d` (all non-negative, `b > 0`, `d > 0`) exactly, using only
+/// division and modulo so it **never overflows** — the Stern-Brocot / continued-
+/// fraction descent. At each step the integer parts are compared; on a tie the
+/// fractional remainders `r1/b`, `r2/d` are compared by recursing on the
+/// reciprocals `b/r1`, `d/r2`, which flips the ordering. `Frac` denominators are
+/// always ≥ 1, so this is only reached from [`Frac::cmp`]'s overflow fallback.
+fn cmp_ratio(mut a: u128, mut b: u128, mut c: u128, mut d: u128) -> std::cmp::Ordering {
+    let mut flipped = false;
+    loop {
+        let (q1, q2) = (a / b, c / d);
+        if q1 != q2 {
+            let ord = q1.cmp(&q2);
+            return if flipped { ord.reverse() } else { ord };
+        }
+        let (r1, r2) = (a % b, c % d);
+        if r1 == 0 || r2 == 0 {
+            // At least one fractional part is zero (both ⇒ Equal; else the zero
+            // side is the smaller). `bool`'s `Ord` gives false < true, so
+            // `(r1 != 0).cmp(&(r2 != 0))` yields exactly that ordering.
+            let ord = (r1 != 0).cmp(&(r2 != 0));
+            return if flipped { ord.reverse() } else { ord };
+        }
+        // Compare r1/b vs r2/d by comparing the reciprocals b/r1 vs d/r2 (reversed).
+        a = b;
+        b = r1;
+        c = d;
+        d = r2;
+        flipped = !flipped;
     }
 }
 
@@ -251,6 +294,7 @@ impl SpeciesAccumulator {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::cmp::Ordering;
 
     fn key(n: u64) -> CellKey {
         n.to_be_bytes().to_vec()
@@ -275,6 +319,31 @@ mod tests {
         assert!(Frac::new(1, 3) < Frac::new(1, 2));
         assert!(Frac::new(2, 3) > Frac::new(1, 2));
         assert_eq!(Frac::new(3, 3), Frac::whole(1));
+    }
+
+    /// The `Ord` fallback compares exactly even when the direct cross-multiply
+    /// would overflow `u128` (round-7 P2). Consecutive integers are coprime, so
+    /// `Frac::new` keeps these near-`u128::MAX` num/den un-reduced, and the
+    /// cross-products overflow — forcing the continued-fraction path.
+    #[test]
+    fn frac_ord_does_not_overflow_on_extreme_inputs() {
+        let m = u128::MAX;
+        // x = M/(M-1) = 1 + 1/(M-1);  y = (M-1)/(M-2) = 1 + 1/(M-2).
+        // 1/(M-2) > 1/(M-1), so y > x. A wrapping cross-multiply would flip this.
+        let x = Frac::new(m, m - 1);
+        let y = Frac::new(m - 1, m - 2);
+        // Confirm the inputs really are un-reduced (else the fallback isn't hit).
+        assert_eq!((x.num(), x.den()), (m, m - 1));
+        assert!(x < y, "M/(M-1) < (M-1)/(M-2)");
+        assert!(y > x);
+        // A strictly-larger whole vs a huge-but-sub-1 fraction, cross-products
+        // overflowing: (M-1)/M < 1 < M/(M-1).
+        assert!(Frac::new(m - 1, m) < Frac::new(m, m - 1));
+        // Equal values still compare Equal through the fallback.
+        assert_eq!(
+            Frac::new(m, m - 1).cmp(&Frac::new(m, m - 1)),
+            Ordering::Equal
+        );
     }
 
     #[test]

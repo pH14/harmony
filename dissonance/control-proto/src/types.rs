@@ -218,6 +218,22 @@ pub enum Request {
         /// The event index to start the page at.
         offset: u32,
     },
+    /// Fetch a **page** of the guest **console** (serial) capture, starting at
+    /// byte `offset` → [`Console`](Reply::Console). The scrape tier reads this to
+    /// fill `RunTrace.records`, the input the log-template sensor (task 67
+    /// `logtmpl`) clusters into the primary signal — the server-side serial
+    /// capture a socket client (the campaign's `SocketMachine`) cannot otherwise
+    /// see. Like [`SdkEvents`](Self::SdkEvents) it is a **pure read** (it never
+    /// advances the VM or touches hashable state, so it is determinism-neutral)
+    /// and **paged**: the reply carries the capture's total length so the client
+    /// pages `offset..total` until it is drained, each page bounded to the control
+    /// frame limit. The capture is per-snapshot cumulative (restored with the VM),
+    /// so a client baselines `offset` at branch/replay time to read only a run's
+    /// new bytes — exactly the cursor discipline the in-process recorder uses.
+    Console {
+        /// The byte offset into the serial capture to start the page at.
+        offset: u32,
+    },
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)
@@ -238,6 +254,17 @@ pub enum Reply {
     /// the `Moment`-stamped `(moment, event_id, bytes)` stream, order-preserving.
     /// Empty for a guest with no SDK.
     SdkEvents(Vec<(u64, u32, Vec<u8>)>),
+    /// A **page** of the guest console capture (reply to
+    /// [`Console`](Request::Console)): `total` is the capture's full byte length
+    /// (so the client knows when it has drained `offset..total`), and `chunk` is
+    /// the bytes `serial[offset..]` bounded to the control frame limit. `chunk`
+    /// is empty once `offset` reaches the end (or when there is no live VM).
+    Console {
+        /// The full byte length of the serial capture — the paging bound.
+        total: u32,
+        /// The requested page: `serial[offset..]`, frame-limit bounded.
+        chunk: Vec<u8>,
+    },
 }
 
 /// The guest-observable outcome of a [`Run`](Request::Run) — the explorer's
