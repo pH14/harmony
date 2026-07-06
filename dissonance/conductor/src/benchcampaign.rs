@@ -41,7 +41,7 @@
 
 use std::collections::BTreeSet;
 
-use benchmark::manifest::{BugSpec, TriggerParams};
+use benchmark::manifest::{BugId, BugSpec, TriggerParams};
 use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
@@ -527,18 +527,45 @@ fn cells_of(spec: &BugSpec, signal: &SignalCells, trace: &RunTrace) -> Vec<u64> 
     touched
 }
 
+/// A certified find's **determinism certificate**: the reproducer env and the
+/// finding run's `state_hash` (which every one of the N certifying replays
+/// matched). The box operator uses `state_hash` for the solo-vs-co-tenant
+/// determinism stress-test (it MUST be identical whether the campaign ran alone or
+/// alongside co-tenant VMs on other cores) and `env` to re-derive the reproducer.
+#[derive(Clone, Debug)]
+pub struct FindCert {
+    /// The bug found.
+    pub bug: BugId,
+    /// The branch it fired at (time-to-bug).
+    pub branch: u64,
+    /// The genesis-replayable reproducer env.
+    pub env: Environment,
+    /// The finding run's canonical 32-byte `state_hash`.
+    pub state_hash: [u8; 32],
+}
+
+/// The full outcome of one benchmark campaign: the discovery-event log the report
+/// consumes, plus a determinism certificate per certified find.
+#[derive(Clone, Debug)]
+pub struct BenchOutcome {
+    /// The discovery-event log (`report::CampaignLog`).
+    pub log: CampaignLog,
+    /// One certificate per certified find.
+    pub certs: Vec<FindCert>,
+}
+
 /// Drive one benchmark campaign against `machine` under `config` and return its
-/// discovery-event log. Seals a base, then per branch: pick a base env (signal
-/// exploits novel exemplars; baseline explores from genesis), run, capture the
-/// console → cells, admit novel exemplars, and judge — recording the first find
-/// per bug (its time-to-bug).
+/// discovery-event log plus per-find determinism certificates. Seals a base, then
+/// per branch: pick a base env (signal exploits novel exemplars; baseline explores
+/// from genesis), run, capture the console → cells, admit novel exemplars, and
+/// judge — recording the first find per bug (its time-to-bug).
 pub fn run_bench_campaign<M: Machine>(
     machine: &mut M,
     codec: &dyn EnvCodec,
     spec: &BugSpec,
     cfg: &BenchConfig,
     config: Configuration,
-) -> Result<CampaignLog, MachineError> {
+) -> Result<BenchOutcome, MachineError> {
     let oracle = TerminalOracle::new();
     // The real task-67 signal for THIS campaign: a fresh LogSensor+CellFnV1 whose
     // codebook accumulates across this (config, seed)'s branches but is independent
@@ -560,6 +587,7 @@ pub fn run_bench_campaign<M: Machine>(
     let mut frontier: Vec<Exemplar> = Vec::new();
     let mut events = Vec::new();
     let mut finds = Vec::new();
+    let mut certs = Vec::new();
     let mut found = false;
     let mut step = 0u64;
 
@@ -631,18 +659,27 @@ pub fn run_bench_campaign<M: Machine>(
                     path_len,
                     novel_on_path,
                 });
+                certs.push(FindCert {
+                    bug: spec.id,
+                    branch,
+                    env: env.clone(),
+                    state_hash: run_hash,
+                });
                 found = true;
             }
         }
     }
 
     machine.drop_snap(base)?;
-    Ok(CampaignLog {
-        bug: spec.id,
-        config,
-        seed: cfg.campaign_seed,
-        events,
-        finds,
+    Ok(BenchOutcome {
+        log: CampaignLog {
+            bug: spec.id,
+            config,
+            seed: cfg.campaign_seed,
+            events,
+            finds,
+        },
+        certs,
     })
 }
 
@@ -807,9 +844,13 @@ mod tests {
         for config in [Configuration::Signal, Configuration::Baseline] {
             let cfg = BenchConfig::smoke(0xBEEF_0069);
             let mut m1 = BenchToyMachine::new(bug.clone());
-            let log1 = run_bench_campaign(&mut m1, &codec(), &bug, &cfg, config).unwrap();
+            let log1 = run_bench_campaign(&mut m1, &codec(), &bug, &cfg, config)
+                .unwrap()
+                .log;
             let mut m2 = BenchToyMachine::new(bug.clone());
-            let log2 = run_bench_campaign(&mut m2, &codec(), &bug, &cfg, config).unwrap();
+            let log2 = run_bench_campaign(&mut m2, &codec(), &bug, &cfg, config)
+                .unwrap()
+                .log;
             assert_eq!(log1, log2, "{config:?} must be deterministic-twice");
             assert!(!log1.finds.is_empty(), "{config:?} should find bug 1");
         }
@@ -826,7 +867,9 @@ mod tests {
         let cfg = BenchConfig::smoke(0x0033_1D69);
         for config in [Configuration::Signal, Configuration::Baseline] {
             let mut m = BenchToyMachine::new(bug.clone());
-            let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, config).unwrap();
+            let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, config)
+                .unwrap()
+                .log;
             assert!(
                 !log.finds.is_empty(),
                 "{config:?} must find the rare-entropy bug by seed search"
@@ -843,8 +886,9 @@ mod tests {
         let bug = bench.get(BugId(1)).unwrap().clone();
         let cfg = BenchConfig::smoke(0xBEEF_0069);
         let mut m = BenchToyMachine::new(bug.clone());
-        let log =
-            run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline)
+            .unwrap()
+            .log;
         let find = log.finds.first().expect("bug 1 found");
         assert_eq!(
             log.events.len() as u64,
@@ -924,8 +968,9 @@ mod tests {
             max_branches: 8,
             ..BenchConfig::smoke(1)
         };
-        let log =
-            run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline)
+            .unwrap()
+            .log;
         assert!(
             log.finds.is_empty(),
             "an unmarked crash must not be certified as a find"
@@ -1008,8 +1053,9 @@ mod tests {
             max_branches: 1,
             ..BenchConfig::smoke(1)
         };
-        let log =
-            run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline)
+            .unwrap()
+            .log;
         assert!(
             log.finds.is_empty(),
             "replays that differ from the finding hash must not certify a find"
@@ -1137,7 +1183,9 @@ mod tests {
         let bug = bench.get(BugId(1)).unwrap().clone();
         let cfg = BenchConfig::smoke(0x1234);
         let mut m = BenchToyMachine::new(bug.clone());
-        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Signal).unwrap();
+        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Signal)
+            .unwrap()
+            .log;
         let distinct: BTreeSet<u64> = log
             .events
             .iter()

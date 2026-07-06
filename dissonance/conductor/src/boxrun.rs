@@ -39,7 +39,8 @@ use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
 use super::{
-    BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording, parse_retain, seeds,
+    BenchBoxArgs, BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording,
+    parse_retain, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -376,4 +377,176 @@ pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
     finish_campaign("box", &report, n)
+}
+
+/// Lowercase-hex of a 32-byte state hash, for the finding certificate line the
+/// determinism stress-test compares solo vs co-tenant.
+fn hex32(h: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(64);
+    for b in h {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Task 69 M2 (GO/NO-GO #2): run ONE benchmark campaign — a `(bug, config, seed)`
+/// signal-vs-baseline run — against a real planted-bug guest on patched KVM, and
+/// emit its `CampaignLog` (+ per-find state hashes) as JSON.
+///
+/// This is the gate-deciding run. It boots the bug's image to its readiness marker,
+/// seals a mid-workload base, and drives the **identical** [`run_bench_campaign`]
+/// loop the portable gate drives against the toy — only the backing guest swapped,
+/// with the two M2 prerequisites live: (a) the real guest console is captured through
+/// the task-69 `Console` wire verb so the real `LogSensor`/`CellFnV1` signal sees
+/// guest logs, and (b) fault moments are rebased onto the sealed base's V-time so a
+/// planted fault lands in its vulnerable window.
+///
+/// One campaign per invocation (isolated in its own process on its own leased core),
+/// so the operator runs up to 3 concurrently on distinct cores and compares each
+/// finding's `state_hash` solo vs co-tenant — the determinism stress-test (a solo≠
+/// co-tenant hash is a P0 determinism leak, not a speed hiccup).
+#[cfg(target_os = "linux")]
+pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
+    use benchmark::manifest::{Benchmark, BugId};
+    use benchmark::report::Configuration;
+    use conductor::benchcampaign::{BenchConfig, run_bench_campaign};
+
+    // 1. The (optionally box-calibrated) benchmark manifest + the target bug/config.
+    let bench = match &args.calibration {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(s) => match serde_json::from_str::<Benchmark>(&s) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!(
+                        "[conductor] benchcampaign box: calibration {} is not a valid Benchmark: {e}",
+                        path.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "[conductor] benchcampaign box: cannot read calibration {}: {e}",
+                    path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        None => Benchmark::wave5(),
+    };
+    let Some(spec) = bench.get(BugId(args.bug)).cloned() else {
+        eprintln!(
+            "[conductor] benchcampaign box: no bug {} in the manifest",
+            args.bug
+        );
+        return ExitCode::FAILURE;
+    };
+    let config = match args.config.as_str() {
+        "signal" => Configuration::Signal,
+        "baseline" => Configuration::Baseline,
+        other => {
+            eprintln!(
+                "[conductor] benchcampaign box: --config must be `signal` or `baseline`, got {other:?}"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 2. Boot the bug's guest to its readiness marker + seal a mid-workload base.
+    let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    // 3. The box campaign config: fault moments rebased onto the sealed base
+    //    (M2 prereq 2), replay bar floored at 25/25 (the flag can only raise it).
+    let cfg = BenchConfig::box_campaign(
+        args.seed,
+        args.max_branches,
+        args.replay_n.max(super::REPLAY_BAR),
+    );
+    println!(
+        "[conductor] benchcampaign box: bug {} ({}) / {config:?} / seed {} — {} branches, \
+         verify {}×, fault-rebase {}.\n",
+        spec.id.0, spec.name, args.seed, cfg.max_branches, cfg.replay_n, cfg.fault_rebase,
+    );
+
+    // 4. Drive the campaign over the wire (SocketMachine → real KVM). The real guest
+    //    console rides the `Console` verb into RunTrace.records → the signal.
+    let initial = boot_env();
+    let spec_run = spec.clone();
+    let (served, outcome) = run_session(&mut server, move |stream| {
+        let mut machine = SocketMachine::connect(stream, initial)?;
+        run_bench_campaign(&mut machine, &SpecEnvCodec, &spec_run, &cfg, config)
+    });
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[conductor] benchcampaign box: campaign failed (transport/backend): {e}");
+            if let Err(se) = served {
+                eprintln!("[conductor] benchcampaign box: server session ended with: {se}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(se) = served {
+        eprintln!("[conductor] benchcampaign box: server session ended fatally: {se}");
+        return ExitCode::FAILURE;
+    }
+
+    // 5. Emit the CampaignLog JSON (the offline `benchmark-report` input).
+    match serde_json::to_string_pretty(&outcome.log) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&args.out, json) {
+                eprintln!(
+                    "[conductor] benchcampaign box: write {}: {e}",
+                    args.out.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+        Err(e) => {
+            eprintln!("[conductor] benchcampaign box: serialize CampaignLog: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // The signal GUARDRAIL (user 2026-07-06): the REAL LogSensor/CellFnV1 must
+    // actually produce cells on the box path — a signal campaign that makes ZERO
+    // cells is measuring nothing, and must NOT be quietly accepted as a valid gate
+    // input. Surface the count loudly.
+    let distinct_cells: std::collections::BTreeSet<u64> = outcome
+        .log
+        .events
+        .iter()
+        .flat_map(|e| e.touched.iter().copied())
+        .collect();
+    println!(
+        "[conductor] benchcampaign box: {} branches logged, {} distinct signal cells, {} certified find(s). Wrote {}.",
+        outcome.log.events.len(),
+        distinct_cells.len(),
+        outcome.certs.len(),
+        args.out.display(),
+    );
+    if matches!(config, Configuration::Signal) && distinct_cells.is_empty() {
+        eprintln!(
+            "[conductor] benchcampaign box: WARNING — the SIGNAL config produced ZERO cells. The \
+             real LogSensor/CellFnV1 saw no guest console, so the signal has nothing to steer on. \
+             Do NOT treat this as a valid signal campaign — investigate the console capture before \
+             using this log in the ruling."
+        );
+    }
+    // The finding certificates: `bug branch state_hash` per certified find — the
+    // determinism stress-test compares these solo vs co-tenant (a mismatch is a P0
+    // leak). Printed so a wrapper script can diff them across co-tenancy.
+    for c in &outcome.certs {
+        println!(
+            "[conductor] FIND bug {} branch {} state_hash {}",
+            c.bug.0,
+            c.branch,
+            hex32(&c.state_hash),
+        );
+    }
+    ExitCode::SUCCESS
 }
