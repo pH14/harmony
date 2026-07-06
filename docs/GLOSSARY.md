@@ -101,7 +101,7 @@ counterpoint, dissonance must resolve.
 | **`Reproducer`** | the reproducer artifact — the opaque currency the explorer ferries | `environment::EnvSpec` stays as the decoded form ("the specification of the environment") — do **not** also name it Reproducer, or the original collision is rebuilt one level down |
 | **rollout** | one branch → run → terminal | A rollout *produces* a timeline |
 | **`step`** | one search-loop iteration | pick base → mint reproducer → rollout → admit → judge |
-| **timeline** | one execution history — the data-noun the codebase lacked | Composes with the axis: a timeline is a sequence of `Moment`s; a reproducer replays a timeline; a bug's address is `(timeline, Moment)`. The user-facing word for the resolution layer. **`multiverse` is rejected** — Antithesis branding |
+| **timeline** | one execution history — the data-noun the codebase lacked | Composes with the axis: a timeline is a sequence of `Moment`s; a reproducer replays a timeline; a bug's address is `(timeline, Moment)`. The user-facing word for the resolution layer. **`multiverse` is rejected** — Antithesis branding. NB: pre-task-94 explorer code used "Timeline" for the *inner loop* (`timeline()`/`multiverse_step()`); that sense is dead — any surviving loop-sense use is legacy (see `docs/LAYERS.md`) |
 | **`Span`** | a duration on the `Moment` axis | |
 
 ## Keeps (the defense, one line each)
