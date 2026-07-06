@@ -166,3 +166,107 @@ campaign  — a seeded, budgeted sequence of steps against one workload
    batch with each crate's next substantive PR; `VTime` audits ride each crate's next
    touch. No big-bang rename PR — merged, box-gated, golden-pinned code is not churned
    for vocabulary alone.
+
+---
+
+# Consonance addendum
+
+> **Status: RULED (Paul, 2026-07-06).** The same review, run over consonance. Same
+> discipline: binding on new code immediately; renames ride their scheduled windows; no
+> big-bang. Consonance needed a much smaller slate than dissonance — its verb spine
+> (`branch`/`replay`/`snapshot`/`drop`/`hash`/`run`, `seal`/`quiescent`, `work`) is already
+> bit-consistent from `snapshot-store` through the `ControlServer` to the explorer seam.
+> What it had instead was a handful of cross-family collisions this document's first pass
+> missed because it was written looking at dissonance.
+
+## A fourth governing rule — prefixes are earned by pairs
+
+**The directory provides the family grouping** (`consonance/` is the namespace; a blanket
+`vm-` prefix would restate the path). **A name-prefix is reserved for crates that are two
+halves of one seam or one artifact** — the `sdk-link` precedent, generalized. Consonance
+previously carried three accidental prefix families (`vmm-`, `vm-`, `v`) that encoded
+nothing. After this slate, every prefix names a real pair, and the crate list teaches the
+architecture:
+
+```
+vmm-backend, vmm-core                 the machine (below / above the Backend trait)
+vtime, lapic                          time & interrupt fabric (engine + device model)
+snapshot-store, snapshot-state        the snapshot artifact (memory / everything else)
+hypercall-proto, hypercall-doorbell   the guest channel (frames / transport)
+unison, acceptance-suite              the determinism gates (instrument / gate)
+telemetry                             the operator tap
+```
+
+Corollary: device-model crates are named for the hardware they model (`lapic` today, a
+future `gic` per `docs/ARCH-BOUNDARY.md`) — the hardware name *is* the group marker; no
+prefix.
+
+## Kills
+
+| Legacy | Replacement | Why |
+|---|---|---|
+| "corpus GC" (the snapshot-**pool** sense — `control.rs` `drop`, `explorer/seam.rs`, `explorer/lib.rs` doc comments) | **"pool GC"** | "Corpus" gets exactly one meaning: the acceptance workload suite (payloads + manifest). The retained-state nouns on the spine side are already `Archive`/`Frontier` |
+| "Hypervizor VMM" (`hypercall-proto/src/lib.rs`) | "the deterministic VMM" | Pre-Harmony project-name leftover |
+
+## Renames — crates
+
+| Legacy | New | Why |
+|---|---|---|
+| `det-corpus` | **`acceptance-suite`** | Kills the double-clipped "det-" (the `logtmpl` smell) and the corpus overload; names the role — the engine's acceptance gate (oracles + manifest + report + runner CLI), the domain layer over `unison`. Explicitly **not** folded into `unison`: the instrument stays domain-free (its own non-goal); the gate is a product artifact (CLI exit-code contract, audited manifest, JSON report), not a test suite of the bisector |
+| `vm-state` | **`snapshot-state`** | Completes the snapshot pair: a snapshot is the memory pages (`snapshot-store`) plus this blob — the crate's own first sentence. Also kills the `vm-`/`vmm-` near-collision, which implied a kinship with `vmm-core` that doesn't exist. The `VmState` type and the `vm_state` blob name **stay** — they name the content; the crate names the role |
+| `vmcall-transport` | **`hypercall-doorbell`** | Documented misnomer (the mechanism is a port-I/O doorbell, not `VMCALL`; supersedes the spec's deferred `io-transport`). The prefix groups the channel pair with `hypercall-proto` (frames / transport). ⚠️ Guest payloads depend on it → `MANIFEST.sha256` rebaseline; rides task 43's window (task-90 ruling) |
+
+## Renames — types
+
+| Legacy | New | Why |
+|---|---|---|
+| `unison::Machine` / `MachineFactory` / `MachineError` | **`Subject`** / **`SubjectFactory`** / **`SubjectError`** | The eager one — the `Reproducer` of this addendum. Two load-bearing `Machine` traits (unison's `run_to`/`work`/`state_hash` vs the spine's `branch`/`replay`/`run`), sibling families, and they meet inside `vmm-core` (`corpus.rs` implements one, `control.rs` serves the other). The Keeps line "`Machine`/`EnvCodec` sit below the spine" blessed the **spine's** trait; unison's own doc — "a deterministic machine under test" — is the new name. The spine's `Machine` keeps its name |
+| `det_corpus::Oracle` (enum) | **`OracleKind`** | A which-check selector (O1/O2/O3) vs the spine's `trait Oracle` (kept, citation-grounded). Rides the `acceptance-suite` rename — one PR |
+| `vmm_backend::Event` | **`Injection`** | Three `Event`s in consonance alone (this injectable interrupt/NMI, `telemetry::Event`, hypercall `ServiceId::Event`), all flowing through vmm-core's loop. The backend's is the thing you *inject*; the other two keep the word |
+| `Vtime` (`vmm_backend::types`), `VTime` (control wire) | **`Moment`** / **`Span`** | Already ruled above; noted here because consonance carries *both spellings* of the killed name. Audits ride each crate's next touch — the newest consonance code (`control.rs`, the live gates) already complies |
+
+## Pins — adopted vocabulary, no rename
+
+- **`SnapshotId` vs `SnapId`** — keep both; the pair is the point. `SnapshotId` is the
+  **store-local** resource handle; `SnapId` is the **pool-wide wire** handle the
+  `ControlServer` mints and maps (`control.rs`: "Wire `SnapId` → store `SnapshotId`").
+  This sharpens the Keeps line above ("`SnapId` (raw resource handle)") — the raw handle
+  is `SnapshotId`; `SnapId` is its wire alias.
+- **The two canonical digests + the wire verb** — `state_hash` (all architectural state,
+  latent included) and `observable_digest` (guest-observable output only — O3 is unsound
+  without the distinction). `hash` is the *wire verb*, scoped by `HashScope`. Three names,
+  three roles; do not unify.
+- **"V-time" survives as the mechanism's name.** The kill above retired `VTime` the
+  *type*, not the word: V-time names the work-derived clock itself; `Moment`/`Span` name
+  positions and durations **on** it. The `vtime` crate and its prose stand.
+- **The mirror-type pattern is deliberate.** Same-name local mirrors under conventions
+  rule 2 (`telemetry::ExitCounts` mirrors `vmm_backend::ExitCounts`; `snapshot-state`'s
+  `VcpuRegs`/`Segment`/… mirror `vmm-backend`'s) are **not** collisions — the marker is
+  the "local mirror of X" doc comment. Future naming reviews prosecute unmarked
+  duplicates only.
+
+## Reserved — consonance
+
+- **The `vmm-core` split names.** `vmm-core` is a grab-bag ("core" answers "what does this
+  do" with "everything"), but that is a packaging problem `docs/ARCH-BOUNDARY.md` §B
+  already owns: engine/personality module split now, **crate split only when an ARM
+  backend lands**. The role names are minted at that window — candidates: `engine` (the
+  arch-neutral half; family-consistent with "consonance, the deterministic engine"), the
+  personality crates per ARCH-BOUNDARY's own vocabulary, and possibly `control-server`
+  peeling off. Reserved so the split does not improvise; do not rename `vmm-core` before
+  it.
+
+## Sequencing — consonance
+
+1. **Binding on new code immediately.**
+2. **Eager, standalone**: `unison::Machine` → `Subject` — the cross-family collision every
+   future reader pays for.
+3. **Cheap, anytime**: `det-corpus` → `acceptance-suite` (+ `OracleKind` folded in — one
+   dev-dep reverse edge, CI path globs, doc refs; no goldens, no wire); `vm-state` →
+   `snapshot-state` (one reverse dep, no wire/golden impact).
+4. **Task 43's window**: `vmcall-transport` → `hypercall-doorbell` (MANIFEST rebaseline),
+   alongside the R-L4 payloads/golden move to consonance's test surface.
+5. **Rides next touch**: `vmm_backend::Event` → `Injection`; the `Vtime`/`VTime` audits;
+   the doc-comment kills (pool GC, Hypervizor).
+6. **No big-bang** — merged, box-gated, golden-pinned code is not churned for vocabulary
+   alone.
