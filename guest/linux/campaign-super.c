@@ -190,12 +190,46 @@ int main(void)
     // branches are dead code — until a single-event upset makes one fire. Every
     // `l->` access is a volatile load/store (above), so the guards are never
     // optimized out and the host's flip is always seen.
+    //
+    // Realistic operational logging (task 69 M2 — see IMPLEMENTATION §"guest
+    // logging"): a supervised retry-worker emits periodic health/progress lines a
+    // real service would, so the log-template signal (task 67) has a workload to
+    // read. Every line below is **bug-agnostic by construction** — its content is
+    // a function of the worker's *normal* budget cycle `[0, BUDGET_MAX/2)`,
+    // chosen WITHOUT reference to the planted trigger (which fires only when
+    // `budget` leaves `[0, BUDGET_MAX)` or the canary flips). None encodes
+    // proximity to the trigger; a fault that perturbs the ledger changes the
+    // worker's *state*, and the logs reflect that state exactly as a real
+    // service's would. `last_phase` makes the phase line fire on transitions only
+    // (periodic, not per-iteration).
+    long last_phase = -1;
     for (long i = 0; i < ITERS; i++) {
         if (l->canary != CANARY) {
             report_bug_and_die("canary");
         }
         if (l->budget < 0 || l->budget >= BUDGET_MAX) {
             report_bug_and_die("budget");
+        }
+        long budget = l->budget;
+        // (a) Lifecycle phase across the normal cycle — a real worker logs its
+        //     warmup/steady/drain stage (generic operational stages).
+        long phase = (budget * 3) / (BUDGET_MAX / 2);
+        if (phase != last_phase) {
+            const char *name = phase <= 0 ? "warmup" : (phase == 1 ? "steady" : "drain");
+            printf("supervisor: lifecycle phase %s\n", name);
+            // (b) A backpressure notice a real service emits under sustained load
+            //     (a generic load band, NOT the crash threshold).
+            if (phase >= 2) {
+                printf("supervisor: backpressure engaged, shedding retries\n");
+            }
+            fflush(stdout);
+            last_phase = phase;
+        }
+        // (c) A periodic checkpoint line — a real worker commits a checkpoint each
+        //     batch of processed work (a standard progress/observability log).
+        if (i % 4096 == 0) {
+            printf("supervisor: checkpoint committed, batch complete\n");
+            fflush(stdout);
         }
         l->budget = (l->budget + 1) % (BUDGET_MAX / 2);
     }
