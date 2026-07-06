@@ -705,3 +705,103 @@ Deviations considered: storing markers inside the override map as a new
 seam (it never reaches `decide`), and the one-action-per-`Moment` rule would
 collide a reseed with a host fault at a shared branch origin. A separate
 table keeps both recordable and the apply order fixed (reseed before fault).
+
+---
+
+# IMPLEMENTATION — task 85 (run the `EnvCodec::compose` rekeying flake to ground, issue #72)
+
+**Classification: (a) a flaky / underspecified test. `compose` is correct — no
+production code changed.** The intermittent proptest failure was a too-strong
+assertion in the test `compose_rekeys_overrides_at_any_offset`, not a
+non-determinism in `compose`'s rekeying.
+
+## The counterexample (captured verbatim)
+
+Hunting with the cached regression file cleared and `PROPTEST_CASES=200000`
+reproduced the failure on the first run. Shrunk minimal input (now checked in as
+`tests/envcodec.proptest-regressions`):
+
+```
+base_ov = {850009: Host(SkewTime(VTime(0)))}
+tail_ov = {677257: Host(SkewTime(VTime(0)))}
+seed = 0,  policy = FaultPolicy::none(),  at = 172752
+```
+
+The load-bearing arithmetic: **`677257 + 172752 == 850009`**. The tail's one
+override at Moment `677257` re-keys to `677257 + at = 850009`, which is exactly
+the base's override Moment. Since `850009 ≥ at`, the base entry is in the
+**discarded suffix** `[at, ∞)`.
+
+## Root cause — the test, not `compose`
+
+`compose(base, tail, at)` keeps `base`'s prefix `[0, at)` and splices the tail in
+at `at`, re-keying every tail Moment by `+ at`. The base *suffix* `[at, ∞)` is
+discarded; the tail's spliced-in timeline governs it. So the correct output here
+is `{850009: Host(SkewTime(VTime(0)))}` — one entry, sourced from the **tail**
+(verified directly). That is exactly what `compose` returns.
+
+The proptest's `else` branch, however, asserted `!out.contains_key(m)` for every
+base Moment `m ≥ at` ("base entry ≥ at is dropped"). That conflates *"the base's
+entry at `m` is dropped"* (true) with *"nothing is at `m`"* (false whenever a
+tail Moment aligns to `m - at`). The base entry **is** dropped; a tail override
+legitimately re-keys onto the same Moment. The collision is rare — it needs a
+base Moment, a tail Moment, and `at` to satisfy `base_m = tail_m + at` — so the
+failure was intermittent and vanished once the auto-saved regression seed was
+cleared, precisely as issue #72 described ("fault-schedule offsets at particular
+positions").
+
+## The fix — state the property correctly (never weaken it)
+
+The `else` branch now asserts the *real* splice contract, which is strictly
+stronger, not weaker:
+
+```rust
+// at any m >= at, out[m] is the tail's re-keyed entry (its m - at), or absent —
+// never the base's dropped entry.
+prop_assert_eq!(out.get(m), tail_ov.get(&(m - at)));
+```
+
+In the common case (tail empty at `m - at`) this reduces to the old
+`!out.contains_key(m)`; in the aligned case it correctly requires the tail's
+value. Combined with the unchanged length assertion (`out.len() == kept_base +
+tail_ov.len()`) and the tail/prefix assertions, the output map is fully pinned.
+The property doc comment was updated to state that the base suffix is governed by
+the tail's re-keyed timeline.
+
+A deterministic concrete regression, `compose_tail_rekeys_onto_dropped_base_moment`,
+pins the exact counterexample (with distinct `SkewTime(0)`/`SkewTime(7)` values so
+it also proves the **tail** — not the base — wins the aligned Moment). The
+`tests/envcodec.proptest-regressions` file is checked in so the shrunk seed is
+re-run before any novel case, permanently.
+
+## Evidence: fails pre-fix, passes post-fix
+
+- **Pre-fix:** restoring the old `!out.contains_key(m)` assertion and replaying the
+  checked-in regression seed fails deterministically in 0.02 s at the default 256
+  cases (no hunt needed — it is the persisted counterexample).
+- **Post-fix:** `compose_rekeys_overrides_at_any_offset` is green at
+  `PROPTEST_CASES=300000` (≈1.9×10⁶ cases total across the hunt + verification
+  runs), and the concrete regression passes.
+
+## Determinism cross-check + gates
+
+- `cargo test -p environment` fully green **twice back-to-back** with the
+  regression file present (22 tests in `envcodec.rs`; `determinism.rs`,
+  `replay.rs`, `golden.rs` all green both runs) — no residual flake.
+- `cargo fmt -p environment -- --check` clean; `cargo clippy -p environment
+  --all-features --all-targets -- -D warnings` exit 0 (only the pre-existing
+  workspace `clippy.toml` `rand::*` meta-diagnostics, which cite no crate code);
+  `cargo deny check` — advisories/bans/licenses/sources ok.
+
+## Deviations considered and rejected
+
+- **Deleting or loosening the `else` assertion** to make it pass — rejected; that
+  would weaken the property. The replacement is *stronger* (it pins the aligned
+  case rather than tolerating it).
+- **"Fixing" the generator** (e.g. `prop_assume`-ing away aligned inputs, or forcing
+  base/tail Moment ranges disjoint) — rejected. The aligned case is legal input that
+  `compose` handles correctly; excluding it would hide a real, tested behavior (the
+  tail governs the suffix) rather than assert it.
+- **Touching `compose`/`rekey_moment`** — rejected; `compose` was correct. Per the
+  spec's surface rule, source is touched only on a proven compose bug, and there was
+  none. No change to `src/`.
