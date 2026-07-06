@@ -197,6 +197,15 @@ mod tests {
     }
 
     #[test]
+    fn prefix_pins_the_text_version() {
+        // The prefix embeds the version, so the two cannot drift.
+        assert_eq!(
+            MomentRef::PREFIX,
+            format!("mref{}", MomentRef::TEXT_VERSION)
+        );
+    }
+
+    #[test]
     fn round_trips_a_seeded_env() {
         let m = MomentRef::new(seeded(0xDEAD_BEEF), 4242);
         let text = m.to_string();

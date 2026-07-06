@@ -43,11 +43,20 @@ pub struct Record {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
-    /// `open` landed a materialization: the moment reached, the whole-state hash
-    /// (hex), and the lineage taint bit.
+    /// `open` landed a materialization: the moment reached, the landing
+    /// [`StopReason`](control_proto::StopReason) kind (so an early crash /
+    /// quiescence *before* the requested moment is visible, never a swallowed
+    /// clean open), the whole-state hash (hex), and the lineage taint bit.
     Opened {
-        /// The moment the materialization landed at.
+        /// The moment the materialization landed at (may be *earlier* than the
+        /// requested moment if the guest stopped short — compare with the `open`
+        /// command's `MomentRef`).
         moment: u64,
+        /// The landing stop kind: `deadline` (reached the requested moment) vs
+        /// `crash` / `quiescent` (stopped short).
+        stop: String,
+        /// Optional stop detail (a crash's kind + message).
+        detail: Option<String>,
         /// The `hash(Whole)` at the landing (hex).
         hash: String,
         /// Whether the landed timeline is tainted.
@@ -102,8 +111,9 @@ pub enum Outcome {
     /// [`Stop`](Outcome::Stop). Carries the `SessionError` display verbatim
     /// (including a `Tainted` guard).
     Error {
-        /// A short category label (`control` / `tainted` / `read` /
-        /// `nothing_open` / `parse` / `transport`).
+        /// A short category label: a [`SessionError`](crate::SessionError)
+        /// category (`control` / `tainted` / `read` / `nothing_open` /
+        /// `negotiation` / `transport`) or a REPL-level one (`parse`).
         category: String,
         /// The error's `Display` string, verbatim.
         message: String,
@@ -122,13 +132,21 @@ pub fn render_line(r: &Record) -> String {
     let rendered = match &r.outcome {
         Outcome::Opened {
             moment,
+            stop,
+            detail,
             hash,
             tainted,
-        } => format!(
-            "opened @moment {moment} hash {}{}",
-            short(hash),
-            taint_flag(*tainted)
-        ),
+        } => {
+            let d = match detail {
+                Some(d) => format!(" ({d})"),
+                None => String::new(),
+            };
+            format!(
+                "opened @moment {moment} stop={stop}{d} hash {}{}",
+                short(hash),
+                taint_flag(*tainted)
+            )
+        }
         Outcome::Regs { view } => format!(
             "rip={:#018x} rflags={:#010x} cr3={:#x} cs={:#06x} @moment {} (regs v{})",
             view.rip, view.rflags, view.cr3, view.seg[0], view.moment, view.version
@@ -230,6 +248,8 @@ mod tests {
                 cmd: "open mref1:100:00ff".to_string(),
                 outcome: Outcome::Opened {
                     moment: 100,
+                    stop: "deadline".to_string(),
+                    detail: None,
                     hash: "abcdef0123456789".to_string(),
                     tainted: false,
                 },

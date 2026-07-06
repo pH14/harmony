@@ -18,7 +18,12 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **30 tests.**
+end-to-end live==replay test. **32 tests.**
+
+`materialize`/`open` **surface the landing `StopReason`** (`MaterializedSession::stop`, and the
+`Opened` transcript record's `stop`/`detail`): a guest that crashes or quiesces *before* the
+requested moment lands at that earlier moment and reports the crash/quiescence, never a swallowed
+clean open (test `open_surfaces_an_early_crash_stop`).
 
 ## The load-bearing decision: the `Server` seam (and why not raw `control-proto`)
 
@@ -141,8 +146,8 @@ run per `docs/BOX-PINNING.md`, `taskset -c 2`), the Postgres image, **and merged
 The laptop gate already exercises the identical client/REPL/transcript logic against the mock
 (`materialize_is_deterministic_from_genesis`, `inspection_does_not_change_a_later_hash`,
 `exec_taints_the_fork_and_leaves_the_original_unperturbed`,
-`vary_counterfactual_visibly_diverges_and_can_crash`, `repl_drives_the_whole_investigation`), so the
-box gate is a live re-confirmation, not new logic.
+`vary_counterfactual_visibly_diverges_and_can_crash`, `open_surfaces_an_early_crash_stop`,
+`repl_drives_the_whole_investigation`), so the box gate is a live re-confirmation, not new logic.
 
 ### Box transcript
 

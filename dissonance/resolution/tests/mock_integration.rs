@@ -188,6 +188,45 @@ fn vary_counterfactual_visibly_diverges_and_can_crash() {
     }
 }
 
+#[test]
+fn open_surfaces_an_early_crash_stop() {
+    // A MomentRef whose env crashes (staged CorruptMemory at 3_000) with a
+    // requested moment PAST the crash: materialize must land at the crash and
+    // surface the Crash StopReason, never report a clean open at 3_000 as if the
+    // requested 5_000 was reached.
+    let mut sess = session(11);
+    let base = mref(11, 5_000);
+    let faulted = base.vary(&OverrideEdit::Set {
+        at: 3_000,
+        action: Action::Host(HostFault::CorruptMemory {
+            gpa: 0x4000,
+            mask: environment::BitMask(0x1),
+        }),
+    });
+
+    let ms = sess.materialize(&faulted).unwrap();
+    assert_eq!(
+        ms.moment(),
+        3_000,
+        "landed at the crash, short of the request"
+    );
+    assert!(
+        matches!(ms.stop(), resolution::StopReason::Crash { .. }),
+        "the landing StopReason is surfaced, not swallowed"
+    );
+
+    // And through the REPL: the Opened record carries the crash stop kind.
+    let mut shell = Shell::new(session(11));
+    let opened = line(&mut shell, &format!("open {faulted}"));
+    match opened.outcome {
+        Outcome::Opened { moment, stop, .. } => {
+            assert_eq!(moment, 3_000);
+            assert_eq!(stop, "crash");
+        }
+        other => panic!("expected Opened, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // REPL-level: every command through the line protocol, both categories.
 // ---------------------------------------------------------------------------

@@ -276,9 +276,15 @@ impl<S: Server> Shell<S> {
                 Ok(mut ms) => {
                     let moment = ms.moment();
                     let tainted = ms.tainted();
+                    // Surface the landing stop: a crash/quiescence before the
+                    // requested moment is visible here, not a swallowed open.
+                    let stop = stop_kind(ms.stop()).to_string();
+                    let detail = stop_detail(ms.stop());
                     match ms.hash() {
                         Ok(h) => Outcome::Opened {
                             moment,
+                            stop,
+                            detail,
                             hash: to_hex(&h),
                             tainted,
                         },
@@ -340,9 +346,12 @@ impl<S: Server> Shell<S> {
                 },
                 None => err_outcome(&SessionError::NothingOpen),
             },
-            // Handled in `dispatch`; unreachable here.
+            // `transcript` is a view, intercepted by `dispatch` before it
+            // reaches here; this arm exists only to keep the match exhaustive.
+            // Recorded as a `parse`-category note rather than an invented
+            // category (it is not a `SessionError`); statically unreachable.
             Command::Transcript => Outcome::Error {
-                category: "internal".to_string(),
+                category: "parse".to_string(),
                 message: "transcript is a view, not a recorded command".to_string(),
             },
         }

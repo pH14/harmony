@@ -3,6 +3,11 @@
 //! transcript, then re-rendered from that transcript — asserting the live
 //! rendering and the replay are **byte-identical** (the one-renderer principle,
 //! through the real process, clap, stdin loop, and file I/O).
+//!
+//! Gated on the `cli` feature (the `[[bin]]` is), so `--no-default-features`
+//! builds cleanly — `env!("CARGO_BIN_EXE_resolution")` only resolves when the
+//! bin exists.
+#![cfg(feature = "cli")]
 
 use std::io::Write;
 use std::process::{Command, Stdio};

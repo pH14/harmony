@@ -30,6 +30,12 @@ struct Current {
     /// Whether an [`exec`](MaterializedSession::exec) improvisation has tainted
     /// this timeline (displayed prominently; reset on re-materialize).
     tainted: bool,
+    /// The [`StopReason`] that last positioned this timeline — the landing of
+    /// the materialize `run`, updated by each [`run`](MaterializedSession::run).
+    /// So a crash or early quiescence *before* the requested moment is never
+    /// swallowed: it is visible via [`stop`](MaterializedSession::stop) and in
+    /// the transcript's `Opened` record.
+    stop: StopReason,
 }
 
 /// A connected session over a control-transport [`Server`]. Holds the genesis
@@ -118,6 +124,7 @@ impl<S: Server> Session<S> {
             env: mref.env.clone(),
             moment: stop_vtime(&stop),
             tainted: false,
+            stop,
         });
         Ok(())
     }
@@ -177,6 +184,16 @@ impl<S: Server> MaterializedSession<'_, S> {
         MomentRef::new(c.env.clone(), c.moment)
     }
 
+    /// The [`StopReason`] that last positioned this timeline — the landing of
+    /// the materialize, updated by each [`run`](Self::run). `materialize`/`open`
+    /// swallow no outcome: if the guest **crashed** or **quiesced** before the
+    /// requested moment (so [`moment`](Self::moment) is *earlier* than asked),
+    /// that is visible here (and in the transcript's `Opened` record) rather
+    /// than looking like a clean landing.
+    pub fn stop(&self) -> &StopReason {
+        &self.cur().stop
+    }
+
     /// **Observation:** read `len` bytes of guest physical memory at `gpa`.
     /// Hash-invariant; out-of-range/oversized is a loud error, never a short
     /// read.
@@ -207,7 +224,9 @@ impl<S: Server> MaterializedSession<'_, S> {
             deadline: Some(VTime(until)),
             on: StopMask::NONE,
         })?;
-        self.cur_mut().moment = stop_vtime(&stop);
+        let cur = self.cur_mut();
+        cur.moment = stop_vtime(&stop);
+        cur.stop = stop.clone();
         Ok(stop)
     }
 
