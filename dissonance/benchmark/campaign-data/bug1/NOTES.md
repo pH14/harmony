@@ -17,6 +17,10 @@
   `rmmod kvm_intel kvm; modprobe kvm; modprobe kvm_intel` and verify `1396736` on a
   fresh ssh.
 
+## ⛔ SUPERSEDED (2026-07-07) — the "verb not supported" blocker was STALE; the real
+## blocker is crash-terminal FEASIBILITY. See "## 2026-07-07 GROUND TRUTH" below.
+## Everything in this section is kept for history but is NOT the current blocker.
+
 ## THE BLOCKER (calibration) — a fault offset > 0 is rejected "verb not supported"
 - `calibration.json` sets bug 1's gpa to the real ledger **canary** gpa on the
   logged image (`0x7fbe2000` = 2143166464; printed as `CAMPAIGN_LEDGER_GPA` at boot,
@@ -102,3 +106,65 @@ rule GO/NO-GO on the data — an honest NO-GO is a real result.
    dissonance/benchmark/CORRELATION-REPORT.md`. **Record the zero-cell scope statement**
    (the log-template signal is inert on silent workloads; selectors must fall back to
    baseline on zero cells). Rule GO/NO-GO honestly — an honest NO-GO is a real result.
+
+---
+
+## 2026-07-07 GROUND TRUTH (fresh session; box-verified) — supersedes the seal-arm story
+
+**The "verb not supported" blocker was STALE and mis-diagnosed.** Two facts, one from
+static analysis (code at HEAD 136db19; no Rust changed since 040771d) and one from a
+live box run, kill it:
+
+1. **Static:** `can_arm_arrival()` is `vtime.is_some() && backend.deterministic_tsc` —
+   a **static backend capability**, NOT a property of the seal point. Patched KVM sets
+   `deterministic_tsc = true` (`vmm-backend/src/kvm.rs:728`), and V-time is always wired,
+   so `can_arm_arrival()` is **unconditionally true** on the bench server. A plain minted
+   `Recorded{Host(CorruptMemory)}` env (which is what bug 1's branch envs are — identical
+   structure for offset-0 and offset-500, only the `Moment` key differs) passes **every**
+   `Unsupported` gate in `control.rs`'s `restore`/`check_fault_admissible`. So the code
+   **cannot** return `Unsupported` for bug 1's fault in an offset-dependent way. The
+   "re-seal to an arm-capable boundary" fix targets a mechanism that does not exist.
+2. **Live:** `bench-campaign --bug 1 --config baseline --seed 1 --deadline-delta 200000
+   --calibration calibration.json` (window `[1500,1520]` → offset ~496 past the seal)
+   runs **cleanly**: EXIT=0, all branches log, real LogSensor makes cells, KVM reverts to
+   stock. **No "verb not supported".** The offset>0 fault stages and applies fine.
+
+**THE REAL BLOCKER — crash-terminal feasibility (this is what actually gates M2):**
+Per-branch `BENCH_DIAG=1` shows the bug DOES fire. Branches with the correct canary gpa
+`0x7fbe2000` print the `CAMPAIGN_BUG` marker (`marker=true`) — the planted bug triggers.
+But the crash terminal is the SLOW path: all three isa-debug-exit channels FAIL on this
+kernel (no `CONFIG_X86_IOPL_IOPERM` / `CONFIG_DEVPORT` — documented in
+`conductor/IMPLEMENTATION.md`), so the bug falls back to `_exit(0x60)` → `/init` `reboot -f`
+→ triple-fault → `Crash{Shutdown}`. That reboot is at **seal + ~4.8M V-time**:
+  - deadline 200000 → firing branch stops at **`Deadline`** (`judge=false`) BEFORE the
+    crash → **NOT certified** (this is why the small-deadline plan / ruling (c) fails).
+  - deadline 8_000_000 → firing branch reaches **`Crash{Shutdown}`** at vtime 463116585,
+    `judge=true`, **CERTIFIES 25/25** (seed 1, branch 1, state_hash
+    `bc3cde425cd3e74ff0310c7eb353d595b703a5a2a7dd7799366995e3480ecf9d`). **Gate 2
+    (benchmark validity) for bug 1 is DONE** — the reproducer replays the identical crash.
+
+**Box cost model (measured):** ~60k vns/sec; per-branch ≈ `1.7s + deadline/60_000`.
+Non-firing branch runs the busy loop to the deadline; firing branch executes ~4.8M vns to
+the reboot. So crash-terminal certification needs deadline ≥ ~5M → **~80–133 s/branch** →
+a 120-campaign suite (≥20 seeds × 2 configs × 3 bugs) is **infeasible** (weeks).
+
+**THE FIX (decision point — see issue #66 / commit): terminal-agnostic, marker-based
+certification.** A find = the per-bug MARKER present + 25/25 replays reproducing the
+identical `(stop, state_hash)` — decoupled from *which* terminal. Run the ≥20-seed
+CORRELATION campaigns at a SMALL deadline (~2s/branch, feasible: ~6h for 120 campaigns
+3-wide); the marker (at seal+~500) is captured well before the small deadline, and 25/25
+determinism still holds at the `Deadline` stop. Gate-2 VALIDITY (a real `Crash`) is proven
+separately per bug with ONE large-deadline run (bug 1 already ✅ above). Gate integrity is
+preserved: the marker is per-bug and only the planted bug prints it (attribution), and
+25/25 identity is unchanged (determinism). The M1 gate-integrity tests still hold
+(unmarked crash → no marker → not a find; drifting hash → replays differ → not certified).
+
+**Other confirmed facts:**
+- Ledger gpa `0x7fbe2000` (canary) is correct for the logged image (boot prints
+  `CAMPAIGN_LEDGER_GPA: canary=0x7fbe2000`). calibration.json `crash_kind: Shutdown` is
+  right (the reboot fallback IS a Shutdown).
+- The three issue-#66 P2s (#3 stads `Frac` overflow, #4 order-super torn window, #5
+  ORDER_BUG crash_kind Shutdown) are **already folded in** (all cite "round-7 P2").
+- `BENCH_DIAG=1` env-gated per-branch diagnostics added to `run_bench_campaign` (stderr
+  only, never touches state/hash — a golden run is bit-identical). Keep it; it's how you
+  watch a long campaign + calibrate a bug.

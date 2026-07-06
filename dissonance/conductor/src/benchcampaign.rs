@@ -703,6 +703,38 @@ pub fn run_bench_campaign<M: Machine>(
         let trace = trace_of(machine, stop, env.clone())?;
         let touched = cells_of(spec, &signal, &trace);
 
+        // Opt-in per-branch diagnostics (`BENCH_DIAG=1`): print each branch's
+        // injected schedule, terminal, marker/judge attribution, and cell count.
+        // Pure observation (stderr only) — never touches campaign state or a
+        // hash — so a golden run (env unset) is bit-identical. The box operator
+        // uses it to calibrate a bug's trigger (does the fault fire? does the
+        // marker attribute?) and to watch a long campaign's progress.
+        if std::env::var_os("BENCH_DIAG").is_some() {
+            let sc = scenario_of(&env);
+            let faults: Vec<String> = sc
+                .faults
+                .iter()
+                .map(|p| match p.kind {
+                    FaultKind::CorruptMemory { gpa, mask } => {
+                        format!("Corrupt@{} gpa={gpa:#x} bit={}", p.at, mask.trailing_zeros())
+                    }
+                    FaultKind::InjectInterrupt { vector } => {
+                        format!("Interrupt@{} vec={vector:#x}", p.at)
+                    }
+                })
+                .collect();
+            let marker = marker_attributed(&trace, spec);
+            let judged = oracle.judge(&trace).is_some();
+            let n_records = trace.records.len();
+            eprintln!(
+                "[bench-diag] branch {branch} {config:?} seed={} faults=[{}] stop={:?} marker={marker} judge={judged} cells={} records={n_records}",
+                cfg.campaign_seed,
+                faults.join(", "),
+                trace.terminal,
+                touched.len(),
+            );
+        }
+
         // Admit an exemplar iff it claimed a fresh cell (novelty archive).
         let mut novel = false;
         for &c in &touched {
