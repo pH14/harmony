@@ -159,6 +159,81 @@ preserved: the marker is per-bug and only the planted bug prints it (attribution
 25/25 identity is unchanged (determinism). The M1 gate-integrity tests still hold
 (unmarked crash → no marker → not a find; drifting hash → replays differ → not certified).
 
+## 2026-07-07 FOREMAN RULING + VALIDATED + CAMPAIGN LAUNCHED (recycle handoff)
+
+**Foreman ruling (on the flagged marker-based-cert decision):** PROVISIONALLY
+APPROVED, 4 binding conditions: (1) per-find cert = marker + 25/25 identical
+`(stop, state_hash, marker)` at the campaign deadline [✅ implemented exactly];
+(2) per-bug VALIDITY cert MANDATORY — one large-deadline run proving the marker's
+branch reaches a real `Crash`, for EACH bug before it enters the suite [bug 1 ✅
+`Crash{Shutdown}`@463116585 / state_hash bc3cde42..., certified 25/25; bugs 2/3
+PENDING]; (3) CORRELATION-REPORT.md must state the two-part realization
+explicitly; (4) keep the gate-integrity tests [✅ kept + added
+`marker_bearing_deadline_stop_is_a_find`].
+
+**IMPLEMENTED (commit baa1fed):** terminal-agnostic marker-based certification in
+`benchcampaign.rs` — find = `marker_attributed(&trace, spec)`; `certify_replays`
+is marker- + deadline-aware (replays run at the campaign `until`, require
+identical `(stop, state_hash)` + marker each), `verify_replays` removed. All 11
+benchcampaign tests green.
+
+**VALIDATED on box:** bug 1 certifies a find at deadline **50000** via the
+marker path (seed 1 branch 1 → `Deadline`@458446116, marker=true, certified 25/25,
+state_hash ffadc25d...). Box reverts to stock cleanly.
+
+**CAMPAIGN PARAMETERS (chosen):** `--deadline-delta 50000 --max-branches 512
+--replay-n 25`, 20 seeds (1..20) × 2 configs, 3-wide + 3 solo (baseline seeds
+1..3) `--exclusive` determinism spot-checks. Bug 1 is EASY on the box (fires on
+ANY canary bit-flip at gpa 0x7fbe2000 — the guest checks the canary every loop
+iteration, so no timing-window constraint like the toy; P(fire)≈1/4 → found at
+~4 branches). The hard, discriminating bugs are 2 (interrupt 1/256) and 3
+(rare-entropy 1/256) — they need the 512 budget.
+
+**ORCHESTRATOR:** `dissonance/benchmark/campaign-data/run-bug1-campaign.sh`
+(committed). **Box-window concurrency lesson (2 failed launches):** NEVER
+background `box-window.sh acquire` — concurrent first-acquires race the
+window-open (`load_patched` ABORTs once patched is loaded → empty core). The
+robust design: acquire 3 PERSISTENT leases SERIALLY up front, run 3 fixed-core
+serial streams, release all 3 at the end, then solo `--exclusive` spot-checks.
+Launched detached; results land in `~/t69m2-results/bug1/` on the box
+(`progress.log`, `*.json`, `finds.log`, `determinism.log`).
+
+**BOX COST MODEL (measured):** ~60k vns/sec; per-branch ≈ `3s overhead +
+deadline/60k` (deadline 50000 → ~3.8s non-firing). Firing branches overshoot the
+opportunistic deadline to ~seal+157k (the reboot's next exit) → ~5.6s; the
+25-replay cert ≈ ~140s (once per campaign, at the first find). ~30-40 min/campaign
+→ bug-1 suite (43 campaigns) ≈ ~8h at 3-wide.
+
+**REMAINING RECIPE (for the fresh session):**
+1. Monitor `~/t69m2-results/bug1/progress.log` until `ORCH DONE`; check
+   `determinism.log` for `P0-DIVERGENCE` (a solo≠co-tenant hash is a P0 STOP +
+   escalate — never serialize to hide it). `scp` the `*.json` back, commit under
+   `dissonance/benchmark/campaign-data/bug1/`. Box hygiene: if the orchestrator
+   dies, `kill -9 -<pgid>`, `pgrep -x conductor | xargs -r kill -9`, then
+   `rmmod kvm_intel kvm; modprobe kvm; modprobe kvm_intel` and verify 1396736 on
+   a FRESH ssh (never `pkill -f` — self-matches the wrapper argv).
+2. **Bugs 2 (order) & 3 (uuid):** their guest sources exist
+   (`guest/linux/order-super.c`, `uuid-super.c`) but need the same realistic
+   bug-agnostic operational logging campaign-super got, plus
+   `build-order-image.sh`/`build-uuid-image.sh` + `order-init.sh`/`uuid-init.sh`
+   (model on `build-campaign-image.sh`/`campaign-init.sh`; markers
+   `ORDER_READY`/`UUID_READY`; both `crash_kind: Shutdown` — same reboot fallback,
+   the channels fail the same way). Build; calibrate each trigger on the box
+   (order: vector 0x81 + window offset; uuid: 8-bit prefix — the entropy draw is
+   post-snapshot RDRAND, so it varies per branch); **gate-2 validity run each**
+   (large deadline, confirm a real `Crash` + 25/25 — condition 2) BEFORE the
+   suite; then run 20×2 campaigns each (clone the orchestrator, swap
+   `--bug`/`--initramfs`/`--ready-marker`/`--calibration`).
+3. **Report:** concat all `*.json` → `benchmark-report --logs all.json --out
+   dissonance/benchmark/CORRELATION-REPORT.md`. STATE THE TWO-PART REALIZATION
+   (condition 3): correlation runs = marker-based finds at a small deadline;
+   validity = per-bug large-deadline `Crash` + 25/25. Record the cell count +
+   zero-cell scope statement. Rule GO/NO-GO honestly (GO needs cell novelty
+   correlating with bug progress on ≥2 of 3 bugs + signal median not worse than
+   baseline on any bug; else NO-GO → iterate task-67 CellFn). Note bug 1's
+   easy/degenerate TTB (~4, low variance) — it will show weak correlation; the
+   ruling leans on bugs 2/3.
+
 **Other confirmed facts:**
 - Ledger gpa `0x7fbe2000` (canary) is correct for the logged image (boot prints
   `CAMPAIGN_LEDGER_GPA: canary=0x7fbe2000`). calibration.json `crash_kind: Shutdown` is
