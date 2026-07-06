@@ -33,12 +33,46 @@
   Likely cause: **`seal_base`'s snapshot-retry lands the base at a point that is
   quiescent-for-snapshot but NOT arm-capable (synchronized)**, unlike task-60's seal.
   Confirm by comparing `can_arm_arrival()` at the bench seal vs the task-60 seal.
-- **Resolution options** (pick after confirming): (a) seal at an arm-capable
-  synchronized boundary (make `seal_base` land where `can_arm_arrival()` is true, not
-  just any snapshottable point) — preferred, keeps a real window search; or (b) if
-  arm_arrival isn't available on this seal, calibrate the fault to `at == floor`
-  (offset 0) — corrupt the ledger right at the seal, which still fires (the loop
-  checks the canary every iteration) but pins the fault to one Moment (thin search).
+### FOREMAN RULINGS (2026-07-06) + the confirmed fix design
+- **Ruling: option (a)** — make `seal_base` land at an arm-capable synchronized
+  boundary (keep a REAL window search). Option (b) (offset-0) is REJECTED as primary:
+  it thins exactly the timing-window search this benchmark discriminates on.
+- **First CONFIRM the diagnosis**: compare `can_arm_arrival()` at the bench seal vs
+  the task-60 seal. Practical confirm without server instrumentation: run task-60's
+  `conductor campaign box` (its own `--gpa-base`/`--window-*`) against the **new logged
+  image** with an offset>0 fault. If it ALSO fails "verb not supported", the arm-
+  incapable seal is a property of the image/seal, not bench-specific (the realistic
+  logging moved the seal point off a synchronized boundary); if task-60 works, the
+  bench harness differs and that difference is the bug.
+- **Scope**: fix INSIDE this task's surface if the bench harness can do it against
+  EXISTING vmm-core APIs (a seal-retry *condition*). Only if it needs a vmm-core/control
+  change: keep it minimal, call it out in the PR as a task-59 seam amendment, do NOT
+  split into a separate task (M2 blocks 70/72/76). If that change is non-trivial
+  (semantics, not a retry condition) → checkpoint + escalate, don't build it.
+
+### Refined root cause + the in-surface fix (retry-condition, existing APIs)
+The snapshot-retry in `seal_base` retries only on `NotQuiescent`, so it lands at the
+first **snapshottable** point — which is NOT necessarily **synchronized / arm-capable**
+(a deadline/quiescent stop can be off a V-time intercept). A fault at offset>0 then
+can't arm. Fix `seal_base` to also require arm-capability before committing the base:
+after `snapshot()` succeeds, **probe** it — `machine.branch(base, <minimal CorruptMemory
+at relative offset 1>)`; the branch-time fault validation is side-effect-free on
+rejection (`control.rs` doc), so `Ok` ⇒ arm-capable (the staged probe fault is
+discarded by the campaign's first real branch), a `verb-not-supported` reject ⇒ NOT
+arm-capable → `drop_snap` + nudge (`run(deadline vt+step)`) + re-snapshot, looping to
+`snapshot_max_attempts`. Detection caveat: `ControlError::Unsupported` currently maps to
+`MachineError::Transport("control error: verb not supported by this backend")` — either
+string-match that message, or (cleaner) add a distinct `MachineError::Unsupported`
+variant in `explorer::adapter::control_error_to_machine` and match it. **This is
+untested — implement + validate on the box (rebuild, one calibration run fires +
+certifies 25/25 at a small deadline_delta) before the ≥20-seed runs.**
+
+### Fairness ruling (bug 2 answer): the 3-cell vocabulary IS a fair test
+The guardrail was against silently faking the keyer, not against small vocabularies.
+The real sensor making 3 cells from bug-agnostic operational logging is the honest
+condition. **Do NOT enrich the logging to help the signal.** Record the cell count
+prominently in `CORRELATION-REPORT.md` alongside the zero-cell scope statement, and
+rule GO/NO-GO on the data — an honest NO-GO is a real result.
 
 ## Wall-time finding (feasibility) — use a SMALL deadline_delta
 - With `--deadline-delta 2000000`, a non-triggering branch runs the full 2M V-time:
