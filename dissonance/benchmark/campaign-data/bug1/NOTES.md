@@ -204,6 +204,13 @@ opportunistic deadline to ~seal+157k (the reboot's next exit) → ~5.6s; the
 25-replay cert ≈ ~140s (once per campaign, at the first find). ~30-40 min/campaign
 → bug-1 suite (43 campaigns) ≈ ~8h at 3-wide.
 
+**STATUS AT HANDOFF (2026-07-07 ~01:25):** bug-1 orchestrator LAUNCHED + confirmed
+running 3-wide (box pid 994855, cores 2/1/3, 3 leases w1/w2/w3, first 3 campaigns
+booting). ETA ~8h. WATCH-ITEMS for the monitor: (a) `kvm_intel users` was 9 early
+(transient boot+restore overlap across 3 campaigns) — if it climbs unboundedly a
+VM isn't being dropped (OOM risk) → investigate/kill+revert; (b) `progress.log`
+`rc≠0` or `ACQUIRE-FAIL`/`FATAL` lines; (c) `determinism.log` `P0-DIVERGENCE`.
+
 **REMAINING RECIPE (for the fresh session):**
 1. Monitor `~/t69m2-results/bug1/progress.log` until `ORCH DONE`; check
    `determinism.log` for `P0-DIVERGENCE` (a solo≠co-tenant hash is a P0 STOP +
