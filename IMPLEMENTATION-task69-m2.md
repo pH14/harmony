@@ -174,14 +174,55 @@ cluster → no cells → **the signal cannot steer the search**.
 This is a real design finding for GO/NO-GO #2, not a wiring bug: the task-67
 log-template signal assumes a **log-rich** guest (Postgres, k3s — real workloads
 with running logs), but the planted-bug payloads are **minimal, silent supervised
-loops** (built for task 60's *blind* search, which needs no signal). With these
-guests the signal has no input, so the gate would trivially rule NO-GO for a
-guest-shape reason rather than a signal-discriminating-power reason. **This is
-escalated to the user (2026-07-06) before running the full campaign** — running 20
-seeds × 3 bugs to produce 0 cells everywhere would waste the multi-hour box time and
-yield a meaningless ruling. The resolution (make the guests emit proximity-graded
-console during their loop / use a different post-seal console source / treat it as a
-task-67 signal-design finding) is the user's ruling; see the report to the user.
+loops** (built for task 60's *blind* search, which needs no signal).
+
+### Resolution — realistic, bug-agnostic guest logging (user ruling 2026-07-06)
+
+The user ruled **not** a vacuous NO-GO (a silent guest is a *degenerate input* for a
+log-based sensor — zero cells is true of any log signal on a workload that emits no
+logs, and real services log constantly, which is task 67's whole premise), but to
+**un-rig the benchmark**: add the realistic logging a real supervised service would
+emit anyway, then measure honestly (and rule NO-GO if it *still* doesn't
+discriminate). Hard anti-rigging constraints, all honored:
+
+1. **Bug-agnostic by design** — every added line's content is a function of the
+   worker's *normal* state, chosen without reference to the planted trigger; no
+   proximity breadcrumb. Per-line justification (constraint 1) for `campaign-super`:
+   - `supervisor: lifecycle phase warmup|steady|drain` — a real supervised worker
+     logs its lifecycle stage; here derived from the normal budget cycle
+     `[0, BUDGET_MAX/2)`, thirds of the cycle, unrelated to the trigger (`budget`
+     leaving `[0, BUDGET_MAX)` / a canary flip).
+   - `supervisor: backpressure engaged, shedding retries` — a real service logs
+     backpressure under sustained load; fires in the top operational band, a generic
+     load signal, **not** the crash threshold.
+   - `supervisor: checkpoint committed, batch complete` — a real worker logs a
+     periodic checkpoint per batch of processed work (standard progress log).
+2. The **terminal-marker filter stands** — `CAMPAIGN_BUG` is still excluded from the
+   cell stream.
+3. **Same image for both configs** — signal and baseline boot the identical guest;
+   only the explorer's *use* of the cells differs.
+4. **The image change invalidates all prior runs** — both configs are re-run on the
+   new image; no old-image/new-image mixing.
+5. **The zero-cell finding is a permanent scope statement** (to be recorded in
+   `CORRELATION-REPORT.md` regardless of verdict): *the log-template signal is
+   definitionally inert on silent workloads; a selector (tasks 70/72/76) must handle
+   the zero-cell case by falling back to baseline behavior.*
+6. If, after realistic logging, the signal still fails to discriminate, the ruling is
+   an **honest NO-GO** — this un-rigs the benchmark, it does not pre-commit the verdict.
+
+`order-super.c` and `uuid-super.c` get the same treatment (realistic, bug-agnostic
+operational logging in their supervised loops) before the campaign. Adding logging
+changes instructions-per-iteration, so the fault window offset must be re-calibrated
+on the new image (per constraint 4).
+
+**Validated live (2026-07-06):** the campaign image was rebuilt with the logged
+`campaign-super`, and a `bug 1 / signal` run on real patched KVM logged **`3 distinct
+signal cells`** (up from `0` on the silent guest). The real `LogSensor`/`CellFnV1`
+now has workload to read — the guardrail is satisfied and the signal is no longer
+definitionally inert. (3 cells is modest, from a handful of operational log
+templates; whether that *discriminates* — correlates with bugs — is the empirical
+question the full ≥20-seed campaign measures, and an honest NO-GO remains possible.)
+KVM reverted to stock `1396736`, fresh-ssh verified.
 
 **What is NOT yet validated (the remaining gate-deciding step):** the real ≥20-seed
 campaign has not run to completion on patched KVM. So the box gates 2–4 (a certified
