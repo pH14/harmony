@@ -143,14 +143,54 @@ so it cannot be constructed externally, but it deserializes), defaulting to the 
 - **KVM left on stock `1396736`** — only cargo build/test/clippy ran; no patched
   module was ever loaded. Verified on a fresh ssh before and after.
 
+**Live de-risk on real patched KVM (bug 1 / signal, `ssh hetzner`, core 2 via
+`box-window.sh`, 2026-07-06):**
+- **Socket console capture works live** — the real guest's console (Postgres logs,
+  the UUID `row|…` workload lines, `CAMPAIGN_LEDGER_GPA`, `CAMPAIGN_READY`) reached
+  the client off the wire through the new `Console` verb. This is the input the
+  real `LogSensor`/`CellFnV1` clusters — the mechanism M1 never exercised.
+- Boot-to-marker works: `CAMPAIGN_READY` reached; the base seals mid-workload.
+- **Three real box-integration gaps the toy path never hit were found and fixed
+  by this de-risk** (each now committed + portably gated): (a) each branch needs a
+  `deadline_delta` bound; (b) base-sealing needs the task-60 snapshot-retry past
+  non-quiescent boundaries (a plain `snapshot()?` fails "non-quiescent point" on
+  the live guest); (c) launch discipline — a box campaign must run so the guest
+  process never outlives its ssh (an orphaned run holds patched KVM; kill by exact
+  PID + `rmmod`/`modprobe` reverts to stock).
+- **KVM left on stock `1396736`, fresh-ssh verified** after every patched run.
+
+**⚠️ GUARDRAIL FINDING — the signal produces ZERO cells on the real planted-bug
+guest (STOP-and-report, user's honesty guardrail).** A `bug 1 / signal` run logged
+`2 branches, 0 distinct signal cells`. The console-capture *integration* is fine
+(boot console reached the client); the problem is the **guest emits no console
+during the fault-search runs**. `campaign-super.c`'s supervised loop is pure integer
+arithmetic (its own header comment: "no syscalls") — it prints only `CAMPAIGN_READY`
+(at the seal, before the console cursor), `CAMPAIGN_BUG` (the marker, which the
+signal correctly filters out), and `CAMPAIGN_DONE` (only after all 200M iterations,
+far past any per-branch deadline). So each branch runs a **bounded slice of a silent
+loop** → empty console → the log-template `LogSensor`/`CellFnV1` has nothing to
+cluster → no cells → **the signal cannot steer the search**.
+
+This is a real design finding for GO/NO-GO #2, not a wiring bug: the task-67
+log-template signal assumes a **log-rich** guest (Postgres, k3s — real workloads
+with running logs), but the planted-bug payloads are **minimal, silent supervised
+loops** (built for task 60's *blind* search, which needs no signal). With these
+guests the signal has no input, so the gate would trivially rule NO-GO for a
+guest-shape reason rather than a signal-discriminating-power reason. **This is
+escalated to the user (2026-07-06) before running the full campaign** — running 20
+seeds × 3 bugs to produce 0 cells everywhere would waste the multi-hour box time and
+yield a meaningless ruling. The resolution (make the guests emit proximity-graded
+console during their loop / use a different post-seal console source / treat it as a
+task-67 signal-design finding) is the user's ruling; see the report to the user.
+
 **What is NOT yet validated (the remaining gate-deciding step):** the real ≥20-seed
-campaign has not run on patched KVM. So the box gates 2–4 (a certified find per
-bug replaying 25/25; the committed `CORRELATION-REPORT.md`; the GO/NO-GO ruling)
-are **PENDING**. The infrastructure to run them is complete and box-verified; the
-run itself is the "Box campaign runbook" below. In particular, **the live signal's
-discriminating power on the real guest is unproven** — the #1 thing the campaign
-validates (does the real `LogSensor`/`CellFnV1` produce cells on the box, and do
-they correlate with bugs?).
+campaign has not run to completion on patched KVM. So the box gates 2–4 (a certified
+find per bug replaying 25/25; the committed `CORRELATION-REPORT.md`; the GO/NO-GO
+ruling) are **PENDING**. The infrastructure is complete and box-verified, the
+console→signal path is proven live, and the box-integration gaps are closed; the
+remaining work is the per-bug calibration + the multi-hour parallelized run (the
+"Box campaign runbook" below). The signal's *discriminating power* (do the cells
+correlate with bugs?) is what that campaign measures.
 
 ## Box campaign runbook (the remaining ≥20-seed run)
 
