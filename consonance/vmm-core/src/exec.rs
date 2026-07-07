@@ -30,16 +30,23 @@
 //! the command runs, and finally the *executed* `echo` emits `<M>:<digits>:<M>`
 //! with the real exit status. The detector therefore scans for
 //! `<M>` `:` `<one-or-more ASCII digits>` `:` `<M>` — a pattern the literal echo
-//! (`<M>:$?:<M>`) **cannot** match, because `$?` are not digits. This is what lets
-//! a single marker disambiguate the echo from the result without splitting the
-//! token or coordinating with the guest.
+//! (`<M>:$?:<M>`) **cannot** match, because `$?` are not digits. **This
+//! digits-vs-literal-`$?` rule is the load-bearing disambiguation** — not the
+//! marker's exact bytes.
 //!
-//! The marker is `\x01HXEC-<nonce>-\x01` — bracketed by SOH (`0x01`) control bytes
-//! that a normal command's textual output is very unlikely to contain, and salted
-//! with a per-call `nonce` so two different `exec`s cannot alias. The `nonce` is a
-//! caller-supplied counter, **not** wall-clock or `rand` (conventions rule 4);
-//! because `exec` is off the record, its exact value never needs to be
-//! reproducible — only unique-enough within a session.
+//! The marker is `HXEC-<nonce>-` — plain printable ASCII (`HXEC` == "harmony
+//! exec"), salted with a per-call `nonce` so two different `exec`s cannot alias.
+//! **It must stay printable.** The exec-capable image (`guest/linux/exec-init.sh`)
+//! hands the console to an *interactive* `busybox ash` with line editing
+//! (`CONFIG_FEATURE_EDITING=y`, on by defconfig), and a line editor treats control
+//! bytes as editing keystrokes rather than input — e.g. `^A` (SOH, `0x01`) is
+//! *cursor-to-start*, which rearranges the injected line so the sentinel never
+//! reaches the wire (empirically reproduced against busybox ash 1.37: every `exec`
+//! timed out). A printable marker survives the line editor untouched; the nonce
+//! salt already carries the collision-avoidance the (removed) SOH brackets were
+//! meant to add. The `nonce` is a caller-supplied counter, **not** wall-clock or
+//! `rand` (conventions rule 4); because `exec` is off the record, its exact value
+//! never needs to be reproducible — only unique-enough within a session.
 //!
 //! ## Failure modes (documented, by ruling out of scope to *fix*)
 //!
@@ -48,10 +55,10 @@
 //!   whatever was captured. A long-running or hung command, or a guest with no
 //!   cooperating shell, ends here.
 //! - **Marker collision.** If the command's *own* output contains the exact
-//!   `<M>:<digits>:<M>` pattern, the detector stops early on it. The SOH-bracketed,
-//!   nonce-salted marker makes this astronomically unlikely for textual output but
-//!   is not impossible for arbitrary binary output — acceptable for a crude,
-//!   off-record channel.
+//!   `<M>:<digits>:<M>` pattern, the detector stops early on it. The distinctive
+//!   `HXEC-` tag plus the per-call `nonce` salt makes this astronomically unlikely
+//!   for textual output but is not impossible for arbitrary binary output —
+//!   acceptable for a crude, off-record channel.
 //! - **Output cap.** Captured output is bounded at [`MAX_CAPTURE`]; past that,
 //!   bytes are dropped (and the session still completes on the sentinel if it
 //!   arrives). This keeps a runaway command from growing an unbounded buffer —
@@ -61,8 +68,11 @@
 //!   otherwise would time out. The box guest image (`guest/linux/`) provides a
 //!   root shell on the serial console for exactly this reason.
 
-/// The marker's fixed prefix, between two SOH (`0x01`) bytes. `HXEC` == "harmony
-/// exec"; SOH brackets keep it out of ordinary textual output.
+/// The marker's fixed, **plain-printable** prefix (`HXEC` == "harmony exec"). Kept
+/// printable so an interactive line-editing shell (busybox ash,
+/// `CONFIG_FEATURE_EDITING=y`) does not eat it as editing keystrokes — see the
+/// module docs. The per-call `nonce` (appended, then a trailing `-`) does the
+/// collision-avoidance the marker's bytes must not.
 const MARKER_TAG: &[u8] = b"HXEC-";
 
 /// The upper bound on captured serial output for one `exec` (1 MiB). Past this,
@@ -110,7 +120,7 @@ pub struct ExecOutcome {
 /// side-effect-free — the real serial wiring lives in [`crate::vmm`], and this is
 /// unit-tested against a scripted mock serial.
 pub struct ExecSession {
-    /// The full marker: `\x01HXEC-<nonce>-\x01`.
+    /// The full, plain-printable marker: `HXEC-<nonce>-`.
     marker: Vec<u8>,
     /// The bytes to type on the serial input (the command + the sentinel `echo`).
     input: Vec<u8>,
@@ -120,6 +130,14 @@ pub struct ExecSession {
     done: Option<Done>,
     /// `true` once [`MAX_CAPTURE`] was hit and bytes were dropped.
     truncated: bool,
+    /// The offset [`scan`](Self::scan) resumes marker-search from, so a chatty
+    /// guest emitting output across many V-time steps stays linear instead of
+    /// re-walking the whole capture (and every historical non-matching marker) on
+    /// each [`feed`](Self::feed). Any sentinel starting before this offset would
+    /// already have been fully present — and matched-or-rejected — on a prior feed,
+    /// so resuming here never misses one. Held back by [`sentinel_max_len`](Self::sentinel_max_len)
+    /// so a sentinel straddling the previous buffer boundary is still caught.
+    scan_from: usize,
 }
 
 impl ExecSession {
@@ -132,12 +150,12 @@ impl ExecSession {
     /// commands work. The crude channel does no quoting or escaping — the caller
     /// owns what it injects.
     pub fn new(cmd: &str, nonce: u64) -> ExecSession {
+        // Plain-printable marker `HXEC-<nonce>-` — NO control bytes (an interactive
+        // line-editing shell would eat them; see the module docs).
         let mut marker = Vec::with_capacity(MARKER_TAG.len() + 20);
-        marker.push(0x01);
         marker.extend_from_slice(MARKER_TAG);
         marker.extend_from_slice(nonce.to_string().as_bytes());
         marker.push(b'-');
-        marker.push(0x01);
 
         let mut input = Vec::with_capacity(cmd.len() + 2 * marker.len() + 16);
         input.extend_from_slice(cmd.as_bytes());
@@ -156,6 +174,7 @@ impl ExecSession {
             capture: Vec::new(),
             done: None,
             truncated: false,
+            scan_from: 0,
         }
     }
 
@@ -179,9 +198,22 @@ impl ExecSession {
         } else {
             self.capture.extend_from_slice(bytes);
         }
-        if let Some((status, cut)) = self.scan() {
+        if let Some((status, cut)) = self.scan(self.scan_from) {
             self.done = Some(Done::Sentinel { status, cut });
+            return;
         }
+        // No match this round: next scan may skip everything that is now more than a
+        // full sentinel-width behind the buffer end (it was wholly present and
+        // rejected here). Keep the overlap so a sentinel split across feeds is found.
+        self.scan_from = self.capture.len().saturating_sub(self.sentinel_max_len());
+    }
+
+    /// The maximum byte length of a complete sentinel `<M>:<digits>:<M>`: two
+    /// markers, the two `:` separators, and up to 20 digits (a `u64`'s widest
+    /// decimal). A sentinel is never longer than this, so resuming a scan this far
+    /// back from the buffer end can never miss one.
+    fn sentinel_max_len(&self) -> usize {
+        2 * self.marker.len() + 2 + 20
     }
 
     /// Close the session because the run reached its V-time deadline before any
@@ -222,17 +254,20 @@ impl ExecSession {
         }
     }
 
-    /// Scan the capture for the completion sentinel `<M>:<digits>:<M>` and return
-    /// `(status, cut)` — the parsed exit status and the byte offset where the
-    /// sentinel line begins (so output is reported up to there). Returns `None`
-    /// until the *executed* `echo` output appears; the shell's literal echo of the
-    /// typed line (`<M>:$?:<M>`) never matches, because `$?` are not digits.
-    fn scan(&self) -> Option<(u64, usize)> {
+    /// Scan the capture from byte offset `start` for the completion sentinel
+    /// `<M>:<digits>:<M>` and return `(status, cut)` — the parsed exit status and
+    /// the byte offset where the sentinel line begins (so output is reported up to
+    /// there). Returns `None` until the *executed* `echo` output appears; the
+    /// shell's literal echo of the typed line (`<M>:$?:<M>`) never matches, because
+    /// `$?` are not digits. `start` only skips a prefix already scanned on a prior
+    /// feed (see [`scan_from`](Self::scan_from)); it never affects `cut`, which is
+    /// the absolute sentinel offset.
+    fn scan(&self, start: usize) -> Option<(u64, usize)> {
         let m = &self.marker;
         let buf = &self.capture;
         // Every candidate start is an occurrence of the marker. Walk them in order
-        // and return the first that is followed by `:<digits>:<M>`.
-        let mut from = 0;
+        // (from `start`) and return the first that is followed by `:<digits>:<M>`.
+        let mut from = start.min(buf.len());
         while let Some(rel) = find(&buf[from..], m) {
             let start = from + rel;
             let mut i = start + m.len();
@@ -289,8 +324,9 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// The injected line is `<cmd>\necho <M>:$?:<M>\n`, and the marker is
-    /// SOH-bracketed + nonce-salted.
+    /// The injected line is `<cmd>\necho <M>:$?:<M>\n`, and the marker is a
+    /// **plain-printable** nonce-salted token (no control bytes — an interactive
+    /// line-editing shell would eat them; see the module docs).
     #[test]
     fn injection_wraps_the_command_with_a_sentinel_echo() {
         let s = ExecSession::new("ls /", 7);
@@ -301,10 +337,16 @@ mod tests {
             "cmd then the echo: {text:?}"
         );
         assert!(text.ends_with('\n'));
-        // Marker present twice (open + close), literal `$?` between them.
-        assert_eq!(input.iter().filter(|&&b| b == 0x01).count(), 4, "2 markers");
         assert!(text.contains("HXEC-7-"));
         assert!(text.contains(":$?:"), "literal $? in the injected echo");
+        // Every injected byte is printable ASCII or a newline — NO control bytes,
+        // so an interactive line-editing shell relays the line intact.
+        assert!(
+            input
+                .iter()
+                .all(|&b| b == b'\n' || (0x20..0x7f).contains(&b)),
+            "injected bytes must be printable (+\\n): {input:?}"
+        );
     }
 
     /// A cooperating shell echoes the typed line (with literal `$?`) and then the
@@ -347,6 +389,36 @@ mod tests {
         let out = s.into_outcome();
         assert!(out.ok);
         assert_eq!(out.status, Some(137));
+    }
+
+    /// The resume-offset optimization (linear scan) does not miss a sentinel after
+    /// many chatty feeds — including an early **literal-`$?` echo** (a historical
+    /// non-matching marker occurrence) that the resume must scan *past* without
+    /// forgetting, then a real sentinel byte-by-byte much later.
+    #[test]
+    fn resume_scan_finds_the_sentinel_after_lots_of_chatty_output() {
+        let mut s = ExecSession::new("busy", 5);
+        let marker = String::from_utf8(s.marker.clone()).unwrap();
+        // The shell's echo of the typed line (literal `$?`) — must NOT complete.
+        s.feed(format!("busy\necho {marker}:$?:{marker}\n").as_bytes());
+        assert!(!s.is_done());
+        // A long run of chatty output, one byte per feed (many V-time steps).
+        for _ in 0..4096 {
+            s.feed(b"x");
+        }
+        assert!(!s.is_done());
+        // The real executed echo, dribbled in byte-by-byte across the boundary.
+        for b in format!("{marker}:42:{marker}\n").into_bytes() {
+            s.feed(&[b]);
+        }
+        assert!(s.is_done());
+        let out = s.into_outcome();
+        assert!(out.ok);
+        assert_eq!(out.status, Some(42));
+        // Output is everything before the sentinel (the echo + the 4096 x's), never
+        // the sentinel itself.
+        assert!(out.output.ends_with(b"x"));
+        assert!(!String::from_utf8_lossy(&out.output).contains(":42:"));
     }
 
     /// The sentinel can arrive split across two `feed` chunks (V-time steps): the

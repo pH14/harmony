@@ -24,29 +24,40 @@
 //! guest's serial input (ttyS0) as if typed at a root shell, and detects completion
 //! by a sentinel `echo`. That needs a **root shell reading ttyS0** in the guest at
 //! the snapshot point. The stock Postgres workload image drives postgres and does
-//! not read the serial, so gate 2's *output* half runs against the **exec-capable**
-//! image variant (`guest/linux/exec-init.sh`; build `make -C guest/linux
-//! exec-image`). The **determinism** half of gate 2 (the original timeline is
-//! unaffected) and *all* of gate 3 (the taint guard) hold against **any** image —
-//! `exec` taints and the guard fires regardless of whether a shell answered — so
-//! this harness runs the guard gates against whatever image is present and only
-//! asserts non-empty output when `EXEC_EXPECT_OUTPUT=1` (set it for the
-//! exec-capable image).
+//! not read the serial, so gate 2's *output* half needs the **exec-capable** image
+//! variant (`guest/linux/exec-init.sh`; build `make -C guest/linux exec-image`,
+//! `INITRAMFS=initramfs-exec.cpio.gz`). The **determinism** half of gate 2 (the
+//! original timeline is unaffected) and *all* of gate 3 (the taint guard) hold
+//! against **any** image — `exec` taints and the guard fires regardless of whether
+//! a shell answered.
+//!
+//! **The output assertion is strict by default** (gate 2 says "capture non-empty
+//! output" — a by-the-docs dispatch must not pass vacuously): the run **fails**
+//! unless the `exec` completed with non-empty output. Strictness is **forced** on
+//! the exec-capable image (basename contains `exec`). To run ONLY the guard half
+//! (gate 3 + gate-2 determinism) against a shell-less image, set `EXEC_TAINT_ONLY=1`
+//! — which the run announces does **not** satisfy gate 2.
 //!
 //! Run on `ssh <det-box>` with the LOADED patched KVM modules + a built image,
 //! CPU-pinned per `docs/BOX-PINNING.md` (lease a core via `box-window.sh`; never
 //! touch another lease's cores or its patched-KVM window). ALWAYS revert KVM to
 //! stock **1396736** + verify after any patched run.
 //! ```text
-//! make -C guest fetch && make -C guest/linux postgres-image   # or exec-image
-//! taskset -c <core> cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
+//! # Full gate 2 + gate 3 (the exec-capable image — strict is forced):
+//! make -C guest fetch && make -C guest/linux exec-image
+//! INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
+//!   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
+//! # Guard half only, against the real Postgres workload (does NOT satisfy gate 2):
+//! make -C guest/linux postgres-image
+//! EXEC_TAINT_ONLY=1 taskset -c <core> \
+//!   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 //! ```
 //! Tunable via env (defaults below): `EI_GENESIS_STEP` (V-time ns to nudge past a
 //! non-snapshottable boundary), `EI_MID` (V-time ns past genesis for the mid-
 //! workload snapshot), `EI_LATE` (the later `Moment` the original continues to),
 //! `EI_BUDGET` (V-time ns the `exec` may run), `EI_CMD` (the command to `exec`),
-//! `EXEC_EXPECT_OUTPUT` (assert non-empty output — set for the exec-capable image),
-//! `EI_SEED` (the genesis env seed).
+//! `EXEC_TAINT_ONLY=1` (relax the output half — guard-only, shell-less image; forced
+//! strict anyway on an `exec`-named image), `EI_SEED` (the genesis env seed).
 //!
 //! Every precondition that would prevent a real run — no `/dev/kvm`, stock modules,
 //! a non-baseline host — is a **loud panic (test FAILURE)**, never an early-return
@@ -260,9 +271,9 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     require_kvm();
     require_host_baseline();
     let kernel = require_artifact("bzImage");
-    let initramfs = std::env::var("INITRAMFS")
-        .map(|n| require_artifact(&n))
-        .unwrap_or_else(|_| require_artifact("initramfs-postgres.cpio.gz"));
+    let initramfs_name =
+        std::env::var("INITRAMFS").unwrap_or_else(|_| "initramfs-postgres.cpio.gz".to_string());
+    let initramfs = require_artifact(&initramfs_name);
     let seed = env_u64("EI_SEED", GENESIS_SEED);
 
     let live = boot_pg(&kernel, &initramfs, seed);
@@ -353,11 +364,31 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
         output.len(),
         String::from_utf8_lossy(&output[..output.len().min(120)]),
     );
-    if std::env::var("EXEC_EXPECT_OUTPUT").ok().as_deref() == Some("1") {
+    // Gate 2 requires "capture non-empty output" — so the output half is
+    // **strict by default**, not opt-in (a by-the-docs dispatch must not pass
+    // vacuously). Two escape hatches, both structural:
+    //   - `EXEC_TAINT_ONLY=1` relaxes it, for running ONLY the guard half (gate 3 +
+    //     gate-2 determinism) against a shell-less image (e.g. stock Postgres). This
+    //     explicitly does NOT satisfy gate 2 — the run must say so out loud.
+    //   - …UNLESS the resolved image is the exec-capable one (basename contains
+    //     `exec`), in which case strictness is FORCED — there is no legitimate
+    //     reason to relax the output proof on the very image that ships a shell.
+    let image_is_exec = initramfs_name.contains("exec");
+    let taint_only = std::env::var("EXEC_TAINT_ONLY").ok().as_deref() == Some("1");
+    let strict = image_is_exec || !taint_only;
+    if strict {
         assert!(
             !output.is_empty() && ok,
-            "exec `{cmd}` produced no output / did not complete — is a root shell reading ttyS0 \
-             in this image? (build the exec-capable image, or unset EXEC_EXPECT_OUTPUT)"
+            "gate 2: exec `{cmd}` produced no output / did not complete against image \
+             `{initramfs_name}` — a root shell must be reading ttyS0 (build the exec-capable image: \
+             `make -C guest/linux exec-image`, INITRAMFS=initramfs-exec.cpio.gz). To run ONLY the \
+             taint-guard half against a shell-less image, set EXEC_TAINT_ONLY=1 (this does NOT \
+             satisfy gate 2's 'capture non-empty output')."
+        );
+    } else {
+        println!(
+            "  NOTE: EXEC_TAINT_ONLY=1 — output half SKIPPED (image `{initramfs_name}` has no \
+             serial shell); gate 2's non-empty-output requirement is NOT proven by this run."
         );
     }
 

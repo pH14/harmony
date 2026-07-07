@@ -4012,18 +4012,29 @@ unit tests cover the readable cases incl. rewind-to-untainted-ancestor recovery.
 
 ## The `exec` channel (crude, off the record) — the sentinel scheme
 
-`exec` injects `"<cmd>\necho <M>:$?:<M>\n"` on the serial RX, where `<M>` is
-`\x01HXEC-<nonce>-\x01` (SOH-bracketed, nonce-salted so two `exec`s can't alias).
+`exec` injects `"<cmd>\necho <M>:$?:<M>\n"` on the serial RX, where `<M>` is the
+**plain-printable** `HXEC-<nonce>-` (nonce-salted so two `exec`s can't alias).
 Completion is detected by scanning serial **output** for `<M>:<digits>:<M>`: the
 shell's *echo of the typed line* shows `<M>:$?:<M>` with `$?` **literal** (not
 digits) and never matches; the *executed* `echo` emits real digits and does. The
 parsed digits are the shell exit status; output is reported up to the sentinel line.
 
+**The marker must stay printable** (PR #86 r2, blocking). An earlier version
+bracketed it with SOH (`0x01`) to reduce output collisions, but the exec-capable
+image's *interactive* `busybox ash` has line editing on (`CONFIG_FEATURE_EDITING=y`,
+from defconfig), which eats control bytes as editing keystrokes — `^A` is
+cursor-to-start — scrambling the injected line so the sentinel never reaches the
+wire (reproduced against busybox ash 1.37: every `exec` timed out). The
+digits-vs-literal-`$?` rule is the load-bearing disambiguation, not the brackets;
+the nonce salt carries the collision-avoidance. `scan()` resumes from
+`len - sentinel_max_len` each feed, so a chatty guest stays linear (not O(n²)) while
+a sentinel split across V-time steps is still caught.
+
 **Documented failure modes** (out of scope to *fix* by ruling): deadline-before-
-sentinel → `ok=false` with partial capture; marker collision in binary output (SOH
-brackets make this astronomically unlikely for text); output cap at 1 MiB (bounded,
-no OOM); non-echoing/cooked-mode shells time out (the exec-capable image provides an
-echoing root shell). See `src/exec.rs` module docs.
+sentinel → `ok=false` with partial capture; marker collision in binary output (the
+distinctive `HXEC-` tag + nonce salt make this astronomically unlikely for text);
+output cap at 1 MiB (bounded, no OOM); non-echoing/cooked-mode shells time out (the
+exec-capable image provides an echoing root shell). See `src/exec.rs` module docs.
 
 **Server run loop** (`ControlServer::exec`): inject once, then step until the
 sentinel matches, the V-time deadline is reached (opportunistic, like `run`), or a
@@ -4054,18 +4065,26 @@ window; the M2 worker calibrates on core 4) when this landed. All Mac-portable w
 (gate 1) is **green and pushed**; the box gates are authored and ready but **not yet
 run**. They must be run before the task is fully closed:
 
+The output assertion is **strict by default** (gate 2's "capture non-empty output"),
+and **forced** strict on the `exec`-named image, so a by-the-docs dispatch cannot
+pass vacuously (PR #86 r2, blocking). `EXEC_TAINT_ONLY=1` runs only the guard half
+against a shell-less image and announces it does NOT satisfy gate 2.
+
 | gate | test | how to run |
 |---|---|---|
-| 2 (improvisation + determinism) | `tests/live_exec_improvisation.rs` | Postgres image: gate 3 + gate-2 determinism. `exec-image` + `EXEC_EXPECT_OUTPUT=1`: gate-2 non-empty output. |
-| 3 (the guard) | same test | asserted inline (`recorded_env=Tainted`, `dirty snapshot tainted`, branch-of-tainted refuses) |
+| 2 (improvisation + determinism, incl. non-empty output) | `tests/live_exec_improvisation.rs` | the **exec-capable** image (strict forced): full gate 2 + gate 3 |
+| 3 (the guard) | same test | asserted inline (`recorded_env=Tainted`, `dirty snapshot tainted`, branch-of-tainted refuses); also runnable against Postgres with `EXEC_TAINT_ONLY=1` |
 | 4 (byte-identity) | the **existing** `live_*` gates | unchanged; re-run one (e.g. `live_moment_address`) to confirm byte-identity |
 
 ```text
 # on ssh <det-box>, LOADED patched KVM, CPU-pinned (det-cfl-v1 host); lease a core:
-make -C guest fetch && make -C guest/linux postgres-image     # gate 3 + gate-2 determinism
-taskset -c <core> cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
-make -C guest/linux exec-image                                 # gate-2 output half
-EXEC_EXPECT_OUTPUT=1 INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
+# Full gate 2 + gate 3 — the exec-capable image (strict is forced):
+make -C guest fetch && make -C guest/linux exec-image
+INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
+  cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
+# Guard half only, against the real Postgres workload (does NOT satisfy gate 2):
+make -C guest/linux postgres-image
+EXEC_TAINT_ONLY=1 taskset -c <core> \
   cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
 # ALWAYS revert KVM to stock 1396736 + verify on a fresh ssh after any patched run.
 ```
