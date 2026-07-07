@@ -713,3 +713,43 @@ fd6dc2f guest prep · 8bf0d44 orchestrators+NOTES · bae7040 bug-2 0/512 finding
 escalation · (foreman rulings) · 7deb3ab bug-3 FIX · 8bbc695 bug-2 rework WIP · 9136c7a bug-1
 phase-1 data · 765a8fc logs · 535c621 determinism CERTIFIED · d6ae8f8 NOTES · (this) bug-2 counter
 validated + WINDOW_SPIN.
+
+---
+
+## 2026-07-08 (fresh session) — BUG-2 CALIBRATION: root cause MEASURED, filler design in flight
+
+**The 0/512 root cause is now MEASURED, not hypothesized.** Built a diagnostic path: made the
+mint's OrderingInterrupt fault-offset search width an env knob `BENCH_ORDER_RANGE` (default 64
+preserved; deterministic — read once, keeps `mint_scenario_env` pure; the campaign bakes the
+calibrated value as a constant). Rebuilt conductor on box (11.9s). Ran a WIDE-range diagnostic
+(`BENCH_ORDER_RANGE=50000`, deadline 60000, 48 branches) against the existing WINDOW_SPIN=4096
+order image:
+- **48/48 fires, offsets 453 → 49547, ZERO non-fires.** So at WINDOW_SPIN=4096 the vulnerable
+  window is CONTINUOUS from ~453 V-time onward — **duty ≈ 1, TTF ≈ 1** (way too easy). The old
+  0/512 was purely the [4,68) search never reaching the first window (which starts at ~453,
+  i.e. one `/proc/interrupts` pread past the seal — the leading counter read).
+
+**Why duty≈1 and the fix.** The FIREABLE span each iteration = everything between the two counter
+samples = `intr_before` pread (Q) + primary++ + WINDOW_SPIN spin + mirror + `intr_after` pread up
+to its snapshot ≈ **Q + WINDOW_SPIN·s** (s = V-time/spin-iter). At WINDOW_SPIN=4096 that fills the
+whole iteration. **The rate dial must therefore be a NON-fireable filler**, not the window: added
+`FILLER_SPIN` (busy-spin at the loop BOTTOM, outside [intr_before, intr_after]) so
+`duty ≈ window/(window+filler)`. An interrupt serviced in the filler is a non-trigger by
+construction (next iter's `intr_before` samples after it ⇒ both samples include the bump). This is
+still FAITHFUL to Paul's ruling: the fireable span IS the process's non-atomic critical section
+(sample→update→sample); the filler just makes hitting it rare. Set WINDOW_SPIN=256 (keep the
+held-torn window a modest real fraction, minimize the deadline) + FILLER_SPIN as the rate dial.
+
+**MEASUREMENT IN FLIGHT (this session):** rebuilt the order image WINDOW_SPIN=256 / FILLER_SPIN=8192
+and launched a detached diagnostic (`BENCH_ORDER_RANGE=100000`, deadline 110000, 128 branches) to
+read the ACTUAL duty + period. From that I set FILLER_final for TTF≈128-256 (extrapolate linearly
+in FILLER), then RANGE_final ≈ period (≥ T so P(fire)=duty; ≤ deadline so fires beat the stop) and
+deadline ≈ RANGE+margin. Bake the winners as constants, `git checkout` the env knob's diagnostic
+use, rebuild the canonical order image, then gate-2 validity + the 20×2 campaign.
+
+**Box discipline this session:** all runs DETACHED via `setsid` + a DONE sentinel + self-release
+(box idle, no campaign to collide with; setsid survives ssh drops — the first foreground diag's ssh
+DID drop at branch 44 but the reparented script self-released + reverted to stock 1396736 cleanly).
+Poller = a `run_in_background` until-DONE loop. kvm verified stock after each run. Box worktree
+`~/harmony-t69m2`: benchcampaign.rs (env knob) + order-super.c (filler) scp'd; conductor rebuilt.
+UNCOMMITTED locally until bug-2 constants are frozen.
