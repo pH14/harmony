@@ -120,7 +120,8 @@ Three properties the crate exists to embody, each with a regression test:
   `Timeline.crashed`: every subsequent `run` re-reports the crash at its `Moment` without advancing
   (so a later `run` can't skip the already-hit override and fabricate post-crash state), and
   `exec` re-reports the terminal condition too (`ok = false`, no output, no advance — a crashed
-  guest cannot run a command) rather than fabricating a successful run. Observations stay at the
+  guest cannot run a command; the attempt still marks+reports `tainted`) rather than fabricating a
+  successful run. Observations stay at the
   crash point until the client re-materializes (`branch`/`replay` installs a fresh/restored
   timeline). `MockServer` is the laptop reference model for session semantics, so this had to be
   right (`a_crashed_timeline_stays_terminal_until_rematerialize`, `exec_on_a_crashed_timeline_does_not_run`).
@@ -154,8 +155,10 @@ The conservative mark makes the *send-fails* row (a false positive — the serve
 price of never producing the far worse false negative: a clean-looking coordinate on a
 server-side-improvised timeline. Regression: `exec_reply_lost_still_taints_conservatively` (a mock
 that applies the exec then errors the reply). `exec` on a crashed timeline re-reports the terminal
-condition (`ok = false`, no advance) rather than fabricating a run
-(`exec_on_a_crashed_timeline_does_not_run`).
+condition (`ok = false`, no output, no advance) rather than fabricating a run — but an exec
+*attempt* is still an improvisation, so **every** mock `exec` path (including the crashed refusal)
+marks *and reports* `tainted: true`, consistent with the client's conservative mark and the
+"`exec` surfaces the taint bit" contract (`exec_on_a_crashed_timeline_does_not_run`).
 
 Pure observations and navigation are always allowed on a tainted timeline — they do not emit a
 coordinate. Every verb/accessor, audited against the rule:

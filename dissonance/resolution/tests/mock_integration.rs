@@ -711,7 +711,15 @@ fn exec_on_a_crashed_timeline_does_not_run() {
         result.output.is_empty(),
         "no fabricated output on a crashed guest"
     );
+    assert!(
+        result.tainted,
+        "an exec attempt marks+reports taint on every path, incl. the crashed refusal"
+    );
     assert_eq!(ms.moment(), 3_000, "exec did not advance past the crash");
+    assert!(
+        ms.tainted(),
+        "the session is tainted after the exec attempt"
+    );
 }
 
 #[test]
