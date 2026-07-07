@@ -357,9 +357,10 @@ impl<S: Server> Shell<S> {
                 // A tainted timeline has no reproducer, so its counterfactual
                 // would be a bare pasteable address that replays the *un-exec'd*
                 // env at the post-exec moment — a misleading reproducer dressed
-                // as a counterfactual. Fail loudly, exactly like `recorded_env` /
-                // `mref` (the taint rule). Wind back to a clean moment to vary.
-                if self.session.tainted() {
+                // as a counterfactual. Route through the SAME structural
+                // choke-point as `mref`/`recorded_env` and fail loudly (the taint
+                // rule). Wind back to a clean moment to vary.
+                if self.session.guard_reproducible().is_err() {
                     err_outcome(&SessionError::Tainted)
                 } else {
                     match self.session.current_mref() {

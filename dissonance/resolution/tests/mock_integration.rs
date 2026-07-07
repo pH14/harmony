@@ -558,6 +558,10 @@ struct FaultyServer {
     /// **errors the reply** — models "applied-but-reply-lost" (exercises the
     /// conservative taint-before-round-trip invariant).
     exec_applies_then_errors: bool,
+    /// `exec` errors **without applying** — models "send failed / server never
+    /// saw it", leaving the server *clean* while the client is conservatively
+    /// tainted (exercises the LOCAL structural guard vs. the blind server guard).
+    exec_send_fails: bool,
     /// `run` fails once this many `run` calls have already succeeded (`None` =
     /// never). Lets a good `open` precede a failing one.
     fail_run_after: Option<u32>,
@@ -570,6 +574,7 @@ impl FaultyServer {
             inner,
             fail_regs: true,
             exec_applies_then_errors: false,
+            exec_send_fails: false,
             fail_run_after: None,
             run_count: 0,
         }
@@ -579,6 +584,7 @@ impl FaultyServer {
             inner,
             fail_regs: false,
             exec_applies_then_errors: false,
+            exec_send_fails: false,
             fail_run_after: Some(n),
             run_count: 0,
         }
@@ -588,6 +594,17 @@ impl FaultyServer {
             inner,
             fail_regs: false,
             exec_applies_then_errors: true,
+            exec_send_fails: false,
+            fail_run_after: None,
+            run_count: 0,
+        }
+    }
+    fn exec_send_fails(inner: MockServer) -> Self {
+        Self {
+            inner,
+            fail_regs: false,
+            exec_applies_then_errors: false,
+            exec_send_fails: true,
             fail_run_after: None,
             run_count: 0,
         }
@@ -630,6 +647,10 @@ impl Server for FaultyServer {
         self.inner.regs()
     }
     fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+        if self.exec_send_fails {
+            // The request never reached the server — inner stays CLEAN.
+            return Err(SessionError::Transport("exec send failed".to_string()));
+        }
         if self.exec_applies_then_errors {
             // The server applied the exec (inner is now tainted server-side) but
             // the reply was lost / decoded as a transport error.
@@ -661,6 +682,72 @@ fn taint_is_recorded_before_the_fallible_moment_refresh() {
     assert!(
         matches!(ms.recorded_env(), Err(SessionError::Tainted)),
         "recorded_env refuses too"
+    );
+}
+
+#[test]
+fn every_reproducer_emitter_refuses_on_a_locally_tainted_session() {
+    // The structural guard's raison d'être: the exec request's reply was lost
+    // BEFORE the server marked its timeline (here: it never reached the server at
+    // all), so the SERVER is clean while the client is conservatively tainted.
+    // EVERY reproducer/coordinate emitter must refuse via the LOCAL guard — a
+    // server-side guard alone would be blind and mint a clean reproducer.
+    let inner = MockServer::boot(EnvCodec::seeded(61, FaultPolicy::none()));
+    let mut sess = Session::connect(FaultyServer::exec_send_fails(inner)).unwrap();
+    {
+        let mut ms = sess.materialize(&mref(61, 500)).unwrap();
+        assert!(
+            ms.exec("x").is_err(),
+            "the send failure surfaces as an error"
+        );
+        assert!(
+            ms.tainted(),
+            "conservatively tainted even though the server never saw the exec"
+        );
+        // Client-level emitters — the server timeline is CLEAN, so a passing
+        // `recorded_env` here would be the exact hole the local guard closes.
+        assert!(
+            matches!(ms.mref(), Err(SessionError::Tainted)),
+            "mref() refuses"
+        );
+        assert!(
+            matches!(ms.recorded_env(), Err(SessionError::Tainted)),
+            "recorded_env() refuses on LOCAL taint though the server is clean"
+        );
+    }
+    // REPL-level emitter (`vary`) routes through the same guard.
+    let mut shell = Shell::new(sess);
+    assert!(
+        matches!(&line(&mut shell, "vary set 5 skew 1").outcome,
+            Outcome::Error { category, .. } if category == "tainted"),
+        "the REPL vary refuses too"
+    );
+}
+
+#[test]
+fn exec_past_quiescence_does_not_rewind_the_moment() {
+    // V-time is monotonic: exec can push the moment past the quiescence point;
+    // a following `run` must NOT rewind it (min(deadline, quiescent) < cur.moment).
+    let mut sess = session(51);
+    // A requested moment far past quiescence (~1M–2M) so materialize lands AT
+    // quiescence rather than the request.
+    let mut ms = sess.materialize(&mref(51, 5_000_000)).unwrap();
+    let quiesced = ms.moment();
+    assert!(
+        quiesced < 5_000_000,
+        "materialize landed at quiescence ({quiesced}), not the request"
+    );
+
+    ms.exec("x").unwrap();
+    let after_exec = ms.moment();
+    assert!(after_exec > quiesced, "exec advanced past quiescence");
+
+    // A forward run must never decrease the moment.
+    ms.run(9_000_000).unwrap();
+    assert!(
+        ms.moment() >= after_exec,
+        "run rewound the moment ({after_exec} -> {})",
+        ms.moment()
     );
 }
 

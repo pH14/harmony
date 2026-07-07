@@ -168,6 +168,22 @@ impl<S: Server> Session<S> {
     pub fn tainted(&self) -> bool {
         self.current.as_ref().is_some_and(|c| c.tainted)
     }
+
+    /// **The structural taint choke-point.** Every path that would hand out a
+    /// reproducible coordinate or reproducer — [`MaterializedSession::mref`],
+    /// [`MaterializedSession::recorded_env`], the REPL `vary` — routes through
+    /// this **before** any server delegation, and no emitter mints reproducer
+    /// material without it (see the grep-audit in `IMPLEMENTATION.md`). The
+    /// **local** taint bit is authoritative: it is set conservatively the instant
+    /// an `exec` request is issued, possibly before the server marks its own
+    /// timeline (a lost/dropped reply), so a server-side guard alone would be
+    /// blind to it and mint a clean reproducer after an attempted improvisation.
+    pub(crate) fn guard_reproducible(&self) -> Result<(), SessionError> {
+        if self.tainted() {
+            return Err(SessionError::Tainted);
+        }
+        Ok(())
+    }
 }
 
 /// A live, moment-addressed session: the observation, navigation, and
@@ -184,26 +200,22 @@ impl<S: Server> MaterializedSession<'_, S> {
         self.cur().moment
     }
 
-    /// The reproducer this timeline runs under.
-    pub fn env(&self) -> &EnvSpec {
-        &self.cur().env
-    }
-
     /// Whether an `exec` improvisation has tainted this timeline.
     pub fn tainted(&self) -> bool {
         self.cur().tainted
     }
 
     /// The reproducible coordinate of the current point (env + current moment).
-    /// **Fails loudly** with [`SessionError::Tainted`] on a tainted timeline: a
-    /// tainted state is off the record and has no reproducer, so there is no
-    /// honest paste-able `MomentRef` for it (the taint rule — mirrors
+    /// **Fails loudly** with [`SessionError::Tainted`] on a tainted timeline (via
+    /// the structural `guard_reproducible`
+    /// choke-point): a tainted state is off the record and has no reproducer, so
+    /// there is no honest paste-able `MomentRef` for it (the taint rule — mirrors
     /// [`recorded_env`](Self::recorded_env)). Use [`moment`](Self::moment) for
-    /// the bare V-time.
+    /// the bare V-time. (There is deliberately no raw `env()` accessor: the base
+    /// env is reproducer material and would bypass the guard — mint the
+    /// reproducer through [`recorded_env`](Self::recorded_env).)
     pub fn mref(&self) -> Result<MomentRef, SessionError> {
-        if self.tainted() {
-            return Err(SessionError::Tainted);
-        }
+        self.session.guard_reproducible()?;
         let c = self.cur();
         Ok(MomentRef::new(c.env.clone(), c.moment))
     }
@@ -285,12 +297,18 @@ impl<S: Server> MaterializedSession<'_, S> {
         Ok(result)
     }
 
-    /// Mint the genesis-complete reproducer for the current point. The task-81
-    /// taint guard's fail-loud site: a tainted timeline returns
-    /// [`SessionError::Tainted`] verbatim, never a lying reproducer. (Not a REPL
-    /// command — the REPL is the thin 8-verb shell; this is the client method
-    /// through which the guard is observable.)
+    /// Mint the genesis-complete reproducer for the current point. Routes through
+    /// the structural `guard_reproducible`
+    /// choke-point **before** delegating: a tainted timeline returns
+    /// [`SessionError::Tainted`] verbatim, never a lying reproducer. The local
+    /// guard is load-bearing here — the server's own guard is authoritative for
+    /// *server-side* taint but blind to the client's *conservative* taint (e.g. a
+    /// lost `exec` reply where the server never marked its timeline), so
+    /// delegating without the local check would mint a clean reproducer after an
+    /// attempted improvisation. (Not a REPL command — the thin 8-verb shell; this
+    /// is the client method through which the reproducer mint is observable.)
     pub fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
+        self.session.guard_reproducible()?;
         self.session.server.recorded_env()
     }
 

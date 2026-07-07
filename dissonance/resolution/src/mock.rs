@@ -288,19 +288,32 @@ impl Server for MockServer {
             });
         }
         let quiescent = self.quiescent();
-        let target = match until.deadline {
-            // A deadline at or behind the current point is already met: report
-            // the effective V-time without advancing (the adapter's probe
-            // semantics).
-            Some(v) if v.0 <= self.cur.moment => {
-                return Ok(StopReason::Deadline {
-                    vtime: VTime(self.cur.moment),
-                });
-            }
+        // The V-time this run would advance toward.
+        let raw = match until.deadline {
             Some(v) => v.0.min(quiescent),
             // No deadline: run to quiescence.
             None => quiescent,
         };
+        // **V-time is monotonic — a run never rewinds.** The target can fall
+        // *behind* the current point in two ways: a deadline already met, or
+        // (the round-8 bug) an `exec` that pushed `cur.moment` past `quiescent`
+        // so `min(deadline, quiescent) < cur.moment`. Either way, make no
+        // backward move: report the current position (Quiescent if we are at or
+        // past the quiescence point, else the met Deadline). This also keeps the
+        // reported `vtime` equal to `cur.moment`, so the client's mirror can't
+        // diverge below the server.
+        if raw <= self.cur.moment {
+            return Ok(if self.cur.moment >= quiescent {
+                StopReason::Quiescent {
+                    vtime: VTime(self.cur.moment),
+                }
+            } else {
+                StopReason::Deadline {
+                    vtime: VTime(self.cur.moment),
+                }
+            });
+        }
+        let target = raw; // strictly ahead of cur.moment
         // A staged CorruptMemory the run reaches crashes the guest there — and
         // latches the timeline terminal (recorded on `cur.crashed`).
         if let Some(crash_at) = self.crash_between(self.cur.moment, target) {

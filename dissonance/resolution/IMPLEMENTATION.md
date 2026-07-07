@@ -18,7 +18,7 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **44 tests.**
+end-to-end live==replay test. **46 tests.**
 
 **`open` is transactional.** `materialize` invalidates `current` *before* touching the server and
 installs the new timeline *only on full success*; if `branch` succeeds but the follow-up `run`
@@ -125,14 +125,21 @@ Three properties the crate exists to embody, each with a regression test:
   crash point until the client re-materializes (`branch`/`replay` installs a fresh/restored
   timeline). `MockServer` is the laptop reference model for session semantics, so this had to be
   right (`a_crashed_timeline_stays_terminal_until_rematerialize`, `exec_on_a_crashed_timeline_does_not_run`).
+- **V-time is monotonic — `run` never rewinds (round-8 fix).** `exec` can push `cur.moment` past the
+  quiescence point, after which a later `run` computed `target = min(deadline, quiescent) < cur.moment`
+  and the assignment *rewound* the timeline (a forward `run` reporting an earlier moment). `run` now
+  makes no backward move: if the (clamped) target is at or behind the current point it reports the
+  current position (`Quiescent` if at/past quiescence, else the met `Deadline`) without changing
+  `cur.moment` (`exec_past_quiescence_does_not_rewind_the_moment`).
 
 ## The taint rule (the single source of truth)
 
 > **A tainted timeline — one an `exec` improvisation has poisoned (task 81, `docs/RESOLUTION.md`
 > §Improvisations) — has no reproducible coordinate. Therefore: (1) every path that would emit a
-> *bare, pasteable* `MomentRef` derived from a tainted timeline fails loudly with
-> `SessionError::Tainted` (the one exception is the transcript stamp, which records the
-> non-pasteable `tainted!…` marked form so the record stays complete and `open` refuses it); and
+> *bare, pasteable* `MomentRef` or reproducer derived from a tainted timeline routes through one
+> structural guard (`Session::guard_reproducible`) and fails loudly with `SessionError::Tainted`
+> (the one exception is the transcript stamp, which records the non-pasteable `tainted!…` marked
+> form so the record stays complete and `open` refuses it); and
 > (2) taint is recorded *conservatively* — `cur.tainted = true` is set **before the exec request is
 > issued to the server**, not after a successful reply. Once the request may have reached the
 > server it may have applied it, even if the reply is then lost, times out, or decodes as a
@@ -171,21 +178,50 @@ coordinate. Every verb/accessor, audited against the rule:
 | `hash` | no (digest) | allowed (the digest *reflects* taint, so a fork diverges) | `exec_taints_the_fork_…` |
 | `run` | no (`StopReason`) | allowed (advances the tainted timeline) | — |
 | `exec` | no (`ExecResult`) | **sets** taint — *conservatively, before the round-trip* (see the exec-flow table above) | `exec_reply_lost_still_taints_conservatively`, `taint_is_recorded_before_the_fallible_moment_refresh` |
-| `recorded_env` | the reproducer (`EnvSpec`) | **fails `Tainted`** | `exec_taints_the_fork_…` |
-| `MaterializedSession::mref()` | **yes** (`MomentRef`) | **fails `Tainted`** | `exec_advances_…`, `taint_is_recorded_…` |
+| `recorded_env` | the reproducer (`EnvSpec`) | **fails `Tainted`** via `guard_reproducible` (before delegating — the server guard is blind to local taint) | `every_reproducer_emitter_refuses_…`, `exec_taints_the_fork_…` |
+| `MaterializedSession::mref()` | **yes** (`MomentRef`) | **fails `Tainted`** via `guard_reproducible` | `every_reproducer_emitter_refuses_…`, `exec_advances_…` |
 | `moment()` | no (bare `u64` V-time) | allowed (a V-time is not a coordinate) | `exec_advances_…` |
-| `env()` | no (`&EnvSpec` base env) | allowed (raw; `recorded_env` is the guarded reproducer-mint) | — |
-| REPL `vary` | **yes** (`Varied.mref`) | **fails `Tainted`** (wind back to vary) | `vary_on_a_tainted_timeline_fails_loudly` |
+| ~~`env()`~~ | — | **removed** — a raw `&EnvSpec` accessor is reproducer material that would bypass the guard; use `recorded_env` | — |
+| REPL `vary` | **yes** (`Varied.mref`) | **fails `Tainted`** via `guard_reproducible` (wind back to vary) | `every_reproducer_emitter_refuses_…`, `vary_on_a_tainted_timeline_fails_loudly` |
 | `MomentRef::vary` (pure fn) | a `MomentRef` | n/a — a `MomentRef` *value* has no taint; the REPL guards the *timeline* before calling it | — |
 | transcript stamp | the record's `mref` | the non-pasteable `tainted!…` marked form (audit-complete; `open` refuses it) | `tainted_records_get_a_non_reproducible_stamp` |
 | `open <tainted!…>` | — | refused (`MRefParseError::Tainted`) | `tainted_stamp_is_refused_by_parse` |
 | `Session::current_mref()` | raw (`pub(crate)`) | internal only — the stamp marks it; REPL `vary` guards on `tainted()` first — never a public bare emitter | — |
 
-Every fix falls straight out of the rule rather than being an isolated patch: REPL `vary` fails
-`Tainted` (it was the last bare-coordinate emitter that hadn't been guarded); and the taint-ordering
-family closed one level at a time — first set-after-`exec`-before-`regs` (round 3), then
-set-before-the-round-trip (round 6, the conservative invariant above), which subsumes it and covers
-the applied-but-reply-lost hazard. `--transcript`/replay byte-identity is preserved throughout.
+### The structural choke-point (round-8 — one guard, grep-audited)
+
+The taint-ordering family recurred four times as point fixes, so it is now **structural**: one
+private guard, `Session::guard_reproducible(&self) -> Result<(), SessionError>`, checks the **local**
+`cur.tainted` bit and is the single gate **every** reproducer/coordinate emitter routes through
+*before any server delegation*. The local bit is authoritative because it is set conservatively the
+instant an `exec` request is issued (§the exec flow), possibly before the server marks its own
+timeline — so `recorded_env` delegating to the server's guard alone would mint a clean reproducer
+after a lost/dropped exec reply (`recorded_env`'s exact round-8 hole).
+
+Every emitter and its guard, and the grep that audits nothing bypasses it:
+
+| Emitter | Routes through `guard_reproducible`? |
+|---|---|
+| `MaterializedSession::mref()` | yes — first line |
+| `MaterializedSession::recorded_env()` | yes — first line, **before** `server.recorded_env()` |
+| REPL `vary` (`Shell::run_cmd`) | yes — `guard_reproducible().is_err()` before building the counterfactual |
+| ~~`MaterializedSession::env()`~~ | **removed** (was an unguarded raw `&EnvSpec` reproducer accessor) |
+| `Session::current_mref()` | raw `pub(crate)`, not an emitter: the transcript stamp *marks* its output (`tainted!…`, non-pasteable), and REPL `vary` calls `guard_reproducible` first |
+
+```
+$ grep -rn 'server\.recorded_env\|c\.env\.clone()\|current_mref()\|MomentRef::new' dissonance/resolution/src
+# non-test hits: mref()/current_mref() build a coordinate; recorded_env() mints the reproducer;
+# repl.rs current_mref() is the stamp (marks) + vary (guarded). The three emitters each call
+# guard_reproducible first; nothing bypasses it. (MomentRef::new hits in mref.rs are #[cfg(test)].)
+```
+
+Regression `every_reproducer_emitter_refuses_on_a_locally_tainted_session` drives a server that is
+**clean** (the exec's send failed, so the server never saw it) while the client is conservatively
+tainted, and asserts `mref` / `recorded_env` / REPL `vary` all refuse — i.e. the *local* guard, not
+the server's, is doing the work. The taint-ordering family closed one level at a time — set-after-
+`exec`-before-`regs` (round 3) → set-before-the-round-trip (round 6) → this single structural
+choke-point (round 8), which subsumes both. `--transcript`/replay byte-identity is preserved
+throughout.
 
 ## The load-bearing decision: the `Server` seam (and why not raw `control-proto`)
 
