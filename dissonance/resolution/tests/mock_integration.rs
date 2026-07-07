@@ -263,7 +263,7 @@ fn open_surfaces_an_early_crash_stop() {
 // ---------------------------------------------------------------------------
 
 /// Dispatch a line, asserting it recorded, and return the record.
-fn line(shell: &mut Shell<MockServer>, line: &str) -> Record {
+fn line<S: Server>(shell: &mut Shell<S>, line: &str) -> Record {
     match shell.execute_line(line) {
         DispatchOutput::Recorded(r) => r,
         DispatchOutput::View(_) => panic!("expected a recorded command for {line:?}"),
@@ -497,43 +497,78 @@ fn vary_on_a_tainted_timeline_fails_loudly() {
     ));
 }
 
-/// A test double: a `MockServer` whose `regs` verb always fails, to exercise the
-/// taint-before-fallible-refresh ordering inside `MaterializedSession::exec`.
-struct RegsFails(MockServer);
+/// A `MockServer` wrapper that can be told to fail a specific verb, to exercise
+/// the client's failure paths (taint-before-refresh, transactional open). Every
+/// other verb delegates to the inner mock.
+struct FaultyServer {
+    inner: MockServer,
+    /// `regs` always fails when set (exercises `exec`'s refresh failure).
+    fail_regs: bool,
+    /// `run` fails once this many `run` calls have already succeeded (`None` =
+    /// never). Lets a good `open` precede a failing one.
+    fail_run_after: Option<u32>,
+    run_count: u32,
+}
 
-impl Server for RegsFails {
+impl FaultyServer {
+    fn regs_fails(inner: MockServer) -> Self {
+        Self {
+            inner,
+            fail_regs: true,
+            fail_run_after: None,
+            run_count: 0,
+        }
+    }
+    fn run_fails_after(inner: MockServer, n: u32) -> Self {
+        Self {
+            inner,
+            fail_regs: false,
+            fail_run_after: Some(n),
+            run_count: 0,
+        }
+    }
+}
+
+impl Server for FaultyServer {
     fn hello(&mut self, caps: Caps) -> Result<Caps, SessionError> {
-        self.0.hello(caps)
+        self.inner.hello(caps)
     }
     fn snapshot(&mut self) -> Result<Snapshot, SessionError> {
-        self.0.snapshot()
+        self.inner.snapshot()
     }
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
-        self.0.drop_snap(snap)
+        self.inner.drop_snap(snap)
     }
     fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
-        self.0.branch(snap, env)
+        self.inner.branch(snap, env)
     }
     fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
-        self.0.replay(snap)
+        self.inner.replay(snap)
     }
     fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
-        self.0.run(until)
+        if self.fail_run_after.is_some_and(|n| self.run_count >= n) {
+            return Err(SessionError::Transport("run verb is down".to_string()));
+        }
+        self.run_count += 1;
+        self.inner.run(until)
     }
     fn hash(&mut self, scope: HashScope) -> Result<[u8; 32], SessionError> {
-        self.0.hash(scope)
+        self.inner.hash(scope)
     }
     fn read(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, SessionError> {
-        self.0.read(gpa, len)
+        self.inner.read(gpa, len)
     }
     fn regs(&mut self) -> Result<RegsView, SessionError> {
-        Err(SessionError::Transport("regs verb is down".to_string()))
+        if self.fail_regs {
+            return Err(SessionError::Transport("regs verb is down".to_string()));
+        }
+        self.inner.regs()
     }
     fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
-        self.0.exec(cmd, deadline)
+        self.inner.exec(cmd, deadline)
     }
     fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
-        self.0.recorded_env()
+        self.inner.recorded_env()
     }
 }
 
@@ -543,7 +578,7 @@ fn taint_is_recorded_before_the_fallible_moment_refresh() {
     // refresh fails. The local mirror must ALREADY be marked tainted — no window
     // where a clean coordinate could be minted on a tainted timeline.
     let inner = MockServer::boot(EnvCodec::seeded(21, FaultPolicy::none()));
-    let mut sess = Session::connect(RegsFails(inner)).unwrap();
+    let mut sess = Session::connect(FaultyServer::regs_fails(inner)).unwrap();
     let mut ms = sess.materialize(&mref(21, 500)).unwrap();
 
     assert!(ms.exec("x").is_err(), "exec surfaces the refresh failure");
@@ -556,4 +591,38 @@ fn taint_is_recorded_before_the_fallible_moment_refresh() {
         matches!(ms.recorded_env(), Err(SessionError::Tainted)),
         "recorded_env refuses too"
     );
+}
+
+#[test]
+fn open_is_transactional_when_the_run_fails() {
+    // branch succeeds but the follow-up run fails: `current` must be left None,
+    // never a stale coordinate naming the OLD timeline while the server sits on
+    // the new branch. Open a good timeline first, then a failing one.
+    let inner = MockServer::boot(EnvCodec::seeded(31, FaultPolicy::none()));
+    // The first materialize's run succeeds; the second's run fails.
+    let mut sess = Session::connect(FaultyServer::run_fails_after(inner, 1)).unwrap();
+
+    {
+        let ms = sess.materialize(&mref(31, 500)).unwrap();
+        assert_eq!(ms.moment(), 500, "the first open succeeds");
+    }
+
+    // Second open: branch succeeds, run fails -> Err, and nothing is left open.
+    assert!(
+        sess.materialize(&mref(31, 900)).is_err(),
+        "the failing run surfaces as an error"
+    );
+    assert!(
+        matches!(sess.materialized(), Err(SessionError::NothingOpen)),
+        "a failed open leaves NOTHING open — not the stale first timeline"
+    );
+
+    // And the REPL stamp shows `-` (no coordinate), not a lying old address.
+    let mut shell = Shell::new(sess);
+    let rec = line(&mut shell, "regs");
+    assert_eq!(
+        rec.mref, "-",
+        "no coordinate is stamped while nothing is open"
+    );
+    assert!(matches!(&rec.outcome, Outcome::Error { category, .. } if category == "nothing_open"));
 }

@@ -18,7 +18,16 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **40 tests.**
+end-to-end live==replay test. **41 tests.**
+
+**`open` is transactional.** `materialize` invalidates `current` *before* touching the server and
+installs the new timeline *only on full success*; if `branch` succeeds but the follow-up `run`
+fails, `current` is left `None` (stamps show `-`, `materialized()` errors `NothingOpen`) rather
+than a stale coordinate that names the *old* timeline while the server already sits on the new
+branch (`open_is_transactional_when_the_run_fails`, a mock that fails the run after a successful
+branch). Wind-back is `Session::materialize` again (a fresh handle) — there is no
+`current`-mutating method on a live `MaterializedSession`, so its "an open timeline exists"
+invariant holds after this change.
 
 `materialize`/`open` **surface the landing `StopReason`** (`MaterializedSession::stop`, and the
 `Opened` transcript record's `stop`/`detail`): a guest that crashes or quiesces *before* the

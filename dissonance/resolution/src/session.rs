@@ -110,7 +110,17 @@ impl<S: Server> Session<S> {
     /// branch off `root`, run to `mref.moment`, and record the landing as the
     /// current timeline. v1 always passes genesis; the parameter is the seam the
     /// Archive-era snapshot hint slots into.
+    ///
+    /// **Transactional.** `current` is invalidated *before* the server is
+    /// touched and installed *only on full success*. So if `branch` succeeds but
+    /// the follow-up `run` fails (e.g. a torn transport), `current` is left
+    /// `None` — never a stale coordinate that names the *old* timeline while the
+    /// server already sits on the new branch (stamps would show `-` and
+    /// [`materialized`](Session::materialized) errors `NothingOpen`, rather than
+    /// lying).
     fn materialize_from(&mut self, mref: &MomentRef, root: SnapId) -> Result<(), SessionError> {
+        // Invalidate first: any failure below leaves nothing open.
+        self.current = None;
         let wire_env = Environment {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: mref.env.encode(),
@@ -120,6 +130,7 @@ impl<S: Server> Session<S> {
             deadline: Some(VTime(mref.moment)),
             on: StopMask::NONE,
         })?;
+        // Install only now that both verbs have succeeded.
         self.current = Some(Current {
             env: mref.env.clone(),
             moment: stop_vtime(&stop),
@@ -280,15 +291,14 @@ impl<S: Server> MaterializedSession<'_, S> {
         self.session.server.recorded_env()
     }
 
-    /// Wind back: re-materialize `mref` (cheap by ruling — a fresh branch from
-    /// genesis). Resets the current timeline and clears local taint.
-    pub fn rematerialize(&mut self, mref: &MomentRef) -> Result<(), SessionError> {
-        let genesis = self.session.genesis;
-        self.session.materialize_from(mref, genesis)
-    }
-
-    /// The current-timeline state, always present while this handle exists (a
-    /// `MaterializedSession` is only constructed with `current` set).
+    /// The current-timeline state. Always present while this handle exists: a
+    /// `MaterializedSession` is only ever constructed with `current` set
+    /// ([`materialize`](Session::materialize) installs it before returning the
+    /// handle; [`materialized`](Session::materialized) checks it first), and no
+    /// method on this handle clears it — so the `expect` is statically
+    /// infallible. (Wind-back is [`Session::materialize`] again — a fresh handle
+    /// — not a mutation of this one, which is what keeps this invariant true
+    /// after the transactional-`open` change.)
     fn cur(&self) -> &Current {
         self.session
             .current
