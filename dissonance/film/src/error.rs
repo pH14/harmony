@@ -65,4 +65,15 @@ pub enum FilmError {
         /// The number of re-materialize attempts made.
         retries: u32,
     },
+
+    /// The [`FilmPlan`](crate::FilmPlan) handed to [`film`](crate::film) was
+    /// invalid. [`FilmPlan::derive`](crate::FilmPlan::derive) never produces such
+    /// a plan, but a plan reached another way (deserialized, or built field-by-
+    /// field) is re-validated at entry so an untrusted plan fails loudly instead
+    /// of, e.g., hanging a zero-`read_cap` chunker (rule 4).
+    #[error("invalid film plan: {reason}")]
+    InvalidPlan {
+        /// Why the plan was rejected.
+        reason: &'static str,
+    },
 }

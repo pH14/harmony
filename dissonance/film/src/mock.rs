@@ -19,8 +19,8 @@
 use std::collections::BTreeMap;
 
 use control_proto::{
-    CapFlags, Caps, ControlError, CoverageGeometry, Environment, HashScope, SnapId, StopConditions,
-    StopReason, VTime,
+    CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, Environment, HashScope,
+    SnapId, StopConditions, StopReason, VTime,
 };
 use environment::{EnvSpec, Moment};
 use resolution::{ExecResult, READ_CAP, RegsView, Server, SessionError, Snapshot};
@@ -105,6 +105,10 @@ pub struct MockBillboardServer {
     /// before serving normally — exercises the projector's re-materialize
     /// recovery.
     drops_remaining: u32,
+    /// If set, a `run` whose target is beyond this `Moment` stops **short** at it
+    /// with a scripted crash (the guest crashed/quiesced before the requested
+    /// frame) — exercises the projector's [`crate::FilmError::ShortRun`] path.
+    stop_short_at: Option<Moment>,
 }
 
 impl MockBillboardServer {
@@ -124,6 +128,7 @@ impl MockBillboardServer {
             cur_moment: 0,
             corrupt: Corruption::None,
             drops_remaining: 0,
+            stop_short_at: None,
         }
     }
 
@@ -137,6 +142,14 @@ impl MockBillboardServer {
     /// normally — drives the projector's drop-recovery path.
     pub fn with_read_drops(mut self, n: u32) -> Self {
         self.drops_remaining = n;
+        self
+    }
+
+    /// Make every `run` past `moment` stop **short** at it with a scripted crash
+    /// (the guest never reaches later frames) — drives the projector's
+    /// [`crate::FilmError::ShortRun`] path.
+    pub fn with_stop_short_at(mut self, moment: Moment) -> Self {
+        self.stop_short_at = Some(moment);
         self
     }
 
@@ -256,6 +269,22 @@ impl Server for MockBillboardServer {
 
     fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
         let target = until.deadline.map(|v| v.0).unwrap_or(MOCK_QUIESCENT);
+        // Scripted short landing: the guest crashes before `target` — the run
+        // stops at `stop_short_at` and reports a crash, never advancing to the
+        // requested frame.
+        if let Some(s) = self.stop_short_at
+            && target > s
+            && s >= self.cur_moment
+        {
+            self.cur_moment = s;
+            return Ok(StopReason::Crash {
+                vtime: VTime(s),
+                info: CrashInfo {
+                    kind: CrashKind::Panic,
+                    detail: b"mock: scripted stop-short".to_vec(),
+                },
+            });
+        }
         // V-time is monotonic — never rewind.
         if target <= self.cur_moment {
             return Ok(StopReason::Deadline {
@@ -307,8 +336,12 @@ impl Server for MockBillboardServer {
             return Err(SessionError::Transport("mock: injected read drop".into()));
         }
         let win_start = self.window.gpa;
-        let win_end = win_start + u64::from(self.window.len);
-        if gpa >= win_start && end <= win_end {
+        // Overflow-safe window end (scenarios control gpa, but stay total).
+        let win_end = win_start.checked_add(u64::from(self.window.len));
+        if let Some(win_end) = win_end
+            && gpa >= win_start
+            && end <= win_end
+        {
             let full = self.billboard_bytes(self.current_frame());
             let off = (gpa - win_start) as usize;
             return Ok(full[off..off + len as usize].to_vec());

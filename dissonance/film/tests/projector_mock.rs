@@ -196,6 +196,55 @@ fn billboard_reads_are_hash_neutral() {
 }
 
 #[test]
+fn a_short_landing_is_surfaced_as_a_hard_error() {
+    // The guest crashes at moment 1050, before frame 1's moment (1100): the run
+    // lands short and the projector surfaces it, never a fabricated frame.
+    let scenario = BillboardScenario::new(0x10_0000, clock(3));
+    let ticks = scenario.ticks.clone();
+    let window = scenario.window();
+    let plan = FilmPlan::derive(&ticks, window, ClipSelect::All, None, 1 << 16).unwrap();
+    let server = MockBillboardServer::boot(scenario).with_stop_short_at(1050);
+    let mut session = Session::connect(server).unwrap();
+
+    match project(&mut session, &reproducer(), &plan).unwrap_err() {
+        FilmError::ShortRun {
+            frame,
+            landed,
+            target,
+            stop_kind,
+        } => {
+            assert_eq!(frame, 1);
+            assert_eq!(landed, 1050);
+            assert_eq!(target, 1100);
+            assert_eq!(stop_kind, "crash");
+        }
+        other => panic!("expected ShortRun, got {other:?}"),
+    }
+}
+
+#[test]
+fn film_rejects_an_invalid_plan() {
+    // A hand-built plan with a zero read cap is rejected up front — never a hang.
+    let scenario = BillboardScenario::new(0x10_0000, clock(1));
+    let window = scenario.window();
+    let bad_plan = FilmPlan {
+        billboard: window,
+        read_cap: 0,
+        frames: vec![film::FrameShot {
+            frame: 0,
+            moment: 1000,
+        }],
+        clip: ClipSelect::All,
+        stride: 1,
+    };
+    let mut session = Session::connect(MockBillboardServer::boot(scenario)).unwrap();
+    assert!(matches!(
+        project(&mut session, &reproducer(), &bad_plan).unwrap_err(),
+        FilmError::InvalidPlan { .. }
+    ));
+}
+
+#[test]
 fn a_long_clip_films_end_to_end() {
     // The box-gate shape (≥300 frames) at portable scale — one materialize, then
     // linear runs, every header verified.

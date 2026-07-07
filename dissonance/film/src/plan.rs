@@ -52,8 +52,19 @@ impl BillboardWindow {
     /// task-80 length cap ([`resolution::READ_CAP`]), respected by chunking so a
     /// billboard larger than one `read` (e.g. an SNES savestate) still films.
     /// Chunks are contiguous, in ascending `gpa` order, and reassemble to exactly
-    /// `len` bytes; `read_cap` is assumed non-zero (derivation rejects zero).
+    /// `len` bytes.
+    ///
+    /// A `read_cap` of zero yields **no chunks** (never a non-terminating loop):
+    /// [`FilmPlan::derive`] rejects a zero cap, but a `FilmPlan` reached any other
+    /// way — deserialized from untrusted JSON, or built by hand (every field is
+    /// `pub`) — must not be able to hang a reader on `read_cap == 0` (rule 4:
+    /// library code never loops on untrusted input). [`crate::film`] rejects such
+    /// a plan up front, so this empty list is a belt-and-braces guard, not a
+    /// silent success.
     fn chunks(&self, read_cap: u32) -> Vec<ReadChunk> {
+        if read_cap == 0 {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         let mut done: u32 = 0;
         while done < self.len {
@@ -433,6 +444,23 @@ mod tests {
             ),
             Err(PlanError::EmptyClip)
         );
+    }
+
+    #[test]
+    fn chunks_of_a_zero_cap_plan_are_empty_not_a_hang() {
+        // `derive` rejects a zero cap, but a `FilmPlan` built by hand (all fields
+        // are `pub`) or deserialized must never hang the chunker (rule 4).
+        let plan = FilmPlan {
+            billboard: window(),
+            read_cap: 0,
+            frames: vec![FrameShot {
+                frame: 0,
+                moment: 0,
+            }],
+            clip: ClipSelect::All,
+            stride: 1,
+        };
+        assert!(plan.read_chunks().is_empty());
     }
 
     #[test]

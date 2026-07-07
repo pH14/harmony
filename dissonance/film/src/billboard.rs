@@ -159,7 +159,11 @@ impl BillboardHeader {
             len: u32_le(buf, 28),
         };
         let buf_len = buf.len() as u64;
-        for (region, which) in [(savestate, "savestate"), (work_ram, "work_ram")] {
+        let mut ends = [0u64; 2];
+        for (i, (region, which)) in [(savestate, "savestate"), (work_ram, "work_ram")]
+            .into_iter()
+            .enumerate()
+        {
             // A region must not overlap the header and must lie wholly inside the
             // buffer the projector actually read. Overflow-safe end (rule 4).
             let end = region.end().ok_or(HeaderError::RegionOverflow { which })?;
@@ -171,6 +175,17 @@ impl BillboardHeader {
                     buf_len: buf.len(),
                 });
             }
+            ends[i] = end;
+        }
+        // The two regions must not overlap each other (task 86 lays them out
+        // contiguously; an overlap is a corrupt region table — reject it rather
+        // than hand back a savestate that shares bytes with the work RAM).
+        let overlap = u64::from(savestate.offset) < ends[1]
+            && u64::from(work_ram.offset) < ends[0]
+            && savestate.len > 0
+            && work_ram.len > 0;
+        if overlap {
+            return Err(HeaderError::RegionOverlap);
         }
         Ok(BillboardHeader {
             version,
@@ -298,6 +313,10 @@ pub enum HeaderError {
         /// Which region (`savestate` / `work_ram`).
         which: &'static str,
     },
+    /// The savestate and work-RAM regions overlap — a corrupt region table (task
+    /// 86 lays them out contiguously).
+    #[error("billboard savestate and work_ram regions overlap")]
+    RegionOverlap,
     /// A region ran past the buffer (or into the header) — the projector did not
     /// read enough bytes, or the table is corrupt.
     #[error(
@@ -398,6 +417,19 @@ mod tests {
             BillboardHeader::parse(&buf),
             Err(HeaderError::RegionOutOfBounds { .. } | HeaderError::RegionOverflow { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_overlapping_regions() {
+        let mut buf = sample();
+        // savestate occupies [32, 72); point work_ram (offset field at 24) into
+        // it at 40 with length 16 → [40, 56), overlapping the savestate.
+        buf[24..28].copy_from_slice(&40u32.to_le_bytes());
+        buf[28..32].copy_from_slice(&16u32.to_le_bytes());
+        assert_eq!(
+            BillboardHeader::parse(&buf),
+            Err(HeaderError::RegionOverlap)
+        );
     }
 
     #[test]

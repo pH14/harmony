@@ -19,7 +19,7 @@
 use environment::EnvSpec;
 use resolution::{MomentRef, Server, Session, SessionError, StopReason};
 
-use crate::billboard::BillboardHeader;
+use crate::billboard::{BillboardHeader, HEADER_LEN};
 use crate::capture::{CaptureBundle, FrameCapture};
 use crate::error::FilmError;
 use crate::plan::{FilmPlan, FrameShot, ReadChunk};
@@ -42,6 +42,7 @@ pub fn film<S: Server>(
     reproducer: &EnvSpec,
     plan: &FilmPlan,
 ) -> Result<CaptureBundle, FilmError> {
+    validate_plan(plan)?;
     let chunks = plan.read_chunks();
     let mut bundle = CaptureBundle::new();
     for (i, shot) in plan.frames.iter().enumerate() {
@@ -49,6 +50,32 @@ pub fn film<S: Server>(
         bundle.frames.push(capture);
     }
     Ok(bundle)
+}
+
+/// Re-validate a caller-supplied [`FilmPlan`] before driving any verb.
+/// [`FilmPlan::derive`] already enforces these, but a plan reached another way
+/// (deserialized from untrusted JSON, or built field-by-field — every field is
+/// `pub`) must not be able to hang or misbehave: a zero `read_cap` would make
+/// chunking produce nothing, an empty frame list nothing to film, an
+/// under-header window a buffer that cannot hold a header. Fail loud instead
+/// (rule 4).
+fn validate_plan(plan: &FilmPlan) -> Result<(), FilmError> {
+    if plan.read_cap == 0 {
+        return Err(FilmError::InvalidPlan {
+            reason: "read_cap is zero",
+        });
+    }
+    if plan.frames.is_empty() {
+        return Err(FilmError::InvalidPlan {
+            reason: "no frames to film",
+        });
+    }
+    if (plan.billboard.len as usize) < HEADER_LEN {
+        return Err(FilmError::InvalidPlan {
+            reason: "billboard window is smaller than a header",
+        });
+    }
+    Ok(())
 }
 
 /// How the projector positions the timeline at a frame.
