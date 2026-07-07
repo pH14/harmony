@@ -345,7 +345,9 @@ impl<S: Server> Shell<S> {
                     Ok(r) => Outcome::Exec {
                         ok: r.ok,
                         tainted: r.tainted,
-                        output: String::from_utf8_lossy(&r.output).into_owned(),
+                        // Lossless: guest serial bytes are arbitrary, and the
+                        // transcript is the replayable artifact.
+                        output_hex: to_hex(&r.output),
                     },
                     Err(e) => err_outcome(&e),
                 },

@@ -154,6 +154,37 @@ fn exec_taints_the_fork_and_leaves_the_original_unperturbed() {
 }
 
 #[test]
+fn exec_advances_the_session_moment() {
+    // Against the real verb the guest runs to sentinel/deadline, so V-time
+    // advances; the session must refresh its tracked moment (via the regs verb)
+    // so moment()/mref() and the NEXT exec's deadline are not stale.
+    let mut sess = session(13);
+    let m = mref(13, 2_000);
+    let mut ms = sess.materialize(&m).unwrap();
+    assert_eq!(ms.moment(), 2_000);
+
+    ms.exec("abc").unwrap();
+    let after = ms.moment();
+    assert!(
+        after > 2_000,
+        "exec advanced the tracked moment (2000 -> {after})"
+    );
+    assert_eq!(
+        ms.mref().moment,
+        after,
+        "mref() reflects the post-exec V-time"
+    );
+
+    // A second exec advances further still — computed from the refreshed moment,
+    // not the stale pre-exec one.
+    ms.exec("de").unwrap();
+    assert!(
+        ms.moment() > after,
+        "the second exec advanced from the refreshed moment"
+    );
+}
+
+#[test]
 fn vary_counterfactual_visibly_diverges_and_can_crash() {
     let mut sess = session(9);
     let base = mref(9, 1_000);

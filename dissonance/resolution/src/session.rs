@@ -233,10 +233,23 @@ impl<S: Server> MaterializedSession<'_, S> {
     /// **Improvisation:** run `cmd` inside the guest, tainting this timeline.
     /// The client refuses nothing (the server guard is authoritative); the
     /// returned [`ExecResult::tainted`] surfaces the consequence prominently.
+    ///
+    /// The guest ran to a completion sentinel or the deadline, so V-time
+    /// advanced. We learn the new [`Moment`] from the `regs` verb — [`RegsView`]
+    /// carries the current `Moment` by design — rather than extending
+    /// [`ExecResult`] (which would drift the mirrored task-80/81 wire contract).
+    /// Keeping the tracked moment fresh is load-bearing: the *next* `exec`'s
+    /// deadline is `moment + EXEC_BUDGET`, and [`moment`](Self::moment) /
+    /// [`mref`](Self::mref) must report the true post-`exec` V-time.
     pub fn exec(&mut self, cmd: &str) -> Result<ExecResult, SessionError> {
         let deadline = VTime(self.cur().moment.saturating_add(EXEC_BUDGET));
         let result = self.session.server.exec(cmd, deadline)?;
-        self.cur_mut().tainted = true;
+        // `regs` is a pure observation (hash-invariant), so this cannot perturb
+        // the timeline; it only reads back where the exec left V-time.
+        let moment = self.session.server.regs()?.moment;
+        let cur = self.cur_mut();
+        cur.tainted = true;
+        cur.moment = moment;
         Ok(result)
     }
 

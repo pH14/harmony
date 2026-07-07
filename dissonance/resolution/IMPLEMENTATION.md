@@ -18,14 +18,31 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **36 tests.**
+end-to-end live==replay test. **38 tests.**
 
 `materialize`/`open` **surface the landing `StopReason`** (`MaterializedSession::stop`, and the
 `Opened` transcript record's `stop`/`detail`): a guest that crashes or quiesces *before* the
 requested moment lands at that earlier moment and reports the crash/quiescence, never a swallowed
 clean open (test `open_surfaces_an_early_crash_stop`).
 
-### Reproducer-semantics discipline (review round 2)
+### The exec seam (review round 2)
+
+- **`exec` advances the tracked V-time.** Against the real verb the guest runs to a completion
+  sentinel or the deadline, so V-time moves. After a successful `exec` the session refreshes
+  `cur.moment` from the **`regs` verb** (`RegsView` carries the current `Moment`) rather than
+  extending `ExecResult` — which would drift the mirrored task-80/81 wire contract. This keeps the
+  *next* `exec`'s deadline (`moment + EXEC_BUDGET`) and `moment()`/`mref()` correct. The
+  `MockServer`'s `exec` now advances time so the seam is exercised by the gates
+  (`exec_advances_the_session_moment`).
+- **exec output is recorded losslessly.** Guest serial bytes are arbitrary (not necessarily
+  UTF-8); the JSONL transcript is the replayable artifact, so `Outcome::Exec.output_hex` stores the
+  **exact bytes** as lower-hex (`String::from_utf8_lossy` would substitute U+FFFD and corrupt both
+  the bytes and the byte count). `render_line` presents a human-lossy escaped view over the decoded
+  bytes; the artifact round-trips exactly (`exec_output_round_trips_losslessly_including_non_utf8`,
+  and the mock now emits a couple of non-UTF-8 bytes so the CLI/proptest exercise the path
+  end-to-end). `--replay` byte-identity is preserved.
+
+### Reproducer-semantics discipline (review round 1)
 
 Three properties the crate exists to embody, each with a regression test:
 

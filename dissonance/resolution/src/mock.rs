@@ -336,9 +336,16 @@ impl Server for MockServer {
         Ok(self.cur.regs())
     }
 
-    fn exec(&mut self, cmd: &str, _deadline: VTime) -> Result<ExecResult, SessionError> {
+    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
         // The improvisation taints the timeline (structural, not conventional).
         self.cur.tainted = true;
+        // The guest runs the command to a completion sentinel, advancing V-time
+        // (the real verb runs to sentinel/deadline). Scripted + deterministic
+        // here, but the moment MUST move so the client's refresh-from-regs seam
+        // is exercised by the gates. Clamp to the deadline.
+        let completion = self.cur.moment.saturating_add(1 + cmd.len() as u64);
+        let ok = completion <= deadline.0;
+        self.cur.moment = completion.min(deadline.0);
         // Crude scripted "serial shell": echo a prompt + the command + a
         // deterministic canned line, exactly the off-the-record channel task 81
         // rules is exempt from the determinism discipline.
@@ -347,9 +354,12 @@ impl Server for MockServer {
         output.extend_from_slice(cmd.as_bytes());
         output.extend_from_slice(b"\n");
         output.extend_from_slice(format!("(scripted output for {} bytes)\n", cmd.len()).as_bytes());
+        // A couple of raw, non-UTF-8 serial bytes — guest serial output is
+        // arbitrary; the transcript must record it losslessly regardless.
+        output.extend_from_slice(&[0x1b, 0xff]);
         Ok(ExecResult {
             output,
-            ok: true,
+            ok,
             tainted: true,
         })
     }

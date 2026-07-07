@@ -99,8 +99,11 @@ pub enum Outcome {
         ok: bool,
         /// The timeline's taint bit (always `true` after an exec).
         tainted: bool,
-        /// The captured serial output (UTF-8 text; the mock's is ASCII).
-        output: String,
+        /// The captured serial output, **lower-hex** — recorded losslessly
+        /// because guest serial bytes are arbitrary (not necessarily UTF-8) and
+        /// the transcript is the replayable artifact. `render_line` may present a
+        /// human-lossy escaped form; the JSONL round-trips the exact bytes.
+        output_hex: String,
     },
     /// `vary`: the counterfactual `MomentRef` (its textual encoding) — copy it
     /// and `open` it to run the one-change replay.
@@ -174,13 +177,18 @@ pub fn render_line(r: &Record) -> String {
         Outcome::Exec {
             ok,
             tainted,
-            output,
-        } => format!(
-            "exec ok={ok}{} output({}b): {}",
-            taint_flag(*tainted),
-            output.len(),
-            output.escape_default()
-        ),
+            output_hex,
+        } => {
+            // Human-lossy view: decode the lossless hex and escape it. A
+            // hand-mangled hex string degrades to empty rather than panicking.
+            let bytes = crate::from_hex(output_hex).unwrap_or_default();
+            format!(
+                "exec ok={ok}{} output({}b): {}",
+                taint_flag(*tainted),
+                bytes.len(),
+                String::from_utf8_lossy(&bytes).escape_default()
+            )
+        }
         // The whole point of `vary` is the counterfactual address, so render it
         // in full — never `short` — so an agent/human consuming the rendered
         // output (not the JSONL) can paste it straight into `open`.
@@ -272,7 +280,7 @@ mod tests {
                 outcome: Outcome::Exec {
                     ok: true,
                     tainted: true,
-                    output: "# ls /\n".to_string(),
+                    output_hex: crate::to_hex(b"# ls /\n"),
                 },
             },
         ]
@@ -298,5 +306,33 @@ mod tests {
     #[test]
     fn from_jsonl_rejects_garbage_without_panicking() {
         assert!(from_jsonl("not json\n").is_err());
+    }
+
+    #[test]
+    fn exec_output_round_trips_losslessly_including_non_utf8() {
+        // Guest serial output is arbitrary bytes; the transcript is the
+        // replayable artifact, so the exact bytes must survive the JSONL round
+        // trip (no U+FFFD substitution).
+        let raw = [0x00u8, 0xff, 0xfe, 0x1b, b'h', b'i', 0x80];
+        let rec = Record {
+            seq: 1,
+            mref: "mref1:0:00".to_string(),
+            cmd: "exec x".to_string(),
+            outcome: Outcome::Exec {
+                ok: true,
+                tainted: true,
+                output_hex: crate::to_hex(&raw),
+            },
+        };
+        let back = from_jsonl(&to_jsonl(std::slice::from_ref(&rec)).unwrap()).unwrap();
+        assert_eq!(back, vec![rec]);
+        let Outcome::Exec { output_hex, .. } = &back[0].outcome else {
+            panic!("expected Exec");
+        };
+        assert_eq!(
+            crate::from_hex(output_hex).unwrap(),
+            raw,
+            "the exact bytes survive the transcript round trip"
+        );
     }
 }
