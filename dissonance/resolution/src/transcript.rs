@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::MomentRef;
 use crate::server::RegsView;
 
 /// One transcript entry: a monotonic sequence number, the `MomentRef` the
@@ -129,6 +130,13 @@ pub enum Outcome {
 /// stays scannable while the full stamp lives in the JSONL.
 pub fn render_line(r: &Record) -> String {
     let fp = mref_fingerprint(&r.mref);
+    // Flag a tainted (off-the-record, non-reproducible) coordinate in the human
+    // view too — the JSONL stamp already carries the marker; this surfaces it.
+    let taint_mark = if r.mref.starts_with(MomentRef::TAINTED_STAMP_PREFIX) {
+        "!"
+    } else {
+        ""
+    };
     let rendered = match &r.outcome {
         Outcome::Opened {
             moment,
@@ -173,10 +181,13 @@ pub fn render_line(r: &Record) -> String {
             output.len(),
             output.escape_default()
         ),
-        Outcome::Varied { mref } => format!("varied => {}", short(mref)),
+        // The whole point of `vary` is the counterfactual address, so render it
+        // in full — never `short` — so an agent/human consuming the rendered
+        // output (not the JSONL) can paste it straight into `open`.
+        Outcome::Varied { mref } => format!("varied => {mref}"),
         Outcome::Error { category, message } => format!("ERROR[{category}] {message}"),
     };
-    format!("[{}] {fp} {} => {rendered}", r.seq, r.cmd)
+    format!("[{}] {taint_mark}{fp} {} => {rendered}", r.seq, r.cmd)
 }
 
 /// Render a whole transcript: [`render_line`] of each record, newline-joined.

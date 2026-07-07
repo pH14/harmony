@@ -18,12 +18,35 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **32 tests.**
+end-to-end live==replay test. **36 tests.**
 
 `materialize`/`open` **surface the landing `StopReason`** (`MaterializedSession::stop`, and the
 `Opened` transcript record's `stop`/`detail`): a guest that crashes or quiesces *before* the
 requested moment lands at that earlier moment and reports the crash/quiescence, never a swallowed
 clean open (test `open_surfaces_an_early_crash_stop`).
+
+### Reproducer-semantics discipline (review round 2)
+
+Three properties the crate exists to embody, each with a regression test:
+
+- **`vary` renders a paste-able address.** The one command whose entire output *is* a
+  counterfactual `MomentRef` renders it in **full** (never `short`), so an agent/human consuming
+  rendered output — not the JSONL — can paste it straight into `open`
+  (`vary_renders_a_pasteable_full_momentref`).
+- **A tainted coordinate never lies.** A record observed on a timeline an `exec` improvisation has
+  tainted is stamped with `MomentRef::TAINTED_STAMP_PREFIX` (`tainted!…`), not a bare
+  reproducible-claiming `MomentRef` — the state is off the record (task 81) and not regenerable
+  from `(seed, overrides)`. `MomentRef::parse` refuses the marked form
+  (`MRefParseError::Tainted`), so `open` rejects it loudly instead of silently reopening the
+  *untainted* pre-`exec` state; the human render flags it with a leading `!`
+  (`tainted_records_get_a_non_reproducible_stamp`, `tainted_stamp_is_refused_by_parse`). The
+  `--replay` byte-identity property is preserved (the marker rides the stamp string through the
+  one renderer).
+- **`replay` restores the world verbatim.** `MockServer` snapshots capture the **whole** timeline
+  (world seed + env + moment + taint), so `snapshot-under-A → branch-to-B → replay(snap)` restores
+  A's world, not A's moment inside B's world (`replay_restores_the_whole_world_verbatim_after_a_branch`).
+  The mock's quiescence point is now derived from the live world on demand, not a stored field, so
+  it cannot go stale across a branch/replay.
 
 ## The load-bearing decision: the `Server` seam (and why not raw `control-proto`)
 

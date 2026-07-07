@@ -6,10 +6,12 @@
 //! Two layers: the client (`Session`/`MaterializedSession`) directly, and the
 //! REPL (`Shell`) over the same mock — the surface an agent actually drives.
 
+use control_proto::{Environment, StopConditions, StopMask, VTime};
 use environment::{EnvCodec, FaultPolicy};
 use resolution::{
-    Action, Command, DispatchOutput, HostFault, MockServer, MomentRef, Outcome, OverrideEdit,
-    Record, Session, SessionError, Shell,
+    Action, Command, DispatchOutput, EnvSpec, HashScope, HostFault, MRefParseError, MockServer,
+    MomentRef, Outcome, OverrideEdit, Record, Server, Session, SessionError, Shell, client_caps,
+    render_line,
 };
 
 /// A fresh session over a mock booted under `seed`.
@@ -321,4 +323,115 @@ fn every_repl_verb_parses() {
     ] {
         assert!(Command::parse(line).is_ok(), "verb should parse: {line}");
     }
+}
+
+#[test]
+fn vary_renders_a_pasteable_full_momentref() {
+    // The `vary` command's whole output IS a counterfactual address; the
+    // rendered line must carry it in full so it can be pasted into `open`.
+    let mut shell = Shell::new(session(5));
+    let base = mref(5, 100);
+    line(&mut shell, &format!("open {base}"));
+    let varied = line(&mut shell, "vary set 50 skew 7");
+    let counterfactual = match &varied.outcome {
+        Outcome::Varied { mref } => mref.clone(),
+        other => panic!("expected Varied, got {other:?}"),
+    };
+    // The rendered (human) line contains the full address, not a truncation.
+    assert!(
+        render_line(&varied).contains(&counterfactual),
+        "vary must render the full paste-able MomentRef"
+    );
+    // And it round-trips: pasting it into `open` materializes.
+    assert!(MomentRef::parse(&counterfactual).is_ok());
+    assert!(matches!(
+        line(&mut shell, &format!("open {counterfactual}")).outcome,
+        Outcome::Opened { .. }
+    ));
+}
+
+#[test]
+fn tainted_records_get_a_non_reproducible_stamp() {
+    // A clean record's stamp is a paste-able MomentRef; a tainted one is not —
+    // it is marked, and `open` refuses it (no lying paste-to-reach coordinate).
+    let mut shell = Shell::new(session(8));
+    let base = mref(8, 100);
+
+    let opened = line(&mut shell, &format!("open {base}"));
+    assert!(
+        MomentRef::parse(&opened.mref).is_ok(),
+        "an untainted stamp reopens cleanly"
+    );
+
+    // exec taints the live timeline.
+    let execd = line(&mut shell, "exec ls /");
+    assert!(
+        execd.mref.starts_with(MomentRef::TAINTED_STAMP_PREFIX),
+        "a tainted record's stamp is marked, not a clean mref"
+    );
+    // Observations recorded after the exec are on the tainted timeline too.
+    let after = line(&mut shell, "hash");
+    assert!(after.mref.starts_with(MomentRef::TAINTED_STAMP_PREFIX));
+    // The marked stamp is refused by parse — not silently reopened as untainted.
+    assert_eq!(MomentRef::parse(&execd.mref), Err(MRefParseError::Tainted));
+    let reopened = line(&mut shell, &format!("open {}", execd.mref));
+    assert!(
+        matches!(&reopened.outcome, Outcome::Error { category, .. } if category == "parse"),
+        "open refuses a tainted coordinate loudly"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Server-level: the `replay` verbatim-restore contract (the reference model).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replay_restores_the_whole_world_verbatim_after_a_branch() {
+    // snapshot-under-A → branch-to-B → replay(snap) must restore A's WORLD (not
+    // A's moment inside B's world). `read`/`regs`/`hash` are functions of the
+    // world seed, so a partial capture would silently pin wrong semantics.
+    let mut srv = MockServer::boot(EnvCodec::seeded(1, FaultPolicy::none()));
+    srv.hello(client_caps()).unwrap();
+
+    // Advance under world A and snapshot there.
+    srv.run(StopConditions {
+        deadline: Some(VTime(500)),
+        on: StopMask::NONE,
+    })
+    .unwrap();
+    let snap = srv.snapshot().unwrap();
+    let hash_a = srv.hash(HashScope::Whole).unwrap();
+    let regs_a = srv.regs().unwrap();
+    let read_a = srv.read(0x1000, 32).unwrap();
+
+    // Branch a different world (env B) off the same snapshot, same position.
+    let env_b = EnvCodec::seeded(2, FaultPolicy::none());
+    let wire_b = Environment {
+        blob_version: EnvSpec::BLOB_VERSION,
+        bytes: env_b.encode(),
+    };
+    srv.branch(snap.id, &wire_b).unwrap();
+    assert_ne!(
+        srv.hash(HashScope::Whole).unwrap(),
+        hash_a,
+        "branch installed a different world"
+    );
+
+    // Replay the snapshot: a verbatim restore of world A.
+    srv.replay(snap.id).unwrap();
+    assert_eq!(
+        srv.hash(HashScope::Whole).unwrap(),
+        hash_a,
+        "replay restored world A's hash verbatim"
+    );
+    assert_eq!(
+        srv.regs().unwrap(),
+        regs_a,
+        "replay restored world A's regs"
+    );
+    assert_eq!(
+        srv.read(0x1000, 32).unwrap(),
+        read_a,
+        "replay restored world A's memory"
+    );
 }

@@ -262,11 +262,22 @@ impl<S: Server> Shell<S> {
 
     /// The `MomentRef` stamp for the next record: the current open moment
     /// (env + position), or `-` if nothing is open.
+    ///
+    /// A **tainted** timeline's coordinate is not reproducible (its state is off
+    /// the record — see task 81), so it is stamped with
+    /// [`MomentRef::TAINTED_STAMP_PREFIX`] rather than a bare, reproducible-
+    /// claiming `MomentRef`. The inner address (the pre-`exec` origin) is kept
+    /// for provenance, but `open` refuses the marked form
+    /// ([`MRefParseError::Tainted`](crate::MRefParseError)) rather than reopening
+    /// the untainted state it would mis-address.
     fn stamp(&self) -> String {
-        self.session
-            .current_mref()
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "-".to_string())
+        match self.session.current_mref() {
+            Some(m) if self.session.tainted() => {
+                format!("{}{m}", MomentRef::TAINTED_STAMP_PREFIX)
+            }
+            Some(m) => m.to_string(),
+            None => "-".to_string(),
+        }
     }
 
     /// Run one command against the session and summarize it as an [`Outcome`].

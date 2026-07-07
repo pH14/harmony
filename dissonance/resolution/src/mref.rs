@@ -67,6 +67,17 @@ impl MomentRef {
     /// The fixed prefix of the textual encoding.
     const PREFIX: &'static str = "mref1";
 
+    /// The prefix a transcript stamps onto a coordinate observed on a **tainted**
+    /// timeline (a lineage an [`exec`](crate::MaterializedSession::exec)
+    /// improvisation has poisoned). Such a state is *not* regenerable from
+    /// `(seed, overrides)` — it is off the record — so its coordinate is a lying
+    /// paste-to-reach address. [`parse`](MomentRef::parse) refuses a string
+    /// carrying this prefix ([`MRefParseError::Tainted`]) rather than silently
+    /// reopening the *untainted* pre-`exec` state the inner address names. This
+    /// is the textual face of the task-81 lineage-taint discipline
+    /// (`docs/RESOLUTION.md` §Improvisations).
+    pub const TAINTED_STAMP_PREFIX: &'static str = "tainted!";
+
     /// Build a `MomentRef` from its parts.
     pub fn new(env: EnvSpec, moment: Moment) -> Self {
         Self { env, moment }
@@ -106,6 +117,12 @@ impl MomentRef {
     ///
     /// Form: `mref1:<moment-decimal>:<lower-hex of EnvSpec::encode()>`.
     pub fn parse(s: &str) -> Result<MomentRef, MRefParseError> {
+        // A tainted-timeline stamp is deliberately non-reproducible: refuse it
+        // loudly rather than reopen the untainted state its inner address names
+        // (the task-81 discipline — see `TAINTED_STAMP_PREFIX`).
+        if s.starts_with(Self::TAINTED_STAMP_PREFIX) {
+            return Err(MRefParseError::Tainted);
+        }
         // Exactly three colon-separated fields; the hex field never contains a
         // colon, so a plain 3-way split is unambiguous.
         let mut parts = s.split(':');
@@ -170,6 +187,11 @@ pub enum MRefParseError {
     /// The `mref1` version/prefix tag was missing or wrong.
     #[error("not a versioned moment reference (expected the `mref1` prefix)")]
     BadPrefix,
+    /// The coordinate was stamped on a tainted (off-the-record) timeline and is
+    /// not a reproducible address — refused rather than silently reopening the
+    /// untainted state it names ([`MomentRef::TAINTED_STAMP_PREFIX`]).
+    #[error("tainted (off-the-record) coordinate: not reproducible, refusing to open")]
+    Tainted,
     /// A required `:`-separated field was missing.
     #[error("truncated moment reference (missing a field)")]
     Truncated,
@@ -241,6 +263,16 @@ mod tests {
                 "expected parse error for {bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn tainted_stamp_is_refused_by_parse() {
+        // The inner address is a valid mref, but the tainted-marked form is a
+        // non-reproducible coordinate and is refused loudly, never reopened.
+        let clean = MomentRef::new(seeded(3), 42).to_string();
+        assert!(MomentRef::parse(&clean).is_ok());
+        let tainted = format!("{}{clean}", MomentRef::TAINTED_STAMP_PREFIX);
+        assert_eq!(MomentRef::parse(&tainted), Err(MRefParseError::Tainted));
     }
 
     #[test]

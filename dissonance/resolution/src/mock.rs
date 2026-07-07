@@ -121,14 +121,6 @@ impl Timeline {
     }
 }
 
-/// A captured snapshot: the timeline verbatim, so `replay` restores it exactly
-/// and `branch` reseeds from its position + lineage taint.
-#[derive(Clone, Debug)]
-struct SnapState {
-    moment: Moment,
-    tainted: bool,
-}
-
 /// The in-crate scripted control-transport server. Construct with
 /// [`boot`](MockServer::boot), then drive it through a [`Session`](crate::Session).
 #[derive(Clone, Debug)]
@@ -139,11 +131,16 @@ pub struct MockServer {
     /// `Unsupported`, mirroring the real server).
     negotiated: bool,
     next_snap: u64,
-    snaps: BTreeMap<u64, SnapState>,
+    /// Captured snapshots — the **whole** [`Timeline`] verbatim (world_seed +
+    /// env + moment + taint), so `replay` restores the exact world and `branch`
+    /// reseeds from the captured position + lineage taint. Capturing only
+    /// `{moment, tainted}` would let a `replay` after a `branch` restore the old
+    /// position inside the *new* world (the `read`/`hash` observables are
+    /// functions of `world_seed`), silently violating `replay`'s verbatim
+    /// contract.
+    snaps: BTreeMap<u64, Timeline>,
     /// The live timeline.
     cur: Timeline,
-    /// The largest quiescence moment; a `run` past it ends `Quiescent`.
-    quiescent_at: Moment,
 }
 
 impl MockServer {
@@ -157,18 +154,21 @@ impl MockServer {
     /// Boot with an explicit guest RAM size (for exercising `read` range
     /// checks).
     pub fn boot_with_ram(boot_env: EnvSpec, ram_bytes: u64) -> Self {
-        let cur = Timeline::from_env(boot_env, 0, false);
-        // Quiescence sits far past any mid-workload target, derived from the
-        // world so it is deterministic but env-specific.
-        let quiescent_at = 1_000_000 + (cur.world_seed % 1_000_000);
         Self {
             ram_bytes,
             negotiated: false,
             next_snap: 0,
             snaps: BTreeMap::new(),
-            cur,
-            quiescent_at,
+            cur: Timeline::from_env(boot_env, 0, false),
         }
+    }
+
+    /// The quiescence moment for the *current* world: far past any mid-workload
+    /// target, derived from `world_seed` so it is deterministic and env-specific.
+    /// Computed on demand (never a stored field), so it is always consistent
+    /// with whatever timeline `branch`/`replay` last installed.
+    fn quiescent(&self) -> Moment {
+        1_000_000 + (self.cur.world_seed % 1_000_000)
     }
 
     /// The caps this mock advertises: the negotiated app-protocol version, the
@@ -218,13 +218,8 @@ impl Server for MockServer {
         }
         let id = self.next_snap;
         self.next_snap += 1;
-        self.snaps.insert(
-            id,
-            SnapState {
-                moment: self.cur.moment,
-                tainted: self.cur.tainted,
-            },
-        );
+        // Capture the whole timeline verbatim.
+        self.snaps.insert(id, self.cur.clone());
         Ok(Snapshot {
             id: SnapId(id),
             tainted: self.cur.tainted,
@@ -253,10 +248,10 @@ impl Server for MockServer {
         }
         let spec = EnvSpec::decode(&env.bytes)
             .map_err(|_| control_proto::ControlError::MalformedEnvironment)?;
-        // Restore reseeds from the snapshot's position and inherits its lineage
-        // taint (task 81): a branch off an untainted genesis is untainted.
+        // Restore the snapshot's position and inherit its lineage taint (task
+        // 81: a branch off an untainted genesis is untainted), then reseed the
+        // world with the new env.
         self.cur = Timeline::from_env(spec, meta.moment, meta.tainted);
-        self.quiescent_at = 1_000_000 + (self.cur.world_seed % 1_000_000);
         Ok(())
     }
 
@@ -266,14 +261,16 @@ impl Server for MockServer {
                 control_proto::ControlError::UnknownSnapshot(snap),
             ));
         };
-        // Verbatim restore: same env/world, back to the captured position and
-        // taint.
-        self.cur.moment = meta.moment;
-        self.cur.tainted = meta.tainted;
+        // Verbatim restore of the whole captured timeline (world_seed + env +
+        // moment + taint) — `replay`'s contract. Restoring only moment/taint
+        // would leave the *current* world in place, so a replay after a branch
+        // would read the wrong world.
+        self.cur = meta;
         Ok(())
     }
 
     fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
+        let quiescent = self.quiescent();
         let target = match until.deadline {
             // A deadline at or behind the current point is already met: report
             // the effective V-time without advancing (the adapter's probe
@@ -283,9 +280,9 @@ impl Server for MockServer {
                     vtime: VTime(self.cur.moment),
                 });
             }
-            Some(v) => v.0.min(self.quiescent_at),
+            Some(v) => v.0.min(quiescent),
             // No deadline: run to quiescence.
-            None => self.quiescent_at,
+            None => quiescent,
         };
         // A staged CorruptMemory the run reaches crashes the guest there.
         if let Some(crash_at) = self.crash_between(self.cur.moment, target) {
@@ -299,9 +296,9 @@ impl Server for MockServer {
             });
         }
         self.cur.moment = target;
-        if target >= self.quiescent_at {
+        if target >= quiescent {
             Ok(StopReason::Quiescent {
-                vtime: VTime(self.quiescent_at),
+                vtime: VTime(quiescent),
             })
         } else {
             Ok(StopReason::Deadline {
