@@ -139,9 +139,14 @@ impl<S: Server> Session<S> {
         Ok(MaterializedSession { session: self })
     }
 
-    /// The `MomentRef` of the current open timeline (env + the moment the last
-    /// verb left it at), or `None` if nothing is open.
-    pub fn current_mref(&self) -> Option<MomentRef> {
+    /// The **raw** current coordinate (env + the moment the last verb left it
+    /// at), or `None` if nothing is open. Internal by design: on a *tainted*
+    /// timeline this is not a reproducer, so a caller must either mark it (the
+    /// transcript stamp emits the non-pasteable `tainted!…` form) or guard on
+    /// [`tainted`](Self::tainted) first (the REPL `vary`). External coordinate
+    /// emission goes through the fail-loud [`MaterializedSession::mref`], which
+    /// refuses a tainted timeline (the taint rule — see `IMPLEMENTATION.md`).
+    pub(crate) fn current_mref(&self) -> Option<MomentRef> {
         self.current
             .as_ref()
             .map(|c| MomentRef::new(c.env.clone(), c.moment))
@@ -178,10 +183,18 @@ impl<S: Server> MaterializedSession<'_, S> {
         self.cur().tainted
     }
 
-    /// The `MomentRef` of the current point (env + current moment).
-    pub fn mref(&self) -> MomentRef {
+    /// The reproducible coordinate of the current point (env + current moment).
+    /// **Fails loudly** with [`SessionError::Tainted`] on a tainted timeline: a
+    /// tainted state is off the record and has no reproducer, so there is no
+    /// honest paste-able `MomentRef` for it (the taint rule — mirrors
+    /// [`recorded_env`](Self::recorded_env)). Use [`moment`](Self::moment) for
+    /// the bare V-time.
+    pub fn mref(&self) -> Result<MomentRef, SessionError> {
+        if self.tainted() {
+            return Err(SessionError::Tainted);
+        }
         let c = self.cur();
-        MomentRef::new(c.env.clone(), c.moment)
+        Ok(MomentRef::new(c.env.clone(), c.moment))
     }
 
     /// The [`StopReason`] that last positioned this timeline — the landing of
@@ -244,12 +257,17 @@ impl<S: Server> MaterializedSession<'_, S> {
     pub fn exec(&mut self, cmd: &str) -> Result<ExecResult, SessionError> {
         let deadline = VTime(self.cur().moment.saturating_add(EXEC_BUDGET));
         let result = self.session.server.exec(cmd, deadline)?;
-        // `regs` is a pure observation (hash-invariant), so this cannot perturb
-        // the timeline; it only reads back where the exec left V-time.
+        // Record taint IMMEDIATELY — before any fallible follow-up. If the exec
+        // succeeded, the server-side timeline is tainted; a later failure must
+        // never leave the local mirror unmarked (that window is exactly the lie
+        // the structural guard exists to prevent).
+        self.cur_mut().tainted = true;
+        // Then learn the post-exec V-time from the `regs` verb (`RegsView`
+        // carries the current Moment) — a pure observation, so it cannot perturb
+        // the timeline. A failed refresh keeps the stale moment on an
+        // already-tainted timeline (the taint bit is what matters).
         let moment = self.session.server.regs()?.moment;
-        let cur = self.cur_mut();
-        cur.tainted = true;
-        cur.moment = moment;
+        self.cur_mut().moment = moment;
         Ok(result)
     }
 

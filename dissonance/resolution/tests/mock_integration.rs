@@ -6,12 +6,12 @@
 //! Two layers: the client (`Session`/`MaterializedSession`) directly, and the
 //! REPL (`Shell`) over the same mock — the surface an agent actually drives.
 
-use control_proto::{Environment, StopConditions, StopMask, VTime};
+use control_proto::{Caps, Environment, StopConditions, StopMask, VTime};
 use environment::{EnvCodec, FaultPolicy};
 use resolution::{
-    Action, Command, DispatchOutput, EnvSpec, HashScope, HostFault, MRefParseError, MockServer,
-    MomentRef, Outcome, OverrideEdit, Record, Server, Session, SessionError, Shell, client_caps,
-    render_line,
+    Action, Command, DispatchOutput, EnvSpec, ExecResult, HashScope, HostFault, MRefParseError,
+    MockServer, MomentRef, Outcome, OverrideEdit, Record, RegsView, Server, Session, SessionError,
+    Shell, SnapId, Snapshot, StopReason, client_caps, render_line,
 };
 
 /// A fresh session over a mock booted under `seed`.
@@ -169,14 +169,12 @@ fn exec_advances_the_session_moment() {
         after > 2_000,
         "exec advanced the tracked moment (2000 -> {after})"
     );
-    assert_eq!(
-        ms.mref().moment,
-        after,
-        "mref() reflects the post-exec V-time"
-    );
+    // The timeline is now tainted, so the reproducible-coordinate emitter
+    // refuses (the taint rule) — moment() still reports the bare V-time.
+    assert!(matches!(ms.mref(), Err(SessionError::Tainted)));
 
-    // A second exec advances further still — computed from the refreshed moment,
-    // not the stale pre-exec one.
+    // A second exec advances further still — its deadline is computed from the
+    // refreshed moment, not the stale pre-exec one.
     ms.exec("de").unwrap();
     assert!(
         ms.moment() > after,
@@ -307,6 +305,11 @@ fn repl_drives_the_whole_investigation() {
     // exec taints; the record shows it prominently.
     let execd = line(&mut shell, "exec ls /");
     assert!(matches!(execd.outcome, Outcome::Exec { tainted: true, .. }));
+
+    // Wind back to the clean original before varying — the counterfactual must
+    // be a variation of the untainted reproducer, not the tainted fork (the
+    // taint rule; a `vary` on the tainted timeline would refuse).
+    line(&mut shell, &format!("open {base}"));
 
     // vary → the counterfactual MomentRef, which we then open (copy-a-moment).
     let varied = line(&mut shell, "vary set 3000 corrupt 0x2000 0xff");
@@ -464,5 +467,93 @@ fn replay_restores_the_whole_world_verbatim_after_a_branch() {
         srv.read(0x1000, 32).unwrap(),
         read_a,
         "replay restored world A's memory"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The taint rule: no verb emits a bare pasteable MomentRef from a tainted
+// timeline, and taint is recorded before any fallible follow-up.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vary_on_a_tainted_timeline_fails_loudly() {
+    // open; exec; vary must not hand back a bare pasteable address (it would
+    // replay the un-exec'd env at the post-exec moment — a misleading reproducer
+    // dressed as a counterfactual). It fails loudly, like recorded_env / mref.
+    let mut shell = Shell::new(session(17));
+    let base = mref(17, 100);
+    line(&mut shell, &format!("open {base}"));
+    line(&mut shell, "exec ls /");
+    let varied = line(&mut shell, "vary set 50 skew 7");
+    assert!(
+        matches!(&varied.outcome, Outcome::Error { category, .. } if category == "tainted"),
+        "vary refuses on a tainted timeline"
+    );
+    // Winding back to a clean moment lets vary succeed again.
+    line(&mut shell, &format!("open {base}"));
+    assert!(matches!(
+        line(&mut shell, "vary set 50 skew 7").outcome,
+        Outcome::Varied { .. }
+    ));
+}
+
+/// A test double: a `MockServer` whose `regs` verb always fails, to exercise the
+/// taint-before-fallible-refresh ordering inside `MaterializedSession::exec`.
+struct RegsFails(MockServer);
+
+impl Server for RegsFails {
+    fn hello(&mut self, caps: Caps) -> Result<Caps, SessionError> {
+        self.0.hello(caps)
+    }
+    fn snapshot(&mut self) -> Result<Snapshot, SessionError> {
+        self.0.snapshot()
+    }
+    fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
+        self.0.drop_snap(snap)
+    }
+    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
+        self.0.branch(snap, env)
+    }
+    fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
+        self.0.replay(snap)
+    }
+    fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
+        self.0.run(until)
+    }
+    fn hash(&mut self, scope: HashScope) -> Result<[u8; 32], SessionError> {
+        self.0.hash(scope)
+    }
+    fn read(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, SessionError> {
+        self.0.read(gpa, len)
+    }
+    fn regs(&mut self) -> Result<RegsView, SessionError> {
+        Err(SessionError::Transport("regs verb is down".to_string()))
+    }
+    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+        self.0.exec(cmd, deadline)
+    }
+    fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
+        self.0.recorded_env()
+    }
+}
+
+#[test]
+fn taint_is_recorded_before_the_fallible_moment_refresh() {
+    // exec succeeds server-side (timeline tainted), but the post-exec regs
+    // refresh fails. The local mirror must ALREADY be marked tainted — no window
+    // where a clean coordinate could be minted on a tainted timeline.
+    let inner = MockServer::boot(EnvCodec::seeded(21, FaultPolicy::none()));
+    let mut sess = Session::connect(RegsFails(inner)).unwrap();
+    let mut ms = sess.materialize(&mref(21, 500)).unwrap();
+
+    assert!(ms.exec("x").is_err(), "exec surfaces the refresh failure");
+    assert!(ms.tainted(), "taint recorded before the fallible refresh");
+    assert!(
+        matches!(ms.mref(), Err(SessionError::Tainted)),
+        "the coordinate emitter refuses on the tainted timeline"
+    );
+    assert!(
+        matches!(ms.recorded_env(), Err(SessionError::Tainted)),
+        "recorded_env refuses too"
     );
 }

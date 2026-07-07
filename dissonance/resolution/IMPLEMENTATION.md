@@ -18,7 +18,7 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **38 tests.**
+end-to-end live==replay test. **40 tests.**
 
 `materialize`/`open` **surface the landing `StopReason`** (`MaterializedSession::stop`, and the
 `Opened` transcript record's `stop`/`detail`): a guest that crashes or quiesces *before* the
@@ -64,6 +64,43 @@ Three properties the crate exists to embody, each with a regression test:
   A's world, not A's moment inside B's world (`replay_restores_the_whole_world_verbatim_after_a_branch`).
   The mock's quiescence point is now derived from the live world on demand, not a stored field, so
   it cannot go stale across a branch/replay.
+
+## The taint rule (the single source of truth)
+
+> **A tainted timeline — one an `exec` improvisation has poisoned (task 81, `docs/RESOLUTION.md`
+> §Improvisations) — has no reproducible coordinate. Therefore: (1) every path that would emit a
+> *bare, pasteable* `MomentRef` derived from a tainted timeline fails loudly with
+> `SessionError::Tainted` (the one exception is the transcript stamp, which records the
+> non-pasteable `tainted!…` marked form so the record stays complete and `open` refuses it); and
+> (2) taint is recorded (`cur.tainted = true`) *before any fallible follow-up*, so no window exists
+> where a clean coordinate could be minted on a tainted timeline.**
+
+Pure observations and navigation are always allowed on a tainted timeline — they do not emit a
+coordinate. Every verb/accessor, audited against the rule:
+
+| Verb / accessor | Emits a coordinate? | On a tainted timeline | Test (where nontrivial) |
+|---|---|---|---|
+| `open` / `materialize` | no (a session) | **resets** taint to `false` (fresh branch from genesis) — this is how you "wind back" to vary | `exec_taints_the_fork_and_leaves_the_original_unperturbed` |
+| `read` | no (bytes) | allowed (pure observation, hash-invariant) | `observation_never_perturbs_the_hash` |
+| `regs` | no (`RegsView`) | allowed (pure; also how `exec` learns the post-exec `Moment`) | `observation_never_perturbs_the_hash` |
+| `hash` | no (digest) | allowed (the digest *reflects* taint, so a fork diverges) | `exec_taints_the_fork_…` |
+| `run` | no (`StopReason`) | allowed (advances the tainted timeline) | — |
+| `exec` | no (`ExecResult`) | **sets** taint — recorded *before* the fallible `regs` refresh | `exec_advances_the_session_moment`, `taint_is_recorded_before_the_fallible_moment_refresh` |
+| `recorded_env` | the reproducer (`EnvSpec`) | **fails `Tainted`** | `exec_taints_the_fork_…` |
+| `MaterializedSession::mref()` | **yes** (`MomentRef`) | **fails `Tainted`** | `exec_advances_…`, `taint_is_recorded_…` |
+| `moment()` | no (bare `u64` V-time) | allowed (a V-time is not a coordinate) | `exec_advances_…` |
+| `env()` | no (`&EnvSpec` base env) | allowed (raw; `recorded_env` is the guarded reproducer-mint) | — |
+| REPL `vary` | **yes** (`Varied.mref`) | **fails `Tainted`** (wind back to vary) | `vary_on_a_tainted_timeline_fails_loudly` |
+| `MomentRef::vary` (pure fn) | a `MomentRef` | n/a — a `MomentRef` *value* has no taint; the REPL guards the *timeline* before calling it | — |
+| transcript stamp | the record's `mref` | the non-pasteable `tainted!…` marked form (audit-complete; `open` refuses it) | `tainted_records_get_a_non_reproducible_stamp` |
+| `open <tainted!…>` | — | refused (`MRefParseError::Tainted`) | `tainted_stamp_is_refused_by_parse` |
+| `Session::current_mref()` | raw (`pub(crate)`) | internal only — the stamp marks it; REPL `vary` guards on `tainted()` first — never a public bare emitter | — |
+
+The two round-3 fixes fall straight out of the rule: REPL `vary` now fails `Tainted` (it was the
+last bare-coordinate emitter that hadn't been guarded), and `exec` sets `cur.tainted = true`
+immediately after the server-side `exec` succeeds — before the fallible `regs` refresh — so a
+failed refresh keeps the stale moment on an *already-marked* timeline. `--replay` byte-identity is
+preserved throughout.
 
 ## The load-bearing decision: the `Server` seam (and why not raw `control-proto`)
 

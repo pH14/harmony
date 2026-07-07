@@ -353,12 +353,23 @@ impl<S: Server> Shell<S> {
                 },
                 Err(e) => err_outcome(&e),
             },
-            Command::Vary(edit) => match self.session.current_mref() {
-                Some(base) => Outcome::Varied {
-                    mref: base.vary(edit).to_string(),
-                },
-                None => err_outcome(&SessionError::NothingOpen),
-            },
+            Command::Vary(edit) => {
+                // A tainted timeline has no reproducer, so its counterfactual
+                // would be a bare pasteable address that replays the *un-exec'd*
+                // env at the post-exec moment — a misleading reproducer dressed
+                // as a counterfactual. Fail loudly, exactly like `recorded_env` /
+                // `mref` (the taint rule). Wind back to a clean moment to vary.
+                if self.session.tainted() {
+                    err_outcome(&SessionError::Tainted)
+                } else {
+                    match self.session.current_mref() {
+                        Some(base) => Outcome::Varied {
+                            mref: base.vary(edit).to_string(),
+                        },
+                        None => err_outcome(&SessionError::NothingOpen),
+                    }
+                }
+            }
             // `transcript` is a view, intercepted by `dispatch` before it
             // reaches here; this arm exists only to keep the match exhaustive.
             // Recorded as a `parse`-category note rather than an invented

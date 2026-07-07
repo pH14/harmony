@@ -50,6 +50,7 @@ fn live_session_and_replay_render_identically() {
          read 0x1000 16\n\
          hash\n\
          exec ls /\n\
+         open {mref}\n\
          vary set 3000 corrupt 0x2000 0xff\n\
          run 5000\n"
     );
