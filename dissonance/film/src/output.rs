@@ -173,6 +173,10 @@ mod tests {
         );
     }
 
+    // blake3 uses SIMD/FFI its pure-Rust callers cannot reach under Miri
+    // (unsupported intrinsic / foreign call), so this digest test is skipped
+    // there; the rest of the crate's logic stays Miri-covered.
+    #[cfg_attr(miri, ignore = "blake3 SIMD/FFI is not Miri-interpretable")]
     #[test]
     fn blake3_hex_is_stable_and_hex() {
         let h = blake3_hex(b"the same bytes");

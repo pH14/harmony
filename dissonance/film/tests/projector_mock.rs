@@ -8,8 +8,8 @@
 use environment::{EnvCodec, EnvSpec, FaultPolicy};
 use film::{
     BillboardScenario, ClipSelect, Corruption, FilmError, FilmPlan, FrameRenderer, FrameTick,
-    MockBillboardServer, MomentRef, Session, StampRenderer, blake3_hex, contact_sheet,
-    film as project, write_ppm,
+    MockBillboardServer, MomentRef, Session, StampRenderer, contact_sheet, film as project,
+    write_ppm,
 };
 
 /// A fault-free, genesis-complete reproducer for the tests.
@@ -66,10 +66,12 @@ fn three_frame_clip_round_trips_to_three_correct_frames() {
     assert_eq!(frames.len(), 3);
     assert_ne!(frames[0], frames[1]);
     assert_ne!(frames[1], frames[2]);
-    // PPM + contact sheet produce, and hashes are stable.
+    // PPM + contact sheet produce (the sheet tiles all three frames; the blake3
+    // committed-hash stability lives in the `output` unit tests).
     let sheet = contact_sheet(&frames, 3, [0, 0, 0]).unwrap();
-    let h = blake3_hex(&write_ppm(&sheet));
-    assert_eq!(h, blake3_hex(&write_ppm(&sheet)));
+    let ppm = write_ppm(&sheet);
+    assert_eq!(sheet.width(), 3 * frames[0].width());
+    assert!(ppm.starts_with(b"P6\n"));
 }
 
 #[test]

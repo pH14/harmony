@@ -20,17 +20,20 @@ Four passes, one seam:
 All green on macOS (this worktree):
 
 - `cargo build -p film --all-features` ✓
-- `cargo nextest run -p film --all-features` — **41 tests** (26 unit + 4 plan
-  proptests ≥256 cases + 9 projector-mock + 2 artifact-roundtrip) ✓
+- `cargo nextest run -p film --all-features` — **45 tests** (28 unit + 4 plan
+  proptests ≥256 cases + 11 projector-mock + 2 artifact-roundtrip) ✓
 - `cargo clippy -p film --all-features --all-targets -- -D warnings` ✓ (the
   `rand::*` "does not refer to a reachable function" lines are workspace
   `clippy.toml` config notes for a crate that does not depend on `rand`, not lint
   failures — clippy exits 0)
 - `cargo fmt -p film -- --check` ✓
 - `cargo deny check` ✓
-- `cargo +nightly-2026-06-16 miri test -p film` (default features) ✓ — the
-  default build has **zero `unsafe`**, so Miri validates the pure logic; proptest
-  cases drop to 16 under `cfg!(miri)`.
+- `cargo +nightly-2026-06-16 miri test -p film` (default features) — the default
+  build has **zero `unsafe`**, so Miri validates the pure logic; proptest cases
+  drop to 16 under `cfg!(miri)`. The two tests that *execute* `blake3` (a
+  digest-stability check) carry `#[cfg_attr(miri, ignore)]` because blake3's
+  SIMD/FFI path is not Miri-interpretable on this platform — an implementation
+  detail of the hash, not of film's logic; everything else runs under Miri.
 
 The `film demo` binary was driven end-to-end and is byte-for-byte deterministic
 across runs (same contact-sheet blake3 on repeat).
@@ -46,8 +49,27 @@ across runs (same contact-sheet blake3 on repeat).
 | all with no ROM/core | entire default + `--all-features` laptop path |
 
 Extra coverage beyond the letter of the gate: drop-recovery (`with_read_drops`),
-chunked-read reassembly through the projector, hash-neutrality of billboard
-reads, a 300-frame clip (box-gate shape), and plan/bundle JSON round-trips.
+short-landing → `ShortRun` (`with_stop_short_at`), chunked-read reassembly
+through the projector, hash-neutrality of billboard reads, a 300-frame clip
+(box-gate shape), plan/bundle JSON round-trips, and invalid-plan rejection.
+
+## Adversarial-review hardening (applied)
+
+A cross-context review pass surfaced four findings, all addressed:
+
+1. **rule-4 hang** — `FilmPlan::read_chunks()` looped forever on `read_cap == 0`
+   for a plan reached outside `derive` (deserialized / hand-built, all fields
+   `pub`). Fixed two ways: `chunks()` returns no chunks on a zero cap, and
+   `film()` re-validates the plan at entry (`FilmError::InvalidPlan`). Both tested.
+2. **untested `ShortRun`** — added `MockBillboardServer::with_stop_short_at` (a
+   scripted crash before the requested frame) and a test asserting the projector
+   surfaces `FilmError::ShortRun` rather than fabricating a frame.
+3. **minimal `env_cb`** — flagged to the foreman below (the most likely box-gate
+   friction point); documented, not a code change.
+4. **overlapping regions** — `BillboardHeader::parse` now rejects a savestate /
+   work-RAM overlap (`HeaderError::RegionOverlap`), closing the "reject
+   corruption" gap; the mock `read` window-end is `checked_add` (total on any
+   `gpa`).
 
 ## Deviations considered and rejected
 
