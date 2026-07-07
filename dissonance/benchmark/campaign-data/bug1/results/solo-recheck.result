@@ -1,0 +1,6 @@
+core=[2] start=2026-07-07T22:52:18
+seed 1 rc=0 elapsed=358s OK solo==cotenant ffadc25d6fe4aa46fea3c65ed43535c8f00c03164cafe073ad43cc901c2ac83c
+seed 2 rc=0 elapsed=358s OK solo==cotenant 7e218f788b10b80ec7c32201748277a8ff2a605be92947881407771fe5645271
+seed 3 rc=0 elapsed=358s OK solo==cotenant a6d35a9c489348a61b52c913e7fd6c2eae3f50d9de48adcc3e6a67d53c520ac5
+kvm_after=1396736 end=2026-07-07T23:10:13
+DONE
