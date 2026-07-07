@@ -492,3 +492,59 @@ Every run below: foreground, kvm_intel back to **9** after (verified), no module
   interrupt counter rather than via preemption) — simpler, no scheduling-determinism risk, still a
   faithful "handler ran mid-update" ordering violation. Recommend B if a clean observable exists.
   Do NOT build either unilaterally — it's a benchmark-mechanism change.
+
+### 2026-07-07 — BUG 3 (uuid) ALSO DOES NOT FIRE — root cause CONFIRMED (seal overshoots the draw)
+
+Ran on core 4 (foreground, kvm→9 after each): 512 branches @8-bit → 0 fires; 16 branches with a
+**rebuilt PREFIX_BITS=1** guest (should fire ~1/2) → 0 fires (P(0/16)=1.5e-5 ⇒ NOT bad luck);
+4 branches with a **hardcoded matching draw** (`draw = 0xA5..00`, no RDRAND) → STILL 0 fires.
+`conductor box --record` (8 seeds) → branches reach `Crash{Shutdown}` (reboot) with **≥2 distinct
+state_hashes**, and the post-seal trace (`strings`) contains **ONLY reboot messages** — no
+UUID_DRAW (despite UUID_DEBUG=1), no supervisor operational logs, no UUID_BUG.
+
+**Confirmed root cause:** the base snapshot seals **PAST uuid-super's entire post-READY execution.**
+uuid-super prints UUID_READY then *immediately* draws + decides + (on match) crashes — there is NO
+long snapshottable window after the ready marker (unlike campaign-super/order-super, whose long
+post-READY loops the seal lands *inside*). So `seal_base`'s snapshot-retry (advancing past
+`NotQuiescent`) overshoots uuid-super entirely and seals in the reboot tail. Consequences: the
+entropy draw is **baked into the base** (happened pre-seal), per-branch `reseed_entropy(seed)` never
+re-runs it, and every branch inherits an already-rebooting base → reboot-only console, no marker.
+The ≥2 distinct hashes come from the reseed perturbing entropy state, NOT from uuid behaving
+differently. The absent UUID_DRAW/UUID_BUG in the *post-seal* trace is the direct proof the draw
+happened *before* the seal.
+
+Note bug 2 is a DIFFERENT root cause: order-super HAS a proper post-READY loop, so its seal lands
+mid-loop and the fault is injected correctly (BENCH_DIAG shows `Interrupt@[4..68]` + operational
+logs, records=1) — it just can't produce an involuntary ctxsw (no runnable alternative). The
+bug-2 real-vector test was DEPRIORITIZED: no vector helps when there is nothing to switch to.
+
+### 2026-07-07 — JOINT ESCALATION (checkpoint) — 2 of 3 benchmark bugs are UNREALIZED on the box
+
+Bug 1 fires + certifies (the running suite proves it). **Bugs 2 AND 3 do not fire on the box** —
+neither was ever box-validated in M1 (their gate-2 was always PENDING), and both M1 design
+assumptions fail on THIS guest:
+- **Bug 2 (order):** the injected-interrupt→INVOLUNTARY-ctxsw detection can't fire — single
+  runnable userspace task (postgres stopped, /init blocked in wait) + no clock-event device ⇒ an
+  injected interrupt returns to the same task, `ru_nivcsw` stays 0. 0/512.
+- **Bug 3 (uuid):** the base seals PAST uuid-super's fast post-READY draw ⇒ draw baked, no
+  per-branch variation, branches inherit a rebooting base. 0/512, 0/16(1-bit), 0/4(hardcoded-fire).
+
+**Fix options for foreman/Paul (all are benchmark-mechanism changes — NOT built unilaterally):**
+- Bug 2 — **(A)** deterministic co-runner (order-init launches a 2nd busy userspace task so a
+  reschedule actually deschedules order-super) + a real reschedule/timer vector; determinism of
+  two-task scheduling under the harness must be proven (the 25/25-cert risk). **(B)** detect the
+  injected interrupt landing in the window via a kernel interrupt COUNTER (single-task-observable),
+  not via preemption — simpler, no scheduling-determinism risk, still a faithful "handler ran
+  mid-update" ordering violation. Lean B.
+- Bug 3 — add a **snapshottable pre-draw window**: after UUID_READY, run a short bounded
+  stabilization loop (like campaign-super's) BEFORE `draw_campaign_entropy()`, so the seal lands in
+  that loop and the draw stays post-seal (per-branch). Small, contained image change; re-validate
+  the draw varies per branch (distinct hashes AND a fire found). Most contained of all the fixes.
+
+**Recommendation:** both fixes are worthwhile — bug 1 is degenerate/easy, so a meaningful GO/NO-GO
+needs the discriminating bugs 2 & 3. Bug-3's fix is the most contained (a pre-draw loop); bug-2's
+needs a mechanism decision (co-runner vs interrupt-counter). ~half a day of guest rework + box
+re-calibration + gate-2 each. ALTERNATIVES: rule GO/NO-GO on bug-1-only (fails the spec's "≥3 bugs,
+each found" gate — needs a waiver), or defer bugs 2/3 to a follow-up task. Escalated to Paul/foreman
+for the call. Bug-1 suite untouched throughout (healthy, all rc=0, kvm_intel→9 after every core-4
+run).
