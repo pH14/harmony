@@ -331,10 +331,10 @@ fn moment_address_materializes_identically_twice() {
     println!("  genesis_vt={genesis_vt} attempts={attempts} seed={seed:#x}");
     println!("  probes={probes:x?}");
     let mut all_pass = true;
-    println!(
-        "  {:>14}  {:>18}  {:>10}  {:>4}  {}",
-        "moment", "rip", "hash8", "regs", "read"
-    );
+    // Column headers bound to locals so the width-formatted columns are not string
+    // literal args (clippy::print_literal under the box's `-D warnings` gate).
+    let (c_moment, c_rip, c_hash, c_regs, c_read) = ("moment", "rip", "hash8", "regs", "read");
+    println!("  {c_moment:>14}  {c_rip:>18}  {c_hash:>10}  {c_regs:>4}  {c_read}");
     for &moment in &moments {
         let a = materialize(&mut s, moment);
         let b = materialize(&mut s, moment);
@@ -344,8 +344,7 @@ fn moment_address_materializes_identically_twice() {
         let pass = regs_eq && read_eq && hash_eq;
         all_pass &= pass;
         println!(
-            "  {:>14}  {:>#18x}  {:>10}  {:>4}  {}   => {}",
-            moment,
+            "  {moment:>14}  {:>#18x}  {:>10}  {:>4}  {}   => {}",
             a.regs.rip,
             &hex(&a.hash)[..8],
             if regs_eq { "ok" } else { "DIFF" },
