@@ -41,18 +41,20 @@ fn live_session_and_replay_render_identically() {
     // A MomentRef into the mock's genesis env under the same seed the bin boots.
     let mref = MomentRef::new(EnvCodec::seeded(seed, FaultPolicy::none()), 4_000);
 
-    // A script that exercises the recorded verbs (no `transcript` view, so the
-    // live stdout is exactly the recorded render stream).
+    // A script that exercises every recorded verb, INCLUDING `transcript` — the
+    // live stdout is exactly the recorded render stream, so replay reproduces it.
     let script = format!(
         "# a scripted investigation\n\
          open {mref}\n\
          regs\n\
          read 0x1000 16\n\
          hash\n\
+         transcript\n\
          exec ls /\n\
          open {mref}\n\
          vary set 3000 corrupt 0x2000 0xff\n\
-         run 5000\n"
+         run 5000\n\
+         transcript\n"
     );
 
     let dir = tempfile::tempdir().unwrap();

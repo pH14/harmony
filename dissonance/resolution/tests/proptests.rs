@@ -71,6 +71,9 @@ fn command_strategy() -> impl Strategy<Value = Command> {
     prop_oneof![
         Just(Command::Regs),
         Just(Command::Hash),
+        // `transcript` is a recorded command now, so it's in the byte-identity
+        // sweep (an earlier revision had to exclude it — a non-recorded view).
+        Just(Command::Transcript),
         (0u64..200_000).prop_map(|until| Command::Run { until }),
         (any::<u64>(), 0u32..256).prop_map(|(gpa, len)| Command::Read { gpa, len }),
         "[a-z ]{0,8}".prop_map(Command::Exec),

@@ -18,7 +18,17 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **46 tests.**
+end-to-end live==replay test. **47 tests.**
+
+**Every command is recorded, `transcript` included (round-9 fix).** The `transcript` command is a
+recorded [`Record`] like every other command — its outcome captures the view *deterministically* as
+a `(count, digest)` (the number of preceding records and an FNV fingerprint of their rendering),
+**not** the full rendered text, which would be self-referential (a later `transcript` would
+re-render this one, unbounded). So `--record` captures it and `--transcript` replay reproduces the
+live stdout byte-for-byte even for scripts that include `transcript`
+(`transcript_command_is_recorded_and_replays_byte_identically`, the CLI test's script, and the
+byte-identity proptest all now include it). The full re-render of an investigation is
+`resolution --transcript <file>`; the in-REPL `transcript` command prints a one-line checkpoint.
 
 **`open` is transactional.** `materialize` invalidates `current` *before* touching the server and
 installs the new timeline *only on full success*; if `branch` succeeds but the follow-up `run`

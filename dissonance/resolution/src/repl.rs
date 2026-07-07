@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::server::Server;
 use crate::session::{Session, stop_detail, stop_kind, stop_vtime};
-use crate::transcript::{Outcome, Record, render_transcript};
+use crate::transcript::{Outcome, Record, transcript_digest};
 use crate::{MRefParseError, MomentRef, OverrideEdit, SessionError, to_hex};
 
 /// One REPL command — the thin line protocol, parsed from a single line and
@@ -45,7 +45,9 @@ pub enum Command {
     /// `vary <edit>` — the counterfactual: one override edit on the open
     /// `MomentRef`.
     Vary(OverrideEdit),
-    /// `transcript` — re-render the investigation so far (a view; not recorded).
+    /// `transcript` — record a deterministic checkpoint (count + view digest) of
+    /// the investigation so far. Recorded like every command, so it replays
+    /// byte-identically; the full re-render is `resolution --transcript <file>`.
     Transcript,
 }
 
@@ -180,8 +182,11 @@ pub enum CommandParseError {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DispatchOutput {
     /// A recorded command — render it with [`render_line`](crate::render_line).
+    /// Every command (including `transcript`) produces this.
     Recorded(Record),
-    /// The `transcript` view — the fully rendered transcript so far.
+    /// A no-op with nothing to record (a blank/comment line): print `String`
+    /// verbatim (empty). Never carries a `transcript` dump anymore — `transcript`
+    /// is a recorded command.
     View(String),
 }
 
@@ -241,12 +246,11 @@ impl<S: Server> Shell<S> {
         }
     }
 
-    /// Dispatch a parsed command. `transcript` renders a view (not recorded);
-    /// every other command runs, appends a stamped [`Record`], and returns it.
+    /// Dispatch a parsed command. **Every** command — including `transcript` —
+    /// runs, appends a stamped [`Record`], and returns it, so `--record` captures
+    /// the whole session and `--transcript` replay reproduces the live stdout
+    /// byte-for-byte.
     pub fn dispatch(&mut self, cmd: Command) -> DispatchOutput {
-        if cmd == Command::Transcript {
-            return DispatchOutput::View(render_transcript(&self.records));
-        }
         self.seq += 1;
         let cmd_text = cmd.canonical();
         let outcome = self.run_cmd(&cmd);
@@ -371,13 +375,14 @@ impl<S: Server> Shell<S> {
                     }
                 }
             }
-            // `transcript` is a view, intercepted by `dispatch` before it
-            // reaches here; this arm exists only to keep the match exhaustive.
-            // Recorded as a `parse`-category note rather than an invented
-            // category (it is not a `SessionError`); statically unreachable.
-            Command::Transcript => Outcome::Error {
-                category: "parse".to_string(),
-                message: "transcript is a view, not a recorded command".to_string(),
+            // `transcript` is a recorded command: a deterministic checkpoint of
+            // the view so far — the count of preceding records and a digest of
+            // their rendering (NOT the full text, which would recurse). Computed
+            // over `self.records`, which at this point holds exactly the records
+            // that precede this `transcript` record.
+            Command::Transcript => Outcome::Transcript {
+                count: self.records.len() as u64,
+                digest: transcript_digest(&self.records),
             },
         }
     }

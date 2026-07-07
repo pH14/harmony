@@ -111,6 +111,18 @@ pub enum Outcome {
         /// The varied `MomentRef` encoding.
         mref: String,
     },
+    /// `transcript`: a checkpoint of the investigation so far. Captures the view
+    /// **deterministically** as a `(count, digest)` — the number of records
+    /// preceding this one and a fingerprint of their rendering — **not** the full
+    /// rendered text, which would be self-referential (a later `transcript` would
+    /// re-render this one, unbounded). So the `transcript` command is recorded
+    /// like every other command and replays byte-identically.
+    Transcript {
+        /// How many records precede this `transcript` record.
+        count: u64,
+        /// A short fingerprint of `render_transcript` over those records.
+        digest: String,
+    },
     /// A control failure — the *error* result category, kept strictly apart from
     /// [`Stop`](Outcome::Stop). Carries the `SessionError` display verbatim
     /// (including a `Tainted` guard).
@@ -193,6 +205,11 @@ pub fn render_line(r: &Record) -> String {
         // in full — never `short` — so an agent/human consuming the rendered
         // output (not the JSONL) can paste it straight into `open`.
         Outcome::Varied { mref } => format!("varied => {mref}"),
+        // A one-liner checkpoint, not the full dump (which would recurse). To see
+        // the whole investigation, replay the recording: `resolution --transcript`.
+        Outcome::Transcript { count, digest } => {
+            format!("transcript: {count} records (view digest {digest})")
+        }
         Outcome::Error { category, message } => format!("ERROR[{category}] {message}"),
     };
     format!("[{}] {taint_mark}{fp} {} => {rendered}", r.seq, r.cmd)
@@ -237,8 +254,21 @@ pub fn from_jsonl(text: &str) -> Result<Vec<Record>, serde_json::Error> {
 /// hex digits of an FNV-1a hash. Purely for the human line; the full stamp is in
 /// the JSONL.
 fn mref_fingerprint(mref: &str) -> String {
+    fingerprint(mref)
+}
+
+/// The `transcript` command's deterministic "view" — an 8-hex fingerprint of the
+/// rendering of `records` (those preceding the `transcript` record). Fixed-size,
+/// so a later `transcript` embedding it never recurses/blows up; deterministic,
+/// so live and replay produce the identical checkpoint.
+pub(crate) fn transcript_digest(records: &[Record]) -> String {
+    fingerprint(&render_transcript(records))
+}
+
+/// The shared FNV-1a fingerprint: the first 8 hex digits of the hash of `s`.
+fn fingerprint(s: &str) -> String {
     let mut h = 0xCBF2_9CE4_8422_2325u64;
-    for &b in mref.as_bytes() {
+    for &b in s.as_bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0000_0100_0000_01B3);
     }

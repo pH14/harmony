@@ -11,7 +11,8 @@ use environment::{EnvCodec, FaultPolicy};
 use resolution::{
     Action, Command, DispatchOutput, EnvSpec, ExecResult, HashScope, HostFault, MRefParseError,
     MockServer, MomentRef, Outcome, OverrideEdit, Record, RegsView, Server, Session, SessionError,
-    Shell, SnapId, Snapshot, StopReason, client_caps, render_line,
+    Shell, SnapId, Snapshot, StopReason, client_caps, from_jsonl, render_line, render_transcript,
+    to_jsonl,
 };
 
 /// A fresh session over a mock booted under `seed`.
@@ -375,18 +376,21 @@ fn repl_drives_the_whole_investigation() {
     let stop = line(&mut shell, "run 5000");
     assert!(matches!(&stop.outcome, Outcome::Stop { stop, .. } if stop == "crash"));
 
-    // transcript is a view (not recorded), rendering every prior line.
-    match shell.execute_line("transcript") {
-        DispatchOutput::View(dump) => {
-            assert!(dump.contains("opened"));
-            assert!(dump.contains("crash"));
-            assert!(dump.contains("TAINTED"));
-        }
-        DispatchOutput::Recorded(_) => panic!("transcript must be a view"),
+    // transcript is now a RECORDED command — a deterministic checkpoint of the
+    // view so far (count + digest), so it replays byte-identically.
+    let prior = shell.records().len() as u64;
+    let t = line(&mut shell, "transcript");
+    match t.outcome {
+        Outcome::Transcript { count, .. } => assert_eq!(count, prior),
+        other => panic!("transcript must be recorded, got {other:?}"),
     }
+    // The full investigation is captured in the records; re-render and check.
+    let full = render_transcript(shell.records());
+    assert!(full.contains("opened"));
+    assert!(full.contains("crash"));
+    assert!(full.contains("TAINTED"));
 
-    // Every one of the eight verbs was exercised above; the transcript captured
-    // the recorded ones with monotonic sequence numbers.
+    // Every command — including `transcript` — was recorded with monotonic seqs.
     let seqs: Vec<u64> = shell.records().iter().map(|r| r.seq).collect();
     assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
 }
@@ -407,6 +411,47 @@ fn every_repl_verb_parses() {
     ] {
         assert!(Command::parse(line).is_ok(), "verb should parse: {line}");
     }
+}
+
+#[test]
+fn transcript_command_is_recorded_and_replays_byte_identically() {
+    // A script that INCLUDES `transcript` (twice): the byte-identity contract
+    // must hold even so — `transcript` is a recorded checkpoint, not a
+    // non-recorded view.
+    let base = mref(70, 200);
+    let script = [
+        format!("open {base}"),
+        "regs".to_string(),
+        "transcript".to_string(),
+        "hash".to_string(),
+        "read 0x10 8".to_string(),
+        "transcript".to_string(),
+    ];
+    let mut shell = Shell::new(session(70));
+    for l in &script {
+        line(&mut shell, l);
+    }
+    // Every command — both `transcript`s included — is recorded.
+    assert_eq!(shell.records().len(), script.len());
+    assert!(
+        shell
+            .records()
+            .iter()
+            .filter(|r| matches!(r.outcome, Outcome::Transcript { .. }))
+            .count()
+            == 2,
+        "both transcript commands were recorded"
+    );
+
+    // Live rendering == replay rendering, byte-for-byte, WITH `transcript` in it.
+    let live = render_transcript(shell.records());
+    let parsed = from_jsonl(&to_jsonl(shell.records()).unwrap()).unwrap();
+    assert_eq!(
+        parsed.as_slice(),
+        shell.records(),
+        "JSONL round-trips losslessly"
+    );
+    assert_eq!(render_transcript(&parsed), live, "replay == live");
 }
 
 #[test]
