@@ -1,0 +1,42 @@
+[package]
+name = "resolution"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The moment-addressed session client, REPL, and replayable transcript — dissonance's epoch-loop agent surface (task 82)"
+
+[lints]
+workspace = true
+
+[features]
+default = ["cli"]
+# The `resolution` REPL binary and its only extra dependency, `clap` (bins-only
+# per the rule-5 whitelist). The library — MomentRef, the session client, the
+# transcript, the line protocol, and the in-crate mock server — pulls no clap.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "resolution"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# This crate *is* a client of the control-transport wire contract and *is*
+# addressed by the reproducer's env types — the two hard-rule-2 exceptions the
+# task spec grants explicitly. Pinned `version` alongside `path` for `cargo
+# deny`'s wildcard ban.
+control-proto = { path = "../control-proto", version = "0.1.0" }
+environment = { path = "../environment", version = "0.1.0" }
+# Typed, two-category session errors (rule-5 whitelist).
+thiserror = "2"
+# The transcript is JSONL: one serde-serialized record per line (rule-5
+# whitelist, std features only).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The REPL binary only (whitelist: clap is bins-only).
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+proptest = "1"
+# Transcript round-trip tests write JSONL to a throwaway file.
+tempfile = "3"
