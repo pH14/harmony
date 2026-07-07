@@ -275,9 +275,9 @@ prefix.
 
 # Scoring addendum
 
-> **Status: PROPOSED (rides `docs/SCORING.md`; binding when that doc is ruled).** The
-> Scoring-seam ruling mints three terms and reserves one name; per the naming authority
-> rule they land here in the same PR.
+> **Status: RULED (Paul, 2026-07-07).** The Scoring-seam ruling (`docs/SCORING.md`) mints
+> three terms and reserves one name; per the naming authority rule they land here in the
+> same PR. Binding on new code immediately, like the addenda above.
 
 ## Adopted vocabulary — scoring
 

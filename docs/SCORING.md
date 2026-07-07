@@ -1,6 +1,6 @@
 # SCORING — the Scoring seam's interior
 
-> **Status: PROPOSED (drafted 2026-07-07, awaiting ruling — Paul).** Companion to
+> **Status: RULED (Paul, 2026-07-07).** Companion to
 > `docs/EXPLORATION.md` §"The Scoring seam": that doc rules the seam's *boundaries* (Sensor → Cell →
 > Archive, the three signal tiers, coverage-is-terminal); this one rules its *interior* — what makes
 > a state worth keeping (`CellFn`/`Archive`), what makes a kept state worth returning to

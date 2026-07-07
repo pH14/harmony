@@ -81,7 +81,7 @@ address, 81 improvisations, 82 the `dissonance/resolution` client/REPL/transcrip
 findings diff. 80/81 hang off task 58 only; 83 waits on 60 + 64. Agent harness, rehearsal-mark
 UI, and `donate` are deliberately unspecced until the core lands.
 
-## Scoring — the seam's interior (design PROPOSED 2026-07-07, awaiting ruling)
+## Scoring — the seam's interior (design ruled 2026-07-07)
 
 `docs/SCORING.md` is the EXPLORATION.md companion for the Scoring seam's interior: what makes a
 state worth keeping (`CellFn`/`Archive`) and worth returning to (`Selector`/retention), and the
@@ -90,8 +90,8 @@ rulings grounded in a four-report primary-source research pass: the re-key-and-r
 (a `CellFn` change never invalidates a campaign), epoch-wise granularity control, quality as
 per-cell domination (never a key dimension), the two-channel `Reward` widening with **cost ruled
 out of choice**, Selector economics (cold-start smoothing → hierarchical bandit), Agamotto-shaped
-seal-pool retention, and the STADS stop. Status flips to RULED here when Paul rules the doc;
-task 70 implements against it.
+seal-pool retention, and the STADS stop. Ruled by Paul 2026-07-07; task 70 implements
+against it.
 
 ## The deferred register (recorded so it isn't re-derived)
 
