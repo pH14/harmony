@@ -3824,15 +3824,37 @@ cores are all held by the M2 campaign, so no lease is takeable without touching 
 `docs/BOX-PINNING.md`, CPU-pinned via a `box-window.sh` lease, KVM reverted to
 stock 1396736 + verified after.
 
-> **BOX GATE STATUS: PENDING** — the determinism box is contended (task-69 M2's
-> bug-1 campaign holds leased cores + the patched-KVM window until ~06:30 ET). Per
-> the foreman brief, all Mac-portable work is done first; the live gate runs when a
-> lease frees. **The box run table (moment · rip · hash · regs/read equality) will
-> be filled in here on completion.**
+> **BOX GATE STATUS: PASSED** — run 2026-07-07 on the determinism box, `taskset -c 4`
+> (core 4 = threads {4,12}, disjoint from the co-running M2 campaign's cores
+> {1,2,3}/siblings {9,10,11}), against the real patched-KVM Postgres workload
+> (`kvm` size 1400832, no module transition — the campaign owns the stock-revert).
+> Post-run safety verified: `kvm_intel` refcount back to baseline 9, no VM process
+> lingering. Genesis sealed at V-time 0 (seed `0x800080c0ffee80`); probes
+> `[0x100000, 0x1000000, 0x10000000]`; runtime 103.72 s; **RESULT: PASS**.
 >
-> | run | moment | rip | hash(Whole)₈ | regs eq | read eq | verdict |
-> |-----|--------|-----|--------------|---------|---------|---------|
-> | _(to be filled from `taskset -c <core> cargo test -p vmm-core --release --test live_moment_address -- --ignored --nocapture`)_ | | | | | | |
+> Gate 2 — each `Moment` materialized **twice from genesis** is byte-identical
+> (`regs` incl. `rip`, `read` of the 3 probes, and `hash(Whole)`); the four hashes
+> differ across `Moment`s, so the address resolves to genuinely distinct guest
+> states:
+>
+> | moment | rip | hash(Whole)₈ | regs eq | read eq | twice-from-genesis |
+> |--------|-----|--------------|---------|---------|--------------------|
+> | 500 000    | `0x2feb160` | `81042481` | ok | ok | **IDENTICAL** |
+> | 2 000 000  | `0x2feb113` | `7649728d` | ok | ok | **IDENTICAL** |
+> | 8 000 000  | `0x2feadb6` | `bdc2b402` | ok | ok | **IDENTICAL** |
+> | 20 000 000 | `0x2feb113` | `a416d5e2` | ok | ok | **IDENTICAL** |
+>
+> Gate 3 — observation invariance: reaching `Moment` 40 000 000 through 500 000
+> **with** a full inspection pass (regs + 3 reads) at the intermediate point yields
+> `hash(Whole)` prefix `0fb73ef6`, byte-identical to the **uninspected** control
+> run (`0fb73ef6`) — inspection does not perturb the continuation.
+>
+> The addressed `Moment`s are past a V-time-0 genesis (early boot, for run-time
+> economy — a full 2 GiB branch restore per materialization × 10); the acceptance
+> criteria are the twice-from-genesis reproducibility and the observation
+> invariance, both of which the exact-`Moment` force-exit (armed via a no-op
+> `CorruptMemory{mask:0}` marker) makes exact. `MA_MOMENTS`/`MA_GENESIS_STEP`
+> retune for deeper (post-`GUEST_READY`) points at proportionally higher run cost.
 
 **Gate 4 — standard suite green, no golden re-blessing:** additive verbs; the
 existing `live_*` gates are byte-identical (no `StopReason`/hash change on any
