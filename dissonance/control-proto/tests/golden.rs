@@ -622,6 +622,90 @@ fn err_protocol() {
     );
 }
 
+// ------------------------- task 81: improvisations -------------------------
+
+#[test]
+fn req_exec() {
+    // REQ_EXEC (0x0C), cmd (u32-len-prefixed UTF-8), deadline (u64 LE).
+    check_req(
+        13,
+        Request::Exec {
+            cmd: "ls /".to_string(),
+            deadline: VTime(0x64),
+        },
+        &[
+            0x0C, // REQ_EXEC
+            0x04, 0x00, 0x00, 0x00, // cmd len = 4
+            b'l', b's', b' ', b'/', // "ls /"
+            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // deadline = 0x64
+        ],
+    );
+}
+
+#[test]
+fn req_recorded_env() {
+    check_req(14, Request::RecordedEnv, &[0x0D]);
+}
+
+#[test]
+fn reply_exec_result() {
+    // RESULT_OK (0x00), REPLY_EXEC_RESULT (0x09), output (u32-len blob), ok (u8).
+    check_reply(
+        60,
+        Ok(Reply::ExecResult {
+            output: vec![0x6F, 0x6B], // "ok"
+            ok: true,
+        }),
+        &[
+            0x00, 0x09, // RESULT_OK, REPLY_EXEC_RESULT
+            0x02, 0x00, 0x00, 0x00, // output len = 2
+            0x6F, 0x6B, // "ok"
+            0x01, // ok = true
+        ],
+    );
+}
+
+#[test]
+fn reply_snapshot_tainted() {
+    // RESULT_OK (0x00), REPLY_SNAPSHOT (0x0A), id (u64 LE), tainted (u8).
+    check_reply(
+        61,
+        Ok(Reply::Snapshot {
+            id: SnapId(9),
+            tainted: true,
+        }),
+        &[
+            0x00, 0x0A, // RESULT_OK, REPLY_SNAPSHOT
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 9
+            0x01, // tainted = true
+        ],
+    );
+}
+
+#[test]
+fn reply_recorded() {
+    // RESULT_OK (0x00), REPLY_RECORDED (0x0B), Environment (blob_version u16, bytes).
+    check_reply(
+        62,
+        Ok(Reply::Recorded(Environment {
+            blob_version: 3,
+            bytes: vec![0xCA, 0xFE],
+        })),
+        &[
+            0x00, 0x0B, // RESULT_OK, REPLY_RECORDED
+            0x03, 0x00, // blob_version = 3
+            0x02, 0x00, 0x00, 0x00, // bytes len = 2
+            0xCA, 0xFE, // bytes
+        ],
+    );
+}
+
+#[test]
+fn err_tainted() {
+    // RESULT_ERR (0x01), CE_TAINTED (0x13), no payload.
+    check_reply(63, Err(ControlError::Tainted), &[0x01, 0x13]);
+}
+
 /// The `class_bit` constants are a hand-maintained mirror of
 /// `environment::DecisionClass` (the lib stays schema-blind — conventions rule 2,
 /// so it never imports the enum). This test — the only place both are in scope —

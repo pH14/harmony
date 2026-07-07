@@ -80,8 +80,10 @@ pub const PROTO_VERSION: u16 = 1;
 /// requests, the `Bytes` / `Regs` reply tags, and the `ReadOutOfRange` /
 /// `ReadTooLarge` error tags — additive, but a peer that negotiated an older
 /// version must reject at `hello` rather than hit a mid-session `ShortFrame` on a
-/// tag it does not know.
-pub const APP_PROTOCOL_VERSION: u16 = 5;
+/// tag it does not know. Bumped to **6** by task 81: the improvisation surface —
+/// the `Exec` + `RecordedEnv` verbs, the `ExecResult` / `Snapshot` (taint-carrying)
+/// / `Recorded` reply tags, and the `ControlError::Tainted` reply tag.
+pub const APP_PROTOCOL_VERSION: u16 = 6;
 
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
@@ -111,7 +113,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 5); // task 80: read/regs observation verbs
+        assert_eq!(APP_PROTOCOL_VERSION, 6); // task 81: exec/recorded_env improvisation verbs
         assert_eq!(READ_CAP, 65_536); // == 1 << 16 (64 KiB)
     }
 }
