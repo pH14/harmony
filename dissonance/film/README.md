@@ -38,8 +38,11 @@ passes:
 | `cli` | `clap` | the `film` driver binary. |
 | `core-replay` | `libc` | the real `CoreReplay` renderer — the libretro C-ABI FFI. Compile-checked everywhere; only useful on the box. |
 
-The default build carries no `unsafe` and runs fully under Miri; the FFI lives
-entirely behind the `core-replay` feature and the `FrameRenderer` seam.
+All `unsafe` lives behind the `core-replay` feature and the `FrameRenderer` seam.
+The frontend-callback `unsafe` (pixel decode, input) is exercised under Miri with
+synthetic buffers — the documented invocation is `cargo +nightly-2026-06-16 miri
+test -p film --features core-replay`; only the `dlopen`/`retro_*` FFI (which Miri
+cannot execute) sits behind the `CoreReplay::load` seam.
 
 ## The `film` binary
 

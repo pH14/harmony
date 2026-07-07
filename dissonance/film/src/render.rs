@@ -30,12 +30,31 @@ pub const NES_HEIGHT: u32 = 240;
 
 /// A rendered RGB frame: `width × height` pixels, three bytes (R, G, B) each, row
 /// major, top-left origin. The invariant `rgb.len() == width * height * 3` holds
-/// for every `Frame` a constructor returns.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+/// for every `Frame` — the constructors *and* [`Deserialize`] enforce it, so a
+/// `Frame` from untrusted JSON can never violate it and make [`pixel`](Frame::pixel)
+/// / [`write_ppm`](crate::write_ppm) index out of range (rule 4).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct Frame {
     width: u32,
     height: u32,
     rgb: Vec<u8>,
+}
+
+impl<'de> Deserialize<'de> for Frame {
+    /// Deserialize a `Frame`, **validating the length invariant**. Untrusted JSON
+    /// whose `rgb` length does not match `width * height * 3` (or whose dimensions
+    /// overflow / are zero) is a deserialization error, never an invariant-
+    /// violating `Frame` that would later panic a safe accessor (rule 4).
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Frame, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            width: u32,
+            height: u32,
+            rgb: Vec<u8>,
+        }
+        let raw = Raw::deserialize(de)?;
+        Frame::from_rgb(raw.width, raw.height, raw.rgb).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Frame {
@@ -280,5 +299,23 @@ mod tests {
         assert_ne!(f0, f1);
         assert_ne!(f1, f2);
         assert_ne!(f0, f2);
+    }
+
+    #[test]
+    fn deserialize_validates_the_length_invariant() {
+        // A well-formed frame round-trips.
+        let f = Frame::from_rgb(2, 2, vec![7u8; 12]).unwrap();
+        let json = serde_json::to_string(&f).unwrap();
+        assert_eq!(serde_json::from_str::<Frame>(&json).unwrap(), f);
+
+        // Untrusted JSON whose rgb length does not match width*height*3 is a
+        // deserialization ERROR (never a panicking-accessor Frame, rule 4).
+        let bad = r#"{"width":2,"height":2,"rgb":[1,2,3]}"#;
+        assert!(serde_json::from_str::<Frame>(bad).is_err());
+        // Zero / overflowing dimensions are rejected too.
+        let zero = r#"{"width":0,"height":2,"rgb":[]}"#;
+        assert!(serde_json::from_str::<Frame>(zero).is_err());
+        let overflow = r#"{"width":4294967295,"height":4294967295,"rgb":[1]}"#;
+        assert!(serde_json::from_str::<Frame>(overflow).is_err());
     }
 }

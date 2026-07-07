@@ -20,25 +20,29 @@ Four passes, one seam:
 All green on macOS (this worktree):
 
 - `cargo build -p film --all-features` ✓
-- `cargo nextest run -p film --all-features` — **45 tests** (28 unit + 4 plan
-  proptests ≥256 cases + 11 projector-mock + 2 artifact-roundtrip) ✓
+- `cargo nextest run -p film --all-features` — **54 tests** (35 unit incl. the
+  Miri-exercised callback tests + 1 bin + 5 plan proptests ≥256 cases + 11
+  projector-mock + 2 artifact-roundtrip) ✓
 - `cargo clippy -p film --all-features --all-targets -- -D warnings` ✓ (the
   `rand::*` "does not refer to a reachable function" lines are workspace
   `clippy.toml` config notes for a crate that does not depend on `rand`, not lint
   failures — clippy exits 0)
 - `cargo fmt -p film -- --check` ✓
 - `cargo deny check` ✓
-- `cargo +nightly-2026-06-16 miri test -p film` ✓ — run with **default Miri
-  isolation on** (no `-Zmiri-disable-isolation`), matching the reviewer/CI
-  invocation. The default build has **zero `unsafe`**, so Miri validates the pure
-  logic; proptest cases drop to 16 under `cfg!(miri)`, and the proptest config
+- `cargo +nightly-2026-06-16 miri test -p film --features core-replay` ✓ — the
+  documented invocation, isolation on (no `-Zmiri-disable-isolation`), matching
+  the reviewer/CI. `--features core-replay` compiles **and runs** the frontend-
+  callback `unsafe` (`video_cb`/`env_cb`/`input_state_cb`) against synthetic
+  buffers, so Miri actually validates the pointer logic — see "The `unsafe` /
+  Miri story" below. Proptest cases drop to 16 under `cfg!(miri)`, and the config
   sets `failure_persistence = None` under `cfg!(miri)` (its default regressions
   file needs `getcwd`, which Miri isolation blocks — leaving it on made
-  `plan_proptest` red, the round-1 finding). The one test that *executes*
-  `blake3` carries `#[cfg_attr(miri, ignore)]` because blake3's SIMD/FFI path is
-  not Miri-interpretable on aarch64 — an implementation detail of the hash, not
-  of film's logic; everything else (lib unit + `plan_proptest` + `projector_mock`
-  + `artifact_roundtrip`) runs and passes under Miri.
+  `plan_proptest` red, a round-1 finding). The one test that *executes* `blake3`
+  carries `#[cfg_attr(miri, ignore)]` (blake3's SIMD/FFI is not Miri-interpretable
+  on aarch64 — a property of the hash, not of film); everything else passes.
+- Linux cross-check `cargo check --workspace --all-features --all-targets --target
+  x86_64-unknown-linux-gnu` ✓ (film + `core-replay`/`libc` compile for the box's
+  platform).
 
 The `film demo` binary was driven end-to-end and is byte-for-byte deterministic
 across runs (same contact-sheet blake3 on repeat).
@@ -86,6 +90,28 @@ findings, all fixed:
    Miri claim is corrected to the plain invocation and re-verified (the earlier
    green run had used `-Zmiri-disable-isolation`, which the doc didn't state).
 
+## Round-2 PR review fixes (applied)
+
+The fresh codex pass (post-round-1) raised two more [blocking] findings, both
+fixed:
+
+1. **Miri-vacuous `unsafe`.** The frontend callbacks are pure-Rust `unsafe`, not
+   uninterpretable FFI, so the carve-out did not cover them — Miri should exercise
+   them. `video_cb` was refactored to provenance-preserving pointer arithmetic
+   (`base.add(off)` vs an `as usize` round-trip), and feature-gated tests now
+   drive `video_cb` (all 3 pixel formats, `pitch > width*bpp`, odd/unaligned
+   pitch), `env_cb` (`SET_PIXEL_FORMAT` valid/unsupported, `GET_CAN_DUPE`, null
+   rejection), and `input_state_cb`. The documented Miri invocation is now
+   `--features core-replay` (see "The `unsafe` / Miri story"). CI edit to add
+   `film` to the nightly Miri `-p` list is left to the foreman (rule 1; stated in
+   a PR reply).
+2. **`Frame` deserialized without its invariant.** `Frame` derived `Deserialize`,
+   so untrusted JSON could build one with `rgb.len() != width*height*3` and panic
+   a safe accessor (rule 4). Replaced the derive with a hand-written `Deserialize`
+   that routes through `Frame::from_rgb` (the `checked_mul` length + dimension
+   guard), so malformed JSON is a deserialization error; a rejection test covers
+   length mismatch, zero, and overflowing dimensions.
+
 ## Adversarial-review hardening (applied earlier, pre-PR)
 
 A cross-context review pass surfaced four findings, all addressed:
@@ -130,22 +156,34 @@ A cross-context review pass surfaced four findings, all addressed:
 
 ## The `unsafe` / Miri story (the named grant)
 
-The only `unsafe` in the crate is the libretro C-ABI FFI in `core_replay.rs`,
-behind the `core-replay` feature and the `FrameRenderer` seam. Consequences:
+All `unsafe` lives in `core_replay.rs`, behind the `core-replay` feature and the
+`FrameRenderer` seam. It splits into two kinds, and **Miri covers the kind it
+can**:
 
-- The **default build carries no `unsafe`** — Miri runs the whole default surface
-  clean (the FFI cannot be interpreted; it is feature-excluded, matching the
-  conventions' Miri carve-out for privileged/FFI paths behind a seam).
-- The **pure** parts of the renderer — the pixel-format conversions
-  (`0RGB1555`/`RGB565`/`XRGB8888` → RGB24) and the joypad→libretro-input mapping
-  — are `unsafe`-free functions with unit tests that run under `--all-features`.
-- Every `unsafe` block has a `// SAFETY:` note; the raw work is confined to
-  `dlopen`/`dlsym`/`transmute`-to-fn-pointer and the `retro_*` calls.
+- **Pure-Rust `unsafe` — the frontend callbacks** (`video_cb`'s pointer walk over
+  the core's frame buffer, `env_cb`'s writes/reads through the `data` pointer,
+  `input_state_cb`). This is *not* uninterpretable FFI — it is exactly the
+  pointer logic Miri exists to check. So it is **driven under Miri with synthetic
+  buffers** (round-1 review left this vacuous; round-2 fixed it): `video_cb` over
+  all three pixel formats with `pitch > width*bpp` padding and an **odd/unaligned
+  pitch**; `env_cb` for `SET_PIXEL_FORMAT` (valid + unsupported), `GET_CAN_DUPE`,
+  and null-pointer rejection; `input_state_cb`. `video_cb` was refactored to
+  `base.add(off)` (provenance-preserving) instead of an `as usize` round-trip, so
+  Miri validates the reads.
+- **Uninterpretable FFI** — `dlopen`/`dlsym`, `transmute`-to-fn-pointer, and the
+  `retro_*` calls. Miri genuinely cannot execute these (foreign functions); they
+  sit behind the `CoreReplay::load` seam and no test calls them, matching the
+  conventions' Miri carve-out for privileged/FFI paths.
+- The pixel-format conversions and the joypad→libretro mapping are `unsafe`-free
+  and unit-tested. Every `unsafe` block has a `// SAFETY:` note.
 
-Per the `unsafe`⇒Miri review bar: run `cargo +nightly-2026-06-16 miri test -p
-film` (default features) — done here, clean. Adding `film` to the nightly Miri
-job's `-p` list is a one-line CI edit for the integrator (I do not edit workflow
-files; conventions rule 1).
+**The documented Miri invocation is therefore `cargo +nightly-2026-06-16 miri
+test -p film --features core-replay`** (isolation on) — it compiles and *runs*
+the callback `unsafe`, not just the default `unsafe`-free surface. Verified green
+here. Adding `film` to the nightly Miri job's `-p` list (with `--features
+core-replay`) is a one-line CI edit **left to the foreman at merge** — a
+delegated task does not edit workflow files (conventions rule 1); this is stated
+in a PR reply.
 
 ## What the integrator must reconcile when 80 / 82 / 86 merge
 

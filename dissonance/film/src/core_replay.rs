@@ -241,19 +241,23 @@ extern "C" fn video_cb(data: *const c_void, width: c_uint, height: c_uint, pitch
     let (w, h) = (width as usize, height as usize);
     let mut rgb = Vec::with_capacity(w * h * 3);
     let bpp = if fmt == FMT_XRGB8888 { 4 } else { 2 };
+    // Provenance-preserving pointer walk (no int round-trip), so Miri can exercise
+    // this pure-Rust unsafe with a synthetic buffer: `base.add(off)` keeps the
+    // frame buffer's provenance where `data as usize + off` would strip it.
+    let base = data.cast::<u8>();
     for y in 0..h {
-        let row = data as usize + y * pitch;
         for x in 0..w {
-            let px_ptr = row + x * bpp;
+            let off = y * pitch + x * bpp;
+            // SAFETY: `off < h*pitch` for `x < width`, `y < height` and a core
+            // stride `pitch ≥ width*bpp`, so the `bpp` bytes read at `base + off`
+            // lie inside the frame buffer the core just filled (`base` non-null,
+            // checked above). `read_unaligned` tolerates any pitch alignment.
+            let px = unsafe { base.add(off) };
             let pixel = if bpp == 4 {
-                // SAFETY: `px_ptr` is within row `y` (`y < height`, `x < width`,
-                // `pitch` is the core's byte stride ≥ width*bpp), so the 4 bytes
-                // read lie inside the frame buffer the core just filled.
-                let v = unsafe { std::ptr::read_unaligned(px_ptr as *const u32) };
+                let v = unsafe { std::ptr::read_unaligned(px.cast::<u32>()) };
                 conv_xrgb8888(v)
             } else {
-                // SAFETY: as above, for a 2-byte pixel.
-                let v = unsafe { std::ptr::read_unaligned(px_ptr as *const u16) };
+                let v = unsafe { std::ptr::read_unaligned(px.cast::<u16>()) };
                 if fmt == FMT_RGB565 {
                     conv_rgb565(v)
                 } else {
@@ -583,5 +587,113 @@ mod tests {
         if std::env::var(CORE_ENV).is_err() || std::env::var(ROM_ENV).is_err() {
             assert!(matches!(CoreReplay::from_env(), Ok(None)));
         }
+    }
+
+    // ---- The frontend callbacks are pure-Rust `unsafe` (pointer reads/writes,
+    // no FFI), so — unlike the `dlopen`/`retro_*` path — they ARE Miri-
+    // exercisable with synthetic buffers. Driving them here is what makes
+    // `cargo +nightly miri test -p film --features core-replay` validate the
+    // unsafe pointer logic instead of skipping over it.
+
+    /// Set the pixel format + clear any prior frame, run `video_cb` against a
+    /// synthetic buffer, and return the captured RGB.
+    fn run_video(fmt: u32, data: &[u8], w: u32, h: u32, pitch: usize) -> Vec<u8> {
+        CTX.with(|c| {
+            let mut c = c.borrow_mut();
+            c.pixel_format = fmt;
+            c.frame = None;
+        });
+        video_cb(data.as_ptr() as *const c_void, w, h, pitch);
+        CTX.with(|c| c.borrow_mut().frame.take())
+            .map(|(_, _, rgb)| rgb)
+            .expect("video_cb captured a frame")
+    }
+
+    #[test]
+    fn video_cb_converts_all_three_pixel_formats() {
+        // 0RGB1555: [max red (0x7C00), max blue (0x001F)], tight pitch.
+        let buf = [0x00, 0x7C, 0x1F, 0x00];
+        assert_eq!(
+            run_video(FMT_0RGB1555, &buf, 2, 1, 4),
+            [0xFF, 0, 0, 0, 0, 0xFF]
+        );
+        // RGB565: [max red (0xF800), max green (0x07E0)].
+        let buf = [0x00, 0xF8, 0xE0, 0x07];
+        assert_eq!(
+            run_video(FMT_RGB565, &buf, 2, 1, 4),
+            [0xFF, 0, 0, 0, 0xFF, 0]
+        );
+        // XRGB8888 (LE 0xXXRRGGBB): 0xFF112233 → [0x11,0x22,0x33].
+        let buf = 0xFF11_2233u32.to_le_bytes();
+        assert_eq!(run_video(FMT_XRGB8888, &buf, 1, 1, 4), [0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn video_cb_honours_pitch_padding() {
+        // 1x2 RGB565 with pitch 6 (> width*bpp = 2): 4 padding bytes per row must
+        // be skipped. row0 = max red, row1 = max green.
+        let buf = [0x00, 0xF8, 0x11, 0x22, 0x33, 0x44, 0xE0, 0x07];
+        assert_eq!(
+            run_video(FMT_RGB565, &buf, 1, 2, 6),
+            [0xFF, 0, 0, 0, 0xFF, 0]
+        );
+    }
+
+    #[test]
+    fn video_cb_reads_at_an_odd_unaligned_pitch() {
+        // 2x2 RGB565 with an ODD pitch 5: row1 starts at byte 5 (odd address), so
+        // the u16 reads there are unaligned — read_unaligned must handle it and
+        // Miri must see no misaligned-read UB. Fill four distinct pixels.
+        // row0: 0xF800 (red), 0x001F (blue); row1: 0x07E0 (green), 0xFFFF (white).
+        let mut buf = vec![0u8; 5 * 2];
+        buf[0..2].copy_from_slice(&0xF800u16.to_le_bytes());
+        buf[2..4].copy_from_slice(&0x001Fu16.to_le_bytes());
+        buf[5..7].copy_from_slice(&0x07E0u16.to_le_bytes());
+        buf[7..9].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        let rgb = run_video(FMT_RGB565, &buf, 2, 2, 5);
+        assert_eq!(
+            rgb,
+            [
+                0xFF, 0, 0, // red
+                0, 0, 0xFF, // blue
+                0, 0xFF, 0, // green
+                0xFF, 0xFF, 0xFF, // white
+            ]
+        );
+    }
+
+    #[test]
+    fn env_cb_pixel_format_dupe_and_null_rejection() {
+        // SET_PIXEL_FORMAT (valid) → true + CTX updated.
+        let mut fmt: c_int = FMT_RGB565 as c_int;
+        let ok = env_cb(ENV_SET_PIXEL_FORMAT, (&raw mut fmt).cast::<c_void>());
+        assert!(ok);
+        assert_eq!(CTX.with(|c| c.borrow().pixel_format), FMT_RGB565);
+        // SET_PIXEL_FORMAT (unsupported value) → false.
+        let mut bad: c_int = 99;
+        assert!(!env_cb(
+            ENV_SET_PIXEL_FORMAT,
+            (&raw mut bad).cast::<c_void>()
+        ));
+        // GET_CAN_DUPE writes false (the finding-3 contract) and returns true.
+        let mut dupe = true;
+        assert!(env_cb(ENV_GET_CAN_DUPE, (&raw mut dupe).cast::<c_void>()));
+        assert!(!dupe);
+        // Null data is rejected, never dereferenced.
+        assert!(!env_cb(ENV_SET_PIXEL_FORMAT, std::ptr::null_mut()));
+        assert!(!env_cb(ENV_GET_CAN_DUPE, std::ptr::null_mut()));
+        // An unserviced command is refused.
+        assert!(!env_cb(0xDEAD, std::ptr::null_mut()));
+    }
+
+    #[test]
+    fn input_state_cb_reports_the_joypad_only_for_port0_joypad() {
+        CTX.with(|c| c.borrow_mut().joypad = 0b1000_0001); // A + Right
+        assert_eq!(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, ID_A), 1);
+        assert_eq!(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, ID_RIGHT), 1);
+        assert_eq!(input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, ID_B), 0);
+        // Wrong device / port → always 0.
+        assert_eq!(input_state_cb(0, 999, 0, ID_A), 0);
+        assert_eq!(input_state_cb(1, RETRO_DEVICE_JOYPAD, 0, ID_A), 0);
     }
 }
