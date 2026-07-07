@@ -335,7 +335,13 @@ mod tests {
     fn derive_all_selects_every_frame() {
         let plan = FilmPlan::derive(&clock(3), window(), ClipSelect::All, None, CAP).unwrap();
         assert_eq!(plan.frames.len(), 3);
-        assert_eq!(plan.frames[0], FrameShot { frame: 0, moment: 1000 });
+        assert_eq!(
+            plan.frames[0],
+            FrameShot {
+                frame: 0,
+                moment: 1000
+            }
+        );
         assert_eq!(plan.stride, 1);
     }
 
@@ -344,7 +350,10 @@ mod tests {
         let plan = FilmPlan::derive(
             &clock(5),
             window(),
-            ClipSelect::MomentSpan { start: 1010, end: 1030 },
+            ClipSelect::MomentSpan {
+                start: 1010,
+                end: 1030,
+            },
             None,
             CAP,
         )
@@ -390,8 +399,14 @@ mod tests {
             Err(PlanError::EmptyInput)
         );
         let bad = vec![
-            FrameTick { frame: 0, moment: 100 },
-            FrameTick { frame: 1, moment: 100 }, // moment not advancing
+            FrameTick {
+                frame: 0,
+                moment: 100,
+            },
+            FrameTick {
+                frame: 1,
+                moment: 100,
+            }, // moment not advancing
         ];
         assert!(matches!(
             FilmPlan::derive(&bad, window(), ClipSelect::All, None, CAP),
@@ -409,7 +424,10 @@ mod tests {
             FilmPlan::derive(
                 &clock(3),
                 window(),
-                ClipSelect::FrameRange { first: 100, last: 200 },
+                ClipSelect::FrameRange {
+                    first: 100,
+                    last: 200
+                },
                 None,
                 CAP,
             ),
@@ -432,7 +450,10 @@ mod tests {
         assert!(matches!(
             FilmPlan::derive(
                 &clock(1),
-                BillboardWindow { gpa: u64::MAX - 10, len: 1024 },
+                BillboardWindow {
+                    gpa: u64::MAX - 10,
+                    len: 1024
+                },
                 ClipSelect::All,
                 None,
                 CAP,

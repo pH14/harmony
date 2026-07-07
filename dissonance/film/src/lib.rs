@@ -57,9 +57,7 @@ pub use capture::{CaptureBundle, FrameCapture};
 pub use error::FilmError;
 pub use mock::{BillboardScenario, Corruption, MockBillboardServer};
 pub use output::{OutputError, blake3_hex, contact_sheet, write_ppm};
-pub use plan::{
-    BillboardWindow, ClipSelect, FilmPlan, FrameShot, FrameTick, PlanError, ReadChunk,
-};
+pub use plan::{BillboardWindow, ClipSelect, FilmPlan, FrameShot, FrameTick, PlanError, ReadChunk};
 pub use projector::{MAX_DROP_RETRIES, film};
 pub use render::{Frame, FrameRenderer, NES_HEIGHT, NES_WIDTH, RenderError, StampRenderer};
 

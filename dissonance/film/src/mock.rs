@@ -111,11 +111,7 @@ impl MockBillboardServer {
     /// Boot a mock at genesis (`Moment` 0) from a scenario.
     pub fn boot(scenario: BillboardScenario) -> Self {
         let window = scenario.window();
-        let frame_by_moment = scenario
-            .ticks
-            .iter()
-            .map(|t| (t.moment, t.frame))
-            .collect();
+        let frame_by_moment = scenario.ticks.iter().map(|t| (t.moment, t.frame)).collect();
         Self {
             window,
             savestate_len: scenario.savestate_len,

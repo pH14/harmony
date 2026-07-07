@@ -103,6 +103,7 @@ counterpoint, dissonance must resolve.
 | **`step`** | one search-loop iteration | pick base → mint reproducer → rollout → admit → judge |
 | **timeline** | one execution history — the data-noun the codebase lacked | Composes with the axis: a timeline is a sequence of `Moment`s; a reproducer replays a timeline; a bug's address is `(timeline, Moment)`. The user-facing word for the resolution layer. **`multiverse` is rejected** — Antithesis branding. NB: pre-task-94 explorer code used "Timeline" for the *inner loop* (`timeline()`/`multiverse_step()`); that sense is dead — any surviving loop-sense use is legacy (see `docs/LAYERS.md`) |
 | **`Span`** | a duration on the `Moment` axis | |
+| **film** | the visible replay of a reproducer clip — `(reproducer, Moment) → what the screen showed` | A pure **observation** query over the one timeline (never an in-guest re-render, which the one-reproducer rule forbids — `docs/LAYERS.md`): read task 86's billboard at each frame `Moment`, then re-render host-side by loading the savestate into the same commit-pinned core (**1:1 by construction**). The resolution layer's showpiece (task 87, `dissonance/film`). Verb: "film the clip"; the intermediate artifact is a *capture bundle*, rendered to a PPM sequence / contact sheet |
 
 ## Keeps (the defense, one line each)
 

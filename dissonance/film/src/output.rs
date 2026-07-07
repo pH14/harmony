@@ -58,12 +58,8 @@ pub fn contact_sheet(
     let n = frames.len() as u32;
     // rows = ceil(n / cols); n ≥ 1 and cols ≥ 1 so this is ≥ 1.
     let rows = n.div_ceil(cols);
-    let sheet_w = cols
-        .checked_mul(cell_w)
-        .ok_or(OutputError::SheetOverflow)?;
-    let sheet_h = rows
-        .checked_mul(cell_h)
-        .ok_or(OutputError::SheetOverflow)?;
+    let sheet_w = cols.checked_mul(cell_w).ok_or(OutputError::SheetOverflow)?;
+    let sheet_h = rows.checked_mul(cell_h).ok_or(OutputError::SheetOverflow)?;
     // Start from a solid background, then blit each cell over it.
     let mut sheet = Frame::solid(sheet_w, sheet_h, background)?;
     let mut rgb = sheet.rgb().to_vec();
@@ -138,12 +134,8 @@ mod tests {
     #[test]
     fn contact_sheet_tiles_row_major() {
         // Two 1x1 cells, 2 columns → a 2x1 sheet, [A, B].
-        let sheet = contact_sheet(
-            &[frame([10, 20, 30]), frame([40, 50, 60])],
-            2,
-            [0, 0, 0],
-        )
-        .unwrap();
+        let sheet =
+            contact_sheet(&[frame([10, 20, 30]), frame([40, 50, 60])], 2, [0, 0, 0]).unwrap();
         assert_eq!(sheet.width(), 2);
         assert_eq!(sheet.height(), 1);
         assert_eq!(sheet.rgb(), &[10, 20, 30, 40, 50, 60]);
@@ -186,6 +178,9 @@ mod tests {
         let h = blake3_hex(b"the same bytes");
         assert_eq!(h, blake3_hex(b"the same bytes"));
         assert_eq!(h.len(), 64);
-        assert!(h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert!(
+            h.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
     }
 }
