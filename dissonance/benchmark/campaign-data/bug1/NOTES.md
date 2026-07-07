@@ -347,3 +347,34 @@ boxrun.rs):**
 **NEXT:** unified clean relaunch of the bug-1 suite (both configs, same 1bcfc6c binary),
 then prep bugs 2 & 3 in parallel, then report + GO/NO-GO. The signal<baseline-on-bug-1
 expectation stands (degenerate bug); the discriminating evidence is bugs 2/3.
+
+## 2026-07-07 02:51 — bug-1 suite RELAUNCHED (fixed binary 1bcfc6c), running 3-wide
+
+Orchestrator `/root/run-bug1-campaign.sh` (md5 897121b) relaunched detached: **box pid
+1702270** (reparented to init, survives disconnect), cores {2,1,3}, 3 leases, patched KVM
+loaded (size 1400832). 20 seeds × 2 configs + 3 solo determinism spot-checks, deadline
+50000 / maxb 512 / rn 25. Results → `~/t69m2-results/bug1/` (`progress.log`, `*.json`,
+`finds.log`, `determinism.log`). ETA ~8h. **WATCH:** b1-signal-1 (the campaign that aborted
+rc=1 pre-fix) MUST now run to completion — first live proof the fix holds under the real
+suite. Same monitor watch-items as before (rc≠0 / ACQUIRE-FAIL / FATAL in progress.log;
+P0-DIVERGENCE in determinism.log = STOP+escalate; kvm_intel unbounded refcnt growth).
+
+**REMAINING WORK (fresh session can pick up — recipe in the "REMAINING RECIPE" section
+above, items 2 & 3):**
+1. MONITOR the bug-1 relaunch to `ORCH DONE`; verify determinism.log has no P0-DIVERGENCE;
+   scp `*.json` back, commit under `campaign-data/bug1/`.
+2. BUGS 2 (order) & 3 (uuid): add the same bug-agnostic operational logging to
+   `guest/linux/order-super.c` / `uuid-super.c`; write build + init scripts (model on
+   `build-campaign-image.sh`/`campaign-init.sh`; markers `ORDER_READY`/`UUID_READY`); build
+   images; calibrate triggers on the box; **gate-2 validity run each** (large deadline → real
+   `Crash` + 25/25) BEFORE the suite; then run 20×2 campaigns each (clone the orchestrator,
+   swap `--bug`/`--initramfs`/`--ready-marker`/`--calibration`). Both bugs now benefit from
+   the fixed exploit: bug 2 (timing window) is where signal SHOULD help most — the one-dim
+   exploit kernel jitters timing/vector to converge on the window, so exploiting a near-miss
+   parent is productive (unlike degenerate bug 1).
+3. REPORT: `benchmark-report --logs all.json --out CORRELATION-REPORT.md`. STATE the two-part
+   realization (marker-based small-deadline finds + per-bug large-deadline `Crash` validity)
+   AND — per foreman condition — the exploit-operator description (bug-agnostic one-dimension
+   seeded jitter of the parent's fault). Record cell counts + the zero-cell scope statement.
+   Rule GO/NO-GO honestly (GO = cell-novelty correlates with bug progress on ≥2/3 bugs +
+   signal median not worse than baseline on any bug; else NO-GO → iterate task-67 CellFn).
