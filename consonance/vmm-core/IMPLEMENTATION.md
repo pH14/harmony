@@ -3723,3 +3723,175 @@ carrying reseed markers is honored marker-wise instead of the single
   (`record_reseed`), and a marker-carrying branch stamps the floor reseed, so
   `recorded_env()` replays through the marker path bit-identically (closure
   pinned in `mid_run_reseed_marker_applies_at_its_moment_and_recorded_env_reproduces`).
+
+# IMPLEMENTATION — task 80 (inspection verbs: `read`/`regs` + the moment address)
+
+Task 80 (FRONTIER — the resolution observation surface) serves the two observation
+verbs `dissonance/control-proto` added, and proves the **moment address** live: a
+`(genesis-complete Environment, Moment)` pair materializes to a session at exactly
+that instruction, twice, byte-identically. Surfaces touched (frontier waiver of
+hard rule 1, per the spec): `dissonance/control-proto` (wire types + codec) and
+`consonance/vmm-core` (server dispatch + `read`/`regs` plumbing).
+
+## Server dispatch (`ControlServer::handle`)
+
+- **`read(gpa, len)`** → slice `Vmm::guest_memory()`. Two fail-loud guards, both
+  before any copy: `len > READ_CAP` → `ControlError::ReadTooLarge` (checked
+  **first**, before touching the VM — a pure request-validation error, like
+  `hash`'s unsupported scopes); `[gpa, gpa+len)` past RAM (or a `gpa+len` that would
+  overflow `u64`, computed in `u128`) → `ControlError::ReadOutOfRange`. Never a
+  truncated/zero-filled success. A **poisoned** server (`vmm == None`) is the
+  session-fatal `ServeError::Poisoned` every sibling verb returns — `read` guards
+  the RAM fetch with `ok_or(Poisoned)`, so the torn session is never masked as a
+  bogus `ReadOutOfRange { ram_len: 0 }` (PR #83 round-1 blocking fix; `regs`/`hash`
+  already conformed). `read` therefore returns the nested `Result<Result<Reply,
+  ControlError>, ServeError>` the other verbs use.
+- **`regs()`** → assemble the wire `RegsView` from the new **`Vmm::inspect_vcpu()`**
+  (a best-effort, non-mutating vCPU read — the same state the hash folds in, via
+  `current_vcpu()`; distinct from the fail-closed `save_vm_state` seal) plus
+  `effective_vns()`. `moment` and `vtime` are the two names of the single
+  deterministic axis (a retired-branch count in whole ns, ratio 1 — exactly the
+  `Moment` the perturb/run plane addresses), so both carry `effective_vns`.
+
+**Observation semantics are the contract.** Both verbs borrow `&self` only and
+touch nothing else — not `schedule`, not `reseed_schedule`, not `recorded`, not
+V-time — so:
+
+- neither mutates guest state, V-time, or any hash: `hash(Whole)` before and after
+  any sequence of `read`/`regs` is bit-identical;
+- neither is recorded into any `Environment` (`recorded_env()` is unchanged) — the
+  `docs/RESOLUTION.md` search-surface criterion: observation, not a move.
+
+There is **no synchronization gate** on either: a `regs` view is honest even at a
+terminal / non-intercept point (`effective_vns` is a truthful lower bound there),
+unlike `save_vm_state`, which fails closed. This is deliberate — an observer must
+be able to look at *any* materialized point.
+
+## The moment-address materialization procedure
+
+Client-side, no new crate (spec-permitted — in the box gate harness):
+`materialize(env, moment)` = `branch(genesis_snap, env)` then `run(until = moment)`.
+The `run` lands via the deterministic exact-`Moment` force-exit machinery (tasks
+47/55) with retired count == `moment` — a `StopReason::Deadline { vtime: moment }`
+— after which the VM is synchronized, so `regs().moment == moment`. `env` is a
+genesis-complete `Seeded` reproducer, so the whole trajectory is regenerable from
+genesis.
+
+## Gates
+
+**Gate 1 — portable (macOS + Linux, mock backend), all green:**
+- `read_returns_the_guest_bytes` (incl. the boundary-inclusive `gpa+len == ram_len`
+  empty/edge read), `read_out_of_range_is_loud` (one-past-end + `u64` overflow),
+  `read_oversized_len_is_loud` (cap checked before range),
+  `regs_reports_the_versioned_view_at_the_current_moment`,
+  `observations_before_hello_are_unsupported`,
+  `read_and_regs_on_a_poisoned_server_are_session_fatal` (a `vmm == None` server
+  answers `read`/`regs` with the session-fatal `ServeError::Poisoned`, cross-checked
+  against `hash(Whole)` — PR #83 round-1).
+- `observations_do_not_perturb_hash_or_recorded_env` — a full inspection pass
+  (regs + several reads incl. an out-of-range one) leaves `hash(Whole)` and
+  `recorded_env()` unchanged.
+- `observations_never_change_hash_or_stop_outcomes` — **proptest (256 cases)**:
+  any interleaving of `read`/`regs` (incl. out-of-range/over-cap ones) among the
+  other verbs yields byte-identical `hash` results and `StopReason` outcomes vs.
+  the observation-stripped run.
+- `moment_address_materializes_identically_twice` — the materialization procedure
+  on the exact-arrival mock, ≥4 Moments, twice-from-genesis identical `regs`/`read`/
+  `hash`. `inspection_mid_materialization_does_not_perturb_the_continuation` — the
+  portable analogue of gate 3. (The mock's bare `run()` HLTs immediately, so a
+  plain deadline never advances V-time; the exact-`Moment` landing is driven by a
+  **no-op arrival marker** — `CorruptMemory { mask: 0 }`, an XOR-0 that touches no
+  byte but arms the exact-count arrival — the portable stand-in for the box's
+  timer-driven force-exit.)
+- Also in `control-proto`: `loopback` exercises `read`/`regs` over the wire; golden
+  + round-trip + adversarial + streaming cover the new frames.
+
+**Gates 2 & 3 — box (the moment address + observation invariance):**
+`tests/live_moment_address.rs` — a `#[cfg(target_os = "linux")]` + `#[ignore]`d
+box-only gate driving the `ControlServer` verbs against the real patched-KVM
+Postgres workload. Seals a **genesis** snapshot, then for ≥4 mid-workload Moments
+materializes `(env, moment)` **twice from genesis** and asserts identical `regs`
+(incl. `rip` and the reported `Moment`), identical `read` of ≥3 probe regions, and
+identical `hash(Whole)` (gate 2); then reaches a later Moment twice — once with a
+full inspection pass at an intermediate Moment, once without — and asserts the
+`hash(Whole)` matches (gate 3). Every missing precondition is a loud panic, never a
+vacuous green. Type-checked against the real Linux API surface via
+`cargo check --target x86_64-unknown-linux-gnu` (the box gate compiles; a Mac
+per-crate gate cannot see `cfg(linux)` breakage). The final on-box `cargo build`
+of the `cfg(linux)` half **rides the queued box-gate run** — the box's 3 leasable
+cores are all held by the M2 campaign, so no lease is takeable without touching it
+(PR #83 round-1: build-on-box confirmed to ride the box run). Run per
+`docs/BOX-PINNING.md`, CPU-pinned via a `box-window.sh` lease, KVM reverted to
+stock 1396736 + verified after.
+
+> **BOX GATE STATUS: PASSED** — run 2026-07-07 on the determinism box, `taskset -c 4`
+> (core 4 = threads {4,12}, disjoint from the co-running M2 campaign's cores
+> {1,2,3}/siblings {9,10,11}), against the real patched-KVM Postgres workload
+> (`kvm` size 1400832, no module transition — the campaign owns the stock-revert).
+> Post-run safety verified: `kvm_intel` refcount back to baseline 9, no VM process
+> lingering. Genesis sealed at V-time 0 (seed `0x800080c0ffee80`); probes
+> `[0x100000, 0x1000000, 0x10000000]`; runtime 103.72 s; **RESULT: PASS**.
+>
+> Gate 2 — each `Moment` materialized **twice from genesis** is byte-identical
+> (`regs` incl. `rip`, `read` of the 3 probes, and `hash(Whole)`); the four hashes
+> differ across `Moment`s, so the address resolves to genuinely distinct guest
+> states:
+>
+> | moment | rip | hash(Whole)₈ | regs eq | read eq | twice-from-genesis |
+> |--------|-----|--------------|---------|---------|--------------------|
+> | 500 000    | `0x2feb160` | `81042481` | ok | ok | **IDENTICAL** |
+> | 2 000 000  | `0x2feb113` | `7649728d` | ok | ok | **IDENTICAL** |
+> | 8 000 000  | `0x2feadb6` | `bdc2b402` | ok | ok | **IDENTICAL** |
+> | 20 000 000 | `0x2feb113` | `a416d5e2` | ok | ok | **IDENTICAL** |
+>
+> Gate 3 — observation invariance: reaching `Moment` 40 000 000 through 500 000
+> **with** a full inspection pass (regs + 3 reads) at the intermediate point yields
+> `hash(Whole)` prefix `0fb73ef6`, byte-identical to the **uninspected** control
+> run (`0fb73ef6`) — inspection does not perturb the continuation.
+>
+> The addressed `Moment`s are past a V-time-0 genesis (early boot, for run-time
+> economy — a full 2 GiB branch restore per materialization × 10); the acceptance
+> criteria are the twice-from-genesis reproducibility and the observation
+> invariance, both of which the exact-`Moment` force-exit (armed via a no-op
+> `CorruptMemory{mask:0}` marker) makes exact. `MA_MOMENTS`/`MA_GENESIS_STEP`
+> retune for deeper (post-`GUEST_READY`) points at proportionally higher run cost.
+
+**Gate 4 — standard suite green, no golden re-blessing:** additive verbs; the
+existing `live_*` gates are byte-identical (no `StopReason`/hash change on any
+pre-existing path). `APP_PROTOCOL_VERSION` 4 → 5 is the only pin update
+(`hello_negotiates_the_pinned_caps`, `wire_constants_are_pinned`); the `public-api`
+snapshots for both crates are refreshed (`control-proto` regenerated with the
+pinned nightly; `vmm-core`'s Linux-frozen snapshot hand-extended with
+`inspect_vcpu`, since it skips on macOS).
+
+## Deviations considered and rejected
+
+- **Building the wire `RegsView` inside `vmm.rs`.** Rejected — `vmm.rs` is
+  workload-agnostic substrate; it exposes a neutral `inspect_vcpu()` and the wire
+  view is assembled at the server/wire boundary (`control.rs`, `regs_view`), so the
+  substrate stays free of the control-plane vocabulary.
+- **A synchronization gate on `regs` (mirroring `save_vm_state`).** Rejected — an
+  observation must be serviceable at any point; the view honestly reports
+  `effective_vns` (a lower bound at a non-intercept point), and it never feeds the
+  fault-staging floor (which keeps its own `synchronized()` gate). Gating `regs`
+  would make the observer unable to look at exactly the terminals a resolution
+  session most wants to inspect.
+- **serde on `control-proto::RegsView`.** Rejected for now — the crate is
+  deliberately serde-free (its canonical codec *is* the serialization). Noted for
+  the integrator collapsing `resolution`'s local (serde-deriving) view.
+- **A hard force-exit at the `run` deadline to make the exact-`Moment` landing work
+  on the mock.** Rejected — task 58 reverted exactly that; the real landing is the
+  patched-KVM force-exit, and the portable proof uses the existing no-op arrival
+  marker instead (above).
+
+## Known limitations / integrator notes
+
+- **Read cap = 64 KiB** (`control_proto::READ_CAP`), matching `resolution`'s
+  `READ_CAP`. A resolution session reads probe-sized regions; a larger sweep pages.
+- **`RegsView` reconciliation** with `dissonance/resolution`'s local view is a
+  rename + (optional) serde derive — the field set/order is identical by
+  construction.
+- **CI wiring (root files off-limits, rule 1):** add `tests/live_moment_address`
+  nowhere special (it is `#[ignore]`d and `cfg(linux)`, like `live_host_plane`); no
+  new `-p` entries are needed beyond the existing `control-proto`/`vmm-core` gates.
+  The box table above must be filled before the task is considered fully closed.

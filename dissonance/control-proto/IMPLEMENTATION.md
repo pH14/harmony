@@ -48,6 +48,46 @@ lines 41–42). It mirrors the existing `Branch` verb pattern:
   adversarial/streaming coverage all extend to it; the `public-api.txt` snapshot
   is refreshed.
 
+### Task 80 — the observation verbs `read` / `regs`
+
+Task 80 (the resolution observation surface) adds the two **observation** verbs the
+control protocol was missing — it could `hash(scope)` guest state but never *look
+at* it:
+
+- **`Request::Read { gpa: u64, len: u32 } → Reply::Bytes(Vec<u8>)`** — guest
+  physical memory. Body = `REQ_READ(10) · gpa:u64 · len:u32`. `len` is bounded by
+  the new **`READ_CAP` = 64 KiB** const; the backend answers a loud
+  `ControlError::ReadTooLarge { len, cap }` for an over-cap request and
+  `ControlError::ReadOutOfRange { gpa, len, ram_len }` for a `[gpa, gpa+len)` past
+  guest RAM — **never** a truncated success.
+- **`Request::Regs → Reply::Regs(RegsView)`** — a **versioned** register view
+  (`RegsView::VERSION = 1`): the 16 GPRs (canonical order
+  `rax rbx rcx rdx rsi rdi rbp rsp r8..r15`), `rip`, `rflags`, the segment
+  selectors (`cs ss ds es fs gs`), `cr0`/`cr3`/`cr4`, and the current `Moment`/
+  V-time. A **view, not** the save/restore format: additive-evolution, no
+  round-trip obligation — a `VERSION` bump appends fields (encoded after `vtime`),
+  and an older reader still consumes the prefix it knows. Body = `REQ_REGS(11)`;
+  the reply's `RegsView` is written field-by-field, fixed order, little-endian.
+
+The `RegsView` shape mirrors `dissonance/resolution`'s **local** view (PR #82,
+`server.rs`) field-for-field (rule 2 — resolution defined it locally against this
+spec while 80 was unmerged), so the integrator's reconciliation is a rename, not a
+reshape. `resolution`'s local view additionally derives `serde::{Serialize,
+Deserialize}` for its transcript; this crate stays serde-free (the wire codec *is*
+the serialization) — when the integrator collapses the two, add serde derives to
+`RegsView` (serde is whitelisted) or a `From` conversion. The two read range guards
+(`ReadOutOfRange`/`ReadTooLarge`) collapse onto resolution's client-local
+`SessionError` variants, same field shapes.
+
+`APP_PROTOCOL_VERSION` bumped **4 → 5** (new verbs + reply tags + error tags):
+additive to the codec, but a stale peer must reject **at `hello`** rather than hit
+a mid-session `ShortFrame` on a tag it does not know. Golden bytes (`req_read`,
+`req_regs`, `reply_bytes`, `reply_regs`, `err_read_out_of_range`,
+`err_read_too_large`), the round-trip/adversarial/streaming proptest strategies,
+the loopback ("every verb") session, and `public-api.txt` all extend to the new
+surface; the decoder's new discriminant arms are reached by the existing
+arbitrary-bytes fuzz target.
+
 ### Module layout
 
 `error.rs` (`ControlError` / `ProtocolError`) · `types.rs` (the plain wire data +

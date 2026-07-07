@@ -190,6 +190,31 @@ pub enum ControlError {
         /// The reserved vector.
         vector: u8,
     },
+    /// A [`Read`](crate::Request::Read) named a `[gpa, gpa+len)` range that runs
+    /// past guest RAM. Rejected **loudly** at the observation boundary (task 80:
+    /// "out-of-range → error, never a truncated success"): a short read would
+    /// hand the client bytes it did not ask for (or zero-fill), silently corrupting
+    /// whatever it decodes from them.
+    #[error("read [{gpa:#x}, {gpa:#x}+{len}) is out of range (guest RAM is {ram_len} bytes)")]
+    ReadOutOfRange {
+        /// The requested guest-physical base.
+        gpa: u64,
+        /// The requested length in bytes.
+        len: u32,
+        /// The guest RAM size in bytes.
+        ram_len: u64,
+    },
+    /// A [`Read`](crate::Request::Read) asked for more than
+    /// [`READ_CAP`](crate::READ_CAP) bytes. Rejected **before any allocation**, so
+    /// an untrusted `len` can never force an unbounded buffer (conventions rule 4)
+    /// — the same discipline the codec applies to a frame length.
+    #[error("read len {len} exceeds the per-call cap of {cap} bytes")]
+    ReadTooLarge {
+        /// The requested length.
+        len: u32,
+        /// The per-call cap ([`READ_CAP`](crate::READ_CAP)).
+        cap: u32,
+    },
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

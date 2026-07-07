@@ -467,6 +467,7 @@ pub fn vmm_core::vmm::Vmm<B>::has_active_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_inflight_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_pending_guest_interrupt(&mut self) -> core::result::Result<bool, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::idle_landings(&self) -> &[u64]
+pub fn vmm_core::vmm::Vmm<B>::inspect_vcpu(&self) -> vmm_backend::state::VcpuState
 pub fn vmm_core::vmm::Vmm<B>::is_synchronized(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::net_decisions(&self) -> &[(u64, u64, environment::catalog::Answer)]

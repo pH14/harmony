@@ -104,8 +104,8 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use control_proto::{
-    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Reply,
-    Request, SnapId, StopReason, VTime, decode_request, encode_reply,
+    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Moment,
+    READ_CAP, RegsView, Reply, Request, SnapId, StopReason, VTime, decode_request, encode_reply,
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
@@ -438,7 +438,63 @@ impl<B: Backend> ControlServer<B> {
                     *offset as usize,
                 ))))
             }
+            // Observation verbs (task 80): `read`/`regs` look at guest state without
+            // moving it. Both borrow `self.vmm` immutably and touch nothing else —
+            // not the schedule, not `recorded`, not V-time — so `hash(Whole)` before
+            // and after any sequence of them is bit-identical, and neither is ever
+            // recorded into an `Environment` (the RESOLUTION.md search-surface
+            // criterion: observation, not a move). Serviceable at any point (no
+            // synchronization gate): a `regs` view is honest even at a terminal.
+            Request::Read { gpa, len } => self.read(*gpa, *len),
+            Request::Regs => {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(Ok(Reply::Regs(regs_view(vmm))))
+            }
         }
+    }
+
+    /// `read(gpa, len)`: return exactly `len` bytes of guest **physical** memory at
+    /// `gpa`, or a loud [`ControlError`] — **never a truncated success** (task 80).
+    /// A pure observation: it borrows the guest image immutably and mutates nothing,
+    /// so it cannot perturb the run or any hash.
+    ///
+    /// The outer `Result` keeps the two categories apart like every other verb: a
+    /// **poisoned** server (`vmm == None` after a prior fatal error) is the same
+    /// session-fatal [`ServeError::Poisoned`] `regs`/`hash`/`snapshot` return —
+    /// **not** a recoverable reply. Guarding the RAM fetch with `ok_or(Poisoned)`
+    /// (PR #83 round-1 blocking) is what makes that so: an empty-slice fallback would
+    /// have masked the torn session as a bogus `ReadOutOfRange { ram_len: 0 }`, a
+    /// recoverable error a client would retry against a VM that no longer exists.
+    ///
+    /// The recoverable range guards, both fail-loud, checked before any copy:
+    /// - `len > `[`READ_CAP`] → [`ControlError::ReadTooLarge`], rejected **before**
+    ///   the slice is taken (and before touching the VM — a pure request-validation
+    ///   error, like `hash`'s unsupported scopes) so an untrusted `len` can never
+    ///   force an over-large copy (conventions rule 4).
+    /// - `[gpa, gpa+len)` past guest RAM (or a `gpa + len` overflow) →
+    ///   [`ControlError::ReadOutOfRange`]. A short read would hand the caller bytes
+    ///   it never asked for; the loud error makes the caller widen or re-address.
+    #[allow(clippy::result_large_err)] // ServeError's size is irrelevant on this cold path
+    fn read(&self, gpa: u64, len: u32) -> Result<Result<Reply, ControlError>, ServeError> {
+        if len > READ_CAP {
+            return Ok(Err(ControlError::ReadTooLarge { len, cap: READ_CAP }));
+        }
+        // Fetch the guest image; a `None` VM is a torn session, session-fatal like
+        // every sibling verb — never an empty-RAM fallback that fakes a range error.
+        let ram = self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .guest_memory();
+        let ram_len = ram.len() as u64;
+        // `gpa + len` in u128 so a near-u64::MAX gpa cannot wrap into a "valid" range.
+        let end = u128::from(gpa) + u128::from(len);
+        if end > u128::from(ram_len) {
+            return Ok(Err(ControlError::ReadOutOfRange { gpa, len, ram_len }));
+        }
+        // In range: gpa and end both fit usize (end <= ram_len <= isize::MAX).
+        let start = gpa as usize;
+        Ok(Ok(Reply::Bytes(ram[start..start + len as usize].to_vec())))
     }
 
     /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
@@ -1317,6 +1373,44 @@ fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32,
     page
 }
 
+/// Assemble the wire [`RegsView`] for the `regs` observation verb (task 80) from
+/// the VM's best-effort vCPU read ([`Vmm::inspect_vcpu`]) and its effective V-time
+/// ([`Vmm::effective_vns`]). Pure and non-mutating.
+///
+/// The GPRs and segment selectors are placed in the view's canonical order
+/// (`rax rbx rcx rdx rsi rdi rbp rsp r8..r15` — note **rbp before rsp** — and
+/// `cs ss ds es fs gs`). `Moment` and `vtime` are the two names of the single
+/// deterministic axis: the effective V-time is a retired-branch count in whole
+/// nanoseconds (ratio 1), which is exactly the [`Moment`] the perturb/run plane
+/// addresses, so both fields carry it (a fresh / V-time-unwired VM reads `0`).
+fn regs_view<B: Backend>(vmm: &Vmm<B>) -> RegsView {
+    let s = vmm.inspect_vcpu();
+    let r = &s.regs;
+    let vns = vmm.effective_vns().unwrap_or(0);
+    RegsView {
+        version: RegsView::VERSION,
+        gpr: [
+            r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp, r.rsp, r.r8, r.r9, r.r10, r.r11,
+            r.r12, r.r13, r.r14, r.r15,
+        ],
+        rip: r.rip,
+        rflags: r.rflags,
+        seg: [
+            s.sregs.cs.selector,
+            s.sregs.ss.selector,
+            s.sregs.ds.selector,
+            s.sregs.es.selector,
+            s.sregs.fs.selector,
+            s.sregs.gs.selector,
+        ],
+        cr0: s.sregs.cr0,
+        cr3: s.sregs.cr3,
+        cr4: s.sregs.cr4,
+        moment: Moment(vns),
+        vtime: vns,
+    }
+}
+
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
     let vtime = VTime(vns);
     match stop {
@@ -1372,7 +1466,7 @@ mod tests {
 
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, Environment, HashScope, HostFault, Moment,
-        Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+        READ_CAP, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
     };
     use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
     use vmm_backend::{Backend, Exit, MockBackend, Vtime};
@@ -1541,8 +1635,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 4,
-            "task 73 round-7 bumped for StopMask-gated SDK stops"
+            caps.protocol_version, 5,
+            "task 80 bumped for the read/regs observation verbs"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -1567,6 +1661,294 @@ mod tests {
                 assert!(events.is_empty(), "the mock guest emits no doorbell events")
             }
             other => panic!("SdkEvents verb answered unexpectedly (paged): {other:?}"),
+        }
+    }
+
+    // ------------------------- task 80: observation verbs ----------------------
+
+    fn read(
+        server: &mut ControlServer<MockBackend>,
+        gpa: u64,
+        len: u32,
+    ) -> Result<Reply, ControlError> {
+        server.handle(&Request::Read { gpa, len }).unwrap()
+    }
+
+    fn regs(server: &mut ControlServer<MockBackend>) -> control_proto::RegsView {
+        match server.handle(&Request::Regs).unwrap() {
+            Ok(Reply::Regs(v)) => v,
+            other => panic!("regs reply: {other:?}"),
+        }
+    }
+
+    /// `read` returns exactly the guest bytes at `[gpa, gpa+len)` — here the boot
+    /// marker the fixture loads at offset 0.
+    #[test]
+    fn read_returns_the_guest_bytes() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        match read(&mut s, 0, 12) {
+            Ok(Reply::Bytes(b)) => assert_eq!(&b, b"SERVER_BOOT\n"),
+            other => panic!("read reply: {other:?}"),
+        }
+        // A zero-length read at the exact RAM end is a valid empty read (the
+        // boundary is inclusive: `gpa + len == ram_len` is in range).
+        assert_eq!(read(&mut s, RAM as u64, 0), Ok(Reply::Bytes(Vec::new())));
+        assert_eq!(
+            read(&mut s, RAM as u64 - 4, 4),
+            Ok(Reply::Bytes(vec![0u8; 4])),
+            "a read ending exactly at ram_len is in range"
+        );
+    }
+
+    /// A `[gpa, gpa+len)` range past guest RAM (or an address+len that would
+    /// overflow `u64`) is a loud `ReadOutOfRange` — never a truncated/zero-filled
+    /// success.
+    #[test]
+    fn read_out_of_range_is_loud() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        assert_eq!(
+            read(&mut s, RAM as u64 - 3, 4),
+            Err(ControlError::ReadOutOfRange {
+                gpa: RAM as u64 - 3,
+                len: 4,
+                ram_len: RAM as u64,
+            }),
+            "one byte past the end is rejected, not clipped"
+        );
+        assert_eq!(
+            read(&mut s, u64::MAX - 2, 8),
+            Err(ControlError::ReadOutOfRange {
+                gpa: u64::MAX - 2,
+                len: 8,
+                ram_len: RAM as u64,
+            }),
+            "a gpa+len that would overflow u64 is rejected, never wrapped"
+        );
+    }
+
+    /// A `len` over the per-call cap is `ReadTooLarge`, checked **before** the range
+    /// (so even an over-cap read at a huge address is the cap error, not a slice) and
+    /// before any allocation.
+    #[test]
+    fn read_oversized_len_is_loud() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        assert_eq!(
+            read(&mut s, 0, READ_CAP + 1),
+            Err(ControlError::ReadTooLarge {
+                len: READ_CAP + 1,
+                cap: READ_CAP,
+            })
+        );
+        assert_eq!(
+            read(&mut s, u64::MAX, u32::MAX),
+            Err(ControlError::ReadTooLarge {
+                len: u32::MAX,
+                cap: READ_CAP,
+            }),
+            "the cap is checked before the range, so no slice is attempted"
+        );
+    }
+
+    /// `regs` reports the current versioned view; `moment` and `vtime` are the two
+    /// names of the single V-time axis, so both equal the live effective V-time.
+    #[test]
+    fn regs_reports_the_versioned_view_at_the_current_moment() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let v = regs(&mut s);
+        assert_eq!(v.version, control_proto::RegsView::VERSION);
+        let vns = s.vmm().unwrap().effective_vns().unwrap();
+        assert_eq!(v.moment.0, vns, "moment is the current V-time");
+        assert_eq!(v.vtime, vns, "vtime and moment coincide on the single axis");
+        assert_eq!(v.moment.0, 500, "the fixture is wired at work-count 500");
+    }
+
+    /// Both observation verbs are subject to the `hello`-first gate — before a
+    /// session is negotiated nothing is supported.
+    #[test]
+    fn observations_before_hello_are_unsupported() {
+        let mut s = server(vec![Exit::Hlt]);
+        assert_eq!(read(&mut s, 0, 4), Err(ControlError::Unsupported));
+        assert_eq!(
+            s.handle(&Request::Regs).unwrap(),
+            Err(ControlError::Unsupported)
+        );
+    }
+
+    /// A `read`/`regs` against a **poisoned** server (`vmm == None` after a prior
+    /// fatal error) is the same session-fatal [`ServeError::Poisoned`] every sibling
+    /// verb returns — never a recoverable reply (PR #83 round-1 blocking: `read`
+    /// must not fall back to an empty-RAM slice and fake a `ReadOutOfRange { ram_len:
+    /// 0 }`, which a client would retry against a VM that no longer exists).
+    #[test]
+    fn read_and_regs_on_a_poisoned_server_are_session_fatal() {
+        // A factory that cannot boot poisons the session on the first branch: the
+        // live VM is dropped, the factory fails, and `vmm` stays `None`.
+        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E);
+        let mut s = ControlServer::new(
+            live,
+            Box::new(|| Err(VmmError::ContractViolation("no boot".into()))),
+        );
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert!(
+            matches!(
+                s.handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(1),
+                }),
+                Err(ServeError::Vmm(_))
+            ),
+            "the failing factory tears the session down"
+        );
+        // Now poisoned. Both observation verbs are session-fatal, exactly like the
+        // sibling verbs — not a recoverable ControlError.
+        assert!(matches!(
+            s.handle(&Request::Read { gpa: 0, len: 4 }),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(
+            s.handle(&Request::Regs),
+            Err(ServeError::Poisoned)
+        ));
+        // A cross-check that a sibling agrees (hash Whole is the canonical one).
+        assert!(matches!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            }),
+            Err(ServeError::Poisoned)
+        ));
+    }
+
+    /// The **observation contract** (task 80): a full inspection pass (regs +
+    /// several reads, including a deliberately out-of-range one) between other
+    /// verbs leaves `hash(Whole)` bit-identical and is never stamped into the
+    /// recorded reproducer (`recorded_env` is unchanged) — observation, not a move.
+    #[test]
+    fn observations_do_not_perturb_hash_or_recorded_env() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        s.handle(&Request::Branch {
+            snap: base,
+            env: seeded_env(7),
+        })
+        .unwrap()
+        .unwrap();
+        let h_before = hash(&mut s);
+        let env_before = s.recorded_env().clone();
+        // A whole inspection pass — reads across the image, the register view, and
+        // an out-of-range read (a loud error is still a pure observation).
+        let _ = read(&mut s, 0, 16);
+        let _ = read(&mut s, RAM as u64 - 8, 8);
+        let _ = regs(&mut s);
+        let _ = read(&mut s, RAM as u64, 64); // out of range → error, no effect
+        let _ = regs(&mut s);
+        assert_eq!(hash(&mut s), h_before, "observation did not move the hash");
+        assert_eq!(
+            s.recorded_env(),
+            &env_before,
+            "observation was not recorded into the reproducer"
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    enum ObsOp {
+        Snapshot,
+        Run,
+        Hash,
+        Branch(u64),
+        Replay,
+        Read(u64, u32),
+        Regs,
+    }
+
+    fn arb_obs_op() -> impl Strategy<Value = ObsOp> {
+        prop_oneof![
+            Just(ObsOp::Snapshot),
+            Just(ObsOp::Run),
+            Just(ObsOp::Hash),
+            (1u64..=8).prop_map(ObsOp::Branch),
+            Just(ObsOp::Replay),
+            // Reads span in-range and (deliberately) out-of-range addresses/lengths,
+            // so even a rejected observation is proven inert.
+            (0u64..=(RAM as u64 + 64), 0u32..=(RAM as u32 + 64))
+                .prop_map(|(gpa, len)| ObsOp::Read(gpa, len)),
+            Just(ObsOp::Regs),
+        ]
+    }
+
+    /// The observable output of a "core" verb — the things the invariance gate
+    /// pins. `Run`/`Hash` are the spec's named surfaces; the control acks are
+    /// included so a stray mutation anywhere shows up.
+    #[derive(Clone, Debug, PartialEq)]
+    enum Rec {
+        Ctl(Result<Reply, ControlError>),
+        Run(Result<Reply, ControlError>),
+        Hash(Result<Reply, ControlError>),
+    }
+
+    /// Run a script against a fresh (identically-seeded) server, optionally
+    /// executing the `read`/`regs` observations, and return the ordered outputs of
+    /// every non-observation verb.
+    fn run_obs_script(ops: &[ObsOp], include_obs: bool) -> Vec<Rec> {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        let mut rec = Vec::new();
+        for op in ops {
+            match op {
+                ObsOp::Snapshot => rec.push(Rec::Ctl(s.handle(&Request::Snapshot).unwrap())),
+                ObsOp::Run => rec.push(Rec::Run(run_all_res(&mut s))),
+                ObsOp::Hash => rec.push(Rec::Hash(
+                    s.handle(&Request::Hash {
+                        scope: HashScope::Whole,
+                    })
+                    .unwrap(),
+                )),
+                ObsOp::Branch(seed) => rec.push(Rec::Ctl(
+                    s.handle(&Request::Branch {
+                        snap: base,
+                        env: seeded_env(*seed),
+                    })
+                    .unwrap(),
+                )),
+                ObsOp::Replay => rec.push(Rec::Ctl(s.handle(&Request::Replay(base)).unwrap())),
+                ObsOp::Read(gpa, len) => {
+                    if include_obs {
+                        let _ = read(&mut s, *gpa, *len);
+                    }
+                }
+                ObsOp::Regs => {
+                    if include_obs {
+                        let _ = s.handle(&Request::Regs).unwrap();
+                    }
+                }
+            }
+        }
+        rec
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// **Acceptance gate 1 (observation invariance).** Any interleaving of
+        /// `read`/`regs` among the other verbs yields byte-identical `hash` results
+        /// and `StopReason` outcomes as the same sequence with the observations
+        /// stripped — the RESOLUTION.md search-surface criterion: observation, not a
+        /// move. Reads that are out of range / over-cap (loud errors) are included,
+        /// so even a *rejected* observation is proven inert.
+        #[test]
+        fn observations_never_change_hash_or_stop_outcomes(
+            ops in prop::collection::vec(arb_obs_op(), 1..16)
+        ) {
+            let with_obs = run_obs_script(&ops, true);
+            let without_obs = run_obs_script(&ops, false);
+            prop_assert_eq!(with_obs, without_obs,
+                "interleaved read/regs changed a hash or stop outcome");
         }
     }
 
@@ -3783,6 +4165,185 @@ mod tests {
     }
     fn arr_hash<B: Backend>(s: &ControlServer<B>) -> [u8; 32] {
         s.vmm().unwrap().state_hash()
+    }
+
+    /// A **no-op** host fault (`CorruptMemory` with a zero XOR mask) — it changes no
+    /// guest byte, but staging it at a `Moment` arms the exact-count arrival so a
+    /// `run` lands there. On the portable mock this is the stand-in for the box's
+    /// timer-driven force-exit (tasks 47/55): the mock's bare `run()` HLTs
+    /// immediately, so a plain deadline never advances V-time, but an armed arrival
+    /// drives `run_until` to the exact `Moment`. On the real backend the deadline
+    /// itself force-exits, so no marker is needed (see the `live_moment_address` box
+    /// gate).
+    fn arrival_marker(at: u64) -> Request {
+        Request::Perturb {
+            fault: HostFault(
+                EnvHostFault::CorruptMemory {
+                    gpa: 0,
+                    mask: BitMask(0), // XOR 0 — the state is untouched
+                }
+                .encode(),
+            ),
+            at: Moment(at),
+        }
+    }
+
+    /// The **moment-address materialization procedure** (task 80), exercised
+    /// portably on the exact-arrival mock: given `(env, moment)` with a
+    /// genesis-complete `env`, `branch(genesis, env)` then advance to the exact
+    /// `Moment` (here via a no-op arrival marker — see [`arrival_marker`]; on the
+    /// box the deadline force-exits) and read that materialized point with the
+    /// observation verbs. Materializing the same address **twice from genesis**
+    /// yields byte-identical `regs` (including `rip` and `moment`), `read`, and
+    /// `hash(Whole)` — the address is a stable coordinate. (The box gate proves the
+    /// same against the live Postgres workload, where the state actually differs
+    /// Moment-to-Moment; the mock's static image makes this a determinism/mechanism
+    /// proof, not a state-evolution one.)
+    #[test]
+    fn moment_address_materializes_identically_twice() {
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let genesis = arr_snap(&mut s); // the genesis snapshot (V-time 0)
+        let env = seeded_env_arr(0x0080_0080); // a genesis-complete Seeded env
+
+        let materialize = |s: &mut ControlServer<ArrivalBackend>,
+                           moment: u64|
+         -> (control_proto::RegsView, Vec<u8>, [u8; 32]) {
+            // branch(genesis, env) — restore genesis + reseed from env's seed.
+            assert_eq!(
+                s.handle(&Request::Branch {
+                    snap: genesis,
+                    env: env.clone()
+                })
+                .unwrap(),
+                Ok(Reply::Unit)
+            );
+            // Advance to the exact-`Moment` stop.
+            s.handle(&arrival_marker(moment)).unwrap().unwrap();
+            let stop = match s
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(VTime(moment)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap()
+            {
+                Ok(Reply::Stop(st)) => st,
+                other => panic!("run answered {other:?}"),
+            };
+            assert_eq!(
+                stop,
+                StopReason::Deadline {
+                    vtime: VTime(moment)
+                },
+                "materialization lands exactly at the addressed Moment"
+            );
+            // Observe: regs, a probe read, and the whole-state hash.
+            let view = match s.handle(&Request::Regs).unwrap() {
+                Ok(Reply::Regs(v)) => v,
+                other => panic!("regs answered {other:?}"),
+            };
+            assert_eq!(
+                view.moment.0, moment,
+                "regs reports the retired count == the addressed Moment"
+            );
+            assert_eq!(view.vtime, moment, "vtime coincides with moment");
+            let bytes = match s.handle(&Request::Read { gpa: 0, len: 128 }).unwrap() {
+                Ok(Reply::Bytes(b)) => b,
+                other => panic!("read answered {other:?}"),
+            };
+            (view, bytes, arr_hash(s))
+        };
+
+        for moment in [1_000u64, 5_000, 50_000, 250_000] {
+            let (r1, b1, h1) = materialize(&mut s, moment);
+            let (r2, b2, h2) = materialize(&mut s, moment);
+            assert_eq!(
+                r1, r2,
+                "regs identical across two materializations @ {moment}"
+            );
+            assert_eq!(
+                b1, b2,
+                "read identical across two materializations @ {moment}"
+            );
+            assert_eq!(
+                h1, h2,
+                "hash identical across two materializations @ {moment}"
+            );
+        }
+    }
+
+    /// Observation invariance **during materialization** (task 80 gate 3, portable
+    /// analogue): a full inspection pass (regs + several reads) at an intermediate
+    /// Moment does not perturb the run — continuing to a later Moment yields the
+    /// same `hash(Whole)` as an uninspected control that reaches the later Moment
+    /// through the identical arrival schedule.
+    #[test]
+    fn inspection_mid_materialization_does_not_perturb_the_continuation() {
+        let env = seeded_env_arr(0x0B5E_0BED);
+        let (mid, late) = (10_000u64, 90_000u64);
+
+        // One materialization to `mid`→`late` through two arrival markers, with an
+        // optional inspection pass at `mid`. `arrival_server`s are freshly and
+        // identically composed, so the two runs differ only in the inspection.
+        let run_to_late = |inspect: bool| -> [u8; 32] {
+            let mut s = arrival_server();
+            arr_hello(&mut s);
+            let genesis = arr_snap(&mut s);
+            s.handle(&Request::Branch {
+                snap: genesis,
+                env: env.clone(),
+            })
+            .unwrap()
+            .unwrap();
+            // Advance to `mid`.
+            s.handle(&arrival_marker(mid)).unwrap().unwrap();
+            assert!(matches!(
+                s.handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(VTime(mid)),
+                        on: StopMask::NONE
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+                Ok(Reply::Stop(StopReason::Deadline { .. }))
+            ));
+            if inspect {
+                // A full inspection pass at the intermediate Moment.
+                let _ = s.handle(&Request::Regs).unwrap();
+                let _ = s.handle(&Request::Read { gpa: 0, len: 64 }).unwrap();
+                let _ = s
+                    .handle(&Request::Read {
+                        gpa: RAM as u64 - 16,
+                        len: 16,
+                    })
+                    .unwrap();
+                let _ = s.handle(&Request::Regs).unwrap();
+            }
+            // Continue to `late`.
+            s.handle(&arrival_marker(late)).unwrap().unwrap();
+            assert!(matches!(
+                s.handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(VTime(late)),
+                        on: StopMask::NONE
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+                Ok(Reply::Stop(StopReason::Deadline { .. }))
+            ));
+            arr_hash(&s)
+        };
+
+        assert_eq!(
+            run_to_late(true),
+            run_to_late(false),
+            "an inspection pass mid-materialization perturbed the continuation"
+        );
     }
 
     #[test]

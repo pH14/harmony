@@ -218,6 +218,27 @@ pub enum Request {
         /// The event index to start the page at.
         offset: u32,
     },
+    /// **Observation** (task 80): read `len` bytes of guest **physical** memory at
+    /// `gpa` → [`Bytes`](Reply::Bytes). A pure observation — it never mutates guest
+    /// state, V-time, or any hash, and is never recorded into an
+    /// [`Environment`] (the `docs/RESOLUTION.md` search-surface criterion:
+    /// observation, not a move). `len` is bounded by the backend's read cap
+    /// ([`READ_CAP`](crate::READ_CAP)); an over-cap `len` is a loud
+    /// [`ReadTooLarge`](crate::ControlError::ReadTooLarge) and a `[gpa, gpa+len)`
+    /// range past guest RAM a loud [`ReadOutOfRange`](crate::ControlError::ReadOutOfRange)
+    /// — **never** a truncated success.
+    Read {
+        /// The guest-physical base address to read from.
+        gpa: u64,
+        /// The number of bytes to read (bounded by [`READ_CAP`](crate::READ_CAP)).
+        len: u32,
+    },
+    /// **Observation** (task 80): the current [`RegsView`] → [`Regs`](Reply::Regs).
+    /// Like [`Read`](Request::Read) it is a pure observation (no state/V-time/hash
+    /// mutation, never recorded into an [`Environment`]). Returns a **versioned**
+    /// register *view*, not the save/restore format — additive evolution, no
+    /// round-trip obligation.
+    Regs,
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)
@@ -238,6 +259,58 @@ pub enum Reply {
     /// the `Moment`-stamped `(moment, event_id, bytes)` stream, order-preserving.
     /// Empty for a guest with no SDK.
     SdkEvents(Vec<(u64, u32, Vec<u8>)>),
+    /// The bytes of a [`Read`](Request::Read) — exactly `len` bytes of guest
+    /// physical memory (never short; an under-range read is an error reply, not a
+    /// truncated `Bytes`).
+    Bytes(Vec<u8>),
+    /// The current register view (reply to [`Regs`](Request::Regs)).
+    Regs(RegsView),
+}
+
+/// A **versioned** register view (task 80) — the observation surface for
+/// `docs/RESOLUTION.md`. It is a *view*, not the save/restore format
+/// ([`VcpuState`]-equivalent): additive evolution only, no round-trip obligation,
+/// so [`version`](RegsView::VERSION) may gain fields without breaking a reader
+/// that pins the older shape. Carries the general-purpose registers, `rip`,
+/// `rflags`, the segment selectors, the control registers `cr0`/`cr3`/`cr4`, and
+/// the current [`Moment`]/V-time the view is of.
+///
+/// `Moment` and `vtime` are the two names of the single deterministic axis on the
+/// substrate (a retired-branch count == whole nanoseconds, ratio 1), so they
+/// coincide there; both are carried so a reader need not know the ratio.
+///
+/// [`VcpuState`]: the backend's full save/restore vCPU record — not this view.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RegsView {
+    /// The view schema version (task-80 additive-evolution contract). See
+    /// [`RegsView::VERSION`].
+    pub version: u16,
+    /// The 16 general-purpose registers in canonical order:
+    /// `rax rbx rcx rdx rsi rdi rbp rsp r8 r9 r10 r11 r12 r13 r14 r15`.
+    pub gpr: [u64; 16],
+    /// The instruction pointer.
+    pub rip: u64,
+    /// The flags register.
+    pub rflags: u64,
+    /// The segment selectors in canonical order: `cs ss ds es fs gs`.
+    pub seg: [u16; 6],
+    /// Control register `cr0`.
+    pub cr0: u64,
+    /// Control register `cr3` (the page-table base).
+    pub cr3: u64,
+    /// Control register `cr4`.
+    pub cr4: u64,
+    /// The current [`Moment`] (retired-instruction count) this view is of.
+    pub moment: Moment,
+    /// The current effective V-time.
+    pub vtime: u64,
+}
+
+impl RegsView {
+    /// The current [`RegsView`] schema version. **Additive-only**: a bump adds
+    /// fields, never reshapes or drops one, so a reader pinning an older version
+    /// keeps reading the prefix it knows.
+    pub const VERSION: u16 = 1;
 }
 
 /// The guest-observable outcome of a [`Run`](Request::Run) — the explorer's
