@@ -270,3 +270,25 @@ prefix.
    the doc-comment kills (pool GC, Hypervizor).
 6. **No big-bang** — merged, box-gated, golden-pinned code is not churned for vocabulary
    alone.
+
+---
+
+# Scoring addendum
+
+> **Status: PROPOSED (rides `docs/SCORING.md`; binding when that doc is ruled).** The
+> Scoring-seam ruling mints three terms and reserves one name; per the naming authority
+> rule they land here in the same PR.
+
+## Adopted vocabulary — scoring
+
+| Word | Names | Notes |
+|---|---|---|
+| **re-key** | recomputing every retained timeline's cells under a changed `CellFn`, then rebuilding the archive by re-running admission | The AURORA container-rebuild / Go-Explore archive-conversion mechanism; harmony's form is exact and offline (replay retained `RunTrace`s through the pure fold). Verb: "re-key the traces" |
+| **re-key epoch** | the interval between re-keys — the cadence of the `SCORING.md` R2 granularity controller | Epoch-wise, never online: `CellFn` knobs are discrete, so the controller adjusts between re-keys, not continuously |
+| **energy** | how many rollouts a chosen entry receives before the `Selector` chooses again | AFLFast's power-schedule term of art, used for AFLFast's mechanism (citation discipline holds). Cost-aware; *choice* stays cost-blind (`SCORING.md` R5) |
+
+## Reserved — scoring
+
+- **`quality`** — the second `Reward` channel (`SCORING.md` R4): the per-cell domination
+  preference magnitude (R3). Named now so task 70+ does not mint a collision; `Reward`
+  channels are meaning-blind integers, and there are exactly two.
