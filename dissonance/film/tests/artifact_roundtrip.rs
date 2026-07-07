@@ -53,3 +53,37 @@ fn capture_bundle_renders_identically_after_a_json_round_trip() {
     };
     assert_eq!(render(&bundle), render(&reloaded));
 }
+
+#[test]
+fn loaded_bundle_validation_catches_tampering() {
+    let scenario = BillboardScenario::new(0x4000, clock(3));
+    let window = scenario.window();
+    let ticks = scenario.ticks.clone();
+    let plan = FilmPlan::derive(&ticks, window, ClipSelect::All, None, 1 << 16).unwrap();
+    let repro = EnvCodec::seeded(11, FaultPolicy::none());
+    let mut session = Session::connect(MockBillboardServer::boot(scenario)).unwrap();
+    let bundle = project(&mut session, &repro, &plan).unwrap();
+
+    // A faithful bundle validates.
+    bundle.validate().unwrap();
+
+    // Round-trip through JSON, then tamper the last frame's *stored* header so it
+    // disagrees with its bytes: validate must catch the header/bytes mismatch
+    // self-describingly (not render garbage). This clip has no frame gap, so the
+    // last frame's counter is 2.
+    let json = serde_json::to_string(&bundle).unwrap();
+    let mut reloaded: CaptureBundle = serde_json::from_str(&json).unwrap();
+    reloaded.frames.last_mut().unwrap().header.joypad ^= 0xFF;
+    assert!(matches!(
+        reloaded.validate().unwrap_err(),
+        film::CaptureError::HeaderMismatch { frame: 2 }
+    ));
+
+    // Corrupting the bytes' header region (magic) is caught as a parse failure.
+    let mut torn: CaptureBundle = serde_json::from_str(&json).unwrap();
+    torn.frames[0].bytes[0] ^= 0xFF;
+    assert!(matches!(
+        torn.validate().unwrap_err(),
+        film::CaptureError::Header { frame: 0, .. }
+    ));
+}

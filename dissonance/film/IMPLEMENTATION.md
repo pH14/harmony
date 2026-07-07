@@ -20,9 +20,9 @@ Four passes, one seam:
 All green on macOS (this worktree):
 
 - `cargo build -p film --all-features` ✓
-- `cargo nextest run -p film --all-features` — **54 tests** (35 unit incl. the
-  Miri-exercised callback tests + 1 bin + 5 plan proptests ≥256 cases + 11
-  projector-mock + 2 artifact-roundtrip) ✓
+- `cargo nextest run -p film --all-features` — **56 tests** (36 unit incl. the
+  Miri-exercised callback + geometry-rejection tests + 1 bin + 5 plan proptests
+  ≥256 cases + 11 projector-mock + 3 artifact-roundtrip) ✓
 - `cargo clippy -p film --all-features --all-targets -- -D warnings` ✓ (the
   `rand::*` "does not refer to a reachable function" lines are workspace
   `clippy.toml` config notes for a crate that does not depend on `rand`, not lint
@@ -89,6 +89,29 @@ findings, all fixed:
    Fixed by `failure_persistence = None` under `cfg!(miri)`; the IMPLEMENTATION
    Miri claim is corrected to the plain invocation and re-verified (the earlier
    green run had used `-Zmiri-disable-isolation`, which the doc didn't state).
+
+## Round-3 PR review fixes (applied)
+
+One [blocking] + one [suggestion, taken]:
+
+1. **Checked geometry validation in `video_cb`, up front** (blocking). Before any
+   pointer read, `video_cb` now checks — with overflow-safe arithmetic — that the
+   frame geometry equals the load-time `av_info` geometry (the old post-conversion
+   check, moved to the front via a `Ctx.expected` field), that `pitch ≥
+   width*bpp`, and that the row-extent and `w*h*3` capacity do not overflow
+   `usize`. A violation records a typed outcome (`VideoCapture::{Geometry,
+   BadPitch,Overflow}`) that `render()` maps to a loud `RenderError`
+   (`CoreGeometry`/`CorePitch`/`CoreGeometryOverflow`) — so a buggy/mis-pinned
+   core yields an error, never a debug panic (`w*h*3` overflow at `c_uint`
+   maxima) or a wrapped-offset read. Not a security boundary (the core is
+   in-process native code), but honest failure. New Miri-exercised test
+   `video_cb_rejects_geometry_and_pitch_violations`.
+2. **Load-time bundle revalidation** (suggestion). `CaptureBundle::validate` /
+   `FrameCapture::validate` re-derive `BillboardHeader::parse(&bytes)` and check
+   it equals the stored header (and the counters agree), so a corrupt/tampered
+   JSON-loaded bundle fails **self-describingly** (`CaptureError`) instead of
+   rendering garbage. The `film render` bin calls it right after load. Test
+   `loaded_bundle_validation_catches_tampering`.
 
 ## Round-2 PR review fixes (applied)
 

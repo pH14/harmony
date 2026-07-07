@@ -12,23 +12,30 @@
 //! reconstruction whose fidelity could be doubted (the hand-written PPU
 //! compositor the integrator rejected, 2026-07-07 — see `IMPLEMENTATION.md`).
 //!
-//! ## Feature-gated, box-only, off the Miri path
+//! ## Feature-gated; the `unsafe` splits into Miri-covered and box-only
 //!
 //! This module compiles only under the `core-replay` feature (which pulls
-//! `libc`), so the default build carries no `unsafe`, no FFI, and nothing Miri
-//! cannot interpret — the `unsafe` grant (task 87: the libretro C-ABI FFI) lives
-//! entirely here, behind the [`FrameRenderer`] seam. The core and the
-//! user-supplied ROM never ship in the repo; [`CoreReplay::from_env`] reads them
-//! from `HARMONY_SMB_CORE` / `HARMONY_SMB_ROM` and returns `Ok(None)` (a loud
-//! SKIP) when either is absent, mirroring task 86's ROM discipline. The live path
-//! is the foreman's box gate, where guest and renderer build from the identical
-//! core pin on the identical x86_64 Linux platform — which is what makes
-//! savestate loading a non-issue there.
+//! `libc`), so the default build carries no `unsafe` at all. The `unsafe` grant
+//! (task 87: the libretro C-ABI FFI) lives entirely here, behind the
+//! [`FrameRenderer`] seam, and is of two kinds:
 //!
-//! The pixel-format conversions and the joypad→libretro-input mapping are pure,
-//! `unsafe`-free functions with their own tests (run under `--all-features`); the
-//! `unsafe` is confined to the `dlopen`/`dlsym` and `retro_*` calls, each with a
-//! `// SAFETY:` note.
+//! - **Pure-Rust `unsafe` — the frontend callbacks** (`video_cb`'s pointer walk,
+//!   `env_cb`'s pointer writes/reads, `input_state_cb`). Miri *can* interpret
+//!   these, so they are **exercised under Miri** with synthetic buffers (the
+//!   tests below); `cargo +nightly miri test -p film --features core-replay` is
+//!   the documented invocation and validates this logic.
+//! - **Uninterpretable FFI** — `dlopen`/`dlsym`, `transmute`-to-fn-pointer, and
+//!   the `retro_*` calls. Miri genuinely cannot execute these; they sit behind
+//!   the [`CoreReplay::load`] seam and no test calls them (the conventions' Miri
+//!   carve-out for privileged/FFI paths).
+//!
+//! The core and the user-supplied ROM never ship in the repo;
+//! [`CoreReplay::from_env`] reads them from `HARMONY_SMB_CORE` / `HARMONY_SMB_ROM`
+//! and returns `Ok(None)` (a loud SKIP) when either is absent, mirroring task
+//! 86's ROM discipline. The live path is the foreman's box gate, where guest and
+//! renderer build from the identical core pin on the identical x86_64 Linux
+//! platform. The pixel conversions and the joypad→libretro mapping are pure and
+//! `unsafe`-free; every `unsafe` block has a `// SAFETY:` note.
 
 use std::cell::RefCell;
 use std::ffi::{CString, c_char, c_int, c_uint, c_void};
@@ -173,6 +180,23 @@ struct RetroSystemAvInfo {
     timing: RetroSystemTiming,
 }
 
+/// What `video_cb` captured (or rejected) this `retro_run`. A buggy/mis-pinned
+/// core must produce a **loud [`RenderError`]**, never a debug panic (`w*h*3`
+/// overflow) or a wrapped-offset read — so `video_cb` validates geometry up
+/// front and records the outcome here for `render()` to map.
+enum VideoCapture {
+    /// A validated frame: `(width, height, rgb24)`.
+    Frame(u32, u32, Vec<u8>),
+    /// The core reported a frame geometry other than the load-time `av_info`
+    /// geometry.
+    Geometry { got_w: u32, got_h: u32 },
+    /// The core reported `pitch < width * bytes_per_pixel` — rows would overlap.
+    BadPitch { pitch: usize, min: usize },
+    /// The geometry/offset arithmetic overflowed `usize` — a hostile/garbage
+    /// geometry, refused before any pointer read.
+    Overflow,
+}
+
 /// Per-thread render context the C callbacks reach (libretro callbacks carry no
 /// user-data pointer). Single-core-per-thread by construction — film renders one
 /// clip sequentially.
@@ -182,9 +206,11 @@ struct Ctx {
     joypad: u8,
     /// The negotiated pixel format (default `0RGB1555` per the libretro spec).
     pixel_format: u32,
-    /// The frame the video callback captured this `retro_run`, as `(w, h,
-    /// rgb24)`.
-    frame: Option<(u32, u32, Vec<u8>)>,
+    /// The load-time `av_info` base geometry (`width`, `height`) every frame must
+    /// match; `None` before a core is loaded.
+    expected: Option<(u32, u32)>,
+    /// What the video callback captured (or rejected) this `retro_run`.
+    capture: Option<VideoCapture>,
 }
 
 thread_local! {
@@ -216,7 +242,7 @@ extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
             }
             // Answer **false**: film re-`unserialize`s and renders one fresh frame
             // per capture, so the core must hand real pixels every `retro_run` —
-            // a `video_refresh(NULL, …)` dupe frame would leave `CTX.frame` empty
+            // a `video_refresh(NULL, …)` dupe frame would leave the capture empty
             // (`render()` clears it before each run) and spuriously fail a
             // legitimate frame. A screenshot frontend has nothing to gain from
             // duping.
@@ -229,28 +255,74 @@ extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
     }
 }
 
-/// The video callback: convert the core's frame to RGB24 and stash it. A null
-/// `data` is a dupe frame; film advertises `can_dupe = false` (see `env_cb`), so
-/// a well-behaved core never sends one — if one arrives anyway it is dropped, and
-/// `render()` then reports a loud "no frame" error rather than fabricating one.
+/// The video callback: **validate the geometry, then** convert the core's frame
+/// to RGB24 and stash it. A null `data` is a dupe frame; film advertises
+/// `can_dupe = false` (see `env_cb`), so a well-behaved core never sends one — if
+/// one arrives anyway it is dropped, and `render()` reports a loud "no frame"
+/// error rather than fabricating one.
+///
+/// The core is in-process native code, so this is not a security boundary — but a
+/// buggy or mis-pinned core must yield a [`RenderError`], never a debug panic or
+/// wrapped-offset read. So *before* the first pointer read it checks, with
+/// overflow-safe arithmetic: (1) geometry equals the load-time `av_info`
+/// geometry, (2) `pitch ≥ width * bpp`, (3) the row/offset extent and the RGB
+/// capacity do not overflow `usize`. Only then does it walk the buffer, where
+/// every `base.add(off)` is proven in-range.
 extern "C" fn video_cb(data: *const c_void, width: c_uint, height: c_uint, pitch: usize) {
     if data.is_null() {
         return;
     }
-    let fmt = CTX.with(|c| c.borrow().pixel_format);
+    let (fmt, expected) = CTX.with(|c| {
+        let c = c.borrow();
+        (c.pixel_format, c.expected)
+    });
+    // (1) Geometry must match the load-time av_info geometry (moved up front).
+    if let Some((ew, eh)) = expected
+        && (width != ew || height != eh)
+    {
+        set_capture(VideoCapture::Geometry {
+            got_w: width,
+            got_h: height,
+        });
+        return;
+    }
     let (w, h) = (width as usize, height as usize);
-    let mut rgb = Vec::with_capacity(w * h * 3);
     let bpp = if fmt == FMT_XRGB8888 { 4 } else { 2 };
+    // (2) pitch ≥ width*bpp, with a checked width*bpp.
+    let Some(min_pitch) = w.checked_mul(bpp) else {
+        set_capture(VideoCapture::Overflow);
+        return;
+    };
+    if pitch < min_pitch {
+        set_capture(VideoCapture::BadPitch {
+            pitch,
+            min: min_pitch,
+        });
+        return;
+    }
+    // (3) The maximum byte offset read is `(h-1)*pitch + w*bpp` and the RGB
+    // capacity is `w*h*3`; both must fit in `usize`. Checking the extent proves
+    // every `y*pitch + x*bpp` in the walk (with `y<h`, `x<w`) is overflow-free.
+    let extent = h
+        .checked_sub(1)
+        .and_then(|hm1| hm1.checked_mul(pitch))
+        .and_then(|rows| min_pitch.checked_add(rows));
+    let capacity = w.checked_mul(h).and_then(|wh| wh.checked_mul(3));
+    let (Some(_extent), Some(capacity)) = (extent, capacity) else {
+        set_capture(VideoCapture::Overflow);
+        return;
+    };
+    let mut rgb = Vec::with_capacity(capacity);
     // Provenance-preserving pointer walk (no int round-trip), so Miri can exercise
     // this pure-Rust unsafe with a synthetic buffer: `base.add(off)` keeps the
     // frame buffer's provenance where `data as usize + off` would strip it.
     let base = data.cast::<u8>();
     for y in 0..h {
         for x in 0..w {
-            let off = y * pitch + x * bpp;
-            // SAFETY: `off < h*pitch` for `x < width`, `y < height` and a core
-            // stride `pitch ≥ width*bpp`, so the `bpp` bytes read at `base + off`
-            // lie inside the frame buffer the core just filled (`base` non-null,
+            let off = y * pitch + x * bpp; // ≤ extent, proven not to overflow above
+            // SAFETY: `off ≤ (h-1)*pitch + (w-1)*bpp < extent` (checked), and the
+            // core guarantees a buffer of at least `height*pitch` bytes, so the
+            // `bpp` bytes read at `base + off` lie inside it (`base` non-null,
             // checked above). `read_unaligned` tolerates any pitch alignment.
             let px = unsafe { base.add(off) };
             let pixel = if bpp == 4 {
@@ -267,7 +339,12 @@ extern "C" fn video_cb(data: *const c_void, width: c_uint, height: c_uint, pitch
             rgb.extend_from_slice(&pixel);
         }
     }
-    CTX.with(|c| c.borrow_mut().frame = Some((width, height, rgb)));
+    set_capture(VideoCapture::Frame(width, height, rgb));
+}
+
+/// Record this `retro_run`'s video outcome for `render()` to read.
+fn set_capture(capture: VideoCapture) {
+    CTX.with(|c| c.borrow_mut().capture = Some(capture));
 }
 
 /// The input-poll callback (no-op — input is a static per-frame byte).
@@ -430,6 +507,13 @@ impl CoreReplay {
                     "core reported a zero frame geometry".into(),
                 ));
             }
+            // Publish the expected geometry so `video_cb` can validate every
+            // frame up front, and clear any stale capture.
+            CTX.with(|c| {
+                let mut c = c.borrow_mut();
+                c.expected = Some((w, h));
+                c.capture = None;
+            });
             Ok((fns, w, h))
         }
     }
@@ -456,11 +540,11 @@ impl FrameRenderer for CoreReplay {
 
     fn render(&mut self, capture: &FrameCapture) -> Result<Frame, RenderError> {
         let savestate = capture.savestate();
-        // Present this frame's joypad byte and clear any prior captured frame.
+        // Present this frame's joypad byte and clear any prior capture.
         CTX.with(|c| {
             let mut c = c.borrow_mut();
             c.joypad = capture.joypad();
-            c.frame = None;
+            c.capture = None;
         });
         // SAFETY: `unserialize`/`run` are the resolved libretro entry points; the
         // savestate slice pointer+len are valid for the read. `retro_run` invokes
@@ -474,20 +558,23 @@ impl FrameRenderer for CoreReplay {
             }
             (self.fns.run)();
         }
-        let (w, h, rgb) =
-            CTX.with(|c| c.borrow_mut().frame.take())
-                .ok_or(RenderError::Unavailable(
-                    "core produced no frame this retro_run".into(),
-                ))?;
-        if w != self.width || h != self.height {
-            return Err(RenderError::CoreGeometry {
-                got_w: w,
-                got_h: h,
+        // `video_cb` already validated geometry/pitch up front; map its outcome.
+        match CTX.with(|c| c.borrow_mut().capture.take()) {
+            None => Err(RenderError::Unavailable(
+                "core produced no frame this retro_run".into(),
+            )),
+            Some(VideoCapture::Frame(w, h, rgb)) => Frame::from_rgb(w, h, rgb),
+            Some(VideoCapture::Geometry { got_w, got_h }) => Err(RenderError::CoreGeometry {
+                got_w,
+                got_h,
                 want_w: self.width,
                 want_h: self.height,
-            });
+            }),
+            Some(VideoCapture::BadPitch { pitch, min }) => {
+                Err(RenderError::CorePitch { pitch, min })
+            }
+            Some(VideoCapture::Overflow) => Err(RenderError::CoreGeometryOverflow),
         }
-        Frame::from_rgb(w, h, rgb)
     }
 }
 
@@ -595,18 +682,46 @@ mod tests {
     // `cargo +nightly miri test -p film --features core-replay` validate the
     // unsafe pointer logic instead of skipping over it.
 
-    /// Set the pixel format + clear any prior frame, run `video_cb` against a
-    /// synthetic buffer, and return the captured RGB.
-    fn run_video(fmt: u32, data: &[u8], w: u32, h: u32, pitch: usize) -> Vec<u8> {
+    /// Set the pixel format + expected geometry, clear any prior capture, run
+    /// `video_cb` against a synthetic buffer, and return the raw [`VideoCapture`].
+    /// `expected` is the load-time geometry to validate against (`Some((w,h))`
+    /// makes the geometry check pass for a matching frame).
+    fn run_video_capture(
+        fmt: u32,
+        expected: Option<(u32, u32)>,
+        data: &[u8],
+        w: u32,
+        h: u32,
+        pitch: usize,
+    ) -> VideoCapture {
         CTX.with(|c| {
             let mut c = c.borrow_mut();
             c.pixel_format = fmt;
-            c.frame = None;
+            c.expected = expected;
+            c.capture = None;
         });
         video_cb(data.as_ptr() as *const c_void, w, h, pitch);
-        CTX.with(|c| c.borrow_mut().frame.take())
-            .map(|(_, _, rgb)| rgb)
-            .expect("video_cb captured a frame")
+        CTX.with(|c| c.borrow_mut().capture.take())
+            .expect("video_cb set a capture")
+    }
+
+    /// A `video_cb` run whose geometry matches the expected `(w, h)` — returns the
+    /// converted RGB.
+    fn run_video(fmt: u32, data: &[u8], w: u32, h: u32, pitch: usize) -> Vec<u8> {
+        match run_video_capture(fmt, Some((w, h)), data, w, h, pitch) {
+            VideoCapture::Frame(_, _, rgb) => rgb,
+            other => panic!("expected a Frame capture, got {}", capture_kind(&other)),
+        }
+    }
+
+    /// A short label for a non-Frame capture (for test failure messages).
+    fn capture_kind(c: &VideoCapture) -> &'static str {
+        match c {
+            VideoCapture::Frame(..) => "frame",
+            VideoCapture::Geometry { .. } => "geometry",
+            VideoCapture::BadPitch { .. } => "bad-pitch",
+            VideoCapture::Overflow => "overflow",
+        }
     }
 
     #[test]
@@ -660,6 +775,28 @@ mod tests {
                 0xFF, 0xFF, 0xFF, // white
             ]
         );
+    }
+
+    #[test]
+    fn video_cb_rejects_geometry_and_pitch_violations() {
+        let buf = [0u8; 16];
+        // Geometry mismatch vs the load-time expected (2x1): rejected up front,
+        // no pointer walk.
+        assert!(matches!(
+            run_video_capture(FMT_RGB565, Some((2, 1)), &buf, 4, 1, 8),
+            VideoCapture::Geometry { got_w: 4, got_h: 1 }
+        ));
+        // pitch < width*bpp (RGB565 bpp=2, width 2 → min 4): rejected.
+        assert!(matches!(
+            run_video_capture(FMT_RGB565, Some((2, 1)), &buf, 2, 1, 3),
+            VideoCapture::BadPitch { pitch: 3, min: 4 }
+        ));
+        // A hostile geometry whose size arithmetic overflows usize is refused
+        // before any read (no expected, so geometry check is skipped).
+        assert!(matches!(
+            run_video_capture(FMT_XRGB8888, None, &buf, u32::MAX, u32::MAX, usize::MAX),
+            VideoCapture::Overflow
+        ));
     }
 
     #[test]

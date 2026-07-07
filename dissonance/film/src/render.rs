@@ -247,6 +247,20 @@ pub enum RenderError {
         /// The expected height.
         want_h: u32,
     },
+    /// The core reported a row `pitch` smaller than `width * bytes_per_pixel`, so
+    /// rows would overlap — a buggy/mis-pinned core (`core_replay`).
+    #[error("core reported pitch {pitch} < the minimum row stride {min} (width*bpp)")]
+    CorePitch {
+        /// The reported row stride in bytes.
+        pitch: usize,
+        /// The minimum valid stride (`width * bpp`).
+        min: usize,
+    },
+    /// The core's reported geometry made the frame's size/offset arithmetic
+    /// overflow `usize` — refused before any pointer read, never a panic
+    /// (`core_replay`).
+    #[error("core geometry overflows the frame size arithmetic")]
+    CoreGeometryOverflow,
 }
 
 #[cfg(test)]

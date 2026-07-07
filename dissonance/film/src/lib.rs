@@ -53,7 +53,7 @@ pub use billboard::{
     BILLBOARD_LAYOUT_VERSION, BILLBOARD_MAGIC, BillboardHeader, HEADER_LEN, HeaderError, Region,
     encode_billboard,
 };
-pub use capture::{CaptureBundle, FrameCapture};
+pub use capture::{CaptureBundle, CaptureError, FrameCapture};
 pub use error::FilmError;
 pub use mock::{BillboardScenario, Corruption, MockBillboardServer};
 pub use output::{OutputError, blake3_hex, contact_sheet, write_ppm};

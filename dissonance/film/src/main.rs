@@ -187,6 +187,11 @@ fn cmd_render(
     if bundle.is_empty() {
         return Err("capture bundle has no frames".into());
     }
+    // Revalidate the loaded artifact so a corrupt/tampered bundle fails
+    // self-describingly here, before any rendering.
+    bundle
+        .validate()
+        .map_err(|e| format!("corrupt capture bundle: {e}"))?;
     let mut renderer = pick_renderer(core_replay)?;
     render_bundle(&bundle, renderer.as_mut(), out_dir, contact_cols)
 }

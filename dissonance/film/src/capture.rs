@@ -10,8 +10,9 @@
 //! (`render`) is the host-side, out-of-timeline second pass.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use crate::billboard::BillboardHeader;
+use crate::billboard::{BillboardHeader, HeaderError};
 use environment::Moment;
 
 /// One filmed frame's raw capture: the frame counter and `Moment` it was read
@@ -46,6 +47,31 @@ impl FrameCapture {
     pub fn joypad(&self) -> u8 {
         self.header.joypad
     }
+
+    /// **Revalidate a loaded capture** against itself: a `FrameCapture` from
+    /// untrusted JSON (a load-later artifact — task 87 §2) carries a stored
+    /// `header` and `bytes` that serde does not cross-check. This re-derives the
+    /// header from `bytes` and asserts it equals the stored one, and that the
+    /// frame counters agree — so a corrupt/tampered bundle fails **self-
+    /// describingly** here rather than rendering garbage downstream. Total and
+    /// panic-free (rule 4).
+    pub fn validate(&self) -> Result<(), CaptureError> {
+        let parsed =
+            BillboardHeader::parse(&self.bytes).map_err(|source| CaptureError::Header {
+                frame: self.frame,
+                source,
+            })?;
+        if parsed != self.header {
+            return Err(CaptureError::HeaderMismatch { frame: self.frame });
+        }
+        if self.header.frame != self.frame {
+            return Err(CaptureError::FrameCounter {
+                frame: self.frame,
+                header_frame: self.header.frame,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// An ordered clip of [`FrameCapture`]s — the artifact the projector produces and
@@ -73,4 +99,43 @@ impl CaptureBundle {
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
+
+    /// [`validate`](FrameCapture::validate) every frame — the load-time integrity
+    /// check for a JSON-loaded bundle. Reports the first inconsistent frame.
+    pub fn validate(&self) -> Result<(), CaptureError> {
+        for frame in &self.frames {
+            frame.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Why a loaded [`CaptureBundle`]/[`FrameCapture`] failed
+/// [`validate`](FrameCapture::validate) — a corrupt or tampered on-disk artifact
+/// (rule 4: distinct, panic-free).
+#[derive(Clone, PartialEq, Eq, Debug, Error)]
+pub enum CaptureError {
+    /// A frame's `bytes` did not parse as a billboard header.
+    #[error("frame {frame}: billboard bytes do not parse ({source})")]
+    Header {
+        /// The frame index in the bundle.
+        frame: u32,
+        /// The underlying parse error.
+        #[source]
+        source: HeaderError,
+    },
+    /// A frame's stored header did not match the header re-derived from its bytes.
+    #[error("frame {frame}: stored header does not match its bytes (corrupt artifact)")]
+    HeaderMismatch {
+        /// The frame index in the bundle.
+        frame: u32,
+    },
+    /// A frame's stored counter did not match its header's frame counter.
+    #[error("frame {frame}: stored counter disagrees with the header's ({header_frame})")]
+    FrameCounter {
+        /// The stored frame counter.
+        frame: u32,
+        /// The header's frame counter.
+        header_frame: u32,
+    },
 }
