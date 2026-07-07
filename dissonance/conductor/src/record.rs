@@ -200,7 +200,10 @@ fn seal_base<B: Backend>(
                 | Reply::Hello(_)
                 | Reply::Hash(_)
                 | Reply::Stop(_)
-                | Reply::SdkEvents(_),
+                | Reply::SdkEvents(_)
+                // Task 80 observation replies: never answered to a `snapshot`.
+                | Reply::Bytes(_)
+                | Reply::Regs(_),
             ) => {
                 return Err(RecordError::Protocol("snapshot: unexpected reply".into()));
             }
