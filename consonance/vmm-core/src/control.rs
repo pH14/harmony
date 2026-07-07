@@ -104,8 +104,8 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use control_proto::{
-    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Reply,
-    Request, SnapId, StopReason, VTime, decode_request, encode_reply,
+    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Moment,
+    READ_CAP, RegsView, Reply, Request, SnapId, StopReason, VTime, decode_request, encode_reply,
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
@@ -438,7 +438,51 @@ impl<B: Backend> ControlServer<B> {
                     *offset as usize,
                 ))))
             }
+            // Observation verbs (task 80): `read`/`regs` look at guest state without
+            // moving it. Both borrow `self.vmm` immutably and touch nothing else —
+            // not the schedule, not `recorded`, not V-time — so `hash(Whole)` before
+            // and after any sequence of them is bit-identical, and neither is ever
+            // recorded into an `Environment` (the RESOLUTION.md search-surface
+            // criterion: observation, not a move). Serviceable at any point (no
+            // synchronization gate): a `regs` view is honest even at a terminal.
+            Request::Read { gpa, len } => Ok(self.read(*gpa, *len)),
+            Request::Regs => {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(Ok(Reply::Regs(regs_view(vmm))))
+            }
         }
+    }
+
+    /// `read(gpa, len)`: return exactly `len` bytes of guest **physical** memory at
+    /// `gpa`, or a loud [`ControlError`] — **never a truncated success** (task 80).
+    /// A pure observation: it borrows the guest image immutably and mutates nothing,
+    /// so it cannot perturb the run or any hash.
+    ///
+    /// Two range guards, both fail-loud, checked before any copy:
+    /// - `len > `[`READ_CAP`] → [`ControlError::ReadTooLarge`], rejected **before**
+    ///   the slice is taken so an untrusted `len` can never force an over-large copy
+    ///   (conventions rule 4).
+    /// - `[gpa, gpa+len)` past guest RAM (or a `gpa + len` overflow) →
+    ///   [`ControlError::ReadOutOfRange`]. A short read would hand the caller bytes
+    ///   it never asked for; the loud error makes the caller widen or re-address.
+    fn read(&self, gpa: u64, len: u32) -> Result<Reply, ControlError> {
+        if len > READ_CAP {
+            return Err(ControlError::ReadTooLarge { len, cap: READ_CAP });
+        }
+        let ram = self
+            .vmm
+            .as_ref()
+            .map(|v| v.guest_memory())
+            .unwrap_or(&[][..]);
+        let ram_len = ram.len() as u64;
+        // `gpa + len` in u128 so a near-u64::MAX gpa cannot wrap into a "valid" range.
+        let end = u128::from(gpa) + u128::from(len);
+        if end > u128::from(ram_len) {
+            return Err(ControlError::ReadOutOfRange { gpa, len, ram_len });
+        }
+        // In range: gpa and end both fit usize (end <= ram_len <= isize::MAX).
+        let start = gpa as usize;
+        Ok(Reply::Bytes(ram[start..start + len as usize].to_vec()))
     }
 
     /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
@@ -1317,6 +1361,44 @@ fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32,
     page
 }
 
+/// Assemble the wire [`RegsView`] for the `regs` observation verb (task 80) from
+/// the VM's best-effort vCPU read ([`Vmm::inspect_vcpu`]) and its effective V-time
+/// ([`Vmm::effective_vns`]). Pure and non-mutating.
+///
+/// The GPRs and segment selectors are placed in the view's canonical order
+/// (`rax rbx rcx rdx rsi rdi rbp rsp r8..r15` — note **rbp before rsp** — and
+/// `cs ss ds es fs gs`). `Moment` and `vtime` are the two names of the single
+/// deterministic axis: the effective V-time is a retired-branch count in whole
+/// nanoseconds (ratio 1), which is exactly the [`Moment`] the perturb/run plane
+/// addresses, so both fields carry it (a fresh / V-time-unwired VM reads `0`).
+fn regs_view<B: Backend>(vmm: &Vmm<B>) -> RegsView {
+    let s = vmm.inspect_vcpu();
+    let r = &s.regs;
+    let vns = vmm.effective_vns().unwrap_or(0);
+    RegsView {
+        version: RegsView::VERSION,
+        gpr: [
+            r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rbp, r.rsp, r.r8, r.r9, r.r10, r.r11,
+            r.r12, r.r13, r.r14, r.r15,
+        ],
+        rip: r.rip,
+        rflags: r.rflags,
+        seg: [
+            s.sregs.cs.selector,
+            s.sregs.ss.selector,
+            s.sregs.ds.selector,
+            s.sregs.es.selector,
+            s.sregs.fs.selector,
+            s.sregs.gs.selector,
+        ],
+        cr0: s.sregs.cr0,
+        cr3: s.sregs.cr3,
+        cr4: s.sregs.cr4,
+        moment: Moment(vns),
+        vtime: vns,
+    }
+}
+
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
     let vtime = VTime(vns);
     match stop {
@@ -1372,7 +1454,7 @@ mod tests {
 
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, Environment, HashScope, HostFault, Moment,
-        Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+        READ_CAP, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
     };
     use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
     use vmm_backend::{Backend, Exit, MockBackend, Vtime};
@@ -1541,8 +1623,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 4,
-            "task 73 round-7 bumped for StopMask-gated SDK stops"
+            caps.protocol_version, 5,
+            "task 80 bumped for the read/regs observation verbs"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -1567,6 +1649,249 @@ mod tests {
                 assert!(events.is_empty(), "the mock guest emits no doorbell events")
             }
             other => panic!("SdkEvents verb answered unexpectedly (paged): {other:?}"),
+        }
+    }
+
+    // ------------------------- task 80: observation verbs ----------------------
+
+    fn read(
+        server: &mut ControlServer<MockBackend>,
+        gpa: u64,
+        len: u32,
+    ) -> Result<Reply, ControlError> {
+        server.handle(&Request::Read { gpa, len }).unwrap()
+    }
+
+    fn regs(server: &mut ControlServer<MockBackend>) -> control_proto::RegsView {
+        match server.handle(&Request::Regs).unwrap() {
+            Ok(Reply::Regs(v)) => v,
+            other => panic!("regs reply: {other:?}"),
+        }
+    }
+
+    /// `read` returns exactly the guest bytes at `[gpa, gpa+len)` — here the boot
+    /// marker the fixture loads at offset 0.
+    #[test]
+    fn read_returns_the_guest_bytes() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        match read(&mut s, 0, 12) {
+            Ok(Reply::Bytes(b)) => assert_eq!(&b, b"SERVER_BOOT\n"),
+            other => panic!("read reply: {other:?}"),
+        }
+        // A zero-length read at the exact RAM end is a valid empty read (the
+        // boundary is inclusive: `gpa + len == ram_len` is in range).
+        assert_eq!(read(&mut s, RAM as u64, 0), Ok(Reply::Bytes(Vec::new())));
+        assert_eq!(
+            read(&mut s, RAM as u64 - 4, 4),
+            Ok(Reply::Bytes(vec![0u8; 4])),
+            "a read ending exactly at ram_len is in range"
+        );
+    }
+
+    /// A `[gpa, gpa+len)` range past guest RAM (or an address+len that would
+    /// overflow `u64`) is a loud `ReadOutOfRange` — never a truncated/zero-filled
+    /// success.
+    #[test]
+    fn read_out_of_range_is_loud() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        assert_eq!(
+            read(&mut s, RAM as u64 - 3, 4),
+            Err(ControlError::ReadOutOfRange {
+                gpa: RAM as u64 - 3,
+                len: 4,
+                ram_len: RAM as u64,
+            }),
+            "one byte past the end is rejected, not clipped"
+        );
+        assert_eq!(
+            read(&mut s, u64::MAX - 2, 8),
+            Err(ControlError::ReadOutOfRange {
+                gpa: u64::MAX - 2,
+                len: 8,
+                ram_len: RAM as u64,
+            }),
+            "a gpa+len that would overflow u64 is rejected, never wrapped"
+        );
+    }
+
+    /// A `len` over the per-call cap is `ReadTooLarge`, checked **before** the range
+    /// (so even an over-cap read at a huge address is the cap error, not a slice) and
+    /// before any allocation.
+    #[test]
+    fn read_oversized_len_is_loud() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        assert_eq!(
+            read(&mut s, 0, READ_CAP + 1),
+            Err(ControlError::ReadTooLarge {
+                len: READ_CAP + 1,
+                cap: READ_CAP,
+            })
+        );
+        assert_eq!(
+            read(&mut s, u64::MAX, u32::MAX),
+            Err(ControlError::ReadTooLarge {
+                len: u32::MAX,
+                cap: READ_CAP,
+            }),
+            "the cap is checked before the range, so no slice is attempted"
+        );
+    }
+
+    /// `regs` reports the current versioned view; `moment` and `vtime` are the two
+    /// names of the single V-time axis, so both equal the live effective V-time.
+    #[test]
+    fn regs_reports_the_versioned_view_at_the_current_moment() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let v = regs(&mut s);
+        assert_eq!(v.version, control_proto::RegsView::VERSION);
+        let vns = s.vmm().unwrap().effective_vns().unwrap();
+        assert_eq!(v.moment.0, vns, "moment is the current V-time");
+        assert_eq!(v.vtime, vns, "vtime and moment coincide on the single axis");
+        assert_eq!(v.moment.0, 500, "the fixture is wired at work-count 500");
+    }
+
+    /// Both observation verbs are subject to the `hello`-first gate — before a
+    /// session is negotiated nothing is supported.
+    #[test]
+    fn observations_before_hello_are_unsupported() {
+        let mut s = server(vec![Exit::Hlt]);
+        assert_eq!(read(&mut s, 0, 4), Err(ControlError::Unsupported));
+        assert_eq!(
+            s.handle(&Request::Regs).unwrap(),
+            Err(ControlError::Unsupported)
+        );
+    }
+
+    /// The **observation contract** (task 80): a full inspection pass (regs +
+    /// several reads, including a deliberately out-of-range one) between other
+    /// verbs leaves `hash(Whole)` bit-identical and is never stamped into the
+    /// recorded reproducer (`recorded_env` is unchanged) — observation, not a move.
+    #[test]
+    fn observations_do_not_perturb_hash_or_recorded_env() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        s.handle(&Request::Branch {
+            snap: base,
+            env: seeded_env(7),
+        })
+        .unwrap()
+        .unwrap();
+        let h_before = hash(&mut s);
+        let env_before = s.recorded_env().clone();
+        // A whole inspection pass — reads across the image, the register view, and
+        // an out-of-range read (a loud error is still a pure observation).
+        let _ = read(&mut s, 0, 16);
+        let _ = read(&mut s, RAM as u64 - 8, 8);
+        let _ = regs(&mut s);
+        let _ = read(&mut s, RAM as u64, 64); // out of range → error, no effect
+        let _ = regs(&mut s);
+        assert_eq!(hash(&mut s), h_before, "observation did not move the hash");
+        assert_eq!(
+            s.recorded_env(),
+            &env_before,
+            "observation was not recorded into the reproducer"
+        );
+    }
+
+    #[derive(Clone, Debug)]
+    enum ObsOp {
+        Snapshot,
+        Run,
+        Hash,
+        Branch(u64),
+        Replay,
+        Read(u64, u32),
+        Regs,
+    }
+
+    fn arb_obs_op() -> impl Strategy<Value = ObsOp> {
+        prop_oneof![
+            Just(ObsOp::Snapshot),
+            Just(ObsOp::Run),
+            Just(ObsOp::Hash),
+            (1u64..=8).prop_map(ObsOp::Branch),
+            Just(ObsOp::Replay),
+            // Reads span in-range and (deliberately) out-of-range addresses/lengths,
+            // so even a rejected observation is proven inert.
+            (0u64..=(RAM as u64 + 64), 0u32..=(RAM as u32 + 64))
+                .prop_map(|(gpa, len)| ObsOp::Read(gpa, len)),
+            Just(ObsOp::Regs),
+        ]
+    }
+
+    /// The observable output of a "core" verb — the things the invariance gate
+    /// pins. `Run`/`Hash` are the spec's named surfaces; the control acks are
+    /// included so a stray mutation anywhere shows up.
+    #[derive(Clone, Debug, PartialEq)]
+    enum Rec {
+        Ctl(Result<Reply, ControlError>),
+        Run(Result<Reply, ControlError>),
+        Hash(Result<Reply, ControlError>),
+    }
+
+    /// Run a script against a fresh (identically-seeded) server, optionally
+    /// executing the `read`/`regs` observations, and return the ordered outputs of
+    /// every non-observation verb.
+    fn run_obs_script(ops: &[ObsOp], include_obs: bool) -> Vec<Rec> {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+        let mut rec = Vec::new();
+        for op in ops {
+            match op {
+                ObsOp::Snapshot => rec.push(Rec::Ctl(s.handle(&Request::Snapshot).unwrap())),
+                ObsOp::Run => rec.push(Rec::Run(run_all_res(&mut s))),
+                ObsOp::Hash => rec.push(Rec::Hash(
+                    s.handle(&Request::Hash {
+                        scope: HashScope::Whole,
+                    })
+                    .unwrap(),
+                )),
+                ObsOp::Branch(seed) => rec.push(Rec::Ctl(
+                    s.handle(&Request::Branch {
+                        snap: base,
+                        env: seeded_env(*seed),
+                    })
+                    .unwrap(),
+                )),
+                ObsOp::Replay => rec.push(Rec::Ctl(s.handle(&Request::Replay(base)).unwrap())),
+                ObsOp::Read(gpa, len) => {
+                    if include_obs {
+                        let _ = read(&mut s, *gpa, *len);
+                    }
+                }
+                ObsOp::Regs => {
+                    if include_obs {
+                        let _ = s.handle(&Request::Regs).unwrap();
+                    }
+                }
+            }
+        }
+        rec
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// **Acceptance gate 1 (observation invariance).** Any interleaving of
+        /// `read`/`regs` among the other verbs yields byte-identical `hash` results
+        /// and `StopReason` outcomes as the same sequence with the observations
+        /// stripped — the RESOLUTION.md search-surface criterion: observation, not a
+        /// move. Reads that are out of range / over-cap (loud errors) are included,
+        /// so even a *rejected* observation is proven inert.
+        #[test]
+        fn observations_never_change_hash_or_stop_outcomes(
+            ops in prop::collection::vec(arb_obs_op(), 1..16)
+        ) {
+            let with_obs = run_obs_script(&ops, true);
+            let without_obs = run_obs_script(&ops, false);
+            prop_assert_eq!(with_obs, without_obs,
+                "interleaved read/regs changed a hash or stop outcome");
         }
     }
 

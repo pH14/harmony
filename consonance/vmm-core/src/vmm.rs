@@ -758,6 +758,20 @@ impl<B: Backend> Vmm<B> {
         self.ram.as_bytes()
     }
 
+    /// The current guest-visible vCPU register file, read **best-effort** and
+    /// **without mutating** the VM — the substrate half of the task-80 `regs`
+    /// observation verb. Returns the terminal-captured state if the VM is stopped
+    /// at one, else a swallowing live `Backend::save` (default on a backend that
+    /// cannot save). Identical to the vCPU state the hash folds in
+    /// ([`current_vcpu`](Vmm::current_vcpu)), so a `regs` observation reports
+    /// exactly the register file the determinism hash is taken over — but as a
+    /// *view*, never the fallible snapshot seal ([`save_vm_state`](Vmm::save_vm_state),
+    /// which fails closed at a non-synchronized boundary). Pairs with
+    /// [`effective_vns`](Vmm::effective_vns) for the view's `Moment`/V-time.
+    pub fn inspect_vcpu(&self) -> VcpuState {
+        self.current_vcpu()
+    }
+
     /// `true` iff the live vCPU is at a **non-quiescent** point — its `kvm_vcpu_events`
     /// carries an interrupt or exception KVM has injected but not yet delivered (or the
     /// `#PF`/`#DB` payload / `SIPI` / SMM / a queued triple fault) **in flight**. This is
