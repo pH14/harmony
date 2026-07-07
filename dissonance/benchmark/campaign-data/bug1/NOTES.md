@@ -575,3 +575,30 @@ Canonical image rebuilt at PREFIX_BITS=**8** + STABILIZE_ITERS=8192; a 512-branc
 (real ~1/256 rate) is running to confirm the production difficulty. Bug-2 rework (interrupt-counter)
 is next. kvm_intel→9 verified after each run; bug-1 suite untouched (phase-1 nearly done — baseline-20
 + signal-19 complete).
+
+### 2026-07-07 — BUG-1 CAMPAIGN DONE (phase-1 40/40 valid) + a SELF-INFLICTED box collision (lesson)
+
+**Phase-1 complete + committed (9136c7a):** 20 seeds × 2 configs, all rc=0, each campaign found bug 1
++ certified. JSONs under `campaign-data/bug1/results/`. This is the valid bug-1 correlation data.
+
+**INCIDENT (my fault) — the phase-2 solo determinism spot-check did NOT run.** I had BACKGROUNDED the
+bug-3 8-bit smoke (a 512-branch, untracked, core-4 bench-campaign). It was still holding patched KVM
+when phase-1 released its leases, so box-window's revert-to-stock `rmmod` failed (`REVERT MISMATCH
+1400832`), and phase-2's `acquire solo-N --exclusive` → `load_patched` ABORTED ("kvm is neither stock
+nor cleanly loadable") → empty core → `taskset: failed to parse CPU list:` → solo runs rc=1, no hash.
+`determinism.log`'s "P0-DIVERGENCE seed N co=[hash] solo=[]" is that artifact — **NOT** a real
+co-tenant-vs-solo mismatch. Phase-1 data is unaffected.
+
+**LESSON (box discipline, hard rule):** NEVER background an untracked core-4 patched-KVM VM — a
+background VM can overlap the campaign's phase transitions (phase-1 release → revert, phase-2
+`load_patched`), and `load_patched`/`revert_stock` both abort while `kvm_intel` is in use. Run every
+box VM FOREGROUND (so it cannot outlive the step) and, when a campaign is live, do not start a core-4
+run that could still be alive at its phase-2. The foreman's "verify kvm→9 after every run" assumed
+foreground runs; backgrounding broke that invariant.
+
+**RECOVERY PLAN (in order):** (1) let the 8-bit smoke finish (last KVM user) — do NOT kill it
+mid-run; (2) verify `kvm_intel users==0`, then manually revert to stock (`rmmod kvm_intel kvm;
+modprobe kvm; modprobe kvm_intel`; verify **1396736** on a fresh ssh); (3) re-run the phase-2 solo
+determinism spot-check cleanly (seeds 1/2/3 `--exclusive`, box now idle → no collision) and diff vs
+the co-tenant `finds.log` hashes; (4) smoke bug-2 (order interrupt-counter rework, commit 8bbc695
+WIP); (5) gate-2 validity for bugs 2/3; (6) bug-2/3 campaigns. All box VMs FOREGROUND from here.
