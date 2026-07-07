@@ -20,6 +20,20 @@ pub enum MachineError {
     /// fault). Carries an opaque description.
     #[error("machine transport/backend failure: {0}")]
     Transport(String),
+    /// The backend **rejected a well-formed proposal as inadmissible** — it
+    /// staged/decoded cleanly but names a fault the backend refuses to apply: an
+    /// out-of-range `CorruptMemory` gpa, a `Moment` behind the restore point or
+    /// already carrying a fault, or an out-of-scope fault this backend does not
+    /// service. This is a **recoverable** rejection, *categorically distinct from
+    /// a [`Transport`](Self::Transport) failure*: the machine is intact and the
+    /// rejection is side-effect-free (task-59 stage-time validation), so a driver
+    /// that proposes envs (the explorer, the benchmark campaign) should **discard
+    /// this proposal and continue** rather than abort — exactly as a fuzzer drops
+    /// an inadmissible mutant. It must NEVER be conflated with `Transport`, or a
+    /// caller that skips it would mask a real backend death or a determinism
+    /// divergence. Carries the wire reason for diagnostics. (task-69 M2)
+    #[error("backend rejected an inadmissible proposal: {0}")]
+    Inadmissible(String),
     /// A snapshot was requested at a non-quiescent point (snapshots are
     /// quiescent-only). [`Explorer::new`](crate::Explorer::new) returns this if
     /// the initial genesis snapshot cannot be taken.

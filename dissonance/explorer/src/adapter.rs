@@ -665,6 +665,20 @@ fn control_error_to_machine(err: control_proto::ControlError) -> MachineError {
         Ce::NotQuiescent | Ce::SnapshotWhileArmed => MachineError::NotQuiescent,
         Ce::BadEnvVersion(v) => MachineError::BadEnvironment(v),
         Ce::MalformedEnvironment => MachineError::BadEnvironment(EnvSpec::BLOB_VERSION),
+        // A well-formed PROPOSAL the backend rejects as inadmissible — a distinct,
+        // recoverable category from a torn transport (task-69 M2). All four decode
+        // cleanly; the backend simply refuses to apply the fault: an out-of-range
+        // `CorruptMemory` gpa (`PerturbOutOfRange`), a `Moment` behind the restore
+        // point (`PerturbPastMoment`) or already carrying a fault
+        // (`PerturbMomentTaken`), or an out-of-scope fault / capability this
+        // backend does not service (`Unsupported`). A proposing driver (explorer,
+        // benchmark campaign) discards the proposal and continues; only the genuine
+        // failures below fall through to `Transport` and abort — so this remap
+        // NEVER masks a backend death or a determinism divergence.
+        e @ (Ce::PerturbOutOfRange { .. }
+        | Ce::PerturbPastMoment { .. }
+        | Ce::PerturbMomentTaken { .. }
+        | Ce::Unsupported) => MachineError::Inadmissible(format!("control error: {e}")),
         other => MachineError::Transport(format!("control error: {other}")),
     }
 }
@@ -1387,11 +1401,30 @@ mod tests {
             control_error_to_machine(Ce::MalformedEnvironment),
             MachineError::BadEnvironment(EnvSpec::BLOB_VERSION)
         );
+        // Well-formed but inadmissible PROPOSALS map to the recoverable
+        // `Inadmissible` category (task-69 M2), NOT `Transport` — a proposing
+        // driver discards them and continues. `Unsupported` (out-of-scope fault /
+        // absent capability) rides with the stage-time perturb rejections here.
+        for err in [
+            Ce::PerturbOutOfRange {
+                gpa: 0xdead_beef_dead_beef,
+                ram_len: 1 << 31,
+            },
+            Ce::PerturbPastMoment { at: 3, floor: 10 },
+            Ce::PerturbMomentTaken { at: 7 },
+            Ce::Unsupported,
+        ] {
+            assert!(
+                matches!(control_error_to_machine(err), MachineError::Inadmissible(_)),
+                "inadmissible proposals are the recoverable category"
+            );
+        }
+        // Genuine failures remain `Transport` — never conflated with a rejected
+        // proposal, so skipping the latter can never mask one of these.
         for err in [
             Ce::RestoreFailed,
             Ce::ResolveWithoutDecision,
             Ce::MalformedAnswer,
-            Ce::Unsupported,
             Ce::Protocol(control_proto::ProtocolError::ShortFrame),
         ] {
             assert!(

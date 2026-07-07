@@ -479,7 +479,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     let spec_run = spec.clone();
     let (served, outcome) = run_session(&mut server, move |stream| {
         let mut machine = SocketMachine::connect(stream, initial)?;
-        run_bench_campaign(&mut machine, &SpecEnvCodec, &spec_run, &cfg, config)
+        run_bench_campaign(&mut machine, &spec_run, &cfg, config)
     });
     let outcome = match outcome {
         Ok(o) => o,

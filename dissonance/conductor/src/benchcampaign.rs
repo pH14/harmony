@@ -46,8 +46,8 @@ use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, CellFn, EnvCodec, Environment, FeatureSet, Machine, MachineError, Moment, Prng,
-    Record, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId, VTime,
+    AdapterEnv, CellFn, Environment, FeatureSet, Machine, MachineError, Moment, Prng, Record,
+    RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId, VTime,
 };
 use logtmpl::{CellFnV1, LogSensor};
 
@@ -236,6 +236,143 @@ fn scenario_of(env: &Environment) -> Scenario {
         })
         .collect();
     Scenario { seed, faults }
+}
+
+/// The signal config's **exploit kernel** (task-69 M2 fix B): a small, generic,
+/// BUG-AGNOSTIC perturbation of a novel parent's *existing* fault schedule. It
+/// knows nothing of the planted trigger — it only jitters what the parent already
+/// carries (fault timing, a nearby gpa, a neighbouring corruption bit, a nearby
+/// interrupt vector), so a novel-cell parent that happens to sit near the trigger
+/// gets its neighbourhood searched while one far away wanders locally. Every draw
+/// is from the campaign's seeded `prng` (no ad-hoc entropy), so the whole campaign
+/// stays a pure function of the seed. The env is rebuilt exactly as
+/// [`mint_scenario_env`] builds an explore branch (a `Seeded` base plus `perturb`
+/// faults, `base_offset` 0), so an exploit branch keys off the sealed base
+/// identically to an explore branch — the two configs differ ONLY in *which* base
+/// env a branch starts from, which is the variable the GO/NO-GO measures.
+///
+/// This replaces the earlier `EnvCodec::mutate` exploit, whose generic
+/// `host_fault_from` drew a uniform-random 64-bit host fault — almost always an
+/// out-of-range gpa or an out-of-scope `SkewTime`/`SetClockRate` the backend
+/// rejects — so "exploitation" was a wasted (and, pre-fix-A, campaign-aborting)
+/// branch rather than a local search (round-8 P0).
+fn exploit_env(parent: &Environment, prng: &mut Prng) -> Environment {
+    let sc = scenario_of(parent);
+    if sc.faults.is_empty() {
+        // A fault-less parent (a rare-entropy bug fires on the seed alone): the
+        // only thing to jitter is the seed itself. A single-bit twiddle keeps the
+        // exploit "near" the parent; entropy has no seed-locality, so this is
+        // honest local search, not a claim that exploitation helps a seed-only bug
+        // (called out in CORRELATION-REPORT.md).
+        let seed = sc.seed ^ (1u64 << (prng.next_u64() % 64));
+        return AdapterEnv {
+            base_offset: 0,
+            pos: 0,
+            spec: EnvSpec::Seeded {
+                seed,
+                policy: FaultPolicy::none(),
+            },
+        }
+        .encode();
+    }
+    // Jitter exactly one fault; carry the rest verbatim.
+    let victim = (prng.next_u64() % sc.faults.len() as u64) as usize;
+    let mut env_spec = EnvSpec::Seeded {
+        seed: sc.seed,
+        policy: FaultPolicy::none(),
+    };
+    for (i, p) in sc.faults.iter().enumerate() {
+        let (at, kind) = if i == victim {
+            perturb_fault(p.at, p.kind, prng)
+        } else {
+            (p.at, p.kind)
+        };
+        let fault = match kind {
+            FaultKind::CorruptMemory { gpa, mask } => HostFault::CorruptMemory {
+                gpa,
+                mask: BitMask(mask),
+            },
+            FaultKind::InjectInterrupt { vector } => HostFault::InjectInterrupt { vector },
+        };
+        env_spec.perturb(fault, at);
+    }
+    AdapterEnv {
+        base_offset: 0,
+        pos: 0,
+        spec: env_spec,
+    }
+    .encode()
+}
+
+/// One small, generic jitter of a single staged fault for [`exploit_env`],
+/// perturbing exactly **one** dimension and leaving the rest as the parent. This
+/// one-dimension-at-a-time step is what lets exploitation *converge* on a
+/// conjunctive trigger (e.g. bug 1 needs the right gpa AND bit AND timing slot
+/// together): a parent that already matches two of three dimensions is fixed on
+/// the third without disturbing the two it got right — whereas jittering every
+/// dimension at once could never hold a match. Bug-agnostic and seeded-
+/// deterministic; each step is small enough to stay in the parent's in-range
+/// neighbourhood (the rare boundary escapee is caught by fix A's skip, never
+/// fatal).
+fn perturb_fault(at: u64, kind: FaultKind, prng: &mut Prng) -> (u64, FaultKind) {
+    match kind {
+        // Corrupt-memory faults have three search dimensions — timing, gpa, bit —
+        // so pick one to nudge.
+        FaultKind::CorruptMemory { gpa, mask } => match prng.next_u64() % 3 {
+            0 => {
+                // Timing jitter: a small signed step in [-32, 32] (saturating).
+                let d = (prng.next_u64() % 65) as i64 - 32;
+                (at.saturating_add_signed(d), kind)
+            }
+            1 => {
+                // Nearby gpa: a small aligned signed step (a few 8-byte words / a
+                // page either way).
+                const STEPS: [i64; 6] = [-0x2000, -0x1000, -8, 8, 0x1000, 0x2000];
+                let d = STEPS[(prng.next_u64() % STEPS.len() as u64) as usize];
+                (
+                    at,
+                    FaultKind::CorruptMemory {
+                        gpa: gpa.saturating_add_signed(d),
+                        mask,
+                    },
+                )
+            }
+            _ => {
+                // Bit twiddle: move the corruption to a neighbouring bit.
+                let bit = mask.trailing_zeros() as i64;
+                let delta = if prng.next_u64().is_multiple_of(2) {
+                    -1
+                } else {
+                    1
+                };
+                let nb = (bit + delta).clamp(0, 63) as u64;
+                (
+                    at,
+                    FaultKind::CorruptMemory {
+                        gpa,
+                        mask: 1u64 << nb,
+                    },
+                )
+            }
+        },
+        // Interrupt faults have two dimensions — timing and vector.
+        FaultKind::InjectInterrupt { vector } => match prng.next_u64() % 2 {
+            0 => {
+                let d = (prng.next_u64() % 65) as i64 - 32;
+                (at.saturating_add_signed(d), kind)
+            }
+            _ => {
+                // Nearby vector: flip one low bit.
+                let b = (prng.next_u64() % 4) as u8;
+                (
+                    at,
+                    FaultKind::InjectInterrupt {
+                        vector: vector ^ (1 << b),
+                    },
+                )
+            }
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -639,7 +776,6 @@ fn seal_base<M: Machine>(
 /// judge — recording the first find per bug (its time-to-bug).
 pub fn run_bench_campaign<M: Machine>(
     machine: &mut M,
-    codec: &dyn EnvCodec,
     spec: &BugSpec,
     cfg: &BenchConfig,
     config: Configuration,
@@ -683,7 +819,7 @@ pub fn run_bench_campaign<M: Machine>(
         let (env, parent_path_len, parent_novel) = if exploit {
             let pick = (prng.next_u64() % frontier.len() as u64) as usize;
             let parent = &frontier[pick];
-            let e = codec.mutate(&parent.env, prng.next_u64());
+            let e = exploit_env(&parent.env, &mut prng);
             (e, parent.path_len, parent.novel_on_path)
         } else {
             (
@@ -693,8 +829,39 @@ pub fn run_bench_campaign<M: Machine>(
             )
         };
 
-        machine.branch(base, &env)?;
-        let stop = machine.run(&until, None)?;
+        // Stage + run the branch. A backend that REJECTS this env's fault as an
+        // inadmissible PROPOSAL (an out-of-range gpa, a Moment behind the restore
+        // point / already taken, or an out-of-scope fault it won't service) is NOT
+        // a machine failure — it is a discarded mutant, exactly as a real explorer
+        // discards a rejected proposal. Skip the branch (no cells, never a find)
+        // and keep the campaign running; only a genuine transport/backend death
+        // (any OTHER `MachineError`) still aborts via `?`, so real failures and
+        // determinism divergences are never masked (task-69 M2 fix A). Fix B's
+        // small local exploit kernel keeps the parent's fault in-range, so a skip
+        // here is now the rare boundary escapee rather than every insert-mutation.
+        let staged = machine
+            .branch(base, &env)
+            .and_then(|()| machine.run(&until, None));
+        let stop = match staged {
+            Ok(stop) => stop,
+            Err(MachineError::Inadmissible(why)) => {
+                if std::env::var_os("BENCH_DIAG").is_some() {
+                    eprintln!(
+                        "[bench-diag] branch {branch} {config:?} seed={} SKIP inadmissible proposal: {why}",
+                        cfg.campaign_seed
+                    );
+                }
+                // A skipped branch still consumes budget (a wasted proposal costs a
+                // branch, so measure-1's equal-budget comparison stays honest) but
+                // contributes no cells and can never be a find.
+                events.push(BranchEvent {
+                    branch,
+                    touched: Vec::new(),
+                });
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         // The finding run's state_hash, captured before any replay disturbs the
         // machine — a certified find must replay N/N identical to THIS.
         let run_hash = machine.hash()?;
@@ -714,7 +881,11 @@ pub fn run_bench_campaign<M: Machine>(
                 .iter()
                 .map(|p| match p.kind {
                     FaultKind::CorruptMemory { gpa, mask } => {
-                        format!("Corrupt@{} gpa={gpa:#x} bit={}", p.at, mask.trailing_zeros())
+                        format!(
+                            "Corrupt@{} gpa={gpa:#x} bit={}",
+                            p.at,
+                            mask.trailing_zeros()
+                        )
                     }
                     FaultKind::InjectInterrupt { vector } => {
                         format!("Interrupt@{} vec={vector:#x}", p.at)
@@ -848,6 +1019,10 @@ fn marker_attributed(trace: &RunTrace, spec: &BugSpec) -> bool {
 /// the ~4.8M-V-time reboot and diverge from a small-deadline `Deadline` finding.
 /// A flaky/non-deterministic run, or one whose marker does not reproduce, fails
 /// — never logged as a find. `n == 0` or an empty marker never certifies.
+// The certificate genuinely needs all of (base, env, marker, until, found_stop,
+// found_hash, n) to pin a replay to the FINDING run; bundling them into a struct
+// would only move the arity, not reduce the coupling.
+#[allow(clippy::too_many_arguments)]
 fn certify_replays<M: Machine>(
     machine: &mut M,
     base: SnapId,
@@ -883,12 +1058,6 @@ fn certify_replays<M: Machine>(
 mod tests {
     use super::*;
     use benchmark::manifest::{Benchmark, BugId};
-    use explorer::SpecEnvCodec;
-
-    fn codec() -> SpecEnvCodec {
-        SpecEnvCodec
-    }
-
     /// Each bug's toy machine crashes on its trigger and halts nominally, and the
     /// crash carries the per-bug id (attribution).
     #[test]
@@ -979,13 +1148,9 @@ mod tests {
         for config in [Configuration::Signal, Configuration::Baseline] {
             let cfg = BenchConfig::smoke(0xBEEF_0069);
             let mut m1 = BenchToyMachine::new(bug.clone());
-            let log1 = run_bench_campaign(&mut m1, &codec(), &bug, &cfg, config)
-                .unwrap()
-                .log;
+            let log1 = run_bench_campaign(&mut m1, &bug, &cfg, config).unwrap().log;
             let mut m2 = BenchToyMachine::new(bug.clone());
-            let log2 = run_bench_campaign(&mut m2, &codec(), &bug, &cfg, config)
-                .unwrap()
-                .log;
+            let log2 = run_bench_campaign(&mut m2, &bug, &cfg, config).unwrap().log;
             assert_eq!(log1, log2, "{config:?} must be deterministic-twice");
             assert!(!log1.finds.is_empty(), "{config:?} should find bug 1");
         }
@@ -1002,9 +1167,7 @@ mod tests {
         let cfg = BenchConfig::smoke(0x0033_1D69);
         for config in [Configuration::Signal, Configuration::Baseline] {
             let mut m = BenchToyMachine::new(bug.clone());
-            let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, config)
-                .unwrap()
-                .log;
+            let log = run_bench_campaign(&mut m, &bug, &cfg, config).unwrap().log;
             assert!(
                 !log.finds.is_empty(),
                 "{config:?} must find the rare-entropy bug by seed search"
@@ -1021,7 +1184,7 @@ mod tests {
         let bug = bench.get(BugId(1)).unwrap().clone();
         let cfg = BenchConfig::smoke(0xBEEF_0069);
         let mut m = BenchToyMachine::new(bug.clone());
-        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline)
+        let log = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Baseline)
             .unwrap()
             .log;
         let find = log.finds.first().expect("bug 1 found");
@@ -1103,12 +1266,106 @@ mod tests {
             max_branches: 8,
             ..BenchConfig::smoke(1)
         };
-        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline)
+        let log = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Baseline)
             .unwrap()
             .log;
         assert!(
             log.finds.is_empty(),
             "an unmarked crash must not be certified as a find"
+        );
+    }
+
+    /// Fix A (task-69 M2): an **inadmissible fault PROPOSAL** — the backend
+    /// staged the env cleanly but refuses to apply the fault (out-of-range gpa,
+    /// Moment behind/at-taken, out-of-scope fault) — is a *discarded mutant*, not
+    /// a machine failure: the campaign SKIPS that branch (records it with no
+    /// cells, never a find) and runs to completion. A genuine `Transport` death
+    /// is the opposite — it still aborts loudly, so a real backend failure or a
+    /// determinism divergence is NEVER masked by the skip.
+    #[test]
+    fn inadmissible_proposal_is_skipped_but_transport_still_aborts() {
+        /// Seals fine (snapshot works), but every `branch` returns `err`.
+        struct RejectBranchMachine {
+            current: Environment,
+            snaps: std::collections::BTreeMap<u64, Environment>,
+            next: u64,
+            err: MachineError,
+        }
+        impl Machine for RejectBranchMachine {
+            fn branch(&mut self, _s: SnapId, _e: &Environment) -> Result<(), MachineError> {
+                Err(self.err.clone())
+            }
+            fn replay(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.current = self.snaps[&s.0].clone();
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                _u: &StopConditions,
+                _r: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                // Never reached — branch fails first.
+                Ok(StopReason::Quiescent {
+                    vtime: VTime(BASE_VTIME + 1),
+                })
+            }
+            fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+                let id = self.next;
+                self.next += 1;
+                self.snaps.insert(id, self.current.clone());
+                Ok(SnapId(id))
+            }
+            fn drop_snap(&mut self, s: SnapId) -> Result<(), MachineError> {
+                self.snaps.remove(&s.0);
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(self.current.clone())
+            }
+        }
+        let bench = Benchmark::wave5();
+        let bug = bench.get(BugId(1)).unwrap().clone();
+        let cfg = BenchConfig {
+            max_branches: 8,
+            ..BenchConfig::smoke(1)
+        };
+        let mk = |err| RejectBranchMachine {
+            current: mint_scenario_env(0, &bug, 0),
+            snaps: std::collections::BTreeMap::new(),
+            next: 1,
+            err,
+        };
+
+        // Inadmissible on every branch: run to completion, every branch skipped.
+        let mut skip = mk(MachineError::Inadmissible("gpa out of range (test)".into()));
+        let log = run_bench_campaign(&mut skip, &bug, &cfg, Configuration::Baseline)
+            .expect("an inadmissible proposal must never abort the campaign")
+            .log;
+        assert!(log.finds.is_empty(), "a skipped branch can never be a find");
+        assert_eq!(
+            log.events.len(),
+            cfg.max_branches as usize,
+            "a skipped branch still consumes budget (recorded, so measure-1 stays honest)"
+        );
+        assert!(
+            log.events.iter().all(|e| e.touched.is_empty()),
+            "a skipped branch contributes no cells"
+        );
+
+        // A real transport death still aborts — never swallowed as a skip.
+        let mut die = mk(MachineError::Transport("socket torn (test)".into()));
+        assert!(
+            matches!(
+                run_bench_campaign(&mut die, &bug, &cfg, Configuration::Baseline),
+                Err(MachineError::Transport(_))
+            ),
+            "a genuine backend failure must abort, not be masked as an inadmissible skip"
         );
     }
 
@@ -1186,13 +1443,17 @@ mod tests {
             max_branches: 1,
             ..BenchConfig::smoke(1)
         };
-        let out = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline).unwrap();
+        let out = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Baseline).unwrap();
         assert_eq!(
             out.log.finds.len(),
             1,
             "a marker-bearing Deadline stop must certify as a find (terminal-agnostic)"
         );
-        assert_eq!(out.certs.len(), 1, "the find emits a determinism certificate");
+        assert_eq!(
+            out.certs.len(),
+            1,
+            "the find emits a determinism certificate"
+        );
     }
 
     /// A crash whose replays agree with EACH OTHER but differ from the FINDING
@@ -1271,7 +1532,7 @@ mod tests {
             max_branches: 1,
             ..BenchConfig::smoke(1)
         };
-        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Baseline)
+        let log = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Baseline)
             .unwrap()
             .log;
         assert!(
@@ -1401,7 +1662,7 @@ mod tests {
         let bug = bench.get(BugId(1)).unwrap().clone();
         let cfg = BenchConfig::smoke(0x1234);
         let mut m = BenchToyMachine::new(bug.clone());
-        let log = run_bench_campaign(&mut m, &codec(), &bug, &cfg, Configuration::Signal)
+        let log = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Signal)
             .unwrap()
             .log;
         let distinct: BTreeSet<u64> = log
