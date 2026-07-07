@@ -378,3 +378,81 @@ above, items 2 & 3):**
    seeded jitter of the parent's fault). Record cell counts + the zero-cell scope statement.
    Rule GO/NO-GO honestly (GO = cell-novelty correlates with bug progress on ≥2/3 bugs +
    signal median not worse than baseline on any bug; else NO-GO → iterate task-67 CellFn).
+
+---
+
+## 2026-07-07 (fresh session, BUGS 2 & 3 PHASE) — guest prep DONE + images BUILT; calibration gated
+
+**CODE DONE + committed+pushed (fd6dc2f):**
+- `order-super.c` / `uuid-super.c`: added the SAME bug-agnostic operational logging idiom
+  `campaign-super.c` has (lifecycle phase / backpressure / checkpoint), driven by the NORMAL
+  work counter (never the trigger). In order-super it sits at the loop BOTTOM, OUTSIDE the
+  `[sw_before,sw_after]` ctxsw window (console writes are voluntary yields — `ru_nvcsw` — so they
+  can't forge the involuntary `ru_nivcsw` the trigger keys on). `uuid-super` draws entropy ONCE
+  post-READY (model match — loop adds NO RDRAND), crashes early on a prefix match (marker before
+  the small deadline), else runs the operational loop to the deadline (feeds the signal on
+  non-firing branches). Fairness: identical logging across bugs, NOT enriched per bug.
+- `build-order-image.sh`/`build-uuid-image.sh` + `order-init.sh`/`uuid-init.sh`: verbatim clones
+  of the bug-1 build/init (one determinism closure), swapping supervisor/init/ext4-UUID
+  (deadbeef…62/…63)/output/markers (ORDER_READY/UUID_READY). **Init HARDENING:** the /init crash
+  echo is marker-substring-free (`ORDER_ABORT_TERMINAL`/`UUID_ABORT_TERMINAL`, not `*_BUG_TERMINAL`)
+  so `marker_attributed` is satisfied ONLY by the super's real marker (bug 1's echo carries its
+  marker but is shielded by the small-deadline stop landing before /init runs — this is strictly
+  safer).
+- `manifest.rs` + `calibration.json`: bug-3 `crash_kind` Panic→Shutdown (real box terminal =
+  deref→SIGSEGV→/init reboot→Crash{Shutdown}; manifest = attribution ground truth; round-7 P2
+  principle already applied to bug 2). crash_kind is TOY-PATH ONLY (box cert is marker-based /
+  terminal-agnostic), so NO box behaviour changes.
+- Portable gates green: benchmark 29/29, conductor benchcampaign 12/12.
+
+**IMAGES BUILT on the box (2026-07-07):** `~/harmony-t69m2/guest/build/initramfs-order.cpio.gz` +
+`initramfs-uuid.cpio.gz` (~38M each), built with `taskset -c 4,12` (OFF the campaign cores).
+order-super/uuid-super compiled clean. The 6 guest/linux files were scp'd to the box worktree
+(overwriting the pre-logging order/uuid sources — campaign doesn't use them). Postgres debs +
+busybox tarball already cached in `guest/dl/`.
+
+**ORCHESTRATORS created (`campaign-data/run-bug2-campaign.sh`, `run-bug3-campaign.sh`):** clones of
+run-bug1-campaign.sh swapping `--bug`/`--initramfs`/`--ready-marker`/OUT/names; DEADLINE=50000
+MAXB=512 RN=25 (same defaults — confirm/adjust after calibration). They run 3-wide AFTER bug-1
+frees {1,2,3}. CAL still points at `bug1/calibration.json` (holds all 3 bugs).
+
+**CALIBRATION BLOCKER + FOREMAN RULING (2026-07-07):** box-window pool is exactly `CORES=(2 1 3)`
+— all held by the bug-1 campaign (~15-18h). The classifier DENIED editing `/root/box-window.sh`
+to add core 4 (shared-infra guardrail; box-window UNTOUCHED, verified). **Foreman ruled: modified
+option 2 — calibrate on core 4 UNTRACKED (no box-window lease), foreman-coordinated:**
+  1. ✅ Verified (BOX-PINNING.md): core 4 = threads {4,12}, sibling cpu12; campaign cores {1,2,3}
+     = siblings {9,10,11}; cpu12 ∉ campaign siblings ⇒ core 4 is a distinct physical core, sibling
+     not shared with the campaign. Pin calibration to `taskset -c 4` (leave cpu12 idle). cpu4/12
+     carry only floating system daemons, no pinned determinism workload.
+  2. ⏳ SEQUENCING: task-80 (agent-inspection-verbs) runs a SHORT core-4 live gate FIRST. **DO NOT
+     start core-4 calibration until the foreman's next message confirms task-80's gate is done.**
+  3. SAFETY (untracked ⇒ manual discipline): FOREGROUND runs; after EVERY run verify the VM exited
+     + `kvm_intel` refcount returns to baseline (currently **9**); NEVER rmmod/insmod (use the
+     already-loaded patched module — never transition it); never touch cores {1,2,3}.
+
+**CALIBRATION APPROACH + RISKS (once core 4 is cleared):**
+- **Bug 2 (order) — the risky one.** Mechanism: injected `InjectInterrupt{vector}` → guest-kernel
+  RESCHEDULE → involuntary ctxsw inside order-super's non-atomic window → ORDER_BUG. UNVERIFIED
+  whether vector 0x81 (or the mint's spread {0x81^0..15}) actually causes a reschedule on this
+  kernel. FIRST run a WIDE-window diagnostic (`BENCH_DIAG=1`, widen the bug-2 window to ~[1004,1200]
+  in a scratch calibration.json, ~64 branches, small replay-n) to confirm ANY vector/offset fires +
+  marker attributes + certifies. If NONE fire → try a known reschedule vector (RESCHEDULE_VECTOR
+  0xfd / LOCAL_TIMER 0xec) via the manifest vector; if still nothing → CHECKPOINT + ESCALATE (the
+  InjectInterrupt→reschedule mechanism doesn't reach userspace preemption on this kernel — do NOT
+  fake it). Once firing, narrow the window so naïve TTF ≈ 256 and confirm the marker still lands
+  before deadline 50000.
+- **Bug 3 (uuid) — simpler.** Run ~512 branches (`BENCH_DIAG=1`), confirm SOME branch fires
+  (UUID_BUG) at ~1/256 + certifies 25/25 (RDRAND intercept is deterministic per seed ⇒ replays
+  reproduce). Model agreement is a toy-path concern (already tested); the box only needs fire+cert.
+  If RDRAND isn't intercepted (draw host-random / varies across replays) → cert fails → ESCALATE.
+- **Gate-2 validity (MANDATORY, foreman condition 2):** each bug — ONE large-deadline run
+  (~8_000_000) proving the marker branch reaches a REAL `Crash` + certifies 25/25, BEFORE its
+  suite. bug 1 ✅ already; bugs 2/3 pending core-4 clearance.
+
+**Condition-4 answer (why bug-1 8h→~15-18h):** the ~8h estimate used the SOLO per-branch cost
+(~3.8s at deadline 50000). Under 3-wide co-tenancy, 3 KVM guests contend for the shared memory
+controller / LLC on the single-socket i9-9900K, inflating per-branch WALL time — the cold first
+wave ran ~83 min/campaign (~2.5×; 512 branches × ~9.7s), warmer later waves faster. Each campaign
+runs the FULL 512-branch budget by design (species curve — does NOT stop at first find). Net ETA
+~15-18h. Wall-clock only — determinism (state_hash) is co-tenancy-independent (V-time = retired
+branches), which phase-2's solo-vs-co-tenant spot-check verifies.
