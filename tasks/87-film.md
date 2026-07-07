@@ -36,10 +36,11 @@ No dependency on `explorer`.
 
 Pure-logic, macOS + Linux, laptop-gated: all tests run against an **in-crate mock** (the
 task-82 loopback pattern — a scripted server speaking the real codec, serving synthetic
-billboard bytes) plus **hand-built synthetic PPU fixtures** (tile patterns, palettes, sprite
-tables constructed in test code; golden frames pinned by blake3 hash). **No ROM, no emulator,
-no core anywhere in this crate or its tests.** **Box gate:** one live scenario, handed to the
-foreman (pinned per `docs/BOX-PINNING.md`, box-safety per task 86's section).
+billboard bytes) plus **hand-built synthetic PPU fixtures** (nametables, pattern tables,
+palettes, sprite tables constructed in test code; golden frames pinned by blake3 hash). **No
+ROM, no emulator, no core anywhere in this crate or its tests.** **Box gate:** one live
+scenario, handed to the foreman (pinned per `docs/BOX-PINNING.md`, box-safety per task 86's
+section).
 
 ## What to build
 
@@ -61,19 +62,25 @@ decode, `run(until next frame Moment)`. One materialization per clip, linear fro
 dropped session, re-materialize at the failed frame and continue. Reads are host-side and
 hash-neutral by construction — the projector never sends anything but observation verbs.
 
-### 3. `FrameDecoder` — the seam — and `SmwDecoder` — the v1
+### 3. `FrameDecoder` — the seam — and `SmbDecoder` — the v1
 
 `FrameDecoder`: billboard bytes → an RGB frame (integer-only math; rule 4 — floats never touch
-frame state; goldens are byte-exact). `SmwDecoder` v1 composites SNES **Mode 1** from the
-billboard: BG1/BG2 (4bpp) + BG3 (2bpp) tilemaps and tiles from VRAM, palettes from CGRAM,
-sprites from OAM, scroll/mode/layer-enable from SMW's WRAM register mirrors. 256×224.
+frame state; goldens are byte-exact). `SmbDecoder` v1 composites the NES PPU from the
+billboard: the single background layer from nametables + attribute tables, tiles from the
+pattern tables (2bpp), colors through palette RAM and a **fixed 64-entry NES master-palette
+RGB table committed as an integer constant** (the NES emits composite-video chroma, not RGB;
+a canonical lookup is standard practice), sprites from OAM (front/behind-background priority,
+8×8 and 8×16), scroll from SMB's WRAM mirrors (`HorizontalScroll`, `Mirror_PPU_CTRL_REG1` —
+in the billboard's RAM region). 256×240 output (overscan cropping is the viewer's business,
+not the decoder's).
 
 **The fidelity bar is "recognizable gameplay," not bit-parity with a reference emulator** —
 this is reconstruction from end-of-frame state, and the approximations are documented, not
-hidden: per-scanline effects (HDMA color gradients) render flat; color math, mosaic, and
-windowing are v1-out; **Mode 7 scenes** (title screen, some boss rooms) emit a labeled
-placeholder frame rather than garbage. Emulator debuggers' tile/map/sprite viewers are the
-prior art for exactly this kind of state-driven compositing.
+hidden. One raster special case is sanctioned: SMB statically splits the screen at the status
+bar (sprite-0 hit), so the decoder renders the status-bar rows with zero scroll and the
+playfield with the mirrored scroll — without it every frame's HUD would smear. All other
+mid-frame raster tricks are v1-out and render from end-of-frame state. Emulator debuggers'
+tile/map/sprite viewers are the prior art for exactly this kind of state-driven compositing.
 
 ### 4. Output — zero new dependencies
 
@@ -89,10 +96,11 @@ Naming: `film` enters `docs/GLOSSARY.md` (Adopted vocabulary) in this task's imp
 
 1. **Portable (macOS + Linux):** `FilmPlan` derivation proptested (≥256) over synthetic traces
    (frame clocks with gaps, chunked windows, stride edge cases); header-verification rejects
-   every corruption class (bad magic, version skew, frame-counter mismatch); `SmwDecoder`
-   golden-frame tests over the synthetic PPU fixtures (BG layers, sprite priority, palette,
-   scroll); the projector driven end-to-end against the mock server (a scripted 3-frame clip
-   round-trips to 3 correct frames). Standard suite green.
+   every corruption class (bad magic, version skew, frame-counter mismatch); `SmbDecoder`
+   golden-frame tests over the synthetic PPU fixtures (background + attribute colors, sprite
+   priority, palette lookup, scroll including the status-bar split); the projector driven
+   end-to-end against the mock server (a scripted 3-frame clip round-trips to 3 correct
+   frames). Standard suite green.
 2. **Box gate (one, thin, foreman-handled):** film a ≥300-frame clip from task 86's deep
    reproducer end-to-end on real KVM. Assert (a) the frames decode and a contact sheet is
    produced (committed as the report artifact), and (b) **hash-neutrality**: the filmed
@@ -104,9 +112,13 @@ Naming: `film` enters `docs/GLOSSARY.md` (Adopted vocabulary) in this task's imp
 - **Live/paced viewing, streaming, or any viewer UI** — a later tier; the natural embedding is
   task 83's findings page (a clip beside a `MomentRef`), not built here.
 - **Video encoding in-repo** — PPM out, ffmpeg outside.
-- **PPU completeness** — no Mode 7, color math, mosaic, windows; the decoder seam exists so a
-  later task can raise fidelity without touching the projector.
-- **Other consoles/workloads** — `FrameDecoder` is the seam; `SmwDecoder` is the only impl.
+- **PPU completeness** — no mid-frame raster effects beyond the sanctioned status-bar split,
+  no emphasis bits/grayscale edge cases beyond what SMB uses; the decoder seam exists so a
+  later task can raise fidelity (or add the SNES Mode-1 decoder for Super Mario World)
+  without touching the projector.
+- **Other consoles/workloads** — `FrameDecoder` is the seam; `SmbDecoder` is the only impl.
+  Metroid (same console) reuses it as-is; Super Mario World (SNES) is a new impl, its own
+  task.
 - **Any guest-side change** — the billboard is task 86's surface; if its layout needs
   amending, that is a task-86 follow-up ruled by the integrator, not a patch here.
 - **REPL/transcript work** — task 82 owns the interactive surface; film is a batch query.
