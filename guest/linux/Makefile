@@ -14,10 +14,12 @@ image: kernel initramfs
 
 # Task 81 exec-capable initramfs: static busybox + an interactive root shell on
 # ttyS0 (`exec-init.sh`), so the `exec` improvisation channel has a shell to inject
-# commands into (reuses the kernel built by `make kernel`). Produces
-# guest/build/initramfs-exec.cpio.gz — used by the improvisation box gate with
-# EXEC_EXPECT_OUTPUT=1. Off-record test scaffolding (see exec-init.sh).
-exec-image:
+# commands into. Produces guest/build/initramfs-exec.cpio.gz — used by the
+# improvisation box gate (strict output mode is forced on this image). Off-record
+# test scaffolding (see exec-init.sh). Depends on `kernel` (like the composite
+# `image` target) so the documented single-command build works from a clean
+# checkout — the box gate needs both bzImage and this initramfs.
+exec-image: kernel
 	./build-exec-image.sh
 
 # Task 37 bare-Postgres workload initramfs (root-only; reuses the kernel built by
