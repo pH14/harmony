@@ -214,9 +214,15 @@ extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
             if data.is_null() {
                 return false;
             }
+            // Answer **false**: film re-`unserialize`s and renders one fresh frame
+            // per capture, so the core must hand real pixels every `retro_run` —
+            // a `video_refresh(NULL, …)` dupe frame would leave `CTX.frame` empty
+            // (`render()` clears it before each run) and spuriously fail a
+            // legitimate frame. A screenshot frontend has nothing to gain from
+            // duping.
             // SAFETY: for GET_CAN_DUPE libretro guarantees `data` points to a
             // valid `bool`; we write our capability into it.
-            unsafe { *(data as *mut bool) = true };
+            unsafe { *(data as *mut bool) = false };
             true
         }
         _ => false,
@@ -224,7 +230,9 @@ extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
 }
 
 /// The video callback: convert the core's frame to RGB24 and stash it. A null
-/// `data` is a dupe frame — keep the previous capture.
+/// `data` is a dupe frame; film advertises `can_dupe = false` (see `env_cb`), so
+/// a well-behaved core never sends one — if one arrives anyway it is dropped, and
+/// `render()` then reports a loud "no frame" error rather than fabricating one.
 extern "C" fn video_cb(data: *const c_void, width: c_uint, height: c_uint, pitch: usize) {
     if data.is_null() {
         return;

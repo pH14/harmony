@@ -75,6 +75,16 @@ fn validate_plan(plan: &FilmPlan) -> Result<(), FilmError> {
             reason: "billboard window is smaller than a header",
         });
     }
+    if plan
+        .billboard
+        .gpa
+        .checked_add(u64::from(plan.billboard.len))
+        .is_none()
+    {
+        return Err(FilmError::InvalidPlan {
+            reason: "billboard window address range overflows",
+        });
+    }
     Ok(())
 }
 

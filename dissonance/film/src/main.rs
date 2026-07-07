@@ -251,33 +251,38 @@ fn render_bundle(
     Ok(())
 }
 
-/// Pick a renderer. `--core-replay` uses the real core when the feature is
-/// compiled in and the env vars are set; it SKIPs loudly to the stamp renderer
-/// otherwise, so a missing core/ROM is never a silent success.
+/// Pick a renderer. Without `--core-replay` the stamp renderer is the legitimate
+/// default. **With** an explicit `--core-replay`, anything that prevents real
+/// core rendering — the binary built without the `core-replay` feature, or the
+/// core/ROM env vars unset — is a hard **error** (non-zero exit), never a silent
+/// fall-back to fake frames. A box gate that asked for the core must not pass
+/// vacuously on stamped pixels with plausible-but-wrong committed hashes (the
+/// gate-integrity rule).
 fn pick_renderer(core_replay: bool) -> Result<Box<dyn FrameRenderer>, String> {
-    if core_replay {
-        #[cfg(feature = "core-replay")]
-        {
-            match film::CoreReplay::from_env() {
-                Ok(Some(core)) => return Ok(Box::new(core)),
-                Ok(None) => {
-                    eprintln!(
-                        "SKIP: --core-replay requested but HARMONY_SMB_CORE/HARMONY_SMB_ROM unset; \
-                         using the stamp renderer"
-                    );
-                }
-                Err(e) => return Err(format!("core load failed: {e}")),
-            }
-        }
-        #[cfg(not(feature = "core-replay"))]
-        {
-            eprintln!(
-                "SKIP: --core-replay requested but this binary was built without the `core-replay` \
-                 feature; using the stamp renderer"
-            );
+    if !core_replay {
+        return Ok(Box::new(StampRenderer::default()));
+    }
+    #[cfg(feature = "core-replay")]
+    {
+        match film::CoreReplay::from_env() {
+            Ok(Some(core)) => Ok(Box::new(core)),
+            Ok(None) => Err(
+                "--core-replay requires HARMONY_SMB_CORE and HARMONY_SMB_ROM to be \
+                             set (the pinned core .so + the ROM dump); refusing to render fake \
+                             frames under an explicit --core-replay"
+                    .to_string(),
+            ),
+            Err(e) => Err(format!("core load failed: {e}")),
         }
     }
-    Ok(Box::new(StampRenderer::default()))
+    #[cfg(not(feature = "core-replay"))]
+    {
+        Err(
+            "--core-replay requires a binary built with the `core-replay` feature; refusing to \
+             render fake frames under an explicit --core-replay"
+                .to_string(),
+        )
+    }
 }
 
 /// The task-80 per-read cap the client uses (re-exposed here so the CLI default
@@ -310,4 +315,26 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(value).map_err(|e| format!("serialize: {e}"))?;
     fs::write(path, json).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_core_replay_never_falls_back_to_fake_frames() {
+        // Absent the flag, the stamp renderer is the legitimate default.
+        assert!(pick_renderer(false).is_ok());
+        // With an explicit --core-replay that cannot be honored (no feature, or
+        // no core/ROM env), the result must be an Err (non-zero exit) — never a
+        // silent StampRenderer producing plausible-but-wrong committed hashes. On
+        // a box with the core/ROM set this path would legitimately succeed, so
+        // guard on the env to keep the assertion deterministic everywhere else.
+        if cfg!(not(feature = "core-replay"))
+            || std::env::var("HARMONY_SMB_CORE").is_err()
+            || std::env::var("HARMONY_SMB_ROM").is_err()
+        {
+            assert!(pick_renderer(true).is_err());
+        }
+    }
 }

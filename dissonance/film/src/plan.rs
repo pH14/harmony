@@ -54,15 +54,20 @@ impl BillboardWindow {
     /// Chunks are contiguous, in ascending `gpa` order, and reassemble to exactly
     /// `len` bytes.
     ///
-    /// A `read_cap` of zero yields **no chunks** (never a non-terminating loop):
-    /// [`FilmPlan::derive`] rejects a zero cap, but a `FilmPlan` reached any other
+    /// A `read_cap` of zero, or a window whose `gpa + len` overflows the address
+    /// space, yields **no chunks** — never a non-terminating loop or a panicking
+    /// add. [`FilmPlan::derive`] rejects both, but a `FilmPlan` reached any other
     /// way — deserialized from untrusted JSON, or built by hand (every field is
-    /// `pub`) — must not be able to hang a reader on `read_cap == 0` (rule 4:
-    /// library code never loops on untrusted input). [`crate::film`] rejects such
-    /// a plan up front, so this empty list is a belt-and-braces guard, not a
-    /// silent success.
+    /// `pub`) — must not be able to hang or panic a reader (rule 4: library code
+    /// never loops or panics on untrusted input). [`crate::film`] rejects such a
+    /// plan up front, so this empty list is a belt-and-braces guard, not a silent
+    /// success. When non-empty, chunks are contiguous, in ascending `gpa` order,
+    /// and reassemble to exactly `len` bytes.
     fn chunks(&self, read_cap: u32) -> Vec<ReadChunk> {
-        if read_cap == 0 {
+        // Total on any untrusted `(gpa, len, read_cap)`: a zero cap cannot chunk,
+        // and an overflowing window has no valid last-chunk `gpa`, so the inner
+        // `gpa + done` below (where `done < len`) can never overflow.
+        if read_cap == 0 || self.gpa.checked_add(u64::from(self.len)).is_none() {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -453,6 +458,26 @@ mod tests {
         let plan = FilmPlan {
             billboard: window(),
             read_cap: 0,
+            frames: vec![FrameShot {
+                frame: 0,
+                moment: 0,
+            }],
+            clip: ClipSelect::All,
+            stride: 1,
+        };
+        assert!(plan.read_chunks().is_empty());
+    }
+
+    #[test]
+    fn chunks_of_an_overflowing_window_are_empty_not_a_panic() {
+        // A hand-built/deserialized plan whose `gpa + len` overflows must not
+        // panic the chunker on the `gpa + done` add (rule 4).
+        let plan = FilmPlan {
+            billboard: BillboardWindow {
+                gpa: u64::MAX - 10,
+                len: 1024,
+            },
+            read_cap: 1 << 16,
             frames: vec![FrameShot {
                 frame: 0,
                 moment: 0,

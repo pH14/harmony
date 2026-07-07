@@ -3,7 +3,7 @@
 //! clocks with gaps, chunked windows, and stride edge cases. Pure logic — no
 //! ROM, no core, no session.
 
-use film::{BillboardWindow, ClipSelect, FilmPlan, FrameTick, HEADER_LEN, PlanError};
+use film::{BillboardWindow, ClipSelect, FilmPlan, FrameShot, FrameTick, HEADER_LEN, PlanError};
 use proptest::prelude::*;
 
 /// A strictly-increasing frame clock: `1..=64` ticks whose `frame` and `moment`
@@ -35,8 +35,21 @@ fn window() -> impl Strategy<Value = BillboardWindow> {
 /// slower interpreted) so the unsafe-free crate's Miri run stays quick.
 const CASES: u32 = if cfg!(miri) { 16 } else { 256 };
 
+/// The proptest config. Under Miri, disable file **failure-persistence**: it
+/// writes a regressions file, which needs `getcwd` — unavailable under Miri's
+/// default isolation, so leaving it on makes `cargo +nightly miri test -p film`
+/// fail on the first case (a red gate). Off Miri it stays on (a proptest
+/// failure persists its seed for replay).
+fn config() -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(CASES);
+    if cfg!(miri) {
+        cfg.failure_persistence = None;
+    }
+    cfg
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CASES))]
+    #![proptest_config(config())]
 
     /// `All` + stride 1 films exactly the clock, in order, and the read chunks
     /// reassemble to the whole window (each ≤ the cap, contiguous, ascending).
@@ -139,5 +152,29 @@ proptest! {
             _ => ClipSelect::FrameRange { first: 0, last: u32::MAX },
         };
         let _ = FilmPlan::derive(&ticks, BillboardWindow { gpa, len }, clip, stride, cap);
+    }
+
+    /// `read_chunks()` is total on a *hand-built* plan (bypassing `derive`), for
+    /// any `(gpa, len, read_cap)` — in particular a window whose `gpa + len`
+    /// overflows, or a zero cap, must yield no chunks rather than panic/hang
+    /// (rule 4). When non-empty, the chunks reassemble to `len` and stay ≤ cap.
+    #[test]
+    fn read_chunks_is_total_on_an_arbitrary_plan(
+        gpa in any::<u64>(),
+        len in any::<u32>(),
+        read_cap in any::<u32>(),
+    ) {
+        let plan = FilmPlan {
+            billboard: BillboardWindow { gpa, len },
+            read_cap,
+            frames: vec![FrameShot { frame: 0, moment: 0 }],
+            clip: ClipSelect::All,
+            stride: 1,
+        };
+        let chunks = plan.read_chunks();
+        if !chunks.is_empty() {
+            prop_assert_eq!(chunks.iter().map(|c| c.len as u64).sum::<u64>(), u64::from(len));
+            prop_assert!(chunks.iter().all(|c| c.len <= read_cap));
+        }
     }
 }

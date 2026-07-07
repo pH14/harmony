@@ -28,14 +28,17 @@ All green on macOS (this worktree):
   failures — clippy exits 0)
 - `cargo fmt -p film -- --check` ✓
 - `cargo deny check` ✓
-- `cargo +nightly-2026-06-16 miri test -p film` (default features) ✓ — all test
-  binaries pass under Miri (exit 0; lib unit + `plan_proptest` + `projector_mock`
-  + `artifact_roundtrip`). The default build has **zero `unsafe`**, so Miri
-  validates the pure logic; proptest cases drop to 16 under `cfg!(miri)`. The one
-  test that *executes* `blake3` carries `#[cfg_attr(miri, ignore)]` because
-  blake3's SIMD/FFI path is not Miri-interpretable on this platform — an
-  implementation detail of the hash, not of film's logic; everything else runs
-  under Miri.
+- `cargo +nightly-2026-06-16 miri test -p film` ✓ — run with **default Miri
+  isolation on** (no `-Zmiri-disable-isolation`), matching the reviewer/CI
+  invocation. The default build has **zero `unsafe`**, so Miri validates the pure
+  logic; proptest cases drop to 16 under `cfg!(miri)`, and the proptest config
+  sets `failure_persistence = None` under `cfg!(miri)` (its default regressions
+  file needs `getcwd`, which Miri isolation blocks — leaving it on made
+  `plan_proptest` red, the round-1 finding). The one test that *executes*
+  `blake3` carries `#[cfg_attr(miri, ignore)]` because blake3's SIMD/FFI path is
+  not Miri-interpretable on aarch64 — an implementation detail of the hash, not
+  of film's logic; everything else (lib unit + `plan_proptest` + `projector_mock`
+  + `artifact_roundtrip`) runs and passes under Miri.
 
 The `film demo` binary was driven end-to-end and is byte-for-byte deterministic
 across runs (same contact-sheet blake3 on repeat).
@@ -55,7 +58,35 @@ short-landing → `ShortRun` (`with_stop_short_at`), chunked-read reassembly
 through the projector, hash-neutrality of billboard reads, a 300-frame clip
 (box-gate shape), plan/bundle JSON round-trips, and invalid-plan rejection.
 
-## Adversarial-review hardening (applied)
+## Round-1 PR review fixes (applied)
+
+The foreman's round-1 read + blind cross-model pass raised four [blocking]
+findings, all fixed:
+
+1. **`--core-replay` must not fall back to fake frames** (gate-integrity). An
+   explicit `--core-replay` that cannot be honored (binary built without the
+   `core-replay` feature, or `HARMONY_SMB_CORE`/`HARMONY_SMB_ROM` unset) is now a
+   hard **error** (non-zero exit), never a silent `StampRenderer` producing
+   plausible-but-wrong committed hashes. The stamp renderer stays the default only
+   when the flag is absent. Locked by a bin test.
+2. **Rule-4 gpa overflow.** `validate_plan` now `checked_add`-guards
+   `billboard.gpa + len` (`FilmError::InvalidPlan`), and `BillboardWindow::chunks`
+   is total on any untrusted window (an overflowing `gpa + len` yields no chunks,
+   like a zero cap) so `read_chunks()` never panics on the inner `gpa + done`.
+   Regression: a proptest that `read_chunks()` is total on an arbitrary hand-built
+   plan, plus unit/projector cases.
+3. **`GET_CAN_DUPE` answers `false`.** `render()` clears the captured frame before
+   each `retro_run`, so a legal dupe frame (`video_refresh(NULL, …)`) would become
+   a spurious "no frame" error. A screenshot frontend gains nothing from duping, so
+   the core is now obliged to hand real pixels every run.
+4. **Red Miri gate fixed.** `plan_proptest` failed under the *documented* plain
+   invocation (`cargo +nightly-2026-06-16 miri test -p film`, isolation on) with
+   `getcwd` unavailable — proptest's default file failure-persistence needs it.
+   Fixed by `failure_persistence = None` under `cfg!(miri)`; the IMPLEMENTATION
+   Miri claim is corrected to the plain invocation and re-verified (the earlier
+   green run had used `-Zmiri-disable-isolation`, which the doc didn't state).
+
+## Adversarial-review hardening (applied earlier, pre-PR)
 
 A cross-context review pass surfaced four findings, all addressed:
 

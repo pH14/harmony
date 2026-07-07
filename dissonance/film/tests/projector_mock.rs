@@ -226,24 +226,39 @@ fn a_short_landing_is_surfaced_as_a_hard_error() {
 
 #[test]
 fn film_rejects_an_invalid_plan() {
-    // A hand-built plan with a zero read cap is rejected up front — never a hang.
+    // Hand-built plans that bypass `derive` are re-validated up front — never a
+    // hang or a panic (rule 4): a zero read cap, and a window whose gpa+len
+    // overflows the address space.
     let scenario = BillboardScenario::new(0x10_0000, clock(1));
     let window = scenario.window();
-    let bad_plan = FilmPlan {
+    let frames = vec![film::FrameShot {
+        frame: 0,
+        moment: 1000,
+    }];
+    let zero_cap = FilmPlan {
         billboard: window,
         read_cap: 0,
-        frames: vec![film::FrameShot {
-            frame: 0,
-            moment: 1000,
-        }],
+        frames: frames.clone(),
         clip: ClipSelect::All,
         stride: 1,
     };
-    let mut session = Session::connect(MockBillboardServer::boot(scenario)).unwrap();
-    assert!(matches!(
-        project(&mut session, &reproducer(), &bad_plan).unwrap_err(),
-        FilmError::InvalidPlan { .. }
-    ));
+    let overflow = FilmPlan {
+        billboard: film::BillboardWindow {
+            gpa: u64::MAX - 4,
+            len: window.len,
+        },
+        read_cap: 1 << 16,
+        frames,
+        clip: ClipSelect::All,
+        stride: 1,
+    };
+    for bad_plan in [zero_cap, overflow] {
+        let mut session = Session::connect(MockBillboardServer::boot(scenario.clone())).unwrap();
+        assert!(matches!(
+            project(&mut session, &reproducer(), &bad_plan).unwrap_err(),
+            FilmError::InvalidPlan { .. }
+        ));
+    }
 }
 
 #[test]
