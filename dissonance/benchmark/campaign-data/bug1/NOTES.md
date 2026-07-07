@@ -602,3 +602,35 @@ modprobe kvm; modprobe kvm_intel`; verify **1396736** on a fresh ssh); (3) re-ru
 determinism spot-check cleanly (seeds 1/2/3 `--exclusive`, box now idle → no collision) and diff vs
 the co-tenant `finds.log` hashes; (4) smoke bug-2 (order interrupt-counter rework, commit 8bbc695
 WIP); (5) gate-2 validity for bugs 2/3; (6) bug-2/3 campaigns. All box VMs FOREGROUND from here.
+
+### 2026-07-07 — 8-bit bug-3 VALIDATED + a SECOND (timeout) orphan + REFINED box discipline
+
+**Bug-3 8-bit smoke PASSED:** 512 branches, deadline 50000, real 8-bit prefix → **3 fires**
+(~1/171, matches the designed ~1/256) + **1 certified find** (branch 52, state_hash
+5281f249…, marker + 25/25). The production bug-3 works. (This smoke was BACKGROUNDED and is
+what collided with phase-2 — see the incident above.)
+
+**SECOND orphan (the local 10-min cap):** the clean solo re-run was launched as ONE foreground
+`ssh 'bash -s'` doing 3 seeds. The **local Bash tool caps at 600 s** and SIGTERM'd the ssh at
+10 min; the remote `bash -s` reparented to init and kept running (orphaned), holding the
+`solo-recheck` lease + patched KVM. Also observed: that first solo seed was **very slow** (~12
+min, 100% CPU, only just sealed) — cold KVM after the reloads. I killed it by exact PIDs (never
+`pkill -f` — self-matches the wrapper argv; used `kill <pid>` + `pkill -x conductor`), rm'd the
+stale lease files, verified kvm_intel users==0, reverted to stock **1396736** (verified).
+
+**REFINED BOX DISCIPLINE (supersedes bare FOREGROUND-ONLY):**
+- A **live campaign** is the collision hazard. During one: FOREGROUND-only, and never start a
+  core-4 run that could outlive its step into a phase transition.
+- With **no live campaign**, the hazard is gone; then the rule is *don't orphan*. A foreground
+  ssh run > ~9 min gets killed by the local 600 s cap and orphans the remote (WORSE than
+  detached). So: runs that fit < ~9 min → foreground; longer runs → **monitored detached**
+  (`setsid` on the box, writes a DONE sentinel, self-releases + reverts) + a `run_in_background`
+  poller that re-invokes me on completion. Monitored + self-cleaning, never fire-and-forget.
+- Always revert to stock + verify 1396736 after a work block; kill by exact PID.
+Flagged to the foreman for confirmation.
+
+**Solo re-run RELAUNCHED (detached, monitored):** `~/solo-recheck.sh` (setsid), acquires
+`solo-rc --exclusive` (core 2), runs baseline seeds 1/2/3 (bug 1, 16 branches, deadline 50000,
+replay-n 25), compares each find hash to the co-tenant baseline, releases (reverts to stock),
+writes `~/t69m2-results/bug1/solo-recheck.result` + `DONE`. A poller waits for DONE. Result +
+solo==co-tenant verdict pending.
