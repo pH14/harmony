@@ -3737,9 +3737,15 @@ hard rule 1, per the spec): `dissonance/control-proto` (wire types + codec) and
 
 - **`read(gpa, len)`** → slice `Vmm::guest_memory()`. Two fail-loud guards, both
   before any copy: `len > READ_CAP` → `ControlError::ReadTooLarge` (checked
-  **first**, so an over-cap read at any address never sizes a buffer); `[gpa,
-  gpa+len)` past RAM (or a `gpa+len` that would overflow `u64`, computed in `u128`)
-  → `ControlError::ReadOutOfRange`. Never a truncated/zero-filled success.
+  **first**, before touching the VM — a pure request-validation error, like
+  `hash`'s unsupported scopes); `[gpa, gpa+len)` past RAM (or a `gpa+len` that would
+  overflow `u64`, computed in `u128`) → `ControlError::ReadOutOfRange`. Never a
+  truncated/zero-filled success. A **poisoned** server (`vmm == None`) is the
+  session-fatal `ServeError::Poisoned` every sibling verb returns — `read` guards
+  the RAM fetch with `ok_or(Poisoned)`, so the torn session is never masked as a
+  bogus `ReadOutOfRange { ram_len: 0 }` (PR #83 round-1 blocking fix; `regs`/`hash`
+  already conformed). `read` therefore returns the nested `Result<Result<Reply,
+  ControlError>, ServeError>` the other verbs use.
 - **`regs()`** → assemble the wire `RegsView` from the new **`Vmm::inspect_vcpu()`**
   (a best-effort, non-mutating vCPU read — the same state the hash folds in, via
   `current_vcpu()`; distinct from the fail-closed `save_vm_state` seal) plus
@@ -3778,7 +3784,10 @@ genesis.
   empty/edge read), `read_out_of_range_is_loud` (one-past-end + `u64` overflow),
   `read_oversized_len_is_loud` (cap checked before range),
   `regs_reports_the_versioned_view_at_the_current_moment`,
-  `observations_before_hello_are_unsupported`.
+  `observations_before_hello_are_unsupported`,
+  `read_and_regs_on_a_poisoned_server_are_session_fatal` (a `vmm == None` server
+  answers `read`/`regs` with the session-fatal `ServeError::Poisoned`, cross-checked
+  against `hash(Whole)` — PR #83 round-1).
 - `observations_do_not_perturb_hash_or_recorded_env` — a full inspection pass
   (regs + several reads incl. an out-of-range one) leaves `hash(Whole)` and
   `recorded_env()` unchanged.
@@ -3808,9 +3817,12 @@ full inspection pass at an intermediate Moment, once without — and asserts the
 `hash(Whole)` matches (gate 3). Every missing precondition is a loud panic, never a
 vacuous green. Type-checked against the real Linux API surface via
 `cargo check --target x86_64-unknown-linux-gnu` (the box gate compiles; a Mac
-per-crate gate cannot see `cfg(linux)` breakage). Run per `docs/BOX-PINNING.md`,
-CPU-pinned via a `box-window.sh` lease, KVM reverted to stock 1396736 + verified
-after.
+per-crate gate cannot see `cfg(linux)` breakage). The final on-box `cargo build`
+of the `cfg(linux)` half **rides the queued box-gate run** — the box's 3 leasable
+cores are all held by the M2 campaign, so no lease is takeable without touching it
+(PR #83 round-1: build-on-box confirmed to ride the box run). Run per
+`docs/BOX-PINNING.md`, CPU-pinned via a `box-window.sh` lease, KVM reverted to
+stock 1396736 + verified after.
 
 > **BOX GATE STATUS: PENDING** — the determinism box is contended (task-69 M2's
 > bug-1 campaign holds leased cores + the patched-KVM window until ~06:30 ET). Per

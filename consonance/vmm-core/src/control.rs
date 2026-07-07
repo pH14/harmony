@@ -445,7 +445,7 @@ impl<B: Backend> ControlServer<B> {
             // recorded into an `Environment` (the RESOLUTION.md search-surface
             // criterion: observation, not a move). Serviceable at any point (no
             // synchronization gate): a `regs` view is honest even at a terminal.
-            Request::Read { gpa, len } => Ok(self.read(*gpa, *len)),
+            Request::Read { gpa, len } => self.read(*gpa, *len),
             Request::Regs => {
                 let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                 Ok(Ok(Reply::Regs(regs_view(vmm))))
@@ -458,31 +458,43 @@ impl<B: Backend> ControlServer<B> {
     /// A pure observation: it borrows the guest image immutably and mutates nothing,
     /// so it cannot perturb the run or any hash.
     ///
-    /// Two range guards, both fail-loud, checked before any copy:
+    /// The outer `Result` keeps the two categories apart like every other verb: a
+    /// **poisoned** server (`vmm == None` after a prior fatal error) is the same
+    /// session-fatal [`ServeError::Poisoned`] `regs`/`hash`/`snapshot` return —
+    /// **not** a recoverable reply. Guarding the RAM fetch with `ok_or(Poisoned)`
+    /// (PR #83 round-1 blocking) is what makes that so: an empty-slice fallback would
+    /// have masked the torn session as a bogus `ReadOutOfRange { ram_len: 0 }`, a
+    /// recoverable error a client would retry against a VM that no longer exists.
+    ///
+    /// The recoverable range guards, both fail-loud, checked before any copy:
     /// - `len > `[`READ_CAP`] → [`ControlError::ReadTooLarge`], rejected **before**
-    ///   the slice is taken so an untrusted `len` can never force an over-large copy
-    ///   (conventions rule 4).
+    ///   the slice is taken (and before touching the VM — a pure request-validation
+    ///   error, like `hash`'s unsupported scopes) so an untrusted `len` can never
+    ///   force an over-large copy (conventions rule 4).
     /// - `[gpa, gpa+len)` past guest RAM (or a `gpa + len` overflow) →
     ///   [`ControlError::ReadOutOfRange`]. A short read would hand the caller bytes
     ///   it never asked for; the loud error makes the caller widen or re-address.
-    fn read(&self, gpa: u64, len: u32) -> Result<Reply, ControlError> {
+    #[allow(clippy::result_large_err)] // ServeError's size is irrelevant on this cold path
+    fn read(&self, gpa: u64, len: u32) -> Result<Result<Reply, ControlError>, ServeError> {
         if len > READ_CAP {
-            return Err(ControlError::ReadTooLarge { len, cap: READ_CAP });
+            return Ok(Err(ControlError::ReadTooLarge { len, cap: READ_CAP }));
         }
+        // Fetch the guest image; a `None` VM is a torn session, session-fatal like
+        // every sibling verb — never an empty-RAM fallback that fakes a range error.
         let ram = self
             .vmm
             .as_ref()
-            .map(|v| v.guest_memory())
-            .unwrap_or(&[][..]);
+            .ok_or(ServeError::Poisoned)?
+            .guest_memory();
         let ram_len = ram.len() as u64;
         // `gpa + len` in u128 so a near-u64::MAX gpa cannot wrap into a "valid" range.
         let end = u128::from(gpa) + u128::from(len);
         if end > u128::from(ram_len) {
-            return Err(ControlError::ReadOutOfRange { gpa, len, ram_len });
+            return Ok(Err(ControlError::ReadOutOfRange { gpa, len, ram_len }));
         }
         // In range: gpa and end both fit usize (end <= ram_len <= isize::MAX).
         let start = gpa as usize;
-        Ok(Reply::Bytes(ram[start..start + len as usize].to_vec()))
+        Ok(Ok(Reply::Bytes(ram[start..start + len as usize].to_vec())))
     }
 
     /// The session's **V-time synchronization** predicate (PR #51 round-7): `true`
@@ -1764,6 +1776,51 @@ mod tests {
             s.handle(&Request::Regs).unwrap(),
             Err(ControlError::Unsupported)
         );
+    }
+
+    /// A `read`/`regs` against a **poisoned** server (`vmm == None` after a prior
+    /// fatal error) is the same session-fatal [`ServeError::Poisoned`] every sibling
+    /// verb returns — never a recoverable reply (PR #83 round-1 blocking: `read`
+    /// must not fall back to an empty-RAM slice and fake a `ReadOutOfRange { ram_len:
+    /// 0 }`, which a client would retry against a VM that no longer exists).
+    #[test]
+    fn read_and_regs_on_a_poisoned_server_are_session_fatal() {
+        // A factory that cannot boot poisons the session on the first branch: the
+        // live VM is dropped, the factory fails, and `vmm` stays `None`.
+        let live = vmm_at_sync(vec![Exit::Hlt], 500, 0xBA5E);
+        let mut s = ControlServer::new(
+            live,
+            Box::new(|| Err(VmmError::ContractViolation("no boot".into()))),
+        );
+        hello(&mut s);
+        let base = snap(&mut s);
+        assert!(
+            matches!(
+                s.handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(1),
+                }),
+                Err(ServeError::Vmm(_))
+            ),
+            "the failing factory tears the session down"
+        );
+        // Now poisoned. Both observation verbs are session-fatal, exactly like the
+        // sibling verbs — not a recoverable ControlError.
+        assert!(matches!(
+            s.handle(&Request::Read { gpa: 0, len: 4 }),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(
+            s.handle(&Request::Regs),
+            Err(ServeError::Poisoned)
+        ));
+        // A cross-check that a sibling agrees (hash Whole is the canonical one).
+        assert!(matches!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            }),
+            Err(ServeError::Poisoned)
+        ));
     }
 
     /// The **observation contract** (task 80): a full inspection pass (regs +
