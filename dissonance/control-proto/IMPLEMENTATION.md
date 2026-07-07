@@ -221,3 +221,28 @@ surfaces three *pre-existing* workspace-`clippy.toml` meta-diagnostics (the
 `rand::*` disallowed-method paths become unresolvable once proptest pulls `rand`
 into the dev-dep graph); they are emitted for every proptest-using crate, cite
 `clippy.toml` not this crate's code, and do not fail `-D warnings`.
+
+## Task 81 — the improvisation surface (`exec` / `recorded_env` + taint)
+
+Additive to the wire vocabulary (`APP_PROTOCOL_VERSION` 5 → 6):
+
+- `Request::Exec { cmd: String, deadline: VTime }` → `Reply::ExecResult { output, ok }`
+  — the crude, off-record improvisation verb (tags `REQ_EXEC=12`,
+  `REPLY_EXEC_RESULT=9`). `cmd` is a `u32`-length-prefixed UTF-8 blob; a non-UTF-8
+  body is a `ProtocolError::ShortFrame`, never a panic (the decoder is a Tier-1 fuzz
+  target). `ok` is a canonical boolean (`0`/`1` only).
+- `Request::RecordedEnv` → `Reply::Recorded(Environment)` — the reproducer mint
+  (tags `REQ_RECORDED_ENV=13`, `REPLY_RECORDED=11`). The taint guard's fail-loud
+  site: the backend answers `Err(ControlError::Tainted)` for a tainted timeline.
+- `Reply::Snapshot { id, tainted }` (tag `REPLY_SNAPSHOT=10`) — the **additive**
+  taint-carrying snapshot reply. `Reply::SnapId(SnapId)` is retained and remains the
+  reply for an untainted snapshot, so every pre-81 consumer and every existing
+  golden is byte-identical; reshaping `SnapId` was rejected because its tuple shape
+  is pinned by merged `resolution`/`explorer`/`conductor` (see vmm-core's
+  IMPLEMENTATION.md for the full rationale).
+- `ControlError::Tainted` (tag `CE_TAINTED=19`) — the taint guard's error.
+
+Coverage: hand-written golden frames for each new request/reply/error, the loopback
+session now taints and exercises `exec`/`recorded_env`/`Snapshot`/`Tainted`
+end-to-end, and the round-trip/adversarial proptest generators include every new
+variant. The codec stays bit-deterministic, panic-free, and cap-bounded.

@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! Box-only **improvisation** gate (task 81): prove that `exec`-in-a-fork runs a
+//! real command inside a live guest and that the **taint guard** keeps that
+//! improvised timeline out of the reproducer story — while the *original* timeline
+//! it forked from is provably unaffected. Driven directly against the
+//! [`ControlServer`] verbs (`hello`/`snapshot`/`branch`/`replay`/`run`/`hash`/`exec`/
+//! `recorded_env`) on the real patched-KVM Postgres workload.
+//!
+//! The spec's box gates (`tasks/81-improvisations.md`):
+//!   2. **The improvisation.** From a mid-workload Postgres snapshot: `branch` a
+//!      fork, `exec` a real command (`ls /` / `ps aux`), capture **non-empty**
+//!      output; the **original** timeline, continued to a later `Moment`, hashes
+//!      **identically** to a control run that never forked — the improvisation
+//!      observably cost the search nothing.
+//!   3. **The guard.** On the exec'd fork, `recorded_env` fails `Tainted`; a
+//!      snapshot taken there reports `tainted: true`; a `branch` from it also
+//!      refuses `recorded_env`.
+//!   4. (Byte-identity of the existing `live_*` gates is covered by *those* gates —
+//!      the serial-input path is inert when no `exec` session is active; see the
+//!      portable `devices::tests::serial_input_is_inert_until_injected` unit test
+//!      and the unchanged `state_hash` on every non-`exec` run.)
+//!
+//! **Guest prerequisite (gate 2's non-empty output).** `exec` injects bytes on the
+//! guest's serial input (ttyS0) as if typed at a root shell, and detects completion
+//! by a sentinel `echo`. That needs a **root shell reading ttyS0** in the guest at
+//! the snapshot point. The stock Postgres workload image drives postgres and does
+//! not read the serial, so gate 2's *output* half runs against the **exec-capable**
+//! image variant (`guest/linux/exec-init.sh`; build `make -C guest/linux
+//! exec-image`). The **determinism** half of gate 2 (the original timeline is
+//! unaffected) and *all* of gate 3 (the taint guard) hold against **any** image —
+//! `exec` taints and the guard fires regardless of whether a shell answered — so
+//! this harness runs the guard gates against whatever image is present and only
+//! asserts non-empty output when `EXEC_EXPECT_OUTPUT=1` (set it for the
+//! exec-capable image).
+//!
+//! Run on `ssh <det-box>` with the LOADED patched KVM modules + a built image,
+//! CPU-pinned per `docs/BOX-PINNING.md` (lease a core via `box-window.sh`; never
+//! touch another lease's cores or its patched-KVM window). ALWAYS revert KVM to
+//! stock **1396736** + verify after any patched run.
+//! ```text
+//! make -C guest fetch && make -C guest/linux postgres-image   # or exec-image
+//! taskset -c <core> cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
+//! ```
+//! Tunable via env (defaults below): `EI_GENESIS_STEP` (V-time ns to nudge past a
+//! non-snapshottable boundary), `EI_MID` (V-time ns past genesis for the mid-
+//! workload snapshot), `EI_LATE` (the later `Moment` the original continues to),
+//! `EI_BUDGET` (V-time ns the `exec` may run), `EI_CMD` (the command to `exec`),
+//! `EXEC_EXPECT_OUTPUT` (assert non-empty output — set for the exec-capable image),
+//! `EI_SEED` (the genesis env seed).
+//!
+//! Every precondition that would prevent a real run — no `/dev/kvm`, stock modules,
+//! a non-baseline host — is a **loud panic (test FAILURE)**, never an early-return
+//! `Ok`. macOS builds an empty test binary; the `exec` state machine and the taint
+//! guard are covered portably by the `src/exec.rs` unit tests and the
+//! `src/control.rs` taint-guard proptest + unit tests.
+#![cfg(target_os = "linux")]
+
+use control_proto::{
+    ControlError, Environment, HashScope, Reply, Request, SnapId, StopConditions, StopMask,
+    StopReason, VTime,
+};
+use environment::{EnvSpec, FaultPolicy};
+use vmm_backend::Backend;
+use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+
+type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend>>;
+
+const GUEST_RAM_LEN: usize = 2 << 30;
+const GENESIS_SEED: u64 = 0x0080_0080_C0FF_EE80;
+const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable \
+     no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
+
+fn repo_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+fn require_artifact(name: &str) -> Vec<u8> {
+    for p in [
+        repo_root().join("guest/build").join(name),
+        repo_root().join("guest/linux").join(name),
+    ] {
+        if let Ok(bytes) = std::fs::read(&p) {
+            return bytes;
+        }
+    }
+    panic!(
+        "guest artifact `{name}` not found in guest/build or guest/linux — build it first on the \
+         box: `make -C guest fetch && make -C guest/linux postgres-image` (or `exec-image`)."
+    );
+}
+
+fn require_kvm() {
+    assert!(
+        std::path::Path::new("/dev/kvm").exists(),
+        "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the LOADED \
+         patched KVM modules, CPU-pinned per docs/BOX-PINNING.md."
+    );
+}
+
+fn require_host_baseline() {
+    let report = vmm_core::hostassert::report();
+    let mut all = true;
+    for o in &report {
+        if !o.pass {
+            eprintln!(
+                "[host-assert] FAIL {}: expected {}, observed {}",
+                o.key, o.expected, o.actual
+            );
+        }
+        all &= o.pass;
+    }
+    assert!(
+        all,
+        "host CPU is not the det-cfl-v1 baseline — run on the determinism box."
+    );
+}
+
+fn cmdline() -> String {
+    std::env::var("BOOT_CMDLINE").unwrap_or_else(|_| DEFAULT_CMDLINE.to_string())
+}
+
+fn env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn hex(d: &[u8; 32]) -> String {
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
+    boot_linux_selected(
+        BackendKind::Patched,
+        kernel,
+        initramfs,
+        GUEST_RAM_LEN,
+        &cmdline(),
+        seed,
+    )
+    .expect("boot_linux_selected (patched) — needs the LOADED patched KVM + perf + det-cfl-v1 host")
+}
+
+fn call<B: Backend>(s: &mut ControlServer<B>, req: &Request) -> Result<Reply, ControlError> {
+    s.handle(req)
+        .expect("session-fatal ServeError from the control server")
+}
+
+fn expect_ok<B: Backend>(s: &mut ControlServer<B>, req: &Request) -> Reply {
+    match call(s, req) {
+        Ok(reply) => reply,
+        Err(e) => panic!("verb {req:?} answered a ControlError: {e:?}"),
+    }
+}
+
+fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+    match expect_ok(
+        s,
+        &Request::Run {
+            until: StopConditions {
+                deadline: Some(VTime(deadline)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        },
+    ) {
+        Reply::Stop(stop) => stop,
+        other => panic!("run answered {other:?}"),
+    }
+}
+
+fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
+    match expect_ok(
+        s,
+        &Request::Hash {
+            scope: HashScope::Whole,
+        },
+    ) {
+        Reply::Hash(h) => h,
+        other => panic!("hash answered {other:?}"),
+    }
+}
+
+fn seeded_env(seed: u64) -> Environment {
+    Environment {
+        blob_version: EnvSpec::BLOB_VERSION,
+        bytes: EnvSpec::Seeded {
+            seed,
+            policy: FaultPolicy::none(),
+        }
+        .encode(),
+    }
+}
+
+/// Snapshot at the current point, returning the handle and the taint bit its reply
+/// carries. A `Reply::SnapId` is the pre-81 taint-free reply (untainted); a
+/// `Reply::Snapshot` carries the flag.
+fn snapshot<B: Backend>(s: &mut ControlServer<B>) -> (SnapId, bool) {
+    match call(s, &Request::Snapshot) {
+        Ok(Reply::SnapId(id)) => (id, false),
+        Ok(Reply::Snapshot { id, tainted }) => (id, tainted),
+        Ok(other) => panic!("snapshot answered {other:?}"),
+        Err(e) => panic!("snapshot answered a ControlError: {e:?}"),
+    }
+}
+
+/// Seal the current point, retrying past non-snapshottable boundaries (the task-58
+/// nudge). Returns `(SnapId, tainted, V-time)`.
+fn seal<B: Backend>(s: &mut ControlServer<B>, mut vt: u64, retry_step: u64) -> (SnapId, bool, u64) {
+    let mut attempts = 0usize;
+    loop {
+        attempts += 1;
+        match call(s, &Request::Snapshot) {
+            Ok(Reply::SnapId(id)) => return (id, false, vt),
+            Ok(Reply::Snapshot { id, tainted }) => return (id, tainted, vt),
+            Ok(other) => panic!("snapshot answered {other:?}"),
+            Err(ControlError::NotQuiescent) => {
+                assert!(
+                    attempts < 100_000,
+                    "no snapshottable boundary within budget"
+                );
+                match run_until(s, vt.saturating_add(retry_step)) {
+                    StopReason::Deadline { vtime } => vt = vtime.0,
+                    other => panic!("guest ended before a sealable boundary: {other:?}"),
+                }
+            }
+            Err(e) => panic!("snapshot answered a ControlError: {e:?}"),
+        }
+    }
+}
+
+fn recorded_env<B: Backend>(s: &mut ControlServer<B>) -> Result<Reply, ControlError> {
+    call(s, &Request::RecordedEnv)
+}
+
+/// The original timeline, restored from `snap` and continued to `late` — the
+/// determinism anchor for gate 2. A verbatim `replay` (no reseed) so it is the
+/// exact same trajectory each time.
+fn replay_to_late<B: Backend>(s: &mut ControlServer<B>, snap: SnapId, late: u64) -> [u8; 32] {
+    assert_eq!(
+        expect_ok(s, &Request::Replay(snap)),
+        Reply::Unit,
+        "replay(original snapshot)"
+    );
+    match run_until(s, late) {
+        StopReason::Deadline { .. } => {}
+        other => panic!("continuing the original to `late` stopped non-Deadline: {other:?}"),
+    }
+    hash_whole(s)
+}
+
+#[test]
+#[ignore = "box-only improvisation gate (LOADED patched KVM + built image + det-cfl-v1 host); \
+            run per docs/BOX-PINNING.md"]
+fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
+    require_kvm();
+    require_host_baseline();
+    let kernel = require_artifact("bzImage");
+    let initramfs = std::env::var("INITRAMFS")
+        .map(|n| require_artifact(&n))
+        .unwrap_or_else(|_| require_artifact("initramfs-postgres.cpio.gz"));
+    let seed = env_u64("EI_SEED", GENESIS_SEED);
+
+    let live = boot_pg(&kernel, &initramfs, seed);
+    let (fk, fi) = (kernel.clone(), initramfs.clone());
+    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+        boot_linux_selected(
+            BackendKind::Patched,
+            &fk,
+            &fi,
+            GUEST_RAM_LEN,
+            &cmdline(),
+            seed,
+        )
+    });
+    let mut s = ControlServer::new(live, factory);
+    assert_eq!(
+        expect_ok(&mut s, &Request::Hello(server_caps())),
+        Reply::Hello(server_caps())
+    );
+
+    // 1. Seal genesis, then run to a mid-workload point and seal the ORIGINAL
+    //    snapshot `mid_snap` — the timeline the improvisation forks off (untainted).
+    let retry_step = env_u64("EI_GENESIS_STEP", 1_000_000);
+    let vt0 = match run_until(&mut s, 0) {
+        StopReason::Deadline { vtime } => vtime.0,
+        other => panic!("vtime probe stopped non-Deadline: {other:?}"),
+    };
+    let (genesis, _gt, genesis_vt) = seal(&mut s, vt0, retry_step);
+    let env = seeded_env(seed);
+
+    // Materialize the mid point from genesis, then seal it.
+    assert_eq!(
+        expect_ok(
+            &mut s,
+            &Request::Branch {
+                snap: genesis,
+                env: env.clone(),
+            }
+        ),
+        Reply::Unit
+    );
+    let mid_target = genesis_vt + env_u64("EI_MID", 8_000_000);
+    let vt_mid = match run_until(&mut s, mid_target) {
+        StopReason::Deadline { vtime } => vtime.0,
+        other => panic!("run to mid stopped non-Deadline: {other:?}"),
+    };
+    let (mid_snap, mid_taint, mid_vt) = seal(&mut s, vt_mid, retry_step);
+    assert!(
+        !mid_taint,
+        "the mid-workload snapshot is untainted (no exec yet)"
+    );
+    let late = mid_vt + env_u64("EI_LATE", 40_000_000);
+
+    println!("\n[REPORT] task81 improvisation box gate");
+    println!("  genesis_vt={genesis_vt} mid_vt={mid_vt} late={late} seed={seed:#x}");
+
+    // 2a. CONTROL: continue the ORIGINAL from `mid_snap` to `late` with NO fork/exec
+    //     anywhere — the reference hash.
+    let control_hash = replay_to_late(&mut s, mid_snap, late);
+    println!("  control  hash8={}", &hex(&control_hash)[..8]);
+
+    // 2b. IMPROVISE on a FORK: branch off `mid_snap`, exec a real command.
+    assert_eq!(
+        expect_ok(
+            &mut s,
+            &Request::Branch {
+                snap: mid_snap,
+                env: env.clone(),
+            }
+        ),
+        Reply::Unit,
+        "branch a fork off the mid snapshot"
+    );
+    let budget = env_u64("EI_BUDGET", 200_000_000);
+    let cmd = std::env::var("EI_CMD").unwrap_or_else(|_| "ls /".to_string());
+    let (output, ok) = match expect_ok(
+        &mut s,
+        &Request::Exec {
+            cmd: cmd.clone(),
+            deadline: VTime(mid_vt.saturating_add(budget)),
+        },
+    ) {
+        Reply::ExecResult { output, ok } => (output, ok),
+        other => panic!("exec answered {other:?}"),
+    };
+    println!(
+        "  exec `{cmd}` ok={ok} output_len={} sample={:?}",
+        output.len(),
+        String::from_utf8_lossy(&output[..output.len().min(120)]),
+    );
+    if std::env::var("EXEC_EXPECT_OUTPUT").ok().as_deref() == Some("1") {
+        assert!(
+            !output.is_empty() && ok,
+            "exec `{cmd}` produced no output / did not complete — is a root shell reading ttyS0 \
+             in this image? (build the exec-capable image, or unset EXEC_EXPECT_OUTPUT)"
+        );
+    }
+
+    // 3. THE GUARD, on the exec'd fork:
+    //    - recorded_env is a loud Tainted;
+    assert_eq!(
+        recorded_env(&mut s),
+        Err(ControlError::Tainted),
+        "gate 3: recorded_env on the exec'd fork must fail Tainted"
+    );
+    //    - a snapshot taken here reports tainted: true;
+    let (dirty_snap, dirty_taint) = snapshot(&mut s);
+    assert!(
+        dirty_taint,
+        "gate 3: a snapshot taken on the exec'd fork must report tainted: true"
+    );
+    //    - a branch from that tainted snapshot also refuses recorded_env.
+    assert_eq!(
+        expect_ok(
+            &mut s,
+            &Request::Branch {
+                snap: dirty_snap,
+                env: env.clone(),
+            }
+        ),
+        Reply::Unit
+    );
+    assert_eq!(
+        recorded_env(&mut s),
+        Err(ControlError::Tainted),
+        "gate 3: a branch from the tainted snapshot must also refuse recorded_env"
+    );
+    println!(
+        "  guard    recorded_env=Tainted  dirty_snapshot.tainted=true  branch-of-tainted=Tainted  => PASS"
+    );
+
+    // 2c. The ORIGINAL, continued AFTER the improvisation, must hash identically to
+    //     the control — the fork's exec cost the search nothing.
+    let after_hash = replay_to_late(&mut s, mid_snap, late);
+    println!("  after    hash8={}", &hex(&after_hash)[..8]);
+    assert_eq!(
+        after_hash,
+        control_hash,
+        "gate 2: the original timeline continued past the improvisation diverged from the control \
+         (control={} after={}) — the fork's exec must NOT touch the original's trajectory",
+        hex(&control_hash),
+        hex(&after_hash)
+    );
+    println!("  determinism: original continuation IDENTICAL before/after the fork => PASS");
+    println!("[REPORT] task81 improvisation box gate: ALL PASS");
+}
