@@ -69,6 +69,15 @@ pub use environment::{Action, EnvSpec, HostFault, Moment};
 /// never force an unbounded buffer (conventions rule 4).
 pub const READ_CAP: u32 = 1 << 16; // 64 KiB
 
+/// The maximum decoded length of any **hex field** this crate parses from
+/// untrusted text: a pasted [`MomentRef`]'s env blob, a `vary … raw` action, and
+/// an exec output in a replayed transcript. Checked *before* the buffer is sized
+/// (see `from_hex`), so a multi-gigabyte pasted hex string is rejected cheaply
+/// — the same capped-untrusted-length discipline as [`READ_CAP`]. Generous
+/// enough for any real reproducer (it also bounds the `control-proto` frame the
+/// env blob rides), so it never rejects a legitimate paste.
+pub const MAX_HEX_FIELD_BYTES: usize = 16 << 20; // 16 MiB
+
 /// The [`MockServer`]'s default scripted guest RAM size — the ceiling `read`
 /// range-checks against.
 pub const DEFAULT_RAM_BYTES: u64 = 1 << 30; // 1 GiB
@@ -90,12 +99,24 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
     s
 }
 
-/// Decode canonical lower-case hex to bytes. Total: an odd length or a non-hex
-/// (incl. upper-case) digit yields `None`, never a panic. Rejecting upper-case
+/// Decode canonical lower-case hex to bytes, refusing anything decoding to more
+/// than `max_bytes`. Total: an odd length, a non-hex (incl. upper-case) digit, or
+/// an over-`max_bytes` length yields `None`, never a panic. Rejecting upper-case
 /// keeps the encoding canonical (one text per byte string).
-pub(crate) fn from_hex(s: &str) -> Option<Vec<u8>> {
+///
+/// **Capped before allocating.** The `max_bytes` check happens *before* the
+/// `Vec::with_capacity`, so a pasted multi-gigabyte hex field (this decodes
+/// untrusted text — an `open`ed `MomentRef`, a `vary … raw` action, an exec
+/// output in a replayed transcript) is rejected cheaply rather than sizing a
+/// buffer to it (the [`READ_CAP`] discipline, conventions rule 4).
+pub(crate) fn from_hex(s: &str, max_bytes: usize) -> Option<Vec<u8>> {
     let bytes = s.as_bytes();
     if !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let decoded_len = bytes.len() / 2;
+    if decoded_len > max_bytes {
+        // Reject BEFORE allocating — never size a buffer to an untrusted length.
         return None;
     }
     let nib = |c: u8| -> Option<u8> {
@@ -105,9 +126,27 @@ pub(crate) fn from_hex(s: &str) -> Option<Vec<u8>> {
             _ => None,
         }
     };
-    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut out = Vec::with_capacity(decoded_len);
     for pair in bytes.chunks_exact(2) {
         out.push((nib(pair[0])? << 4) | nib(pair[1])?);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_hex_caps_decoded_length_before_allocating() {
+        // Over-cap → rejected cheaply, before any `Vec::with_capacity`.
+        assert_eq!(from_hex("00000000", 3), None); // decodes to 4 bytes > cap 3
+        // At / under the cap decodes.
+        assert_eq!(from_hex("00ff", 2), Some(vec![0x00, 0xff]));
+        assert_eq!(from_hex("00ff", usize::MAX), Some(vec![0x00, 0xff]));
+        // The other rejections still hold (odd length, non-/upper-case hex).
+        assert_eq!(from_hex("0", usize::MAX), None);
+        assert_eq!(from_hex("zz", usize::MAX), None);
+        assert_eq!(from_hex("00FF", usize::MAX), None); // upper-case not canonical
+    }
 }

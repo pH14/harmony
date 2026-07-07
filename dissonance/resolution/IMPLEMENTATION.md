@@ -18,7 +18,7 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **47 tests.**
+end-to-end live==replay test. **49 tests.**
 
 **Every command is recorded, `transcript` included (round-9 fix).** The `transcript` command is a
 recorded [`Record`] like every other command — its outcome captures the view *deterministically* as
@@ -317,9 +317,19 @@ FNV-1a/SplitMix digest of the active `EnvSpec`, integer math only) and the curre
   so a counterfactual can change *behaviour*, not just the hash.
 
 Constants: `READ_CAP` = 64 KiB (oversized `read` rejected before allocation), `DEFAULT_RAM_BYTES`
-= 1 GiB (the `read` range ceiling), `EXEC_BUDGET` = 1e6 V-time (default `exec` deadline). The mock
+= 1 GiB (the `read` range ceiling), `EXEC_BUDGET` = 1e6 V-time (default `exec` deadline),
+`MAX_HEX_FIELD_BYTES` = 16 MiB (the cap on any hex field decoded from untrusted text). The mock
 uses `Moment ≡ run-deadline V-time` 1:1 (the "clock ratio 1" simplification the adapter also uses);
 the real substrate's exact-`Moment` force-exit is the box gate's concern.
+
+**Capped untrusted lengths (rule 4), everywhere — not just `read`.** `from_hex` takes a `max_bytes`
+and checks the decoded length **before** the `Vec::with_capacity`, so a pasted multi-gigabyte hex
+field — an `open`ed `MomentRef` env blob, a `vary … raw` action, an exec output in a replayed
+transcript — is rejected cheaply rather than sizing a buffer to it (the `READ_CAP` discipline
+generalized). Every caller passes `MAX_HEX_FIELD_BYTES`. Tests
+`from_hex_caps_decoded_length_before_allocating` (the mechanism) and
+`parse_rejects_an_oversized_env_field_cheaply` (the `open` path) — the latter runs in ~15 ms with the
+cap and ~1 s without it, which *is* the cheap-rejection guarantee.
 
 ## Portability / quality
 

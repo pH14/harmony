@@ -178,7 +178,8 @@ pub enum CommandParseError {
 }
 
 /// The result of [`Shell::dispatch`]: a recorded command (its [`Record`] was
-/// appended) or the `transcript` view (a rendered dump; not recorded).
+/// appended — every command, `transcript` included) or a no-op view (a
+/// blank/comment line, nothing recorded).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum DispatchOutput {
     /// A recorded command — render it with [`render_line`](crate::render_line).
@@ -438,7 +439,8 @@ fn parse_edit(tokens: &[&str]) -> Result<OverrideEdit, CommandParseError> {
         }
         ["set", at, "nominal"] => Ok(set(parse_num(at)?, Action::Guest(Answer::Nominal))),
         ["set", at, "raw", hex] => {
-            let bytes = crate::from_hex(hex).ok_or(CommandParseError::BadHex)?;
+            let bytes = crate::from_hex(hex, crate::MAX_HEX_FIELD_BYTES)
+                .ok_or(CommandParseError::BadHex)?;
             let action = Action::decode(&bytes).map_err(|_| CommandParseError::BadRawAction)?;
             Ok(set(parse_num(at)?, action))
         }

@@ -136,7 +136,8 @@ impl MomentRef {
             return Err(MRefParseError::Trailing);
         }
         let moment: Moment = moment_str.parse().map_err(|_| MRefParseError::BadMoment)?;
-        let env_bytes = crate::from_hex(env_hex).ok_or(MRefParseError::BadEnvHex)?;
+        let env_bytes = crate::from_hex(env_hex, crate::MAX_HEX_FIELD_BYTES)
+            .ok_or(MRefParseError::BadEnvHex)?;
         let env = EnvSpec::decode(&env_bytes).map_err(|_| MRefParseError::BadEnv)?;
         Ok(MomentRef { env, moment })
     }
@@ -263,6 +264,18 @@ mod tests {
                 "expected parse error for {bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn parse_rejects_an_oversized_env_field_cheaply() {
+        // A pasted MomentRef whose hex env field decodes to one byte over the
+        // cap: `from_hex` refuses at the length check, BEFORE sizing a buffer to
+        // the paste — no unbounded allocation on untrusted text.
+        let over_bytes = crate::MAX_HEX_FIELD_BYTES + 1;
+        let mut s = String::with_capacity("mref1:0:".len() + over_bytes * 2);
+        s.push_str("mref1:0:");
+        s.extend(std::iter::repeat_n('0', over_bytes * 2));
+        assert_eq!(MomentRef::parse(&s), Err(MRefParseError::BadEnvHex));
     }
 
     #[test]

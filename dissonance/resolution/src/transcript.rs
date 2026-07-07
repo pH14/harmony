@@ -193,7 +193,7 @@ pub fn render_line(r: &Record) -> String {
         } => {
             // Human-lossy view: decode the lossless hex and escape it. A
             // hand-mangled hex string degrades to empty rather than panicking.
-            let bytes = crate::from_hex(output_hex).unwrap_or_default();
+            let bytes = crate::from_hex(output_hex, crate::MAX_HEX_FIELD_BYTES).unwrap_or_default();
             format!(
                 "exec ok={ok}{} output({}b): {}",
                 taint_flag(*tainted),
@@ -360,7 +360,7 @@ mod tests {
             panic!("expected Exec");
         };
         assert_eq!(
-            crate::from_hex(output_hex).unwrap(),
+            crate::from_hex(output_hex, crate::MAX_HEX_FIELD_BYTES).unwrap(),
             raw,
             "the exact bytes survive the transcript round trip"
         );
