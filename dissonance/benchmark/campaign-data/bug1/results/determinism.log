@@ -1,0 +1,28 @@
+##############################################################################
+## ⚠️  COLLISION ARTIFACT — the "P0-DIVERGENCE" lines below are NOT real
+## determinism divergences. Do NOT read them as a co-tenant-vs-solo hash
+## mismatch.
+##
+## `solo=[]` means the phase-2 solo run FAILED TO RUN (rc=1, empty state_hash) —
+## it never produced a hash to compare. It is NOT a hash that differed from the
+## co-tenant one. Cause (self-inflicted, 2026-07-07): an untracked core-4 bug-3
+## smoke VM was still holding patched KVM when phase-1 released its leases, so
+## box-window's revert-to-stock failed and phase-2's `acquire --exclusive` →
+## `load_patched` aborted ("kvm neither stock nor cleanly loadable") → empty
+## core → `taskset: failed to parse CPU list:` → rc=1.
+##
+## The real phase-2 solo determinism spot-check is being RE-RUN cleanly (box
+## idle, no collision); its solo==co-tenant results supersede this file. Per the
+## foreman: no phase-1 certification language enters CORRELATION-REPORT.md until
+## that clean re-run shows solo==co-tenant on seeds 1/2/3.
+##
+## Full write-up: dissonance/benchmark/campaign-data/bug1/NOTES.md
+##   §"2026-07-07 — BUG-1 CAMPAIGN DONE (phase-1 40/40 valid) + a SELF-INFLICTED
+##    box collision (lesson)".
+## A grep for P0-DIVERGENCE that lands here MUST read this header first.
+##############################################################################
+
+=== determinism spot-check (co-tenant vs solo) — COLLISION ARTIFACT (see header) ===
+seed 1 P0-DIVERGENCE co=[state_hash ffadc25d6fe4aa46fea3c65ed43535c8f00c03164cafe073ad43cc901c2ac83c] solo=[]
+seed 2 P0-DIVERGENCE co=[state_hash 7e218f788b10b80ec7c32201748277a8ff2a605be92947881407771fe5645271] solo=[]
+seed 3 P0-DIVERGENCE co=[state_hash a6d35a9c489348a61b52c913e7fd6c2eae3f50d9de48adcc3e6a67d53c520ac5] solo=[]
