@@ -258,25 +258,28 @@ impl<S: Server> MaterializedSession<'_, S> {
     /// The client refuses nothing (the server guard is authoritative); the
     /// returned [`ExecResult::tainted`] surfaces the consequence prominently.
     ///
-    /// The guest ran to a completion sentinel or the deadline, so V-time
-    /// advanced. We learn the new [`Moment`] from the `regs` verb — [`RegsView`]
-    /// carries the current `Moment` by design — rather than extending
-    /// [`ExecResult`] (which would drift the mirrored task-80/81 wire contract).
-    /// Keeping the tracked moment fresh is load-bearing: the *next* `exec`'s
-    /// deadline is `moment + EXEC_BUDGET`, and [`moment`](Self::moment) /
-    /// [`mref`](Self::mref) must report the true post-`exec` V-time.
+    /// **Conservative taint (the invariant).** The timeline is presumed tainted
+    /// from the moment the exec request is *issued* — not from a successful
+    /// reply. Once the request may have reached the server it may have applied
+    /// it, even if the reply is then lost, times out, or decodes as a transport
+    /// error; "clean" can never be reclaimed after that. So `cur.tainted` is set
+    /// **before** the round-trip, covering every failure point (send fails /
+    /// applied-but-reply-lost / reply-error / the follow-up `regs` refresh
+    /// fails). See the exec-flow taint table in `IMPLEMENTATION.md`.
+    ///
+    /// On success the guest ran to a completion sentinel or the deadline, so
+    /// V-time advanced; the new [`Moment`] is learned from the `regs` verb
+    /// ([`RegsView`] carries it) rather than by extending [`ExecResult`] (which
+    /// would drift the mirrored task-80/81 wire contract). A failed refresh
+    /// keeps the stale moment on the already-tainted timeline.
     pub fn exec(&mut self, cmd: &str) -> Result<ExecResult, SessionError> {
         let deadline = VTime(self.cur().moment.saturating_add(EXEC_BUDGET));
-        let result = self.session.server.exec(cmd, deadline)?;
-        // Record taint IMMEDIATELY — before any fallible follow-up. If the exec
-        // succeeded, the server-side timeline is tainted; a later failure must
-        // never leave the local mirror unmarked (that window is exactly the lie
-        // the structural guard exists to prevent).
+        // Conservative taint: mark BEFORE the round-trip, so no failure mode can
+        // leave a server-side-improvised timeline looking clean.
         self.cur_mut().tainted = true;
-        // Then learn the post-exec V-time from the `regs` verb (`RegsView`
-        // carries the current Moment) — a pure observation, so it cannot perturb
-        // the timeline. A failed refresh keeps the stale moment on an
-        // already-tainted timeline (the taint bit is what matters).
+        let result = self.session.server.exec(cmd, deadline)?;
+        // Learn the post-exec V-time from `regs` (a pure observation). A failed
+        // refresh keeps the stale moment on the already-tainted timeline.
         let moment = self.session.server.regs()?.moment;
         self.cur_mut().moment = moment;
         Ok(result)

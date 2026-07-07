@@ -554,6 +554,10 @@ struct FaultyServer {
     inner: MockServer,
     /// `regs` always fails when set (exercises `exec`'s refresh failure).
     fail_regs: bool,
+    /// `exec` **applies** to the inner mock (taints it server-side) but then
+    /// **errors the reply** — models "applied-but-reply-lost" (exercises the
+    /// conservative taint-before-round-trip invariant).
+    exec_applies_then_errors: bool,
     /// `run` fails once this many `run` calls have already succeeded (`None` =
     /// never). Lets a good `open` precede a failing one.
     fail_run_after: Option<u32>,
@@ -565,6 +569,7 @@ impl FaultyServer {
         Self {
             inner,
             fail_regs: true,
+            exec_applies_then_errors: false,
             fail_run_after: None,
             run_count: 0,
         }
@@ -573,7 +578,17 @@ impl FaultyServer {
         Self {
             inner,
             fail_regs: false,
+            exec_applies_then_errors: false,
             fail_run_after: Some(n),
+            run_count: 0,
+        }
+    }
+    fn exec_reply_lost(inner: MockServer) -> Self {
+        Self {
+            inner,
+            fail_regs: false,
+            exec_applies_then_errors: true,
+            fail_run_after: None,
             run_count: 0,
         }
     }
@@ -615,6 +630,12 @@ impl Server for FaultyServer {
         self.inner.regs()
     }
     fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+        if self.exec_applies_then_errors {
+            // The server applied the exec (inner is now tainted server-side) but
+            // the reply was lost / decoded as a transport error.
+            let _ = self.inner.exec(cmd, deadline)?;
+            return Err(SessionError::Transport("exec reply lost".to_string()));
+        }
         self.inner.exec(cmd, deadline)
     }
     fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
@@ -641,6 +662,56 @@ fn taint_is_recorded_before_the_fallible_moment_refresh() {
         matches!(ms.recorded_env(), Err(SessionError::Tainted)),
         "recorded_env refuses too"
     );
+}
+
+#[test]
+fn exec_reply_lost_still_taints_conservatively() {
+    // The server APPLIES the exec (its timeline is now improvised) but the reply
+    // is lost / decodes as a transport error. The conservative invariant: the
+    // timeline is presumed tainted from the moment the request was ISSUED, so
+    // the session must be tainted even though `exec` returned an error — no clean
+    // vary/stamp on a server-side-improvised timeline.
+    let inner = MockServer::boot(EnvCodec::seeded(37, FaultPolicy::none()));
+    let mut sess = Session::connect(FaultyServer::exec_reply_lost(inner)).unwrap();
+    let mut ms = sess.materialize(&mref(37, 500)).unwrap();
+
+    assert!(ms.exec("x").is_err(), "the lost reply surfaces as an error");
+    assert!(
+        ms.tainted(),
+        "tainted despite the lost reply (taint set before the round-trip)"
+    );
+    assert!(
+        matches!(ms.mref(), Err(SessionError::Tainted)),
+        "the coordinate emitter refuses on the conservatively-tainted timeline"
+    );
+}
+
+#[test]
+fn exec_on_a_crashed_timeline_does_not_run() {
+    // A crashed guest cannot run a command: exec must not advance or return ok
+    // (consistent with `run` re-reporting the crash terminally).
+    let mut sess = session(29);
+    let faulted = mref(29, 500).vary(&OverrideEdit::Set {
+        at: 3_000,
+        action: Action::Host(HostFault::CorruptMemory {
+            gpa: 0x2000,
+            mask: environment::BitMask(0x1),
+        }),
+    });
+    let mut ms = sess.materialize(&faulted).unwrap();
+    match ms.run(6_000).unwrap() {
+        StopReason::Crash { vtime, .. } => assert_eq!(vtime.0, 3_000),
+        other => panic!("expected Crash, got {other:?}"),
+    }
+    assert_eq!(ms.moment(), 3_000);
+
+    let result = ms.exec("ls /").unwrap();
+    assert!(!result.ok, "a crashed guest cannot run a command");
+    assert!(
+        result.output.is_empty(),
+        "no fabricated output on a crashed guest"
+    );
+    assert_eq!(ms.moment(), 3_000, "exec did not advance past the crash");
 }
 
 #[test]

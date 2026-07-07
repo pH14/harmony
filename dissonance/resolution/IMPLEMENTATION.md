@@ -18,7 +18,7 @@ server; the live proof is one box gate handed to the foreman.
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **42 tests.**
+end-to-end live==replay test. **44 tests.**
 
 **`open` is transactional.** `materialize` invalidates `current` *before* touching the server and
 installs the new timeline *only on full success*; if `branch` succeeds but the follow-up `run`
@@ -116,12 +116,14 @@ Three properties the crate exists to embody, each with a regression test:
   A's world, not A's moment inside B's world (`replay_restores_the_whole_world_verbatim_after_a_branch`).
   The mock's quiescence point is now derived from the live world on demand, not a stored field, so
   it cannot go stale across a branch/replay.
-- **A crash is terminal (round-5 fix).** Once a scripted fault crashes the guest, the mock latches
+- **A crash is terminal (round-5/6 fix).** Once a scripted fault crashes the guest, the mock latches
   `Timeline.crashed`: every subsequent `run` re-reports the crash at its `Moment` without advancing
   (so a later `run` can't skip the already-hit override and fabricate post-crash state), and
-  observations stay at the crash point — until the client re-materializes (`branch`/`replay`
-  installs a fresh/restored timeline). `MockServer` is the laptop reference model for session
-  semantics, so this had to be right (`a_crashed_timeline_stays_terminal_until_rematerialize`).
+  `exec` re-reports the terminal condition too (`ok = false`, no output, no advance — a crashed
+  guest cannot run a command) rather than fabricating a successful run. Observations stay at the
+  crash point until the client re-materializes (`branch`/`replay` installs a fresh/restored
+  timeline). `MockServer` is the laptop reference model for session semantics, so this had to be
+  right (`a_crashed_timeline_stays_terminal_until_rematerialize`, `exec_on_a_crashed_timeline_does_not_run`).
 
 ## The taint rule (the single source of truth)
 
@@ -130,8 +132,30 @@ Three properties the crate exists to embody, each with a regression test:
 > *bare, pasteable* `MomentRef` derived from a tainted timeline fails loudly with
 > `SessionError::Tainted` (the one exception is the transcript stamp, which records the
 > non-pasteable `tainted!…` marked form so the record stays complete and `open` refuses it); and
-> (2) taint is recorded (`cur.tainted = true`) *before any fallible follow-up*, so no window exists
-> where a clean coordinate could be minted on a tainted timeline.**
+> (2) taint is recorded *conservatively* — `cur.tainted = true` is set **before the exec request is
+> issued to the server**, not after a successful reply. Once the request may have reached the
+> server it may have applied it, even if the reply is then lost, times out, or decodes as a
+> transport error; there is no failure point after which "clean" can be reclaimed.**
+
+### The exec flow, every failure point → taint state
+
+`exec` marks taint before the round-trip, so the timeline is tainted at *every* point after the
+request leaves the client. Enumerated:
+
+| Failure point | Server-side timeline | Client `exec` returns | Client taint | Coordinate emitters (`mref`/`vary`/`recorded_env`) |
+|---|---|---|---|---|
+| request send fails (never reached server) | untouched | `Err` | **tainted** (conservative — the client cannot distinguish this from below) | fail `Tainted` |
+| applied, but reply lost / decodes as transport error | **improvised** | `Err` | **tainted** | fail `Tainted` |
+| reply is a `ControlError` (server rejected) | per server | `Err` | **tainted** | fail `Tainted` |
+| success, but the follow-up `regs` refresh fails | improvised | `Err` | **tainted** (moment stays stale) | fail `Tainted` |
+| full success | improvised | `Ok(ExecResult)` | **tainted**, moment refreshed | fail `Tainted` |
+
+The conservative mark makes the *send-fails* row (a false positive — the server never saw it) the
+price of never producing the far worse false negative: a clean-looking coordinate on a
+server-side-improvised timeline. Regression: `exec_reply_lost_still_taints_conservatively` (a mock
+that applies the exec then errors the reply). `exec` on a crashed timeline re-reports the terminal
+condition (`ok = false`, no advance) rather than fabricating a run
+(`exec_on_a_crashed_timeline_does_not_run`).
 
 Pure observations and navigation are always allowed on a tainted timeline — they do not emit a
 coordinate. Every verb/accessor, audited against the rule:
@@ -143,7 +167,7 @@ coordinate. Every verb/accessor, audited against the rule:
 | `regs` | no (`RegsView`) | allowed (pure; also how `exec` learns the post-exec `Moment`) | `observation_never_perturbs_the_hash` |
 | `hash` | no (digest) | allowed (the digest *reflects* taint, so a fork diverges) | `exec_taints_the_fork_…` |
 | `run` | no (`StopReason`) | allowed (advances the tainted timeline) | — |
-| `exec` | no (`ExecResult`) | **sets** taint — recorded *before* the fallible `regs` refresh | `exec_advances_the_session_moment`, `taint_is_recorded_before_the_fallible_moment_refresh` |
+| `exec` | no (`ExecResult`) | **sets** taint — *conservatively, before the round-trip* (see the exec-flow table above) | `exec_reply_lost_still_taints_conservatively`, `taint_is_recorded_before_the_fallible_moment_refresh` |
 | `recorded_env` | the reproducer (`EnvSpec`) | **fails `Tainted`** | `exec_taints_the_fork_…` |
 | `MaterializedSession::mref()` | **yes** (`MomentRef`) | **fails `Tainted`** | `exec_advances_…`, `taint_is_recorded_…` |
 | `moment()` | no (bare `u64` V-time) | allowed (a V-time is not a coordinate) | `exec_advances_…` |
@@ -154,11 +178,11 @@ coordinate. Every verb/accessor, audited against the rule:
 | `open <tainted!…>` | — | refused (`MRefParseError::Tainted`) | `tainted_stamp_is_refused_by_parse` |
 | `Session::current_mref()` | raw (`pub(crate)`) | internal only — the stamp marks it; REPL `vary` guards on `tainted()` first — never a public bare emitter | — |
 
-The two round-3 fixes fall straight out of the rule: REPL `vary` now fails `Tainted` (it was the
-last bare-coordinate emitter that hadn't been guarded), and `exec` sets `cur.tainted = true`
-immediately after the server-side `exec` succeeds — before the fallible `regs` refresh — so a
-failed refresh keeps the stale moment on an *already-marked* timeline. `--transcript`/replay byte-identity is
-preserved throughout.
+Every fix falls straight out of the rule rather than being an isolated patch: REPL `vary` fails
+`Tainted` (it was the last bare-coordinate emitter that hadn't been guarded); and the taint-ordering
+family closed one level at a time — first set-after-`exec`-before-`regs` (round 3), then
+set-before-the-round-trip (round 6, the conservative invariant above), which subsumes it and covers
+the applied-but-reply-lost hazard. `--transcript`/replay byte-identity is preserved throughout.
 
 ## The load-bearing decision: the `Server` seam (and why not raw `control-proto`)
 

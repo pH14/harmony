@@ -357,6 +357,17 @@ impl Server for MockServer {
     }
 
     fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+        // A crashed timeline is terminal: the guest cannot run a command. Do not
+        // advance, do not fabricate output, do not report success — re-report
+        // the terminal condition (consistent with `run` re-reporting the crash).
+        // The client still marks its own conservative taint on the exec attempt.
+        if self.cur.crashed.is_some() {
+            return Ok(ExecResult {
+                output: Vec::new(),
+                ok: false,
+                tainted: self.cur.tainted,
+            });
+        }
         // The improvisation taints the timeline (structural, not conventional).
         self.cur.tainted = true;
         // The guest runs the command to a completion sentinel, advancing V-time
