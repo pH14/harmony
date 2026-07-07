@@ -28,12 +28,14 @@ All green on macOS (this worktree):
   failures — clippy exits 0)
 - `cargo fmt -p film -- --check` ✓
 - `cargo deny check` ✓
-- `cargo +nightly-2026-06-16 miri test -p film` (default features) — the default
-  build has **zero `unsafe`**, so Miri validates the pure logic; proptest cases
-  drop to 16 under `cfg!(miri)`. The two tests that *execute* `blake3` (a
-  digest-stability check) carry `#[cfg_attr(miri, ignore)]` because blake3's
-  SIMD/FFI path is not Miri-interpretable on this platform — an implementation
-  detail of the hash, not of film's logic; everything else runs under Miri.
+- `cargo +nightly-2026-06-16 miri test -p film` (default features) ✓ — all test
+  binaries pass under Miri (exit 0; lib unit + `plan_proptest` + `projector_mock`
+  + `artifact_roundtrip`). The default build has **zero `unsafe`**, so Miri
+  validates the pure logic; proptest cases drop to 16 under `cfg!(miri)`. The one
+  test that *executes* `blake3` carries `#[cfg_attr(miri, ignore)]` because
+  blake3's SIMD/FFI path is not Miri-interpretable on this platform — an
+  implementation detail of the hash, not of film's logic; everything else runs
+  under Miri.
 
 The `film demo` binary was driven end-to-end and is byte-for-byte deterministic
 across runs (same contact-sheet blake3 on repeat).
