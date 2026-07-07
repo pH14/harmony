@@ -634,3 +634,82 @@ Flagged to the foreman for confirmation.
 replay-n 25), compares each find hash to the co-tenant baseline, releases (reverts to stock),
 writes `~/t69m2-results/bug1/solo-recheck.result` + `DONE`. A poller waits for DONE. Result +
 solo==co-tenant verdict pending.
+
+---
+
+## 2026-07-08 — RECYCLE CHECKPOINT (context long). Bugs 1 & 3 DONE; bug-2 mechanism VALIDATED, calibration pending.
+
+### STATE OF THE THREE BUGS
+- **Bug 1 (fault-timing): DONE.** Phase-1 40/40 campaigns valid + committed (`campaign-data/bug1/
+  results/`). Phase-2 solo determinism **CERTIFIED** — solo==co-tenant on seeds 1/2/3 (ffadc25d /
+  7e218f78 / a6d35a9c). `results/determinism.log` annotated (the "P0-DIVERGENCE" was a collision
+  artifact, resolved). Foreman gate met: phase-1 may carry certification language.
+- **Bug 3 (rare-entropy): DONE + validated.** Fix = pre-draw stabilization loop with periodic
+  console writes (seal_base needs a write-boundary before the draw; a silent spin does NOT work).
+  `uuid-super.c` = ONE loop, draw ONCE at `i==STABILIZE_ITERS` (8192). Canonical image = 8-bit +
+  8192. Box smoke: **3 fires / 512 @deadline 50000, 1 certified find** (branch 52, state_hash
+  5281f249…). Committed 7deb3ab.
+- **Bug 2 (order-interrupt): MECHANISM VALIDATED, CALIBRATION PENDING.** Fix = interrupt-COUNTER
+  observable (Paul's ruling, no co-runner): `interrupts_serviced()` sums /proc/interrupts' per-CPU
+  counts (NOT /proc/stat `intr` — that omits the spurious/APIC lines the unregistered injected
+  vectors land on). **PROOF the counter works:** a diagnostic firing on ANY counter change since
+  ORDER_READY hit **16/16 branches** + certified — so task-59's InjectInterrupt IS delivered +
+  counted, all mint vectors {0x81^0..15}. BUT the real per-window detection gives **0/512**: the
+  interrupt reliably bumps the counter but almost never lands *between* the two per-iteration
+  samples.
+
+### BUG-2 CALIBRATION — analysis + plan (the remaining bug-2 work)
+Root of the 0-fires: the mint (`benchcampaign.rs mint_scenario_env`, OrderingInterrupt arm) searches
+`at = window.0 - rebase - 4 + rand%64` — only **64 discrete offsets** at seal+[4,68), which all fall
+in ~the first loop iteration; and the implicit window (primary++ ; mirror) is a few instructions, so
+the interrupt lands in it ~never. Added a tunable **`WINDOW_SPIN`** (order-super.c, default 4096) — a
+busy-spin holding `mirror` stale between the two samples — so the window is a tunable fraction of the
+iteration. **Next session:**
+1. Rebuild order image + smoke bug-2 (BENCH_DIAG, 128 branches) at a few `WINDOW_SPIN` values;
+   read WHICH `at` offsets fire (BENCH_DIAG prints `Interrupt@<at> … marker=<bool>`) to see the
+   window's position+width and the fire rate.
+2. If all fire (P≈1) → shrink WINDOW_SPIN; if 0 → grow it. **Likely blocker:** 64 offsets is too
+   COARSE for a ~1/256 rate (granularity 1/64 ⇒ best ~1/64, TTF~64, below the [100,1000] band). If so,
+   **widen the mint's OrderingInterrupt offset range** (`%64` → e.g. `%4096`, or make it the manifest
+   window width) in benchcampaign.rs — a search-range tuning (NOT a semantics change), then REBUILD
+   the box conductor (`cargo build --release -p conductor`, taskset off the campaign cores) and note
+   the binary differs from bug-1's 1bcfc6c (fine — the report compares WITHIN each bug). Re-smoke to
+   land TTF in [100,1000].
+3. Then order-super's WINDOW_SPIN + the mint range are the two dials; freeze them, `git checkout`
+   away any diagnostic edits, rebuild the canonical order image.
+
+### THEN (same for both bugs 2 & 3, once bug-2 calibrated)
+4. **Gate-2 validity (foreman condition 2):** prove marker→REAL Crash at a large deadline. Real
+   8-bit/narrow-window rates make a large-deadline campaign infeasible (~5M V-time × ≥256 branches),
+   so use an EASY variant (bug-3 PREFIX_BITS=1; bug-2 wide WINDOW_SPIN) at deadline ~8M → a firing
+   branch reaches Crash{Shutdown} + certifies 25/25. The crash path (announce→deref/isa-exit→/init
+   reboot→Shutdown) is trigger-rate-independent, so this validates the real bug. Flagged to Paul;
+   he has not objected.
+5. **Campaigns:** clone the bug-1 orchestrator (`run-bug2/3-campaign.sh` already written), 3-wide,
+   20×2 each, deadline 50000, + the 3 solo determinism spot-checks. **~15h each, back-to-back** →
+   multi-day. Run DETACHED + MONITORED (box now idle, no campaign to collide with). Commit JSONs.
+6. **Report (task 11):** concat all CampaignLogs → `benchmark-report --logs all.json --out
+   CORRELATION-REPORT.md` (computes the 4 measures + Go/NoGo). LAYER ON the M2 prose: the two-part
+   realization (marker-based finds + per-bug large-deadline Crash validity), the exploit-kernel
+   description (bug-agnostic one-dim seeded jitter), the per-bug cell counts, and the zero-cell scope
+   statement. Rule GO/NO-GO honestly (GO = correlation on ≥2/3 bugs + signal median not worse than
+   baseline on any + Klees min-trials floor).
+
+### BOX STATE + DISCIPLINE (as of this checkpoint)
+- Box CLEAN: **kvm 1396736 (stock), 0 leases**, no conductor. Bug-1 campaign done (pid gone).
+- **REFINED DISCIPLINE (Paul-confirmed direction):** no live campaign ⇒ hazard is orphaning, not
+  collision. Foreground for <~9-min runs (local Bash caps at 600s and SIGTERMs the ssh → orphans);
+  longer runs → MONITORED-DETACHED (setsid on box, DONE sentinel, self-release+revert, a
+  `run_in_background` poller re-invokes me). Kill by EXACT PID (never `pkill -f` — self-matches the
+  wrapper argv; `pkill -x conductor` is ok). Always revert+verify 1396736 after a work block.
+- Box scripts (on box `~`): `solo-recheck.sh` (done), `bug2-smoke.sh` (reusable — edit --max-branches
+  + the guest source). Results land in `~/t69m2-results/`. Box worktree `~/harmony-t69m2` @ 1bcfc6c
+  (Rust unchanged); guest sources scp'd per build. `~/box-window.sh` = CORES=(2 1 3), untouched.
+- Guest build: `taskset -c 4,12 ./build-order-image.sh` (or uuid) off the campaign cores. Order/uuid
+  images live in `~/harmony-t69m2/guest/build/`.
+
+### COMMITS THIS SESSION (branch task/signal-bug-correlation, all pushed)
+fd6dc2f guest prep · 8bf0d44 orchestrators+NOTES · bae7040 bug-2 0/512 finding · 81f8f4a bug-2/3
+escalation · (foreman rulings) · 7deb3ab bug-3 FIX · 8bbc695 bug-2 rework WIP · 9136c7a bug-1
+phase-1 data · 765a8fc logs · 535c621 determinism CERTIFIED · d6ae8f8 NOTES · (this) bug-2 counter
+validated + WINDOW_SPIN.

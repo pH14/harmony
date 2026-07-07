@@ -24,9 +24,12 @@
 // device, so an injected interrupt runs its IDT handler and returns to the SAME
 // task; `ru_nivcsw` stays 0 (0/512 fires on the box, confirmed). The reachable,
 // single-task-observable effect of a delivered interrupt is that the kernel
-// SERVICES it: the total hardware-interrupt count — the first number of
-// /proc/stat's `intr` line — increments. The process samples that count across
-// the update window; a change means an interrupt was serviced INSIDE it, i.e. the
+// SERVICES it: a serviced-interrupt COUNTER moves — the sum of /proc/interrupts'
+// per-CPU counts (task-59's injected vectors are unregistered, so they land on the
+// spurious/APIC lines that /proc/stat's `intr` total omits — box-confirmed: a
+// probe firing on ANY counter change since ORDER_READY hit 16/16, so the vector
+// IS delivered + counted). The process samples that count across the update
+// window; a change means an interrupt was serviced INSIDE it, i.e. the
 // injected vector at the vulnerable Moment. No preemption, reschedule, or signal
 // plumbing required. (KVM still delivers the task-59 `InjectInterrupt` to the
 // guest kernel IDT, not as a userspace signal — the milestone-1 SIGUSR1 draft was
@@ -38,8 +41,8 @@
 //
 // Trigger (tunable — matches dissonance/benchmark manifest BugId(2)):
 //   * fault kind:  InjectInterrupt { vector = INTERRUPT_VECTOR } (any vector the
-//                  guest kernel SERVICES + counts in /proc/stat `intr`; the exact
-//                  vector is calibrated on the box).
+//                  guest kernel SERVICES + counts in /proc/interrupts; the box
+//                  confirmed every mint vector {0x81^0..15} is counted).
 //   * Moment:      inside [WINDOW_LO, WINDOW_HI) offsets past the base snapshot,
 //                  landing in a per-iteration non-atomic update window.
 //   * window width is the dial on expected time-to-find (~256 branches).
@@ -76,41 +79,63 @@
 // (see the loop). Mirrors campaign-super.c's `BUDGET_MAX/2` so all three supers
 // emit the SAME log cadence — the apples-to-apples signal workload (task 69 M2).
 #define WORK_CYCLE 500000L
+// The vulnerable-window width (busy iterations mirror is held stale) — the dial on
+// bug-2's expected time-to-find. 0 ⇒ the tiny implicit window (0 fires on the box);
+// a larger value widens the Moment-window the injected interrupt can land in.
+// Box-calibrated at milestone 2 (2026-07-08). See the loop.
+#define WINDOW_SPIN 4096L
 
 // The shared bookkeeping. `primary` and `mirror` must always satisfy
 // `mirror == ~primary`; `updating` is 1 exactly during the non-atomic window.
 static volatile uint64_t primary;
 static volatile uint64_t mirror;
 
-// The total number of hardware interrupts the kernel has serviced — the first
-// number of /proc/stat's `intr` line. A delivered external interrupt increments
-// it; sampling before/after the update window detects an interrupt serviced
-// INSIDE the window (the injected vector at the vulnerable Moment) — a single-task
-// observable that needs no preemption (see the header note). On a single-vCPU
-// guest the `intr` line sits near the top of /proc/stat (right after `cpu`/`cpu0`),
-// so one pread of the head reaches it; the fd is kept open and `pread` re-snapshots
-// the file on each call. Returns 0 on any error (a stuck 0 simply never fires,
-// never a false positive).
+// The total number of interrupts the kernel has serviced, of EVERY kind — the sum
+// of the per-CPU count column of /proc/interrupts. A delivered external interrupt
+// increments exactly one of these lines; sampling before/after the update window
+// detects an interrupt serviced INSIDE the window (the injected vector at the
+// vulnerable Moment) — a single-task observable that needs no preemption (see the
+// header note).
+//
+// Why the SUM of /proc/interrupts and NOT /proc/stat's `intr` total: the campaign
+// injects UNREGISTERED vectors (0x81 & neighbours), which the kernel services as
+// spurious/APIC interrupts. /proc/stat's `intr` counts only numbered device IRQs,
+// so it MISSES those (0/512 fires on the box, confirmed 2026-07-07);
+// /proc/interrupts carries every line — the numbered IRQs AND the arch/APIC
+// counters (LOC/SPU/RES/…) — so its sum moves for any delivered vector. On a
+// single-vCPU guest the file is small (one count column); the fd is kept open and
+// `pread` re-snapshots it. Sum the first integer after each line's ':' (the CPU0
+// count); the header line has no ':' and is skipped. Returns 0 on any error (a
+// stuck 0 simply never fires — never a false positive).
 static uint64_t interrupts_serviced(void)
 {
     static int fd = -1;
     if (fd < 0) {
-        fd = open("/proc/stat", O_RDONLY);
+        fd = open("/proc/interrupts", O_RDONLY);
         if (fd < 0) {
             return 0;
         }
     }
-    char buf[1024];
+    char buf[16384];
     ssize_t n = pread(fd, buf, sizeof(buf) - 1, 0);
     if (n <= 0) {
         return 0;
     }
     buf[n] = '\0';
-    const char *p = strstr(buf, "\nintr ");
-    if (!p) {
-        return 0;
+    uint64_t sum = 0;
+    char *line = buf;
+    while (line && *line) {
+        char *eol = strchr(line, '\n');
+        if (eol) {
+            *eol = '\0';
+        }
+        char *colon = strchr(line, ':');
+        if (colon) {
+            sum += strtoull(colon + 1, NULL, 10);
+        }
+        line = eol ? eol + 1 : NULL;
     }
-    return strtoull(p + 6, NULL, 10);
+    return sum;
 }
 
 // Announce the planted bug: print the distinctive `ORDER_BUG:` marker and write
@@ -145,7 +170,7 @@ int main(void)
     if (getenv("ORDER_DEBUG")) {
         printf("ORDER_IOPERM: %s\n", ioperm(ISA_DEBUG_EXIT_PORT, 1, 1) == 0 ? "ok" : "FAILED");
         printf("ORDER_VECTOR: injected=0x%x (serviced-interrupt observable)\n", INTERRUPT_VECTOR);
-        // Baseline serviced-interrupt count — confirms /proc/stat `intr` is
+        // Baseline serviced-interrupt count — confirms the /proc/interrupts sum is
         // readable + parseable (pre-READY diagnostic; not part of any branch).
         printf("ORDER_INTR0: %llu\n", (unsigned long long)interrupts_serviced());
         fflush(stdout);
@@ -168,6 +193,16 @@ int main(void)
         // between the two half-updates, leaving the pair observably torn.
         primary = primary + 1;   // (1) primary advances — mirror now stale
         // --- vulnerable window: mirror not yet restored ---
+        // Hold the pair torn for WINDOW_SPIN busy iterations so the injected
+        // interrupt has a TUNABLE Moment-window to land in. This is the dial on the
+        // expected time-to-find: the fire probability is roughly the fraction of an
+        // iteration this spin occupies. Box-calibrated (2026-07-08) — with the tiny
+        // implicit window (no spin) the interrupt reliably increments the counter
+        // but almost never lands *between* the two samples, so 0/512 fires; a
+        // right-sized spin dials the rate into the findable ~10²–10³ branch band.
+        for (long w = 0; w < WINDOW_SPIN; w++) {
+            __asm__ volatile("" ::: "memory"); // keep the spin (mirror stays stale)
+        }
         mirror = ~primary;       // (2) mirror catches up — window closed
         // Sample AFTER the window fully closes so the [intr_before, intr_after]
         // interval brackets the ENTIRE torn window (round-7 P2). Sampling before
