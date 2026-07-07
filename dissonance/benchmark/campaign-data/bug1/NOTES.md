@@ -548,3 +548,30 @@ re-calibration + gate-2 each. ALTERNATIVES: rule GO/NO-GO on bug-1-only (fails t
 each found" gate — needs a waiver), or defer bugs 2/3 to a follow-up task. Escalated to Paul/foreman
 for the call. Bug-1 suite untouched throughout (healthy, all rc=0, kvm_intel→9 after every core-4
 run).
+
+### 2026-07-07 — FOREMAN RULING (Paul) + BUG-3 FIX DONE + SMOKE-VALIDATED
+
+Ruling: bug-2 = **interrupt-counter observable** (single-task; detect the injected interrupt landing
+in the window via a kernel COUNTER, not preemption; no co-runner); bug-3 = **pre-draw stabilization
+loop**. New discipline: **smoke-fire-first** (a minutes-long fire-once probe per fixed bug BEFORE any
+campaign spend), then gate-2, then the 20×2 campaigns.
+
+**Bug 3 FIXED (uuid-super.c) + smoke-validated.** The fix that worked (after two dead ends): a
+SILENT pre-draw spin does NOT help (no snapshottable boundary → seal still lands at the RDRAND
+intercept). The seal needs a **console-write** boundary. So uuid-super now runs ONE unified loop
+after UUID_READY that emits the periodic operational log lines (each `fflush` = a snapshottable
+boundary the seal lands on) and draws ONCE at `i == STABILIZE_ITERS`; by then several checkpoint
+writes have given the seal a home EARLIER in the loop, so the draw runs post-seal, per-branch.
+`STABILIZE_ITERS` tuned to **8192** (draw just past the i=4096 checkpoint; ~8.9 ns/iter ⇒ reached
+well within the 50 000-ns campaign deadline). Evidence:
+- `conductor box --record` (2M deadline): **8 distinct UUID_DRAW values** across 8 seeds (draw now
+  varies per branch ⇒ reseed reaches it post-seal) and **4/8 fire** (UUID_BUG present) at
+  PREFIX_BITS=1 — exactly the 4 draws with MSB=1. Operational templates captured
+  (checkpoint/lifecycle/backpressure).
+- bench-campaign, **deadline 50 000** (the real campaign deadline), PREFIX_BITS=1, 24 branches:
+  **10/24 marker=true, 1 certified find** (marker + 25/25). So the marker-based cert works at the
+  standard deadline — NO per-bug deadline change needed.
+Canonical image rebuilt at PREFIX_BITS=**8** + STABILIZE_ITERS=8192; a 512-branch 8-bit smoke
+(real ~1/256 rate) is running to confirm the production difficulty. Bug-2 rework (interrupt-counter)
+is next. kvm_intel→9 verified after each run; bug-1 suite untouched (phase-1 nearly done — baseline-20
++ signal-19 complete).
