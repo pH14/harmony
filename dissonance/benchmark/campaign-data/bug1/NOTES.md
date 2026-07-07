@@ -456,3 +456,39 @@ wave ran ~83 min/campaign (~2.5×; 512 branches × ~9.7s), warmer later waves fa
 runs the FULL 512-branch budget by design (species curve — does NOT stop at first find). Net ETA
 ~15-18h. Wall-clock only — determinism (state_hash) is co-tenancy-independent (V-time = retired
 branches), which phase-2's solo-vs-co-tenant spot-check verifies.
+
+---
+
+## 2026-07-07 — CORE-4 CALIBRATION (foreman-cleared, untracked, `taskset -c 4`)
+
+Preflight verified: kvm_intel=9, campaign on {1,2,3} intact, core 4 clear (task-80 gate done).
+Every run below: foreground, kvm_intel back to **9** after (verified), no module transition.
+
+**Bug 2 (order) — DOES NOT FIRE with the placeholder vector; testing real vectors before escalate.**
+- Image boots + seals (base sealed deep in the loop at VTime ~458M) + branches run clean (rc=0).
+- BENCH_DIAG confirms InjectInterrupt faults are minted+delivered: `Interrupt@<at=4..68> vec=0x81..0x8e`
+  (the mint spread `{vector^0..15}`), `fault-rebase 1000` (⇒ the `at` search range [4,68) correctly
+  overlaps the FIRST loop iterations past the seal — NOT a window/timing miss).
+- **16 branches → 0 fires; 512 branches (suite scale) → 0 fires.** cells=1, records=1 (operational
+  logging works; guest runs the loop, just never preempted).
+- **Root cause (hypothesis, strong):** order-super detects the bug via `ru_nivcsw` (INVOLUNTARY
+  context switches). On this guest — no clock-event device (pg-init's cooperative-wait design) +
+  order-super is the ONLY runnable userspace task (postgres stopped, /init blocked in `wait()`) — an
+  injected interrupt runs its IDT handler and returns to the SAME task; with nothing to switch to and
+  no timer tick, `ru_nivcsw` stays permanently 0 ⇒ ORDER_BUG can't fire. COMPOUNDED: the mint
+  vectors `{0x81^0..15}` are all arbitrary — none is a real reschedule/timer/IPI vector (0x81 was a
+  placeholder "wired at bring-up").
+- **BEFORE escalating (proper calibration):** try REAL reschedule/timer vectors via a scratch
+  calibration.json — a timer interrupt (LOCAL_TIMER 0xec; spread covers 0xe0-0xef) can raise a
+  softirq → ksoftirqd runnable → preempts order-super (involuntary ctxsw) EVEN single-task; then the
+  reschedule/IPI range (manifest vector 0xf9 spreads to the full 0xf0-0xff incl. RESCHEDULE 0xfd /
+  CALL_FUNCTION 0xfb). If a vector fires → calibration success (set that vector in calibration.json,
+  narrow window to ~1/256, confirm marker < deadline 50000 + cert). If NEITHER range fires → ESCALATE:
+  the mechanism truly can't produce an involuntary ctxsw on this single-task/no-timer guest. Fix
+  options for the foreman/Paul then: **(A)** deterministic co-runner (order-init launches a 2nd busy
+  userspace task so a reschedule actually deschedules order-super) + a real vector — faithful but the
+  two-task scheduling must be proven deterministic under the harness (the 25/25-cert risk); **(B)** a
+  single-task-observable realization (detect the injected interrupt landing in the window via a kernel
+  interrupt counter rather than via preemption) — simpler, no scheduling-determinism risk, still a
+  faithful "handler ran mid-update" ordering violation. Recommend B if a clean observable exists.
+  Do NOT build either unilaterally — it's a benchmark-mechanism change.
