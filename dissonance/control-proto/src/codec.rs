@@ -20,8 +20,8 @@
 use crate::error::ProtocolError;
 use crate::types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
-    EventRef, HashScope, HostFault, Moment, Reply, Request, SnapId, StopConditions, StopMask,
-    StopReason, VTime,
+    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
+    StopMask, StopReason, VTime,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
@@ -40,6 +40,8 @@ const REQ_RUN: u8 = 6;
 const REQ_HASH: u8 = 7;
 const REQ_PERTURB: u8 = 8;
 const REQ_SDK_EVENTS: u8 = 9;
+const REQ_READ: u8 = 10;
+const REQ_REGS: u8 = 11;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -52,6 +54,8 @@ const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
 const REPLY_SDK_EVENTS: u8 = 6;
+const REPLY_BYTES: u8 = 7;
+const REPLY_REGS: u8 = 8;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -88,6 +92,8 @@ const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
 const CE_NOT_SYNCHRONIZED: u8 = 15;
 const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
+const CE_READ_OUT_OF_RANGE: u8 = 17;
+const CE_READ_TOO_LARGE: u8 = 18;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -249,6 +255,12 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             w.push(REQ_SDK_EVENTS);
             put_u32(w, *offset);
         }
+        Request::Read { gpa, len } => {
+            w.push(REQ_READ);
+            put_u64(w, *gpa);
+            put_u32(w, *len);
+        }
+        Request::Regs => w.push(REQ_REGS),
     }
 }
 
@@ -274,6 +286,11 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             at: Moment(r.u64()?),
         },
         REQ_SDK_EVENTS => Request::SdkEvents { offset: r.u32()? },
+        REQ_READ => Request::Read {
+            gpa: r.u64()?,
+            len: r.u32()?,
+        },
+        REQ_REGS => Request::Regs,
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -331,6 +348,14 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
                 put_bytes(w, bytes);
             }
         }
+        Reply::Bytes(bytes) => {
+            w.push(REPLY_BYTES);
+            put_bytes(w, bytes);
+        }
+        Reply::Regs(view) => {
+            w.push(REPLY_REGS);
+            write_regs_view(w, view);
+        }
     }
 }
 
@@ -355,7 +380,58 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
             }
             Reply::SdkEvents(events)
         }
+        REPLY_BYTES => Reply::Bytes(r.bytes()?.to_vec()),
+        REPLY_REGS => Reply::Regs(read_regs_view(r)?),
         _ => return Err(ProtocolError::ShortFrame),
+    })
+}
+
+/// The `RegsView` wire layout — fixed field order, no padding, all little-endian
+/// (canonical). The `gpr`/`seg` arrays are written element-by-element in their
+/// canonical order; growing the view (an additive `VERSION` bump) appends fields
+/// after `vtime`, so an older decoder still consumes the prefix it knows and a
+/// newer one reads the extension. Every element is a fixed-width integer, so the
+/// body length is constant for a given version.
+fn write_regs_view(w: &mut Vec<u8>, v: &RegsView) {
+    put_u16(w, v.version);
+    for g in &v.gpr {
+        put_u64(w, *g);
+    }
+    put_u64(w, v.rip);
+    put_u64(w, v.rflags);
+    for s in &v.seg {
+        put_u16(w, *s);
+    }
+    put_u64(w, v.cr0);
+    put_u64(w, v.cr3);
+    put_u64(w, v.cr4);
+    put_u64(w, v.moment.0);
+    put_u64(w, v.vtime);
+}
+
+fn read_regs_view(r: &mut Reader) -> Result<RegsView, ProtocolError> {
+    let version = r.u16()?;
+    let mut gpr = [0u64; 16];
+    for g in &mut gpr {
+        *g = r.u64()?;
+    }
+    let rip = r.u64()?;
+    let rflags = r.u64()?;
+    let mut seg = [0u16; 6];
+    for s in &mut seg {
+        *s = r.u16()?;
+    }
+    Ok(RegsView {
+        version,
+        gpr,
+        rip,
+        rflags,
+        seg,
+        cr0: r.u64()?,
+        cr3: r.u64()?,
+        cr4: r.u64()?,
+        moment: Moment(r.u64()?),
+        vtime: r.u64()?,
     })
 }
 
@@ -570,6 +646,17 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             w.push(CE_PERTURB_RESERVED_VECTOR);
             w.push(*vector);
         }
+        Ce::ReadOutOfRange { gpa, len, ram_len } => {
+            w.push(CE_READ_OUT_OF_RANGE);
+            put_u64(w, *gpa);
+            put_u32(w, *len);
+            put_u64(w, *ram_len);
+        }
+        Ce::ReadTooLarge { len, cap } => {
+            w.push(CE_READ_TOO_LARGE);
+            put_u32(w, *len);
+            put_u32(w, *cap);
+        }
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -609,6 +696,15 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
         },
         CE_NOT_SYNCHRONIZED => Ce::NotSynchronized,
         CE_PERTURB_RESERVED_VECTOR => Ce::PerturbReservedVector { vector: r.u8()? },
+        CE_READ_OUT_OF_RANGE => Ce::ReadOutOfRange {
+            gpa: r.u64()?,
+            len: r.u32()?,
+            ram_len: r.u64()?,
+        },
+        CE_READ_TOO_LARGE => Ce::ReadTooLarge {
+            len: r.u32()?,
+            cap: r.u32()?,
+        },
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,

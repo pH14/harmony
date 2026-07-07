@@ -8,8 +8,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Environment, EventRef, HashScope, HostFault, Moment, ProtocolError, Reply, Request, SnapId,
-    StopConditions, StopMask, StopReason, VTime,
+    Environment, EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Request,
+    SnapId, StopConditions, StopMask, StopReason, VTime,
 };
 use proptest::prelude::*;
 
@@ -84,7 +84,36 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
             fault: HostFault(fault),
             at: Moment(at),
         }),
+        any::<u32>().prop_map(|offset| Request::SdkEvents { offset }),
+        (any::<u64>(), any::<u32>()).prop_map(|(gpa, len)| Request::Read { gpa, len }),
+        Just(Request::Regs),
     ]
+}
+
+pub fn arb_regs_view() -> impl Strategy<Value = RegsView> {
+    (
+        any::<u16>(),
+        prop::array::uniform16(any::<u64>()),
+        any::<u64>(),
+        any::<u64>(),
+        prop::array::uniform6(any::<u16>()),
+        (any::<u64>(), any::<u64>(), any::<u64>()),
+        (any::<u64>(), any::<u64>()),
+    )
+        .prop_map(
+            |(version, gpr, rip, rflags, seg, (cr0, cr3, cr4), (moment, vtime))| RegsView {
+                version,
+                gpr,
+                rip,
+                rflags,
+                seg,
+                cr0,
+                cr3,
+                cr4,
+                moment: Moment(moment),
+                vtime,
+            },
+        )
 }
 
 fn arb_crash_kind() -> impl Strategy<Value = CrashKind> {
@@ -147,6 +176,9 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
             .prop_map(|(moment, vtime)| ControlError::ScheduleUnsatisfiable { moment, vtime }),
         Just(ControlError::NotSynchronized),
         any::<u8>().prop_map(|vector| ControlError::PerturbReservedVector { vector }),
+        (any::<u64>(), any::<u32>(), any::<u64>())
+            .prop_map(|(gpa, len, ram_len)| ControlError::ReadOutOfRange { gpa, len, ram_len }),
+        (any::<u32>(), any::<u32>()).prop_map(|(len, cap)| ControlError::ReadTooLarge { len, cap }),
         arb_protocol_error().prop_map(ControlError::Protocol),
     ]
 }
@@ -158,6 +190,8 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
         Just(Reply::Unit),
         arb_stop_reason().prop_map(Reply::Stop),
         proptest::array::uniform32(any::<u8>()).prop_map(Reply::Hash),
+        arb_bytes().prop_map(Reply::Bytes),
+        arb_regs_view().prop_map(Reply::Regs),
     ]
 }
 

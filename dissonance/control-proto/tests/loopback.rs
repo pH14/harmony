@@ -10,8 +10,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, Environment, HashScope,
-    HostFault, Moment, PROTO_VERSION, Reply, Request, SnapId, StopConditions, StopMask, StopReason,
-    VTime, class_bit, decode_reply, decode_request, encode_reply, encode_request,
+    HostFault, Moment, PROTO_VERSION, RegsView, Reply, Request, SnapId, StopConditions, StopMask,
+    StopReason, VTime, class_bit, decode_reply, decode_request, encode_reply, encode_request,
 };
 
 fn caps() -> Caps {
@@ -87,6 +87,22 @@ impl StubServer {
                 (10, 0x0100_0001, vec![1, 2, 3]),
                 (20, 0x0000_0000, vec![]),
             ])),
+            // Observation verbs (task 80): a stubbed guest returns `len` bytes and
+            // a fixed register view — the point here is that they cross the wire
+            // and round-trip, not that the bytes are a real guest's.
+            &Request::Read { len, .. } => Ok(Reply::Bytes(vec![0xAB; len as usize])),
+            Request::Regs => Ok(Reply::Regs(RegsView {
+                version: RegsView::VERSION,
+                gpr: [0; 16],
+                rip: 0xDEAD_BEEF,
+                rflags: 0x2,
+                seg: [0x10, 0x18, 0x18, 0x18, 0, 0],
+                cr0: 0x8000_0011,
+                cr3: 0x3000,
+                cr4: 0x20,
+                moment: Moment(500),
+                vtime: 500,
+            })),
         }
     }
 }
@@ -174,6 +190,12 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     replies.push(lb.exchange(Request::Hash {
         scope: HashScope::Whole,
     }));
+    // Observation verbs (task 80): read a small region, then the register view.
+    replies.push(lb.exchange(Request::Read {
+        gpa: 0x1000,
+        len: 4,
+    }));
+    replies.push(lb.exchange(Request::Regs));
     // Stage a host-plane fault over the wire (the perturb verb).
     replies.push(lb.exchange(Request::Perturb {
         fault: HostFault(vec![0x02, 0x80]), // opaque environment::HostFault bytes
@@ -206,6 +228,19 @@ fn loopback_exercises_every_verb_with_expected_replies() {
             Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(500) })),
             Ok(Reply::Unit), // Replay
             Ok(Reply::Hash([0x42; 32])),
+            Ok(Reply::Bytes(vec![0xAB; 4])),
+            Ok(Reply::Regs(RegsView {
+                version: RegsView::VERSION,
+                gpr: [0; 16],
+                rip: 0xDEAD_BEEF,
+                rflags: 0x2,
+                seg: [0x10, 0x18, 0x18, 0x18, 0, 0],
+                cr0: 0x8000_0011,
+                cr3: 0x3000,
+                cr4: 0x20,
+                moment: Moment(500),
+                vtime: 500,
+            })),
             Ok(Reply::Unit), // Perturb
             Err(ControlError::ResolveWithoutDecision),
             Ok(Reply::Unit), // Drop
