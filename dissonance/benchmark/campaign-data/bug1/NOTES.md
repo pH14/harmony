@@ -308,3 +308,42 @@ Escalating to Paul: (1) stop the run now vs let baselines finish (recommend STOP
 completed, fix doesn't touch baseline code path so a clean unified relaunch is apples-to-
 apples); (2) fix scope A vs A+B (recommend A+B + re-validate the EXPLOIT path specifically
 before relaunch). Pending decision.
+
+## 2026-07-07 RESOLVED — Paul: STOP + A+B; foreman ruling folded in; fixed + validated
+
+**Decision (Paul):** stop the run now; fix scope **A+B** with exploit-path re-validation.
+**Foreman ruling (issue #66):** (A) `MachineError::Inadmissible` mapped from
+`PerturbOutOfRange`/`PerturbPastMoment`/`PerturbMomentTaken`/`Unsupported`, skip-not-abort,
+never swallow genuine `Transport`; (B) exploit kernel BUG-AGNOSTIC (jitter parent's existing
+fault only) + seeded-stream-deterministic + in benchcampaign.rs only + documented in the
+report; re-validate the exploit path (populated frontier + exploit step) before relaunch.
+
+**STOPPED cleanly (02:02):** `kill -9 -994855` (pgid, not a `-f` pattern), no conductor
+stragglers, released w1/w2/w3 → `REVERT OK` stock `1396736`, archived partial results to
+`~/t69m2-results/bug1-ABORTED-signalbug-0202`.
+
+**FIX (commit 1bcfc6c):** exactly the A+B ruling. Exploit = `exploit_env`/`perturb_fault`
+(one-dimension-at-a-time jitter so it converges on conjunctive triggers; fault-less parent
+jitters its seed); dead `codec` param dropped. Local gates: 12 benchcampaign (+ new
+`inadmissible_proposal_is_skipped_but_transport_still_aborts`) + 57 conductor lib + explorer
+tests green; clippy + rustfmt clean.
+
+**BOX VALIDATED (02:31, worktree checked out to 1bcfc6c + rebuilt — verifies cfg(linux)
+boxrun.rs):**
+- SIGNAL seed 1, 32 branches (the exact campaign that aborted before): **EXIT=0**, exploits
+  concentrate near the canary (gpa 0x7fbe3000±, bits 29/30) exactly as fix B intends, **0
+  aborts, 0 skips** (fix B keeps proposals in-range; fix A is defense-in-depth). No find in
+  32 branches — the canary gpa 0x7fbe2000 was simply never proposed (unlucky ~10%; signal is
+  degenerate on bug 1 as predicted — it concentrates on the near-miss 0x7fbe3000).
+- BASELINE seed 1, 16 branches: **EXIT=0, 1 certified find**, `FIND bug 1 branch 1 state_hash
+  ffadc25d6fe4aa46fea3c65ed43535c8f00c03164cafe073ad43cc901c2ac83c` — **BIT-IDENTICAL to the
+  old-binary gate-2 hash** ⇒ the refactor changed nothing on the find/cert/determinism path
+  and bug-1 gate-2 validity is re-confirmed on the new binary.
+- Box reverted to stock cleanly after every run.
+- **Invocation gotcha:** `--initramfs` takes the BARE name (`initramfs-campaign.cpio.gz`);
+  `artifact()` (boxrun.rs) prepends `guest/build/`. Passing a full path double-prefixes →
+  "guest image missing". Image + bzImage live in `~/harmony-t69m2/guest/build/`.
+
+**NEXT:** unified clean relaunch of the bug-1 suite (both configs, same 1bcfc6c binary),
+then prep bugs 2 & 3 in parallel, then report + GO/NO-GO. The signal<baseline-on-bug-1
+expectation stands (degenerate bug); the discriminating evidence is bugs 2/3.
