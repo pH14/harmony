@@ -178,7 +178,14 @@ impl Benchmark {
                     name: "rare-entropy-prefix".to_string(),
                     class: BugClass::RareEntropy,
                     serial_marker: "UUID_BUG".to_string(),
-                    crash_kind: CrashKind::Panic,
+                    // The rare branch prints UUID_BUG then dereferences a poisoned
+                    // userspace pointer → SIGSEGV → non-zero exit → /init reboot →
+                    // backend `Shutdown` → `Crash{Shutdown}` (isa-debug-exit is
+                    // unreachable on the container kernel, exactly as for bugs 1/2).
+                    // The manifest is the attribution ground truth, so it names the
+                    // *real* box terminal, not the aspirational guest `Panic` (the
+                    // same round-7 P2 correction already applied to bug 2).
+                    crash_kind: CrashKind::Shutdown,
                     // 8-bit prefix ⇒ fire probability 1/256 ⇒ ~256 branches.
                     trigger: TriggerParams::RareEntropy {
                         prefix: 0xA5 << 56,

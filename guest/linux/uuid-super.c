@@ -42,6 +42,16 @@
 // isa-debug-exit terminal. FAIL_CODE 0x63 tags "benchmark bug 3".
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x63
+// Post-READY operational-loop length + work cycle. On a NON-firing branch the
+// process runs this loop emitting the same bug-agnostic operational logs the
+// other supers do, giving the log-template signal (task 67) a workload to read
+// until the campaign deadline cuts it off. Mirrors campaign-super.c's
+// ITERS/`BUDGET_MAX/2` so all three supers share the SAME log cadence — the
+// apples-to-apples signal workload (task 69 M2). A FIRING branch never reaches
+// the loop: it crashes at the prefix match, emitting the UUID_BUG marker well
+// before the deadline (marker-based certification, terminal-agnostic).
+#define ITERS 200000000L
+#define WORK_CYCLE 500000L
 
 static int prefix_matches(uint64_t draw)
 {
@@ -145,6 +155,34 @@ int main(void)
         volatile uint64_t *poisoned = (volatile uint64_t *)(uintptr_t)0xdead000000000000ULL;
         (void)*poisoned;
         _exit(FAIL_CODE); // fallback if the deref somehow did not fault
+    }
+
+    // NON-firing branch: run the SAME bug-agnostic operational loop the other
+    // supers do, so the log-template signal (task 67) reads an identical workload
+    // here as for bugs 1/2 (fairness — do NOT enrich per-bug logging to help the
+    // signal). Every line is a function of the NORMAL work counter `i`, WITHOUT
+    // reference to the rare-entropy trigger (already decided above). No RDRAND is
+    // drawn in the loop — the model matches only the FIRST draw (above), so the
+    // loop must not advance the seeded-entropy stream. The campaign deadline cuts
+    // this loop off; `last_phase` makes the lifecycle line fire on transitions
+    // only. On a nominal (no-deadline) run it completes and prints UUID_DONE.
+    long last_phase = -1;
+    for (long i = 0; i < ITERS; i++) {
+        long work = i % WORK_CYCLE;
+        long phase = (work * 3) / WORK_CYCLE; // {0,1,2} across the normal cycle
+        if (phase != last_phase) {
+            const char *name = phase <= 0 ? "warmup" : (phase == 1 ? "steady" : "drain");
+            printf("supervisor: lifecycle phase %s\n", name);
+            if (phase >= 2) {
+                printf("supervisor: backpressure engaged, shedding retries\n");
+            }
+            fflush(stdout);
+            last_phase = phase;
+        }
+        if (i % 4096 == 0) {
+            printf("supervisor: checkpoint committed, batch complete\n");
+            fflush(stdout);
+        }
     }
 
     printf("UUID_DONE\n");

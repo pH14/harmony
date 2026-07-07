@@ -40,7 +40,7 @@
       "name": "rare-entropy-prefix",
       "class": "RareEntropy",
       "serial_marker": "UUID_BUG",
-      "crash_kind": "Panic",
+      "crash_kind": "Shutdown",
       "trigger": {
         "RareEntropy": {
           "prefix": 11889503016258109440,

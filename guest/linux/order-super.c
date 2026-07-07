@@ -62,6 +62,10 @@
 // tags "benchmark bug 2".
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x62
+// The normal-work cycle length that drives the bug-agnostic operational logging
+// (see the loop). Mirrors campaign-super.c's `BUDGET_MAX/2` so all three supers
+// emit the SAME log cadence — the apples-to-apples signal workload (task 69 M2).
+#define WORK_CYCLE 500000L
 
 // The shared bookkeeping. `primary` and `mirror` must always satisfy
 // `mirror == ~primary`; `updating` is 1 exactly during the non-atomic window.
@@ -118,6 +122,10 @@ int main(void)
     printf("ORDER_READY\n");
     fflush(stdout);
 
+    // `last_phase` makes the operational lifecycle line (below) fire on
+    // transitions only, not every iteration — a periodic health log, not a
+    // per-tick flood.
+    long last_phase = -1;
     for (long i = 0; i < ITERS; i++) {
         uint64_t sw_before = involuntary_ctxsw();
 
@@ -144,6 +152,38 @@ int main(void)
         // the branch is dead code.
         if (sw_after != sw_before) {
             report_and_die();
+        }
+
+        // Realistic operational logging (task 69 M2 — see IMPLEMENTATION
+        // §"guest logging"): a supervised worker emits the periodic
+        // health/progress lines a real service would, so the log-template signal
+        // (task 67) has a workload to read. Every line is **bug-agnostic by
+        // construction** — its content is a function of the worker's NORMAL work
+        // counter `i`, chosen WITHOUT reference to the planted trigger (the
+        // involuntary-preemption check above); none encodes proximity to the
+        // vulnerable interrupt window. Emitted at the loop BOTTOM, OUTSIDE the
+        // `[sw_before, sw_after]` measurement window, so its (voluntary) console
+        // writes never fall inside the torn window they would otherwise perturb —
+        // a write() yields as a *voluntary* switch (`ru_nvcsw`), never the
+        // *involuntary* `ru_nivcsw` the trigger keys on, and any injected
+        // interrupt landing here (not in the window) is correctly a non-trigger.
+        // Identical idiom + messages to campaign-super.c so the signal workload is
+        // the SAME across bugs (fairness — do NOT enrich per-bug logging to help
+        // the signal).
+        long work = i % WORK_CYCLE;
+        long phase = (work * 3) / WORK_CYCLE; // {0,1,2} across the normal cycle
+        if (phase != last_phase) {
+            const char *name = phase <= 0 ? "warmup" : (phase == 1 ? "steady" : "drain");
+            printf("supervisor: lifecycle phase %s\n", name);
+            if (phase >= 2) {
+                printf("supervisor: backpressure engaged, shedding retries\n");
+            }
+            fflush(stdout);
+            last_phase = phase;
+        }
+        if (i % 4096 == 0) {
+            printf("supervisor: checkpoint committed, batch complete\n");
+            fflush(stdout);
         }
     }
 
