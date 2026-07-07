@@ -46,10 +46,10 @@
 #![cfg(target_os = "linux")]
 
 use control_proto::{
-    Environment, HashScope, RegsView, Reply, Request, SnapId, StopConditions, StopMask, StopReason,
-    VTime,
+    Environment, HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Request, SnapId,
+    StopConditions, StopMask, StopReason, VTime,
 };
-use environment::{EnvSpec, FaultPolicy};
+use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
 use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
@@ -214,6 +214,30 @@ fn seeded_env(seed: u64) -> Environment {
     }
 }
 
+/// A **no-op** host fault (`CorruptMemory` with a zero XOR mask at gpa 0) — it
+/// changes no guest byte, but staging it at a `Moment` **arms the exact-count
+/// arrival** so the following `run` lands there precisely. This is how the
+/// deterministic force-exit machinery (tasks 47/55, the patched KVM) is invoked at
+/// an exact `Moment`: the `run` deadline alone is *opportunistic* (task 58 reverted
+/// the hard force-exit, so a bare deadline stops at the first boundary at-or-past
+/// it — it overshoots), whereas a staged `Moment ≤ deadline` makes the run
+/// `arm_arrival` → `run_until` to that exact retired count. XOR-0 leaves state
+/// untouched, so the materialized point observed after the landing is the true one.
+/// Both materializations of a `Moment` stage the identical marker, so the
+/// twice-from-genesis comparison stays byte-exact.
+fn arrival_marker(at: u64) -> Request {
+    Request::Perturb {
+        fault: WireHostFault(
+            EnvHostFault::CorruptMemory {
+                gpa: 0,
+                mask: BitMask(0),
+            }
+            .encode(),
+        ),
+        at: Moment(at),
+    }
+}
+
 /// One observation of a materialized point: the register view, the probe reads,
 /// and the whole-state hash.
 #[derive(Clone, PartialEq, Eq)]
@@ -308,6 +332,8 @@ fn moment_address_materializes_identically_twice() {
             Reply::Unit,
             "branch(genesis, env)"
         );
+        // Arm the exact-count arrival at `moment`, then advance to it.
+        expect_ok(s, &arrival_marker(moment));
         match run_until(s, moment) {
             StopReason::Deadline { vtime } => assert_eq!(
                 vtime.0, moment,
@@ -378,6 +404,9 @@ fn moment_address_materializes_identically_twice() {
             ),
             Reply::Unit
         );
+        // Advance to `mid` via an exact-count arrival, inspect (or not), then
+        // continue to `late` the same way.
+        expect_ok(s, &arrival_marker(mid));
         assert!(matches!(run_until(s, mid), StopReason::Deadline { .. }));
         if inspect {
             let _ = regs(s);
@@ -386,6 +415,7 @@ fn moment_address_materializes_identically_twice() {
             }
             let _ = regs(s);
         }
+        expect_ok(s, &arrival_marker(late));
         assert!(matches!(run_until(s, late), StopReason::Deadline { .. }));
         hash_whole(s)
     };
