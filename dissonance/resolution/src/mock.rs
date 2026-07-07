@@ -53,17 +53,24 @@ struct Timeline {
     moment: Moment,
     /// Whether an [`exec`](Server::exec) improvisation has tainted it.
     tainted: bool,
+    /// Set once a scripted fault has crashed the guest. A crashed timeline is
+    /// **terminal**: every subsequent `run` re-reports this crash without
+    /// advancing, and observations reflect the crash `Moment`, until the client
+    /// re-materializes (`branch`/`replay` installs a fresh/restored timeline).
+    /// `None` = running.
+    crashed: Option<CrashInfo>,
 }
 
 impl Timeline {
     /// Boot a timeline from an env at `moment`, inheriting `tainted` from the
-    /// restored lineage.
+    /// restored lineage. A freshly booted/branched timeline is never crashed.
     fn from_env(env: EnvSpec, moment: Moment, tainted: bool) -> Self {
         Self {
             world_seed: world_seed(&env),
             env,
             moment,
             tainted,
+            crashed: None,
         }
     }
 
@@ -270,6 +277,16 @@ impl Server for MockServer {
     }
 
     fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
+        // A crashed timeline is terminal: keep re-reporting the crash at its
+        // Moment, never advancing (a later `run` must not skip the already-hit
+        // fault and fabricate post-crash state), until the client
+        // re-materializes. `branch`/`replay` install a fresh/restored timeline.
+        if let Some(info) = &self.cur.crashed {
+            return Ok(StopReason::Crash {
+                vtime: VTime(self.cur.moment),
+                info: info.clone(),
+            });
+        }
         let quiescent = self.quiescent();
         let target = match until.deadline {
             // A deadline at or behind the current point is already met: report
@@ -284,15 +301,18 @@ impl Server for MockServer {
             // No deadline: run to quiescence.
             None => quiescent,
         };
-        // A staged CorruptMemory the run reaches crashes the guest there.
+        // A staged CorruptMemory the run reaches crashes the guest there — and
+        // latches the timeline terminal (recorded on `cur.crashed`).
         if let Some(crash_at) = self.crash_between(self.cur.moment, target) {
+            let info = CrashInfo {
+                kind: CrashKind::Panic,
+                detail: b"scripted fault: CorruptMemory".to_vec(),
+            };
             self.cur.moment = crash_at;
+            self.cur.crashed = Some(info.clone());
             return Ok(StopReason::Crash {
                 vtime: VTime(crash_at),
-                info: CrashInfo {
-                    kind: CrashKind::Panic,
-                    detail: b"scripted fault: CorruptMemory".to_vec(),
-                },
+                info,
             });
         }
         self.cur.moment = target;

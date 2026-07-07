@@ -59,25 +59,30 @@ fn live_session_and_replay_render_identically() {
     let transcript = dir.path().join("session.jsonl");
     let transcript_arg = transcript.to_str().unwrap();
 
-    // Live: run the script, logging the JSONL transcript.
+    // Live: run the script, recording the JSONL transcript with `--record`.
     let seed_arg = seed.to_string();
-    let live = run_bin(
-        &["--seed", &seed_arg, "--transcript", transcript_arg],
-        &script,
-    );
+    let live = run_bin(&["--seed", &seed_arg, "--record", transcript_arg], &script);
 
-    // The transcript file was written and is valid JSONL.
+    // The recording was written and is valid JSONL.
     let jsonl = std::fs::read_to_string(&transcript).unwrap();
     assert!(
         jsonl.lines().count() >= 6,
         "one record per recorded command"
     );
 
-    // Replay: re-render the transcript.
-    let replay = run_bin(&["--replay", transcript_arg], "");
+    // Replay: re-render via the spec's `--transcript <file>` form.
+    let replay = run_bin(&["--transcript", transcript_arg], "");
 
     assert_eq!(live, replay, "replay must render byte-identically to live");
     // Sanity: the investigation actually happened.
     assert!(live.contains("opened"));
     assert!(live.contains("TAINTED"));
+
+    // Replay is read-only: the recorded transcript is unchanged after replay
+    // (the spec's own invocation must never truncate the recording).
+    assert_eq!(
+        std::fs::read_to_string(&transcript).unwrap(),
+        jsonl,
+        "replaying --transcript must not overwrite the recording"
+    );
 }

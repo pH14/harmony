@@ -14,11 +14,11 @@ server; the live proof is one box gate handed to the foreman.
 | `mock` | `MockServer` — the in-crate scripted, deterministic guest the whole laptop gate runs against |
 | `transcript` | the `MomentRef`-stamped JSONL `Record` + `render_line`, the one renderer live and replay share |
 | `repl` | the eight-command line protocol (`Command`) + the recording `Shell` |
-| `main` (bin, `cli`) | the `resolution` REPL: live from stdin (`--transcript` logs JSONL) or `--replay <file>` re-render |
+| `main` (bin, `cli`) | the `resolution` REPL: `--transcript <file>` re-renders (spec's replay, read-only), else live from stdin (`--record <file>` logs JSONL) |
 
 Gates: standard suite green (build / nextest / clippy `-D warnings` / fmt / deny), all-features,
 macOS (portable — see below); proptests at 256 cases; the scripted mock investigation; the CLI
-end-to-end live==replay test. **41 tests.**
+end-to-end live==replay test. **42 tests.**
 
 **`open` is transactional.** `materialize` invalidates `current` *before* touching the server and
 installs the new timeline *only on full success*; if `branch` succeeds but the follow-up `run`
@@ -33,6 +33,49 @@ invariant holds after this change.
 `Opened` transcript record's `stop`/`detail`): a guest that crashes or quiesces *before* the
 requested moment lands at that earlier moment and reports the crash/quiescence, never a swallowed
 clean open (test `open_surfaces_an_early_crash_stop`).
+
+## Spec contract audit (`tasks/82-resolution-crate.md`, line-by-line)
+
+Every contract statement in the task spec, checked against the implementation. **✓** = met as
+written; **✓ (deviation)** = met with a documented, deliberate deviation (all forced or additive,
+none reducing the contract).
+
+| # | Spec statement | Status | Where / note |
+|---|---|---|---|
+| **MomentRef** |
+| 1 | `struct MomentRef { pub env, pub moment }` | ✓ (deviation) | `mref.rs`. `env: EnvSpec`, not the `Environment` *trait* the doc names — the reproducer type. Fields `pub`, names/`moment` type exact. |
+| 2 | Versioned, self-contained **textual** encoding (display + parse, implementer picks/documents/round-trips) | ✓ | `mref1:<moment>:<lower-hex(EnvSpec::encode())>`; `Display` + `parse`; round-trip proptest `mref_round_trips`. |
+| 3 | Parsing never panics (untrusted input) | ✓ | Total `parse`; `mref_parse_never_panics` over arbitrary + structured-garbage strings. |
+| **Session client** |
+| 4 | `Session::connect(socket)` | ✓ (deviation) | `Session::connect(server: S)` over the local `Server` seam (control-proto lacks the 80/81 verbs on this branch; rule 2 — see "Server seam" below). |
+| 5 | `materialize(mref) → MaterializedSession` = `branch(genesis, env)` + `run(until = moment)`; v1 roots at genesis; signature ready for a snapshot hint | ✓ | `Session::materialize`; transactional; private `materialize_from(mref, root)` is the snapshot-hint seam. |
+| 6 | Observation: `read`, `regs`, `hash` passthroughs | ✓ | `MaterializedSession::{read,regs,hash}`. |
+| 7 | Navigation: `run(until)`, re-materialize (wind back = materialize again) | ✓ | `run`; wind-back is `Session::materialize` again (no separate method, per the literal ruling). |
+| 8 | Improvisation: `exec(cmd)` — surfaces taint; refuses nothing; displays taint prominently | ✓ | `exec` returns `ExecResult::tainted`; refuses nothing; REPL shows `[TAINTED]` + `!`. |
+| 9 | Counterfactual: `vary(mref, edit) → MomentRef`; pure function, one override edit | ✓ | `MomentRef::vary(&self, &edit)`; `vary_is_pure_and_minimal`. |
+| 10 | Fail-loud: `StopReason` vs `ControlError` never conflated; `Tainted` surfaces verbatim | ✓ | `run` → `Ok(StopReason)`; failures → `SessionError`; `Tainted` verbatim (the taint rule). |
+| **REPL** |
+| 11 | `resolution` bin, `required-features = ["cli"]` | ✓ | `Cargo.toml` `[[bin]]`. |
+| 12 | Commands 1:1: `open`, `regs`, `read <gpa> <len>`, `hash`, `run <until>`, `exec <cmd>`, `vary <edit>`, `transcript` | ✓ | Exactly these 8 (`repl.rs` `Command`); `every_repl_verb_parses`. |
+| 13 | No cleverness; thin scriptable shell; line in, deterministic machine-parseable + human rendering | ✓ | One `Record` (JSONL) + `render_line` per command. |
+| **Transcript** |
+| 14 | One JSONL record per command, `MomentRef`-stamped, monotonic seq | ✓ | `Record { seq, mref, cmd, outcome }`. |
+| 15 | `resolution --transcript <file>` re-renders a recorded investigation identically | ✓ (round-5 fix) | `--transcript` is **replay/re-render, read-only**; live-log output is `--record`. `cli.rs` asserts the replay input is unmodified. |
+| 16 | Deterministic (no wall-clock; V-time + seq only) | ✓ | No `Instant`/`SystemTime`; seq + `Moment` only. |
+| **Acceptance gates** |
+| 17 | Gate 1: standard suite green (build/nextest/clippy `-D`/fmt/deny), all-features, macOS **+ Linux** | ✓ | Green on macOS; portable (no `unsafe`/`cfg(target_os)`/OS-only APIs/`HashMap`/float/wall-clock) ⇒ Linux. |
+| 18 | Gate 2: proptests ≥256 — mref round-trip (adversarial); `vary` pure+minimal; transcript replay byte-identical | ✓ | All three at 256 cases (`tests/proptests.rs`). |
+| 19 | Gate 3: scripted end-to-end (materialize→inspect→exec→vary→materialize counterfactual), every REPL command, both categories | ✓ | `repl_drives_the_whole_investigation` + client-level tests. |
+| 20 | Gate 4: box gate → foreman; record transcript in IMPLEMENTATION.md | ✓ (handed off) | Procedure + laptop analogues below; transcript pending the box + merged 80/81. |
+| **Boundaries** |
+| 21 | Deps: `control-proto` + `environment` only; **no** `explorer` dep | ✓ | `Cargo.toml`. |
+| 22 | Non-goals (MCP harness, rehearsal-mark inbox, `donate`, triage drivers, findings report, UI, nearest-ancestor) | ✓ | None implemented. |
+
+**Surface beyond the spec (all additive, documented):** `recorded_env` (a client method — the
+task-81 taint-guard's fail-loud site, *not* a REPL command); `MaterializedSession::mref()` returns
+`Result` (fail-loud on taint, the taint rule); the `--record` flag (live-log output, since the spec
+names only `--transcript` for replay); and the local `Server`/`MockServer`/`RegsView`/`ExecResult`/
+`Snapshot` seam (rule 2, pending merged 80/81). Nothing removes or narrows a contract.
 
 ### The exec seam (review round 2)
 
@@ -49,7 +92,7 @@ clean open (test `open_surfaces_an_early_crash_stop`).
   the bytes and the byte count). `render_line` presents a human-lossy escaped view over the decoded
   bytes; the artifact round-trips exactly (`exec_output_round_trips_losslessly_including_non_utf8`,
   and the mock now emits a couple of non-UTF-8 bytes so the CLI/proptest exercise the path
-  end-to-end). `--replay` byte-identity is preserved.
+  end-to-end). `--transcript`/replay byte-identity is preserved.
 
 ### Reproducer-semantics discipline (review round 1)
 
@@ -66,13 +109,19 @@ Three properties the crate exists to embody, each with a regression test:
   (`MRefParseError::Tainted`), so `open` rejects it loudly instead of silently reopening the
   *untainted* pre-`exec` state; the human render flags it with a leading `!`
   (`tainted_records_get_a_non_reproducible_stamp`, `tainted_stamp_is_refused_by_parse`). The
-  `--replay` byte-identity property is preserved (the marker rides the stamp string through the
+  `--transcript`/replay byte-identity property is preserved (the marker rides the stamp string through the
   one renderer).
 - **`replay` restores the world verbatim.** `MockServer` snapshots capture the **whole** timeline
   (world seed + env + moment + taint), so `snapshot-under-A → branch-to-B → replay(snap)` restores
   A's world, not A's moment inside B's world (`replay_restores_the_whole_world_verbatim_after_a_branch`).
   The mock's quiescence point is now derived from the live world on demand, not a stored field, so
   it cannot go stale across a branch/replay.
+- **A crash is terminal (round-5 fix).** Once a scripted fault crashes the guest, the mock latches
+  `Timeline.crashed`: every subsequent `run` re-reports the crash at its `Moment` without advancing
+  (so a later `run` can't skip the already-hit override and fabricate post-crash state), and
+  observations stay at the crash point — until the client re-materializes (`branch`/`replay`
+  installs a fresh/restored timeline). `MockServer` is the laptop reference model for session
+  semantics, so this had to be right (`a_crashed_timeline_stays_terminal_until_rematerialize`).
 
 ## The taint rule (the single source of truth)
 
@@ -108,7 +157,7 @@ coordinate. Every verb/accessor, audited against the rule:
 The two round-3 fixes fall straight out of the rule: REPL `vary` now fails `Tainted` (it was the
 last bare-coordinate emitter that hadn't been guarded), and `exec` sets `cur.tainted = true`
 immediately after the server-side `exec` succeeds — before the fallible `regs` refresh — so a
-failed refresh keeps the stale moment on an *already-marked* timeline. `--replay` byte-identity is
+failed refresh keeps the stale moment on an *already-marked* timeline. `--transcript`/replay byte-identity is
 preserved throughout.
 
 ## The load-bearing decision: the `Server` seam (and why not raw `control-proto`)
@@ -152,12 +201,14 @@ already uses). The client's observable behaviour does not change.
   `MaterializedSession` method (the one client path the guard is observable through) — *not* a REPL
   verb, and *not* `donate` (task 64+, a non-goal). `exec`'s result surfaces the taint bit for the
   REPL's prominent display.
-- **CLI flags: `--transcript <file>` logs the live JSONL; `--replay <file>` re-renders.** The spec
-  phrases replay as "`resolution --transcript <file> re-renders`"; splitting into two unambiguous
-  flags avoids overloading one flag for both log-target and replay-source. Both modes render
-  through the *same* `render_transcript`, so the one-renderer guarantee holds. Rejected: a single
-  `--transcript` that guesses live-vs-replay from whether stdin is a TTY (non-deterministic,
-  scripting-hostile).
+- **CLI flags follow the spec: `--transcript <file>` is *replay* (re-render), `--record <file>` is
+  the live-log output.** Task 82 §The transcript documents `resolution --transcript <file>` as the
+  re-render form, so `--transcript` re-renders and is **read-only** — never written back (a replay
+  can never truncate the recording). The live session's JSONL log gets its own flag, `--record`,
+  and the two are mutually exclusive. Both modes render through the *same* `render_transcript`, so
+  the one-renderer guarantee holds. (Round-5 fix: an earlier revision had `--transcript` as the
+  live-log output written at exit, which meant the spec's own replay invocation truncated the
+  recording — a destructive spec violation.)
 
 ## The `vary` minimality property, precisely
 

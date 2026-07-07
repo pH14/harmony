@@ -220,6 +220,56 @@ fn vary_counterfactual_visibly_diverges_and_can_crash() {
 }
 
 #[test]
+fn a_crashed_timeline_stays_terminal_until_rematerialize() {
+    // A crash is terminal: a subsequent `run` must NOT skip the already-hit
+    // fault and advance (fabricating post-crash state) — it re-reports the crash
+    // at the same Moment until the client re-materializes.
+    let mut sess = session(23);
+    let faulted = mref(23, 500).vary(&OverrideEdit::Set {
+        at: 3_000,
+        action: Action::Host(HostFault::CorruptMemory {
+            gpa: 0x2000,
+            mask: environment::BitMask(0x1),
+        }),
+    });
+    let mut ms = sess.materialize(&faulted).unwrap();
+
+    match ms.run(6_000).unwrap() {
+        StopReason::Crash { vtime, .. } => assert_eq!(vtime.0, 3_000),
+        other => panic!("expected Crash, got {other:?}"),
+    }
+    let crash_moment = ms.moment();
+    let crash_hash = ms.hash().unwrap();
+    assert_eq!(crash_moment, 3_000, "landed at the crash");
+
+    // Run again: still crashed, no advance, observations unchanged.
+    match ms.run(9_000).unwrap() {
+        StopReason::Crash { vtime, .. } => {
+            assert_eq!(vtime.0, 3_000, "still crashed at the same Moment")
+        }
+        other => panic!("a crashed timeline must stay crashed, got {other:?}"),
+    }
+    assert_eq!(ms.moment(), crash_moment, "did not advance past the crash");
+    assert_eq!(
+        ms.hash().unwrap(),
+        crash_hash,
+        "observations still reflect the crash point"
+    );
+
+    // Re-materialize clears terminality: a fresh timeline before the fault.
+    let mut ms2 = sess.materialize(&faulted).unwrap();
+    assert_eq!(
+        ms2.moment(),
+        500,
+        "re-materialize lands fresh, before the crash"
+    );
+    assert!(
+        matches!(ms2.run(1_000).unwrap(), StopReason::Deadline { .. }),
+        "the re-materialized timeline runs again (not stuck terminal)"
+    );
+}
+
+#[test]
 fn open_surfaces_an_early_crash_stop() {
     // A MomentRef whose env crashes (staged CorruptMemory at 3_000) with a
     // requested moment PAST the crash: materialize must land at the crash and
