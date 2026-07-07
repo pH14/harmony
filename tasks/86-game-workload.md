@@ -8,11 +8,11 @@
 > real-game start) running under a libretro core as an ordinary supervised Linux guest
 > process. If task 70's selector only beats baseline on the maze it was tuned on, we measured
 > overfitting, not search — this task is where we find out. It also lands the **billboard** (a
-> per-frame, always-on PPU-state export in guest memory) that task 87 (`film`) consumes to
+> per-frame, always-on core-state export in guest memory) that task 87 (`film`) consumes to
 > make replays visible. Named successors ride the same seams (see Non-goals): NES **Metroid**
 > — the direct replication of Antithesis's published experiment, same console and core, only
-> a new RAM table and cell key — then **Super Mario World** (SNES: a new core pin and a
-> Mode-1 decoder behind task 87's seam).
+> a new RAM table and cell key — then **Super Mario World** (SNES: only a new core pin —
+> task 87's core-replay renderer is console-agnostic).
 >
 > **Queued: do not dispatch until task 84 PASSes and task 70 is merged.** Depends on **task 84**
 > (the gate definition, the campaign harness through `explorer::Explorer` + `SocketMachine`, and
@@ -121,20 +121,24 @@ allows, and **its own `retro_run` counter is the frame clock**. Per frame (vblan
    address against SMBDIS.ASM and unit-tests the decode against synthetic RAM fixtures**; the
    level-number and player-state addresses especially).
 3. **Publishes the billboard** (task 87's enabling seam — built here because it must be part
-   of the workload from the first recorded reproducer). Each vblank the agent memcpys a
-   frame-coherent PPU snapshot into one pinned guest buffer: nametable VRAM (2 KiB) + palette
-   RAM (32 B) + OAM (256 B) + the pattern tables (8 KiB CHR — static under NROM; copy once at
-   init or every frame, implementer's choice, the reader must not care) + the console work
-   RAM (2 KiB — small enough to take whole, and it carries SMB's own scroll/PPUCTRL mirrors,
-   `HorizontalScroll $073F`, `Mirror_PPU_CTRL_REG1 $0778`, which spares us a core patch for
-   write-only PPU registers). ~12 KiB per frame. The buffer opens with a self-describing
-   header: magic, layout version, region offsets/lengths, and the current frame counter (so a
-   reader can check read-vs-clock alignment). Its guest-physical address is published once at
+   of the workload from the first recorded reproducer). Each vblank, *before* the frame's
+   `retro_run`, the agent writes into one pinned guest buffer: a self-describing header
+   (magic, layout version, the frame counter, **the frame's joypad byte**, region
+   offsets/lengths) + the core's full savestate (`retro_serialize`, ~20–32 KiB for NES
+   cores) + the 2 KiB console work RAM (cheap, and a stable window for ad-hoc RAM inspection
+   by resolution clients). ~25–35 KiB per frame. The savestate is what makes task 87's
+   frames **1:1 by construction** (integrator fidelity ruling, 2026-07-07): film re-renders
+   each frame by loading the savestate into the *same commit-pinned core* host-side and
+   running exactly one frame with the recorded joypad byte — the picture is the core's own
+   rendering, not a reconstruction. The buffer's guest-physical address is published once at
    init via state registers — either a hugetlb mapping (one contiguous gpa) or a page-0 gpa
    table for a scattered buffer; implementer's choice, documented. **The billboard is
    unconditional** — always on, filmed or not — because the one-reproducer rule forbids a
-   "render mode" that would fork the timeline; a ~12 KiB/frame memcpy is noise at emulation
-   speeds and is simply part of the workload.
+   "render mode" that would fork the timeline; a ~30 KiB/frame serialize+memcpy is noise at
+   emulation speeds and is simply part of the workload. (Savestate portability: the guest
+   image and task 87's host renderer use the **same pinned core commit**; the box gate runs
+   both as identical x86_64 Linux builds — cross-platform savestate loading is best-effort
+   and documented, never gated.)
 4. **Marks legibility events**: `assert_reachable` on first flagpole (any level cleared) and
    on one named deep goal — reaching any world ≥ 2 (by castle *or* by warp zone; both are
    real). Markers, not bugs — zero fault vocabulary, exactly as task 84 rules.
@@ -212,7 +216,7 @@ normal — reconnect + verify. Pin builds/tests to a leased core (`taskset -c`,
 - **Vendoring the ROM or the core**, or any PPU-accuracy work in the core.
 - **Multi-objective preference implementation** — 70's design input; only its diagnostic
   column runs here, and only if 70 shipped it.
-- **Other games/consoles** — per-game pieces (RAM table, chord weights, cell key, decoder)
-  are data behind seams built here. Named successors, each its own task: NES **Metroid**
-  (the Antithesis replication — same core, new table/key) and SNES **Super Mario World**
-  (new core pin + a Mode-1 `FrameDecoder` impl behind task 87's seam).
+- **Other games/consoles** — per-game pieces (RAM table, chord weights, cell key) are data
+  behind seams built here. Named successors, each its own task: NES **Metroid** (the
+  Antithesis replication — same core, new table/key) and SNES **Super Mario World** (only a
+  new core pin — task 87's core-replay renderer carries over unchanged).
