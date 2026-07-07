@@ -4110,6 +4110,185 @@ mod tests {
         s.vmm().unwrap().state_hash()
     }
 
+    /// A **no-op** host fault (`CorruptMemory` with a zero XOR mask) — it changes no
+    /// guest byte, but staging it at a `Moment` arms the exact-count arrival so a
+    /// `run` lands there. On the portable mock this is the stand-in for the box's
+    /// timer-driven force-exit (tasks 47/55): the mock's bare `run()` HLTs
+    /// immediately, so a plain deadline never advances V-time, but an armed arrival
+    /// drives `run_until` to the exact `Moment`. On the real backend the deadline
+    /// itself force-exits, so no marker is needed (see the `live_moment_address` box
+    /// gate).
+    fn arrival_marker(at: u64) -> Request {
+        Request::Perturb {
+            fault: HostFault(
+                EnvHostFault::CorruptMemory {
+                    gpa: 0,
+                    mask: BitMask(0), // XOR 0 — the state is untouched
+                }
+                .encode(),
+            ),
+            at: Moment(at),
+        }
+    }
+
+    /// The **moment-address materialization procedure** (task 80), exercised
+    /// portably on the exact-arrival mock: given `(env, moment)` with a
+    /// genesis-complete `env`, `branch(genesis, env)` then advance to the exact
+    /// `Moment` (here via a no-op arrival marker — see [`arrival_marker`]; on the
+    /// box the deadline force-exits) and read that materialized point with the
+    /// observation verbs. Materializing the same address **twice from genesis**
+    /// yields byte-identical `regs` (including `rip` and `moment`), `read`, and
+    /// `hash(Whole)` — the address is a stable coordinate. (The box gate proves the
+    /// same against the live Postgres workload, where the state actually differs
+    /// Moment-to-Moment; the mock's static image makes this a determinism/mechanism
+    /// proof, not a state-evolution one.)
+    #[test]
+    fn moment_address_materializes_identically_twice() {
+        let mut s = arrival_server();
+        arr_hello(&mut s);
+        let genesis = arr_snap(&mut s); // the genesis snapshot (V-time 0)
+        let env = seeded_env_arr(0x0080_0080); // a genesis-complete Seeded env
+
+        let materialize = |s: &mut ControlServer<ArrivalBackend>,
+                           moment: u64|
+         -> (control_proto::RegsView, Vec<u8>, [u8; 32]) {
+            // branch(genesis, env) — restore genesis + reseed from env's seed.
+            assert_eq!(
+                s.handle(&Request::Branch {
+                    snap: genesis,
+                    env: env.clone()
+                })
+                .unwrap(),
+                Ok(Reply::Unit)
+            );
+            // Advance to the exact-`Moment` stop.
+            s.handle(&arrival_marker(moment)).unwrap().unwrap();
+            let stop = match s
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(VTime(moment)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap()
+            {
+                Ok(Reply::Stop(st)) => st,
+                other => panic!("run answered {other:?}"),
+            };
+            assert_eq!(
+                stop,
+                StopReason::Deadline {
+                    vtime: VTime(moment)
+                },
+                "materialization lands exactly at the addressed Moment"
+            );
+            // Observe: regs, a probe read, and the whole-state hash.
+            let view = match s.handle(&Request::Regs).unwrap() {
+                Ok(Reply::Regs(v)) => v,
+                other => panic!("regs answered {other:?}"),
+            };
+            assert_eq!(
+                view.moment.0, moment,
+                "regs reports the retired count == the addressed Moment"
+            );
+            assert_eq!(view.vtime, moment, "vtime coincides with moment");
+            let bytes = match s.handle(&Request::Read { gpa: 0, len: 128 }).unwrap() {
+                Ok(Reply::Bytes(b)) => b,
+                other => panic!("read answered {other:?}"),
+            };
+            (view, bytes, arr_hash(s))
+        };
+
+        for moment in [1_000u64, 5_000, 50_000, 250_000] {
+            let (r1, b1, h1) = materialize(&mut s, moment);
+            let (r2, b2, h2) = materialize(&mut s, moment);
+            assert_eq!(
+                r1, r2,
+                "regs identical across two materializations @ {moment}"
+            );
+            assert_eq!(
+                b1, b2,
+                "read identical across two materializations @ {moment}"
+            );
+            assert_eq!(
+                h1, h2,
+                "hash identical across two materializations @ {moment}"
+            );
+        }
+    }
+
+    /// Observation invariance **during materialization** (task 80 gate 3, portable
+    /// analogue): a full inspection pass (regs + several reads) at an intermediate
+    /// Moment does not perturb the run — continuing to a later Moment yields the
+    /// same `hash(Whole)` as an uninspected control that reaches the later Moment
+    /// through the identical arrival schedule.
+    #[test]
+    fn inspection_mid_materialization_does_not_perturb_the_continuation() {
+        let env = seeded_env_arr(0x0B5E_0BED);
+        let (mid, late) = (10_000u64, 90_000u64);
+
+        // One materialization to `mid`→`late` through two arrival markers, with an
+        // optional inspection pass at `mid`. `arrival_server`s are freshly and
+        // identically composed, so the two runs differ only in the inspection.
+        let run_to_late = |inspect: bool| -> [u8; 32] {
+            let mut s = arrival_server();
+            arr_hello(&mut s);
+            let genesis = arr_snap(&mut s);
+            s.handle(&Request::Branch {
+                snap: genesis,
+                env: env.clone(),
+            })
+            .unwrap()
+            .unwrap();
+            // Advance to `mid`.
+            s.handle(&arrival_marker(mid)).unwrap().unwrap();
+            assert!(matches!(
+                s.handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(VTime(mid)),
+                        on: StopMask::NONE
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+                Ok(Reply::Stop(StopReason::Deadline { .. }))
+            ));
+            if inspect {
+                // A full inspection pass at the intermediate Moment.
+                let _ = s.handle(&Request::Regs).unwrap();
+                let _ = s.handle(&Request::Read { gpa: 0, len: 64 }).unwrap();
+                let _ = s
+                    .handle(&Request::Read {
+                        gpa: RAM as u64 - 16,
+                        len: 16,
+                    })
+                    .unwrap();
+                let _ = s.handle(&Request::Regs).unwrap();
+            }
+            // Continue to `late`.
+            s.handle(&arrival_marker(late)).unwrap().unwrap();
+            assert!(matches!(
+                s.handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(VTime(late)),
+                        on: StopMask::NONE
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+                Ok(Reply::Stop(StopReason::Deadline { .. }))
+            ));
+            arr_hash(&s)
+        };
+
+        assert_eq!(
+            run_to_late(true),
+            run_to_late(false),
+            "an inspection pass mid-materialization perturbed the continuation"
+        );
+    }
+
     #[test]
     fn reperturb_at_an_applied_moment_is_rejected() {
         // Finding 2: once a fault at `m` has APPLIED it is gone from the schedule
