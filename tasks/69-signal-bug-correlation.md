@@ -134,6 +134,37 @@ report-side statistics — nothing float-derived enters campaign state, hashes, 
    (task 67) and re-run this harness — **the search is not the fix**. Hand this to the foreman
    as the gate on Phase F.
 
+### M2 amendment (integrator ruling, Paul, 2026-07-07 — bug-2 box-refuted)
+
+Bug-2 (OrderingInterrupt via the interrupt-counter observable, the 2026-07-07 option-B ruling)
+is **structurally uncalibratable on the box** — three confirmed findings (escalation commit
+`c71038a` on `task/signal-bug-correlation`; details in
+`dissonance/benchmark/campaign-data/bug1/NOTES.md`): (1) injected-interrupt delivery latency
+forces a detection window with duty≈1; (2) rarity would need past-deadline faults or a
+cell-starving filler — neither feasible; (3) the order-image build is not seal-reproducible
+(458M/463M/473M across identical source; firing flips 48/48 → 0/48). Perfecting a second
+*synthetic* discriminator is no longer worth the instrument cost; the ecologically valid test
+is the held-out real workload (task 86). The gates above are amended for M2 — deliberately, as
+an integrator ruling, not a gate-weakening:
+
+- **Gate 2 (validity)** applies to **bugs 1 and 3**. Bug-2 is documented in the report as
+  found-but-degenerate/deferred, with the three findings recorded; it does not count toward
+  validity.
+- **Gate 3 (measurement)** covers bugs 1 and 3, ≥20 seeds per configuration, otherwise
+  unchanged. The retained traces are a first-class deliverable regardless of verdict — they
+  are the offline re-key substrate for every future `CellFn` candidate (`docs/SCORING.md` R1/R2).
+- **Gate 4 (the ruling)** replaces the binary "≥2 of 3 bugs" criterion with **directional
+  evidence**: the report states bug-3's effect size (the sole real discriminator), the
+  trajectory measure, and the species curves for both configurations, then rules —
+  bug-3 clearly positive (right direction, meaningful effect) AND no bug inverted →
+  **provisional GO**: task 70 dispatches, with task 86 (real workload, held out) as the
+  confirming test; bug-3 flat or inverted → **NO-GO** → the `docs/SCORING.md` E-fails
+  playbook (freeze the campaign, retained traces become the evaluation set, re-key CellFn
+  candidates offline) — **the search is still not the fix**.
+- **Bug-2's successor** (the worker-proposed rare-value-gate rework) is bought **only if** the
+  bugs-1&3 evidence comes back ambiguous and a tiebreaker is decision-relevant; it is a
+  follow-up dispatch, not part of this gate.
+
 ## Box-safety (CRITICAL)
 
 Stock KVM = **1396736**; the patched module is larger. ALWAYS leave the box on stock + verified
