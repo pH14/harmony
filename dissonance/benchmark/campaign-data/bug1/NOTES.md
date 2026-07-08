@@ -866,3 +866,23 @@ degenerate, low re-key value; bug-3 is the substrate that matters). Recommend ac
 3-wide is **~2 days**, not ~15h. Feasible detached+monitored. Verifying the retention binary is
 determinism-neutral (bug-3 seed-1 branch-52 cert must reproduce the prior 8-bit hash 5281f249) + writes
 valid traces before launching the suite.
+
+### 2026-07-08 04:15 — BUG-3 CAMPAIGN LAUNCHED (retention binary, ~2-day 3-wide suite)
+**Retention binary VALIDATED** (bug3-retcheck): seed-1 branch-52 certified 25/25, state_hash
+**5281f2492e3aaefa…** — EXACTLY the prior 8-bit hash ⇒ the `--record` change is determinism-neutral;
+traces JSON written (53 ordered entries, branch 0 first, 64 KB). **Campaign LAUNCHED detached**
+(`run-bug3-campaign.sh`, box orch pid 3322634, cores {2,1,3}, 3 leases, patched KVM 1400832): 20 seeds
+× 2 configs, deadline 50000 / maxb 512 / rn 25, `--record traces/$name.traces.json` per campaign, then
+3 solo `--exclusive` determinism spot-checks + the P0-DIVERGENCE compare. Results → `~/t69m2-results/bug3/`
+(`progress.log`, `*.json`, `finds.log`, `determinism.log`, `traces/*.traces.json`). **ETA ~2 days**
+(bug-3 ≈9-10s/branch solo, ~2.5× bug-1 — heavier uuid restore; co-tenant inflates further). A
+`run_in_background` poller fires on `ORCH DONE` OR a red flag (`P0-DIVERGENCE|FATAL|ACQUIRE-FAIL|rc=[1-9]`).
+WATCH (per the earlier bug-1 P0): b3-signal-1 must run to completion — but bug-3 is RareEntropy (mint has
+NO fault; the signal exploit jitters the SEED, not a gpa), so it can't hit the out-of-range-gpa abort.
+
+**REMAINING (this session or a fresh one after ORCH DONE):** (1) verify determinism.log has no
+P0-DIVERGENCE; scp `bug3/*.json` + `traces/` back, commit under `campaign-data/bug3/`. (2) Concat bug-1
+(committed) + bug-3 CampaignLogs → `benchmark-report --logs all.json --out CORRELATION-REPORT.md`. (3)
+Write the DIRECTIONAL GO/NO-GO (amended gate 4): bug-3 effect size + trajectory + species curves; bug-3
+clearly positive & nothing inverted → provisional GO (task 70 + task 86 held-out); else NO-GO → SCORING
+E-fails. Document bug-2 as found-but-degenerate/deferred (3 findings) + the bug-1-traces gap (flagged).
