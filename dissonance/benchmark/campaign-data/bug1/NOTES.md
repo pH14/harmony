@@ -825,3 +825,19 @@ path all options share — **bug-3 (and bug-1) campaign work**; smoke-fire-once 
 spend; real LogSensor+CellFnV1; 3-wide on leased cores {1,2,3}; solo==co-tenant state_hash
 (divergence = P0 STOP+escalate); NO box spend on bug-2 experiments; do NOT write the
 CORRELATION-REPORT GO/NO-GO or bug-2 final disposition until Paul rules.
+
+### 2026-07-08 — BUG-3 GATE-2 VALIDITY: real Crash PROVEN (crash lands at seal+~9M, NOT ~5M like bug-1)
+Gate-2 for bug-3 was the smoke-fire-first before the campaign. Key subtlety found: bug-3's crash
+completes at **seal+~9M V-time**, later than bug-1's ~5M — so an 8M-deadline gate-2 run stops the
+firing branch at **Deadline** (marker=true, no Crash), which first looked like a validity failure.
+At deadline **20M** the firing branch reaches a real **`Crash{Shutdown}`@VTime 473510449** (info =
+"backend shutdown exit (triple fault or guest-initiated shutdown)"), marker=true, is_bug=true, and
+CERTIFIES (state_hash c62b0f69…). So the poisoned-pointer deref → /init `reboot -f` → triple-fault →
+Shutdown path IS real; the reboot teardown just takes ~9M V-time (≈1.8× bug-1's). The campaign's
+deadline-50000 marker-based finds are unaffected (the UUID_BUG marker fires at the draw, seal+<50000,
+well before the deadline — validated 3/512 + certified). NOTE: `conductor box --record` is NOT a
+faithful bug-3 driver (its Crash console lacked UUID_BUG — it doesn't apply the per-branch trigger
+like bench-campaign); use bench-campaign for bug-3, not the task-58 record tool. Running the formal
+**25/25** gate-2 at deadline 15M (replays stop at Crash@9M) to satisfy foreman condition 2 rigorously,
+then the 20×2 campaign on the canonical 8-bit image (backed up as initramfs-uuid-canonical8bit.cpio.gz;
+gate-2 used a throwaway PREFIX_BITS=1 rebuild). Box reverts to stock 1396736 after each run.
