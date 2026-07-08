@@ -513,6 +513,34 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
         }
     }
 
+    // 5b. Emit the retained re-key substrate (M2 amendment / `docs/SCORING.md`
+    // R1/R2): every branch's `RunTrace` in order, so a future `CellFn` candidate can
+    // re-key THIS campaign offline (a pure fold over the retained timelines) without
+    // re-running it. A first-class M2 deliverable — a write failure FAILS the
+    // campaign rather than silently dropping the substrate.
+    if let Some(rec) = &args.record {
+        match serde_json::to_string(&outcome.traces) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(rec, json) {
+                    eprintln!(
+                        "[conductor] benchcampaign box: write traces {}: {e}",
+                        rec.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+                println!(
+                    "[conductor] benchcampaign box: retained {} branch traces -> {}.",
+                    outcome.traces.len(),
+                    rec.display()
+                );
+            }
+            Err(e) => {
+                eprintln!("[conductor] benchcampaign box: serialize traces: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     // The signal GUARDRAIL (user 2026-07-06): the REAL LogSensor/CellFnV1 must
     // actually produce cells on the box path — a signal campaign that makes ZERO
     // cells is measuring nothing, and must NOT be quietly accepted as a valid gate

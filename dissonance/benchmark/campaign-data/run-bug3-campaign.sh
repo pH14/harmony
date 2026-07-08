@@ -22,7 +22,7 @@ CAL=dissonance/benchmark/campaign-data/bug1/calibration.json
 IMG=initramfs-uuid.cpio.gz
 RMARK=UUID_READY
 OUT=~/t69m2-results/bug3
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$OUT/traces"   # traces/ = the retained re-key substrate (SCORING R1/R2)
 DEADLINE=50000; MAXB=512; RN=25
 PROG="$OUT/progress.log"
 echo "$(date +%FT%T) ORCH START deadline=$DEADLINE maxb=$MAXB rn=$RN" >> "$PROG"
@@ -33,7 +33,8 @@ run_campaign() {  # core name config seed
   taskset -c "$core" $BIN bench-campaign --bug 3 --config "$config" --seed "$seed" \
     --max-branches $MAXB --deadline-delta $DEADLINE --replay-n $RN \
     --calibration "$CAL" --initramfs "$IMG" --ready-marker "$RMARK" \
-    --out "$OUT/$name.json" </dev/null >"$OUT/$name.log" 2>&1
+    --out "$OUT/$name.json" --record "$OUT/traces/$name.traces.json" \
+    </dev/null >"$OUT/$name.log" 2>&1
   local rc=$?
   grep '^\[conductor\] FIND' "$OUT/$name.log" | sed "s|^|$name |" >> "$OUT/finds.log"
   echo "$(date +%T) DONE $name rc=$rc $(grep -o '[0-9]* certified find(s)' "$OUT/$name.log"|tail -1) $(grep -o '[0-9]* distinct signal cells' "$OUT/$name.log"|tail -1)" >> "$PROG"

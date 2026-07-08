@@ -739,6 +739,15 @@ pub struct BenchOutcome {
     pub log: CampaignLog,
     /// One certificate per certified find.
     pub certs: Vec<FindCert>,
+    /// Every non-skipped branch's `(branch_index, RunTrace)`, in branch order —
+    /// the **retained re-key substrate** (M2 amendment / `docs/SCORING.md` R1/R2):
+    /// the offline evaluation set a future `CellFn` candidate replays through its
+    /// pure fold to re-key the archive without re-running the campaign. Each branch
+    /// runs from the sealed base, so its trace is genesis-rooted (no cross-fork gap).
+    /// The box path serializes this to `--record`'s JSON when set; the toy path
+    /// collects it (cheap) and the caller ignores it. Skipped (inadmissible) branches
+    /// have no trace and are absent (they contribute no cells — see the campaign log).
+    pub traces: Vec<(u64, RunTrace)>,
 }
 
 /// Seal the campaign base and return `(snapshot, base_vtime)`. On the **toy** path
@@ -823,6 +832,10 @@ pub fn run_bench_campaign<M: Machine>(
     // find that exploits a novel parent counts that parent's novelty (measure 2).
     let mut frontier: Vec<Exemplar> = Vec::new();
     let mut events = Vec::new();
+    // Retained re-key substrate: every non-skipped branch's (index, trace), in
+    // order (SCORING R1/R2). Write-only — collected, never read mid-campaign, so a
+    // golden run is bit-identical (task-65 sink invariant).
+    let mut traces: Vec<(u64, RunTrace)> = Vec::new();
     let mut finds = Vec::new();
     let mut certs = Vec::new();
     let mut found = false;
@@ -991,6 +1004,11 @@ pub fn run_bench_campaign<M: Machine>(
                 found = true;
             }
         }
+
+        // Retain this branch's trace for offline re-key (SCORING R1/R2). At the loop
+        // tail, after every read of `trace`, so it moves (no clone) and stays a
+        // write-only sink.
+        traces.push((branch, trace));
     }
 
     machine.drop_snap(base)?;
@@ -1003,6 +1021,7 @@ pub fn run_bench_campaign<M: Machine>(
             finds,
         },
         certs,
+        traces,
     })
 }
 

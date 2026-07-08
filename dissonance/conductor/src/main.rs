@@ -123,6 +123,12 @@ struct BenchBoxArgs {
     /// Where to write the `CampaignLog` JSON (the offline `benchmark-report` input).
     #[arg(long)]
     out: PathBuf,
+    /// Optional: write every branch's `RunTrace` (ordered `(branch, trace)` JSON) to
+    /// this path — the **retained re-key substrate** (M2 amendment / `docs/SCORING.md`
+    /// R1/R2): the offline evaluation set a future `CellFn` replays through its pure
+    /// fold. A first-class deliverable of every M2 campaign; absent = not retained.
+    #[arg(long)]
+    record: Option<PathBuf>,
 }
 
 #[derive(Parser)]
