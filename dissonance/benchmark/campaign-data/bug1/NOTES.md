@@ -841,3 +841,28 @@ like bench-campaign); use bench-campaign for bug-3, not the task-58 record tool.
 **25/25** gate-2 at deadline 15M (replays stop at Crash@9M) to satisfy foreman condition 2 rigorously,
 then the 20×2 campaign on the canonical 8-bit image (backed up as initramfs-uuid-canonical8bit.cpio.gz;
 gate-2 used a throwaway PREFIX_BITS=1 rebuild). Box reverts to stock 1396736 after each run.
+
+### 2026-07-08 — PAUL RULED bug-2 (OPTION 4 + amendments, spec commit fa9d323) + RETENTION added
+**Paul's real ruling** (relayed by foreman; the earlier "rare-value gate" AskUserQuestion answer was a
+VOID tooling keystroke): **Option 4** — stop bug-2 investment; document it in CORRELATION-REPORT.md as
+found-but-degenerate/deferred with the 3 box findings; the rare-value gate is a CONDITIONAL follow-up
+(only if bugs-1&3 evidence is ambiguous). Spec amended (`tasks/69-…md` §"M2 amendment"): **Gate 2 & 3 =
+bugs 1 & 3 only**, ≥20 seeds/config; **retained traces are a first-class deliverable** (the SCORING R1/R2
+re-key substrate); **Gate 4 verdict is DIRECTIONAL** — bug-3 clearly positive AND nothing inverted →
+provisional GO (task 70 dispatches, task 86 held-out confirms); bug-3 flat/inverted → NO-GO → SCORING
+E-fails playbook. I'm now UNBLOCKED to write the GO/NO-GO once campaigns complete.
+
+**bug-3 gate-2 25/25 PASSED** (deadline 15M): Crash{Shutdown}@473510449 certified 25/25 (state_hash
+c62b0f69…, identical to the replay-n=1 run). Canonical 8-bit image restored (md5-verified backup).
+
+**RETENTION IMPLEMENTED (commit 9623d2b):** bench-campaign now `--record <FILE>` writes every non-skipped
+branch's ordered `(branch, RunTrace)` JSON — the re-key substrate (write-only sink, determinism-neutral
+per task-65; `BenchOutcome.traces` collected in the loop, serialized in boxrun; 12/12 tests + box build
+green). run-bug3-campaign.sh passes `--record traces/$name.traces.json`. **bug-1's campaign ran
+pre-amendment (no traces) — FLAGGED to foreman:** re-run bug-1 for traces (~2 days more) vs accept (bug-1
+degenerate, low re-key value; bug-3 is the substrate that matters). Recommend accept + note in report.
+
+**bug-3 per-branch cost ≈ 9–10s SOLO** (~2.5× bug-1 — heavier uuid snapshot restore), so the 20×2 suite
+3-wide is **~2 days**, not ~15h. Feasible detached+monitored. Verifying the retention binary is
+determinism-neutral (bug-3 seed-1 branch-52 cert must reproduce the prior 8-bit hash 5281f249) + writes
+valid traces before launching the suite.
