@@ -181,7 +181,14 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64) -> Environment 
             let v = vector as u64;
             let vectors: Vec<u64> = (0..16).map(|k| v ^ k).collect();
             let vec_pick = one_of(&vectors, &mut p) as u8;
-            let at = window.0.saturating_sub(rebase).saturating_sub(4) + p.next_u64() % 64;
+            // Offset search range past the seal. Default 64; a calibration
+            // override (`BENCH_ORDER_RANGE`) widens it so the search reaches the
+            // per-iteration vulnerable windows and dials the fire rate into the
+            // ~10²–10³ band (M2 bug-2 box calibration). Read once and fixed, so
+            // the mint stays a pure function of (seed, spec, rebase, range) — the
+            // FINAL campaign bakes the calibrated value as a constant (no env).
+            let range = order_offset_range();
+            let at = window.0.saturating_sub(rebase).saturating_sub(4) + p.next_u64() % range;
             env_spec.perturb(HostFault::InjectInterrupt { vector: vec_pick }, at);
         }
         // Rare-entropy fires on the seed alone — no fault schedule.
@@ -201,6 +208,18 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64) -> Environment 
 fn mask_bits(mask: u64) -> Vec<u64> {
     let trigger_bit = mask.trailing_zeros() as u64;
     vec![trigger_bit, 7, 15, 30]
+}
+
+/// The bug-2 (`OrderingInterrupt`) mint's fault-offset search width past the seal.
+/// Default 64; overridden by `BENCH_ORDER_RANGE` for box calibration (mapping the
+/// vulnerable-window period + dialing the fire rate). Deterministic per run: the
+/// env is read once here, so a fixed range keeps [`mint_scenario_env`] pure.
+fn order_offset_range() -> u64 {
+    std::env::var("BENCH_ORDER_RANGE")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&r| r > 0)
+        .unwrap_or(64)
 }
 
 fn one_of(xs: &[u64], p: &mut Prng) -> u64 {

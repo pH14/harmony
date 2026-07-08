@@ -753,3 +753,65 @@ DID drop at branch 44 but the reparented script self-released + reverted to stoc
 Poller = a `run_in_background` until-DONE loop. kvm verified stock after each run. Box worktree
 `~/harmony-t69m2`: benchcampaign.rs (env knob) + order-super.c (filler) scp'd; conductor rebuilt.
 UNCOMMITTED locally until bug-2 constants are frozen.
+
+---
+
+## 2026-07-08 — ⛔ BUG-2 ESCALATION: interrupt-counter observable is NOT reliably calibratable
+
+The filler plan above is SUPERSEDED. After ~10 box iterations, bug-2 (interrupt-counter) hit a
+compound wall. **The mint env knob `BENCH_ORDER_RANGE` is KEPT** (a clean deterministic dial,
+default 64, committed) — but the guest-side `FILLER_SPIN` edits are REVERTED (order-super.c back to
+committed 3cdf82a, WINDOW_SPIN=4096). Three independent, box-confirmed findings:
+
+**(1) Injection LATENCY ⇒ the detection window must be large ⇒ duty≈1.** The injected interrupt is
+serviced ~a few thousand V-time AFTER its armed Moment, so the fireable span between the two counter
+samples must EXCEED that latency. Box: WINDOW_SPIN=4096 → 48/48 fires (when the seal is good);
+WINDOW_SPIN=256 → 0/many (service lands past `intr_after`). A window large enough to fire fills the
+whole iteration ⇒ duty≈1 ⇒ TTF≈1 over any in-deadline offset range.
+
+**(2) Rarity is unreachable feasibly.** duty≈1 means diluting P(fire) needs EITHER faults scheduled
+past the deadline — which the scheduler REJECTS: `control error: run overshot staged Moment …;
+schedule unsatisfiable` (arm-horizon = the run deadline; box-confirmed `at` up to 100000 with
+deadline 150000 arms fine, 500000/50000 overshoots) — OR a huge per-iteration filler to make the
+window a small duty-cycle, which stretches each iteration so FEW run within the deadline, STARVING
+the log-template signal of cells (the very thing the signal reads). So bug-2 is EITHER degenerate
+(TTF≈1–4, cells healthy at deadline 50000) OR rare-but-cell-starved (infeasible). It cannot be both
+rare AND cell-rich.
+
+**(3) Seal-point is NOT reproducible across builds ⇒ firing is a lottery.** The SAME committed
+source (WINDOW_SPIN=4096) fired **48/48** on the pre-session image (base seal V-time ≈458.3M) but
+fires **0/48** on a fresh rebuild (seal ≈463.1M) — with the IDENTICAL seed-1 offsets (453, 929,
+2712, …, 41363) that fired before now all missing. Across this session's builds the seal wandered
+458M / 463M / 473M and firing flipped with it. Root: the order-image build (`build-order-image.sh`
+runs `initdb` + bakes a fixed-UUID ext4 with the cluster) is not bit-reproducible, so each build's
+guest seals the snapshot-retry at a different loop point where the fixed fault offsets no longer
+reach a vulnerable window. **I destroyed the one firing bug-2 image by rebuilding it and cannot
+reliably reproduce a firing one.** (Determinism WITHIN one campaign still holds — it snapshots once
+— but a campaign whose seal lands in a non-firing spot yields 0 finds; bug-2 campaigns would be a
+per-build lottery. Must re-verify bug-3's uuid-image is reproducible before its campaign.)
+
+**IMPACT on the benchmark.** bug-1 is degenerate by design (TTF≈4; the M2 ruling was to "lean on
+bugs 2/3" for discrimination). If bug-2 is also unusable, discrimination rests on **bug-3 alone** —
+too thin for a meaningful ≥2/3-bugs GO. Also: the signal's plausible edge is the EXPLOIT converging
+on CONJUNCTIVE triggers (perturb one dim at a time); bug-1 (conjunctive) is degenerate, bug-2
+(conjunctive) is blocked, bug-3 is single-dimension (rare seed prefix — no exploit locality). So no
+bug currently showcases the exploit's advantage in a findable range.
+
+**ESCALATED TO PAUL (options; recommend B, gated on fixing seal reproducibility):**
+- **(A) Accept bug-2 degenerate** (fire+attribute+certify at TTF≈4, deadline 50000, cells OK). Meets
+  gate-2 "3 bugs found"; rule the correlation on bug-3 as sole discriminator. Fast, but thin basis.
+  STILL needs a reproducible firing image (finding 3).
+- **(B) Re-scope bug-2 to a rare-VALUE gate** — order-super draws from the seed post-seal (bug-3's
+  fix idiom) and fires only if (interrupt serviced in window) AND (rare prefix match). Rarity from
+  the value (cheap, deadline stays 50000, cells healthy), interrupt provides the ordering flavor,
+  and it's conjunctive (seed + timing) so the exploit can converge. Mechanism change (needs ruling);
+  ~half-day guest rework; MUST also make the seal reproducible (deterministic initdb / pre-draw
+  stabilization like bug-3). Overlaps bug-3's rare-entropy class somewhat but stays interrupt-gated.
+- **(C) Replace bug-2** with a different distinct-class, calibratable, cell-rich bug.
+- **(D) Rule the benchmark now on bugs 1 & 3**; spin bug-2 (or a replacement) into a follow-up task;
+  document the reduced discrimination and let it inform the GO/NO-GO.
+
+**PROCEEDING regardless on BUG-3** (unblocked, Paul-approved mechanism, the one working
+discriminator): smoke-fire-first re-verify (also tests uuid-image reproducibility per finding 3) →
+gate-2 validity (large-deadline real Crash + 25/25) → 20×2 campaign. Box clean (stock 1396736) after
+every run.
