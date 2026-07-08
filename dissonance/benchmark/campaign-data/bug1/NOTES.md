@@ -811,7 +811,17 @@ bug currently showcases the exploit's advantage in a findable range.
 - **(D) Rule the benchmark now on bugs 1 & 3**; spin bug-2 (or a replacement) into a follow-up task;
   document the reduced discrimination and let it inform the GO/NO-GO.
 
-**PROCEEDING regardless on BUG-3** (unblocked, Paul-approved mechanism, the one working
-discriminator): smoke-fire-first re-verify (also tests uuid-image reproducibility per finding 3) →
-gate-2 validity (large-deadline real Crash + 25/25) → 20×2 campaign. Box clean (stock 1396736) after
-every run.
+**PROCEEDING regardless on BUG-3** (unblocked, the one working discriminator): smoke-fire-first
+re-verify (also tests uuid-image reproducibility per finding 3) → gate-2 validity (large-deadline
+real Crash + 25/25) → 20×2 campaign. Box clean (stock 1396736) after every run.
+
+### 2026-07-08 — FOREMAN CORRECTION: bug-2 "rare-value gate" answer VOID; bug-2 on hold for Paul
+The AskUserQuestion "Rare-value gate" answer was **NOT Paul** — a foreman tooling mis-keystroke
+(Enter on the highlighted default). VOID it. bug-2's ruling belongs to Paul; the escalation above is
+forwarded to him. **No bug-2 mechanism change started** (interrupted before any rare-value-gate code;
+working tree has only the bug-3 gate-2 `PREFIX_BITS` edit; order-super.c reverted to committed;
+`BENCH_ORDER_RANGE` is just the inert mint dial). Until Paul's ruling: proceed ONLY on the no-regret
+path all options share — **bug-3 (and bug-1) campaign work**; smoke-fire-once before any campaign
+spend; real LogSensor+CellFnV1; 3-wide on leased cores {1,2,3}; solo==co-tenant state_hash
+(divergence = P0 STOP+escalate); NO box spend on bug-2 experiments; do NOT write the
+CORRELATION-REPORT GO/NO-GO or bug-2 final disposition until Paul rules.
