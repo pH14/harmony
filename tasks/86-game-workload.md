@@ -21,6 +21,27 @@
 > (materialization), **task 67/link** (`LinkSensor`), **tasks 58/60** (control server + the
 > campaign/guest-workload-init pattern). The spine (`explorer`/`link`/`harmony-sdk`) is
 > **read-only**, exactly as in task 84.
+>
+> **AMENDED — integrator directive (Paul, 2026-07-09): split the dispatch.** Task 69 M2 ruled
+> NO-GO, so task 70 does not exist to test, and the standing directive is now *maximize testing
+> on actual workloads, with visual inspection of what works*. Therefore:
+> - **M0 (workload bring-up) dispatches IMMEDIATELY:** the guest image + core provisioning +
+>   billboard + workload-init, the boot/determinism gates, and campaign runs under the
+>   *existing* default/baseline search (no selector claim made or needed). M0 additionally
+>   absorbs the **film crate's re-homed live gate** (integrator ruling on the film PR #87
+>   merge, same date): libretro core loads in the box guest, one real `unserialize` +
+>   `retro_run` validates film's `env_cb` assumption, a ≥300-frame clip renders from a real
+>   recorded campaign, render-determinism (same input twice → bit-identical frames), and
+>   25/25 hash-neutrality (film observation on/off → identical `state_hash`). Film (merged
+>   portable-approved) is M0's visualization consumer — campaign runs become visually
+>   inspectable contact sheets.
+> - **M1 (the selector referendum — everything below inheriting task 84's gate definitions)
+>   stays queued** behind a selector artifact (task 70's successor under the post-NO-GO
+>   sequencing; per the E-fails doctrine the signal/CellFn iterates first). The gate
+>   definitions in this spec are unchanged — only their dispatch timing moved.
+> - The ROM discipline below is unchanged: no ROM in the repo; `HARMONY_SMB_ROM` is
+>   user-supplied; absent ROM ⇒ gates SKIP loudly, and M0's ROM-independent surface (core
+>   provisioning, billboard plumbing, image scaffolding) still builds and gates.
 
 Read first: `tasks/00-CONVENTIONS.md`, `docs/GLOSSARY.md` (binding register — reproducer,
 rollout, campaign, `Moment`/`Span`), `docs/LAYERS.md` (R-L1, the R-L2 thin-SDK corollary, and
