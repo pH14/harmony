@@ -39,6 +39,7 @@ pub control_proto::ControlError::ScheduleUnsatisfiable
 pub control_proto::ControlError::ScheduleUnsatisfiable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable::vtime: u64
 pub control_proto::ControlError::SnapshotWhileArmed
+pub control_proto::ControlError::Tainted
 pub control_proto::ControlError::UnknownSnapshot(control_proto::SnapId)
 pub control_proto::ControlError::Unsupported
 pub enum control_proto::CrashKind
@@ -58,11 +59,18 @@ pub control_proto::ProtocolError::BadVersion
 pub control_proto::ProtocolError::ShortFrame
 pub enum control_proto::Reply
 pub control_proto::Reply::Bytes(alloc::vec::Vec<u8>)
+pub control_proto::Reply::ExecResult
+pub control_proto::Reply::ExecResult::ok: bool
+pub control_proto::Reply::ExecResult::output: alloc::vec::Vec<u8>
 pub control_proto::Reply::Hash([u8; 32])
 pub control_proto::Reply::Hello(control_proto::Caps)
+pub control_proto::Reply::Recorded(control_proto::Environment)
 pub control_proto::Reply::Regs(control_proto::RegsView)
 pub control_proto::Reply::SdkEvents(alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>)
 pub control_proto::Reply::SnapId(control_proto::SnapId)
+pub control_proto::Reply::Snapshot
+pub control_proto::Reply::Snapshot::id: control_proto::SnapId
+pub control_proto::Reply::Snapshot::tainted: bool
 pub control_proto::Reply::Stop(control_proto::StopReason)
 pub control_proto::Reply::Unit
 pub enum control_proto::Request
@@ -70,6 +78,9 @@ pub control_proto::Request::Branch
 pub control_proto::Request::Branch::env: control_proto::Environment
 pub control_proto::Request::Branch::snap: control_proto::SnapId
 pub control_proto::Request::Drop(control_proto::SnapId)
+pub control_proto::Request::Exec
+pub control_proto::Request::Exec::cmd: alloc::string::String
+pub control_proto::Request::Exec::deadline: control_proto::VTime
 pub control_proto::Request::Hash
 pub control_proto::Request::Hash::scope: control_proto::HashScope
 pub control_proto::Request::Hello(control_proto::Caps)
@@ -79,6 +90,7 @@ pub control_proto::Request::Perturb::fault: control_proto::HostFault
 pub control_proto::Request::Read
 pub control_proto::Request::Read::gpa: u64
 pub control_proto::Request::Read::len: u32
+pub control_proto::Request::RecordedEnv
 pub control_proto::Request::Regs
 pub control_proto::Request::Replay(control_proto::SnapId)
 pub control_proto::Request::Run

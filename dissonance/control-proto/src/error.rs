@@ -215,6 +215,19 @@ pub enum ControlError {
         /// The per-call cap ([`READ_CAP`](crate::READ_CAP)).
         cap: u32,
     },
+    /// The **taint guard** fired (task 81): the current timeline was tainted by an
+    /// [`Exec`](crate::Request::Exec) improvisation, and the request would have
+    /// minted a reproducer from it ([`RecordedEnv`](crate::Request::RecordedEnv) or
+    /// equivalent). An improvised timeline is off the record by ruling
+    /// (`docs/RESOLUTION.md` §Improvisations) — its execution carries no determinism
+    /// guarantee, so there is no honest [`Environment`](crate::Environment) that
+    /// replays it. Refused **loudly** rather than handing back a reproducer that does
+    /// not reproduce; the caller must rewind to an untainted ancestor
+    /// (`branch`/`replay`) to reach recordable state again. Taint never clears
+    /// downstream — every snapshot and every `branch`/`replay` from a tainted point
+    /// stays tainted; only an untainted ancestor is untainted.
+    #[error("timeline is tainted by an exec improvisation; refusing to mint a reproducer")]
+    Tainted,
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

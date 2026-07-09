@@ -758,6 +758,24 @@ impl<B: Backend> Vmm<B> {
         self.ram.as_bytes()
     }
 
+    /// Inject bytes on the guest's serial input (the 8250 RBR) — the crude,
+    /// off-record transport of task 81's `exec` improvisation. The bytes are
+    /// consumed FIFO by the guest's serial shell as it reads the RBR; while any are
+    /// queued, the COM1 receive line asserts (so an interrupt-driven console picks
+    /// them up). **No determinism guarantee**: `exec` taints its timeline by ruling
+    /// (`docs/RESOLUTION.md`), so this input is never recorded, hashed, or
+    /// snapshotted. Inert for every run that never calls it.
+    pub fn inject_serial_input(&mut self, bytes: &[u8]) {
+        self.uart.inject_input(bytes);
+    }
+
+    /// The serial output captured so far (the 8250 THR transmit stream) — the same
+    /// buffer the snapshot adapter reads. Task 81's `exec` loop diffs this across
+    /// steps to feed the completion-sentinel scanner.
+    pub fn serial_output(&self) -> &[u8] {
+        self.uart.capture()
+    }
+
     /// The current guest-visible vCPU register file, read **best-effort** and
     /// **without mutating** the VM — the substrate half of the task-80 `regs`
     /// observation verb. Returns the terminal-captured state if the VM is stopped
@@ -2681,7 +2699,10 @@ impl<B: Backend> Vmm<B> {
     fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
-            if let Some(byte) = self.uart.read(port) {
+            // `read_in` (not `read`): a byte read of the RBR consumes the next
+            // injected `exec` input byte (task 81), the way real hardware pops the
+            // receive FIFO. Inert on every non-`exec` run (the queue is empty).
+            if let Some(byte) = self.uart.read_in(port) {
                 self.backend.complete_read(u64::from(byte))?;
                 return Ok(Step::Continued);
             }
@@ -3247,7 +3268,10 @@ impl<B: Backend> Vmm<B> {
     /// xAPIC), so M1/M2/corpus never see a serial vector.
     fn pending_serial_vector(&self) -> Option<u8> {
         let legacy = self.legacy.as_ref()?;
-        (self.uart.thre_irq_asserted() && !legacy.irq_masked(COM1_IRQ)).then_some(COM1_IRQ_VECTOR)
+        // THRE (transmitter-empty) OR received-data-available (task 81's `exec`
+        // input): `serial_irq_asserted` folds both. Equal to `thre_irq_asserted`
+        // whenever no `exec` input is queued, so a non-`exec` run is unchanged.
+        (self.uart.serial_irq_asserted() && !legacy.irq_masked(COM1_IRQ)).then_some(COM1_IRQ_VECTOR)
     }
 
     /// Complete delivery of every vector the backend **accepted** (issued

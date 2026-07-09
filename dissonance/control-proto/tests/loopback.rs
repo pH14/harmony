@@ -41,6 +41,10 @@ fn conds() -> StopConditions {
 struct StubServer {
     next_snap: u64,
     armed: bool,
+    /// Task 81: whether an `exec` improvisation has tainted the timeline. Drives
+    /// the taint-carrying `Snapshot` reply and the `RecordedEnv` guard so the
+    /// loopback crosses those wire shapes too.
+    tainted: bool,
 }
 
 impl StubServer {
@@ -48,6 +52,7 @@ impl StubServer {
         Self {
             next_snap: 0,
             armed: false,
+            tainted: false,
         }
     }
 
@@ -57,7 +62,16 @@ impl StubServer {
             Request::Snapshot => {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                Ok(Reply::SnapId(SnapId(id)))
+                // A tainted timeline surfaces the taint-carrying reply (task 81);
+                // an untainted one keeps the pre-81 taint-free `SnapId`.
+                if self.tainted {
+                    Ok(Reply::Snapshot {
+                        id: SnapId(id),
+                        tainted: true,
+                    })
+                } else {
+                    Ok(Reply::SnapId(SnapId(id)))
+                }
             }
             Request::Drop(_)
             | Request::Branch { .. }
@@ -103,6 +117,27 @@ impl StubServer {
                 moment: Moment(500),
                 vtime: 500,
             })),
+            // Improvisation (task 81): `exec` taints the timeline and returns the
+            // crude serial capture; the server refuses nothing.
+            Request::Exec { .. } => {
+                self.tainted = true;
+                Ok(Reply::ExecResult {
+                    output: b"root@guest:/# ".to_vec(),
+                    ok: true,
+                })
+            }
+            // The reproducer mint is the taint guard's fail-loud site: a tainted
+            // timeline is a loud `Tainted`, never a lying `Environment`.
+            Request::RecordedEnv => {
+                if self.tainted {
+                    Err(ControlError::Tainted)
+                } else {
+                    Ok(Reply::Recorded(Environment {
+                        blob_version: 1,
+                        bytes: vec![0x07, 0x08, 0x09],
+                    }))
+                }
+            }
         }
     }
 }
@@ -196,6 +231,16 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
         len: 4,
     }));
     replies.push(lb.exchange(Request::Regs));
+    // Improvisation (task 81): the reproducer mints cleanly BEFORE any exec, then
+    // `exec` taints the timeline, the mint fails loud `Tainted`, and a snapshot
+    // taken there surfaces the taint-carrying reply — every new wire shape crosses.
+    replies.push(lb.exchange(Request::RecordedEnv));
+    replies.push(lb.exchange(Request::Exec {
+        cmd: "ps aux".to_string(),
+        deadline: VTime(9_000),
+    }));
+    replies.push(lb.exchange(Request::RecordedEnv));
+    replies.push(lb.exchange(Request::Snapshot));
     // Stage a host-plane fault over the wire (the perturb verb).
     replies.push(lb.exchange(Request::Perturb {
         fault: HostFault(vec![0x02, 0x80]), // opaque environment::HostFault bytes
@@ -241,7 +286,20 @@ fn loopback_exercises_every_verb_with_expected_replies() {
                 moment: Moment(500),
                 vtime: 500,
             })),
-            Ok(Reply::Unit), // Perturb
+            Ok(Reply::Recorded(Environment {
+                blob_version: 1,
+                bytes: vec![0x07, 0x08, 0x09],
+            })), // RecordedEnv (untainted) mints the reproducer
+            Ok(Reply::ExecResult {
+                output: b"root@guest:/# ".to_vec(),
+                ok: true,
+            }), // Exec taints the timeline
+            Err(ControlError::Tainted), // RecordedEnv now fails loud
+            Ok(Reply::Snapshot {
+                id: SnapId(1),
+                tainted: true,
+            }), // a snapshot from the tainted timeline reports it
+            Ok(Reply::Unit),            // Perturb
             Err(ControlError::ResolveWithoutDecision),
             Ok(Reply::Unit), // Drop
         ]

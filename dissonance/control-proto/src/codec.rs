@@ -42,6 +42,8 @@ const REQ_PERTURB: u8 = 8;
 const REQ_SDK_EVENTS: u8 = 9;
 const REQ_READ: u8 = 10;
 const REQ_REGS: u8 = 11;
+const REQ_EXEC: u8 = 12;
+const REQ_RECORDED_ENV: u8 = 13;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -56,6 +58,9 @@ const REPLY_HASH: u8 = 5;
 const REPLY_SDK_EVENTS: u8 = 6;
 const REPLY_BYTES: u8 = 7;
 const REPLY_REGS: u8 = 8;
+const REPLY_EXEC_RESULT: u8 = 9;
+const REPLY_SNAPSHOT: u8 = 10;
+const REPLY_RECORDED: u8 = 11;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -94,6 +99,7 @@ const CE_NOT_SYNCHRONIZED: u8 = 15;
 const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
 const CE_READ_OUT_OF_RANGE: u8 = 17;
 const CE_READ_TOO_LARGE: u8 = 18;
+const CE_TAINTED: u8 = 19;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -261,6 +267,12 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             put_u32(w, *len);
         }
         Request::Regs => w.push(REQ_REGS),
+        Request::Exec { cmd, deadline } => {
+            w.push(REQ_EXEC);
+            put_bytes(w, cmd.as_bytes());
+            put_u64(w, deadline.0);
+        }
+        Request::RecordedEnv => w.push(REQ_RECORDED_ENV),
     }
 }
 
@@ -291,6 +303,13 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             len: r.u32()?,
         },
         REQ_REGS => Request::Regs,
+        REQ_EXEC => Request::Exec {
+            // A non-UTF-8 command is a malformed frame body, not a panic
+            // (conventions rule 4): the codec is a Tier-1 fuzz target.
+            cmd: String::from_utf8(r.bytes()?.to_vec()).map_err(|_| ProtocolError::ShortFrame)?,
+            deadline: VTime(r.u64()?),
+        },
+        REQ_RECORDED_ENV => Request::RecordedEnv,
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -356,6 +375,20 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             w.push(REPLY_REGS);
             write_regs_view(w, view);
         }
+        Reply::ExecResult { output, ok } => {
+            w.push(REPLY_EXEC_RESULT);
+            put_bytes(w, output);
+            w.push(u8::from(*ok));
+        }
+        Reply::Snapshot { id, tainted } => {
+            w.push(REPLY_SNAPSHOT);
+            put_u64(w, id.0);
+            w.push(u8::from(*tainted));
+        }
+        Reply::Recorded(env) => {
+            w.push(REPLY_RECORDED);
+            write_env(w, env);
+        }
     }
 }
 
@@ -382,6 +415,15 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
         }
         REPLY_BYTES => Reply::Bytes(r.bytes()?.to_vec()),
         REPLY_REGS => Reply::Regs(read_regs_view(r)?),
+        REPLY_EXEC_RESULT => Reply::ExecResult {
+            output: r.bytes()?.to_vec(),
+            ok: r.bool()?,
+        },
+        REPLY_SNAPSHOT => Reply::Snapshot {
+            id: SnapId(r.u64()?),
+            tainted: r.bool()?,
+        },
+        REPLY_RECORDED => Reply::Recorded(read_env(r)?),
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -657,6 +699,7 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             put_u32(w, *len);
             put_u32(w, *cap);
         }
+        Ce::Tainted => w.push(CE_TAINTED),
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -705,6 +748,7 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
             len: r.u32()?,
             cap: r.u32()?,
         },
+        CE_TAINTED => Ce::Tainted,
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,
@@ -829,6 +873,16 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+
+    /// Read a canonical boolean: `0` → `false`, `1` → `true`, anything else a
+    /// malformed frame (keeps the encoding one-to-one — no spurious `true` bytes).
+    fn bool(&mut self) -> Result<bool, ProtocolError> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(ProtocolError::ShortFrame),
+        }
     }
 
     /// Read a `u32`-length-prefixed byte blob, borrowed from the body.
