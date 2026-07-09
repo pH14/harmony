@@ -886,3 +886,28 @@ P0-DIVERGENCE; scp `bug3/*.json` + `traces/` back, commit under `campaign-data/b
 Write the DIRECTIONAL GO/NO-GO (amended gate 4): bug-3 effect size + trajectory + species curves; bug-3
 clearly positive & nothing inverted → provisional GO (task 70 + task 86 held-out); else NO-GO → SCORING
 E-fails. Document bug-2 as found-but-degenerate/deferred (3 findings) + the bug-1-traces gap (flagged).
+
+### 2026-07-09 — ✅ BUG-3 CAMPAIGN DONE (~22h) + CORRELATION-REPORT.md RULED **NO-GO** (commit 59102fb)
+Campaign completed clean: **43 DONE, 0 rc≠0**; determinism CERTIFIED (seed1 `5281f249`, seed2 `38a6540c`
+co==solo exact; seed-3 "P0-DIVERGENCE" = empty==empty false-positive — baseline seed3 found nothing in
+BOTH runs). 43 traces retained → `campaign-data/bug3/results/traces.tar.gz` (26M→936K). Box reverted to
+stock after every phase.
+
+**THE DATA (bug-3, the sole discriminator):** signal found **11/20** vs baseline **18/20**; censored
+median TTB (non-finds@512) **signal 299 vs baseline 225 — signal WORSE**; common seeds (10) a **5-5 wash**;
+signal missed 8 seeds baseline found {4,5,7,12,13,14,19,20}, gained 1 {11}. The finders-only median
+(signal 159 < baseline 190) is OPTIMISTIC (compares only the easy seeds the signal found). Within-signal
+novelty→progress **ρ=-0.671** (n=11 < Klees 20 → underpowered) is a real positive nuance but doesn't beat
+baseline. STADS: both configs saturate at **4 species by branch 2** (bug-agnostic logging = tiny fixed
+template vocab → almost no search info). bug-1 degenerate (signal median 5 vs baseline 2, artifact).
+**Mechanism:** bug-3 = single-dim rare-value (no locality); the 1-dim exploit jitters the SEED (~¾ of
+branches) unproductively → starves exploration → misses more.
+
+**RULING = NO-GO** (amended directional gate 4): bug-3 flat-to-inverted (signal worse) → NO-GO → SCORING
+**E-fails playbook** (freeze; retained traces = the eval set; iterate task-67 CellFn for bug-relevant/
+non-saturating cells + revisit the selector's explore/exploit split for non-conjunctive bugs; re-key
+offline; re-run harness). **Task 70 does NOT dispatch.** Report also documents: bug-2 deferred (3
+findings); the 3-part M2 realization (marker cert / large-deadline Crash validity / exploit kernel);
+cell counts + zero-cell scope; bug-1-traces gap (recommend accept). **HANDED TO FOREMAN/PAUL.**
+Conditional-tiebreaker note: the bug-2 rare-value-gate successor (a CONJUNCTIVE bug where the 1-dim
+exploit SHOULD converge) is the amendment's tiebreaker if the underpowered n=11 needs sharpening.
