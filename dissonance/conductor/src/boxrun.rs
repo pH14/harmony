@@ -28,6 +28,7 @@ use std::process::ExitCode;
 // `cargo check` — the Linux-target check in the gate list catches it.
 use conductor::campaign::{CampaignConfig, run_campaign as run_campaign_loop};
 use conductor::record::{RecordConfig, run_recording};
+use conductor::stopwatch::{Phase, PhaseStats, mark};
 use conductor::{SweepConfig, run_session, sweep_client};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
@@ -135,15 +136,17 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
 /// base snapshot a later sweep/campaign seals lands **mid-workload,
 /// post-readiness** (the gate's point) — the one workload-aware step; the
 /// server and adapter after it stay workload-blind. Returns the composed
-/// [`ControlServer`] ready to serve, or a failing [`ExitCode`] with a loud
-/// reason (never a vacuous success). Shared verbatim by the sweep
+/// [`ControlServer`] ready to serve plus the boot-to-ready wall-clock
+/// duration in microseconds (task 96 — observation-only, see
+/// `conductor::stopwatch`'s module doc), or a failing [`ExitCode`] with a
+/// loud reason (never a vacuous success). Shared verbatim by the sweep
 /// ([`run`](run)) and the campaign ([`run_campaign`](run_campaign)) so both
 /// boot the guest identically.
 fn boot_server(
     kernel_name: &str,
     initramfs_name: &str,
     ready_marker: &str,
-) -> Result<ControlServer<Box<dyn Backend>>, ExitCode> {
+) -> Result<(ControlServer<Box<dyn Backend>>, u64), ExitCode> {
     if !std::path::Path::new("/dev/kvm").exists() {
         eprintln!(
             "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
@@ -170,6 +173,11 @@ fn boot_server(
         return Err(ExitCode::FAILURE);
     };
 
+    // "Boot" starts here (task 96 §4: "from server boot start to the readiness
+    // marker") — before `boot_linux_selected`, so the phase covers KVM backend
+    // creation + guest RAM load + the initial restore, not just the
+    // post-boot drive to the marker.
+    let boot_t0 = mark();
     let mut live = match boot_linux_selected(
         BackendKind::Patched,
         &kernel,
@@ -185,16 +193,22 @@ fn boot_server(
         }
     };
     println!("[conductor] box: booting the guest to the readiness marker {ready_marker:?} …");
-    match drive_to_marker(&mut live, ready_marker.as_bytes()) {
-        Ok(steps) => println!(
-            "\n[conductor] readiness marker reached at step {steps}; the base snapshot will be \
-             sealed at the next snapshottable boundary at/after this point.\n"
-        ),
+    let boot_us = match drive_to_marker(&mut live, ready_marker.as_bytes()) {
+        Ok(steps) => {
+            let boot_us = boot_t0.elapsed_us();
+            println!(
+                "\n[conductor] readiness marker reached at step {steps}; the base snapshot \
+                 will be sealed at the next snapshottable boundary at/after this point, wall \
+                 {}s.\n",
+                boot_us / 1_000_000
+            );
+            boot_us
+        }
         Err(e) => {
             eprintln!("\n[conductor] failed to reach the readiness marker: {e}");
             return Err(ExitCode::FAILURE);
         }
-    }
+    };
 
     // The fork factory: fresh, equivalently-composed patched VMs whose
     // boot-loaded image the restore immediately overwrites. `live` is
@@ -212,7 +226,7 @@ fn boot_server(
             BOOT_SEED,
         )
     });
-    Ok(ControlServer::new(live, factory))
+    Ok((ControlServer::new(live, factory), boot_us))
 }
 
 /// The initial environment the box's live VM boots under (the seed/policy the
@@ -230,10 +244,13 @@ pub fn run(args: BoxArgs) -> ExitCode {
     if !super::seeds_ok(args.sweep.seeds, 8) {
         return ExitCode::FAILURE;
     }
-    let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+    // `SweepReport` carries no timing (task 96 only extends `CampaignReport`)
+    // — the boot duration is already in the printed readiness line above.
+    let (mut server, _boot_us) =
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
 
     // Postgres is interrupt-driven; the snapshot search may need many steps
     // to find a sealable boundary at/after readiness. Generous retry budget
@@ -314,7 +331,8 @@ pub fn run(args: BoxArgs) -> ExitCode {
 /// closure). The search space is CLI-scoped — the operator narrows `--gpa-*`
 /// once the supervisor's ledger gpa is pinned (see `CampaignBoxArgs`).
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
-    let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+    let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
+    {
         Ok(s) => s,
         Err(code) => return code,
     };
@@ -362,7 +380,7 @@ pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
         let mut machine = SocketMachine::connect(stream, initial)?;
         run_campaign_loop(&mut machine, &SpecEnvCodec, &cfg)
     });
-    let report = match client {
+    let mut report = match client {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[conductor] campaign box: the campaign failed (transport/backend): {e}");
@@ -376,6 +394,13 @@ pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
         eprintln!("[conductor] campaign box: server session ended with a fatal error: {se}");
         return ExitCode::FAILURE;
     }
+    // Fold the boot-to-ready measurement (task 96) into the report's `Boot`
+    // phase: it happened before `run_campaign_loop`'s own `Stopwatch` existed
+    // (boot brackets `boot_server`, well outside the campaign loop), so it
+    // cannot go through `Stopwatch::time` — merged in here instead.
+    report
+        .timing
+        .insert(Phase::Boot, PhaseStats::single(boot_us));
     finish_campaign("box", &report, n)
 }
 
@@ -454,10 +479,20 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     };
 
     // 2. Boot the bug's guest to its readiness marker + seal a mid-workload base.
-    let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
-        Ok(s) => s,
+    //    `boot_server` also returns the boot-to-ready wall-clock (task 96 stopwatch,
+    //    hash-neutral) — surfaced here so the box operator sees per-campaign boot
+    //    cost. The campaign run + the zero-cell hard-fail below are NOT inside a
+    //    timed phase (no PhaseStats report is built on this measurement path), so
+    //    there is nothing further to time; the boot phase is the only timed segment.
+    let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
+    {
+        Ok(t) => t,
         Err(code) => return code,
     };
+    println!(
+        "[conductor] benchcampaign box: boot-to-ready {} ms (hash-neutral).",
+        boot_us / 1_000
+    );
 
     // 3. The box campaign config: fault moments rebased onto the sealed base
     //    (M2 prereq 2), replay bar floored at 25/25 (the flag can only raise it).

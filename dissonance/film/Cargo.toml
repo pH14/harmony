@@ -1,0 +1,60 @@
+[package]
+name = "film"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The visible replay: a pure observation query over the one timeline that films a reproducer by reading task 86's billboard and re-rendering each frame with the commit-pinned core (task 87)"
+
+[lints]
+workspace = true
+
+[features]
+# The library core — FilmPlan derivation, the billboard header, the projector,
+# the FrameRenderer seam + the deterministic test renderer, and the PPM/contact-
+# sheet writers — pulls no optional dependency, so the default build carries no
+# `unsafe`, no clap, and no libc. Miri runs against this surface (the FFI seam is
+# `core-replay`-gated off, per conventions §Miri).
+default = []
+# The `film` REPL/driver binary and its only extra dependency, `clap` (bins-only
+# per the rule-5 whitelist).
+cli = ["dep:clap"]
+# The real renderer: the libretro C-ABI FFI (`CoreReplay`). Gated so it is
+# compile-checked under `--all-features` but never crosses the FFI in a default
+# test or under Miri. The named `unsafe` grant (task 87) lives entirely here.
+core-replay = ["dep:libc"]
+
+[[bin]]
+name = "film"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# The three hard-rule-2 exceptions the task grants explicitly: this crate is a
+# client of the control-transport wire contract (`control-proto`), is addressed
+# by the reproducer's env types (`environment`), and drives the moment-addressed
+# session client (`resolution`, as a library — `default-features = false` so the
+# lib never pulls the REPL's clap). Pinned `version` alongside `path` for `cargo
+# deny`'s wildcard ban. No dependency on `explorer`.
+control-proto = { path = "../control-proto", version = "0.1.0" }
+environment = { path = "../environment", version = "0.1.0" }
+resolution = { path = "../resolution", version = "0.1.0", default-features = false }
+# Typed, layered errors (rule-5 whitelist).
+thiserror = "2"
+# FilmPlan and the capture bundle are serializable inspectable artifacts (the
+# transcript principle) — one serde model, JSON on disk (rule-5 whitelist, std
+# features only).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The committed artifacts are blake3 hashes of the rendered PPM frames / contact
+# sheet (rule-5 whitelist).
+blake3 = "1"
+# The REPL/driver binary only (whitelist: clap is bins-only).
+clap = { version = "4", features = ["derive"], optional = true }
+# `core-replay` only: `dlopen`/`dlsym` the commit-pinned libretro core and its
+# C-ABI entry points (whitelist). Never present in the default build.
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+# Round-trip a plan / capture bundle through a throwaway file.
+tempfile = "3"

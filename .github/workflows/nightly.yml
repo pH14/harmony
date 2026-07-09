@@ -43,6 +43,20 @@ jobs:
       # they blow the job ceiling without touching any additional unsafe.
       - name: miri — conductor (lib)
         run: cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib
+      # film (task 87): geometry/callback rejection paths + revalidation run
+      # interpreted; the libretro FFI itself is cfg'd off under Miri. The
+      # feature flag pulls in the CoreReplay seam's testable half. Recorded
+      # merge-time addition per the PR #87 round-4 checklist.
+      - name: miri — film (core-replay feature)
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p film --features core-replay
+      # snapshot-store (task 95 M1 merge-time item, PR #91): --lib only — the
+      # mapping/materialize tests need real file-backed mmap, which Miri cannot
+      # execute (they are cfg(not(miri))). The lib tests need disable-isolation
+      # for tempfile creation on top of the job-level permissive-provenance.
+      - name: miri — snapshot-store (lib)
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p snapshot-store --lib
+        env:
+          MIRIFLAGS: -Zmiri-permissive-provenance -Zmiri-disable-isolation
       # guest/flow-agent (task 61) is out-of-workspace (its own manifest). Its ONLY
       # unsafe is the binary's `cfg(target_os="linux")` FFI — `clock_gettime`, and
       # (under `cfg(all(linux, x86_64))`) `mmap /dev/mem` + `iopl` +

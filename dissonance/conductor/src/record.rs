@@ -201,7 +201,18 @@ fn seal_base<B: Backend>(
                 | Reply::Hash(_)
                 | Reply::Stop(_)
                 | Reply::SdkEvents(_)
-                | Reply::Console { .. },
+                | Reply::Console { .. }
+                // Task 80 observation replies: never answered to a `snapshot`.
+                | Reply::Bytes(_)
+                | Reply::Regs(_)
+                // Task 81 improvisation replies: never answered to a `snapshot`.
+                // (`Reply::Snapshot` is the taint-carrying snapshot reply, but the
+                // conductor sweep never `exec`s, so its snapshots are untainted and
+                // come back as `Reply::SnapId` above — a `Reply::Snapshot` here would
+                // be a protocol violation.)
+                | Reply::ExecResult { .. }
+                | Reply::Snapshot { .. }
+                | Reply::Recorded(_),
             ) => {
                 return Err(RecordError::Protocol("snapshot: unexpected reply".into()));
             }

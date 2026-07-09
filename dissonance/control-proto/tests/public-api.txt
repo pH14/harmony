@@ -26,12 +26,20 @@ pub control_proto::ControlError::PerturbPastMoment::floor: u64
 pub control_proto::ControlError::PerturbReservedVector
 pub control_proto::ControlError::PerturbReservedVector::vector: u8
 pub control_proto::ControlError::Protocol(control_proto::ProtocolError)
+pub control_proto::ControlError::ReadOutOfRange
+pub control_proto::ControlError::ReadOutOfRange::gpa: u64
+pub control_proto::ControlError::ReadOutOfRange::len: u32
+pub control_proto::ControlError::ReadOutOfRange::ram_len: u64
+pub control_proto::ControlError::ReadTooLarge
+pub control_proto::ControlError::ReadTooLarge::cap: u32
+pub control_proto::ControlError::ReadTooLarge::len: u32
 pub control_proto::ControlError::ResolveWithoutDecision
 pub control_proto::ControlError::RestoreFailed
 pub control_proto::ControlError::ScheduleUnsatisfiable
 pub control_proto::ControlError::ScheduleUnsatisfiable::moment: u64
 pub control_proto::ControlError::ScheduleUnsatisfiable::vtime: u64
 pub control_proto::ControlError::SnapshotWhileArmed
+pub control_proto::ControlError::Tainted
 pub control_proto::ControlError::UnknownSnapshot(control_proto::SnapId)
 pub control_proto::ControlError::Unsupported
 pub enum control_proto::CrashKind
@@ -50,13 +58,22 @@ pub control_proto::ProtocolError::BadMagic
 pub control_proto::ProtocolError::BadVersion
 pub control_proto::ProtocolError::ShortFrame
 pub enum control_proto::Reply
+pub control_proto::Reply::Bytes(alloc::vec::Vec<u8>)
 pub control_proto::Reply::Console
 pub control_proto::Reply::Console::chunk: alloc::vec::Vec<u8>
 pub control_proto::Reply::Console::total: u32
+pub control_proto::Reply::ExecResult
+pub control_proto::Reply::ExecResult::ok: bool
+pub control_proto::Reply::ExecResult::output: alloc::vec::Vec<u8>
 pub control_proto::Reply::Hash([u8; 32])
 pub control_proto::Reply::Hello(control_proto::Caps)
+pub control_proto::Reply::Recorded(control_proto::Environment)
+pub control_proto::Reply::Regs(control_proto::RegsView)
 pub control_proto::Reply::SdkEvents(alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>)
 pub control_proto::Reply::SnapId(control_proto::SnapId)
+pub control_proto::Reply::Snapshot
+pub control_proto::Reply::Snapshot::id: control_proto::SnapId
+pub control_proto::Reply::Snapshot::tainted: bool
 pub control_proto::Reply::Stop(control_proto::StopReason)
 pub control_proto::Reply::Unit
 pub enum control_proto::Request
@@ -66,12 +83,20 @@ pub control_proto::Request::Branch::snap: control_proto::SnapId
 pub control_proto::Request::Console
 pub control_proto::Request::Console::offset: u32
 pub control_proto::Request::Drop(control_proto::SnapId)
+pub control_proto::Request::Exec
+pub control_proto::Request::Exec::cmd: alloc::string::String
+pub control_proto::Request::Exec::deadline: control_proto::VTime
 pub control_proto::Request::Hash
 pub control_proto::Request::Hash::scope: control_proto::HashScope
 pub control_proto::Request::Hello(control_proto::Caps)
 pub control_proto::Request::Perturb
 pub control_proto::Request::Perturb::at: control_proto::Moment
 pub control_proto::Request::Perturb::fault: control_proto::HostFault
+pub control_proto::Request::Read
+pub control_proto::Request::Read::gpa: u64
+pub control_proto::Request::Read::len: u32
+pub control_proto::Request::RecordedEnv
+pub control_proto::Request::Regs
 pub control_proto::Request::Replay(control_proto::SnapId)
 pub control_proto::Request::Run
 pub control_proto::Request::Run::resolve: core::option::Option<control_proto::Answer>
@@ -124,6 +149,19 @@ pub control_proto::EventRef::data: alloc::vec::Vec<u8>
 pub control_proto::EventRef::id: u32
 pub struct control_proto::HostFault(pub alloc::vec::Vec<u8>)
 pub struct control_proto::Moment(pub u64)
+pub struct control_proto::RegsView
+pub control_proto::RegsView::cr0: u64
+pub control_proto::RegsView::cr3: u64
+pub control_proto::RegsView::cr4: u64
+pub control_proto::RegsView::gpr: [u64; 16]
+pub control_proto::RegsView::moment: control_proto::Moment
+pub control_proto::RegsView::rflags: u64
+pub control_proto::RegsView::rip: u64
+pub control_proto::RegsView::seg: [u16; 6]
+pub control_proto::RegsView::version: u16
+pub control_proto::RegsView::vtime: u64
+impl control_proto::RegsView
+pub const control_proto::RegsView::VERSION: u16
 pub struct control_proto::SnapId(pub u64)
 pub struct control_proto::StopConditions
 pub control_proto::StopConditions::deadline: core::option::Option<control_proto::VTime>
@@ -137,6 +175,7 @@ pub struct control_proto::VTime(pub u64)
 pub const control_proto::APP_PROTOCOL_VERSION: u16
 pub const control_proto::MAX_FRAME_LEN: usize
 pub const control_proto::PROTO_VERSION: u16
+pub const control_proto::READ_CAP: u32
 pub fn control_proto::decode_reply(&[u8]) -> core::result::Result<core::option::Option<(u32, core::result::Result<control_proto::Reply, control_proto::ControlError>, usize)>, control_proto::ProtocolError>
 pub fn control_proto::decode_request(&[u8]) -> core::result::Result<core::option::Option<(u32, control_proto::Request, usize)>, control_proto::ProtocolError>
 pub fn control_proto::encode_reply(u32, &core::result::Result<control_proto::Reply, control_proto::ControlError>, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), control_proto::ProtocolError>

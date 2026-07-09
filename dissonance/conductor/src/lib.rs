@@ -49,6 +49,7 @@ pub mod materialize;
 pub mod mock;
 pub mod planted;
 pub mod record;
+pub mod stopwatch;
 
 /// Run one control session: `client` on a spawned thread against `server` on
 /// the calling thread, over a fresh socketpair. Returns the server-loop result

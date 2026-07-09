@@ -45,8 +45,8 @@ pub use codec::{decode_reply, decode_request, encode_reply, encode_request};
 pub use error::{ControlError, ProtocolError};
 pub use types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
-    EventRef, HashScope, HostFault, Moment, Reply, Request, SnapId, StopConditions, StopMask,
-    StopReason, VTime, class_bit,
+    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
+    StopMask, StopReason, VTime, class_bit,
 };
 
 /// The wire-format version carried in every frame header. Bumps only when the
@@ -76,10 +76,27 @@ pub const PROTO_VERSION: u16 = 1;
 /// to **4** by task 73 round-7: the SDK stops (`Assertion` / `SnapshotPoint`) are
 /// now gated on their new `StopMask` class bits (8 / 9) rather than surfacing
 /// unconditionally — a semantic change to the `Run` stop set. Bumped to **5** by
-/// task 69 M2: the `Console` scrape verb (`Request::Console` / `Reply::Console`)
-/// extends the wire vocabulary, so a v≤4 peer must be rejected at `Hello` rather
-/// than failing mid-session on an unknown tag.
-pub const APP_PROTOCOL_VERSION: u16 = 5;
+/// task 80: the observation verbs `read` / `regs` add the `Read` / `Regs`
+/// requests, the `Bytes` / `Regs` reply tags, and the `ReadOutOfRange` /
+/// `ReadTooLarge` error tags — additive, but a peer that negotiated an older
+/// version must reject at `hello` rather than hit a mid-session `ShortFrame` on a
+/// tag it does not know. Bumped to **6** by task 81: the improvisation surface —
+/// the `Exec` + `RecordedEnv` verbs, the `ExecResult` / `Snapshot` (taint-carrying)
+/// / `Recorded` reply tags, and the `ControlError::Tainted` reply tag. Bumped to
+/// **7** by task 69 M2: the `Console` scrape verb (`Request::Console` /
+/// `Reply::Console`, the socket console-capture tier) extends the wire vocabulary,
+/// so a v≤6 peer must reject at `Hello` rather than fail mid-session on an unknown
+/// tag.
+pub const APP_PROTOCOL_VERSION: u16 = 7;
+
+/// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
+/// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
+/// allocation**, so an untrusted count can never force an unbounded buffer
+/// (conventions rule 4). 64 KiB — generous for any probe region a resolution
+/// session reads, and far below [`MAX_FRAME_LEN`] so a full `Bytes` reply always
+/// frames. Both peers agree on this number; a server picking a smaller effective
+/// cap still rejects loudly, never truncates.
+pub const READ_CAP: u32 = 1 << 16; // 64 KiB
 
 /// Maximum on-wire frame *body* length. Generous for [`Environment`] blobs and
 /// hashes, but bounded so untrusted transport can never force unbounded
@@ -100,6 +117,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 5); // task 69 M2: Console scrape verb added to the wire vocabulary
+        assert_eq!(APP_PROTOCOL_VERSION, 7); // task 69 M2: Console scrape verb added to the wire vocabulary
+        assert_eq!(READ_CAP, 65_536); // == 1 << 16 (64 KiB)
     }
 }

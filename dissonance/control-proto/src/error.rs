@@ -190,6 +190,44 @@ pub enum ControlError {
         /// The reserved vector.
         vector: u8,
     },
+    /// A [`Read`](crate::Request::Read) named a `[gpa, gpa+len)` range that runs
+    /// past guest RAM. Rejected **loudly** at the observation boundary (task 80:
+    /// "out-of-range → error, never a truncated success"): a short read would
+    /// hand the client bytes it did not ask for (or zero-fill), silently corrupting
+    /// whatever it decodes from them.
+    #[error("read [{gpa:#x}, {gpa:#x}+{len}) is out of range (guest RAM is {ram_len} bytes)")]
+    ReadOutOfRange {
+        /// The requested guest-physical base.
+        gpa: u64,
+        /// The requested length in bytes.
+        len: u32,
+        /// The guest RAM size in bytes.
+        ram_len: u64,
+    },
+    /// A [`Read`](crate::Request::Read) asked for more than
+    /// [`READ_CAP`](crate::READ_CAP) bytes. Rejected **before any allocation**, so
+    /// an untrusted `len` can never force an unbounded buffer (conventions rule 4)
+    /// — the same discipline the codec applies to a frame length.
+    #[error("read len {len} exceeds the per-call cap of {cap} bytes")]
+    ReadTooLarge {
+        /// The requested length.
+        len: u32,
+        /// The per-call cap ([`READ_CAP`](crate::READ_CAP)).
+        cap: u32,
+    },
+    /// The **taint guard** fired (task 81): the current timeline was tainted by an
+    /// [`Exec`](crate::Request::Exec) improvisation, and the request would have
+    /// minted a reproducer from it ([`RecordedEnv`](crate::Request::RecordedEnv) or
+    /// equivalent). An improvised timeline is off the record by ruling
+    /// (`docs/RESOLUTION.md` §Improvisations) — its execution carries no determinism
+    /// guarantee, so there is no honest [`Environment`](crate::Environment) that
+    /// replays it. Refused **loudly** rather than handing back a reproducer that does
+    /// not reproduce; the caller must rewind to an untainted ancestor
+    /// (`branch`/`replay`) to reach recordable state again. Taint never clears
+    /// downstream — every snapshot and every `branch`/`replay` from a tainted point
+    /// stays tainted; only an untainted ancestor is untainted.
+    #[error("timeline is tainted by an exec improvisation; refusing to mint a reproducer")]
+    Tainted,
     /// A wire-framing failure surfaced as a reply.
     #[error("protocol error: {0}")]
     Protocol(#[from] ProtocolError),

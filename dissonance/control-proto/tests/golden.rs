@@ -244,6 +244,27 @@ fn req_perturb() {
     );
 }
 
+#[test]
+fn req_read() {
+    check_req(
+        11,
+        Request::Read {
+            gpa: 0x1000,
+            len: 0x40,
+        },
+        &[
+            0x0A, // REQ_READ
+            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // gpa = 0x1000
+            0x40, 0x00, 0x00, 0x00, // len = 0x40
+        ],
+    );
+}
+
+#[test]
+fn req_regs() {
+    check_req(12, Request::Regs, &[0x0B]);
+}
+
 // -------------------------------- replies ----------------------------------
 
 #[test]
@@ -276,6 +297,61 @@ fn reply_hash() {
     let mut body = vec![0x00, 0x05]; // RESULT_OK, REPLY_HASH
     body.extend_from_slice(&digest);
     check_reply(13, Ok(Reply::Hash(digest)), &body);
+}
+
+#[test]
+fn reply_bytes() {
+    check_reply(
+        14,
+        Ok(Reply::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+        &[
+            0x00, 0x07, // RESULT_OK, REPLY_BYTES
+            0x04, 0x00, 0x00, 0x00, // bytes len = 4
+            0xDE, 0xAD, 0xBE, 0xEF, // bytes
+        ],
+    );
+}
+
+#[test]
+fn reply_regs() {
+    use control_proto::{Moment, RegsView};
+    // Distinctive per-field values so any layout drift (field order, width, or a
+    // dropped/added field) fails against the hand-written bytes.
+    let view = RegsView {
+        version: RegsView::VERSION,
+        gpr: [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF,
+        ],
+        rip: 0x1234,
+        rflags: 0x2,
+        seg: [0x10, 0x18, 0x20, 0x28, 0x30, 0x38],
+        cr0: 0x8000_0011,
+        cr3: 0x3000,
+        cr4: 0x20,
+        moment: Moment(0x64),
+        vtime: 0x64,
+    };
+    // Build the expected body field-by-field (fixed order, little-endian) — the
+    // wire layout pinned independently of the codec.
+    let mut body = vec![0x00, 0x08]; // RESULT_OK, REPLY_REGS
+    body.extend_from_slice(&1u16.to_le_bytes()); // version = 1
+    for g in view.gpr {
+        body.extend_from_slice(&g.to_le_bytes());
+    }
+    body.extend_from_slice(&view.rip.to_le_bytes());
+    body.extend_from_slice(&view.rflags.to_le_bytes());
+    for s in view.seg {
+        body.extend_from_slice(&s.to_le_bytes());
+    }
+    body.extend_from_slice(&view.cr0.to_le_bytes());
+    body.extend_from_slice(&view.cr3.to_le_bytes());
+    body.extend_from_slice(&view.cr4.to_le_bytes());
+    body.extend_from_slice(&view.moment.0.to_le_bytes());
+    body.extend_from_slice(&view.vtime.to_le_bytes());
+    // 2 tag + 2 version + 16*8 gpr + 8 rip + 8 rflags + 6*2 seg + 3*8 cr + 8 moment + 8 vtime.
+    assert_eq!(body.len(), 2 + 2 + 128 + 8 + 8 + 12 + 24 + 8 + 8);
+    check_reply(15, Ok(Reply::Regs(view)), &body);
 }
 
 // --------------------------- StopReason variants ---------------------------
@@ -478,6 +554,42 @@ fn err_perturb_reserved_vector() {
 }
 
 #[test]
+fn err_read_out_of_range() {
+    // RESULT_ERR (0x01), CE_READ_OUT_OF_RANGE (0x11), gpa (u64 LE), len (u32 LE), ram_len (u64 LE).
+    check_reply(
+        49,
+        Err(ControlError::ReadOutOfRange {
+            gpa: 0x3FF0,
+            len: 0x40,
+            ram_len: 0x4000,
+        }),
+        &[
+            0x01, 0x11, // RESULT_ERR, CE_READ_OUT_OF_RANGE
+            0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // gpa = 0x3FF0
+            0x40, 0x00, 0x00, 0x00, // len = 0x40
+            0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ram_len = 0x4000
+        ],
+    );
+}
+
+#[test]
+fn err_read_too_large() {
+    // RESULT_ERR (0x01), CE_READ_TOO_LARGE (0x12), len (u32 LE), cap (u32 LE).
+    check_reply(
+        50,
+        Err(ControlError::ReadTooLarge {
+            len: 0x2_0000,
+            cap: control_proto::READ_CAP,
+        }),
+        &[
+            0x01, 0x12, // RESULT_ERR, CE_READ_TOO_LARGE
+            0x00, 0x00, 0x02, 0x00, // len = 0x20000
+            0x00, 0x00, 0x01, 0x00, // cap = 0x10000 (READ_CAP = 64 KiB)
+        ],
+    );
+}
+
+#[test]
 fn err_bad_env_version() {
     check_reply(
         37,
@@ -508,6 +620,90 @@ fn err_protocol() {
         Err(ControlError::Protocol(ProtocolError::BadVersion)),
         &[0x01, 0x09, 0x02],
     );
+}
+
+// ------------------------- task 81: improvisations -------------------------
+
+#[test]
+fn req_exec() {
+    // REQ_EXEC (0x0C), cmd (u32-len-prefixed UTF-8), deadline (u64 LE).
+    check_req(
+        13,
+        Request::Exec {
+            cmd: "ls /".to_string(),
+            deadline: VTime(0x64),
+        },
+        &[
+            0x0C, // REQ_EXEC
+            0x04, 0x00, 0x00, 0x00, // cmd len = 4
+            b'l', b's', b' ', b'/', // "ls /"
+            0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // deadline = 0x64
+        ],
+    );
+}
+
+#[test]
+fn req_recorded_env() {
+    check_req(14, Request::RecordedEnv, &[0x0D]);
+}
+
+#[test]
+fn reply_exec_result() {
+    // RESULT_OK (0x00), REPLY_EXEC_RESULT (0x09), output (u32-len blob), ok (u8).
+    check_reply(
+        60,
+        Ok(Reply::ExecResult {
+            output: vec![0x6F, 0x6B], // "ok"
+            ok: true,
+        }),
+        &[
+            0x00, 0x09, // RESULT_OK, REPLY_EXEC_RESULT
+            0x02, 0x00, 0x00, 0x00, // output len = 2
+            0x6F, 0x6B, // "ok"
+            0x01, // ok = true
+        ],
+    );
+}
+
+#[test]
+fn reply_snapshot_tainted() {
+    // RESULT_OK (0x00), REPLY_SNAPSHOT (0x0A), id (u64 LE), tainted (u8).
+    check_reply(
+        61,
+        Ok(Reply::Snapshot {
+            id: SnapId(9),
+            tainted: true,
+        }),
+        &[
+            0x00, 0x0A, // RESULT_OK, REPLY_SNAPSHOT
+            0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // id = 9
+            0x01, // tainted = true
+        ],
+    );
+}
+
+#[test]
+fn reply_recorded() {
+    // RESULT_OK (0x00), REPLY_RECORDED (0x0B), Environment (blob_version u16, bytes).
+    check_reply(
+        62,
+        Ok(Reply::Recorded(Environment {
+            blob_version: 3,
+            bytes: vec![0xCA, 0xFE],
+        })),
+        &[
+            0x00, 0x0B, // RESULT_OK, REPLY_RECORDED
+            0x03, 0x00, // blob_version = 3
+            0x02, 0x00, 0x00, 0x00, // bytes len = 2
+            0xCA, 0xFE, // bytes
+        ],
+    );
+}
+
+#[test]
+fn err_tainted() {
+    // RESULT_ERR (0x01), CE_TAINTED (0x13), no payload.
+    check_reply(63, Err(ControlError::Tainted), &[0x01, 0x13]);
 }
 
 /// The `class_bit` constants are a hand-maintained mirror of

@@ -48,6 +48,46 @@ lines 41–42). It mirrors the existing `Branch` verb pattern:
   adversarial/streaming coverage all extend to it; the `public-api.txt` snapshot
   is refreshed.
 
+### Task 80 — the observation verbs `read` / `regs`
+
+Task 80 (the resolution observation surface) adds the two **observation** verbs the
+control protocol was missing — it could `hash(scope)` guest state but never *look
+at* it:
+
+- **`Request::Read { gpa: u64, len: u32 } → Reply::Bytes(Vec<u8>)`** — guest
+  physical memory. Body = `REQ_READ(10) · gpa:u64 · len:u32`. `len` is bounded by
+  the new **`READ_CAP` = 64 KiB** const; the backend answers a loud
+  `ControlError::ReadTooLarge { len, cap }` for an over-cap request and
+  `ControlError::ReadOutOfRange { gpa, len, ram_len }` for a `[gpa, gpa+len)` past
+  guest RAM — **never** a truncated success.
+- **`Request::Regs → Reply::Regs(RegsView)`** — a **versioned** register view
+  (`RegsView::VERSION = 1`): the 16 GPRs (canonical order
+  `rax rbx rcx rdx rsi rdi rbp rsp r8..r15`), `rip`, `rflags`, the segment
+  selectors (`cs ss ds es fs gs`), `cr0`/`cr3`/`cr4`, and the current `Moment`/
+  V-time. A **view, not** the save/restore format: additive-evolution, no
+  round-trip obligation — a `VERSION` bump appends fields (encoded after `vtime`),
+  and an older reader still consumes the prefix it knows. Body = `REQ_REGS(11)`;
+  the reply's `RegsView` is written field-by-field, fixed order, little-endian.
+
+The `RegsView` shape mirrors `dissonance/resolution`'s **local** view (PR #82,
+`server.rs`) field-for-field (rule 2 — resolution defined it locally against this
+spec while 80 was unmerged), so the integrator's reconciliation is a rename, not a
+reshape. `resolution`'s local view additionally derives `serde::{Serialize,
+Deserialize}` for its transcript; this crate stays serde-free (the wire codec *is*
+the serialization) — when the integrator collapses the two, add serde derives to
+`RegsView` (serde is whitelisted) or a `From` conversion. The two read range guards
+(`ReadOutOfRange`/`ReadTooLarge`) collapse onto resolution's client-local
+`SessionError` variants, same field shapes.
+
+`APP_PROTOCOL_VERSION` bumped **4 → 5** (new verbs + reply tags + error tags):
+additive to the codec, but a stale peer must reject **at `hello`** rather than hit
+a mid-session `ShortFrame` on a tag it does not know. Golden bytes (`req_read`,
+`req_regs`, `reply_bytes`, `reply_regs`, `err_read_out_of_range`,
+`err_read_too_large`), the round-trip/adversarial/streaming proptest strategies,
+the loopback ("every verb") session, and `public-api.txt` all extend to the new
+surface; the decoder's new discriminant arms are reached by the existing
+arbitrary-bytes fuzz target.
+
 ### Module layout
 
 `error.rs` (`ControlError` / `ProtocolError`) · `types.rs` (the plain wire data +
@@ -181,3 +221,28 @@ surfaces three *pre-existing* workspace-`clippy.toml` meta-diagnostics (the
 `rand::*` disallowed-method paths become unresolvable once proptest pulls `rand`
 into the dev-dep graph); they are emitted for every proptest-using crate, cite
 `clippy.toml` not this crate's code, and do not fail `-D warnings`.
+
+## Task 81 — the improvisation surface (`exec` / `recorded_env` + taint)
+
+Additive to the wire vocabulary (`APP_PROTOCOL_VERSION` 5 → 6):
+
+- `Request::Exec { cmd: String, deadline: VTime }` → `Reply::ExecResult { output, ok }`
+  — the crude, off-record improvisation verb (tags `REQ_EXEC=12`,
+  `REPLY_EXEC_RESULT=9`). `cmd` is a `u32`-length-prefixed UTF-8 blob; a non-UTF-8
+  body is a `ProtocolError::ShortFrame`, never a panic (the decoder is a Tier-1 fuzz
+  target). `ok` is a canonical boolean (`0`/`1` only).
+- `Request::RecordedEnv` → `Reply::Recorded(Environment)` — the reproducer mint
+  (tags `REQ_RECORDED_ENV=13`, `REPLY_RECORDED=11`). The taint guard's fail-loud
+  site: the backend answers `Err(ControlError::Tainted)` for a tainted timeline.
+- `Reply::Snapshot { id, tainted }` (tag `REPLY_SNAPSHOT=10`) — the **additive**
+  taint-carrying snapshot reply. `Reply::SnapId(SnapId)` is retained and remains the
+  reply for an untainted snapshot, so every pre-81 consumer and every existing
+  golden is byte-identical; reshaping `SnapId` was rejected because its tuple shape
+  is pinned by merged `resolution`/`explorer`/`conductor` (see vmm-core's
+  IMPLEMENTATION.md for the full rationale).
+- `ControlError::Tainted` (tag `CE_TAINTED=19`) — the taint guard's error.
+
+Coverage: hand-written golden frames for each new request/reply/error, the loopback
+session now taints and exercises `exec`/`recorded_env`/`Snapshot`/`Tainted`
+end-to-end, and the round-trip/adversarial proptest generators include every new
+variant. The codec stays bit-deterministic, panic-free, and cap-bounded.

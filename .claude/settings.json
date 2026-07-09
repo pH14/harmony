@@ -1,29 +1,43 @@
 {
-  "permissions": {
-    "allow": []
-  },
   "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/agent-hooks/turn-marker.sh stop",
-            "async": true
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "hooks": [
           {
-            "type": "command",
+            "async": true,
             "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/agent-hooks/turn-marker.sh session-end",
-            "async": true
+            "type": "command"
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime --hook-json",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/agent-hooks/turn-marker.sh stop",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(scripts/push-docs-to-main.sh)",
+      "Bash(gh pr merge *)"
     ]
   }
 }

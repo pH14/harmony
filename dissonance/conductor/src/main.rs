@@ -926,6 +926,9 @@ mod tests {
                 hash: [0; 32],
                 is_bug: nominal_is_bug,
             },
+            timing: std::collections::BTreeMap::new(),
+            wall_secs: 0,
+            branches_per_hour_x10: 0,
         }
     }
 

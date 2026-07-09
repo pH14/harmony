@@ -20,8 +20,8 @@
 use crate::error::ProtocolError;
 use crate::types::{
     Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
-    EventRef, HashScope, HostFault, Moment, Reply, Request, SnapId, StopConditions, StopMask,
-    StopReason, VTime,
+    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
+    StopMask, StopReason, VTime,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
@@ -40,7 +40,13 @@ const REQ_RUN: u8 = 6;
 const REQ_HASH: u8 = 7;
 const REQ_PERTURB: u8 = 8;
 const REQ_SDK_EVENTS: u8 = 9;
-const REQ_CONSOLE: u8 = 10;
+const REQ_READ: u8 = 10;
+const REQ_REGS: u8 = 11;
+const REQ_EXEC: u8 = 12;
+const REQ_RECORDED_ENV: u8 = 13;
+// task 69 M2 Console scrape verb — assigned 14 (10–13 taken by tasks 80/81 read/
+// regs/exec/recorded_env on the merge) so the wire tags stay collision-free.
+const REQ_CONSOLE: u8 = 14;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -53,7 +59,14 @@ const REPLY_UNIT: u8 = 3;
 const REPLY_STOP: u8 = 4;
 const REPLY_HASH: u8 = 5;
 const REPLY_SDK_EVENTS: u8 = 6;
-const REPLY_CONSOLE: u8 = 7;
+const REPLY_BYTES: u8 = 7;
+const REPLY_REGS: u8 = 8;
+const REPLY_EXEC_RESULT: u8 = 9;
+const REPLY_SNAPSHOT: u8 = 10;
+const REPLY_RECORDED: u8 = 11;
+// task 69 M2 Console scrape reply — assigned 12 (7–11 taken by tasks 80/81) so the
+// wire tags stay collision-free.
+const REPLY_CONSOLE: u8 = 12;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -90,6 +103,9 @@ const CE_PERTURB_MOMENT_TAKEN: u8 = 13;
 const CE_SCHEDULE_UNSATISFIABLE: u8 = 14;
 const CE_NOT_SYNCHRONIZED: u8 = 15;
 const CE_PERTURB_RESERVED_VECTOR: u8 = 16;
+const CE_READ_OUT_OF_RANGE: u8 = 17;
+const CE_READ_TOO_LARGE: u8 = 18;
+const CE_TAINTED: u8 = 19;
 
 // ---- ProtocolError discriminants (carried inside CE_PROTOCOL). ----
 const PE_SHORT_FRAME: u8 = 0;
@@ -255,6 +271,18 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             w.push(REQ_CONSOLE);
             put_u32(w, *offset);
         }
+        Request::Read { gpa, len } => {
+            w.push(REQ_READ);
+            put_u64(w, *gpa);
+            put_u32(w, *len);
+        }
+        Request::Regs => w.push(REQ_REGS),
+        Request::Exec { cmd, deadline } => {
+            w.push(REQ_EXEC);
+            put_bytes(w, cmd.as_bytes());
+            put_u64(w, deadline.0);
+        }
+        Request::RecordedEnv => w.push(REQ_RECORDED_ENV),
     }
 }
 
@@ -281,6 +309,18 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
         },
         REQ_SDK_EVENTS => Request::SdkEvents { offset: r.u32()? },
         REQ_CONSOLE => Request::Console { offset: r.u32()? },
+        REQ_READ => Request::Read {
+            gpa: r.u64()?,
+            len: r.u32()?,
+        },
+        REQ_REGS => Request::Regs,
+        REQ_EXEC => Request::Exec {
+            // A non-UTF-8 command is a malformed frame body, not a panic
+            // (conventions rule 4): the codec is a Tier-1 fuzz target.
+            cmd: String::from_utf8(r.bytes()?.to_vec()).map_err(|_| ProtocolError::ShortFrame)?,
+            deadline: VTime(r.u64()?),
+        },
+        REQ_RECORDED_ENV => Request::RecordedEnv,
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -343,6 +383,28 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
             put_u32(w, *total);
             put_bytes(w, chunk);
         }
+        Reply::Bytes(bytes) => {
+            w.push(REPLY_BYTES);
+            put_bytes(w, bytes);
+        }
+        Reply::Regs(view) => {
+            w.push(REPLY_REGS);
+            write_regs_view(w, view);
+        }
+        Reply::ExecResult { output, ok } => {
+            w.push(REPLY_EXEC_RESULT);
+            put_bytes(w, output);
+            w.push(u8::from(*ok));
+        }
+        Reply::Snapshot { id, tainted } => {
+            w.push(REPLY_SNAPSHOT);
+            put_u64(w, id.0);
+            w.push(u8::from(*tainted));
+        }
+        Reply::Recorded(env) => {
+            w.push(REPLY_RECORDED);
+            write_env(w, env);
+        }
     }
 }
 
@@ -371,7 +433,67 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
             total: r.u32()?,
             chunk: r.bytes()?.to_vec(),
         },
+        REPLY_BYTES => Reply::Bytes(r.bytes()?.to_vec()),
+        REPLY_REGS => Reply::Regs(read_regs_view(r)?),
+        REPLY_EXEC_RESULT => Reply::ExecResult {
+            output: r.bytes()?.to_vec(),
+            ok: r.bool()?,
+        },
+        REPLY_SNAPSHOT => Reply::Snapshot {
+            id: SnapId(r.u64()?),
+            tainted: r.bool()?,
+        },
+        REPLY_RECORDED => Reply::Recorded(read_env(r)?),
         _ => return Err(ProtocolError::ShortFrame),
+    })
+}
+
+/// The `RegsView` wire layout — fixed field order, no padding, all little-endian
+/// (canonical). The `gpr`/`seg` arrays are written element-by-element in their
+/// canonical order; growing the view (an additive `VERSION` bump) appends fields
+/// after `vtime`, so an older decoder still consumes the prefix it knows and a
+/// newer one reads the extension. Every element is a fixed-width integer, so the
+/// body length is constant for a given version.
+fn write_regs_view(w: &mut Vec<u8>, v: &RegsView) {
+    put_u16(w, v.version);
+    for g in &v.gpr {
+        put_u64(w, *g);
+    }
+    put_u64(w, v.rip);
+    put_u64(w, v.rflags);
+    for s in &v.seg {
+        put_u16(w, *s);
+    }
+    put_u64(w, v.cr0);
+    put_u64(w, v.cr3);
+    put_u64(w, v.cr4);
+    put_u64(w, v.moment.0);
+    put_u64(w, v.vtime);
+}
+
+fn read_regs_view(r: &mut Reader) -> Result<RegsView, ProtocolError> {
+    let version = r.u16()?;
+    let mut gpr = [0u64; 16];
+    for g in &mut gpr {
+        *g = r.u64()?;
+    }
+    let rip = r.u64()?;
+    let rflags = r.u64()?;
+    let mut seg = [0u16; 6];
+    for s in &mut seg {
+        *s = r.u16()?;
+    }
+    Ok(RegsView {
+        version,
+        gpr,
+        rip,
+        rflags,
+        seg,
+        cr0: r.u64()?,
+        cr3: r.u64()?,
+        cr4: r.u64()?,
+        moment: Moment(r.u64()?),
+        vtime: r.u64()?,
     })
 }
 
@@ -586,6 +708,18 @@ fn write_control_error(w: &mut Vec<u8>, err: &crate::error::ControlError) {
             w.push(CE_PERTURB_RESERVED_VECTOR);
             w.push(*vector);
         }
+        Ce::ReadOutOfRange { gpa, len, ram_len } => {
+            w.push(CE_READ_OUT_OF_RANGE);
+            put_u64(w, *gpa);
+            put_u32(w, *len);
+            put_u64(w, *ram_len);
+        }
+        Ce::ReadTooLarge { len, cap } => {
+            w.push(CE_READ_TOO_LARGE);
+            put_u32(w, *len);
+            put_u32(w, *cap);
+        }
+        Ce::Tainted => w.push(CE_TAINTED),
         Ce::Protocol(pe) => {
             w.push(CE_PROTOCOL);
             w.push(match pe {
@@ -625,6 +759,16 @@ fn read_control_error(r: &mut Reader) -> Result<crate::error::ControlError, Prot
         },
         CE_NOT_SYNCHRONIZED => Ce::NotSynchronized,
         CE_PERTURB_RESERVED_VECTOR => Ce::PerturbReservedVector { vector: r.u8()? },
+        CE_READ_OUT_OF_RANGE => Ce::ReadOutOfRange {
+            gpa: r.u64()?,
+            len: r.u32()?,
+            ram_len: r.u64()?,
+        },
+        CE_READ_TOO_LARGE => Ce::ReadTooLarge {
+            len: r.u32()?,
+            cap: r.u32()?,
+        },
+        CE_TAINTED => Ce::Tainted,
         CE_PROTOCOL => Ce::Protocol(match r.u8()? {
             PE_SHORT_FRAME => ProtocolError::ShortFrame,
             PE_BAD_MAGIC => ProtocolError::BadMagic,
@@ -749,6 +893,16 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+
+    /// Read a canonical boolean: `0` → `false`, `1` → `true`, anything else a
+    /// malformed frame (keeps the encoding one-to-one — no spurious `true` bytes).
+    fn bool(&mut self) -> Result<bool, ProtocolError> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(ProtocolError::ShortFrame),
+        }
     }
 
     /// Read a `u32`-length-prefixed byte blob, borrowed from the body.

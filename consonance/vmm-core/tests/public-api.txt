@@ -87,6 +87,21 @@ pub const vmm_core::entry::BOOT_INFO_GPA: u32
 pub fn vmm_core::entry::long_mode_entry(u64, u64, u64, u64) -> vmm_backend::state::VcpuState
 pub fn vmm_core::entry::protected_mode_entry(u32, u32) -> vmm_backend::state::VcpuState
 pub fn vmm_core::entry::write_boot_info(&mut [u8]) -> core::result::Result<u32, vmm_core::multiboot::LoadError>
+pub mod vmm_core::exec
+pub struct vmm_core::exec::ExecOutcome
+pub vmm_core::exec::ExecOutcome::ok: bool
+pub vmm_core::exec::ExecOutcome::output: alloc::vec::Vec<u8>
+pub vmm_core::exec::ExecOutcome::status: core::option::Option<u64>
+pub struct vmm_core::exec::ExecSession
+impl vmm_core::exec::ExecSession
+pub fn vmm_core::exec::ExecSession::feed(&mut self, &[u8])
+pub fn vmm_core::exec::ExecSession::finish_timeout(&mut self)
+pub fn vmm_core::exec::ExecSession::input(&self) -> &[u8]
+pub fn vmm_core::exec::ExecSession::into_outcome(self) -> vmm_core::exec::ExecOutcome
+pub fn vmm_core::exec::ExecSession::is_done(&self) -> bool
+pub fn vmm_core::exec::ExecSession::new(&str, u64) -> vmm_core::exec::ExecSession
+pub fn vmm_core::exec::ExecSession::truncated(&self) -> bool
+pub const vmm_core::exec::MAX_CAPTURE: usize
 pub mod vmm_core::hostassert
 pub struct vmm_core::hostassert::Outcome
 pub vmm_core::hostassert::Outcome::actual: alloc::string::String
@@ -467,6 +482,8 @@ pub fn vmm_core::vmm::Vmm<B>::has_active_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_inflight_event_injection(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::has_pending_guest_interrupt(&mut self) -> core::result::Result<bool, vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::idle_landings(&self) -> &[u64]
+pub fn vmm_core::vmm::Vmm<B>::inject_serial_input(&mut self, &[u8])
+pub fn vmm_core::vmm::Vmm<B>::inspect_vcpu(&self) -> vmm_backend::state::VcpuState
 pub fn vmm_core::vmm::Vmm<B>::is_synchronized(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::lapic_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::net_decisions(&self) -> &[(u64, u64, environment::catalog::Answer)]
@@ -490,6 +507,7 @@ pub fn vmm_core::vmm::Vmm<B>::sdk_restore(&mut self, &vmm_core::vmm::SdkSnapshot
 pub fn vmm_core::vmm::Vmm<B>::sdk_restore_events(&mut self, &vmm_core::vmm::SdkSnapshot)
 pub fn vmm_core::vmm::Vmm<B>::sdk_snapshot(&self) -> core::option::Option<vmm_core::vmm::SdkSnapshot>
 pub fn vmm_core::vmm::Vmm<B>::serial(&self) -> &[u8]
+pub fn vmm_core::vmm::Vmm<B>::serial_output(&self) -> &[u8]
 pub fn vmm_core::vmm::Vmm<B>::snapshot_hashing_wired(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::state_blob(&self) -> alloc::vec::Vec<u8>
 pub fn vmm_core::vmm::Vmm<B>::state_components(&self) -> alloc::vec::Vec<(&'static str, [u8; 32])>

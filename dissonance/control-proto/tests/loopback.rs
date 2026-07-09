@@ -10,8 +10,8 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, Environment, HashScope,
-    HostFault, Moment, PROTO_VERSION, Reply, Request, SnapId, StopConditions, StopMask, StopReason,
-    VTime, class_bit, decode_reply, decode_request, encode_reply, encode_request,
+    HostFault, Moment, PROTO_VERSION, RegsView, Reply, Request, SnapId, StopConditions, StopMask,
+    StopReason, VTime, class_bit, decode_reply, decode_request, encode_reply, encode_request,
 };
 
 fn caps() -> Caps {
@@ -41,6 +41,10 @@ fn conds() -> StopConditions {
 struct StubServer {
     next_snap: u64,
     armed: bool,
+    /// Task 81: whether an `exec` improvisation has tainted the timeline. Drives
+    /// the taint-carrying `Snapshot` reply and the `RecordedEnv` guard so the
+    /// loopback crosses those wire shapes too.
+    tainted: bool,
 }
 
 impl StubServer {
@@ -48,6 +52,7 @@ impl StubServer {
         Self {
             next_snap: 0,
             armed: false,
+            tainted: false,
         }
     }
 
@@ -57,7 +62,16 @@ impl StubServer {
             Request::Snapshot => {
                 let id = self.next_snap;
                 self.next_snap += 1;
-                Ok(Reply::SnapId(SnapId(id)))
+                // A tainted timeline surfaces the taint-carrying reply (task 81);
+                // an untainted one keeps the pre-81 taint-free `SnapId`.
+                if self.tainted {
+                    Ok(Reply::Snapshot {
+                        id: SnapId(id),
+                        tainted: true,
+                    })
+                } else {
+                    Ok(Reply::SnapId(SnapId(id)))
+                }
             }
             Request::Drop(_)
             | Request::Branch { .. }
@@ -94,6 +108,43 @@ impl StubServer {
                     total: serial.len() as u32,
                     chunk: serial[start..].to_vec(),
                 })
+            }
+            // Observation verbs (task 80): a stubbed guest returns `len` bytes and
+            // a fixed register view — the point here is that they cross the wire
+            // and round-trip, not that the bytes are a real guest's.
+            &Request::Read { len, .. } => Ok(Reply::Bytes(vec![0xAB; len as usize])),
+            Request::Regs => Ok(Reply::Regs(RegsView {
+                version: RegsView::VERSION,
+                gpr: [0; 16],
+                rip: 0xDEAD_BEEF,
+                rflags: 0x2,
+                seg: [0x10, 0x18, 0x18, 0x18, 0, 0],
+                cr0: 0x8000_0011,
+                cr3: 0x3000,
+                cr4: 0x20,
+                moment: Moment(500),
+                vtime: 500,
+            })),
+            // Improvisation (task 81): `exec` taints the timeline and returns the
+            // crude serial capture; the server refuses nothing.
+            Request::Exec { .. } => {
+                self.tainted = true;
+                Ok(Reply::ExecResult {
+                    output: b"root@guest:/# ".to_vec(),
+                    ok: true,
+                })
+            }
+            // The reproducer mint is the taint guard's fail-loud site: a tainted
+            // timeline is a loud `Tainted`, never a lying `Environment`.
+            Request::RecordedEnv => {
+                if self.tainted {
+                    Err(ControlError::Tainted)
+                } else {
+                    Ok(Reply::Recorded(Environment {
+                        blob_version: 1,
+                        bytes: vec![0x07, 0x08, 0x09],
+                    }))
+                }
             }
         }
     }
@@ -182,6 +233,22 @@ fn run_session() -> (Vec<u8>, Vec<Result<Reply, ControlError>>) {
     replies.push(lb.exchange(Request::Hash {
         scope: HashScope::Whole,
     }));
+    // Observation verbs (task 80): read a small region, then the register view.
+    replies.push(lb.exchange(Request::Read {
+        gpa: 0x1000,
+        len: 4,
+    }));
+    replies.push(lb.exchange(Request::Regs));
+    // Improvisation (task 81): the reproducer mints cleanly BEFORE any exec, then
+    // `exec` taints the timeline, the mint fails loud `Tainted`, and a snapshot
+    // taken there surfaces the taint-carrying reply — every new wire shape crosses.
+    replies.push(lb.exchange(Request::RecordedEnv));
+    replies.push(lb.exchange(Request::Exec {
+        cmd: "ps aux".to_string(),
+        deadline: VTime(9_000),
+    }));
+    replies.push(lb.exchange(Request::RecordedEnv));
+    replies.push(lb.exchange(Request::Snapshot));
     // Stage a host-plane fault over the wire (the perturb verb).
     replies.push(lb.exchange(Request::Perturb {
         fault: HostFault(vec![0x02, 0x80]), // opaque environment::HostFault bytes
@@ -214,7 +281,33 @@ fn loopback_exercises_every_verb_with_expected_replies() {
             Ok(Reply::Stop(StopReason::Quiescent { vtime: VTime(500) })),
             Ok(Reply::Unit), // Replay
             Ok(Reply::Hash([0x42; 32])),
-            Ok(Reply::Unit), // Perturb
+            Ok(Reply::Bytes(vec![0xAB; 4])),
+            Ok(Reply::Regs(RegsView {
+                version: RegsView::VERSION,
+                gpr: [0; 16],
+                rip: 0xDEAD_BEEF,
+                rflags: 0x2,
+                seg: [0x10, 0x18, 0x18, 0x18, 0, 0],
+                cr0: 0x8000_0011,
+                cr3: 0x3000,
+                cr4: 0x20,
+                moment: Moment(500),
+                vtime: 500,
+            })),
+            Ok(Reply::Recorded(Environment {
+                blob_version: 1,
+                bytes: vec![0x07, 0x08, 0x09],
+            })), // RecordedEnv (untainted) mints the reproducer
+            Ok(Reply::ExecResult {
+                output: b"root@guest:/# ".to_vec(),
+                ok: true,
+            }), // Exec taints the timeline
+            Err(ControlError::Tainted), // RecordedEnv now fails loud
+            Ok(Reply::Snapshot {
+                id: SnapId(1),
+                tainted: true,
+            }), // a snapshot from the tainted timeline reports it
+            Ok(Reply::Unit),            // Perturb
             Err(ControlError::ResolveWithoutDecision),
             Ok(Reply::Unit), // Drop
         ]
