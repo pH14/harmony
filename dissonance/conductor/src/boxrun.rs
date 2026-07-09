@@ -355,6 +355,9 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         snapshot_max_attempts: 100_000,
         setup_deadline_delta: args.setup_deadline_delta,
         rom_sha256: args.game.rom_sha256.clone(),
+        // The box workload gate (round-5 P1): no setup_complete ⇒ a dead
+        // play-agent ⇒ loud failure, never a sealed dead base.
+        require_snapshot_point: true,
     };
     let repeat = args.repeat.max(1);
     let mut first: Option<benchmark::ExplorationLog> = None;

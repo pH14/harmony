@@ -87,10 +87,18 @@ pub struct GameCampaignConfig {
     /// the offline report can refuse logs from a different dump. `None` =
     /// unstamped (the toy, or an operator who did not pass it).
     pub rom_sha256: Option<String>,
+    /// Whether the base MUST seal at the play-agent's `setup_complete`
+    /// snapshot point (round-5 P1). `true` on the box/real path: a guest that
+    /// never reaches it is a dead agent (bad core/ROM/hugetlb//dev/mem
+    /// provisioning), and sealing wherever it died would record a
+    /// zero/constant-cell campaign — refuse loudly instead. `false` only for
+    /// the portable no-SDK toy, whose quiescent terminal is its normal seal.
+    pub require_snapshot_point: bool,
 }
 
 impl GameCampaignConfig {
-    /// A small portable/smoke configuration.
+    /// A small portable/smoke configuration (the no-SDK toy: the generic
+    /// seal fallback is its normal path).
     pub fn smoke(campaign_seed: u64) -> Self {
         GameCampaignConfig {
             campaign_seed,
@@ -101,6 +109,7 @@ impl GameCampaignConfig {
             snapshot_max_attempts: 100_000,
             setup_deadline_delta: 30_000_000_000,
             rom_sha256: None,
+            require_snapshot_point: false,
         }
     }
 }
@@ -120,6 +129,19 @@ pub enum GameCampaignError {
          (task 69 M2 NO-GO); M0 runs PureRandom / SelectorV1 only"
     )]
     SignalUnavailable,
+    /// The guest never surfaced its `setup_complete` snapshot point — a dead
+    /// play-agent (bad core/ROM provisioning, hugetlb, `/dev/mem`), whose
+    /// terminal reached us instead. Refused loudly: sealing a dead base would
+    /// record a zero/constant-cell campaign (the vacuity class).
+    #[error(
+        "the play-agent never reached setup_complete (guest stopped with {stop}) — bad \
+         provisioning (core/ROM/hugetlb//dev/mem)?; refusing to seal a dead base (the campaign \
+         would be vacuous). Check the boot serial for GAME_SKIP / play-agent: FATAL lines."
+    )]
+    SetupNotReached {
+        /// The stop the guest surfaced instead of the snapshot point.
+        stop: String,
+    },
 }
 
 /// Pack the `(game mode, world, level, x-bucket)` tuple into one 64-bit cell
@@ -262,14 +284,19 @@ pub fn run_game_campaign<M: Machine>(
 /// Seal the campaign base. Preferred boundary: the play-agent's
 /// `setup_complete` **snapshot point** (the billboard gpa/len registers are
 /// published in the setup prefix, so every branch inherits them). Arm the
-/// snapshot-point class and run; if the guest surfaces it, seal there. A
-/// machine with no SDK (the portable toy) runs to its own terminal instead —
-/// fall back to the task-60 retry loop (snapshot, stepping past
-/// non-snapshottable boundaries).
+/// snapshot-point class and run; if the guest surfaces it, seal there.
+///
+/// The generic seal-retry fallback below is legal ONLY for the portable
+/// no-SDK toy (`require_snapshot_point = false`): a real box guest that never
+/// reaches `setup_complete` is a **dead agent** (bad core/ROM provisioning,
+/// hugetlb, `/dev/mem` — it crashed or halted during init), and sealing
+/// wherever it died would record a zero/constant-cell campaign — the vacuity
+/// class (round-5 P1). In box mode that is a loud
+/// [`GameCampaignError::SetupNotReached`], never a seal.
 fn seal_base<M: Machine>(
     machine: &mut M,
     cfg: &GameCampaignConfig,
-) -> Result<(explorer::SnapId, u64), MachineError> {
+) -> Result<(explorer::SnapId, u64), GameCampaignError> {
     let mut vt = crate::probe_vtime(machine)?;
     // The snapshot-point class bit, single-sourced from the control plane's
     // pinned mapping (the same construction as `StopMask::ASSERTION`).
@@ -283,13 +310,23 @@ fn seal_base<M: Machine>(
     )?;
     if let StopReason::SnapshotPoint { vtime } = stop {
         vt = vtime.0;
-        if let Ok(snap) = machine.snapshot() {
-            return Ok((snap, vt));
+        match machine.snapshot() {
+            Ok(snap) => return Ok((snap, vt)),
+            // In box mode the setup boundary must also SEAL there — running
+            // past it into the frame loop would move the base off the setup
+            // prefix. Only the toy path may fall through.
+            Err(e) if cfg.require_snapshot_point => return Err(e.into()),
+            Err(_) => {}
         }
+    } else if cfg.require_snapshot_point {
+        // The workload gate: no setup_complete ⇒ no campaign, loudly.
+        return Err(GameCampaignError::SetupNotReached {
+            stop: format!("{stop:?}"),
+        });
     } else {
         vt = stop.vtime().0;
     }
-    // Fallback: the task-60 seal-retry loop.
+    // Fallback: the task-60 seal-retry loop (portable toy path only).
     let mut attempts = 0usize;
     loop {
         attempts += 1;
@@ -297,7 +334,7 @@ fn seal_base<M: Machine>(
             Ok(snap) => return Ok((snap, vt)),
             Err(MachineError::NotQuiescent) => {
                 if attempts >= cfg.snapshot_max_attempts {
-                    return Err(MachineError::NotQuiescent);
+                    return Err(MachineError::NotQuiescent.into());
                 }
                 let stop = machine.run(
                     &StopConditions {
@@ -307,11 +344,11 @@ fn seal_base<M: Machine>(
                     None,
                 )?;
                 if !matches!(stop, StopReason::Deadline { .. }) {
-                    return Err(MachineError::NotQuiescent);
+                    return Err(MachineError::NotQuiescent.into());
                 }
                 vt = stop.vtime().0;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         }
     }
 }
@@ -544,6 +581,86 @@ mod tests {
             assert_eq!(k >> 56, 1, "cell key {k:#x} must carry game mode 1");
         }
         assert!(log.events.iter().any(|e| e.depth > 0), "depth must advance");
+    }
+
+    /// A machine standing in for a DEAD play-agent (round-5 P1): its init
+    /// crashed to the guest terminal, so no snapshot point is ever surfaced —
+    /// and it is perfectly snapshottable where it died, which is exactly why
+    /// the workload gate (not a snapshot failure) must refuse the seal.
+    struct CrashedAgentMachine {
+        vtime: u64,
+        next_snap: u64,
+        env: Environment,
+    }
+
+    impl CrashedAgentMachine {
+        fn new() -> Self {
+            CrashedAgentMachine {
+                vtime: 1_000,
+                next_snap: 1,
+                env: SpecEnvCodec.seeded(0),
+            }
+        }
+    }
+
+    impl Machine for CrashedAgentMachine {
+        fn branch(
+            &mut self,
+            _snap: explorer::SnapId,
+            env: &Environment,
+        ) -> Result<(), MachineError> {
+            self.env = env.clone();
+            Ok(())
+        }
+        fn replay(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            _until: &StopConditions,
+            _resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            self.vtime += 100;
+            Ok(StopReason::Crash {
+                vtime: explorer::VTime(self.vtime),
+                info: vec![0xDE, 0xAD],
+            })
+        }
+        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            let id = self.next_snap;
+            self.next_snap += 1;
+            Ok(explorer::SnapId(id))
+        }
+        fn drop_snap(&mut self, _snap: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            Ok([0u8; 32])
+        }
+        fn coverage(&self) -> &[u8] {
+            &[]
+        }
+        fn recorded_env(&self) -> Result<Environment, MachineError> {
+            Ok(self.env.clone())
+        }
+    }
+
+    /// The round-5 P1 regression: in box mode (`require_snapshot_point`), a
+    /// guest that dies before `setup_complete` is a loud workload-gate error
+    /// — never a sealed dead base and a zero-cell campaign.
+    #[test]
+    fn a_dead_agent_never_seals_a_base_in_box_mode() {
+        let mut m = CrashedAgentMachine::new();
+        let cfg = GameCampaignConfig {
+            require_snapshot_point: true,
+            ..GameCampaignConfig::smoke(1)
+        };
+        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
+            .unwrap_err();
+        assert!(
+            matches!(err, GameCampaignError::SetupNotReached { .. }),
+            "expected the workload gate, got {err:?}"
+        );
     }
 
     /// The Signal configuration is refused until a selector artifact exists.

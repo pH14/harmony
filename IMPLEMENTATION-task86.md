@@ -141,6 +141,9 @@ taskset -c <core> cargo run -p conductor --release -- game box \
 # means a title-screen seal and the campaign data is VACUOUS: STOP, do not
 # spend the campaign budget). Expect nonzero distinct_cells and, over any
 # real budget, nonzero depth movement.
+# The box path also enforces the workload gate itself (round-5 P1): a guest
+# that dies before setup_complete (bad core/ROM/hugetlb//dev/mem) fails the
+# run loudly with SetupNotReached — it can never seal a dead base.
 
 # 2. gate 2 — determinism 25/25 (fresh boot per repetition, bit-identical
 #    per-branch state_hash sequence; every branch is itself a reproducer

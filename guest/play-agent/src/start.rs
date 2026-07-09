@@ -68,7 +68,8 @@ pub struct StartReport {
 /// title screen would make the whole campaign vacuous.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StartError {
-    /// A zero press/release cadence can never produce an edge.
+    /// The cadence is unusable: zero press frames can never produce an edge,
+    /// and an overflowing `press + release` cycle would wrap.
     BadScript,
     /// The core could not expose its work RAM.
     WorkRamFailed,
@@ -90,7 +91,10 @@ pub enum StartError {
 impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StartError::BadScript => write!(f, "start script needs press_frames >= 1"),
+            StartError::BadScript => write!(
+                f,
+                "start script needs press_frames >= 1 and a non-overflowing press+release cycle"
+            ),
             StartError::WorkRamFailed => write!(f, "core work RAM unavailable during start"),
             StartError::Ram(e) => write!(f, "work RAM decode failed during start: {e}"),
             StartError::NeverReachedGameplay { frames } => write!(
@@ -119,7 +123,12 @@ pub fn run_start_script<C: Core>(
     if script.press_frames == 0 {
         return Err(StartError::BadScript);
     }
-    let cycle = script.press_frames + script.release_frames;
+    // Public library input (rule 4): an overflowing press+release cycle must
+    // reject, not wrap (a wrap to 0 would panic at `frames % cycle`).
+    let cycle = script
+        .press_frames
+        .checked_add(script.release_frames)
+        .ok_or(StartError::BadScript)?;
     let mut ram = [0u8; WORK_RAM_LEN];
     let mut frames = 0u32;
     while frames < script.max_frames {
@@ -201,16 +210,26 @@ mod tests {
         ));
     }
 
-    /// A cadence that can never produce an edge is rejected up front.
+    /// A cadence that can never produce an edge — or whose cycle overflows —
+    /// is rejected up front (round-5 P2: no wrap, no `% 0` panic).
     #[test]
-    fn zero_press_cadence_is_rejected() {
+    fn unusable_cadences_are_rejected() {
         let mut core = MockCore::new();
-        let script = StartScript {
+        let zero_press = StartScript {
             press_frames: 0,
             ..StartScript::default()
         };
         assert!(matches!(
-            run_start_script(&mut core, &script),
+            run_start_script(&mut core, &zero_press),
+            Err(StartError::BadScript)
+        ));
+        let overflowing = StartScript {
+            press_frames: 1,
+            release_frames: u32::MAX,
+            ..StartScript::default()
+        };
+        assert!(matches!(
+            run_start_script(&mut core, &overflowing),
             Err(StartError::BadScript)
         ));
     }
