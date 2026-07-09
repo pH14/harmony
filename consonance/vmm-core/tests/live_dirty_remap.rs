@@ -32,10 +32,18 @@
 //!     -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/live_dirty_remap.log
 //! ```
 //!
+//! **Images are pinned by content hash** (hm-xdp): the harness refuses to run
+//! on a bzImage/initramfs whose sha256 differs from the pinned task-78-proven
+//! pair — stage that build (e.g. from the box's `/root/harmony-pr44/guest/build`)
+//! or deliberately override with `INITRAMFS=<name> INITRAMFS_SHA256=<hex>`
+//! (+ `BZIMAGE_SHA256=<hex>`). Verify before staging:
+//! `sha256sum guest/build/{bzImage,initramfs-postgres.cpio.gz}` against the
+//! `PINNED_*` constants below.
+//!
 //! Knobs: `DR_RUN_VNS` (V-time the guest runs before the first seal, default
 //! 20 000 000), `DR_DELTA_VNS` (V-time between the two seals / past the branch,
 //! default 5 000 000), `DR_SNAP_STEP` (retry step past a non-sealable boundary,
-//! default 1 000 000), `BOOT_CMDLINE`, `INITRAMFS`.
+//! default 1 000 000), `BOOT_CMDLINE`, `INITRAMFS` (+ the hash pins above).
 //!
 //! **Box-safety (CRITICAL).** Stock KVM = 1396736; ALWAYS leave the box on
 //! stock + verified after the run: `pkill -9 -f live_dirty_remap` FIRST
@@ -63,6 +71,21 @@ const BASE_SEED: u64 = 0x0095_D127_5EED_C0DE;
 const BRANCH_SEED: u64 = 0x0095_2EBA_5EED_0001;
 const DEFAULT_CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable \
      no_timer_check lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
+
+/// **Pin-by-content-hash discipline (foreman ruling, bead hm-xdp).** Box gates
+/// reference guest images by CONTENT HASH, never a mutable canonical path: the
+/// 2026-07-09 rebuild of the box's canonical `initramfs-postgres.cpio.gz`
+/// silently changed what default-knob gate runs were testing (and broke the
+/// task-78 draw-probe precondition on main). These pins are the
+/// task-78-proven pair (the `/root/harmony-pr44` build, Jul 2;
+/// initramfs md5 `46b1461962b5b0f8aea98654f52a9ce5` for cross-reference).
+/// Running a *different* build deliberately requires supplying its hash:
+/// `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (and `BZIMAGE_SHA256=<hex>` if
+/// the kernel changes too) — the check never silently accepts a drifted file.
+const PINNED_BZIMAGE_SHA256: &str =
+    "f06a34a79010a8f2cc8226dc629cc8fb049740016f035f53e3f2e53d9a30dd41";
+const PINNED_INITRAMFS_SHA256: &str =
+    "3c4a7f2f0db4b59aaf4dee55d43a42c57fc0d10ac25441de88128c61be0778c2";
 
 fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -126,11 +149,44 @@ fn hex(d: &[u8; 32]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Verify a loaded guest artifact against its pinned content hash (hm-xdp):
+/// a mismatch is a loud refusal with both hashes quoted, never a silent run
+/// on a drifted build.
+fn verify_pin(name: &str, bytes: &[u8], expected_sha256: &str) {
+    use sha2::{Digest, Sha256};
+    let observed = format!("{:x}", Sha256::digest(bytes));
+    assert_eq!(
+        observed, expected_sha256,
+        "guest artifact `{name}` does not match its pinned content hash (hm-xdp: gates \
+         reference images BY HASH, never a mutable path — the canonical box image has \
+         drifted before). Stage the pinned build, or run a different build DELIBERATELY \
+         via INITRAMFS=<name> INITRAMFS_SHA256=<hex> / BZIMAGE_SHA256=<hex>."
+    );
+}
+
 fn guest_images() -> (Vec<u8>, Vec<u8>) {
     let kernel = require_artifact("bzImage");
-    let initramfs = std::env::var("INITRAMFS")
-        .map(|n| require_artifact(&n))
-        .unwrap_or_else(|_| require_artifact("initramfs-postgres.cpio.gz"));
+    let kernel_pin =
+        std::env::var("BZIMAGE_SHA256").unwrap_or_else(|_| PINNED_BZIMAGE_SHA256.to_string());
+    verify_pin("bzImage", &kernel, &kernel_pin);
+
+    let (name, pin) = match (
+        std::env::var("INITRAMFS").ok(),
+        std::env::var("INITRAMFS_SHA256").ok(),
+    ) {
+        (None, None) => (
+            "initramfs-postgres.cpio.gz".to_string(),
+            PINNED_INITRAMFS_SHA256.to_string(),
+        ),
+        (Some(n), Some(h)) => (n, h),
+        (None, Some(h)) => ("initramfs-postgres.cpio.gz".to_string(), h),
+        (Some(n), None) => panic!(
+            "INITRAMFS={n} without INITRAMFS_SHA256 — overriding the image requires \
+             supplying its content hash (hm-xdp: never trust a mutable path)"
+        ),
+    };
+    let initramfs = require_artifact(&name);
+    verify_pin(&name, &initramfs, &pin);
     (kernel, initramfs)
 }
 

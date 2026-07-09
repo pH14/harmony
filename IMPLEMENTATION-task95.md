@@ -240,3 +240,16 @@ conductor remap-factory opt-in + task-96 stopwatch (bead filed).
   image); evidence in `/tmp/t95-gatec.log` on the box (c0 section).
 
 Box left on stock KVM **1396736, REVERT OK**, zero leases, after every round.
+
+### Pin-by-content-hash (foreman ruling on hm-xdp, landed)
+
+`live_dirty_remap.rs` now **refuses to run on unpinned images**: the loaded
+bzImage/initramfs are sha256-verified against the task-78-proven pair
+(initramfs `3c4a7f2f…`, md5 `46b14619…`; bzImage `f06a34a7…` — the kernel had
+NOT drifted, only the initramfs) before any VM boots. A deliberate different
+build requires `INITRAMFS=<name> INITRAMFS_SHA256=<hex>` (+
+`BZIMAGE_SHA256`); a bare `INITRAMFS` override without its hash is refused.
+Gate (c) baselines against the same pinned image per the ruling (never
+recalibrated against the drifted canonical build); the a0/a/b results were
+re-run on the pinned image after the ruling — numbers below supersede the
+earlier (drifted-image, self-relative, still-valid) run.
