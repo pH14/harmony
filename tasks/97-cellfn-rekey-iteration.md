@@ -40,8 +40,17 @@ The evaluation set is the committed benchmark traces:
 - bug-3 ablation (`explore_period=1`): include as a *separate* corpus slice — by construction
   it is baseline's trajectory with sensor observations attached, i.e. the only slice showing
   what the sensor sees on an **unsteered** search.
-- bug-1 campaign: include as the degenerate control (a candidate that "improves" bug-1
-  discrimination is fitting noise — see axis (c)).
+- ~~bug-1 campaign as the degenerate control~~ **AMENDED 2026-07-09 (foreman, same day):
+  bug-1 retained NO traces** (retention shipped with the bug-3 launch; bug-1 ran before it),
+  so offline re-keying over it is impossible. The noise control is instead a **synthesized
+  trigger-orthogonal twin candidate**: bug-3's trigger tests the draw's TOP byte
+  (`draw>>56 == 0xA5`), so a state channel on the draw's LOW byte is statistically identical
+  but trigger-blind — the bug-fitted/bug-blind pair must score near-identically on axes
+  (a)/(b), demonstrating on this corpus that breadth/granularity cannot distinguish a
+  bug-aligned descriptor from a bug-blind one (law 6's point, sharper than the bug-1 slice).
+  bug-1's recorded per-campaign cell counts still appear as a reference row with an explicit
+  "no traces retained" note. Runbook lesson beaded: every future campaign retains traces
+  from day one.
 
 First deliverable: a **corpus manifest** (`campaign-data/rekey-corpus.json`) listing every
 included trace file with its sha256, seed, config, and slice — the harness loads ONLY through
