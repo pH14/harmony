@@ -172,6 +172,11 @@ fn boot_server(
         return Err(ExitCode::FAILURE);
     };
 
+    // "Boot" starts here (task 96 §4: "from server boot start to the readiness
+    // marker") — before `boot_linux_selected`, so the phase covers KVM backend
+    // creation + guest RAM load + the initial restore, not just the
+    // post-boot drive to the marker.
+    let boot_t0 = mark();
     let mut live = match boot_linux_selected(
         BackendKind::Patched,
         &kernel,
@@ -186,7 +191,6 @@ fn boot_server(
             return Err(ExitCode::FAILURE);
         }
     };
-    let boot_t0 = mark();
     println!("[conductor] box: booting the guest to the readiness marker {ready_marker:?} …");
     let boot_us = match drive_to_marker(&mut live, ready_marker.as_bytes()) {
         Ok(steps) => {
