@@ -116,7 +116,9 @@ pub fn pagemap_offset(vaddr: u64) -> u64 {
 /// Decode one `/proc/self/pagemap` entry into the page's physical (inside the
 /// VM: guest-physical) address for `vaddr`: bit 63 = present, bits 0..55 =
 /// PFN (zero when the reader lacks `CAP_SYS_ADMIN`), gpa = pfn·4096 + the
-/// within-page offset.
+/// within-page offset. A PFN too large to form a u64 GPA (a 55-bit PFN can
+/// exceed it ×4096) is rejected as the corrupt/hostile input it is — library
+/// logic never panics on input (rule 4).
 pub fn decode_pagemap_entry(entry: u64, vaddr: u64) -> Result<u64, String> {
     if entry & (1 << 63) == 0 {
         return Err("billboard page not present after touch".to_string());
@@ -125,7 +127,9 @@ pub fn decode_pagemap_entry(entry: u64, vaddr: u64) -> Result<u64, String> {
     if pfn == 0 {
         return Err("pagemap PFN is zero (need root/CAP_SYS_ADMIN to read PFNs)".to_string());
     }
-    Ok(pfn * 4096 + (vaddr % 4096))
+    pfn.checked_mul(4096)
+        .and_then(|base| base.checked_add(vaddr % 4096))
+        .ok_or_else(|| format!("pagemap PFN {pfn:#x} overflows a u64 GPA — corrupt entry"))
 }
 
 #[cfg(test)]
@@ -235,6 +239,23 @@ mod tests {
         assert_eq!(
             decode_pagemap_entry(present | (1 << 61) | (1 << 55) | 7, 0),
             Ok(7 * 4096)
+        );
+    }
+
+    /// Round-7 P2: a max-PFN entry (all 55 PFN bits set) cannot form a u64
+    /// GPA — an error, never an overflow panic on input-dependent library
+    /// logic.
+    #[test]
+    fn oversized_pfns_are_rejected_not_overflowed() {
+        let present = 1u64 << 63;
+        let max_pfn = (1u64 << 55) - 1;
+        let err = decode_pagemap_entry(present | max_pfn, 0x123).unwrap_err();
+        assert!(err.contains("overflows"), "got: {err}");
+        // The largest PFN that still fits ×4096 decodes fine (the boundary).
+        let largest_ok = u64::MAX / 4096;
+        assert_eq!(
+            decode_pagemap_entry(present | largest_ok, 0),
+            Ok(largest_ok * 4096)
         );
     }
 }
