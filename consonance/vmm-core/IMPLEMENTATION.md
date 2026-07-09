@@ -4148,3 +4148,35 @@ EXEC_TAINT_ONLY=1 taskset -c <core> \
   are needed. The box table above must be filled before the task is fully closed.
 - **`APP_PROTOCOL_VERSION` is now 6.** Any peer negotiating an older version rejects
   at `hello` (the additive-tag-mid-session hazard the bump exists to prevent).
+
+## Task 95 M2 — O(dirty) capture + remap restore (D5)
+
+Full report (design, safety rule, numbers, box gates): `IMPLEMENTATION-task95.md`
+at repo root. Crate-side summary:
+
+- **Capture (M2.1).** `Vmm` tracks **host-side** guest-RAM writes (doorbell
+  response page, `CorruptMemory`; `restore_guest_memory` latches a wholesale
+  poison) because KVM's dirty log sees only guest writes — an untracked host
+  write in a harvested set would be silent snapshot corruption. Any new host
+  write path must call `Vmm::mark_host_dirty` (invariant documented there).
+  `Vmm::harvest_dirty_gfns() -> Option<Vec<u64>>` returns backend-log ∪
+  host-set, or `None` on any doubt; `Vmm::reset_dirty_tracking()` is the
+  harvest-and-discard arm point. `ControlServer` tracks `derive_parent`
+  (seal / branch / replay set it; fresh boots and failed arms clear it) and
+  seals via `snapshot_derive` over the harvest iff the parent is live and
+  `chain_len < SnapshotEngine::max_chain_len()` (default 32, a knob) — every
+  other path, including a failed derive, is `snapshot_base`; the seal RPC never
+  fails because the optimization was unavailable.
+- **Restore (M2.2).** `RamBacking { Owned(GuestRam), Snapshot(Mapping) }`;
+  `bringup::compose_restore_target` composes a fresh VM **around** a
+  materialized mapping (policy → map → no loader, no entry state — the
+  snapshot's `restore_vm_state` supplies the register file). `ControlServer::
+  set_remap_factory` + `RestoreMode { Remap, Memcpy }` (default `Remap`,
+  effective only once a remap factory is installed — existing composition
+  roots, incl. dissonance's conductor, are byte-for-byte unchanged until they
+  opt in; bead filed for the conductor opt-in). A remap-path recoverable
+  restore failure re-boots via the normal factory so `RestoreFailed` leaves the
+  session on exactly what the memcpy path leaves it on.
+- **Box gates**: `tests/live_dirty_remap.rs` (a0 inertness / a capture A/B /
+  b restore A/B + `[GATE-D]` numbers); gate c = `seal_rate_sweep.rs` +
+  conductor `live_materialization.rs` unchanged.
