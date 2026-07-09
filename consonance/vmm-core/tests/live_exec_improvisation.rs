@@ -440,3 +440,108 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
     println!("  determinism: original continuation IDENTICAL before/after the fork => PASS");
     println!("[REPORT] task81 improvisation box gate: ALL PASS");
 }
+
+/// **Smoke probe (fire-once, minutes-long): the riskiest live assumption.** Boot
+/// the exec-capable image, seal one mid-workload snapshot, `branch` a fork, `exec`
+/// ONE command, and assert the completion sentinel was scraped with non-empty
+/// output. This isolates the end-to-end serial channel — host RX injection → the
+/// guest's interactive busybox ash → the printable-marker echo → THR capture → the
+/// scanner — the one path that cannot be proven off-box, and the one PR #86 r2
+/// fixed (SOH → printable marker). Run this BEFORE the full gate spend; if it is
+/// green the channel works and the full `exec_improvisation_*` gate is worth the
+/// boot cost. It does **not** exercise the determinism or taint gates (those are
+/// the full test's job) — it is deliberately the cheapest faithful channel probe.
+#[test]
+#[ignore = "box-only smoke probe of the exec serial channel (exec-capable image); \
+            run per docs/BOX-PINNING.md before the full gate"]
+fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
+    require_kvm();
+    require_host_baseline();
+    let kernel = require_artifact("bzImage");
+    // The smoke probes the SHELL channel, so it wants the exec-capable image by
+    // default (honor INITRAMFS if the operator points it elsewhere).
+    let initramfs_name =
+        std::env::var("INITRAMFS").unwrap_or_else(|_| "initramfs-exec.cpio.gz".to_string());
+    let initramfs = require_artifact(&initramfs_name);
+    let seed = env_u64("EI_SEED", GENESIS_SEED);
+
+    let live = boot_pg(&kernel, &initramfs, seed);
+    let (fk, fi) = (kernel.clone(), initramfs.clone());
+    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+        boot_linux_selected(
+            BackendKind::Patched,
+            &fk,
+            &fi,
+            GUEST_RAM_LEN,
+            &cmdline(),
+            seed,
+        )
+    });
+    let mut s = ControlServer::new(live, factory);
+    assert_eq!(
+        expect_ok(&mut s, &Request::Hello(server_caps())),
+        Reply::Hello(server_caps())
+    );
+
+    // Seal genesis, run to a mid point, seal it, branch a fork.
+    let retry_step = env_u64("EI_GENESIS_STEP", 1_000_000);
+    let vt0 = match run_until(&mut s, 0) {
+        StopReason::Deadline { vtime } => vtime.0,
+        other => panic!("vtime probe stopped non-Deadline: {other:?}"),
+    };
+    let (genesis, _gt, genesis_vt) = seal(&mut s, vt0, retry_step);
+    let env = seeded_env(seed);
+    assert_eq!(
+        expect_ok(
+            &mut s,
+            &Request::Branch {
+                snap: genesis,
+                env: env.clone(),
+            }
+        ),
+        Reply::Unit
+    );
+    let mid_target = genesis_vt + env_u64("EI_MID", 8_000_000);
+    let vt_mid = match run_until(&mut s, mid_target) {
+        StopReason::Deadline { vtime } => vtime.0,
+        other => panic!("run to mid stopped non-Deadline: {other:?}"),
+    };
+    let (mid_snap, _t, mid_vt) = seal(&mut s, vt_mid, retry_step);
+    assert_eq!(
+        expect_ok(
+            &mut s,
+            &Request::Branch {
+                snap: mid_snap,
+                env,
+            }
+        ),
+        Reply::Unit,
+        "branch a fork to sacrifice"
+    );
+
+    // Inject ONE command and scrape the sentinel — the whole point of the smoke.
+    let budget = env_u64("EI_BUDGET", 200_000_000);
+    let cmd = std::env::var("EI_CMD").unwrap_or_else(|_| "echo HELLO-SMOKE-42".to_string());
+    let (output, ok) = match expect_ok(
+        &mut s,
+        &Request::Exec {
+            cmd: cmd.clone(),
+            deadline: VTime(mid_vt.saturating_add(budget)),
+        },
+    ) {
+        Reply::ExecResult { output, ok } => (output, ok),
+        other => panic!("exec answered {other:?}"),
+    };
+    println!(
+        "\n[SMOKE] exec `{cmd}` ok={ok} output_len={} sample={:?}",
+        output.len(),
+        String::from_utf8_lossy(&output[..output.len().min(200)]),
+    );
+    assert!(
+        ok && !output.is_empty(),
+        "[SMOKE FAIL] the exec channel did not complete/capture on image `{initramfs_name}` — the \
+         sentinel was never scraped (boot / serial-injection / marker / echo / capture path). \
+         STOP: do not spend the full gate until the channel works."
+    );
+    println!("[SMOKE PASS] the exec serial channel works end-to-end on the box.");
+}
