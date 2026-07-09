@@ -428,7 +428,9 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
              state_hash sequences."
         );
     }
-    finish_game(&log, args.game.logs_out.as_ref())
+    let manifest =
+        benchmark::GameManifest::smb(args.game.rom_sha256.clone(), args.game.max_branches);
+    finish_game(&log, args.game.logs_out.as_ref(), &manifest)
 }
 
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {

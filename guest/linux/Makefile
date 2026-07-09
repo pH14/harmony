@@ -44,10 +44,10 @@ k3s-image:
 	./build-k3s-image.sh
 
 # Task 86 SMB game workload initramfs: static busybox + the commit-pinned
-# QuickNES libretro core (built from the verified tarball) + the play-agent +
+# FCEUmm libretro core (GPL-2.0-or-later, built from the verified tarball) +
 # the user-supplied ROM (HARMONY_SMB_ROM=<path>; unset ⇒ loud SKIP, ROM-less
 # image). No root needed. Produces guest/build/initramfs-game.cpio.gz and the
-# shared task-87 renderer core guest/build/quicknes_libretro.so.
+# shared task-87 renderer core guest/build/fceumm_libretro.so.
 game-image:
 	./build-game-image.sh
 

@@ -455,10 +455,30 @@ fn parse_game_config(s: &str) -> Result<benchmark::ExplorationConfig, String> {
     }
 }
 
+/// The manifest sidecar of a logs file: `smb-logs.json` →
+/// `smb-logs.manifest.json`.
+fn game_manifest_path(logs: &Path) -> PathBuf {
+    logs.with_extension("manifest.json")
+}
+
 /// Summarize a finished game campaign and (optionally) append its log to the
 /// JSON array at `--logs-out` — the input the offline `exploration-report`
 /// renders. Printing is a summary; the log is the artifact.
-fn finish_game(log: &benchmark::ExplorationLog, out: Option<&PathBuf>) -> ExitCode {
+///
+/// When logs are written, the matching [`GameManifest`] is emitted beside
+/// them (`<logs>.manifest.json`, round-3 P2): the report binary needs both,
+/// and emitting the pair from the same run means its inputs can never drift.
+/// Across appended runs the manifest must MATCH the existing sidecar — a
+/// budget or ROM drift between appends is a loud error, never a silently
+/// mixed measurement. (The manifest's input-shaping fields are the
+/// play-agent defaults, which `game-init.sh` deliberately does not override;
+/// changing the shaping means changing both in one place,
+/// `GameManifest::smb`.)
+fn finish_game(
+    log: &benchmark::ExplorationLog,
+    out: Option<&PathBuf>,
+    manifest: &benchmark::GameManifest,
+) -> ExitCode {
     let budget = log.events.len() as u64;
     let distinct = log.distinct_cells_at(budget);
     let depth = log.depth_at(budget);
@@ -468,6 +488,48 @@ fn finish_game(log: &benchmark::ExplorationLog, out: Option<&PathBuf>) -> ExitCo
         log.config, log.seed, budget, distinct, depth
     );
     if let Some(path) = out {
+        // The manifest consistency check comes FIRST, so a drifting run can
+        // never contaminate the log array before failing.
+        let mpath = game_manifest_path(path);
+        match std::fs::read_to_string(&mpath) {
+            Ok(raw) => match serde_json::from_str::<benchmark::GameManifest>(&raw) {
+                Ok(existing) if existing == *manifest => {}
+                Ok(existing) => {
+                    eprintln!(
+                        "[conductor] manifest drift: {} records budget={} rom={:?}, this run is \
+                         budget={} rom={:?} — one logs file measures ONE manifest",
+                        mpath.display(),
+                        existing.branch_budget,
+                        existing.rom_sha256,
+                        manifest.branch_budget,
+                        manifest.rom_sha256,
+                    );
+                    return ExitCode::FAILURE;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[conductor] {} exists but is not a GameManifest: {e}",
+                        mpath.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(_) => {
+                let json = match serde_json::to_string_pretty(manifest) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        eprintln!("[conductor] cannot serialize the manifest: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                if let Err(e) = std::fs::write(&mpath, json) {
+                    eprintln!("[conductor] cannot write {}: {e}", mpath.display());
+                    return ExitCode::FAILURE;
+                }
+                println!("[conductor] wrote the manifest to {}", mpath.display());
+            }
+        }
+
         let mut logs: Vec<benchmark::ExplorationLog> = match std::fs::read_to_string(path) {
             Ok(raw) => match serde_json::from_str(&raw) {
                 Ok(l) => l,
@@ -515,9 +577,10 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
         rom_sha256: args.rom_sha256.clone(),
         ..GameCampaignConfig::smoke(args.campaign_seed)
     };
+    let manifest = benchmark::GameManifest::smb(args.rom_sha256.clone(), args.max_branches);
     let mut machine = GameToyMachine::new();
     match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
-        Ok(log) => finish_game(&log, args.logs_out.as_ref()),
+        Ok(log) => finish_game(&log, args.logs_out.as_ref(), &manifest),
         Err(e) => {
             eprintln!("[conductor] game mock campaign failed: {e}");
             ExitCode::FAILURE
@@ -867,6 +930,77 @@ mod boxrun;
 mod tests {
     use super::*;
     use explorer::{EnvCodec, Oracle};
+
+    // --- the game logs+manifest pair (round-3 P2) ---------------------------
+
+    fn game_args(
+        config: &str,
+        max_branches: u64,
+        seed: u64,
+        logs_out: PathBuf,
+        rom: &str,
+    ) -> GameArgs {
+        GameArgs {
+            config: config.to_string(),
+            max_branches,
+            campaign_seed: seed,
+            explore_period: 4,
+            logs_out: Some(logs_out),
+            rom_sha256: Some(rom.to_string()),
+        }
+    }
+
+    /// `--logs-out` must emit the matching manifest from the same run, and the
+    /// emitted pair must round-trip through the report path the
+    /// `exploration-report` binary wraps (parse both files → compute →
+    /// render) — so the report's inputs can never drift from the logs.
+    #[test]
+    fn game_logs_out_emits_a_manifest_that_round_trips_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs_path = dir.path().join("smb-logs.json");
+        // ≥ MIN_SEEDS seeds per available config, all appended to one file.
+        for seed in 0..benchmark::report::MIN_SEEDS {
+            for config in ["pure-random", "selector-v1"] {
+                let args = game_args(config, 8, seed, logs_path.clone(), "cafe");
+                assert_eq!(run_game_mock(args), ExitCode::SUCCESS);
+            }
+        }
+
+        // The emitted pair, read back exactly as the report binary reads it.
+        let logs: Vec<benchmark::ExplorationLog> =
+            serde_json::from_str(&std::fs::read_to_string(&logs_path).unwrap()).unwrap();
+        assert_eq!(logs.len(), 2 * benchmark::report::MIN_SEEDS as usize);
+        let mpath = game_manifest_path(&logs_path);
+        let manifest: benchmark::GameManifest =
+            serde_json::from_str(&std::fs::read_to_string(&mpath).unwrap()).unwrap();
+        assert_eq!(manifest.branch_budget, 8);
+        assert_eq!(manifest.rom_sha256.as_deref(), Some("cafe"));
+
+        // The pair computes + renders (the report bin's exact library path).
+        // Signal is M1's, so the verdict is the missing-configuration
+        // Incomplete — but every validation (workload, ROM, dense budget,
+        // seed floor) passed, which is the drift-proof this test pins.
+        let report = benchmark::ExplorationReport::compute(&manifest, &logs, (1, 1000)).unwrap();
+        match &report.verdict {
+            benchmark::Verdict::Incomplete { reason } => assert!(reason.contains("signal")),
+            other => panic!("expected the missing-signal Incomplete, got {other:?}"),
+        }
+        assert!(report.render_markdown().contains("cafe"));
+
+        // Drift protection: appending a run with a different budget (or ROM)
+        // to the same logs file fails loudly, before touching the log array.
+        let drifted = game_args("pure-random", 9, 999, logs_path.clone(), "cafe");
+        assert_eq!(run_game_mock(drifted), ExitCode::FAILURE);
+        let drifted_rom = game_args("pure-random", 8, 999, logs_path.clone(), "beef");
+        assert_eq!(run_game_mock(drifted_rom), ExitCode::FAILURE);
+        let after: Vec<benchmark::ExplorationLog> =
+            serde_json::from_str(&std::fs::read_to_string(&logs_path).unwrap()).unwrap();
+        assert_eq!(
+            after.len(),
+            2 * benchmark::report::MIN_SEEDS as usize,
+            "a drifting run must not contaminate the log array"
+        );
+    }
 
     // --- parse_u64_flexible -------------------------------------------------
 

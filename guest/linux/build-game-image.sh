@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the **SMB game workload initramfs** (task 86): a static busybox, the
-# commit-pinned QuickNES libretro core (built here from the verified tarball —
+# commit-pinned FCEUmm libretro core (GPL-2.0-or-later, built here from the
 # never vendored), the play-agent (a dynamic glibc binary: it dlopens the core,
 # which a fully-static musl build cannot do — its ldd closure is copied in, the
 # build-postgres-image.sh pattern), the user-supplied ROM, and game-init.sh as
@@ -30,8 +30,8 @@ require_linux_amd64
 require_tools cc c++ make gzip cpio ldd cargo
 
 GAMEROOT=$BUILD_ROOT/game-root
-CORESRC=$BUILD_ROOT/QuickNES_Core-$QUICKNES_COMMIT
-CORE_SO=$CORESRC/quicknes_libretro.so
+CORESRC=$BUILD_ROOT/libretro-fceumm-$FCEUMM_COMMIT
+CORE_SO=$CORESRC/fceumm_libretro.so
 
 # --- 1. static busybox (mirrors build-campaign-image.sh) ---------------------
 echo "== game image: building static busybox ($BUSYBOX_VERSION)"
@@ -48,11 +48,11 @@ set -o pipefail
 grep -qxF 'CONFIG_STATIC=y' "$BBOBJ/.config" || { echo "FAIL: busybox not static" >&2; exit 1; }
 make -C "$BBSRC" O="$BBOBJ" -j"$(nproc)" busybox >/dev/null
 
-# --- 2. the commit-pinned QuickNES core (verify -> extract -> make) ----------
-echo "== game image: building QuickNES core (pin $QUICKNES_COMMIT)"
-verify_and_extract "$DL_DIR/$(basename "$QUICKNES_URL")" "$QUICKNES_SHA256" "$CORESRC"
-make -C "$CORESRC" platform=unix -j"$(nproc)" >/dev/null
-[ -f "$CORE_SO" ] || { echo "FAIL: QuickNES core did not build ($CORE_SO missing)" >&2; exit 1; }
+# --- 2. the commit-pinned FCEUmm core (verify -> extract -> make) ------------
+echo "== game image: building FCEUmm core (pin $FCEUMM_COMMIT, $FCEUMM_LICENSE)"
+verify_and_extract "$DL_DIR/$(basename "$FCEUMM_URL")" "$FCEUMM_SHA256" "$CORESRC"
+make -C "$CORESRC" -f Makefile.libretro platform=unix -j"$(nproc)" >/dev/null
+[ -f "$CORE_SO" ] || { echo "FAIL: FCEUmm core did not build ($CORE_SO missing)" >&2; exit 1; }
 
 # --- 3. the play-agent (dynamic glibc; dlopens the core at runtime) ----------
 # PLAY_AGENT_BIN= a prebuilt binary skips the in-tree build (the k3s-image
@@ -79,7 +79,7 @@ for a in sh mount umount mkdir chmod cat echo ls grep head tee printf \
 done
 
 install -m 0755 "$AGENT_BIN" "$GAMEROOT/opt/harmony/play-agent"
-install -m 0644 "$CORE_SO" "$GAMEROOT/opt/harmony/quicknes_libretro.so"
+install -m 0644 "$CORE_SO" "$GAMEROOT/opt/harmony/fceumm_libretro.so"
 
 # The dynamic loader + the shared-lib closure of the agent AND the core (the
 # core is dlopen'd, so ldd the .so too — its libstdc++/libgcc_s/libm ride in).
@@ -118,5 +118,5 @@ echo "ok: $ART_DIR/initramfs-game.cpio.gz ($(du -h "$ART_DIR/initramfs-game.cpio
 # --- 7. the film-renderer core copy (task 87 shares the pin) ------------------
 # The host-side film renderer dlopens the SAME built core (HARMONY_SMB_CORE=);
 # export it beside the initramfs so the box gate uses one artifact for both.
-install -m 0644 "$CORE_SO" "$ART_DIR/quicknes_libretro.so"
-echo "ok: $ART_DIR/quicknes_libretro.so (the shared task-86/87 core pin)"
+install -m 0644 "$CORE_SO" "$ART_DIR/fceumm_libretro.so"
+echo "ok: $ART_DIR/fceumm_libretro.so (the shared task-86/87 core pin)"

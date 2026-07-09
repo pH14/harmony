@@ -15,14 +15,14 @@ the gate *machinery* is built and committed; only its Signal input is absent.
   byte-matched to film's merged `HBBD` v1 layout (golden-pinned), the
   state-register catalog (`REG_GAME_MODE..REG_BILLBOARD_LEN`, ids under
   `pack_state`'s 16-bit bound), the per-frame agent loop over a mock-core
-  seam, and the Linux glue (dlopen'd QuickNES FFI, hugetlb+pagemap+mlock
+  seam, and the Linux glue (dlopen'd FCEUmm FFI, hugetlb+pagemap+mlock
   billboard pinning, the flow-agent doorbell). See its `IMPLEMENTATION.md`.
-- **`guest/linux/`**: `versions.lock` pins QuickNES_Core `26bb785c` by
+- **`guest/linux/`**: `versions.lock` pins libretro-fceumm `0d610d9a` by
   tarball sha256; `fetch.sh` fetches it (the ROM is **never** fetched);
   `build-game-image.sh` builds core + agent, copies their ldd closure, bakes
   the user-supplied `HARMONY_SMB_ROM` (sha256 recorded in-image and echoed) or
   SKIPs loudly, packs the reproducible `initramfs-game.cpio.gz`, and exports
-  `guest/build/quicknes_libretro.so` — the **same** artifact film's renderer
+  `guest/build/fceumm_libretro.so` — the **same** artifact film's renderer
   dlopens (the shared pin, 1:1 by construction); `game-init.sh` reserves the
   billboard hugepage and maps agent failure to the `reboot -f` crash terminal;
   `game-image` Makefile targets.
@@ -72,9 +72,17 @@ the gate *machinery* is built and committed; only its Signal input is absent.
 4. **Billboard ownership**: the layout is film's merged definition, mirrored
    byte-for-byte (goldens on both sides); integrator reconciliation onto one
    owning constant can ride either crate's next touch.
-5. **QuickNES license label**: repo LICENSE is GPL-2.0 (spec table said
-   LGPL-2.1; the embedded Nes_Emu is LGPL). Same fetched-never-vendored
-   discipline either way; no repo code links it.
+5. **Core pin = FCEUmm, GPL-2.0-or-later (round-3 P1 re-pin).** The first pin
+   (QuickNES, the spec table's LGPL-2.1 row) turned out to be a licensing mix
+   whose safe reading is GPL-2.0-only — incompatible with the AGPL-3
+   play-agent that dlopens it inside one shipped initramfs (a combined work
+   invisible to cargo-deny). FCEUmm was audited per-file at the pinned
+   commit: every explicit header (490/601 files) is or-later, zero
+   only-versioned; GPL-2.0-or-later upgrades to GPL-3, which AGPL-3 §13
+   permits combining with. Rationale + audit recorded in `versions.lock`
+   (`FCEUMM_LICENSE=`) and `guest/play-agent/IMPLEMENTATION.md`. Mesen
+   (GPL-3, clean) is the recorded fallback if FCEUmm fails technically on the
+   box; keeping the core out of the shipped artifact is the last resort.
 6. **Register numbering** is play-agent-local (ids 1–9 + points 1–2, the
    sdk-demo precedent), mirrored as constants in `gamecampaign.rs` with the
    mirror-comment; ids stay < 2^16 for `pack_state`.
@@ -110,11 +118,11 @@ scope it: `taskset -c <lease> make -C guest game-image`).
 
 ```sh
 # 0. provision (box, leased core; needs the branch checked out there)
-make -C guest fetch                                  # pulls the pinned QuickNES tarball
+make -C guest fetch                                  # pulls the pinned FCEUmm tarball
 taskset -c <core> make -C guest kernel               # if bzImage not already built
 HARMONY_SMB_ROM=/path/to/smb.nes taskset -c <core> make -C guest game-image
 #   -> guest/build/initramfs-game.cpio.gz  (ROM sha256 echoed — record it)
-#   -> guest/build/quicknes_libretro.so    (the SAME pin film's renderer dlopens)
+#   -> guest/build/fceumm_libretro.so    (the SAME pin film's renderer dlopens)
 # ROM-independent smoke (can run before the ROM lands): unset HARMONY_SMB_ROM,
 # build, boot — the guest must print GAME_SKIP and halt (Quiescent).
 
@@ -134,16 +142,21 @@ taskset -c <core> cargo run -p conductor --release -- game box \
 # is a P0 STOP + escalate, never serialize-to-hide.
 
 # 3. M0 campaign runs (both available configs, >=20 seeds each, identical
-#    budget; append to one logs file):
+#    budget; append to one logs file — pass the ROM sha256 so every log is
+#    stamped and the report can refuse a mixed dump):
 for s in $(seq 1 20); do
   taskset -c <core> cargo run -p conductor --release -- game box \
-      --config pure-random --campaign-seed $s --max-branches <B> --logs-out smb-logs.json
+      --config pure-random --campaign-seed $s --max-branches <B> \
+      --rom-sha256 <rom sha256> --logs-out smb-logs.json
   taskset -c <core> cargo run -p conductor --release -- game box \
-      --config selector-v1 --campaign-seed $s --max-branches <B> --logs-out smb-logs.json
+      --config selector-v1 --campaign-seed $s --max-branches <B> \
+      --rom-sha256 <rom sha256> --logs-out smb-logs.json
 done
-# manifest.json = benchmark::GameManifest::smb(Some("<rom sha256>"), <B>) as JSON
+# The matching manifest is EMITTED by the runs themselves as
+# smb-logs.manifest.json (round-3 P2 — the pair cannot drift; a budget/ROM
+# change across appends fails loudly). Feed both to the report:
 cargo run -p benchmark --bin exploration-report -- \
-    --logs smb-logs.json --manifest manifest.json \
+    --logs smb-logs.json --manifest smb-logs.manifest.json \
     --out dissonance/benchmark/SMB-EXPLORATION-REPORT.md
 # M0 expectation: verdict INCOMPLETE (signal missing) — commit the report as
 # the baseline-plateau record (the non-vacuity documentation); gates 3/4's
@@ -153,13 +166,13 @@ cargo run -p benchmark --bin exploration-report -- \
 #    reproducer (billboard gpa/len ride the trace's REG_BILLBOARD_* events;
 #    REG_FRAME every vblank is the shot list), then render per
 #    dissonance/film/IMPLEMENTATION.md "The box gate" with
-#    HARMONY_SMB_CORE=guest/build/quicknes_libretro.so HARMONY_SMB_ROM=<rom>:
+#    HARMONY_SMB_CORE=guest/build/fceumm_libretro.so HARMONY_SMB_ROM=<rom>:
 #    (a) core loads in the box guest (step 1 proves it — retro_load_game ok);
 #    (b) one real unserialize+retro_run validates film's env_cb assumption;
 #    (c) a >=300-frame clip renders; (d) render-determinism (same bundle
 #    twice, byte-identical); (e) 25/25 hash-neutrality (film observation
 #    on/off -> identical state_hash).
-#    Likely friction (both sides document it): QuickNES may demand more env_cb
+#    Likely friction (both sides document it): FCEUmm may demand more env_cb
 #    services at load — extend play-agent's `retro::env_cb` and film's env_cb
 #    symmetrically; both are one-match-arm changes.
 

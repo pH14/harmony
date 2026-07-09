@@ -51,7 +51,7 @@ echo "GAME_ROM_SHA256: $($BB cat /opt/harmony/smb.nes.sha256)"
 # SnapshotPoint, after the billboard gpa/len registers are published).
 echo "GAME_READY: launching play-agent"
 /opt/harmony/play-agent \
-    --core /opt/harmony/quicknes_libretro.so \
+    --core /opt/harmony/fceumm_libretro.so \
     --rom /opt/harmony/smb.nes
 rc=$?
 echo "GAME_EXIT: play-agent exited rc=$rc"

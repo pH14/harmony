@@ -6,20 +6,32 @@ is unsafe-free and fully tested against the mock core; the binary
 (`src/main.rs`) carries the named-`unsafe` Linux glue. See the root
 `IMPLEMENTATION-task86.md` for the whole-task record and the box handoff.
 
-## Core choice: QuickNES (pinned in `guest/linux/versions.lock`)
+## Core choice: FCEUmm, GPL-2.0-or-later (pinned in `guest/linux/versions.lock`)
 
-QuickNES over FCEUmm / Mesen for **throughput** — the box runs `retro_run`
-under a single-stepping deterministic VMM, so emulation cost multiplies into
-every branch; QuickNES is the fastest of the three and SMB (mapper 0 / NROM)
-is the most-exercised title in its test suite. Accuracy is a soft concern by
-spec: determinism comes from the VM below, not the core. **License note:** the
-spec's table says LGPL-2.1; the pinned `libretro/QuickNES_Core` repo's
-top-level `LICENSE` is **GPL-2.0** (the embedded Nes_Emu core sources carry
-LGPL-2.1 headers; the libretro packaging is GPL-2). Either way the discipline
-is the same as bedrock/the kernel: fetched at image-build time from the
-sha256-pinned tarball, built, **never vendored, never copied from** — the
-repo's own code links nothing of it. No build-time patch was needed at this
-pin (the ≤100-line patch allowance is unused).
+**Round-3 P1 re-pin.** The first pin was QuickNES (the spec table's "fastest"
+row, labeled LGPL-2.1 there), but the pinned `libretro/QuickNES_Core` release
+is a licensing mix — an LGPL-2.1+ Nes_Emu core under a **bare GPL-2 top-level
+LICENSE with an unheadered `libretro.cpp` glue** — whose safe reading is
+GPL-2.0-only, which is **incompatible with AGPL-3**: the AGPL-3 play-agent
+dlopens the core and both ship inside one initramfs artifact (a combined work
+cargo-deny cannot see). Re-pinned to **FCEUmm** (`libretro/libretro-fceumm`),
+audited per-file at the pinned commit: 490 of 601 `src/` files carry explicit
+headers and **every one is or-later** (488 GPL-2.0-or-later + 2
+LGPL-2.1-or-later, Blargg's `nes_ntsc`); zero only-versioned files; the
+unheadered remainder falls under the repo `Copying` serving those grants. So
+the built core is GPL-2.0-or-later, upgradeable to GPL-3, and **AGPL-3 §13
+permits conveying the combined work** — the compatibility rationale recorded
+beside the sha in `versions.lock` (`FCEUMM_LICENSE=`). Mesen (GPL-3, cleanly
+licensed) was the runner-up, rejected on throughput: it is the heaviest of
+the three and emulation cost multiplies into every branch under the
+single-stepping VMM; FCEUmm is the middle ground and SMB (mapper 0/NROM) is
+core-agnostic territory. Accuracy stays a soft concern — determinism comes
+from the VM below. The fetch discipline is unchanged (sha256-pinned tarball,
+built at image time, **never vendored, never copied from** — the bedrock
+rule); no build-time patch was needed at this pin. One FCEUmm-specific note:
+its `retro_serialize` requires `size == retro_serialize_size()` exactly,
+which is precisely how the agent calls it (the layout freezes that size at
+init).
 
 ## Billboard gpa publication: one hugetlb page (contiguous by construction)
 

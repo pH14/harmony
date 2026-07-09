@@ -146,7 +146,7 @@ mod real {
     use harmony_play_agent::{Agent, Harness, regs};
 
     /// The default in-image location of the pinned libretro core.
-    const DEFAULT_CORE: &str = "/opt/harmony/quicknes_libretro.so";
+    const DEFAULT_CORE: &str = "/opt/harmony/fceumm_libretro.so";
     /// The default in-image location of the user-supplied ROM.
     const DEFAULT_ROM: &str = "/opt/harmony/smb.nes";
 
