@@ -207,18 +207,6 @@ fn seeded_env(seed: u64) -> Environment {
     }
 }
 
-/// Snapshot at the current point, returning the handle and the taint bit its reply
-/// carries. A `Reply::SnapId` is the pre-81 taint-free reply (untainted); a
-/// `Reply::Snapshot` carries the flag.
-fn snapshot<B: Backend>(s: &mut ControlServer<B>) -> (SnapId, bool) {
-    match call(s, &Request::Snapshot) {
-        Ok(Reply::SnapId(id)) => (id, false),
-        Ok(Reply::Snapshot { id, tainted }) => (id, tainted),
-        Ok(other) => panic!("snapshot answered {other:?}"),
-        Err(e) => panic!("snapshot answered a ControlError: {e:?}"),
-    }
-}
-
 /// Seal the current point, retrying past non-snapshottable boundaries (the task-58
 /// nudge). Returns `(SnapId, tainted, V-time)`.
 fn seal<B: Backend>(s: &mut ControlServer<B>, mut vt: u64, retry_step: u64) -> (SnapId, bool, u64) {
@@ -399,8 +387,37 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
         Err(ControlError::Tainted),
         "gate 3: recorded_env on the exec'd fork must fail Tainted"
     );
-    //    - a snapshot taken here reports tainted: true;
-    let (dirty_snap, dirty_taint) = snapshot(&mut s);
+    //    - a snapshot taken here reports tainted: true. The exec'd fork sits at an
+    //      opportunistic deadline stop (not a clean boundary), so nudge to a
+    //      snapshottable point FIRST — staying on the (still-tainted) timeline;
+    //      running forward never clears taint. A Quiescent stop (the shell going
+    //      idle after the command) is itself a sealable boundary, so tolerate it.
+    let mut vt_fork = match run_until(&mut s, 0) {
+        StopReason::Deadline { vtime } => vtime.0,
+        other => panic!("post-exec position probe stopped non-Deadline: {other:?}"),
+    };
+    let mut tries = 0usize;
+    let (dirty_snap, dirty_taint) = loop {
+        tries += 1;
+        match call(&mut s, &Request::Snapshot) {
+            Ok(Reply::SnapId(id)) => break (id, false),
+            Ok(Reply::Snapshot { id, tainted }) => break (id, tainted),
+            Ok(other) => panic!("snapshot on the exec'd fork answered {other:?}"),
+            Err(ControlError::NotQuiescent) => {
+                assert!(
+                    tries < 100_000,
+                    "exec'd fork never reached a snapshottable boundary"
+                );
+                match run_until(&mut s, vt_fork.saturating_add(retry_step)) {
+                    StopReason::Deadline { vtime } | StopReason::Quiescent { vtime } => {
+                        vt_fork = vtime.0
+                    }
+                    other => panic!("exec'd fork ended non-sealably: {other:?}"),
+                }
+            }
+            Err(e) => panic!("snapshot on the exec'd fork answered a ControlError: {e:?}"),
+        }
+    };
     assert!(
         dirty_taint,
         "gate 3: a snapshot taken on the exec'd fork must report tainted: true"
