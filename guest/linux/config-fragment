@@ -150,3 +150,10 @@ CONFIG_POSIX_TIMERS=y
 # campaign 25/25 replay gate re-validates the rebuilt kernel. Asserted in
 # build-kernel.sh so a Kata-side regression cannot silently drop it.
 CONFIG_X86_IOPL_IOPERM=y
+# /dev/mem itself (same smoke, next layer down): the doorbell transport maps
+# the two fixed hypercall pages (REQ 0xE000 / RESP 0xF000 — reserved out of
+# the guest's e820, deliberately) out of /dev/mem, and the allnoconfig seed
+# ships no CONFIG_DEVMEM at all ("/dev/mem: No such file or directory").
+# Same interim status and determinism argument as IOPL above; STRICT_DEVMEM
+# stays off (the mapped pages are reserved, not kernel RAM). Asserted.
+CONFIG_DEVMEM=y
