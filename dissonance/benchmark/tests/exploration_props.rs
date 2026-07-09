@@ -15,6 +15,7 @@ use proptest::prelude::*;
 fn log_from(config: ExplorationConfig, seed: u64, branches: &[(Vec<u64>, u64)]) -> ExplorationLog {
     ExplorationLog {
         workload: "smb".to_string(),
+        rom_sha256: None,
         config,
         seed,
         events: branches

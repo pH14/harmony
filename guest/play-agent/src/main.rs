@@ -253,34 +253,21 @@ mod real {
     /// held joypad byte in NES shift order (bit 0 = A … bit 7 = Right — the
     /// exact mapping film's `CoreReplay` replays).
     ///
-    /// **MIRI (unsafe⇒Miri bar).** Every `unsafe` block here is a real
-    /// `dlopen`/`dlsym`/C-ABI call Miri cannot execute, and the whole module is
-    /// `cfg(all(target_os = "linux", target_arch = "x86_64"))`-gated off the
-    /// Miri host — the same exclusion flow-agent's doorbell FFI documents. The
-    /// pointer/decode logic this module *feeds* (chord decode, RAM decode,
-    /// billboard layout, the frame loop) is `unsafe`-free in `lib.rs` and is
-    /// what the crate's Miri run covers, driven by the mock core.
+    /// **MIRI (unsafe⇒Miri bar).** Every `unsafe` block here is a thin FFI
+    /// edge — a real `dlopen`/`dlsym`/C-ABI call Miri cannot execute — and the
+    /// whole module is `cfg(all(target_os = "linux", target_arch =
+    /// "x86_64"))`-gated off the Miri host, the same exclusion flow-agent's
+    /// doorbell FFI documents. Every **decision** the edges depend on
+    /// (callback responses, joypad-bit mapping, the work-RAM copy bounds) is
+    /// hoisted into the Miri-covered [`harmony_play_agent::glue`]; each
+    /// `// SAFETY:` below cites the glue invariant holding at its call site.
     mod retro {
         use harmony_play_agent::core_seam::Core;
-        use harmony_play_agent::ram::WORK_RAM_LEN;
+        use harmony_play_agent::glue::{
+            self, EnvResponse, RETRO_DEVICE_JOYPAD, RETRO_MEMORY_SYSTEM_RAM,
+        };
         use std::ffi::{CString, c_char, c_uint, c_void};
         use std::sync::atomic::{AtomicU8, Ordering};
-
-        // libretro ABI constants (stable, from libretro.h).
-        const RETRO_DEVICE_JOYPAD: c_uint = 1;
-        const RETRO_MEMORY_SYSTEM_RAM: c_uint = 2;
-        const RETRO_ENVIRONMENT_GET_CAN_DUPE: c_uint = 3;
-        const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: c_uint = 10;
-        // RETRO_DEVICE_ID_JOYPAD_*: the libretro id space (NOT the NES shift
-        // order the billboard byte uses).
-        const ID_B: c_uint = 0;
-        const ID_SELECT: c_uint = 2;
-        const ID_START: c_uint = 3;
-        const ID_UP: c_uint = 4;
-        const ID_DOWN: c_uint = 5;
-        const ID_LEFT: c_uint = 6;
-        const ID_RIGHT: c_uint = 7;
-        const ID_A: c_uint = 8;
 
         #[repr(C)]
         struct RetroGameInfo {
@@ -296,42 +283,22 @@ mod real {
         /// so the statics stay safe Rust.
         static JOYPAD: AtomicU8 = AtomicU8::new(0);
 
-        /// The frame's joypad bit for a libretro device id, mapping the
-        /// billboard byte's NES hardware shift order (bit 0 = A, 1 = B,
-        /// 2 = Select, 3 = Start, 4 = Up, 5 = Down, 6 = Left, 7 = Right) — the
-        /// mirror of `film::core_replay::joypad_pressed`.
-        fn joypad_bit(id: c_uint) -> Option<u8> {
-            Some(match id {
-                ID_A => 0,
-                ID_B => 1,
-                ID_SELECT => 2,
-                ID_START => 3,
-                ID_UP => 4,
-                ID_DOWN => 5,
-                ID_LEFT => 6,
-                ID_RIGHT => 7,
-                _ => return None,
-            })
-        }
-
         extern "C" fn env_cb(cmd: c_uint, data: *mut c_void) -> bool {
-            match cmd {
-                // Any advertised pixel format is fine — video is discarded.
-                RETRO_ENVIRONMENT_SET_PIXEL_FORMAT => true,
-                RETRO_ENVIRONMENT_GET_CAN_DUPE => {
+            // The decision lives in (Miri-covered) glue::env_response; this
+            // edge only performs the one pointer write it prescribes.
+            match glue::env_response(cmd) {
+                EnvResponse::AcceptPixelFormat => true,
+                EnvResponse::CanDupe => {
                     if data.is_null() {
                         return false;
                     }
                     // SAFETY: the libretro contract passes a valid `bool*` for
-                    // GET_CAN_DUPE; we checked non-null. Duplicate frames are
-                    // fine — the guest never reads pixels.
+                    // GET_CAN_DUPE (glue::env_response maps only that command
+                    // here); non-null checked above.
                     unsafe { *data.cast::<bool>() = true };
                     true
                 }
-                // Everything else is unsupported; a core that hard-requires
-                // more surfaces it at load time on the box (documented as the
-                // expected bring-up friction in IMPLEMENTATION.md).
-                _ => false,
+                EnvResponse::Unsupported => false,
             }
         }
 
@@ -343,13 +310,9 @@ mod real {
             _index: c_uint,
             id: c_uint,
         ) -> i16 {
-            if port != 0 || device != RETRO_DEVICE_JOYPAD {
-                return 0;
-            }
-            match joypad_bit(id) {
-                Some(bit) => i16::from((JOYPAD.load(Ordering::Relaxed) >> bit) & 1),
-                None => 0,
-            }
+            // The whole port/device/id → bit decision is glue::input_state_response
+            // (Miri-covered, checked against the chord masks); no unsafe here.
+            glue::input_state_response(JOYPAD.load(Ordering::Relaxed), port, device, id)
         }
         extern "C" fn audio_sample_cb(_l: i16, _r: i16) {}
         extern "C" fn audio_sample_batch_cb(_data: *const i16, frames: usize) -> usize {
@@ -500,26 +463,23 @@ mod real {
             }
 
             fn read_work_ram(&mut self, out: &mut [u8]) -> bool {
-                if out.len() < WORK_RAM_LEN {
-                    return false;
-                }
-                // SAFETY: resolved fn pointers; the returned pointer (checked
-                // non-null) is the core's live system-RAM block of the
-                // returned size, valid until the next retro_run — we copy out
-                // immediately, bounded by both sizes.
-                unsafe {
+                // SAFETY (the module's one borrow of core memory): resolved fn
+                // pointers on the loaded core; the libretro contract makes the
+                // returned pointer (checked non-null, with the returned
+                // non-zero size) the core's live system-RAM block, valid until
+                // the next retro_* call — no such call happens while `src`
+                // lives, and the copy below finishes before this fn returns.
+                let src: &[u8] = unsafe {
                     let ptr = (self.get_memory_data)(RETRO_MEMORY_SYSTEM_RAM);
                     let len = (self.get_memory_size)(RETRO_MEMORY_SYSTEM_RAM);
                     if ptr.is_null() || len == 0 {
                         return false;
                     }
-                    let n = len.min(WORK_RAM_LEN);
-                    std::ptr::copy_nonoverlapping(ptr.cast::<u8>(), out.as_mut_ptr(), n);
-                    // A core exposing less than 2 KiB zero-fills the tail so
-                    // the billboard region is always fully written.
-                    out[n..WORK_RAM_LEN].fill(0);
-                }
-                true
+                    std::slice::from_raw_parts(ptr.cast::<u8>(), len)
+                };
+                // The copy/clamp/zero-fill bounds logic is glue::copy_work_ram
+                // (Miri-covered).
+                glue::copy_work_ram(src, out)
             }
         }
     }
@@ -532,21 +492,20 @@ mod real {
     /// task's `unsafe` grant.
     ///
     /// MIRI: real mmap/mlock FFI + /proc reads — cfg-gated off the Miri host,
-    /// same as the doorbell (see the `retro` module note).
+    /// same as the doorbell (see the `retro` module note). The length bound
+    /// the slice construction relies on and the pagemap offset/entry decode
+    /// are hoisted into the Miri-covered [`harmony_play_agent::glue`].
     mod pinned {
+        use harmony_play_agent::glue::{self, HUGE_PAGE};
         use std::io::{Read, Seek, SeekFrom};
-
-        /// One hugetlb page: 2 MiB on x86-64 (the guest kernel's default
-        /// hugepage size; `game-init.sh` reserves it via `nr_hugepages`).
-        const HUGE_PAGE: usize = 2 << 20;
 
         /// Allocate the pinned billboard buffer: returns its guest-physical
         /// address and the (leaked, process-lifetime) byte slice of exactly
         /// `len` bytes.
         pub fn alloc(len: usize) -> Result<(u64, &'static mut [u8]), String> {
-            if len == 0 || len > HUGE_PAGE {
-                return Err(format!("billboard len {len} must be in 1..={HUGE_PAGE}"));
-            }
+            // The bound from_raw_parts_mut relies on, proven in glue
+            // (Miri-covered): 1 <= len <= HUGE_PAGE.
+            glue::validate_billboard_len(len)?;
             // SAFETY: anonymous private hugetlb mapping of one huge page; the
             // result is checked against MAP_FAILED before use.
             let ptr = unsafe {
@@ -580,9 +539,10 @@ mod real {
             }
 
             let gpa = translate(ptr as u64)?;
-            // SAFETY: the mapping is valid for HUGE_PAGE >= len bytes, never
-            // unmapped (leaked for the process's life), and exclusively owned
-            // by the agent.
+            // SAFETY: the mapping is valid for HUGE_PAGE bytes and
+            // glue::validate_billboard_len proved len <= HUGE_PAGE above; it
+            // is never unmapped (leaked for the process's life) and
+            // exclusively owned by the agent.
             let slice = unsafe { std::slice::from_raw_parts_mut(ptr.cast::<u8>(), len) };
             Ok((gpa, slice))
         }
@@ -592,25 +552,17 @@ mod real {
         /// init provides). Inside the deterministic VM, "physical" *is* the
         /// guest-physical address the host reads the billboard at.
         fn translate(vaddr: u64) -> Result<u64, String> {
+            // Safe std file IO; the offset math and entry decode (present
+            // bit, PFN mask, gpa composition) are glue::pagemap_offset /
+            // glue::decode_pagemap_entry (Miri-covered).
             let mut f = std::fs::File::open("/proc/self/pagemap")
                 .map_err(|e| format!("/proc/self/pagemap: {e}"))?;
-            let index = vaddr / 4096;
-            f.seek(SeekFrom::Start(index * 8))
+            f.seek(SeekFrom::Start(glue::pagemap_offset(vaddr)))
                 .map_err(|e| format!("pagemap seek: {e}"))?;
             let mut entry = [0u8; 8];
             f.read_exact(&mut entry)
                 .map_err(|e| format!("pagemap read: {e}"))?;
-            let entry = u64::from_le_bytes(entry);
-            if entry & (1 << 63) == 0 {
-                return Err("billboard page not present after touch".to_string());
-            }
-            let pfn = entry & ((1 << 55) - 1);
-            if pfn == 0 {
-                return Err(
-                    "pagemap PFN is zero (need root/CAP_SYS_ADMIN to read PFNs)".to_string()
-                );
-            }
-            Ok(pfn * 4096 + (vaddr % 4096))
+            glue::decode_pagemap_entry(u64::from_le_bytes(entry), vaddr)
         }
     }
 

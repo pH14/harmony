@@ -354,6 +354,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         snapshot_retry_step: 1_000_000,
         snapshot_max_attempts: 100_000,
         setup_deadline_delta: args.setup_deadline_delta,
+        rom_sha256: args.game.rom_sha256.clone(),
     };
     let repeat = args.repeat.max(1);
     let mut first: Option<benchmark::ExplorationLog> = None;

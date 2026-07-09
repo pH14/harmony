@@ -84,8 +84,14 @@ a non-issue there (cross-platform savestates stay best-effort, ungated).
   host-side max keeps the high-water mark.
 - **Miri**: the crate's only `unsafe` is the binary's cfg(linux) FFI
   (dlopen/hugetlb/pagemap/doorbell — real syscalls Miri cannot execute,
-  cfg-gated off the Miri host). The nightly Miri line covers the unsafe-free
-  brain + the agent integration suite; proptest failure-persistence is
-  disabled under Miri (its `getcwd` is unsupported in isolation).
+  cfg-gated off the Miri host). Per the flow-agent precedent (round-2 P1),
+  every **decision** those edges depend on is hoisted into `src/glue.rs` —
+  libretro callback responses, the joypad-bit mapping (asserted against the
+  chord masks), the work-RAM copy/clamp/zero-fill bounds, the hugetlb length
+  bound `from_raw_parts_mut` relies on, and the pagemap offset/entry decode —
+  all Miri-covered; `main.rs`'s `unsafe` blocks are thin FFI edges whose
+  `// SAFETY:` comments cite the glue invariant holding at the call site.
+  Proptest failure-persistence is disabled under Miri (its `getcwd` is
+  unsupported in isolation).
 - The `--smoke` mode (mock core + seeded local xorshift, no hypervisor) is the
   off-box bring-up check and runs anywhere.

@@ -76,9 +76,15 @@ pub struct DiscoveryEvent {
 /// One campaign's discovery-event log: one `(config, seed)` run.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct ExplorationLog {
-    /// The workload this campaign ran (e.g. `"smb"`); reports refuse to mix
-    /// workloads.
+    /// The workload this campaign ran (e.g. `"smb"`); a report refuses logs
+    /// whose workload is not the manifest's.
     pub workload: String,
+    /// The sha256 of the ROM the campaign ran, when the driver knows it
+    /// (`--rom-sha256`). A report refuses a log whose recorded dump differs
+    /// from the manifest's — results are only comparable across runs of the
+    /// same dump. `None` = unstamped (accepted; the manifest's hash stands).
+    #[serde(default)]
+    pub rom_sha256: Option<String>,
     /// The configuration.
     pub config: ExplorationConfig,
     /// The campaign seed.
@@ -242,13 +248,31 @@ pub enum ExplorationError {
         /// The floor ([`MIN_SEEDS`]).
         need: u64,
     },
-    /// Logs from more than one workload were mixed.
-    #[error("mixed workloads in one report: {a:?} vs {b:?}")]
-    MixedWorkloads {
-        /// The first workload seen.
-        a: String,
-        /// The offending workload.
-        b: String,
+    /// A log's workload is not the manifest's — scoring one workload's logs
+    /// under another workload's manifest would compare incomparable spaces.
+    #[error("{config:?} seed {seed}: log is from workload {log:?}, the manifest is {manifest:?}")]
+    WorkloadMismatch {
+        /// The manifest's workload.
+        manifest: String,
+        /// The offending log's workload.
+        log: String,
+        /// The configuration.
+        config: ExplorationConfig,
+        /// The seed.
+        seed: u64,
+    },
+    /// A log records a different ROM dump than the manifest — results are
+    /// only comparable across runs of the same dump.
+    #[error("{config:?} seed {seed}: log ran ROM {log:?}, the manifest records {manifest:?}")]
+    RomMismatch {
+        /// The manifest's ROM sha256.
+        manifest: Option<String>,
+        /// The offending log's recorded ROM sha256.
+        log: Option<String>,
+        /// The configuration.
+        config: ExplorationConfig,
+        /// The seed.
+        seed: u64,
     },
     /// A log's branch sequence is not the dense `0..branch_budget` the
     /// manifest requires (truncated, padded, or gapped). Scoring a short log
@@ -307,10 +331,24 @@ impl ExplorationReport {
         }
         let budget = manifest.branch_budget;
         for log in logs {
-            if log.workload != logs[0].workload {
-                return Err(ExplorationError::MixedWorkloads {
-                    a: logs[0].workload.clone(),
-                    b: log.workload.clone(),
+            // Every log must be from the MANIFEST's workload and ROM dump
+            // (round-2 P2) — validating against logs[0] alone would let a
+            // uniform-but-wrong log set score under another workload's
+            // manifest.
+            if log.workload != manifest.workload {
+                return Err(ExplorationError::WorkloadMismatch {
+                    manifest: manifest.workload.clone(),
+                    log: log.workload.clone(),
+                    config: log.config,
+                    seed: log.seed,
+                });
+            }
+            if log.rom_sha256.is_some() && log.rom_sha256 != manifest.rom_sha256 {
+                return Err(ExplorationError::RomMismatch {
+                    manifest: manifest.rom_sha256.clone(),
+                    log: log.rom_sha256.clone(),
+                    config: log.config,
+                    seed: log.seed,
                 });
             }
             // Every log must carry the dense 0..branch_budget sequence the
@@ -695,6 +733,7 @@ mod tests {
             .collect();
         ExplorationLog {
             workload: "smb".to_string(),
+            rom_sha256: Some("f00d".to_string()),
             config,
             seed,
             events,
@@ -749,6 +788,7 @@ mod tests {
         // A baseline that discovered nothing at all.
         logs.extend((0..MIN_SEEDS).map(|s| ExplorationLog {
             workload: "smb".to_string(),
+            rom_sha256: None, // unstamped logs are accepted
             config: ExplorationConfig::PureRandom,
             seed: s,
             events: (0..8).map(|b| ev(b, &[], 0)).collect(),
@@ -788,13 +828,47 @@ mod tests {
         assert_eq!(report.configs[0].seeds, MIN_SEEDS);
     }
 
+    /// Round-2 P2: logs are validated against the MANIFEST's workload — one
+    /// stray log fails, and so does a uniform-but-wrong log set (which the old
+    /// logs[0] cross-check could never catch).
     #[test]
-    fn mixed_workloads_are_rejected() {
+    fn foreign_workload_logs_are_rejected_against_the_manifest() {
+        // One stray log.
         let mut logs = twenty(ExplorationConfig::PureRandom, 2, 3);
         logs[3].workload = "metroid".to_string();
         assert!(matches!(
             ExplorationReport::compute(&manifest(), &logs, (1, 1000)),
-            Err(ExplorationError::MixedWorkloads { .. })
+            Err(ExplorationError::WorkloadMismatch { seed: 3, .. })
+        ));
+
+        // Uniformly wrong: every log from another workload entirely.
+        let mut logs = twenty(ExplorationConfig::PureRandom, 2, 3);
+        for log in &mut logs {
+            log.workload = "metroid".to_string();
+        }
+        assert!(matches!(
+            ExplorationReport::compute(&manifest(), &logs, (1, 1000)),
+            Err(ExplorationError::WorkloadMismatch { .. })
+        ));
+    }
+
+    /// Round-2 P2 (ROM half): a log stamped with a different dump than the
+    /// manifest records is rejected — including a stamped log under a ROM-less
+    /// manifest. Unstamped logs are accepted (the manifest's hash stands).
+    #[test]
+    fn rom_dump_mismatches_are_rejected() {
+        let mut logs = twenty(ExplorationConfig::PureRandom, 2, 3);
+        logs[7].rom_sha256 = Some("beef".to_string());
+        assert!(matches!(
+            ExplorationReport::compute(&manifest(), &logs, (1, 1000)),
+            Err(ExplorationError::RomMismatch { seed: 7, .. })
+        ));
+
+        // A stamped log under a ROM-less manifest is inconsistent metadata.
+        let logs = twenty(ExplorationConfig::PureRandom, 2, 3); // stamped "f00d"
+        assert!(matches!(
+            ExplorationReport::compute(&GameManifest::smb(None, 8), &logs, (1, 1000)),
+            Err(ExplorationError::RomMismatch { .. })
         ));
     }
 
@@ -814,8 +888,13 @@ mod tests {
             "the win is real with a ROM"
         );
 
-        // …must be a SKIP under a ROM-less one.
+        // …must be a SKIP under a ROM-less one. (Unstamped logs, so the SKIP
+        // verdict path is exercised — stamped logs under a ROM-less manifest
+        // are the RomMismatch error, tested separately.)
         let m = GameManifest::smb(None, 8);
+        for log in &mut logs {
+            log.rom_sha256 = None;
+        }
         let report = ExplorationReport::compute(&m, &logs, (1, 1000)).unwrap();
         match &report.verdict {
             Verdict::Incomplete { reason } => assert!(reason.contains("SKIP")),

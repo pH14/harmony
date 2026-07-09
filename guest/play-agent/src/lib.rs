@@ -19,6 +19,7 @@ pub mod agent;
 pub mod billboard;
 pub mod chord;
 pub mod core_seam;
+pub mod glue;
 pub mod ram;
 pub mod regs;
 

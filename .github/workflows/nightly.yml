@@ -78,7 +78,9 @@ jobs:
       # pagemap/mlock billboard pinning + the /dev/mem doorbell — all real
       # syscalls Miri cannot execute, cfg-gated off the Miri host. This run is
       # the UB safety net over the unsafe-free brain (lib.rs: chord decode, RAM
-      # map, billboard writer, the mock-core agent loop) + the agent integration
-      # suite. Proptest cases are cut under cfg(miri).
+      # map, billboard writer, the mock-core agent loop) PLUS the hoisted
+      # FFI-edge logic (lib.rs glue: callback responses, joypad-bit mapping,
+      # work-RAM copy bounds, hugetlb length bound, pagemap decode) + the agent
+      # integration suite. Proptest cases are cut under cfg(miri).
       - name: miri — guest/play-agent (lib + agent, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/play-agent/Cargo.toml --lib --test agent

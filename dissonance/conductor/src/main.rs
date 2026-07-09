@@ -182,6 +182,11 @@ struct GameArgs {
     /// `exploration-report` renders (task 86 gate 3).
     #[arg(long)]
     logs_out: Option<PathBuf>,
+    /// The sha256 of the ROM the image carries (echoed by `game-image` and on
+    /// the boot serial as GAME_ROM_SHA256) — stamped into the log so the
+    /// offline report refuses logs from a different dump.
+    #[arg(long)]
+    rom_sha256: Option<String>,
 }
 
 /// Box-game arguments: the image/marker knobs plus the rollout deadline and
@@ -507,6 +512,7 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
         campaign_seed: args.campaign_seed,
         max_branches: args.max_branches,
         explore_period: args.explore_period,
+        rom_sha256: args.rom_sha256.clone(),
         ..GameCampaignConfig::smoke(args.campaign_seed)
     };
     let mut machine = GameToyMachine::new();

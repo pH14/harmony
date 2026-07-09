@@ -82,6 +82,11 @@ pub struct GameCampaignConfig {
     /// The V-time allowance for the guest to reach its `setup_complete`
     /// snapshot point from wherever the boot drive left it.
     pub setup_deadline_delta: u64,
+    /// The sha256 of the ROM the image carries (`game-image` echoes it at
+    /// build; `GAME_ROM_SHA256` on the boot serial). Stamped into the log so
+    /// the offline report can refuse logs from a different dump. `None` =
+    /// unstamped (the toy, or an operator who did not pass it).
+    pub rom_sha256: Option<String>,
 }
 
 impl GameCampaignConfig {
@@ -95,6 +100,7 @@ impl GameCampaignConfig {
             snapshot_retry_step: 1_000_000,
             snapshot_max_attempts: 100_000,
             setup_deadline_delta: 30_000_000_000,
+            rom_sha256: None,
         }
     }
 }
@@ -246,6 +252,7 @@ pub fn run_game_campaign<M: Machine>(
     machine.drop_snap(base)?;
     Ok(ExplorationLog {
         workload: "smb".to_string(),
+        rom_sha256: cfg.rom_sha256.clone(),
         config,
         seed: cfg.campaign_seed,
         events,
