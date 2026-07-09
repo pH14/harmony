@@ -48,10 +48,13 @@ pub struct conductor::campaign::CampaignReport
 pub conductor::campaign::CampaignReport::base_hash: [u8; 32]
 pub conductor::campaign::CampaignReport::base_vtime: u64
 pub conductor::campaign::CampaignReport::branches_explored: u64
+pub conductor::campaign::CampaignReport::branches_per_hour_x10: u64
 pub conductor::campaign::CampaignReport::found: core::option::Option<conductor::campaign::FoundBug>
 pub conductor::campaign::CampaignReport::nominal: conductor::campaign::NominalRow
 pub conductor::campaign::CampaignReport::replays: alloc::vec::Vec<conductor::RunRow>
 pub conductor::campaign::CampaignReport::snapshot_attempts: usize
+pub conductor::campaign::CampaignReport::timing: alloc::collections::btree::map::BTreeMap<conductor::stopwatch::Phase, conductor::stopwatch::PhaseStats>
+pub conductor::campaign::CampaignReport::wall_secs: u64
 pub struct conductor::campaign::FoundBug
 pub conductor::campaign::FoundBug::branch_index: u64
 pub conductor::campaign::FoundBug::bug: explorer::spine::Bug
@@ -199,6 +202,39 @@ pub fn conductor::record::run_recording<B: vmm_backend::backend::Backend>(&mut v
 pub fn conductor::record::stamp(explorer::VTime) -> explorer::spine::Moment
 pub fn conductor::record::verify_record(&conductor::record::RecordReport, usize) -> alloc::vec::Vec<alloc::string::String>
 pub fn conductor::record::verify_store_reload(&runtrace::store::TraceStore, &conductor::record::RecordReport) -> alloc::vec::Vec<alloc::string::String>
+pub mod conductor::stopwatch
+pub enum conductor::stopwatch::Phase
+pub conductor::stopwatch::Phase::BaseSeal
+pub conductor::stopwatch::Phase::Boot
+pub conductor::stopwatch::Phase::Branch
+pub conductor::stopwatch::Phase::Harvest
+pub conductor::stopwatch::Phase::Hash
+pub conductor::stopwatch::Phase::Judge
+pub conductor::stopwatch::Phase::Nominal
+pub conductor::stopwatch::Phase::Replay
+pub conductor::stopwatch::Phase::Run
+impl conductor::stopwatch::Phase
+pub fn conductor::stopwatch::Phase::as_str(self) -> &'static str
+pub struct conductor::stopwatch::Mark(_)
+impl conductor::stopwatch::Mark
+pub fn conductor::stopwatch::Mark::elapsed_us(&self) -> u64
+pub struct conductor::stopwatch::PhaseStats
+pub conductor::stopwatch::PhaseStats::count: u64
+pub conductor::stopwatch::PhaseStats::max_us: u64
+pub conductor::stopwatch::PhaseStats::p50_us: u64
+pub conductor::stopwatch::PhaseStats::p90_us: u64
+pub conductor::stopwatch::PhaseStats::total_us: u64
+impl conductor::stopwatch::PhaseStats
+pub fn conductor::stopwatch::PhaseStats::single(u64) -> Self
+pub struct conductor::stopwatch::Stopwatch
+impl conductor::stopwatch::Stopwatch
+pub fn conductor::stopwatch::Stopwatch::elapsed_secs(&self) -> u64
+pub fn conductor::stopwatch::Stopwatch::new() -> Self
+pub fn conductor::stopwatch::Stopwatch::stats(&self) -> alloc::collections::btree::map::BTreeMap<conductor::stopwatch::Phase, conductor::stopwatch::PhaseStats>
+pub fn conductor::stopwatch::Stopwatch::time<T>(&mut self, conductor::stopwatch::Phase, impl core::ops::function::FnOnce() -> T) -> T
+impl core::default::Default for conductor::stopwatch::Stopwatch
+pub fn conductor::stopwatch::Stopwatch::default() -> Self
+pub fn conductor::stopwatch::mark() -> conductor::stopwatch::Mark
 pub struct conductor::RunRow
 pub conductor::RunRow::hash: [u8; 32]
 pub conductor::RunRow::stop: explorer::StopReason
