@@ -461,16 +461,28 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
 
     // 3. The box campaign config: fault moments rebased onto the sealed base
     //    (M2 prereq 2), replay bar floored at 25/25 (the flag can only raise it).
-    let cfg = BenchConfig::box_campaign(
+    //    The search knobs come from the RECORDED `--explore-period` / `--order-range`
+    //    flags (env fallback resolved by clap), and flow into the CampaignLog, so a
+    //    same-seed artifact is self-describing (PR#90 round-2 — no ambient env read).
+    let mut cfg = BenchConfig::box_campaign(
         args.seed,
         args.max_branches,
         args.replay_n.max(super::REPLAY_BAR),
         args.deadline_delta,
     );
+    cfg.explore_period = args.explore_period.max(1);
+    cfg.order_range = args.order_range.max(1);
     println!(
         "[conductor] benchcampaign box: bug {} ({}) / {config:?} / seed {} — {} branches, \
-         verify {}×, fault-rebase {}.\n",
-        spec.id.0, spec.name, args.seed, cfg.max_branches, cfg.replay_n, cfg.fault_rebase,
+         verify {}×, fault-rebase {}, explore-period {}, order-range {}.\n",
+        spec.id.0,
+        spec.name,
+        args.seed,
+        cfg.max_branches,
+        cfg.replay_n,
+        cfg.fault_rebase,
+        cfg.explore_period,
+        cfg.order_range,
     );
 
     // 4. Drive the campaign over the wire (SocketMachine → real KVM). The real guest

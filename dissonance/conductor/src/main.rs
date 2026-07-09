@@ -129,6 +129,17 @@ struct BenchBoxArgs {
     /// fold. A first-class deliverable of every M2 campaign; absent = not retained.
     #[arg(long)]
     record: Option<PathBuf>,
+    /// Signal-config explore period (every Nth step explores; the rest exploit). The
+    /// PR#90 ablation sets `1` (explore-only). An **explicit, recorded** knob (lands
+    /// in the CampaignLog) — no ambient env, so a same-seed result is self-describing
+    /// (PR#90 round-2 replaced the old `BENCH_EXPLORE_PERIOD` env read).
+    #[arg(long, default_value_t = 4)]
+    explore_period: u64,
+    /// Bug-2 (`OrderingInterrupt`) mint fault-offset search width. Same recorded,
+    /// no-env rule as `--explore-period` (replaced `BENCH_ORDER_RANGE`). Irrelevant
+    /// to bugs 1/3.
+    #[arg(long, default_value_t = 64)]
+    order_range: u64,
 }
 
 #[derive(Parser)]

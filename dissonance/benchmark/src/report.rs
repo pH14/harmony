@@ -113,6 +113,28 @@ pub struct CampaignLog {
     pub events: Vec<BranchEvent>,
     /// Per-bug find records (a bug may be absent if this seed never found it).
     pub finds: Vec<FindRecord>,
+    /// The signal config's **effective** explore period (every Nth step explores;
+    /// the rest exploit). Recorded so the artifact is **self-describing** — a
+    /// same-seed result must never depend on an ambient env var invisibly (PR#90
+    /// round-2). `#[serde(default)]` = 4 for pre-record logs (the committed campaign
+    /// ran the default 4). The PR#90 ablation records 1 here.
+    #[serde(default = "default_explore_period")]
+    pub explore_period: u64,
+    /// The **effective** bug-2 (`OrderingInterrupt`) mint fault-offset search width.
+    /// Same self-describing rule as `explore_period`; `#[serde(default)]` = 64 for
+    /// pre-record logs. Irrelevant to bugs 1/3 (no `OrderingInterrupt` mint), kept
+    /// so every campaign artifact fully pins its search knobs.
+    #[serde(default = "default_order_range")]
+    pub order_range: u64,
+}
+
+/// Pre-record default (the committed campaign's value) — see [`CampaignLog::explore_period`].
+fn default_explore_period() -> u64 {
+    4
+}
+/// Pre-record default (the committed campaign's value) — see [`CampaignLog::order_range`].
+fn default_order_range() -> u64 {
+    64
 }
 
 impl CampaignLog {
@@ -759,6 +781,8 @@ mod tests {
                 path_len: 4,
                 novel_on_path: 4,
             }],
+            explore_period: 4,
+            order_range: 64,
         }
     }
 
@@ -779,6 +803,8 @@ mod tests {
                 path_len: 4,
                 novel_on_path: 0,
             }],
+            explore_period: 4,
+            order_range: 64,
         }
     }
 
@@ -1156,6 +1182,8 @@ mod tests {
                 path_len: 4,
                 novel_on_path: 4,
             }],
+            explore_period: 4,
+            order_range: 64,
         };
         let rep = CorrelationReport::compute(&bench, &[log], 50, (3, 10), (1, 1000)).unwrap();
         let m = rep.bugs.iter().find(|b| b.bug == bug).unwrap();

@@ -65,8 +65,15 @@ pub struct BenchConfig {
     /// N for the N/N replay verification of a find (25 on the box).
     pub replay_n: usize,
     /// Signal only: every Nth step explores fresh from genesis; the rest exploit
-    /// a novel frontier exemplar. Ignored by the baseline (always explores).
+    /// a novel frontier exemplar. Ignored by the baseline (always explores). Set
+    /// from the recorded `--explore-period` CLI flag (no ambient env); lands in the
+    /// `CampaignLog` so a run is self-describing (PR#90 round-2).
     pub explore_period: u64,
+    /// Bug-2 (`OrderingInterrupt`) mint's fault-offset search width past the seal.
+    /// Set from the recorded `--order-range` CLI flag (no ambient env); lands in the
+    /// `CampaignLog`. Threaded into [`mint_scenario_env`] as an explicit argument,
+    /// never an env read on the deterministic path (PR#90 round-2).
+    pub order_range: u64,
     /// The manifest-frame base V-time to **subtract** from a fault's `Moment` when
     /// minting an env, so it is keyed **relative to the sealed base** (task 69 M2).
     ///
@@ -109,6 +116,7 @@ impl BenchConfig {
             max_branches: 2048,
             replay_n: 25,
             explore_period: 4,
+            order_range: 64,
             fault_rebase: 0,
             deadline_delta: None,
             snapshot_retry_step: 0,
@@ -132,7 +140,12 @@ impl BenchConfig {
             campaign_seed,
             max_branches,
             replay_n,
-            explore_period: explore_period_knob(),
+            // Defaults; the box CLI (`run_bench_campaign_box`) overrides
+            // explore_period / order_range from the recorded `--explore-period` /
+            // `--order-range` flags (env fallback), so the effective values are in
+            // the CampaignLog rather than read ambiently here (PR#90 round-2).
+            explore_period: 4,
+            order_range: 64,
             fault_rebase: BASE_VTIME,
             deadline_delta: Some(deadline_delta),
             // Task-60's box defaults: a fine 10k-V-time retry step seals close to
@@ -153,7 +166,11 @@ impl BenchConfig {
 /// (the adapter re-adds the real seal V-time). The subtraction is a constant, so
 /// the PRNG draw sequence — and thus which schedules the search visits — is
 /// identical across frames.
-pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64) -> Environment {
+///
+/// `order_range` is the bug-2 (`OrderingInterrupt`) fault-offset search width — an
+/// EXPLICIT argument (from [`BenchConfig::order_range`], recorded in the log), never
+/// an ambient env read (PR#90 round-2). Ignored by the other trigger classes.
+pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64, order_range: u64) -> Environment {
     let mut p = Prng::new(seed);
     let mut env_spec = EnvSpec::Seeded {
         seed,
@@ -181,13 +198,13 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64) -> Environment 
             let v = vector as u64;
             let vectors: Vec<u64> = (0..16).map(|k| v ^ k).collect();
             let vec_pick = one_of(&vectors, &mut p) as u8;
-            // Offset search range past the seal. Default 64; a calibration
-            // override (`BENCH_ORDER_RANGE`) widens it so the search reaches the
+            // Offset search range past the seal (`order_range`, the recorded
+            // `--order-range`). Default 64; widening it lets the search reach the
             // per-iteration vulnerable windows and dials the fire rate into the
-            // ~10²–10³ band (M2 bug-2 box calibration). Read once and fixed, so
-            // the mint stays a pure function of (seed, spec, rebase, range) — the
-            // FINAL campaign bakes the calibrated value as a constant (no env).
-            let range = order_offset_range();
+            // ~10²–10³ band (M2 bug-2 box calibration). An explicit argument, so the
+            // mint is a pure function of (seed, spec, rebase, order_range) with no
+            // ambient env read (PR#90 round-2).
+            let range = order_range.max(1);
             let at = window.0.saturating_sub(rebase).saturating_sub(4) + p.next_u64() % range;
             env_spec.perturb(HostFault::InjectInterrupt { vector: vec_pick }, at);
         }
@@ -208,32 +225,6 @@ pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64) -> Environment 
 fn mask_bits(mask: u64) -> Vec<u64> {
     let trigger_bit = mask.trailing_zeros() as u64;
     vec![trigger_bit, 7, 15, 30]
-}
-
-/// The bug-2 (`OrderingInterrupt`) mint's fault-offset search width past the seal.
-/// Default 64; overridden by `BENCH_ORDER_RANGE` for box calibration (mapping the
-/// vulnerable-window period + dialing the fire rate). Deterministic per run: the
-/// env is read once here, so a fixed range keeps [`mint_scenario_env`] pure.
-fn order_offset_range() -> u64 {
-    std::env::var("BENCH_ORDER_RANGE")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&r| r > 0)
-        .unwrap_or(64)
-}
-
-/// The signal config's explore period (every Nth step explores fresh, the rest
-/// exploit a frontier exemplar). Default 4 = the committed campaign's behavior;
-/// overridden by `BENCH_EXPLORE_PERIOD` for the PR#90 ablation (Paul-authorized):
-/// `=1` makes every step explore (no exploit) so a signal-config-only run isolates
-/// "cells blind" from "the exploit budget is harmful on rare-value bugs". Read once
-/// here, so a fixed value keeps [`BenchConfig::box_campaign`] deterministic.
-fn explore_period_knob() -> u64 {
-    std::env::var("BENCH_EXPLORE_PERIOD")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&p| p > 0)
-        .unwrap_or(4)
 }
 
 fn one_of(xs: &[u64], p: &mut Prng) -> u64 {
@@ -431,7 +422,7 @@ impl BenchToyMachine {
     pub fn new(spec: BugSpec) -> Self {
         Self {
             spec,
-            current: mint_scenario_env(0, &spec_placeholder(), 0),
+            current: mint_scenario_env(0, &spec_placeholder(), 0, 64),
             vtime: BASE_VTIME,
             snaps: std::collections::BTreeMap::new(),
             next_snap: 1,
@@ -869,7 +860,7 @@ pub fn run_bench_campaign<M: Machine>(
             (e, parent.path_len, parent.novel_on_path)
         } else {
             (
-                mint_scenario_env(prng.next_u64(), spec, cfg.fault_rebase),
+                mint_scenario_env(prng.next_u64(), spec, cfg.fault_rebase, cfg.order_range),
                 0,
                 0,
             )
@@ -1033,6 +1024,10 @@ pub fn run_bench_campaign<M: Machine>(
             seed: cfg.campaign_seed,
             events,
             finds,
+            // Self-describing: the effective search knobs this run used (PR#90
+            // round-2), so a same-seed artifact never hides an ambient-env choice.
+            explore_period: cfg.explore_period,
+            order_range: cfg.order_range,
         },
         certs,
         traces,
@@ -1146,8 +1141,8 @@ mod tests {
             // The two fault-carrying classes; bug 3 (rare-entropy) mints no fault.
             let spec = bench.get(id).unwrap().clone();
             for seed in 0..64u64 {
-                let abs = scenario_of(&mint_scenario_env(seed, &spec, 0));
-                let boxed = scenario_of(&mint_scenario_env(seed, &spec, BASE_VTIME));
+                let abs = scenario_of(&mint_scenario_env(seed, &spec, 0, 64));
+                let boxed = scenario_of(&mint_scenario_env(seed, &spec, BASE_VTIME, 64));
                 assert_eq!(abs.faults.len(), 1, "{} mints one fault", spec.name);
                 assert_eq!(boxed.faults.len(), 1);
                 assert_eq!(
@@ -1310,7 +1305,7 @@ mod tests {
         let bench = Benchmark::wave5();
         let bug = bench.get(BugId(1)).unwrap().clone();
         let mut m = SilentCrashMachine {
-            current: mint_scenario_env(0, &bug, 0),
+            current: mint_scenario_env(0, &bug, 0, 64),
             snaps: std::collections::BTreeMap::new(),
             next: 1,
         };
@@ -1388,7 +1383,7 @@ mod tests {
             ..BenchConfig::smoke(1)
         };
         let mk = |err| RejectBranchMachine {
-            current: mint_scenario_env(0, &bug, 0),
+            current: mint_scenario_env(0, &bug, 0, 64),
             snaps: std::collections::BTreeMap::new(),
             next: 1,
             err,
@@ -1487,7 +1482,7 @@ mod tests {
         let bug = bench.get(BugId(1)).unwrap().clone();
         let mut m = DeadlineMarkerMachine {
             marker: bug.serial_marker.as_bytes().to_vec(),
-            current: mint_scenario_env(0, &bug, 0),
+            current: mint_scenario_env(0, &bug, 0, 64),
             snaps: std::collections::BTreeMap::new(),
             next: 1,
         };
@@ -1575,7 +1570,7 @@ mod tests {
         let mut m = DriftingHashMachine {
             marker: bug.serial_marker.as_bytes().to_vec(),
             runs: 0,
-            current: mint_scenario_env(0, &bug, 0),
+            current: mint_scenario_env(0, &bug, 0, 64),
             snaps: std::collections::BTreeMap::new(),
             next: 1,
         };
@@ -1604,7 +1599,7 @@ mod tests {
             terminal: StopReason::Quiescent {
                 vtime: VTime(BASE_VTIME),
             },
-            env: mint_scenario_env(0, &spec, 0),
+            env: mint_scenario_env(0, &spec, 0, 64),
             coverage: None,
             events: Vec::new(),
             records: lines
@@ -1656,7 +1651,7 @@ mod tests {
                 terminal: StopReason::Quiescent {
                     vtime: VTime(BASE_VTIME),
                 },
-                env: mint_scenario_env(0, &spec, 0),
+                env: mint_scenario_env(0, &spec, 0, 64),
                 coverage: None,
                 events: Vec::new(),
                 records: lines

@@ -24,6 +24,7 @@ IMG=initramfs-uuid.cpio.gz
 RMARK=UUID_READY
 OUT=~/t69m2-results/bug3
 mkdir -p "$OUT" "$OUT/traces"   # traces/ = the retained re-key substrate (SCORING R1/R2)
+: > "$OUT/failures.log"         # rc propagation (PR#90 round-2): any campaign rc!=0 lands here
 DEADLINE=50000; MAXB=512; RN=25
 PROG="$OUT/progress.log"
 echo "$(date +%FT%T) ORCH START deadline=$DEADLINE maxb=$MAXB rn=$RN" >> "$PROG"
@@ -39,6 +40,8 @@ run_campaign() {  # core name config seed
   local rc=$?
   grep '^\[conductor\] FIND' "$OUT/$name.log" | sed "s|^|$name |" >> "$OUT/finds.log"
   echo "$(date +%T) DONE $name rc=$rc $(grep -o '[0-9]* certified find(s)' "$OUT/$name.log"|tail -1) $(grep -o '[0-9]* distinct signal cells' "$OUT/$name.log"|tail -1)" >> "$PROG"
+  if [ "$rc" -ne 0 ]; then echo "$name rc=$rc" >> "$OUT/failures.log"; echo "$(date +%T) FAILED $name rc=$rc" >> "$PROG"; fi
+  return $rc
 }
 
 # --- Phase 1: 3 persistent leases (serial), 3 fixed-core serial streams -----
@@ -63,7 +66,7 @@ stream() {  # core start-index
   local core=$1 start=$2 i
   for ((i=start; i<${#jobs[@]}; i+=3)); do
     IFS=: read -r cfg seed <<< "${jobs[$i]}"
-    run_campaign "$core" "b3-$cfg-$seed" "$cfg" "$seed"
+    run_campaign "$core" "b3-$cfg-$seed" "$cfg" "$seed" || true  # rc tracked in failures.log; keep the stream going
   done
 }
 stream "$c1" 0 &
@@ -97,4 +100,10 @@ echo "$(date +%FT%T) PHASE2 solo done" >> "$PROG"
     fi
   done
 } >> "$OUT/determinism.log"
-echo "$(date +%FT%T) ORCH DONE" >> "$PROG"
+# rc propagation (PR#90 round-2): a swallowed campaign failure (zero-cell HARD-FAIL,
+# KVM failure, transport death) must fail the wrapper, not exit 0.
+nf=$(wc -l < "$OUT/failures.log")
+if [ "$nf" -gt 0 ]; then
+  echo "$(date +%FT%T) ORCH FAILED — $nf campaign(s) rc!=0 (see failures.log)" >> "$PROG"; exit 1
+fi
+echo "$(date +%FT%T) ORCH DONE (0 failures)" >> "$PROG"

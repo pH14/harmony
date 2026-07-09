@@ -6,6 +6,7 @@ pub conductor::benchcampaign::BenchConfig::deadline_delta: core::option::Option<
 pub conductor::benchcampaign::BenchConfig::explore_period: u64
 pub conductor::benchcampaign::BenchConfig::fault_rebase: u64
 pub conductor::benchcampaign::BenchConfig::max_branches: u64
+pub conductor::benchcampaign::BenchConfig::order_range: u64
 pub conductor::benchcampaign::BenchConfig::replay_n: usize
 pub conductor::benchcampaign::BenchConfig::snapshot_max_attempts: usize
 pub conductor::benchcampaign::BenchConfig::snapshot_retry_step: u64
@@ -35,7 +36,7 @@ pub conductor::benchcampaign::FindCert::bug: benchmark::manifest::BugId
 pub conductor::benchcampaign::FindCert::env: explorer::Environment
 pub conductor::benchcampaign::FindCert::state_hash: [u8; 32]
 pub const conductor::benchcampaign::BASE_VTIME: u64
-pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec, u64) -> explorer::Environment
+pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec, u64, u64) -> explorer::Environment
 pub fn conductor::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &benchmark::manifest::BugSpec, &conductor::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<conductor::benchcampaign::BenchOutcome, explorer::error::MachineError>
 pub mod conductor::campaign
 pub struct conductor::campaign::CampaignConfig
