@@ -671,10 +671,14 @@ fn control_error_to_machine(err: control_proto::ControlError) -> MachineError {
         // `CorruptMemory` gpa (`PerturbOutOfRange`), a `Moment` behind the restore
         // point (`PerturbPastMoment`) or already carrying a fault
         // (`PerturbMomentTaken`), or an out-of-scope fault / capability this
-        // backend does not service (`Unsupported`). A proposing driver (explorer,
-        // benchmark campaign) discards the proposal and continues; only the genuine
-        // failures below fall through to `Transport` and abort — so this remap
-        // NEVER masks a backend death or a determinism divergence.
+        // backend does not service (`Unsupported`). Mapping these to the DISTINCT
+        // `Inadmissible` variant lets a proposing loop discard the proposal and
+        // continue — which the benchmark campaign loop (`conductor::benchcampaign`)
+        // does. The generic `Explorer::modulation` does NOT yet handle this variant:
+        // it propagates `Inadmissible` as an error and aborts (skip/retry for the
+        // generic explorer is tracked in bead hm-f30). Either way, the genuine
+        // failures below fall through to `Transport` and abort — so this remap NEVER
+        // masks a backend death or a determinism divergence.
         e @ (Ce::PerturbOutOfRange { .. }
         | Ce::PerturbPastMoment { .. }
         | Ce::PerturbMomentTaken { .. }

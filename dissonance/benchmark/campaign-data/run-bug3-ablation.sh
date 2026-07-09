@@ -17,7 +17,7 @@ CAL=dissonance/benchmark/campaign-data/bug1/calibration.json
 IMG=initramfs-uuid.cpio.gz; RMARK=UUID_READY
 OUT=~/t69m2-results/bug3-ablation
 mkdir -p "$OUT" "$OUT/traces"
-: > "$OUT/failures.log"
+for lf in failures finds determinism; do : > "$OUT/$lf.log"; done  # PR#90 final: truncate per-run so a stale FIND/hash from a same-OUT rerun can't mask a mismatch
 DEADLINE=50000; MAXB=512; RN=25; EP=1
 PROG="$OUT/progress.log"
 echo "$(date +%FT%T) ABLATION START (signal explore-period=$EP) deadline=$DEADLINE maxb=$MAXB rn=$RN" >> "$PROG"

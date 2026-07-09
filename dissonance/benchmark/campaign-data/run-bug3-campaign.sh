@@ -24,7 +24,7 @@ IMG=initramfs-uuid.cpio.gz
 RMARK=UUID_READY
 OUT=~/t69m2-results/bug3
 mkdir -p "$OUT" "$OUT/traces"   # traces/ = the retained re-key substrate (SCORING R1/R2)
-: > "$OUT/failures.log"         # rc propagation (PR#90 round-2): any campaign rc!=0 lands here
+for lf in failures finds determinism; do : > "$OUT/$lf.log"; done  # PR#90 final: truncate per-run so a stale FIND/hash from a same-OUT rerun can't mask a mismatch (the solo compare greps head -1)
 DEADLINE=50000; MAXB=512; RN=25
 PROG="$OUT/progress.log"
 echo "$(date +%FT%T) ORCH START deadline=$DEADLINE maxb=$MAXB rn=$RN" >> "$PROG"

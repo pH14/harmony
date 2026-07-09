@@ -210,9 +210,13 @@ signal config's 11/20 (and 225 → 299 median) is caused **entirely by the explo
 `explore_period = 4` the signal spends ~¾ of its branches jittering a frontier exemplar's fault, and
 for bug 3 — a single-dimension, locality-free rare-value trigger — that jitter is non-convergent
 (nudging a near-miss seed does not move it toward the target prefix), so those branches are wasted
-and exploration is starved. The cell-guided *explore* is fine (it equals baseline); the *exploit* is
-what hurts. This **sharpens** the NO-GO — it does not reopen it: the signal configuration *as shipped*
-(with exploitation) is still worse than baseline on the sole discriminator.
+and exploration is starved. What the ablation actually shows is narrower than "the cells are fine":
+at `explore_period = 1` nothing is ever cell-guided (the sensor records cells but never steers the
+search), so this run supports **no positive claim about cell-guided exploration**. It shows two
+things only — the **sensor's presence is fully behavior-neutral** (running the log-template sensor
+with no exploit reproduces baseline's find-rate exactly, 18/20), and the **exploit budget is the
+entire deficit**. This **sharpens** the NO-GO — it does not reopen it: the signal configuration *as
+shipped* (with exploitation) is still worse than baseline on the sole discriminator.
 
 **Implication for the E-fails route.** The fix is not only a better `CellFn` (task 67 — cells that
 actually track a bug's trigger) but also the **selector's explore/exploit policy for non-conjunctive
