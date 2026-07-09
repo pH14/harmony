@@ -12,6 +12,18 @@ SESSION="agent-$SLUG"
 WTNAME="harmony-task-$SLUG"
 
 tmux has-session -t "$SESSION" 2>/dev/null || { echo "no session $SESSION" >&2; exit 1; }
+
+# LANDMINE GUARD (2026-07-07): if the worker is showing an AskUserQuestion menu
+# ("Enter to select"), typed text is swallowed and the trailing Enter SELECTS the
+# highlighted default — the worker then believes the user answered. Never type into
+# a menu: the sender must Esc to the idle prompt (or answer the menu deliberately)
+# first. See memory agent-send-menu-landmine.
+if tmux capture-pane -p -t "$SESSION" | grep -qF 'Enter to select'; then
+    echo "REFUSING: $SESSION is showing a selection menu — sending now would pick the" >&2
+    echo "highlighted default, not deliver your message. Esc it to the idle prompt first." >&2
+    exit 2
+fi
+
 # Clear the stop marker so its reappearance means "responded to THIS message".
 rm -f "/tmp/harmony-agents/$WTNAME.stop"
 
