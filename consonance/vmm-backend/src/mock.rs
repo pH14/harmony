@@ -128,6 +128,13 @@ pub struct MockBackend {
     /// before acceptance.
     defer_accept: bool,
     completions: Vec<Completion>,
+    /// Scripted dirty-page harvests (task 95 M2.1): `None` = no dirty tracking
+    /// (`harvest_dirty_gfns` answers `Unsupported`, like a `flags: 0` live
+    /// backend); `Some(queue)` = tracking enabled — each harvest pops the next
+    /// scripted gfn set (empty queue ⇒ an empty harvest: nothing dirtied). The
+    /// mock cannot observe real guest writes (it never writes RAM), so the set is
+    /// scripted, exactly like the exit script.
+    dirty_script: Option<VecDeque<Vec<u64>>>,
 }
 
 impl Default for MockBackend {
@@ -154,6 +161,7 @@ impl MockBackend {
             accepted_irq: VecDeque::new(),
             defer_accept: false,
             completions: Vec::new(),
+            dirty_script: None,
         }
     }
 
@@ -231,6 +239,26 @@ impl MockBackend {
     /// the `restore` path).
     pub fn set_state(&mut self, state: VcpuState) -> &mut Self {
         self.state = state;
+        self
+    }
+
+    /// Turn on dirty tracking (task 95 M2.1): after this, `harvest_dirty_gfns`
+    /// answers `Ok` — the next scripted set from [`Self::push_dirty_gfns`], or
+    /// empty when the script is exhausted (nothing dirtied). Off (`Unsupported`,
+    /// the trait default's shape) until called.
+    pub fn enable_dirty_tracking(&mut self) -> &mut Self {
+        self.dirty_script.get_or_insert_with(VecDeque::new);
+        self
+    }
+
+    /// Enqueue one scripted harvest result (implies
+    /// [`Self::enable_dirty_tracking`]). Sets are consumed in order, one per
+    /// `harvest_dirty_gfns` call — mind that a caller may harvest more than once
+    /// per operation (e.g. a harvest-and-discard re-arm after a seal).
+    pub fn push_dirty_gfns(&mut self, gfns: Vec<u64>) -> &mut Self {
+        self.dirty_script
+            .get_or_insert_with(VecDeque::new)
+            .push_back(gfns);
         self
     }
 
@@ -326,6 +354,21 @@ impl Backend for MockBackend {
         }
         self.regions.push((gpa, host.len()));
         Ok(())
+    }
+
+    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+        match self.dirty_script.as_mut() {
+            None => Err(BackendError::Unsupported {
+                what: "harvest_dirty_gfns (mock dirty tracking not enabled)",
+            }),
+            Some(queue) => {
+                let mut gfns = queue.pop_front().unwrap_or_default();
+                // Honor the trait contract regardless of how the test scripted it.
+                gfns.sort_unstable();
+                gfns.dedup();
+                Ok(gfns)
+            }
+        }
     }
 
     fn run(&mut self) -> Result<Exit> {

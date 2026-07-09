@@ -121,6 +121,19 @@ pub struct KvmBackend {
     /// slot and clobber it; this counter advances by the number of parts, only on a
     /// fully-successful map.
     mem_slot_count: u32,
+    /// Whether guest-RAM memslots are registered with `KVM_MEM_LOG_DIRTY_PAGES`
+    /// (task 95 M2.1). Default **on**: dirty logging is guest-inert (write-protect
+    /// faults are host-side; gate a0 proves bit-identical `state_hash`), and it is
+    /// what makes [`Backend::harvest_dirty_gfns`] answer. [`Self::set_dirty_log_enabled`]
+    /// exists as the A/B arm of that gate and the emergency revert; it affects
+    /// only memslots registered **after** the call.
+    dirty_log: bool,
+    /// The registered RAM memslots — `(slot, gpa, size)` per split part — the
+    /// harvest walks: one `KVM_GET_DIRTY_LOG` per entry, decoded back to absolute
+    /// gfns via the recorded base gpa. Populated by `map_memory` in slot order
+    /// (both LAPIC-split halves of one backing get their own entries); entries of
+    /// a failed (rolled-back) map are removed with it.
+    dirty_slots: Vec<(u32, u64, u64)>,
     msr_filter: Option<MsrFilter>,
     cpuid_installed: bool,
     msr_filter_installed: bool,
@@ -249,6 +262,8 @@ impl KvmBackend {
             xsave2_size,
             regions: MemRegions::new(),
             mem_slot_count: 0,
+            dirty_log: true,
+            dirty_slots: Vec::new(),
             msr_filter: None,
             cpuid_installed: false,
             msr_filter_installed: false,
@@ -266,6 +281,17 @@ impl KvmBackend {
             reset_arm: FirstEntryReset::new(),
             exit_poison: ExitPoison::default(),
         })
+    }
+
+    /// Enable/disable `KVM_MEM_LOG_DIRTY_PAGES` on memslots registered by
+    /// **subsequent** [`Backend::map_memory`] calls (task 95 M2.1). Default
+    /// **enabled**. Call before mapping guest RAM; already-registered slots are
+    /// unaffected. Disabling is the `flags: 0` A/B arm of the tracking-is-inert
+    /// box gate (a0) — with it disabled, [`Backend::harvest_dirty_gfns`] answers
+    /// [`Unsupported`](BackendError::Unsupported) so every capture falls back to
+    /// the (always-correct) full scan.
+    pub fn set_dirty_log_enabled(&mut self, enabled: bool) {
+        self.dirty_log = enabled;
     }
 
     /// Copy `bytes` into guest memory at `gpa` through the registered memslots
@@ -1182,12 +1208,20 @@ impl Backend for KvmBackend {
         let host_base = host.as_ptr() as u64;
         let base_slot = self.mem_slot_count;
         let mut registered = 0u32;
+        // Task 95 M2.1: register guest RAM with dirty logging on (both split
+        // parts), so `harvest_dirty_gfns` can feed the O(dirty) snapshot derive.
+        // Guest-inert (gate a0); `set_dirty_log_enabled(false)` is the A/B arm.
+        let flags = if self.dirty_log {
+            kvm_bindings::KVM_MEM_LOG_DIRTY_PAGES
+        } else {
+            0
+        };
         for (i, part) in
             split_around_hole(gpa.0, host.len() as u64, LAPIC_MMIO_PAGE, 0x1000).enumerate()
         {
             let region = kvm_userspace_memory_region {
                 slot: base_slot + i as u32,
-                flags: 0,
+                flags,
                 guest_phys_addr: part.gpa,
                 memory_size: part.size,
                 userspace_addr: host_base + part.host_off,
@@ -1203,7 +1237,10 @@ impl Backend for KvmBackend {
                 // Roll back the logical-region record AND every part already mapped
                 // in THIS call (a partial split leaves no stale KVM mapping). The
                 // counter is not advanced, so a retry reuses these slot ids cleanly.
+                // The harvest slot table shrinks with it (no stale harvest target).
                 self.regions.rollback_last();
+                self.dirty_slots
+                    .truncate(self.dirty_slots.len() - registered as usize);
                 for j in 0..registered {
                     let undo = kvm_userspace_memory_region {
                         slot: base_slot + j,
@@ -1219,10 +1256,42 @@ impl Backend for KvmBackend {
                 }
                 return Err(e);
             }
+            if self.dirty_log {
+                self.dirty_slots
+                    .push((base_slot + i as u32, part.gpa, part.size));
+            }
             registered += 1;
         }
         self.mem_slot_count += registered;
         Ok(())
+    }
+
+    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+        // Without the log flag the ioctl would fail per-slot anyway; answer the
+        // honest capability error so callers take the full-scan path up front.
+        if !self.dirty_log {
+            return Err(BackendError::Unsupported {
+                what: "harvest_dirty_gfns (dirty logging disabled)",
+            });
+        }
+        let mut gfns = Vec::new();
+        for &(slot, gpa, size) in &self.dirty_slots {
+            // `KVM_GET_DIRTY_LOG` retrieves-and-resets the slot's bitmap. A failure
+            // mid-walk leaves earlier slots already reset — safe under the harvest
+            // contract: on `Err` the caller MUST full-scan (never trust a partial
+            // set), and the *next* harvest window is re-armed by the caller's own
+            // harvest-and-discard at its next parent point.
+            let bitmap = self
+                .vm
+                .get_dirty_log(slot, size as usize)
+                .map_err(kvm_err)?;
+            crate::region::decode_dirty_bitmap(gpa, size, &bitmap, &mut gfns);
+        }
+        // Ascending per slot and disjoint across slots, but the slot table's order
+        // is registration order — sort + dedup is the stated contract, cheap here.
+        gfns.sort_unstable();
+        gfns.dedup();
+        Ok(gfns)
     }
 
     fn run(&mut self) -> Result<Exit> {

@@ -56,6 +56,33 @@ pub trait Backend {
     /// every later `run`.
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()>;
 
+    /// Harvest-and-reset the backend's **guest-write dirty-page log** (task 95
+    /// M2.1): return the guest frame numbers dirtied *by guest execution* since
+    /// the previous harvest (or since the region was mapped), **sorted ascending
+    /// and deduplicated**, and atomically reset the log so the next harvest
+    /// covers exactly the span from this call. On KVM this is `KVM_GET_DIRTY_LOG`
+    /// (retrieve-and-reset) per RAM memslot, decoded and translated back to
+    /// absolute gfns.
+    ///
+    /// **A cost hint, never a correctness input.** Callers use the result only
+    /// to bound how much memory a snapshot capture re-reads; on `Err` they MUST
+    /// fall back to a full scan (which is correct-by-dedup), never fail the
+    /// operation, and never trust a set they cannot prove complete. An
+    /// over-report (superset) is harmless — capture-side dedup discards no-op
+    /// writes; an implementation must never under-report a guest write.
+    /// **Host-side writes through the mapped backing are invisible to this log**
+    /// (KVM tracks sptes, not the userspace mapping) — the layer that writes
+    /// guest RAM from the host must track those itself.
+    ///
+    /// The default returns [`Unsupported`](crate::BackendError::Unsupported): a
+    /// backend without dirty tracking simply makes every caller take the
+    /// full-scan path.
+    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+        Err(crate::error::BackendError::Unsupported {
+            what: "harvest_dirty_gfns",
+        })
+    }
+
     // --- run loop -------------------------------------------------------------
 
     /// Run the vCPU until an exit needs the VMM. Blocking. The returned `Exit` is
@@ -202,6 +229,12 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         // SAFETY: the caller upholds `map_memory`'s contract; we only forward the
         // call to the boxed backend, adding no new obligation.
         unsafe { (**self).map_memory(gpa, host) }
+    }
+
+    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+        // Explicit forward: without this the default (Unsupported) body would
+        // shadow the boxed backend's real dirty log.
+        (**self).harvest_dirty_gfns()
     }
 
     fn run(&mut self) -> Result<Exit> {

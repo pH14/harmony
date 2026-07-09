@@ -69,6 +69,12 @@ impl PatchedKvmBackend {
     pub fn read_guest(&self, gpa: Gpa, buf: &mut [u8]) -> Result<()> {
         self.inner.read_guest(gpa, buf)
     }
+
+    /// Enable/disable dirty logging on subsequently-mapped memslots (task 95
+    /// M2.1) — forwarded to [`KvmBackend::set_dirty_log_enabled`].
+    pub fn set_dirty_log_enabled(&mut self, enabled: bool) {
+        self.inner.set_dirty_log_enabled(enabled);
+    }
 }
 
 impl Backend for PatchedKvmBackend {
@@ -84,6 +90,11 @@ impl Backend for PatchedKvmBackend {
         // SAFETY: the caller upholds `Backend::map_memory`'s contract (host stays
         // live, pinned, page-aligned, unaliased); we only forward it unchanged.
         unsafe { self.inner.map_memory(gpa, host) }
+    }
+
+    fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
+        // Explicit forward (the trait default would shadow the inner dirty log).
+        self.inner.harvest_dirty_gfns()
     }
 
     fn run(&mut self) -> Result<Exit> {
