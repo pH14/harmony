@@ -43,7 +43,7 @@ use conductor::gamecampaign::{GameCampaignConfig, run_game_campaign};
 
 use super::{
     BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, finish, finish_campaign, finish_game,
-    finish_recording, parse_game_config, parse_retain, seeds,
+    finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -358,9 +358,10 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // The box workload gate (round-5 P1): no setup_complete ⇒ a dead
         // play-agent ⇒ loud failure, never a sealed dead base.
         require_snapshot_point: true,
+        trace_dir: args.game.trace_out.clone(),
     };
     let repeat = args.repeat.max(1);
-    let mut first: Option<benchmark::ExplorationLog> = None;
+    let mut first: Option<conductor::gamecampaign::GameCampaignOutcome> = None;
     for rep in 0..repeat {
         // A fresh, identically-seeded boot per repetition: the determinism
         // claim is over the whole boot → seal → campaign pipeline, so nothing
@@ -384,8 +385,8 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             run_game_campaign(&mut machine, &SpecEnvCodec, &rep_cfg, config)
                 .map_err(|e| explorer::MachineError::Transport(e.to_string()))
         });
-        let log = match client {
-            Ok(l) => l,
+        let outcome = match client {
+            Ok(o) => o,
             Err(e) => {
                 eprintln!("[conductor] game box: campaign failed: {e}");
                 if let Err(se) = served {
@@ -399,17 +400,21 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             return ExitCode::FAILURE;
         }
         match &first {
-            None => first = Some(log),
+            None => first = Some(outcome),
             Some(f) => {
-                if *f != log {
+                if *f != outcome {
                     // The determinism gate's loud failure: name the first
                     // diverging branch so the transcript pins it.
                     let at = f
+                        .log
                         .events
                         .iter()
-                        .zip(&log.events)
+                        .zip(&outcome.log.events)
                         .position(|(a, b)| a != b)
-                        .map_or_else(|| "event count".to_string(), |i| format!("branch {i}"));
+                        .map_or_else(
+                            || "event count/artifacts".to_string(),
+                            |i| format!("branch {i}"),
+                        );
                     eprintln!(
                         "[conductor] game box DETERMINISM FAILED: repetition {}/{repeat} \
                          diverged from the first at {at}.",
@@ -424,17 +429,28 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             }
         }
     }
-    let log = first.expect("repeat >= 1 always produces a first log");
-    if repeat > 1 {
+    let outcome = first.expect("repeat >= 1 always produces a first outcome");
+    // The determinism GATE is 25/25 (task 86 gate 2) — never print PASS below
+    // the floor (round-8 P1): a smaller --repeat is a smoke, said so loudly.
+    if repeat >= DETERMINISM_BAR {
         println!(
             "[conductor] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
-             state_hash sequences."
+             state_hash sequences (gate floor {DETERMINISM_BAR})."
+        );
+    } else if repeat > 1 {
+        println!(
+            "[conductor] game box determinism smoke: {repeat}/{repeat} identical — BELOW the \
+             {DETERMINISM_BAR}-run gate floor, NOT the task-86 determinism gate."
         );
     }
+    print_game_artifacts(&outcome);
     let manifest =
         benchmark::GameManifest::smb(args.game.rom_sha256.clone(), args.game.max_branches);
-    finish_game(&log, args.game.logs_out.as_ref(), &manifest)
+    finish_game(&outcome.log, args.game.logs_out.as_ref(), &manifest)
 }
+
+/// The task-86 gate-2 determinism floor: 25 bit-identical repetitions.
+const DETERMINISM_BAR: usize = 25;
 
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)

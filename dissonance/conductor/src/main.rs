@@ -187,6 +187,11 @@ struct GameArgs {
     /// offline report refuses logs from a different dump.
     #[arg(long)]
     rom_sha256: Option<String>,
+    /// Record the deepest branch's reproducer (canonical env + full journal,
+    /// incl. the REG_FRAME moments film needs) into this task-65 trace-store
+    /// directory — the hm-5sv day-one retention discipline.
+    #[arg(long)]
+    trace_out: Option<PathBuf>,
 }
 
 /// Box-game arguments: the image/marker knobs plus the rollout deadline and
@@ -575,16 +580,41 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
         max_branches: args.max_branches,
         explore_period: args.explore_period,
         rom_sha256: args.rom_sha256.clone(),
+        trace_dir: args.trace_out.clone(),
         ..GameCampaignConfig::smoke(args.campaign_seed)
     };
     let manifest = benchmark::GameManifest::smb(args.rom_sha256.clone(), args.max_branches);
     let mut machine = GameToyMachine::new();
     match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
-        Ok(log) => finish_game(&log, args.logs_out.as_ref(), &manifest),
+        Ok(outcome) => {
+            print_game_artifacts(&outcome);
+            finish_game(&outcome.log, args.logs_out.as_ref(), &manifest)
+        }
         Err(e) => {
             eprintln!("[conductor] game mock campaign failed: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Print the campaign's film/re-key artifacts: the retained deep reproducer
+/// and the billboard window from the setup prefix (round-8 P1 — film's
+/// inputs, from campaign output alone).
+fn print_game_artifacts(outcome: &conductor::gamecampaign::GameCampaignOutcome) {
+    if let Some(deep) = &outcome.deep {
+        match &deep.trace_id {
+            Some(id) => println!(
+                "[conductor] deep reproducer: branch {} depth {} -> trace {id}",
+                deep.branch, deep.depth
+            ),
+            None => println!(
+                "[conductor] deep branch: {} depth {} (no --trace-out; NOT retained)",
+                deep.branch, deep.depth
+            ),
+        }
+    }
+    if let Some((gpa, len)) = outcome.billboard {
+        println!("[conductor] billboard window: gpa={gpa:#x} len={len}");
     }
 }
 
@@ -947,6 +977,7 @@ mod tests {
             explore_period: 4,
             logs_out: Some(logs_out),
             rom_sha256: Some(rom.to_string()),
+            trace_out: None,
         }
     }
 

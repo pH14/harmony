@@ -88,6 +88,68 @@ pub fn conductor::campaign::mint_fault_env(u64, u64, &conductor::campaign::Campa
 pub fn conductor::campaign::render_campaign_table(&conductor::campaign::CampaignReport, usize) -> alloc::string::String
 pub fn conductor::campaign::run_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::campaign::CampaignConfig) -> core::result::Result<conductor::campaign::CampaignReport, explorer::error::MachineError>
 pub fn conductor::campaign::verify_campaign(&conductor::campaign::CampaignReport, usize) -> alloc::vec::Vec<alloc::string::String>
+pub mod conductor::gamecampaign
+pub mod conductor::gamecampaign::reg
+pub const conductor::gamecampaign::reg::BILLBOARD_GPA: u64
+pub const conductor::gamecampaign::reg::BILLBOARD_LEN: u64
+pub const conductor::gamecampaign::reg::DEPTH: u64
+pub const conductor::gamecampaign::reg::FRAME: u64
+pub const conductor::gamecampaign::reg::GAME_MODE: u64
+pub const conductor::gamecampaign::reg::LEVEL: u64
+pub const conductor::gamecampaign::reg::WORLD: u64
+pub const conductor::gamecampaign::reg::X_BUCKET: u64
+pub enum conductor::gamecampaign::GameCampaignError
+pub conductor::gamecampaign::GameCampaignError::Machine(explorer::error::MachineError)
+pub conductor::gamecampaign::GameCampaignError::MalformedExemplar(alloc::string::String)
+pub conductor::gamecampaign::GameCampaignError::QuietEnvCarriesFaults
+pub conductor::gamecampaign::GameCampaignError::QuietEnvCarriesFaults::what: &'static str
+pub conductor::gamecampaign::GameCampaignError::Retention(alloc::string::String)
+pub conductor::gamecampaign::GameCampaignError::RolloutDied
+pub conductor::gamecampaign::GameCampaignError::RolloutDied::branch: u64
+pub conductor::gamecampaign::GameCampaignError::RolloutDied::stop: alloc::string::String
+pub conductor::gamecampaign::GameCampaignError::SetupNotReached
+pub conductor::gamecampaign::GameCampaignError::SetupNotReached::stop: alloc::string::String
+pub conductor::gamecampaign::GameCampaignError::SignalUnavailable
+pub struct conductor::gamecampaign::DeepReproducer
+pub conductor::gamecampaign::DeepReproducer::branch: u64
+pub conductor::gamecampaign::DeepReproducer::depth: u64
+pub conductor::gamecampaign::DeepReproducer::trace_id: core::option::Option<alloc::string::String>
+pub struct conductor::gamecampaign::GameCampaignConfig
+pub conductor::gamecampaign::GameCampaignConfig::campaign_seed: u64
+pub conductor::gamecampaign::GameCampaignConfig::deadline_delta: core::option::Option<u64>
+pub conductor::gamecampaign::GameCampaignConfig::explore_period: u64
+pub conductor::gamecampaign::GameCampaignConfig::max_branches: u64
+pub conductor::gamecampaign::GameCampaignConfig::require_snapshot_point: bool
+pub conductor::gamecampaign::GameCampaignConfig::rom_sha256: core::option::Option<alloc::string::String>
+pub conductor::gamecampaign::GameCampaignConfig::setup_deadline_delta: u64
+pub conductor::gamecampaign::GameCampaignConfig::snapshot_max_attempts: usize
+pub conductor::gamecampaign::GameCampaignConfig::snapshot_retry_step: u64
+pub conductor::gamecampaign::GameCampaignConfig::trace_dir: core::option::Option<std::path::PathBuf>
+impl conductor::gamecampaign::GameCampaignConfig
+pub fn conductor::gamecampaign::GameCampaignConfig::smoke(u64) -> Self
+pub struct conductor::gamecampaign::GameCampaignOutcome
+pub conductor::gamecampaign::GameCampaignOutcome::billboard: core::option::Option<(u64, u64)>
+pub conductor::gamecampaign::GameCampaignOutcome::deep: core::option::Option<conductor::gamecampaign::DeepReproducer>
+pub conductor::gamecampaign::GameCampaignOutcome::log: benchmark::exploration::ExplorationLog
+pub struct conductor::gamecampaign::GameToyMachine
+impl conductor::gamecampaign::GameToyMachine
+pub fn conductor::gamecampaign::GameToyMachine::new() -> Self
+impl core::default::Default for conductor::gamecampaign::GameToyMachine
+pub fn conductor::gamecampaign::GameToyMachine::default() -> Self
+impl explorer::seam::Machine for conductor::gamecampaign::GameToyMachine
+pub fn conductor::gamecampaign::GameToyMachine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::coverage(&self) -> &[u8]
+pub fn conductor::gamecampaign::GameToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub fn conductor::gamecampaign::quiet_mutate(&explorer::Environment, u64, u64) -> core::result::Result<explorer::Environment, conductor::gamecampaign::GameCampaignError>
+pub fn conductor::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<conductor::gamecampaign::GameCampaignOutcome, conductor::gamecampaign::GameCampaignError>
+pub fn conductor::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
+pub fn conductor::gamecampaign::smb_cells(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> (alloc::vec::Vec<u64>, u64)
 pub mod conductor::materialize
 pub struct conductor::materialize::HopRow
 pub conductor::materialize::HopRow::at: u64

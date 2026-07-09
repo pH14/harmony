@@ -150,7 +150,11 @@ taskset -c <core> cargo run -p conductor --release -- game box \
 #    replayed 25/25 across the repetitions, the deep one included):
 taskset -c <core> cargo run -p conductor --release -- game box \
     --config pure-random --campaign-seed 1 --max-branches <B> --repeat 25 \
-    --logs-out smb-logs.json
+    --rom-sha256 <rom sha256> --logs-out smb-logs.json --trace-out smb-traces
+# --repeat below 25 prints an explicit BELOW-FLOOR smoke line, never PASS
+# (round-8 P1); --trace-out retains the deepest branch's reproducer (env
+# sidecar + full journal incl. REG_FRAME moments — film's shot list) and the
+# campaign echoes the billboard window (gpa/len) from the setup prefix.
 # Co-tenancy discipline per docs/BOX-PINNING.md: solo vs co-tenant divergence
 # is a P0 STOP + escalate, never serialize-to-hide.
 

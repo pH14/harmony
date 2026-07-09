@@ -133,6 +133,13 @@ fn smoke(args: &Args) -> Result<(), String> {
     );
     let mut agent = Agent::new(core, cfg).map_err(|e| e.to_string())?;
     let mut billboard = vec![0u8; agent.layout().total_len()];
+    // The real path's seal-point prime + vacuity check, mirrored.
+    let sealed = agent
+        .prime_billboard(&mut billboard)
+        .map_err(|e| e.to_string())?;
+    if !sealed.in_gameplay() {
+        return Err(format!("smoke vacuity check: mode {}", sealed.game_mode));
+    }
     let mut harness = SmokeHarness {
         state: args.smoke_seed.max(1), // xorshift must not start at 0
     };
@@ -251,6 +258,27 @@ mod real {
             layout.total_len()
         );
 
+        // Prime the billboard BEFORE sealing (round-8 P1): the base snapshot
+        // must carry a real header + savestate + work RAM — a zero billboard
+        // at the seal would make every seal-point sanity check vacuous, and
+        // setup could "succeed" without retro_serialize ever working. The
+        // decode doubles as the in-guest vacuity check: the seal point must
+        // be gameplay (the scripted start's whole point).
+        let sealed = agent
+            .prime_billboard(billboard)
+            .map_err(|e| e.to_string())?;
+        if !sealed.in_gameplay() {
+            return Err(format!(
+                "seal-point vacuity check failed: billboard decodes to mode {} (want gameplay 1) \
+                 — refusing setup_complete",
+                sealed.game_mode
+            ));
+        }
+        println!(
+            "play-agent: seal-point billboard primed (mode={} world={} level={} x={})",
+            sealed.game_mode, sealed.world, sealed.level, sealed.x_abs
+        );
+
         let transport = doorbell::open()?;
         let sdk = harmony_sdk::Sdk::init(transport, regs::CATALOG)
             .map_err(|e| format!("sdk init: {e:?}"))?;
@@ -258,7 +286,7 @@ mod real {
 
         // Publish the billboard window once at init, then seal the setup
         // prefix — the campaign snapshots at the setup boundary, so every
-        // branch inherits the published window.
+        // branch inherits the published window over the primed billboard.
         harness.state_set(regs::REG_BILLBOARD_GPA, gpa)?;
         harness.state_set(regs::REG_BILLBOARD_LEN, layout.total_len() as u64)?;
         harness
@@ -285,14 +313,33 @@ mod real {
     /// held joypad byte in NES shift order (bit 0 = A … bit 7 = Right — the
     /// exact mapping film's `CoreReplay` replays).
     ///
-    /// **MIRI (unsafe⇒Miri bar).** Every `unsafe` block here is a thin FFI
-    /// edge — a real `dlopen`/`dlsym`/C-ABI call Miri cannot execute — and the
-    /// whole module is `cfg(all(target_os = "linux", target_arch =
-    /// "x86_64"))`-gated off the Miri host, the same exclusion flow-agent's
-    /// doorbell FFI documents. Every **decision** the edges depend on
-    /// (callback responses, joypad-bit mapping, the work-RAM copy bounds) is
-    /// hoisted into the Miri-covered [`harmony_play_agent::glue`]; each
-    /// `// SAFETY:` below cites the glue invariant holding at its call site.
+    /// **MIRI (unsafe⇒Miri bar) — the full audit of this binary's `unsafe`**
+    /// (round-8 P2). Every **decision** the edges depend on is hoisted into
+    /// the Miri-covered [`harmony_play_agent::glue`]; what remains below is
+    /// raw FFI Miri cannot execute, cfg-gated off the Miri host (the
+    /// flow-agent exclusion). Block-by-block:
+    ///
+    /// - `env_cb`'s `*data.cast::<bool>() = true` — the ONLY residual unsafe
+    ///   touching a value: one aligned `bool` store through the pointer the
+    ///   libretro contract supplies for `GET_CAN_DUPE`. The command→action
+    ///   decision is `glue::env_response` (Miri-tested); the null check is
+    ///   safe code beside the store; the store itself is irreducibly an FFI
+    ///   pointer write (nothing left to hoist).
+    /// - `sym`'s `dlsym` + `transmute_copy` — raw symbol resolution; the
+    ///   fn-pointer size equality is `debug_assert`ed, the ABI match is the
+    ///   libretro contract.
+    /// - `dlopen`/`dlerror`/`retro_*` calls — raw C calls.
+    /// - `read_work_ram`'s `from_raw_parts` — borrows the core's RAM block
+    ///   exactly as returned (non-null + non-zero length checked in safe
+    ///   code); ALL copy/clamp/zero-fill logic is `glue::copy_work_ram`
+    ///   (Miri-tested).
+    /// - `pinned`: `mmap`/`write_bytes`/`mlock` (raw syscalls) and
+    ///   `from_raw_parts_mut`, whose length bound is proven by
+    ///   `glue::validate_billboard_len` (Miri-tested) before the slice
+    ///   exists; the pagemap decode/offset math is `glue` (Miri-tested).
+    /// - `doorbell`: `mmap(/dev/mem)`/`iopl`/`with_doorbell` — the flow-agent
+    ///   pattern verbatim; the transport's pointer/bounds logic is
+    ///   Miri-covered in `vmcall-transport`'s own suite.
     mod retro {
         use harmony_play_agent::core_seam::Core;
         use harmony_play_agent::glue::{

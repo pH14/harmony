@@ -69,8 +69,9 @@ pub enum ChordError {
     },
     /// The weights do not sum to exactly 256.
     BadWeightSum {
-        /// The actual sum.
-        sum: u32,
+        /// The actual sum (u64: a hostile `--alphabet` can carry enough
+        /// max-weight entries to wrap a u32 accumulator — round-8 P2).
+        sum: u64,
     },
     /// A textual chord spec failed to parse.
     Parse {
@@ -108,7 +109,10 @@ impl ChordAlphabet {
         if let Some(index) = entries.iter().position(|c| c.weight == 0) {
             return Err(ChordError::ZeroWeight { index });
         }
-        let sum: u32 = entries.iter().map(|c| u32::from(c.weight)).sum();
+        // u64 accumulation: user-controlled u16 weights (an `--alphabet` can
+        // carry tens of thousands of entries) must not wrap a u32 into a
+        // spurious 256 — or panic in debug (round-8 P2).
+        let sum: u64 = entries.iter().map(|c| u64::from(c.weight)).sum();
         if sum != 256 {
             return Err(ChordError::BadWeightSum { sum });
         }
@@ -258,6 +262,27 @@ mod tests {
         assert_eq!(a.decode(55), joypad::RIGHT);
         assert_eq!(a.decode(56), joypad::RIGHT | joypad::B);
         assert_eq!(a.decode(255), 0); // the last (neutral) chord
+    }
+
+    /// Round-8 P2: a weight set big enough to wrap a u32 accumulator is a
+    /// clean BadWeightSum with the true u64 sum — never a panic/wrap that
+    /// could alias 256.
+    #[test]
+    fn weight_overflow_is_rejected_not_wrapped() {
+        // 65537 × 65535 = 2^32 − 1: the u32-wrapping shape.
+        let entries = vec![
+            Chord {
+                buttons: 0,
+                weight: u16::MAX
+            };
+            65_537
+        ];
+        assert_eq!(
+            ChordAlphabet::new(entries),
+            Err(ChordError::BadWeightSum {
+                sum: 65_537u64 * 65_535
+            })
+        );
     }
 
     #[test]

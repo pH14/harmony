@@ -56,6 +56,11 @@ pub mod reg {
     /// The frame clock (task 87's film addresses frames by it; ignored by the
     /// cell key).
     pub const FRAME: u64 = 7;
+    /// The billboard window's guest-physical address (published once in the
+    /// setup prefix).
+    pub const BILLBOARD_GPA: u64 = 8;
+    /// The billboard window's total length.
+    pub const BILLBOARD_LEN: u64 = 9;
 }
 
 /// The game campaign's budget + search knobs. The campaign is a pure function
@@ -93,7 +98,16 @@ pub struct GameCampaignConfig {
     /// provisioning), and sealing wherever it died would record a
     /// zero/constant-cell campaign — refuse loudly instead. `false` only for
     /// the portable no-SDK toy, whose quiescent terminal is its normal seal.
+    /// Also gates the per-rollout terminal check (round-8 P1): in box mode a
+    /// rollout that ends anywhere but its deadline DIED and fails the
+    /// campaign loudly instead of being recorded as an ordinary sample.
     pub require_snapshot_point: bool,
+    /// Record the deepest branch's reproducer (its canonical env + full
+    /// journal) into this task-65 `TraceStore` directory (round-8 P1 / the
+    /// hm-5sv day-one retention discipline): without it the campaign output
+    /// is un-filmable (no `REG_FRAME` moments) and un-rekeyable (no env).
+    /// Tracked from branch 0. `None` = no retention (portable smoke loops).
+    pub trace_dir: Option<std::path::PathBuf>,
 }
 
 impl GameCampaignConfig {
@@ -110,6 +124,7 @@ impl GameCampaignConfig {
             setup_deadline_delta: 30_000_000_000,
             rom_sha256: None,
             require_snapshot_point: false,
+            trace_dir: None,
         }
     }
 }
@@ -157,6 +172,54 @@ pub enum GameCampaignError {
     /// An exemplar env failed to decode — a malformed blob in the frontier.
     #[error("quiet-arm exemplar env failed to decode: {0}")]
     MalformedExemplar(String),
+    /// A box-mode rollout ended somewhere other than its deadline — the
+    /// play-agent DIED mid-rollout (round-8 P1; e.g. `retro_serialize`
+    /// failing on a frame). Crashed rollouts must never be recorded as
+    /// ordinary samples: a campaign — the determinism gate included — could
+    /// "pass" over identically-crashed runs.
+    #[error(
+        "rollout {branch} died: guest stopped with {stop} instead of its deadline — refusing to \
+         record a dead rollout as a sample"
+    )]
+    RolloutDied {
+        /// The branch index that died.
+        branch: u64,
+        /// The terminal it surfaced.
+        stop: String,
+    },
+    /// The deep-reproducer retention failed (trace-store I/O) — loud, never a
+    /// campaign that silently produced un-rekeyable output.
+    #[error("deep-reproducer retention failed: {0}")]
+    Retention(String),
+}
+
+/// The deepest branch's retained reproducer pointer (round-8 P1): which
+/// branch, how deep, and — when a [`GameCampaignConfig::trace_dir`] was
+/// given — the recorded `TraceId` (content-addressed; the env sidecar + full
+/// journal live in the store).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeepReproducer {
+    /// The deepest branch's index (first-deepest on ties; tracked from
+    /// branch 0).
+    pub branch: u64,
+    /// Its depth (the `REG_DEPTH` max).
+    pub depth: u64,
+    /// The recorded trace id, when retention was configured.
+    pub trace_id: Option<String>,
+}
+
+/// What a game campaign produced: the offline-analysis log, the retained deep
+/// reproducer, and the billboard window the guest published in its setup
+/// prefix (film's `FilmPlan` inputs, surfaced from campaign output alone).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GameCampaignOutcome {
+    /// The discovery-event log (`--logs-out`'s artifact).
+    pub log: ExplorationLog,
+    /// The deepest branch (present whenever at least one branch ran).
+    pub deep: Option<DeepReproducer>,
+    /// The billboard `(gpa, len)` from the setup prefix's `REG_BILLBOARD_*`
+    /// registers, when the guest published them (the toy does not).
+    pub billboard: Option<(u64, u64)>,
 }
 
 /// The **quiet-arm mutator** (round-6 P1): the input-only exploit move.
@@ -271,23 +334,33 @@ struct Exemplar {
     env: Environment,
 }
 
-/// Drive one game campaign against `machine` under `config` and return its
-/// discovery-event log. Seals the base at the play-agent's `setup_complete`
-/// snapshot point (billboard published, ROM running), then per branch: mint a
-/// pure seeded env (PureRandom) or exploit a novel exemplar (SelectorV1), run
-/// to the deadline, fold the SDK state events into cells + depth, and log the
-/// branch's terminal `state_hash`.
+/// Drive one game campaign against `machine` under `config`. Seals the base
+/// at the play-agent's `setup_complete` snapshot point (billboard primed +
+/// published, ROM running), then per branch: mint a pure seeded env
+/// (PureRandom) or exploit a novel exemplar (SelectorV1), run to the
+/// deadline, fold the SDK state events into cells + depth, and log the
+/// branch's terminal `state_hash`. The deepest branch's reproducer is
+/// retained ([`GameCampaignConfig::trace_dir`], round-8 P1) and the setup
+/// prefix's billboard window surfaced — film's inputs, from campaign output
+/// alone.
 pub fn run_game_campaign<M: Machine>(
     machine: &mut M,
     codec: &dyn EnvCodec,
     cfg: &GameCampaignConfig,
     config: ExplorationConfig,
-) -> Result<ExplorationLog, GameCampaignError> {
+) -> Result<GameCampaignOutcome, GameCampaignError> {
     if config == ExplorationConfig::Signal {
         return Err(GameCampaignError::SignalUnavailable);
     }
 
     let (base, base_vtime) = seal_base(machine, cfg)?;
+    // Drain the SETUP prefix's SDK capture: the billboard gpa/len registers
+    // were published before the seal, so they ride this capture, not any
+    // branch's — surface them for film (round-8 P1). Also keeps setup events
+    // out of branch 0's trace.
+    let setup_events = drain_events(machine)?;
+    let billboard = billboard_window_of(&setup_events);
+
     let until = StopConditions {
         deadline: cfg
             .deadline_delta
@@ -303,6 +376,10 @@ pub fn run_game_campaign<M: Machine>(
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut frontier: Vec<Exemplar> = Vec::new();
     let mut events = Vec::new();
+    // The deepest branch's (depth, branch, trace), tracked from branch 0
+    // (round-8 P1 / hm-5sv retention discipline); strictly-greater keeps the
+    // first-deepest.
+    let mut deepest: Option<(u64, u64, RunTrace)> = None;
 
     for branch in 0..cfg.max_branches {
         let step = branch + 1;
@@ -325,17 +402,23 @@ pub fn run_game_campaign<M: Machine>(
 
         machine.branch(base, &env)?;
         let stop = machine.run(&until, None)?;
+        // Round-8 P1: in box mode the play-agent never exits — a rollout that
+        // ended anywhere but its deadline DIED (crash/halt mid-rollout) and
+        // must fail the campaign loudly, never be hashed and recorded like an
+        // ordinary sample (the determinism gate could "pass" over
+        // identically-crashed runs). The toy's natural terminal is Quiescent.
+        if cfg.require_snapshot_point && !matches!(stop, StopReason::Deadline { .. }) {
+            return Err(GameCampaignError::RolloutDied {
+                branch,
+                stop: format!("{stop:?}"),
+            });
+        }
         let state_hash = machine.hash()?;
-        let raw: Vec<(Moment, u32, Vec<u8>)> = machine
-            .sdk_events()?
-            .into_iter()
-            .map(|(m, id, b)| (Moment(m), id, b))
-            .collect();
         let trace = RunTrace {
             terminal: stop,
             env: env.clone(),
             coverage: None,
-            events: link::decode_events(&raw),
+            events: drain_events(machine)?,
             records: Vec::new(),
         };
         let (touched, depth) = smb_cells(&sensor.observe(&trace));
@@ -352,6 +435,9 @@ pub fn run_game_campaign<M: Machine>(
             frontier.push(Exemplar { env });
         }
 
+        if deepest.as_ref().is_none_or(|(d, _, _)| depth > *d) {
+            deepest = Some((depth, branch, trace));
+        }
         events.push(DiscoveryEvent {
             branch,
             touched,
@@ -361,13 +447,76 @@ pub fn run_game_campaign<M: Machine>(
     }
 
     machine.drop_snap(base)?;
-    Ok(ExplorationLog {
-        workload: "smb".to_string(),
-        rom_sha256: cfg.rom_sha256.clone(),
-        config,
-        seed: cfg.campaign_seed,
-        events,
+
+    // Retain the deep reproducer (env sidecar + full journal — the REG_FRAME
+    // moments film derives its shot list from ride the journal's events).
+    let deep = match deepest {
+        None => None,
+        Some((depth, branch, trace)) => {
+            let trace_id = match &cfg.trace_dir {
+                None => None,
+                Some(dir) => {
+                    let store = runtrace::TraceStore::open(dir)
+                        .map_err(|e| GameCampaignError::Retention(e.to_string()))?;
+                    let id = store
+                        .record(&trace, runtrace::Retain::Full)
+                        .map_err(|e| GameCampaignError::Retention(e.to_string()))?;
+                    Some(id.to_hex())
+                }
+            };
+            Some(DeepReproducer {
+                branch,
+                depth,
+                trace_id,
+            })
+        }
+    };
+
+    Ok(GameCampaignOutcome {
+        log: ExplorationLog {
+            workload: "smb".to_string(),
+            rom_sha256: cfg.rom_sha256.clone(),
+            config,
+            seed: cfg.campaign_seed,
+            events,
+        },
+        deep,
+        billboard,
     })
+}
+
+/// Drain + decode the machine's SDK event capture (the task-73 seam).
+fn drain_events<M: Machine>(
+    machine: &mut M,
+) -> Result<Vec<(Moment, explorer::GuestEvent)>, MachineError> {
+    let raw: Vec<(Moment, u32, Vec<u8>)> = machine
+        .sdk_events()?
+        .into_iter()
+        .map(|(m, id, b)| (Moment(m), id, b))
+        .collect();
+    Ok(link::decode_events(&raw))
+}
+
+/// Extract the billboard `(gpa, len)` from the setup prefix's decoded state
+/// events (the last write of each register wins — the agent publishes once).
+fn billboard_window_of(events: &[(Moment, explorer::GuestEvent)]) -> Option<(u64, u64)> {
+    let (mut gpa, mut len) = (None, None);
+    for (_, ev) in events {
+        if ev.kind != link::KIND_STATE {
+            continue;
+        }
+        let (Some(explorer::Value::UInt(reg)), Some(explorer::Value::UInt(value))) =
+            (ev.attrs.get("reg"), ev.attrs.get("value"))
+        else {
+            continue;
+        };
+        match *reg {
+            reg::BILLBOARD_GPA => gpa = Some(*value),
+            reg::BILLBOARD_LEN => len = Some(*value),
+            _ => {}
+        }
+    }
+    gpa.zip(len)
 }
 
 /// Seal the campaign base. Preferred boundary: the play-agent's
@@ -640,6 +789,10 @@ mod tests {
     use explorer::SpecEnvCodec;
 
     fn run(config: ExplorationConfig, seed: u64) -> ExplorationLog {
+        run_outcome(config, seed).log
+    }
+
+    fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {
         let mut m = GameToyMachine::new();
         run_game_campaign(
             &mut m,
@@ -648,6 +801,143 @@ mod tests {
             config,
         )
         .unwrap()
+    }
+
+    /// Round-8 P1: the deepest branch is tracked from branch 0 and, with a
+    /// trace_dir, retained as a real task-65 store entry (env sidecar + full
+    /// journal — the re-key/film currency).
+    #[test]
+    fn deep_reproducer_is_tracked_and_retained() {
+        // Without retention configured: the deep branch is still identified.
+        let outcome = run_outcome(ExplorationConfig::PureRandom, 42);
+        let deep = outcome.deep.expect("branches ran, so a deepest exists");
+        assert!(deep.trace_id.is_none());
+        let max_depth = outcome.log.events.iter().map(|e| e.depth).max().unwrap();
+        assert_eq!(deep.depth, max_depth);
+        // First-deepest: no earlier branch has this depth.
+        let first_at = outcome
+            .log
+            .events
+            .iter()
+            .position(|e| e.depth == max_depth)
+            .unwrap() as u64;
+        assert_eq!(deep.branch, first_at);
+
+        // With retention: the store carries the env sidecar + journal.
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = GameToyMachine::new();
+        let cfg = GameCampaignConfig {
+            trace_dir: Some(dir.path().to_path_buf()),
+            ..GameCampaignConfig::smoke(42)
+        };
+        let outcome =
+            run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom).unwrap();
+        let id = outcome
+            .deep
+            .unwrap()
+            .trace_id
+            .expect("retention configured");
+        let files: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            files
+                .iter()
+                .any(|f| f.starts_with(&id) && f.ends_with(".env")),
+            "env sidecar for {id} in {files:?}"
+        );
+        assert!(
+            files
+                .iter()
+                .any(|f| f.starts_with(&id) && f.ends_with(".trace")),
+            "full journal for {id} in {files:?}"
+        );
+        // The toy publishes no billboard registers.
+        assert_eq!(outcome.billboard, None);
+    }
+
+    /// Round-8 P1: a box-mode rollout that ends anywhere but its deadline is
+    /// a loud RolloutDied — never recorded as an ordinary sample.
+    #[test]
+    fn a_dying_rollout_fails_the_box_campaign_loudly() {
+        /// Seals at a snapshot point, then every rollout crashes (the
+        /// retro_serialize-fails-on-frame-1 shape).
+        struct SealsThenCrashes {
+            sealed: bool,
+            vtime: u64,
+            next_snap: u64,
+            env: Environment,
+        }
+        impl Machine for SealsThenCrashes {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                env: &Environment,
+            ) -> Result<(), MachineError> {
+                self.env = env.clone();
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                until: &StopConditions,
+                _resolve: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                self.vtime += 100;
+                // probe_vtime's already-met deadline (0): report position.
+                if until.deadline == Some(explorer::VTime(0)) {
+                    return Ok(StopReason::Deadline {
+                        vtime: explorer::VTime(self.vtime),
+                    });
+                }
+                if !self.sealed {
+                    self.sealed = true;
+                    return Ok(StopReason::SnapshotPoint {
+                        vtime: explorer::VTime(self.vtime),
+                    });
+                }
+                Ok(StopReason::Crash {
+                    vtime: explorer::VTime(self.vtime),
+                    info: vec![1],
+                })
+            }
+            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+                let id = self.next_snap;
+                self.next_snap += 1;
+                Ok(explorer::SnapId(id))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(self.env.clone())
+            }
+        }
+        let mut m = SealsThenCrashes {
+            sealed: false,
+            vtime: 1_000,
+            next_snap: 1,
+            env: SpecEnvCodec.seeded(0),
+        };
+        let cfg = GameCampaignConfig {
+            require_snapshot_point: true,
+            ..GameCampaignConfig::smoke(7)
+        };
+        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
+            .unwrap_err();
+        assert!(
+            matches!(err, GameCampaignError::RolloutDied { branch: 0, .. }),
+            "expected RolloutDied on the first crashed rollout, got {err:?}"
+        );
     }
 
     /// The campaign is a pure function of (campaign_seed, config): a rerun is

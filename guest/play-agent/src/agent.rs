@@ -163,6 +163,31 @@ impl<C: Core> Agent<C> {
         &mut self.core
     }
 
+    /// Fill the billboard **without stepping** (round-8 P1: the seal-point
+    /// billboard must never be zeros): header for the current frame with a
+    /// neutral joypad, the core's real savestate, the real work RAM — proving
+    /// `retro_serialize` and RAM access work *before* `setup_complete` seals
+    /// the base, so every branch inherits a valid, decodable billboard.
+    /// Returns the decoded state so the caller can also verify the seal point
+    /// is in-gameplay (the vacuity check, in-guest). Draws no entropy and
+    /// emits nothing; the first `step` deterministically rewrites the same
+    /// frame with its real chord.
+    pub fn prime_billboard(
+        &mut self,
+        billboard: &mut [u8],
+    ) -> Result<SmbState, AgentError<std::convert::Infallible>> {
+        self.layout
+            .write_header(billboard, self.frame, 0)
+            .map_err(AgentError::Billboard)?;
+        if !self.core.serialize(self.layout.savestate_mut(billboard)) {
+            return Err(AgentError::SerializeFailed);
+        }
+        if !self.core.read_work_ram(self.layout.work_ram_mut(billboard)) {
+            return Err(AgentError::WorkRamFailed);
+        }
+        ram::decode(self.layout.work_ram_mut(billboard)).map_err(AgentError::Ram)
+    }
+
     /// Run one frame: draw (on window boundaries), publish the billboard,
     /// emit registers + the frame clock, mark legibility events, then
     /// `retro_run`. `billboard` is the pinned buffer (at least
@@ -435,6 +460,26 @@ mod tests {
             agent.step(&mut h, &mut buf),
             Err(AgentError::Billboard(BillboardError::BufferTooSmall { .. }))
         ));
+    }
+
+    /// Round-8 P1: the seal-point billboard is primed with a real frame
+    /// (header + savestate + work RAM) without stepping — never zeros — and
+    /// the first step still stamps frame 0.
+    #[test]
+    fn prime_billboard_fills_a_valid_frame_without_stepping() {
+        let mut agent = Agent::new(MockCore::in_gameplay(), small_cfg(4)).unwrap();
+        let mut buf = vec![0u8; agent.layout().total_len()];
+        let state = agent.prime_billboard(&mut buf).unwrap();
+        assert!(state.in_gameplay(), "the vacuity check input");
+        assert_eq!(&buf[0..4], b"HBBD");
+        assert_eq!(agent.frame(), 0, "prime must not step");
+        let ss_start = crate::billboard::HEADER_LEN;
+        assert!(
+            buf[ss_start..ss_start + 8].iter().any(|&b| b != 0),
+            "the savestate region carries the core's real serialize output"
+        );
+        let mut h = FakeHarness::scripted(vec![0]);
+        assert_eq!(agent.step(&mut h, &mut buf).unwrap().frame, 0);
     }
 
     #[test]
