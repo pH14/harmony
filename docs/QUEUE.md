@@ -6,16 +6,15 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Last regenerated: 2026-07-09 ~07:25._
+_Last regenerated: 2026-07-09 ~12:05._
 
 ## In flight
 
 - **NES game-workload bring-up** — guest image, emulator core, per-frame billboard,
   boot-determinism gates, campaigns under default search, film's re-homed live gate
   (task 86 M0, Fable worker) · `hm-ahb`
-- **Benchmark NO-GO report + explore-only addendum** — final read + merge as one artifact
-  (PR #90) · `hm-ias`
-- **Snapshot-store speedups, part 1** — bench + three opts; final read + merge (PR #91) · `hm-b3g`
+- **Snapshot-store frontier: D5 dirty-log capture + remap restore** (task 95 M2, Fable
+  worker) · `hm-b9s`
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
@@ -36,18 +35,25 @@ _Last regenerated: 2026-07-09 ~07:25._
 ## Blocked (dependency edges enforce these — they surface via `bd ready` when cleared)
 
 - **Vocabulary rename sweep** (conductor→counterpoint, Environment→Reproducer,
-  VTime→Moment/Span, Machine→Subject) ← the three in-flight merges · `hm-u7q`
+  VTime→Moment/Span, Machine→Subject) ← the game-workload merge (open branches would
+  conflict with a crate rename) · `hm-u7q`
+- **E-fails signal iteration** — spec drafting is the foreman's next authoring task; the
+  campaign+ablation trace corpus is the evaluation substrate · `hm-b3h`
 - **LAYERS spec reconcile** ← rename sweep · `hm-4o4`
 - **Snapshot-store frontier (D5: dirty-log capture + remap restore — seeds in minutes)**
   ← speedups part 1 + stopwatch merges · `hm-b9s`
-- **E-fails signal iteration** (offline CellFn re-key over the trace corpus; spec first)
-  ← benchmark report merge · `hm-b3h`
 - **Selector chain** (post-NO-GO): selector artifact `hm-bfr` ← signal iteration; then
   exact-pct `hm-6rv`, triage suite `hm-4xe`, game-workload selector referendum `hm-2su`,
   exploration-gate implementation `hm-cs5`
 
 ## Recently done (this week)
 
+- **GO/NO-GO #2 formally closed** — benchmark + ablation merged (PR #90): NO-GO, sharpened
+  (sensor behavior-neutral but weak; the ¾-exploit budget was the entire deficit). New
+  follow-up beads: generic-Explorer Inadmissible handling `hm-f30`, box image drift bug
+  `hm-xdp` (ruled: gates pin images by content hash), spine sdk_events seam `hm-r1x`
+- Snapshot-store speedups part 1 merged (PR #91): seal 2.9× faster, restore write path at
+  its floor
 - Campaign timing instrument merged — every box run now self-reports its phase
   decomposition (PR #92, task 96)
 
