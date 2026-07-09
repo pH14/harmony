@@ -55,6 +55,13 @@ fn campaign_finds_planted_bug_and_reproduces_25_of_25() {
 /// The campaign is a pure function of `(campaign_seed, machine)`: a rerun
 /// explores the identical branch sequence and finds the bug at the identical
 /// branch, with identical hashes.
+///
+/// **Hash-neutrality regression (task 96):** the stopwatch's `Instant::now`
+/// reads make `timing`/`wall_secs`/`branches_per_hour_x10` vary run to run by
+/// construction (real wall-clock, no two runs take exactly the same time) —
+/// this test asserts every OTHER field of the report is bit-identical across
+/// two runs, pinning that the observation-only timing layer cannot leak into
+/// the campaign's search or verdict.
 #[test]
 fn campaign_is_deterministic() {
     let run = || {
@@ -63,12 +70,29 @@ fn campaign_is_deterministic() {
     };
     let a = run();
     let b = run();
+
+    assert_eq!(a.base_vtime, b.base_vtime);
+    assert_eq!(a.snapshot_attempts, b.snapshot_attempts);
     assert_eq!(a.base_hash, b.base_hash);
-    let (fa, fb) = (a.found.unwrap(), b.found.unwrap());
+    assert_eq!(a.branches_explored, b.branches_explored);
+
+    let (fa, fb) = (a.found.as_ref().unwrap(), b.found.as_ref().unwrap());
     assert_eq!(fa.branch_index, fb.branch_index);
     assert_eq!(fa.seed, fb.seed);
-    assert_eq!(fa.hash, fb.hash);
     assert_eq!(fa.env, fb.env);
+    assert_eq!(fa.stop, fb.stop);
+    assert_eq!(fa.hash, fb.hash);
+    assert_eq!(fa.bug.fingerprint, fb.bug.fingerprint);
+
+    assert_eq!(a.replays.len(), b.replays.len());
+    for (ra, rb) in a.replays.iter().zip(b.replays.iter()) {
+        assert_eq!(ra.stop, rb.stop);
+        assert_eq!(ra.hash, rb.hash);
+    }
+
+    assert_eq!(a.nominal.stop, b.nominal.stop);
+    assert_eq!(a.nominal.hash, b.nominal.hash);
+    assert_eq!(a.nominal.is_bug, b.nominal.is_bug);
 }
 
 /// The finder is not hard-coded to one trigger: replanting the bug at a

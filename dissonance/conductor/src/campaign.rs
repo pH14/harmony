@@ -61,13 +61,20 @@
 //! *the* planted bug. The distinctive `CAMPAIGN_BUG:` serial marker the
 //! supervisor prints is the human-visible confirmation.
 
+use std::collections::BTreeMap;
+
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
     AdapterEnv, Bug, EnvCodec, Environment, GuestEvent, Machine, MachineError, Moment, Oracle,
     Prng, RunTrace, StopConditions, StopMask, StopReason, TerminalOracle, VTime,
 };
 
+use crate::stopwatch::{Phase, PhaseStats, Stopwatch};
 use crate::{RunRow, probe_vtime};
+
+/// How often (in search branches) `run_campaign` prints a progress line — the
+/// line that makes a silent, hours-long run legible from `tail -f` (task 96).
+const PROGRESS_INTERVAL: u64 = 32;
 
 /// The crash-kind byte the R2 adapter prepends to a `Crash`'s `info`, mirroring
 /// `control_proto::CrashKind`: `Panic` (a non-zero isa-debug-exit). The oracle
@@ -274,6 +281,19 @@ pub struct CampaignReport {
     pub replays: Vec<RunRow>,
     /// The nominal-seed control run.
     pub nominal: NominalRow,
+    /// Per-phase host-side timing observations (task 96) — observation-only,
+    /// hash-neutral: never read by the search loop or the [`verify_campaign`]
+    /// gates, so it can never influence what a campaign finds. See the
+    /// [`stopwatch`](crate::stopwatch) module doc for the invariant.
+    pub timing: BTreeMap<Phase, PhaseStats>,
+    /// Wall-clock seconds the whole campaign took, from the internal
+    /// [`Stopwatch::new`] to completion. Observation-only, like `timing`.
+    pub wall_secs: u64,
+    /// `branches_explored / wall_secs * 3600`, as a ×10 fixed-point integer
+    /// (e.g. `47` means 4.7 branches/hour). `0` when `wall_secs == 0` (no
+    /// division panic, and a report from a >0-duration run never claims an
+    /// infinite rate).
+    pub branches_per_hour_x10: u64,
 }
 
 /// Drive the whole campaign against `machine` (see the module doc): seal a base,
@@ -287,34 +307,41 @@ pub fn run_campaign<M: Machine>(
     cfg: &CampaignConfig,
 ) -> Result<CampaignReport, MachineError> {
     let oracle = CampaignOracle::new();
+    // Observation-only host-side timing (task 96) — see the `stopwatch`
+    // module doc. Never read to make a decision; folded into the report at
+    // the end.
+    let mut sw = Stopwatch::new();
 
     // 1. Where are we, and seal the base mid-workload (retrying past
-    //    non-snapshottable boundaries — task 41).
+    //    non-snapshottable boundaries — task 41). Timed as one `BaseSeal`
+    //    span covering every retry, not per-attempt.
     let mut vt = probe_vtime(machine)?;
     let mut attempts = 0usize;
-    let base = loop {
-        attempts += 1;
-        match machine.snapshot() {
-            Ok(snap) => break snap,
-            Err(MachineError::NotQuiescent) => {
-                if attempts >= cfg.snapshot_max_attempts {
-                    return Err(MachineError::NotQuiescent);
+    let base = sw.time(Phase::BaseSeal, || {
+        loop {
+            attempts += 1;
+            match machine.snapshot() {
+                Ok(snap) => return Ok(snap),
+                Err(MachineError::NotQuiescent) => {
+                    if attempts >= cfg.snapshot_max_attempts {
+                        return Err(MachineError::NotQuiescent);
+                    }
+                    let stop = machine.run(
+                        &StopConditions {
+                            deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
+                            on: StopMask::NONE,
+                        },
+                        None,
+                    )?;
+                    if !matches!(stop, StopReason::Deadline { .. }) {
+                        return Err(MachineError::NotQuiescent);
+                    }
+                    vt = stop.vtime().0;
                 }
-                let stop = machine.run(
-                    &StopConditions {
-                        deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
-                        on: StopMask::NONE,
-                    },
-                    None,
-                )?;
-                if !matches!(stop, StopReason::Deadline { .. }) {
-                    return Err(MachineError::NotQuiescent);
-                }
-                vt = stop.vtime().0;
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         }
-    };
+    })?;
     let base_vtime = vt;
     let base_hash = machine.hash()?;
 
@@ -339,12 +366,13 @@ pub fn run_campaign<M: Machine>(
         explored = i + 1;
         let seed = campaign.next_u64();
         let env = mint_fault_env(base_vtime, seed, cfg);
-        machine.branch(base, &env)?;
-        let stop = machine.run(&until, None)?;
-        let hash = machine.hash()?;
-        let events = machine_events(machine)?;
+        sw.time(Phase::Branch, || machine.branch(base, &env))?;
+        let stop = sw.time(Phase::Run, || machine.run(&until, None))?;
+        let hash = sw.time(Phase::Hash, || machine.hash())?;
+        let events = sw.time(Phase::Harvest, || machine_events(machine))?;
         let trace = trace_of(stop.clone(), env.clone(), events);
-        if let Some(bug) = oracle.judge(&trace) {
+        let judged = sw.time(Phase::Judge, || oracle.judge(&trace));
+        if let Some(bug) = judged {
             found = Some(FoundBug {
                 branch_index: i,
                 seed,
@@ -355,26 +383,38 @@ pub fn run_campaign<M: Machine>(
             });
             break;
         }
+        if explored.is_multiple_of(PROGRESS_INTERVAL) {
+            print_progress(&sw, explored, cfg.max_branches);
+        }
     }
 
     // 3. Emit + verify: replay the found reproducer N times, requiring the
-    //    identical terminal `(stop, state_hash)` every time.
+    //    identical terminal `(stop, state_hash)` every time. `branch` + `run`
+    //    + `hash` are timed together as one `Replay` span per iteration.
     let mut replays = Vec::new();
     if let Some(f) = &found {
         for _ in 0..cfg.replay_n {
-            machine.branch(base, &f.env)?;
-            let stop = machine.run(&until, None)?;
-            let hash = machine.hash()?;
+            let (stop, hash) = sw.time(Phase::Replay, || -> Result<_, MachineError> {
+                machine.branch(base, &f.env)?;
+                let stop = machine.run(&until, None)?;
+                let hash = machine.hash()?;
+                Ok((stop, hash))
+            })?;
             replays.push(RunRow { stop, hash });
         }
     }
 
-    // 4. The nominal control: a fault-free branch must not crash.
+    // 4. The nominal control: a fault-free branch must not crash. Timed as
+    //    one `Nominal` span (branch + run + hash + the SDK event harvest).
     let nominal_env = codec.seeded(cfg.nominal_seed);
-    machine.branch(base, &nominal_env)?;
-    let nominal_stop = machine.run(&until, None)?;
-    let nominal_hash = machine.hash()?;
-    let nominal_events = machine_events(machine)?;
+    let (nominal_stop, nominal_hash, nominal_events) =
+        sw.time(Phase::Nominal, || -> Result<_, MachineError> {
+            machine.branch(base, &nominal_env)?;
+            let stop = machine.run(&until, None)?;
+            let hash = machine.hash()?;
+            let events = machine_events(machine)?;
+            Ok((stop, hash, events))
+        })?;
     let nominal_trace = trace_of(nominal_stop.clone(), nominal_env, nominal_events);
     let nominal = NominalRow {
         stop: nominal_stop,
@@ -385,6 +425,17 @@ pub fn run_campaign<M: Machine>(
     // 5. Release the base handle (corpus GC — exercises `drop`).
     machine.drop_snap(base)?;
 
+    let wall_secs = sw.elapsed_secs();
+    // ×10 fixed-point branches/hour; `saturating_mul` guards the (unreachable
+    // in practice) overflow case rather than panicking. 0 when wall_secs == 0
+    // — no division panic, and a zero-duration report never claims an
+    // infinite rate.
+    let branches_per_hour_x10 = if wall_secs == 0 {
+        0
+    } else {
+        explored.saturating_mul(36_000) / wall_secs
+    };
+
     Ok(CampaignReport {
         base_vtime,
         snapshot_attempts: attempts,
@@ -393,7 +444,31 @@ pub fn run_campaign<M: Machine>(
         found,
         replays,
         nominal,
+        timing: sw.stats(),
+        wall_secs,
+        branches_per_hour_x10,
     })
+}
+
+/// Print the task-96 progress line: how far the search is, wall-clock
+/// elapsed, and the average per-branch cost of the three heaviest phases —
+/// the line that makes a silent, hours-long run legible from `tail -f`.
+fn print_progress(sw: &Stopwatch, explored: u64, max_branches: u64) {
+    let stats = sw.stats();
+    let avg = |p: Phase| {
+        stats
+            .get(&p)
+            .map(|s| s.total_us / s.count.max(1))
+            .unwrap_or(0)
+    };
+    println!(
+        "[conductor] progress: branch {explored}/{max_branches}, elapsed {}s, avg us — branch {} \
+         run {} hash {}",
+        sw.elapsed_secs(),
+        avg(Phase::Branch),
+        avg(Phase::Run),
+        avg(Phase::Hash),
+    );
 }
 
 /// Build the [`RunTrace`] the oracle judges from a run's terminal + branch env +
@@ -553,6 +628,36 @@ pub fn render_campaign_table(report: &CampaignReport, n: usize) -> String {
             "no bug (adversity-gated, as required)"
         },
     );
+    // The timing section (task 96): omitted entirely when `timing` is empty
+    // (a synthetic report, or a code path with no stopwatch wired up) so a
+    // report built without timing renders exactly as it did before this
+    // field existed — additive, per the task's invariant 4.
+    if !report.timing.is_empty() {
+        let _ = writeln!(
+            out,
+            "timing: wall {}s, {}.{} branches/hour",
+            report.wall_secs,
+            report.branches_per_hour_x10 / 10,
+            report.branches_per_hour_x10 % 10,
+        );
+        let _ = writeln!(
+            out,
+            "{:<10} {:>7} {:>9} {:>8} {:>8} {:>8}",
+            "phase", "count", "total_s", "p50_ms", "p90_ms", "max_ms"
+        );
+        for (phase, stats) in &report.timing {
+            let _ = writeln!(
+                out,
+                "{:<10} {:>7} {:>9} {:>8} {:>8} {:>8}",
+                phase.as_str(),
+                stats.count,
+                stats.total_us / 1_000_000,
+                stats.p50_us / 1_000,
+                stats.p90_us / 1_000,
+                stats.max_us / 1_000,
+            );
+        }
+    }
     out
 }
 
@@ -686,6 +791,9 @@ mod tests {
                 hash: [1; 32],
                 is_bug: false,
             },
+            timing: BTreeMap::new(),
+            wall_secs: 0,
+            branches_per_hour_x10: 0,
         };
         assert_eq!(verify_campaign(&clean, 3), Vec::<String>::new());
 
@@ -957,6 +1065,46 @@ mod tests {
         assert_eq!(pick(&[], &mut p), None);
     }
 
+    /// `run_campaign` (task 96) populates `timing` with every phase it
+    /// actually exercises over a full toy campaign (base seal, every
+    /// per-branch phase, the N/N replays, the nominal pass) and derives
+    /// `branches_per_hour_x10` from `branches_explored`/`wall_secs` exactly
+    /// per the documented 0-when-`wall_secs`-is-0 contract. `Boot` is absent
+    /// — only `boxrun.rs`'s box path feeds that phase in.
+    #[test]
+    fn run_campaign_populates_timing_for_every_exercised_phase() {
+        let mut m = crate::planted::ToyPlantedMachine::new(crate::planted::Trigger::toy());
+        let cfg = CampaignConfig::toy();
+        let report = run_campaign(&mut m, &SpecEnvCodec, &cfg).expect("campaign runs");
+        for phase in [
+            Phase::BaseSeal,
+            Phase::Branch,
+            Phase::Run,
+            Phase::Hash,
+            Phase::Harvest,
+            Phase::Judge,
+            Phase::Replay,
+            Phase::Nominal,
+        ] {
+            assert!(
+                report.timing.contains_key(&phase),
+                "phase {phase:?} should have at least one recorded sample"
+            );
+        }
+        assert!(
+            !report.timing.contains_key(&Phase::Boot),
+            "the portable toy path never boots a box guest"
+        );
+        assert_eq!(
+            report.branches_per_hour_x10,
+            if report.wall_secs == 0 {
+                0
+            } else {
+                report.branches_explored.saturating_mul(36_000) / report.wall_secs
+            }
+        );
+    }
+
     /// `verify_campaign` also flags a replay whose terminal `StopReason`
     /// differs from the finding's, even when the `state_hash` matches — a
     /// replay that reproduces the hash but stops for a different reason (e.g.
@@ -996,6 +1144,9 @@ mod tests {
                 hash: [1; 32],
                 is_bug: false,
             },
+            timing: BTreeMap::new(),
+            wall_secs: 0,
+            branches_per_hour_x10: 0,
         };
         let failures = verify_campaign(&report, 3);
         assert!(
@@ -1008,7 +1159,11 @@ mod tests {
 
     /// [`render_campaign_table`] pins the exact rendered shape for a found
     /// bug, its replay verification, and a clean nominal control — the
-    /// artifact the box gate records verbatim in IMPLEMENTATION.md.
+    /// artifact the box gate records verbatim in IMPLEMENTATION.md. Left with
+    /// an empty `timing` (task 96): the timing section is conditioned on
+    /// `!timing.is_empty()`, so this report — built before that field
+    /// existed — renders byte-for-byte as it always has; the timing-section
+    /// shape itself is pinned separately below.
     #[test]
     fn render_campaign_table_pins_the_found_bug_format() {
         let found = FoundBug {
@@ -1043,6 +1198,9 @@ mod tests {
                 hash: [1; 32],
                 is_bug: false,
             },
+            timing: BTreeMap::new(),
+            wall_secs: 0,
+            branches_per_hour_x10: 0,
         };
         let out = render_campaign_table(&report, 2);
         let expected = format!(
@@ -1060,9 +1218,24 @@ mod tests {
     }
 
     /// The no-find and nominal-crashed-as-bug branches of the render — the
-    /// two cases the found-bug test above cannot exercise.
+    /// two cases the found-bug test above cannot exercise. Updated (task 96)
+    /// to also carry non-empty `timing`, pinning the new timing section's
+    /// exact shape (the found-bug test above deliberately leaves `timing`
+    /// empty and stays byte-for-byte unchanged instead).
     #[test]
     fn render_campaign_table_pins_the_no_find_and_nominal_bug_format() {
+        let mut timing = BTreeMap::new();
+        timing.insert(
+            Phase::Branch,
+            PhaseStats {
+                count: 10,
+                total_us: 52_100_000,
+                p50_us: 5_210_000,
+                p90_us: 6_000_000,
+                max_us: 7_000_000,
+            },
+        );
+        timing.insert(Phase::Hash, PhaseStats::single(2_900_000));
         let report = CampaignReport {
             base_vtime: 7,
             snapshot_attempts: 2,
@@ -1078,12 +1251,19 @@ mod tests {
                 hash: [2; 32],
                 is_bug: true,
             },
+            timing,
+            wall_secs: 90,
+            branches_per_hour_x10: 4000,
         };
         let out = render_campaign_table(&report, 5);
         let expected = format!(
             "base snapshot: sealed at V-time 7 (2 attempts), capture state_hash {}\n\
              NO BUG FOUND in 10 branches\n\
-             nominal control (seed only, no faults): Crash@9[2B] — REPORTED A BUG (trigger not adversity-gated!)\n",
+             nominal control (seed only, no faults): Crash@9[2B] — REPORTED A BUG (trigger not adversity-gated!)\n\
+             timing: wall 90s, 400.0 branches/hour\n\
+             phase        count   total_s   p50_ms   p90_ms   max_ms\n\
+             branch          10        52     5210     6000     7000\n\
+             hash             1         2     2900     2900     2900\n",
             hex32(&[0xCCu8; 32]),
         );
         assert_eq!(out, expected);

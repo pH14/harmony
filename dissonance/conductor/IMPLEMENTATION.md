@@ -887,3 +887,118 @@ code is untouched, only its file location).
 - Same discipline as the rest of this file: every new test asserts a real
   input → real output (a table's exact bytes, a gate's exact failure
   message, an `ExitCode`), never just "the line executed."
+
+---
+
+# task 96 — the campaign stopwatch: hash-neutral phase timing for box runs
+
+**Delegable, small.** Confined to `dissonance/conductor/`, no box gate of its own (this
+task's Environment section names the next scheduled box run — task 69-M2 reruns, task
+95-M2's gate (d), task 86 — as the first consumer of the live numbers, not a gate here).
+
+## What landed, where
+
+| File | Change | Role |
+|---|---|---|
+| `src/stopwatch.rs` (**new**) | `Phase`, `PhaseStats`, `Stopwatch`, `Mark`/`mark()` | the one module every `Instant::now` read in the crate lives in, under a single file-level `#[allow(clippy::disallowed_methods)]` |
+| `src/campaign.rs` | `CampaignReport.{timing, wall_secs, branches_per_hour_x10}`; `run_campaign` wraps every phase; `render_campaign_table` grows a timing section; a progress line every 32 branches | wires the recorder through the search loop, observation-only |
+| `src/boxrun.rs` | `boot_server` returns `(ControlServer, boot_us)`; the readiness line grows `, wall {secs}s`; `run_campaign` merges a single-sample `Boot` phase into the report | feeds the one measurement that happens before a campaign's own `Stopwatch` exists |
+| `src/main.rs`, `tests/campaign.rs` | test literals updated for the 3 new report fields; `campaign_is_deterministic` extended into the task's hash-neutrality regression | keeps every existing assertion meaningful under the new fields |
+
+## The hash-neutrality invariant, concretely
+
+Every `Instant::now()` read in this crate — inside `Stopwatch::new`/`time`, and `mark()`
+(used once, by `boxrun.rs`'s boot timer, so `Instant` reads never leak outside this file
+even for the one measurement that predates a campaign's `Stopwatch`) — lives in
+`stopwatch.rs`, under one `#[allow(clippy::disallowed_methods)]` with a `// not
+order-observable:` justification. `Stopwatch::time` is a pure passthrough of its
+closure's return value: it cannot change what a wrapped call returns or whether it
+errors, so wrapping `machine.branch`/`run`/`hash`/etc. in `sw.time(Phase::X, || …)` is
+mechanically transparent to the campaign's control flow. `PROGRESS_INTERVAL`-gated
+printing reads `sw.stats()`/`sw.elapsed_secs()` for display only — nothing in
+`run_campaign` branches on a duration.
+
+**Regression pin:** `tests/campaign.rs::campaign_is_deterministic` runs the identical toy
+campaign twice and asserts every report field except `timing`/`wall_secs`/
+`branches_per_hour_x10` is bit-identical across the two runs (base hash, the found bug's
+branch/seed/env/stop/hash/fingerprint, every replay's stop+hash, the nominal row) — the
+task's gate 3.
+
+## Phase mapping (exactly per spec)
+
+`BaseSeal` wraps the whole base-seal retry loop as one span (not per-attempt). Per search
+iteration: `Branch`/`Run`/`Hash`/`Harvest` (the SDK event round-trip)/`Judge` each get
+their own span. The verify-replay loop's `branch`+`run`+`hash` are timed together as one
+`Replay` span per iteration (matching "together" in the spec, not three sub-spans). The
+nominal-control pass (`branch`+`run`+`hash`+its event harvest) is one `Nominal` span.
+`Boot` (box-only) is merged in by `boxrun.rs` after `run_campaign` returns, via
+`PhaseStats::single` — it cannot go through the campaign's own `Stopwatch` because the
+boot happens first, outside `run_campaign` entirely.
+
+Progress line (every 32 branches, `PROGRESS_INTERVAL`), matching the spec's example
+shape:
+
+```
+[conductor] progress: branch 128/512, elapsed 1042s, avg us — branch 5210000 run 1200 hash 2900000
+```
+
+## Deviations considered
+
+- **No `serde`/JSON `--out` flag was added**, despite the spec's "serialized into the
+  campaign's `--out` JSON" language. Checked: `conductor` currently has **no** `--out`
+  flag or JSON output anywhere (campaign, sweep, or materialize modes) — `CampaignReport`
+  is a plain, non-serde struct today, and neither `benchmark-report` nor any task-69 stats
+  tool reads a conductor-emitted JSON. Adding `serde`+`serde_json` as a direct dependency
+  of `conductor` would be a **new dependency**, which this task's Environment section
+  explicitly bans ("No new dependencies"). Resolution: `Phase::as_str()` returns the
+  stable snake_case name (`"base_seal"`, `"branch"`, …) a future serde derive would emit,
+  pinned by a unit test — so the naming contract exists today without the dependency. If
+  a conductor JSON output is added later (task-95 M2 or beyond), `CampaignReport` is
+  already shaped for a `#[derive(Serialize)]` with `#[serde(rename = "…")]` matching
+  `as_str()`, or a hand-written `Serialize` impl using it.
+- **The timing section in `render_campaign_table` is conditioned on
+  `!report.timing.is_empty()`**, not on the presence of any specific field. This keeps
+  every report built before this task (synthetic test reports with a default-empty
+  `timing`) rendering byte-for-byte unchanged — `render_campaign_table_pins_the_found_bug_format`
+  is untouched with a comment explaining why; the sibling pin test
+  (`render_campaign_table_pins_the_no_find_and_nominal_bug_format`) was extended to also
+  carry non-empty `timing`, pinning the new section's exact shape instead of just noting
+  it's untested.
+- **`branches_per_hour_x10` avoids floats even in the rendered "X.Y branches/hour" line**
+  (`x / 10` and `x % 10` printed as `{}.{}`) rather than casting to `f64` — the spec
+  permits a float in a formatted print, but the integer form is exactly as readable and
+  keeps the whole timing path free of float rounding even at display time.
+- **`Mark`/`mark()` is an addition beyond the spec's sketched `Stopwatch`/`PhaseStats`/
+  `Phase` API.** `boxrun.rs` needs to measure the boot-to-ready span, which happens before
+  a campaign's `Stopwatch` exists; without an opaque handle it would need its own
+  `Instant::now()` call, violating "all `Instant` reads confined to `stopwatch.rs`"
+  (invariant 1). `Mark` is a one-field newtype wrapping `Instant`, constructed and read
+  only through `stopwatch.rs` functions — every literal `Instant::now()` in the crate
+  still lives in the one file the single clippy allow covers.
+
+## Known limitations / integrator notes
+
+- **A fast toy campaign can report `wall_secs == 0`** (`Stopwatch::elapsed_secs` truncates
+  to whole seconds; the portable toy campaign typically finds its planted bug in well
+  under a second). `branches_per_hour_x10` is `0` in that case by the documented contract
+  (no division panic, no claimed-infinite rate) — this is expected on the toy path, not a
+  bug; the box path's multi-minute-to-hour runs are the numbers this task exists for.
+- **No server-side per-verb timing** (`consonance/vmm-core/control.rs`) — out of surface
+  per the spec's non-goals; the conductor-side wrapper conflates client wait + socket +
+  server work, the named follow-up if the box numbers point into the socket.
+- **`Stopwatch`/`PhaseStats` carry no `Serialize`** (see Deviations above) — a future task
+  wiring a conductor `--out` JSON should add `serde` to `conductor`'s dependencies at that
+  point and derive against `Phase::as_str()`'s existing names, not invent new ones.
+
+## Gates
+
+Standard suite (`build`/`nextest`/`clippy -D warnings`/`fmt --check`/`cargo deny`) green
+on macOS; `cargo check`/`cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings`
+green from the Mac (the `boxrun.rs` changes are `cfg(target_os = "linux")`, invisible to
+a default Mac build — see the task-58/coverage-recovery sections above for why this
+crate's gate list always includes the Linux-target cross-check). 62 lib unit tests + 21
+bin unit tests (incl. `stopwatch`'s 7 new nearest-rank/passthrough/`as_str` tests and
+`campaign`'s new timing-population test) + every existing integration suite, all green;
+no `unsafe` in this crate, so no Miri gate applies. No box gate — this task's spec
+explicitly has none; the live numbers get their first real exercise on the next scheduled
+box run.
