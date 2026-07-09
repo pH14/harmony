@@ -75,8 +75,11 @@ pub const PROTO_VERSION: u16 = 1;
 /// `SdkEvents` verb + `SdkEvents` reply carry the link-tier event capture. Bumped
 /// to **4** by task 73 round-7: the SDK stops (`Assertion` / `SnapshotPoint`) are
 /// now gated on their new `StopMask` class bits (8 / 9) rather than surfacing
-/// unconditionally — a semantic change to the `Run` stop set.
-pub const APP_PROTOCOL_VERSION: u16 = 4;
+/// unconditionally — a semantic change to the `Run` stop set. Bumped to **5** by
+/// task 69 M2: the `Console` scrape verb (`Request::Console` / `Reply::Console`)
+/// extends the wire vocabulary, so a v≤4 peer must be rejected at `Hello` rather
+/// than failing mid-session on an unknown tag.
+pub const APP_PROTOCOL_VERSION: u16 = 5;
 
 /// Maximum on-wire frame *body* length. Generous for [`Environment`] blobs and
 /// hashes, but bounded so untrusted transport can never force unbounded
@@ -97,6 +100,6 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 4); // task 73 round-7: SDK stops gated on StopMask bits 8/9
+        assert_eq!(APP_PROTOCOL_VERSION, 5); // task 69 M2: Console scrape verb added to the wire vocabulary
     }
 }
