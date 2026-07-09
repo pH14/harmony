@@ -129,8 +129,18 @@ HARMONY_SMB_ROM=/path/to/smb.nes taskset -c <core> make -C guest game-image
 # 1. smoke-fire-once-before-campaign-spend (the ruled discipline):
 taskset -c <core> cargo run -p conductor --release -- game box \
     --max-branches 4 --deadline-delta 2_000_000_000
-# serial must show GAME_ROM_SHA256 + GAME_READY; the base seals at the agent's
-# setup_complete SnapshotPoint; expect nonzero distinct_cells.
+# serial must show GAME_ROM_SHA256 + GAME_READY, then the agent's
+# "gameplay reached after N start frames (mode=1 ...)" line — the scripted
+# START sequence (round-4 P1) runs BEFORE setup_complete, so the base seals
+# at GAMEPLAY start, not the title screen. THE VACUITY CHECK (mandatory in
+# this smoke): verify the billboard at the seal point shows in-gameplay
+# state — read the billboard window (REG_BILLBOARD_GPA/LEN from the trace)
+# at the sealed base and check its work-RAM region decodes to OperMode 1 /
+# world 0 / level 0 (equivalently: the serial start line printed mode=1, and
+# branch cells decode to game-mode 1 tuples — a mode-0 cell key anywhere
+# means a title-screen seal and the campaign data is VACUOUS: STOP, do not
+# spend the campaign budget). Expect nonzero distinct_cells and, over any
+# real budget, nonzero depth movement.
 
 # 2. gate 2 — determinism 25/25 (fresh boot per repetition, bit-identical
 #    per-branch state_hash sequence; every branch is itself a reproducer

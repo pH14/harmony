@@ -22,6 +22,7 @@ pub mod core_seam;
 pub mod glue;
 pub mod ram;
 pub mod regs;
+pub mod start;
 
 pub use agent::{Agent, AgentConfig, AgentError, Harness, StepReport};
 pub use billboard::{

@@ -39,11 +39,21 @@ pub struct MockCore {
     ram: [u8; WORK_RAM_LEN],
     frame: u32,
     savestate_len: usize,
+    /// Frames left until a latched `START` press finishes "loading" 1-1
+    /// (`None` = no press latched) — the title→gameplay model the start
+    /// script is tested against.
+    start_countdown: Option<u8>,
+    /// Last frame's joypad byte, for edge detection (SMB latches button
+    /// edges on its per-frame poll — a held `START` registers once).
+    prev_joypad: u8,
 }
 
 /// The default fake savestate size — NES-shaped (~20–32 KiB real cores; small
 /// here so tests stay fast while still exercising multi-region layouts).
 pub const MOCK_SAVESTATE_LEN: usize = 96;
+
+/// Frames the mock "loads" 1-1 for after a latched `START` edge.
+const MOCK_START_LOAD_FRAMES: u8 = 3;
 
 impl Default for MockCore {
     fn default() -> Self {
@@ -58,6 +68,8 @@ impl MockCore {
             ram: [0u8; WORK_RAM_LEN],
             frame: 0,
             savestate_len: MOCK_SAVESTATE_LEN,
+            start_countdown: None,
+            prev_joypad: 0,
         }
     }
 
@@ -101,8 +113,31 @@ impl Core for MockCore {
     }
 
     fn run_frame(&mut self, joypad: u8) {
-        use crate::chord::joypad::{LEFT, RIGHT};
+        use crate::chord::joypad::{LEFT, RIGHT, START};
         self.frame = self.frame.wrapping_add(1);
+        // The title→gameplay model (the start-script seam): a `START` *edge*
+        // on the title screen latches a short "load", after which the mock
+        // enters gameplay at 1-1 — mirroring SMB's edge-latched per-frame
+        // poll. Directional input on the title stays ignored.
+        if self.ram[addr::OPER_MODE] == crate::ram::OPER_MODE_TITLE {
+            if joypad & START != 0
+                && self.prev_joypad & START == 0
+                && self.start_countdown.is_none()
+            {
+                self.start_countdown = Some(MOCK_START_LOAD_FRAMES);
+            }
+            if let Some(c) = self.start_countdown {
+                if c == 0 {
+                    self.start_countdown = None;
+                    self.ram[addr::OPER_MODE] = crate::ram::OPER_MODE_GAMEPLAY;
+                    self.ram[addr::PLAYER_X_POSITION] = 40;
+                    self.ram[addr::NUMBER_OF_LIVES] = 2;
+                } else {
+                    self.start_countdown = Some(c - 1);
+                }
+            }
+        }
+        self.prev_joypad = joypad;
         // The toy movement model, only during gameplay: RIGHT advances 2 px
         // per frame with page carry; LEFT retreats 1 px within the page.
         if self.ram[addr::OPER_MODE] == crate::ram::OPER_MODE_GAMEPLAY {
@@ -144,10 +179,27 @@ mod tests {
     }
 
     #[test]
-    fn title_screen_ignores_input() {
+    fn title_screen_ignores_directional_input() {
         let mut core = MockCore::new();
         core.run_frame(RIGHT);
         assert_eq!(core.ram[addr::PLAYER_X_POSITION], 0);
+        assert_eq!(core.ram[addr::OPER_MODE], crate::ram::OPER_MODE_TITLE);
+    }
+
+    /// A `START` edge on the title latches the load and enters gameplay after
+    /// the mock's load frames; a continuously-held `START` latches only once
+    /// (edge semantics, like the real game's per-frame poll).
+    #[test]
+    fn start_edge_enters_gameplay_after_the_load() {
+        use crate::chord::joypad::START;
+        let mut core = MockCore::new();
+        for _ in 0..MOCK_START_LOAD_FRAMES {
+            core.run_frame(START); // held: one edge, then the countdown
+            assert_eq!(core.ram[addr::OPER_MODE], crate::ram::OPER_MODE_TITLE);
+        }
+        core.run_frame(START);
+        assert_eq!(core.ram[addr::OPER_MODE], crate::ram::OPER_MODE_GAMEPLAY);
+        assert_eq!(core.ram[addr::PLAYER_X_POSITION], 40);
     }
 
     #[test]

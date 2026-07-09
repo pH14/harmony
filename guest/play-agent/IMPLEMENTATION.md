@@ -88,6 +88,17 @@ a non-issue there (cross-platform savestates stay best-effort, ungated).
   at init to freeze the billboard layout). QuickNES's savestate is
   fixed-size; a core whose size drifts mid-run would fail the serialize
   (returns `false` → the agent dies loudly, never a torn billboard).
+- **The scripted start (round-4 P1)**: from power-on SMB sits on the title
+  screen, and the campaign alphabet deliberately excludes `START` (branches
+  must explore gameplay inputs, not menu resets) — so `src/start.rs` presses
+  `START` on a fixed press/release cadence until the RAM shows gameplay
+  (`OperMode == 1`), settles, re-verifies, and only then does the binary
+  publish the billboard and signal `setup_complete`: the base seal lands at
+  gameplay start. The script draws no entropy (a pure function of power-on;
+  the portable test pins that two runs execute identical frames), and failing
+  to reach gameplay is a loud error — never a silently-vacuous campaign. The
+  box smoke's mandatory vacuity check (root `IMPLEMENTATION-task86.md` step
+  1) verifies the billboard shows in-gameplay state at the seal point.
 - **Depth/marker semantics**: `REG_DEPTH` is the instantaneous
   `world*4+level` ordinal via `state_max` (the host keeps the max);
   `smb_level_cleared` fires once when the ordinal first rises above its value

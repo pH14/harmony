@@ -119,8 +119,19 @@ fn smoke(args: &Args) -> Result<(), String> {
     }
 
     let cfg = agent_config(args)?;
-    let mut agent =
-        Agent::new(harmony_play_agent::MockCore::in_gameplay(), cfg).map_err(|e| e.to_string())?;
+    // The smoke exercises the real startup shape: power-on title screen →
+    // the scripted start → the frame loop (not a pre-warmed gameplay core).
+    let mut core = harmony_play_agent::MockCore::new();
+    let start = harmony_play_agent::start::run_start_script(
+        &mut core,
+        &harmony_play_agent::start::StartScript::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "play-agent: smoke gameplay reached after {} start frames",
+        start.frames_run
+    );
+    let mut agent = Agent::new(core, cfg).map_err(|e| e.to_string())?;
     let mut billboard = vec![0u8; agent.layout().total_len()];
     let mut harness = SmokeHarness {
         state: args.smoke_seed.max(1), // xorshift must not start at 0
@@ -204,8 +215,29 @@ mod real {
         let rom = std::fs::read(&rom_path).map_err(|e| format!("ROM {rom_path}: {e}"))?;
         println!("play-agent: rom {rom_path} ({} bytes)", rom.len());
 
-        let core = retro::LibretroCore::load(&core_path, &rom)?;
+        let mut core = retro::LibretroCore::load(&core_path, &rom)?;
         println!("play-agent: core {core_path} loaded");
+
+        // The deterministic scripted start (round-4 P1): press START through
+        // the title until the RAM shows gameplay, BEFORE the billboard is
+        // published and setup_complete seals the base — else every branch
+        // would explore the title screen (the campaign alphabet rightly
+        // excludes START) and the exploration data would be vacuous. Draws no
+        // entropy; a pure function of power-on, so it is part of the
+        // deterministic setup prefix.
+        let start = harmony_play_agent::start::run_start_script(
+            &mut core,
+            &harmony_play_agent::start::StartScript::default(),
+        )
+        .map_err(|e| e.to_string())?;
+        println!(
+            "play-agent: gameplay reached after {} start frames (mode={} world={} level={} x={})",
+            start.frames_run,
+            start.state.game_mode,
+            start.state.world,
+            start.state.level,
+            start.state.x_abs,
+        );
 
         let cfg = agent_config(args)?;
         let mut agent = Agent::new(core, cfg).map_err(|e| e.to_string())?;
