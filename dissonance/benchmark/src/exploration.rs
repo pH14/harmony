@@ -250,6 +250,25 @@ pub enum ExplorationError {
         /// The offending workload.
         b: String,
     },
+    /// A log's branch sequence is not the dense `0..branch_budget` the
+    /// manifest requires (truncated, padded, or gapped). Scoring a short log
+    /// as-is would silently compare unequal budgets — loud error instead.
+    #[error(
+        "{config:?} seed {seed}: expected the dense branch sequence 0..{want}, got {got} events \
+         (first mismatch at event {at})"
+    )]
+    BadBranchSequence {
+        /// The configuration.
+        config: ExplorationConfig,
+        /// The seed.
+        seed: u64,
+        /// The manifest's branch budget.
+        want: u64,
+        /// The events actually present.
+        got: u64,
+        /// The first event index whose branch (or absence) mismatches.
+        at: u64,
+    },
 }
 
 /// The exploration report: the offline analysis of the campaign's
@@ -286,11 +305,30 @@ impl ExplorationReport {
         if logs.is_empty() {
             return Err(ExplorationError::NoLogs);
         }
+        let budget = manifest.branch_budget;
         for log in logs {
             if log.workload != logs[0].workload {
                 return Err(ExplorationError::MixedWorkloads {
                     a: logs[0].workload.clone(),
                     b: log.workload.clone(),
+                });
+            }
+            // Every log must carry the dense 0..branch_budget sequence the
+            // manifest requires: a truncated / padded / gapped log scored
+            // as-is would silently compare unequal budgets.
+            let dense_mismatch = log
+                .events
+                .iter()
+                .enumerate()
+                .find(|(i, e)| e.branch != *i as u64)
+                .map(|(i, _)| i as u64);
+            if log.events.len() as u64 != budget || dense_mismatch.is_some() {
+                return Err(ExplorationError::BadBranchSequence {
+                    config: log.config,
+                    seed: log.seed,
+                    want: budget,
+                    got: log.events.len() as u64,
+                    at: dense_mismatch.unwrap_or_else(|| (log.events.len() as u64).min(budget)),
                 });
             }
         }
@@ -314,7 +352,6 @@ impl ExplorationReport {
             }
         }
 
-        let budget = manifest.branch_budget;
         let mut configs = Vec::new();
         for config in [
             ExplorationConfig::Signal,
@@ -417,7 +454,41 @@ impl ExplorationReport {
             }
         });
 
-        let verdict = match (signal, baseline, baseline_live) {
+        // The ROM gate comes BEFORE any win-condition evaluation (task 86's
+        // "gates SKIP loudly" rule): a ROM-less run has no comparable game
+        // workload, so no arrangement of logs — winning or otherwise — may
+        // ever render Pass from it. The vacuous-green class.
+        let verdict = if manifest.rom_sha256.is_none() {
+            Verdict::Incomplete {
+                reason: "no ROM was provisioned (HARMONY_SMB_ROM unset) — the run is a SKIP; \
+                         a skipped gate is never a green gate"
+                    .to_string(),
+            }
+        } else {
+            Self::score(signal, baseline, baseline_live, cells_beats, depth_beats)
+        };
+
+        Ok(ExplorationReport {
+            manifest: manifest.clone(),
+            configs,
+            cells_beats,
+            depth_beats,
+            baseline_live,
+            stads,
+            verdict,
+        })
+    }
+
+    /// Score the pass condition over the summarized configurations. Called
+    /// only after the ROM gate above has passed — never entered on a SKIP.
+    fn score(
+        signal: Option<&ConfigSummary>,
+        baseline: Option<&ConfigSummary>,
+        baseline_live: Option<bool>,
+        cells_beats: Option<StrictBeats>,
+        depth_beats: Option<StrictBeats>,
+    ) -> Verdict {
+        match (signal, baseline, baseline_live) {
             (Some(_), Some(_), Some(false)) => Verdict::Incomplete {
                 reason: "the pure-random control discovered no cells — a dead control cannot \
                          ground a win (check the workload wiring before scoring)"
@@ -447,17 +518,7 @@ impl ExplorationReport {
                     ),
                 }
             }
-        };
-
-        Ok(ExplorationReport {
-            manifest: manifest.clone(),
-            configs,
-            cells_beats,
-            depth_beats,
-            baseline_live,
-            stads,
-            verdict,
-        })
+        }
     }
 
     /// Render the committed markdown report (floats here only — rendering).
@@ -737,15 +798,74 @@ mod tests {
         ));
     }
 
+    /// The vacuous-green regression (round-1 P1): a ROM-less manifest must
+    /// force the SKIP verdict BEFORE any win-condition evaluation — even over
+    /// logs that would otherwise be a clean strict win, the verdict is never
+    /// Pass (and never Fail either: nothing comparable ran).
     #[test]
-    fn rom_less_manifest_renders_a_loud_skip() {
+    fn rom_less_manifest_can_never_pass_even_on_winning_logs() {
+        // The exact log set that renders Pass under a ROM-carrying manifest…
         let mut logs = twenty(ExplorationConfig::Signal, 8, 12);
         logs.extend(twenty(ExplorationConfig::PureRandom, 2, 3));
+        let with_rom = ExplorationReport::compute(&manifest(), &logs, (1, 1000)).unwrap();
+        assert_eq!(
+            with_rom.verdict,
+            Verdict::Pass,
+            "the win is real with a ROM"
+        );
+
+        // …must be a SKIP under a ROM-less one.
         let m = GameManifest::smb(None, 8);
-        let md = ExplorationReport::compute(&m, &logs, (1, 1000))
-            .unwrap()
-            .render_markdown();
+        let report = ExplorationReport::compute(&m, &logs, (1, 1000)).unwrap();
+        match &report.verdict {
+            Verdict::Incomplete { reason } => assert!(reason.contains("SKIP")),
+            other => panic!("ROM-less verdict must be the SKIP Incomplete, got {other:?}"),
+        }
+        let md = report.render_markdown();
         assert!(md.contains("ROM ABSENT — SKIP"));
+        assert!(md.contains("INCOMPLETE"));
+        assert!(!md.contains("**PASS**"));
+    }
+
+    /// The unequal-budget regression (round-1 P2): a log shorter than the
+    /// manifest's branch budget — or one with a gapped/non-dense branch
+    /// sequence — is a loud error, never scored as-is.
+    #[test]
+    fn truncated_or_gapped_logs_are_rejected() {
+        // Truncated: one seed's log lost its last branch.
+        let mut logs = twenty(ExplorationConfig::PureRandom, 2, 3);
+        logs[5].events.pop();
+        assert!(matches!(
+            ExplorationReport::compute(&manifest(), &logs, (1, 1000)),
+            Err(ExplorationError::BadBranchSequence {
+                seed: 5,
+                want: 8,
+                got: 7,
+                ..
+            })
+        ));
+
+        // Gapped: right length, but a branch index is missing from the middle.
+        let mut logs = twenty(ExplorationConfig::PureRandom, 2, 3);
+        logs[3].events[4].branch = 6;
+        assert!(matches!(
+            ExplorationReport::compute(&manifest(), &logs, (1, 1000)),
+            Err(ExplorationError::BadBranchSequence { seed: 3, at: 4, .. })
+        ));
+
+        // Padded: one branch too many.
+        let mut logs = twenty(ExplorationConfig::PureRandom, 2, 3);
+        let extra = logs[0].events.last().unwrap().clone();
+        logs[0].events.push(DiscoveryEvent { branch: 8, ..extra });
+        assert!(matches!(
+            ExplorationReport::compute(&manifest(), &logs, (1, 1000)),
+            Err(ExplorationError::BadBranchSequence {
+                seed: 0,
+                want: 8,
+                got: 9,
+                ..
+            })
+        ));
     }
 
     #[test]

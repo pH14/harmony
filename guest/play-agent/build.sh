@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Build the play-agent for the guest image. Unlike flow-agent this is a
 # **dynamic** (glibc) build: the agent dlopens the pinned libretro core at
 # runtime, and dlopen from a fully-static musl binary is unsupported — the
