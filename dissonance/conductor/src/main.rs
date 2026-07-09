@@ -32,6 +32,7 @@ use clap::{Parser, Subcommand};
 use conductor::campaign::{
     CampaignConfig, CampaignReport, render_campaign_table, run_campaign, verify_campaign,
 };
+use conductor::gamecampaign::{GameCampaignConfig, GameToyMachine, run_game_campaign};
 use conductor::planted::{ToyPlantedMachine, Trigger};
 use conductor::record::{
     RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
@@ -72,6 +73,10 @@ enum Mode {
     /// campaign per invocation so the operator parallelizes across leased cores and
     /// compares solo vs co-tenant outputs (the determinism stress-test).
     BenchCampaign(BenchBoxArgs),
+    /// The task-86 SMB game-workload exploration campaign (quiet arm — zero
+    /// faults, entropy-only search).
+    #[command(subcommand)]
+    Game(GameMode),
 }
 
 /// Task 69 M2 box benchmark-campaign arguments.
@@ -140,6 +145,74 @@ struct BenchBoxArgs {
     /// to bugs 1/3.
     #[arg(long, default_value_t = 64)]
     order_range: u64,
+}
+
+/// The two game-campaign paths (task 86 M0): the portable SMB-shaped toy, and
+/// the box campaign against the real game image (QuickNES + the user-supplied
+/// ROM under the play-agent).
+#[derive(Subcommand)]
+enum GameMode {
+    /// Portable SMB-shaped toy machine (no /dev/kvm, no ROM) — the laptop
+    /// smoke for the campaign loop + host-side cell key.
+    Mock(GameArgs),
+    /// Box-only: the real game image on patched KVM. `--repeat 25` reruns the
+    /// identical campaign and enforces the per-branch state_hash determinism
+    /// gate (task 86 gate 2).
+    Box(GameBoxArgs),
+}
+
+/// Shared game-campaign knobs (both modes).
+#[derive(Parser)]
+struct GameArgs {
+    /// The configuration: `pure-random` (the task-84-ruled primary baseline) or
+    /// `selector-v1` (the existing default novelty search — the attribution
+    /// column). `signal` is refused until an M1 selector artifact exists.
+    #[arg(long, default_value = "pure-random")]
+    config: String,
+    /// Branch budget (identical across configurations — task 84's ruling).
+    #[arg(long, default_value_t = 64)]
+    max_branches: u64,
+    /// The campaign stream seed; the whole campaign is a pure function of it.
+    #[arg(long, default_value_t = 0x0086_5F5C_0770_0001)]
+    campaign_seed: u64,
+    /// SelectorV1 only: every Nth step explores fresh from the base.
+    #[arg(long, default_value_t = 4)]
+    explore_period: u64,
+    /// Append the campaign's ExplorationLog (JSON array) here — the input
+    /// `exploration-report` renders (task 86 gate 3).
+    #[arg(long)]
+    logs_out: Option<PathBuf>,
+}
+
+/// Box-game arguments: the image/marker knobs plus the rollout deadline and
+/// the determinism-gate repeat count.
+#[derive(Parser)]
+struct GameBoxArgs {
+    #[command(flatten)]
+    game: GameArgs,
+    /// V-time (ns) each rollout runs past the sealed base before its deadline
+    /// (the play-agent never exits on its own).
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_u64_flexible)]
+    deadline_delta: u64,
+    /// V-time (ns) allowed for the agent to reach its `setup_complete`
+    /// snapshot point past the GAME_READY marker.
+    #[arg(long, default_value_t = 30_000_000_000, value_parser = parse_u64_flexible)]
+    setup_deadline_delta: u64,
+    /// Rerun the identical campaign this many times (fresh boot each) and
+    /// require bit-identical logs — the per-branch state_hash sequence gate is
+    /// `--repeat 25`.
+    #[arg(long, default_value_t = 1)]
+    repeat: usize,
+    /// Kernel bzImage filename under guest/build (or guest/linux).
+    #[arg(long, default_value = "bzImage")]
+    kernel: String,
+    /// Initramfs filename — defaults to the task-86 game image.
+    #[arg(long, default_value = "initramfs-game.cpio.gz")]
+    initramfs: String,
+    /// The serial marker the boot is driven to before the campaign attaches
+    /// (the base itself seals at the agent's setup_complete snapshot point).
+    #[arg(long, default_value = "GAME_READY")]
+    ready_marker: String,
 }
 
 #[derive(Parser)]
@@ -343,6 +416,8 @@ fn main() -> ExitCode {
         Mode::Campaign(CampaignMode::Box(args)) => run_campaign_box(args),
         Mode::Materialize(args) => run_mock_materialize(args),
         Mode::BenchCampaign(args) => run_benchcampaign_box(args),
+        Mode::Game(GameMode::Mock(args)) => run_game_mock(args),
+        Mode::Game(GameMode::Box(args)) => run_game_box(args),
     }
 }
 
@@ -358,6 +433,104 @@ fn run_benchcampaign_box(_args: BenchBoxArgs) -> ExitCode {
     eprintln!(
         "[conductor] benchcampaign box needs Linux + patched KVM + a built planted-bug image + \
          the det-cfl-v1 host (docs/BOX-PINNING.md). This is not a Linux host."
+    );
+    ExitCode::FAILURE
+}
+
+/// Parse the game-campaign configuration name. `signal` parses (so the CLI can
+/// surface the loud refusal from the campaign itself); unknown names fail here.
+fn parse_game_config(s: &str) -> Result<benchmark::ExplorationConfig, String> {
+    match s {
+        "pure-random" => Ok(benchmark::ExplorationConfig::PureRandom),
+        "selector-v1" => Ok(benchmark::ExplorationConfig::SelectorV1),
+        "signal" => Ok(benchmark::ExplorationConfig::Signal),
+        other => Err(format!(
+            "unknown game configuration {other:?} (expected pure-random | selector-v1 | signal)"
+        )),
+    }
+}
+
+/// Summarize a finished game campaign and (optionally) append its log to the
+/// JSON array at `--logs-out` — the input the offline `exploration-report`
+/// renders. Printing is a summary; the log is the artifact.
+fn finish_game(log: &benchmark::ExplorationLog, out: Option<&PathBuf>) -> ExitCode {
+    let budget = log.events.len() as u64;
+    let distinct = log.distinct_cells_at(budget);
+    let depth = log.depth_at(budget);
+    println!(
+        "[conductor] game campaign done: config={:?} seed={:#x} branches={} distinct_cells={} \
+         max_depth={}",
+        log.config, log.seed, budget, distinct, depth
+    );
+    if let Some(path) = out {
+        let mut logs: Vec<benchmark::ExplorationLog> = match std::fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!(
+                        "[conductor] {} exists but is not a log array: {e}",
+                        path.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(_) => Vec::new(),
+        };
+        logs.push(log.clone());
+        let json = match serde_json::to_string_pretty(&logs) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("[conductor] cannot serialize logs: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(e) = std::fs::write(path, json) {
+            eprintln!("[conductor] cannot write {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("[conductor] appended the log to {}", path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+/// The portable game campaign: the SMB-shaped toy machine through the real
+/// wire-decode → LinkSensor → cell-key path (no /dev/kvm, no ROM).
+fn run_game_mock(args: GameArgs) -> ExitCode {
+    let config = match parse_game_config(&args.config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[conductor] {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = GameCampaignConfig {
+        campaign_seed: args.campaign_seed,
+        max_branches: args.max_branches,
+        explore_period: args.explore_period,
+        ..GameCampaignConfig::smoke(args.campaign_seed)
+    };
+    let mut machine = GameToyMachine::new();
+    match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
+        Ok(log) => finish_game(&log, args.logs_out.as_ref()),
+        Err(e) => {
+            eprintln!("[conductor] game mock campaign failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The box game campaign (task 86 M0). Linux-only; refuses loudly elsewhere.
+#[cfg(target_os = "linux")]
+fn run_game_box(args: GameBoxArgs) -> ExitCode {
+    boxrun::run_game(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_game_box(_args: GameBoxArgs) -> ExitCode {
+    eprintln!(
+        "[conductor] game box mode needs Linux + patched KVM + the built game image (make -C \
+         guest/linux game-image, HARMONY_SMB_ROM set) — see docs/BOX-PINNING.md. This is not a \
+         Linux host."
     );
     ExitCode::FAILURE
 }

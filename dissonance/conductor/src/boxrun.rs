@@ -39,9 +39,11 @@ use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
+use conductor::gamecampaign::{GameCampaignConfig, run_game_campaign};
+
 use super::{
-    BenchBoxArgs, BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording,
-    parse_retain, seeds,
+    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, finish, finish_campaign, finish_game,
+    finish_recording, parse_game_config, parse_retain, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -330,6 +332,104 @@ pub fn run(args: BoxArgs) -> ExitCode {
 /// the emitted `Bug`'s env replays it bit-for-bit (the record → replay
 /// closure). The search space is CLI-scoped — the operator narrows `--gpa-*`
 /// once the supervisor's ledger gpa is pinned (see `CampaignBoxArgs`).
+/// The task-86 M0 box game campaign: boot the game image (QuickNES + the
+/// user-supplied ROM under the play-agent), drive to `GAME_READY`, seal the
+/// base at the agent's `setup_complete` snapshot point, and run the quiet-arm
+/// exploration campaign. `--repeat N` reruns the **identical** campaign from a
+/// fresh boot each time and requires bit-identical logs (the per-branch
+/// `state_hash` sequence gate is `--repeat 25` — task 86 gate 2).
+pub fn run_game(args: GameBoxArgs) -> ExitCode {
+    let config = match parse_game_config(&args.game.config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[conductor] {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = GameCampaignConfig {
+        campaign_seed: args.game.campaign_seed,
+        max_branches: args.game.max_branches,
+        deadline_delta: Some(args.deadline_delta),
+        explore_period: args.game.explore_period,
+        snapshot_retry_step: 1_000_000,
+        snapshot_max_attempts: 100_000,
+        setup_deadline_delta: args.setup_deadline_delta,
+    };
+    let repeat = args.repeat.max(1);
+    let mut first: Option<benchmark::ExplorationLog> = None;
+    for rep in 0..repeat {
+        // A fresh, identically-seeded boot per repetition: the determinism
+        // claim is over the whole boot → seal → campaign pipeline, so nothing
+        // is allowed to carry over between repeats.
+        let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let rep_cfg = cfg.clone();
+        let initial = boot_env();
+        println!(
+            "[conductor] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
+             rollout)…",
+            rep + 1,
+            config,
+            rep_cfg.max_branches,
+            args.deadline_delta,
+        );
+        let (served, client) = run_session(&mut server, move |stream| {
+            let mut machine = SocketMachine::connect(stream, initial)?;
+            run_game_campaign(&mut machine, &SpecEnvCodec, &rep_cfg, config)
+                .map_err(|e| explorer::MachineError::Transport(e.to_string()))
+        });
+        let log = match client {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[conductor] game box: campaign failed: {e}");
+                if let Err(se) = served {
+                    eprintln!("[conductor] game box: server session ended with: {se}");
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(se) = served {
+            eprintln!("[conductor] game box: server session ended with a fatal error: {se}");
+            return ExitCode::FAILURE;
+        }
+        match &first {
+            None => first = Some(log),
+            Some(f) => {
+                if *f != log {
+                    // The determinism gate's loud failure: name the first
+                    // diverging branch so the transcript pins it.
+                    let at = f
+                        .events
+                        .iter()
+                        .zip(&log.events)
+                        .position(|(a, b)| a != b)
+                        .map_or_else(|| "event count".to_string(), |i| format!("branch {i}"));
+                    eprintln!(
+                        "[conductor] game box DETERMINISM FAILED: repetition {}/{repeat} \
+                         diverged from the first at {at}.",
+                        rep + 1
+                    );
+                    return ExitCode::FAILURE;
+                }
+                println!(
+                    "[conductor] game box: repetition {}/{repeat} bit-identical to the first.",
+                    rep + 1
+                );
+            }
+        }
+    }
+    let log = first.expect("repeat >= 1 always produces a first log");
+    if repeat > 1 {
+        println!(
+            "[conductor] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
+             state_hash sequences."
+        );
+    }
+    finish_game(&log, args.game.logs_out.as_ref())
+}
+
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
     {
