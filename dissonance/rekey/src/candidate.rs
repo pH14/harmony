@@ -28,12 +28,13 @@
 //!
 //! [`StateProjection::DrawLowByte`] (`draw & 0xFF`) is its **twin control**:
 //! statistically identical (both are one uniform byte of the same draw, 256
-//! values, the same arrival pattern) and completely trigger-blind. The two
-//! candidates therefore score identically on breadth and granularity, and only a
-//! bug-based metric could separate them — which is Böhme–Szekeres–Metzman
-//! (ICSE 2022, law 6) demonstrated on harmony's own corpus. It replaces the
-//! bug-1 noise-fitting control the task spec assumed, which turned out to be
-//! unbuildable (bug 1 retained no traces; bead `hm-5sv`, tasks/97 amendment).
+//! values, the same arrival pattern, the same `|K|`) and completely
+//! trigger-blind. On the unsteered ablation slice the two candidates score
+//! identically on breadth *and* granularity, so only a bug-based metric could
+//! separate them — which is Böhme–Szekeres–Metzman (ICSE 2022, law 6)
+//! demonstrated on harmony's own corpus. It replaces the bug-1 noise-fitting
+//! control the task spec assumed, which turned out to be unbuildable (bug 1
+//! retained no traces; bead `hm-5sv`, tasks/97 amendment).
 
 use serde::Serialize;
 

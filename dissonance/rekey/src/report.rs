@@ -22,7 +22,8 @@ const STEP_5_LIMIT: &str = "\
 /// generic line (and, in practice, never ranks).
 fn menu_prose(id: &str) -> &'static str {
     match id {
-        "draw-top-256" => "\
+        "draw-top-256" => {
+            "\
 **What changes.** The cell key gains one chosen sparse state channel — the entropy draw the \
 workload already prints on its console, keyed on its top byte, unfolded. The template channels \
 stay exactly as shipped. Cells go from 3–4 per campaign to hundreds, the frontier stops \
@@ -31,15 +32,18 @@ still searching* rather than only when it crashes.
 
 **What it risks.** This is the trigger byte. Bug 3 fires exactly when `draw >> 56 == 0xA5`, so \
 this descriptor was chosen with the answer in hand, and its twin control (`draw-low-256`, the \
-same draw's trigger-blind low byte) matches it on every quantity a search could use. Nothing in \
-this report distinguishes them in the trigger's favour — where they differ, the *blind* one looks \
-better. That is law 6 (Böhme–Szekeres–Metzman, ICSE 2022) reproduced on harmony's own corpus. Ratifying it is a bet that *some* projection of a \
+same draw's trigger-blind low byte) matches it on every axis of the unsteered ablation slice. \
+Where the two part company it is the exploit kernel's bit-locality talking, or the blind twin \
+fragmenting the crash — never the trigger. That is law 6 (Böhme–Szekeres–Metzman, ICSE 2022) \
+reproduced on harmony's own corpus. Ratifying it is a bet that *some* projection of a \
 guest's chosen state correlates with *some* class of trigger — which is IJON's claim, and a \
 reasonable one — not evidence that this one does. Its cost is also real: 257× the cell space \
 divides per-cell search energy 257 ways (RAID'19: the two most sensitive metrics tested finish \
-below baseline because promotion explodes). Confirm live before believing it.",
+below baseline because promotion explodes). Confirm live before believing it."
+        }
 
-        "draw-top-64" => "\
+        "draw-top-64" => {
+            "\
 **What changes.** The cell key gains one chosen sparse state channel — the entropy draw the \
 workload already prints on its console (`UUID_DRAW: draw=0x… prefix_bits=8`), keyed on its top \
 byte and folded `mod 64` by the shipped `DEFAULT_FOLD_K`. The template channels stay exactly as \
@@ -50,30 +54,37 @@ at the cost of aliasing the trigger byte `0xA5` with `0x25`, `0x65`, and `0xE5`.
 **What it risks.** The same trigger-alignment critique as `draw-top-256`, plus the fold: three \
 unrelated draws now share the bug's cell, so a selector exploiting that cell is three-quarters \
 of the time exploiting a state that has nothing to do with the trigger. It is the conservative \
-version of the same bet — smaller archive, blunter signal.",
+version of the same bet — smaller archive, blunter signal."
+        }
 
-        "draw-low-256" => "\
+        "draw-low-256" => {
+            "\
 **What changes.** Nothing a campaign author would ever choose deliberately: it keys the same \
 draw's low byte, which no trigger in the benchmark reads. It is in the menu **as a control**, \
 not as a proposal.
 
 **What it risks.** Ratifying it would be ratifying noise. That it survives the axes at all — and \
-outscores its trigger-aligned twin on raw pooled breadth — is the report's central negative \
-result: breadth and granularity cannot tell a bug-aligned descriptor from a bug-blind one, and on \
-this corpus neither can chain preservation.",
+matches its trigger-aligned twin on every one of them, on the one slice where the comparison is \
+clean — is the report's central negative result: breadth and granularity cannot tell a bug-aligned \
+descriptor from a bug-blind one, and on this corpus neither can chain preservation."
+        }
 
-        "v1-shipped" => "\
+        "v1-shipped" => {
+            "\
 **What changes.** Nothing. This row is the control, and its reproduction of the campaign's \
 recorded discovery events (all 60 campaigns, every branch, exactly) is the harness's own \
 correctness gate.
 
 **What it risks.** Keeping it is keeping the NO-GO: 3 cells at branch 0, then a frozen archive \
 until the crash mints a fourth. It cannot steer a search because it discovers nothing while the \
-search is running.",
+search is running."
+        }
 
-        _ => "\
+        _ => {
+            "\
 **What changes / what it risks.** A knob-set variant of the shipped v1 composition. See the \
-axis table above; the knob space cannot change what the template channels can see.",
+axis table above; the knob space cannot change what the template channels can see."
+        }
     }
 }
 
@@ -110,6 +121,15 @@ fn header(out: &mut String, a: &Analysis) {
          > {} trace files · {} recorded branches · {} excluded · {} reference logs.\n\
          > All arithmetic is integer/fixed-point; the report has no generated-date line, so two\n\
          > runs on any two hosts produce byte-identical bytes.\n\
+         \n\
+         > **Regenerated after PR #94 round 1.** Axis (a) previously unioned cell keys across\n\
+         > `(config, seed)` campaigns, which R2 forbids (per-seed codebooks are independent; cell\n\
+         > keys are never compared across seeds). Breadth is now per-campaign, and the twin-control\n\
+         > evidence moved with it: on the steered slice the trigger-*aligned* candidate now pools\n\
+         > more cells, not fewer, and the trigger-blind twin's apparent advantage there is gone.\n\
+         > **The top-three menu is unchanged** (`draw-top-64` → `v1-shipped` → `draw-top-256`), and\n\
+         > so is every conclusion: on the unsteered ablation slice — the one slice where the\n\
+         > comparison is clean — the twins remain indistinguishable on every axis.\n\
          \n\
          ## The finding, in one paragraph\n\
          \n\
@@ -233,9 +253,13 @@ fn candidate_space(out: &mut String, a: &Analysis) {
 fn axes(out: &mut String, a: &Analysis) {
     out.push_str(&format!(
         "## The three axes\n\n\
-         - **(a) breadth** — cells discovered over the fixed trace set. `pooled` is the distinct \
-         cells over the whole slice; `mean` is per campaign; `coverage` normalizes `pooled` by the \
-         candidate's key-space cardinality `|K|`, because raw QD-style scores scale with \
+         - **(a) breadth** — cells discovered over the fixed trace set. Every campaign's archive is \
+         keyed in **its own namespace**: `docs/SCORING.md` R2 pins that per-seed codebooks are \
+         independent and *cell keys are never compared across seeds*, because a template species id \
+         is minted in per-campaign first-seen order, so the same key bytes name different behaviour \
+         in two campaigns. `total` therefore sums each campaign's distinct cells rather than \
+         unioning keys across seeds; `mean` is per campaign; `coverage` is `mean / |K|`, the QD \
+         coverage of one campaign's archive, normalized because raw QD-style scores scale with \
          resolution and would crown the finest candidate by construction.\n\
          - **(b) granularity** — Go-Explore's re-tune objective `O = H_n(p)/√(|n/T−1|+1)`, per \
          campaign, averaged. `p` is the arrival count per cell (the STADS abundance stream). The \
@@ -263,7 +287,7 @@ fn axes(out: &mut String, a: &Analysis) {
             s.scores.first().map_or(0, |x| x.finders)
         ));
         out.push_str(&format!(
-            "| candidate | (a) pooled | (a) mean | (a) coverage | (b) O@{TARGET_CELLS} | \
+            "| candidate | (a) total | (a) mean | (a) coverage | (b) O@{TARGET_CELLS} | \
              (b) O@{TARGET_SENSITIVITY} | (c) chains | admitted | cells>0 | steering | crash-only |\n\
              |---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|\n"
         ));
@@ -271,7 +295,7 @@ fn axes(out: &mut String, a: &Analysis) {
             out.push_str(&format!(
                 "| `{}` | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                 score.candidate,
-                score.pooled_cells,
+                score.total_cells,
                 cell(score.mean_cells_q32),
                 cell(score.breadth_q32),
                 cell(score.objective_q32),
@@ -356,7 +380,7 @@ fn ranking(out: &mut String, a: &Analysis) {
          from. On this corpus the gate disqualifies **nothing**; see below.\n\n"
     ));
     out.push_str(&format!(
-        "| # | candidate | (b) O@{TARGET_CELLS} | (a) pooled | (c) chains | steering | verdict |\n\
+        "| # | candidate | (b) O@{TARGET_CELLS} | (a) total | (c) chains | steering | verdict |\n\
          |---:|---|---:|---:|---|---:|---|\n"
     ));
     for (rank, &i) in a.ranking.iter().enumerate() {
@@ -371,7 +395,7 @@ fn ranking(out: &mut String, a: &Analysis) {
             rank + 1,
             s.candidate,
             cell(s.objective_q32),
-            s.pooled_cells,
+            s.total_cells,
             s.chain_cell(),
             s.cells_before_find,
             verdict,
@@ -426,34 +450,37 @@ fn ranking(out: &mut String, a: &Analysis) {
          So the ranking rests entirely on axes (a) and (b) — the discovery curves law 6 disqualifies \
          as sole evidence. **And on the ablation slice, the one slice free of the exploit's \
          confound, the trigger-aligned `draw-top-256` and its trigger-blind twin `draw-low-256` are \
-         indistinguishable on every quantity a search could use:**\n\n\
+         indistinguishable on every axis:**\n\n\
          {}\n\
          The two candidates read the same 64-bit draw. One reads the byte the bug compares; the \
-         other reads a byte no trigger in the benchmark ever looks at. Mean cells per campaign, the \
-         objective at both targets, steering, and chain preservation all agree to within noise. That \
-         is Böhme–Szekeres–Metzman (ICSE 2022) reproduced on harmony's own corpus, and it is the \
-         reason this report hands over a menu rather than a winner.\n\n\
-         The two places they *do* differ both cut **against** the trigger-aligned candidate:\n\n\
-         1. **Pooled cells.** `draw-low-256` pools more ({} vs {} on the campaign slice) — and the \
-            entire surplus is `crash-only` cells ({} vs {}). The top-byte projection pins every \
-            crashing branch to the one cell `0xA5`; the low-byte projection scatters them across as \
-            many cells as they have distinct low bytes. **Raw pooled breadth rewards the \
-            trigger-blind descriptor, for fragmenting the crash it should be ignoring.**\n\
-         2. **Mean cells per campaign** on the *steered* slice ({} vs {}), which is an artifact of \
-            the exploit rather than of the trigger. Measured over the {} exploit branches of that \
+         other reads a byte no trigger in the benchmark ever looks at. Total and mean cells, \
+         coverage, the objective at both targets, steering, and chain preservation all agree to \
+         within noise. That is Böhme–Szekeres–Metzman (ICSE 2022) reproduced on harmony's own \
+         corpus, and it is the reason this report hands over a menu rather than a winner.\n\n\
+         They part company in exactly two places, and **neither is evidence of trigger \
+         alignment**:\n\n\
+         1. **Crash fragmentation.** Even on the clean slice, `draw-low-256` mints {} `crash-only` \
+            cells to `draw-top-256`'s {} — and the top byte's count is *exactly* one per finding \
+            campaign, because every crashing branch draws the same top byte `0xA5`, while the low \
+            byte scatters those branches across as many cells as they have distinct low bytes. \
+            Those cells are keyed only after the guest has already crashed. **Raw breadth rewards \
+            the trigger-blind descriptor here, for fragmenting the crash it should be ignoring.**\n\
+         2. **The steered slice's cell counts** ({} vs {} total, {} vs {} mean) — an artifact of the \
+            exploit kernel, not of the trigger. Measured over the {} exploit branches of that \
             slice: a child inherits its parent's draw **low byte {}% of the time** but its **top \
             byte only {}%** (chance is 1/256 ≈ 0.4%). Twiddling a *low* seed bit preserves the low \
             byte in {}/{} of those exploits; twiddling a *high* one preserves it in {}/{} ({}%). So a \
-            steered campaign resamples the low byte far less often than the top byte. The ablation \
-            slice never exploits, which is exactly why the comparison is clean there.\n\n",
+            steered campaign resamples the low byte far less often than the top byte, which inflates \
+            the top-byte candidate's cell count for a reason that has nothing to do with `0xA5`. The \
+            ablation slice never exploits, which is exactly why the comparison is clean there.\n\n",
         floor.map_or_else(|| "—".to_string(), |s| s.chain_cell()),
         ablation_twin_table(a),
-        a.primary("draw-low-256").map_or(0, |s| s.pooled_cells),
-        a.primary("draw-top-256").map_or(0, |s| s.pooled_cells),
-        a.primary("draw-low-256").map_or(0, |s| s.crash_only_cells),
-        a.primary("draw-top-256").map_or(0, |s| s.crash_only_cells),
-        cell(a.primary("draw-low-256").map_or(0, |s| s.mean_cells_q32)),
+        ablation_row(a, "draw-low-256").map_or(0, |s| s.crash_only_cells),
+        ablation_row(a, "draw-top-256").map_or(0, |s| s.crash_only_cells),
+        a.primary("draw-top-256").map_or(0, |s| s.total_cells),
+        a.primary("draw-low-256").map_or(0, |s| s.total_cells),
         cell(a.primary("draw-top-256").map_or(0, |s| s.mean_cells_q32)),
+        cell(a.primary("draw-low-256").map_or(0, |s| s.mean_cells_q32)),
         primary.locality.exploits,
         pct(primary.locality.shares_low, primary.locality.exploits),
         pct(primary.locality.shares_top, primary.locality.exploits),
@@ -466,6 +493,16 @@ fn ranking(out: &mut String, a: &Analysis) {
             primary.locality.high_bit_exploits(),
         ),
     ));
+}
+
+/// One candidate's row on the unsteered ablation slice.
+fn ablation_row<'a>(a: &'a Analysis, id: &str) -> Option<&'a crate::score::SliceScore> {
+    a.slices
+        .iter()
+        .find(|s| s.id == crate::manifest::BUG3_ABLATION)?
+        .scores
+        .iter()
+        .find(|s| s.candidate == id)
 }
 
 /// `n / d` as a percentage to one decimal place, by integer division with
@@ -493,18 +530,20 @@ fn ablation_twin_table(a: &Analysis) -> String {
         return String::new();
     };
     format!(
-        "| `bug3-ablation` (unsteered) | mean cells | (a) coverage | (b) O@{} | (b) O@{} | steering | (c) chains |\n\
-         |---|---:|---:|---:|---:|---:|---|\n\
-         | `draw-top-256` — reads the trigger byte | {} | {} | {} | {} | {} | {} |\n\
-         | `draw-low-256` — reads a byte no bug uses | {} | {} | {} | {} | {} | {} |\n",
+        "| `bug3-ablation` (unsteered) | (a) total | (a) mean | (a) coverage | (b) O@{} | (b) O@{} | steering | (c) chains |\n\
+         |---|---:|---:|---:|---:|---:|---:|---|\n\
+         | `draw-top-256` — reads the trigger byte | {} | {} | {} | {} | {} | {} | {} |\n\
+         | `draw-low-256` — reads a byte no bug uses | {} | {} | {} | {} | {} | {} | {} |\n",
         TARGET_CELLS,
         TARGET_SENSITIVITY,
+        top.total_cells,
         cell(top.mean_cells_q32),
         cell(top.breadth_q32),
         cell(top.objective_q32),
         cell(top.objective_alt_q32),
         top.cells_before_find,
         top.chain_cell(),
+        low.total_cells,
         cell(low.mean_cells_q32),
         cell(low.breadth_q32),
         cell(low.objective_q32),
@@ -524,9 +563,10 @@ fn menu(out: &mut String, a: &Analysis) {
          *distinct* eligible proposals, each with what it changes and what it risks. Candidates \
          whose every axis is identical to one already listed are the **same descriptor on this \
          corpus** — the knob that separates them addresses a distinction the traces cannot make — \
-         so they are folded into that entry and named there rather than padding the menu. That is \
-         why the third entry carries a double-digit rank: the eight rows between it and the second \
-         are all the same descriptor.\n\n",
+         so they are folded into that entry and named there rather than padding the menu. A \
+         candidate that breaks a finding chain is never offered, whatever its curves. That is why \
+         the third entry carries a double-digit rank: the six rows between it and the second are \
+         all the same descriptor.\n\n",
     );
     for entry in crate::score::menu(&primary.scores, &a.ranking, 3) {
         let s = &primary.scores[entry.row];
@@ -542,10 +582,13 @@ fn menu(out: &mut String, a: &Analysis) {
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push_str(&format!(
-                "> Indistinguishable on every axis from {tied} — ratifying any of them ratifies \
-                 this one. The `fold_k` and `Quant` knobs have **no effect whatsoever** on this \
-                 corpus: with a three-species pre-crash vocabulary, every modulus in the sweep \
-                 exceeds the largest species id, so every fold is the identity.\n\n"
+                "> Partitions the recorded arrivals **identically** to {tied} — same cells, same \
+                 admissions, same chains, same steering; the same descriptor up to cell renaming. \
+                 Ratifying any of them ratifies this one. (They differ only in `|K|`, and so in \
+                 normalized coverage: `|K|` counts the cells a config *could* key, not the ones it \
+                 did.) The `fold_k` and `Quant` knobs have **no effect whatsoever** on this corpus: \
+                 with a three-species pre-crash vocabulary, every modulus in the sweep exceeds the \
+                 largest species id, so every fold is the identity.\n\n"
             ));
         }
         out.push_str(&format!("{}\n\n", menu_prose(&s.candidate)));

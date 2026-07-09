@@ -79,9 +79,12 @@ fn run(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             } else {
                 print!("{rendered}");
-                if let Ok(committed) = std::fs::read_to_string(&path)
-                    && committed != rendered
-                {
+                // Verification mode must never pass vacuously: an unreadable or
+                // absent committed manifest is a failure, not a silent skip.
+                let committed = std::fs::read_to_string(&path).map_err(|e| {
+                    format!("cannot read the committed manifest {}: {e}", path.display())
+                })?;
+                if committed != rendered {
                     return Err("the committed manifest is stale (rerun with --write)".into());
                 }
             }

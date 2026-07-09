@@ -5,7 +5,10 @@
 //! - **(a) breadth** — cells discovered over the fixed trace set, normalized by
 //!   the candidate's key-space cardinality `|K|`. Raw QD-style scores scale with
 //!   resolution, so an unnormalized breadth would crown the finest candidate by
-//!   construction; both are reported.
+//!   construction; both are reported. Every campaign's archive is keyed in **its
+//!   own namespace**: `docs/SCORING.md` R2 pins that per-seed codebooks are
+//!   independent and cell keys are *never* compared across seeds, so breadth sums
+//!   per-campaign counts rather than unioning key bytes across seeds.
 //! - **(b) granularity** — Go-Explore's re-tune objective
 //!   `O = H_n(p) / √(|n/T − 1| + 1)` against a **stated** target cell count `T`,
 //!   computed per campaign in fixed point ([`crate::fixed`]) and averaged.
@@ -27,9 +30,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use explorer::CellKey;
+use sha2::{Digest, Sha256};
 
 use crate::candidate::{Candidate, StateProjection};
-use crate::fixed::{fmt_q32, go_explore_objective_q32, mean_q32, ratio_q32};
+use crate::fixed::{div_int_q32, fmt_q32, go_explore_objective_q32, mean_q32};
 use crate::observe::CampaignObs;
 use crate::replay::Chains;
 
@@ -109,6 +113,12 @@ struct CampaignFold {
     /// species in the slice. A cell absent from this set exists only because the
     /// guest had already crashed when it was keyed.
     untainted: BTreeSet<CellKey>,
+    /// Every arrival's cell, relabelled by first-claim order (`0` for the first
+    /// cell the campaign claimed, `1` for the second, …). This is the campaign's
+    /// **cell partition** with the key bytes stripped: two candidates that
+    /// produce the same label stream partitioned the recorded arrivals
+    /// identically, and are the same descriptor up to cell renaming.
+    labels: Vec<u32>,
 }
 
 /// Re-run the admission fold, in recorded campaign order, under `candidate`.
@@ -122,6 +132,8 @@ fn fold(candidate: &Candidate, obs: &CampaignObs, max_species: u64) -> CampaignF
     let mut first_claim: BTreeMap<CellKey, u64> = BTreeMap::new();
     let mut arrivals: BTreeMap<CellKey, u64> = BTreeMap::new();
     let mut untainted: BTreeSet<CellKey> = BTreeSet::new();
+    let mut label_of: BTreeMap<CellKey, u32> = BTreeMap::new();
+    let mut labels = Vec::new();
     let mut admitted = Vec::with_capacity(obs.branches.len());
     for branch in &obs.branches {
         let mut novel = false;
@@ -132,6 +144,8 @@ fn fold(candidate: &Candidate, obs: &CampaignObs, max_species: u64) -> CampaignF
                 untainted.insert(key.clone());
             }
             *arrivals.entry(key.clone()).or_default() += 1;
+            let next = label_of.len() as u32;
+            labels.push(*label_of.entry(key.clone()).or_insert(next));
             // First-wins: the spine's `claim`. A cell's claim outlives its
             // occupant, so novelty never resets.
             if let std::collections::btree_map::Entry::Vacant(slot) = first_claim.entry(key) {
@@ -146,6 +160,7 @@ fn fold(candidate: &Candidate, obs: &CampaignObs, max_species: u64) -> CampaignF
         arrivals,
         admitted,
         untainted,
+        labels,
     }
 }
 
@@ -248,14 +263,22 @@ pub struct SliceScore {
     pub finders: u64,
 
     // --- axis (a): breadth
-    /// Distinct cells pooled over the whole slice (cell keys are content-based,
-    /// so they compare across seeds — the task-69 M2 per-seed-codebook ruling).
-    pub pooled_cells: u64,
+    /// Distinct cells summed over the slice's campaigns, each campaign counted
+    /// **separately**.
+    ///
+    /// Cell keys are *never* compared across seeds (`docs/SCORING.md` R2: "per-seed
+    /// codebooks are independent; cell keys are never compared across seeds"). A
+    /// template species id is minted in per-campaign first-seen order, so the same
+    /// key bytes name different behaviour in two campaigns; unioning them across
+    /// seeds would silently merge unrelated cells. Every campaign's archive is
+    /// therefore keyed in its own namespace and the totals are added.
+    pub total_cells: u64,
     /// Mean distinct cells per campaign, Q32.
     pub mean_cells_q32: u64,
     /// The candidate's key-space cardinality `|K|`.
     pub key_space: u64,
-    /// `pooled_cells / |K|`, Q32 — QD coverage.
+    /// `mean_cells / |K|`, Q32 — QD coverage of one campaign's archive. Also
+    /// per-campaign, for the same reason `total_cells` is.
     pub breadth_q32: u64,
 
     // --- axis (b): granularity
@@ -284,10 +307,18 @@ pub struct SliceScore {
     /// the finding campaigns — **the steering signal**. Zero means the archive
     /// was frozen for the whole search.
     pub cells_before_find: u64,
-    /// Pooled cells that were *never* keyed on a pre-crash arrival: they exist
+    /// Cells that were *never* keyed on a pre-crash arrival, summed over the
+    /// campaigns (each in its own key namespace, as `total_cells` is): they exist
     /// only because the guest had already crashed. A cell discovered by crashing
     /// is not a cell a search could have used.
     pub crash_only_cells: u64,
+    /// A digest of the candidate's **cell partition** over the slice: every
+    /// arrival's cell, relabelled by first-claim order, hashed campaign by
+    /// campaign. Two candidates with the same digest partitioned the recorded
+    /// arrivals identically — they are the same descriptor up to cell renaming,
+    /// whatever their key bytes or their analytic `|K|`. This, not a tuple of
+    /// summary statistics, is what [`menu`] collapses on.
+    pub partition_digest: [u8; 32],
 }
 
 impl SliceScore {
@@ -333,8 +364,9 @@ pub fn score_slice(
 ) -> SliceScore {
     let key_space = candidate.key_space(constants.max_species, constants.alphabet(candidate.state));
 
-    let mut pooled: BTreeSet<CellKey> = BTreeSet::new();
-    let mut untainted: BTreeSet<CellKey> = BTreeSet::new();
+    let mut total_cells = 0u64;
+    let mut crash_only_cells = 0u64;
+    let mut partition = Sha256::new();
     let mut cells_each = Vec::with_capacity(campaigns.len());
     let mut objectives = Vec::with_capacity(campaigns.len());
     let mut objectives_alt = Vec::with_capacity(campaigns.len());
@@ -348,8 +380,19 @@ pub fn score_slice(
     for (obs, chain) in campaigns.iter().zip(chains) {
         let folded = fold(candidate, obs, constants.max_species);
 
-        pooled.extend(folded.first_claim.keys().cloned());
-        untainted.extend(folded.untainted);
+        // Per-campaign namespaces: never compare a cell key across seeds (R2).
+        total_cells += folded.first_claim.len() as u64;
+        crash_only_cells += folded
+            .first_claim
+            .keys()
+            .filter(|k| !folded.untainted.contains(*k))
+            .count() as u64;
+        // The partition, not the key bytes: a campaign boundary marker, then the
+        // first-claim-order label of every arrival.
+        partition.update(b"campaign");
+        for label in &folded.labels {
+            partition.update(label.to_le_bytes());
+        }
         cells_each.push((folded.first_claim.len() as u64) << 32);
         admitted_each.push((folded.admitted.iter().filter(|&&a| a).count() as u64) << 32);
 
@@ -383,18 +426,18 @@ pub fn score_slice(
         }
     }
 
-    let pooled_cells = pooled.len() as u64;
-    let crash_only_cells = pooled.difference(&untainted).count() as u64;
+    let mean_cells_q32 = mean_q32(&cells_each);
     SliceScore {
         crash_only_cells,
+        partition_digest: partition.finalize().into(),
         candidate: candidate.id.to_string(),
         slice: slice.to_string(),
         campaigns: campaigns.len() as u64,
         finders,
-        pooled_cells,
-        mean_cells_q32: mean_q32(&cells_each),
+        total_cells,
+        mean_cells_q32,
         key_space,
-        breadth_q32: ratio_q32(pooled_cells, key_space),
+        breadth_q32: div_int_q32(mean_cells_q32, key_space),
         objective_q32: mean_q32(&objectives),
         objective_alt_q32: mean_q32(&objectives_alt),
         chains_checked,
@@ -427,49 +470,59 @@ pub fn rank(scores: &[SliceScore]) -> Vec<usize> {
         y.chain_preserved()
             .cmp(&x.chain_preserved())
             .then(y.objective_q32.cmp(&x.objective_q32))
-            .then(y.pooled_cells.cmp(&x.pooled_cells))
+            .then(y.total_cells.cmp(&x.total_cells))
             .then(a.cmp(&b))
     });
     order
 }
 
-/// The axis tuple two candidates must share to be *the same descriptor on this
-/// corpus*: same cells, same distribution, same chains, same steering. Two rows
-/// that agree here differ only in knobs the corpus cannot exercise.
-fn fingerprint(s: &SliceScore) -> (u64, u64, u64, u64, u64, u64, u64) {
-    (
-        s.pooled_cells,
-        s.mean_cells_q32,
-        s.objective_q32,
-        s.objective_alt_q32,
-        s.chains_preserved,
-        s.ancestors_preserved,
-        s.cells_before_find,
-    )
+/// What two candidates must share to be *the same descriptor on this corpus*:
+/// an identical **cell partition** of the recorded arrivals.
+///
+/// A digest, not a tuple of summary statistics. Equal digests mean the two
+/// candidates sorted every arrival of every campaign into the same equivalence
+/// classes, in the same first-claim order — so every *measured* axis (cells,
+/// distribution, admission, chains, steering) is identical by construction, and
+/// no reported quantity can disagree without the digest disagreeing first.
+///
+/// They may still differ in `|K|`, and therefore in normalized coverage: `|K|` is
+/// an analytic property of the config (how many cells it *could* key), not of
+/// what it discovered. [`menu`] says so where it collapses them.
+fn fingerprint(s: &SliceScore) -> [u8; 32] {
+    s.partition_digest
 }
 
 /// One entry of the ratification menu: a ranked candidate, plus every candidate
-/// below it whose axes are *identical* on the primary slice.
+/// below it that induces the *same cell partition* on the primary slice.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct MenuEntry {
     /// Index into the slice's score rows.
     pub row: usize,
     /// The rank the entry earned (1-based), before collapsing.
     pub rank: usize,
-    /// Candidate ids that tie this one on every axis and are folded into it.
+    /// Candidate ids that partition the corpus identically and are folded in.
     pub tied_with: Vec<String>,
 }
 
-/// Build the ratification menu: the top `n` **distinct** proposals.
+/// Build the ratification menu: the top `n` **distinct, eligible** proposals.
 ///
-/// A candidate whose axes exactly match one already on the menu is not a second
-/// proposal — it is the same descriptor reached by a different knob, and the
-/// corpus cannot tell them apart. Listing it would pad the menu with
-/// indistinguishable rows; folding it in silently would hide that the knob does
-/// nothing. It is folded in *and named*.
+/// Two rules, both load-bearing:
+///
+/// - **A candidate that breaks a finding chain is never offered.** Axis (c)
+///   disqualifies it (law 6), and a disqualified row must not fill a menu slot
+///   just because too few candidates qualified. It is skipped entirely — neither
+///   listed nor folded into an eligible entry.
+/// - **A candidate that partitions the corpus exactly as one already on the menu
+///   is not a second proposal.** It is the same descriptor reached by a different
+///   knob, and the corpus cannot tell them apart. Listing it would pad the menu
+///   with indistinguishable rows; folding it in silently would hide that the knob
+///   does nothing. It is folded in *and named*.
 pub fn menu(scores: &[SliceScore], ranking: &[usize], n: usize) -> Vec<MenuEntry> {
     let mut entries: Vec<MenuEntry> = Vec::new();
     for (rank, &row) in ranking.iter().enumerate() {
+        if !scores[row].chain_preserved() {
+            continue;
+        }
         if let Some(existing) = entries
             .iter_mut()
             .find(|e| fingerprint(&scores[e.row]) == fingerprint(&scores[row]))
@@ -692,7 +745,7 @@ mod tests {
 
         // The one-cell floor admits only branch 0 — worse still.
         let f = score_slice(floor, "s", &[&obs], &[&chains], &K);
-        assert_eq!(f.pooled_cells, 1, "everything keys to one cell");
+        assert_eq!(f.total_cells, 1, "everything keys to one cell");
         assert!(!f.chain_preserved());
 
         // A disqualified candidate ranks below a preserved one whatever its
@@ -757,6 +810,7 @@ mod tests {
         assert_eq!(s.key_space, 1);
         assert_eq!(cell(s.breadth_q32), "1.000000", "coverage 1.0 of one cell");
         assert_eq!(s.objective_q32, 0, "and zero granularity: one cell");
+        assert_eq!(s.total_cells, 1, "one cell, one campaign");
     }
 
     /// The debut audit separates "discovered while searching" from "discovered
@@ -807,7 +861,7 @@ mod tests {
             slice: "s".into(),
             campaigns: 1,
             finders: 0,
-            pooled_cells: pooled,
+            total_cells: pooled,
             mean_cells_q32: pooled << 32,
             key_space: 8,
             breadth_q32: 0,
@@ -821,8 +875,14 @@ mod tests {
             cells_after_branch0: 0,
             cells_before_find: 0,
             crash_only_cells: 0,
+            // The partition digest, not the summary tuple, decides the collapse.
+            partition_digest: match candidate {
+                "rich" => [1u8; 32],
+                "poor" => [2u8; 32],
+                _ => [0u8; 32],
+            },
         };
-        // `v1` and `knob-a`/`knob-b` are the same descriptor on this corpus.
+        // `v1` and `knob-a`/`knob-b` induce the same partition on this corpus.
         let scores = vec![
             row("v1", 5, 4),
             row("knob-a", 5, 4),
@@ -848,6 +908,117 @@ mod tests {
 
     /// Drain's masking rule: a token holding a digit is a parameter, not part of
     /// the template. `draw` and `ace` must survive (their letters are hex digits).
+    /// **R2's per-seed pin.** Two campaigns whose codebooks mint the *same key
+    /// bytes* for different behaviour must never have those keys unioned: each
+    /// campaign's archive is keyed in its own namespace, and the totals add.
+    /// Unioning would report one cell where the corpus holds two.
+    #[test]
+    fn cell_keys_are_never_compared_across_seeds() {
+        // Two independent campaigns, each with one species. Their species ids
+        // coincide (both mint id 0 first) though nothing says they mean the same
+        // thing — exactly the collision docs/SCORING.md R2 forbids relying on.
+        let a = campaign(&[&[0]], None);
+        let b = campaign(&[&[0]], None);
+        let chains = Chains {
+            parent: vec![None],
+            admitted: vec![true],
+            find_chains: Vec::new(),
+        };
+        let s = score_slice(&v1(), "s", &[&a, &b], &[&chains, &chains], &K);
+        assert_eq!(
+            s.total_cells, 2,
+            "one cell per campaign, summed — not unioned"
+        );
+        assert_eq!(cell(s.mean_cells_q32), "1.000000");
+        // Coverage is per-campaign too: mean / |K|, never total / |K|.
+        assert_eq!(
+            s.breadth_q32,
+            crate::fixed::div_int_q32(s.mean_cells_q32, s.key_space)
+        );
+    }
+
+    /// The partition digest is the identity two candidates must share to be the
+    /// same descriptor: equal iff they sort every arrival into the same classes.
+    #[test]
+    fn the_partition_digest_tracks_the_cell_partition() {
+        let obs = campaign(&[&[0], &[0, 1]], None);
+        let chains = Chains {
+            parent: vec![None, None],
+            admitted: vec![true, true],
+            find_chains: Vec::new(),
+        };
+        let all = candidates();
+        let get = |id: &str| all.iter().find(|c| c.id == id).expect("candidate");
+        let digest = |id: &str| score_slice(get(id), "s", &[&obs], &[&chains], &K).partition_digest;
+
+        // Same partition, different key bytes AND different |K| (12 vs 16 vs 4):
+        // these are one descriptor reached by three knobs.
+        assert_eq!(digest("v1-shipped"), digest("quant-identity"));
+        assert_eq!(digest("v1-shipped"), digest("lastnew-only"));
+        assert_eq!(digest("v1-shipped"), digest("foldk-16"));
+        assert_ne!(
+            score_slice(get("v1-shipped"), "s", &[&obs], &[&chains], &K).key_space,
+            score_slice(get("quant-identity"), "s", &[&obs], &[&chains], &K).key_space,
+            "identical partition, different key-space denominators"
+        );
+        // A genuinely coarser descriptor partitions differently.
+        assert_ne!(digest("v1-shipped"), digest("no-channels"));
+    }
+
+    /// A disqualified candidate never fills a menu slot, even when too few
+    /// candidates qualify to fill it — axis (c) is a gate, not a tie-break.
+    #[test]
+    fn the_menu_never_offers_a_disqualified_candidate() {
+        let mut broken = SliceScore {
+            candidate: "broken".into(),
+            slice: "s".into(),
+            campaigns: 1,
+            finders: 1,
+            total_cells: 99,
+            mean_cells_q32: 99 << 32,
+            key_space: 99,
+            breadth_q32: 0,
+            objective_q32: u64::MAX, // the best curves in the field…
+            objective_alt_q32: u64::MAX,
+            chains_checked: 1,
+            chains_preserved: 0, // …but it would have lost the bug.
+            ancestors_checked: 1,
+            ancestors_preserved: 0,
+            mean_admitted_q32: 0,
+            cells_after_branch0: 0,
+            cells_before_find: 0,
+            crash_only_cells: 0,
+            partition_digest: [7u8; 32],
+        };
+        let mut good = broken.clone();
+        good.candidate = "good".into();
+        good.objective_q32 = 1;
+        good.objective_alt_q32 = 1;
+        good.chains_preserved = 1;
+        good.ancestors_preserved = 1;
+        good.partition_digest = [8u8; 32];
+
+        let scores = vec![broken.clone(), good.clone()];
+        let order = rank(&scores);
+        assert_eq!(
+            order[0], 1,
+            "the disqualified row ranks last despite its curves"
+        );
+
+        // Room for three; only one qualifies. The menu offers one, not two.
+        let m = menu(&scores, &order, 3);
+        assert_eq!(m.len(), 1);
+        assert_eq!(scores[m[0].row].candidate, "good");
+
+        // And it is never folded into an eligible entry as a "tie" either.
+        broken.partition_digest = good.partition_digest;
+        let scores = vec![broken, good];
+        let order = rank(&scores);
+        let m = menu(&scores, &order, 3);
+        assert_eq!(m.len(), 1);
+        assert!(m[0].tied_with.is_empty(), "a disqualified row is not a tie");
+    }
+
     #[test]
     fn normalize_line_masks_tokens_that_hold_a_digit() {
         assert_eq!(normalize_line("draw=0xa5f1 bits=8"), "<*> <*>");

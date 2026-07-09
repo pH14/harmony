@@ -50,13 +50,20 @@ fn the_control_reproduces_the_recorded_campaigns() {
 
     // CORRELATION-REPORT: "Cell counts (fairness): ~4 cells for both bugs 1 and
     // 3 under both configs" and "cells@256 takes only two values (3 or 4)".
+    // Every campaign's cells are counted in its own key namespace (R2), so the
+    // slice total is exactly `4 x finders + 3 x non-finders`.
     for slice in &a.slices {
         let v1 = slice
             .scores
             .iter()
             .find(|s| s.candidate == "v1-shipped")
             .expect("the control is scored on every slice");
-        assert_eq!(v1.pooled_cells, 4, "{}: 4 distinct cells pooled", slice.id);
+        assert_eq!(
+            v1.total_cells,
+            4 * v1.finders + 3 * (v1.campaigns - v1.finders),
+            "{}: every campaign holds exactly 3 or 4 cells",
+            slice.id
+        );
         let mean = v1.mean_cells_q32 >> 32;
         assert!(
             (3..=4).contains(&mean),
@@ -64,6 +71,36 @@ fn the_control_reproduces_the_recorded_campaigns() {
             slice.id
         );
     }
+}
+
+/// **R2's per-seed pin, on the real corpus.** Cell keys are never compared across
+/// seeds: each campaign's archive is keyed in its own namespace, so the slice
+/// total is the *sum* of per-campaign cell counts, not a cross-seed union. The
+/// two coincide only if every campaign discovers the same cells, which they do
+/// not.
+#[test]
+fn breadth_is_per_campaign_never_pooled_across_seeds() {
+    for slice in &analysis().slices {
+        for s in &slice.scores {
+            let mean = s.mean_cells_q32;
+            // total == mean x campaigns, to within the fixed-point mean's rounding.
+            let reconstructed = (u128::from(mean) * u128::from(s.campaigns)) >> 32;
+            assert!(
+                (reconstructed as u64).abs_diff(s.total_cells) <= 1,
+                "{}/{}: total {} is not the sum of per-campaign counts",
+                slice.id,
+                s.candidate,
+                s.total_cells
+            );
+            // Coverage normalizes the per-campaign mean, never the slice total.
+            assert_eq!(s.breadth_q32, rekey::fixed::div_int_q32(mean, s.key_space));
+        }
+    }
+    // A cross-seed union would have collapsed the 40 bug-3 campaigns' 149 cells
+    // into the 4 abstract cells their count-based keys share.
+    let v1 = primary("v1-shipped");
+    assert_eq!(v1.total_cells, 149, "40 campaigns: 29 x 4 + 11 x 3");
+    assert!(v1.total_cells > 4, "not a cross-seed union");
 }
 
 /// The manifest committed at `campaign-data/rekey-corpus.json` is the one the
@@ -188,7 +225,11 @@ fn v1s_only_post_genesis_cell_is_the_crash() {
             "{}: one post-genesis cell per finder — the crash",
             slice.id
         );
-        assert_eq!(v1.crash_only_cells, 1, "{}: and it is crash-only", slice.id);
+        assert_eq!(
+            v1.crash_only_cells, d.finders,
+            "{}: exactly one crash-only cell per finding campaign",
+            slice.id
+        );
     }
 }
 
@@ -209,15 +250,36 @@ fn no_v1_knob_setting_changes_anything() {
         "lastnew-only",
     ] {
         let s = primary(knob);
-        assert_eq!(s.pooled_cells, v1.pooled_cells, "{knob}: same cells");
+        assert_eq!(
+            s.partition_digest, v1.partition_digest,
+            "{knob}: the same cell partition, arrival for arrival"
+        );
+        assert_eq!(s.total_cells, v1.total_cells, "{knob}: same cells");
         assert_eq!(
             s.objective_q32, v1.objective_q32,
             "{knob}: same granularity"
         );
         assert_eq!(s.cells_before_find, 0, "{knob}: still no steering");
     }
-    assert!(primary("species-only").pooled_cells < v1.pooled_cells);
-    assert_eq!(primary("no-channels").pooled_cells, 1, "the floor");
+    // `|K|` is a property of the config, not of what it discovered, so an
+    // identical partition can still normalize to a different coverage. The menu
+    // says so where it collapses these rows.
+    assert_ne!(
+        primary("quant-identity").breadth_q32,
+        v1.breadth_q32,
+        "identical partition, different key-space denominator"
+    );
+
+    assert!(primary("species-only").total_cells < v1.total_cells);
+    assert_ne!(
+        primary("species-only").partition_digest,
+        v1.partition_digest
+    );
+    assert_eq!(
+        primary("no-channels").total_cells,
+        v1.campaigns,
+        "the floor: one cell per campaign"
+    );
 }
 
 /// **Axis (c) is vacuous on this corpus, and the report must not pretend
@@ -254,8 +316,9 @@ fn chain_preservation_discriminates_nothing_here() {
 
 /// **The twin control.** `draw-top-256` reads the byte bug 3's trigger compares;
 /// `draw-low-256` reads a byte no trigger reads. On the unsteered ablation slice
-/// — the only slice free of the exploit's confound — no axis separates them, and
-/// where they differ at all the *blind* one looks broader. Law 6, on our corpus.
+/// — the only slice free of the exploit's confound — **no axis separates them**.
+/// Where they part company, it is crash fragmentation or the exploit kernel's
+/// bit-locality, never the trigger. Law 6, on our corpus.
 #[test]
 fn the_trigger_blind_twin_is_not_distinguishable() {
     let ablation = analysis()
@@ -272,6 +335,9 @@ fn the_trigger_blind_twin_is_not_distinguishable() {
     };
     let (top, low) = (row("draw-top-256"), row("draw-low-256"));
 
+    // Both have identical key spaces — the twin is exact by construction.
+    assert_eq!(top.key_space, low.key_space);
+
     // Both objectives agree to well under 1% of `1.0` in Q32.
     let tolerance = rekey::fixed::ONE / 100;
     assert!(
@@ -286,25 +352,36 @@ fn the_trigger_blind_twin_is_not_distinguishable() {
         top.objective_alt_q32,
         low.objective_alt_q32
     );
-    // Mean cells per campaign agree within one cell.
+    // Mean cells per campaign, and hence coverage, agree within two cells.
     assert!(top.mean_cells_q32.abs_diff(low.mean_cells_q32) < rekey::fixed::ONE * 2);
+    assert!(top.breadth_q32.abs_diff(low.breadth_q32) < tolerance);
+    // Total cells agree within 1%.
+    assert!(top.total_cells.abs_diff(low.total_cells) * 100 < top.total_cells);
     // Steering agrees within 1%.
     assert!(top.cells_before_find.abs_diff(low.cells_before_find) * 100 < top.cells_before_find);
-    // Both have identical key spaces — the twin is exact by construction.
-    assert_eq!(top.key_space, low.key_space);
+    // And chain preservation is vacuous for both.
+    assert_eq!(top.chain_cell(), low.chain_cell());
 
-    // Where they differ, the blind twin looks *better*: it pools more cells, and
-    // the entire surplus is crash-only fragmentation.
-    assert!(low.pooled_cells > top.pooled_cells);
-    assert_eq!(top.crash_only_cells, 1, "the top byte pins every crash");
-    assert!(
-        low.crash_only_cells > 1,
-        "the low byte scatters the crash across cells"
-    );
+    // The one place they part company on the clean slice cuts AGAINST the
+    // trigger-aligned candidate: the top byte pins every crashing branch to one
+    // cell per campaign; the low byte fragments the crash across many.
     assert_eq!(
-        low.pooled_cells - top.pooled_cells,
-        low.crash_only_cells - top.crash_only_cells,
-        "the whole pooled surplus is crash fragmentation"
+        top.crash_only_cells, top.finders,
+        "one crash cell per finding campaign — every crash draws 0xA5"
+    );
+    assert!(
+        low.crash_only_cells > top.crash_only_cells,
+        "the low byte scatters the crash: {} vs {}",
+        low.crash_only_cells,
+        top.crash_only_cells
+    );
+
+    // On the STEERED slice they do differ — and the difference is the exploit's,
+    // not the trigger's (see `the_exploit_preserves_the_low_byte_but_not_the_top_byte`).
+    let (ptop, plow) = (primary("draw-top-256"), primary("draw-low-256"));
+    assert!(
+        ptop.total_cells > plow.total_cells,
+        "the exploit resamples the low byte less, so the low twin sees fewer cells"
     );
 }
 

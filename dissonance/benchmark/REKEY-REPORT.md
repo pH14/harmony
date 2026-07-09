@@ -14,6 +14,15 @@
 > All arithmetic is integer/fixed-point; the report has no generated-date line, so two
 > runs on any two hosts produce byte-identical bytes.
 
+> **Regenerated after PR #94 round 1.** Axis (a) previously unioned cell keys across
+> `(config, seed)` campaigns, which R2 forbids (per-seed codebooks are independent; cell
+> keys are never compared across seeds). Breadth is now per-campaign, and the twin-control
+> evidence moved with it: on the steered slice the trigger-*aligned* candidate now pools
+> more cells, not fewer, and the trigger-blind twin's apparent advantage there is gone.
+> **The top-three menu is unchanged** (`draw-top-64` → `v1-shipped` → `draw-top-256`), and
+> so is every conclusion: on the unsteered ablation slice — the one slice where the
+> comparison is clean — the twins remain indistinguishable on every axis.
+
 ## The finding, in one paragraph
 
 The shipped `CellFn` v1 discovers **not one cell while the bug-3 search is still searching**,
@@ -95,7 +104,7 @@ Corpus constants used by the key-space normalizer, derived from the observations
 
 ## The three axes
 
-- **(a) breadth** — cells discovered over the fixed trace set. `pooled` is the distinct cells over the whole slice; `mean` is per campaign; `coverage` normalizes `pooled` by the candidate's key-space cardinality `|K|`, because raw QD-style scores scale with resolution and would crown the finest candidate by construction.
+- **(a) breadth** — cells discovered over the fixed trace set. Every campaign's archive is keyed in **its own namespace**: `docs/SCORING.md` R2 pins that per-seed codebooks are independent and *cell keys are never compared across seeds*, because a template species id is minted in per-campaign first-seen order, so the same key bytes name different behaviour in two campaigns. `total` therefore sums each campaign's distinct cells rather than unioning keys across seeds; `mean` is per campaign; `coverage` is `mean / |K|`, the QD coverage of one campaign's archive, normalized because raw QD-style scores scale with resolution and would crown the finest candidate by construction.
 - **(b) granularity** — Go-Explore's re-tune objective `O = H_n(p)/√(|n/T−1|+1)`, per campaign, averaged. `p` is the arrival count per cell (the STADS abundance stream). The **stated target** is `T = 64` — a cell per ~8 branches of the 512-branch budget: fine enough that the frontier has somewhere to go, coarse enough that each cell still earns search energy. `O@256` re-scores at a second target so the ranking's dependence on `T` is visible rather than hidden.
 - **(c) chain preservation** — mandatory, law 6. The admission fold is re-run in recorded campaign order under the candidate; every **proper ancestor** of every bug-finding run must still claim a cell when it arrives. A candidate that would have judged any link uninteresting would have lost the bug.
 
@@ -103,39 +112,39 @@ Diagnostics, clearly *not* a fourth axis: `admitted` is the mean frontier size a
 
 ### `bug3-campaign` — 40 campaigns, 29 found the bug
 
-| candidate | (a) pooled | (a) mean | (a) coverage | (b) O@64 | (b) O@256 | (c) chains | admitted | cells>0 | steering | crash-only |
+| candidate | (a) total | (a) mean | (a) coverage | (b) O@64 | (b) O@256 | (c) chains | admitted | cells>0 | steering | crash-only |
 |---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|
-| `v1-shipped` | 4 | 3.725000 | 0.333333 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `foldk-16` | 4 | 3.725000 | 0.333333 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `foldk-32` | 4 | 3.725000 | 0.333333 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `foldk-128` | 4 | 3.725000 | 0.333333 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `foldk-256` | 4 | 3.725000 | 0.333333 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `quant-identity` | 4 | 3.725000 | 0.250000 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `species-only` | 3 | 2.725000 | 1.000000 | 0.381124 | 0.378162 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `lastnew-only` | 4 | 3.725000 | 1.000000 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 1 |
-| `no-channels` | 1 | 1.000000 | 1.000000 | 0.000000 | 0.000000 | 29/29 chains, 4/4 ancestors | 1.000000 | 0 | 0 | 0 |
-| `draw-top-64` | 67 | 65.700000 | 0.085897 | 0.784615 | 0.605753 | 29/29 chains, 4/4 ancestors | 63.375000 | 2508 | 1331 | 1 |
-| `draw-top-256` | 259 | 187.825000 | 0.083982 | 0.446541 | 0.672845 | 29/29 chains, 4/4 ancestors | 185.100000 | 7393 | 2841 | 1 |
-| `draw-top-only-256` | 257 | 186.100000 | 1.000000 | 0.417338 | 0.624551 | 29/29 chains, 4/4 ancestors | 185.100000 | 7364 | 2841 | 0 |
-| `draw-low-256` | 300 | 169.450000 | 0.097276 | 0.438099 | 0.610901 | 29/29 chains, 4/4 ancestors | 166.625000 | 6658 | 2614 | 42 |
+| `v1-shipped` | 149 | 3.725000 | 0.310417 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `foldk-16` | 149 | 3.725000 | 0.310417 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `foldk-32` | 149 | 3.725000 | 0.310417 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `foldk-128` | 149 | 3.725000 | 0.310417 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `foldk-256` | 149 | 3.725000 | 0.310417 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `quant-identity` | 149 | 3.725000 | 0.232812 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `species-only` | 109 | 2.725000 | 0.908333 | 0.381124 | 0.378162 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `lastnew-only` | 149 | 3.725000 | 0.931250 | 0.529853 | 0.524069 | 29/29 chains, 4/4 ancestors | 1.725000 | 29 | 0 | 29 |
+| `no-channels` | 40 | 1.000000 | 1.000000 | 0.000000 | 0.000000 | 29/29 chains, 4/4 ancestors | 1.000000 | 0 | 0 | 0 |
+| `draw-top-64` | 2628 | 65.700000 | 0.084231 | 0.784615 | 0.605753 | 29/29 chains, 4/4 ancestors | 63.375000 | 2508 | 1331 | 29 |
+| `draw-top-256` | 7513 | 187.825000 | 0.060903 | 0.446541 | 0.672845 | 29/29 chains, 4/4 ancestors | 185.100000 | 7393 | 2841 | 29 |
+| `draw-top-only-256` | 7444 | 186.100000 | 0.724125 | 0.417338 | 0.624551 | 29/29 chains, 4/4 ancestors | 185.100000 | 7364 | 2841 | 0 |
+| `draw-low-256` | 6778 | 169.450000 | 0.054945 | 0.438099 | 0.610901 | 29/29 chains, 4/4 ancestors | 166.625000 | 6658 | 2614 | 51 |
 
 ### `bug3-ablation` — 20 campaigns, 18 found the bug
 
-| candidate | (a) pooled | (a) mean | (a) coverage | (b) O@64 | (b) O@256 | (c) chains | admitted | cells>0 | steering | crash-only |
+| candidate | (a) total | (a) mean | (a) coverage | (b) O@64 | (b) O@256 | (c) chains | admitted | cells>0 | steering | crash-only |
 |---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|
-| `v1-shipped` | 4 | 3.900000 | 0.333333 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `foldk-16` | 4 | 3.900000 | 0.333333 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `foldk-32` | 4 | 3.900000 | 0.333333 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `foldk-128` | 4 | 3.900000 | 0.333333 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `foldk-256` | 4 | 3.900000 | 0.333333 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `quant-identity` | 4 | 3.900000 | 0.250000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `species-only` | 3 | 2.900000 | 1.000000 | 0.348770 | 0.345826 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `lastnew-only` | 4 | 3.900000 | 1.000000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 1 |
-| `no-channels` | 1 | 1.000000 | 1.000000 | 0.000000 | 0.000000 | 18/18 (vacuous) | 1.000000 | 0 | 0 | 0 |
-| `draw-top-64` | 67 | 66.900000 | 0.085897 | 0.793086 | 0.614937 | 18/18 (vacuous) | 64.600000 | 1278 | 941 | 1 |
-| `draw-top-256` | 259 | 225.150000 | 0.083982 | 0.404594 | 0.716860 | 18/18 (vacuous) | 222.250000 | 4443 | 2189 | 1 |
-| `draw-top-only-256` | 257 | 223.250000 | 1.000000 | 0.379366 | 0.667117 | 18/18 (vacuous) | 222.250000 | 4425 | 2189 | 0 |
-| `draw-low-256` | 294 | 223.450000 | 0.095331 | 0.405902 | 0.714294 | 18/18 (vacuous) | 220.200000 | 4409 | 2194 | 36 |
+| `v1-shipped` | 78 | 3.900000 | 0.325000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `foldk-16` | 78 | 3.900000 | 0.325000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `foldk-32` | 78 | 3.900000 | 0.325000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `foldk-128` | 78 | 3.900000 | 0.325000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `foldk-256` | 78 | 3.900000 | 0.325000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `quant-identity` | 78 | 3.900000 | 0.243750 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `species-only` | 58 | 2.900000 | 0.966667 | 0.348770 | 0.345826 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `lastnew-only` | 78 | 3.900000 | 0.975000 | 0.508232 | 0.502380 | 18/18 (vacuous) | 1.900000 | 18 | 0 | 18 |
+| `no-channels` | 20 | 1.000000 | 1.000000 | 0.000000 | 0.000000 | 18/18 (vacuous) | 1.000000 | 0 | 0 | 0 |
+| `draw-top-64` | 1338 | 66.900000 | 0.085769 | 0.793086 | 0.614937 | 18/18 (vacuous) | 64.600000 | 1278 | 941 | 18 |
+| `draw-top-256` | 4503 | 225.150000 | 0.073006 | 0.404594 | 0.716860 | 18/18 (vacuous) | 222.250000 | 4443 | 2189 | 18 |
+| `draw-top-only-256` | 4465 | 223.250000 | 0.868677 | 0.379366 | 0.667117 | 18/18 (vacuous) | 222.250000 | 4425 | 2189 | 0 |
+| `draw-low-256` | 4469 | 223.450000 | 0.072455 | 0.405902 | 0.714294 | 18/18 (vacuous) | 220.200000 | 4409 | 2194 | 39 |
 
 ## Why v1 is blind: the fourth cell *is* the crash
 
@@ -160,21 +169,21 @@ This is not a bug in the marker filter's intent; it is the honest consequence of
 
 Chain preservation **gates**: a candidate that breaks any finding chain is disqualified outright, whatever its curves. Survivors are ordered by the granularity objective at the stated target, tie-broken by raw breadth and then by declaration order — an exact tie means the two candidates *are the same descriptor on this corpus*, and the control is declared first, so a knob variant can never displace the v1 row it is indistinguishable from. On this corpus the gate disqualifies **nothing**; see below.
 
-| # | candidate | (b) O@64 | (a) pooled | (c) chains | steering | verdict |
+| # | candidate | (b) O@64 | (a) total | (c) chains | steering | verdict |
 |---:|---|---:|---:|---|---:|---|
-| 1 | `draw-top-64` | 0.784615 | 67 | 29/29 chains, 4/4 ancestors | 1331 | eligible |
-| 2 | `v1-shipped` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 3 | `foldk-16` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 4 | `foldk-32` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 5 | `foldk-128` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 6 | `foldk-256` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 7 | `quant-identity` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 8 | `lastnew-only` | 0.529853 | 4 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 9 | `draw-top-256` | 0.446541 | 259 | 29/29 chains, 4/4 ancestors | 2841 | eligible |
-| 10 | `draw-low-256` | 0.438099 | 300 | 29/29 chains, 4/4 ancestors | 2614 | eligible |
-| 11 | `draw-top-only-256` | 0.417338 | 257 | 29/29 chains, 4/4 ancestors | 2841 | eligible |
-| 12 | `species-only` | 0.381124 | 3 | 29/29 chains, 4/4 ancestors | 0 | eligible |
-| 13 | `no-channels` | 0.000000 | 1 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 1 | `draw-top-64` | 0.784615 | 2628 | 29/29 chains, 4/4 ancestors | 1331 | eligible |
+| 2 | `v1-shipped` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 3 | `foldk-16` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 4 | `foldk-32` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 5 | `foldk-128` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 6 | `foldk-256` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 7 | `quant-identity` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 8 | `lastnew-only` | 0.529853 | 149 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 9 | `draw-top-256` | 0.446541 | 7513 | 29/29 chains, 4/4 ancestors | 2841 | eligible |
+| 10 | `draw-low-256` | 0.438099 | 6778 | 29/29 chains, 4/4 ancestors | 2614 | eligible |
+| 11 | `draw-top-only-256` | 0.417338 | 7444 | 29/29 chains, 4/4 ancestors | 2841 | eligible |
+| 12 | `species-only` | 0.381124 | 109 | 29/29 chains, 4/4 ancestors | 0 | eligible |
+| 13 | `no-channels` | 0.000000 | 40 | 29/29 chains, 4/4 ancestors | 0 | eligible |
 
 **The ranking is a function of the stated target, not of the corpus.** At the stated `T = 64` the order is `draw-top-64` → `v1-shipped` → `foldk-16`. At `T = 256` it becomes `draw-top-256` → `draw-top-only-256` → `draw-low-256` — the two `draw-top-*` candidates swap, because Go-Explore's penalty term `√(|n/T−1|+1)` is asymmetric (undershooting the target costs at most `√2`, overshooting is unbounded), so `T` alone decides how much resolution is "too much". Choosing `T` is a human judgment about how much search energy a cell should get; the harness cannot make it, and it is precisely the kind of decision R2 reserves for ratification.
 
@@ -185,23 +194,23 @@ The primary slice's 29 finding chains contain **4 proper ancestors in total**, a
 
 The consequence is not subtle: **`no-channels` — the candidate that keys all 30 720 branches into a single cell — passes axis (c) with 29/29 chains, 4/4 ancestors.** The playbook's one **bug-based** axis, the one law 6 makes mandatory, cannot distinguish the shipped descriptor from a constant function. It is computed and reported because it is mandatory, and because it *would* fail a candidate on a corpus with real chain depth (the unit tests exercise exactly that). Here it crowns nothing and kills nothing.
 
-So the ranking rests entirely on axes (a) and (b) — the discovery curves law 6 disqualifies as sole evidence. **And on the ablation slice, the one slice free of the exploit's confound, the trigger-aligned `draw-top-256` and its trigger-blind twin `draw-low-256` are indistinguishable on every quantity a search could use:**
+So the ranking rests entirely on axes (a) and (b) — the discovery curves law 6 disqualifies as sole evidence. **And on the ablation slice, the one slice free of the exploit's confound, the trigger-aligned `draw-top-256` and its trigger-blind twin `draw-low-256` are indistinguishable on every axis:**
 
-| `bug3-ablation` (unsteered) | mean cells | (a) coverage | (b) O@64 | (b) O@256 | steering | (c) chains |
-|---|---:|---:|---:|---:|---:|---|
-| `draw-top-256` — reads the trigger byte | 225.150000 | 0.083982 | 0.404594 | 0.716860 | 2189 | 18/18 (vacuous) |
-| `draw-low-256` — reads a byte no bug uses | 223.450000 | 0.095331 | 0.405902 | 0.714294 | 2194 | 18/18 (vacuous) |
+| `bug3-ablation` (unsteered) | (a) total | (a) mean | (a) coverage | (b) O@64 | (b) O@256 | steering | (c) chains |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `draw-top-256` — reads the trigger byte | 4503 | 225.150000 | 0.073006 | 0.404594 | 0.716860 | 2189 | 18/18 (vacuous) |
+| `draw-low-256` — reads a byte no bug uses | 4469 | 223.450000 | 0.072455 | 0.405902 | 0.714294 | 2194 | 18/18 (vacuous) |
 
-The two candidates read the same 64-bit draw. One reads the byte the bug compares; the other reads a byte no trigger in the benchmark ever looks at. Mean cells per campaign, the objective at both targets, steering, and chain preservation all agree to within noise. That is Böhme–Szekeres–Metzman (ICSE 2022) reproduced on harmony's own corpus, and it is the reason this report hands over a menu rather than a winner.
+The two candidates read the same 64-bit draw. One reads the byte the bug compares; the other reads a byte no trigger in the benchmark ever looks at. Total and mean cells, coverage, the objective at both targets, steering, and chain preservation all agree to within noise. That is Böhme–Szekeres–Metzman (ICSE 2022) reproduced on harmony's own corpus, and it is the reason this report hands over a menu rather than a winner.
 
-The two places they *do* differ both cut **against** the trigger-aligned candidate:
+They part company in exactly two places, and **neither is evidence of trigger alignment**:
 
-1. **Pooled cells.** `draw-low-256` pools more (300 vs 259 on the campaign slice) — and the entire surplus is `crash-only` cells (42 vs 1). The top-byte projection pins every crashing branch to the one cell `0xA5`; the low-byte projection scatters them across as many cells as they have distinct low bytes. **Raw pooled breadth rewards the trigger-blind descriptor, for fragmenting the crash it should be ignoring.**
-2. **Mean cells per campaign** on the *steered* slice (169.450000 vs 187.825000), which is an artifact of the exploit rather than of the trigger. Measured over the 7660 exploit branches of that slice: a child inherits its parent's draw **low byte 43.9% of the time** but its **top byte only 0.4%** (chance is 1/256 ≈ 0.4%). Twiddling a *low* seed bit preserves the low byte in 0/925 of those exploits; twiddling a *high* one preserves it in 3366/6735 (50.0%). So a steered campaign resamples the low byte far less often than the top byte. The ablation slice never exploits, which is exactly why the comparison is clean there.
+1. **Crash fragmentation.** Even on the clean slice, `draw-low-256` mints 39 `crash-only` cells to `draw-top-256`'s 18 — and the top byte's count is *exactly* one per finding campaign, because every crashing branch draws the same top byte `0xA5`, while the low byte scatters those branches across as many cells as they have distinct low bytes. Those cells are keyed only after the guest has already crashed. **Raw breadth rewards the trigger-blind descriptor here, for fragmenting the crash it should be ignoring.**
+2. **The steered slice's cell counts** (7513 vs 6778 total, 187.825000 vs 169.450000 mean) — an artifact of the exploit kernel, not of the trigger. Measured over the 7660 exploit branches of that slice: a child inherits its parent's draw **low byte 43.9% of the time** but its **top byte only 0.4%** (chance is 1/256 ≈ 0.4%). Twiddling a *low* seed bit preserves the low byte in 0/925 of those exploits; twiddling a *high* one preserves it in 3366/6735 (50.0%). So a steered campaign resamples the low byte far less often than the top byte, which inflates the top-byte candidate's cell count for a reason that has nothing to do with `0xA5`. The ablation slice never exploits, which is exactly why the comparison is clean there.
 
 ## The ratification menu
 
-**A human (Paul) ratifies. The harness never auto-promotes.** The three highest-ranked *distinct* eligible proposals, each with what it changes and what it risks. Candidates whose every axis is identical to one already listed are the **same descriptor on this corpus** — the knob that separates them addresses a distinction the traces cannot make — so they are folded into that entry and named there rather than padding the menu. That is why the third entry carries a double-digit rank: the eight rows between it and the second are all the same descriptor.
+**A human (Paul) ratifies. The harness never auto-promotes.** The three highest-ranked *distinct* eligible proposals, each with what it changes and what it risks. Candidates whose every axis is identical to one already listed are the **same descriptor on this corpus** — the knob that separates them addresses a distinction the traces cannot make — so they are folded into that entry and named there rather than padding the menu. A candidate that breaks a finding chain is never offered, whatever its curves. That is why the third entry carries a double-digit rank: the six rows between it and the second are all the same descriptor.
 
 ### `draw-top-64` — ranked 1
 
@@ -211,7 +220,7 @@ The two places they *do* differ both cut **against** the trigger-aligned candida
 
 ### `v1-shipped` — ranked 2
 
-> Indistinguishable on every axis from `foldk-16`, `foldk-32`, `foldk-128`, `foldk-256`, `quant-identity`, `lastnew-only` — ratifying any of them ratifies this one. The `fold_k` and `Quant` knobs have **no effect whatsoever** on this corpus: with a three-species pre-crash vocabulary, every modulus in the sweep exceeds the largest species id, so every fold is the identity.
+> Partitions the recorded arrivals **identically** to `foldk-16`, `foldk-32`, `foldk-128`, `foldk-256`, `quant-identity`, `lastnew-only` — same cells, same admissions, same chains, same steering; the same descriptor up to cell renaming. Ratifying any of them ratifies this one. (They differ only in `|K|`, and so in normalized coverage: `|K|` counts the cells a config *could* key, not the ones it did.) The `fold_k` and `Quant` knobs have **no effect whatsoever** on this corpus: with a three-species pre-crash vocabulary, every modulus in the sweep exceeds the largest species id, so every fold is the identity.
 
 **What changes.** Nothing. This row is the control, and its reproduction of the campaign's recorded discovery events (all 60 campaigns, every branch, exactly) is the harness's own correctness gate.
 
@@ -221,7 +230,7 @@ The two places they *do* differ both cut **against** the trigger-aligned candida
 
 **What changes.** The cell key gains one chosen sparse state channel — the entropy draw the workload already prints on its console, keyed on its top byte, unfolded. The template channels stay exactly as shipped. Cells go from 3–4 per campaign to hundreds, the frontier stops saturating after branch 0, and — for the first time — the archive grows *while the search is still searching* rather than only when it crashes.
 
-**What it risks.** This is the trigger byte. Bug 3 fires exactly when `draw >> 56 == 0xA5`, so this descriptor was chosen with the answer in hand, and its twin control (`draw-low-256`, the same draw's trigger-blind low byte) matches it on every quantity a search could use. Nothing in this report distinguishes them in the trigger's favour — where they differ, the *blind* one looks better. That is law 6 (Böhme–Szekeres–Metzman, ICSE 2022) reproduced on harmony's own corpus. Ratifying it is a bet that *some* projection of a guest's chosen state correlates with *some* class of trigger — which is IJON's claim, and a reasonable one — not evidence that this one does. Its cost is also real: 257× the cell space divides per-cell search energy 257 ways (RAID'19: the two most sensitive metrics tested finish below baseline because promotion explodes). Confirm live before believing it.
+**What it risks.** This is the trigger byte. Bug 3 fires exactly when `draw >> 56 == 0xA5`, so this descriptor was chosen with the answer in hand, and its twin control (`draw-low-256`, the same draw's trigger-blind low byte) matches it on every axis of the unsteered ablation slice. Where the two part company it is the exploit kernel's bit-locality talking, or the blind twin fragmenting the crash — never the trigger. That is law 6 (Böhme–Szekeres–Metzman, ICSE 2022) reproduced on harmony's own corpus. Ratifying it is a bet that *some* projection of a guest's chosen state correlates with *some* class of trigger — which is IJON's claim, and a reasonable one — not evidence that this one does. Its cost is also real: 257× the cell space divides per-cell search energy 257 ways (RAID'19: the two most sensitive metrics tested finish below baseline because promotion explodes). Confirm live before believing it.
 
 ### The recommendation the harness is entitled to make
 

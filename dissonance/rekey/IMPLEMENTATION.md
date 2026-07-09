@@ -28,6 +28,35 @@ Two results, both stronger than the spec anticipated, both gated by tests:
    separates. `foldk-{16,32,128,256}`, `quant-identity` and `lastnew-only` score *identically* to
    the control on every axis. Only a new channel moves anything.
 
+## Round-1 review (PR #94)
+
+Three blocking P1s in `score.rs`, all real, all fixed; the report was regenerated from the frozen
+corpus (the re-key is free by design) and **the top-three menu did not change**.
+
+1. **Axis (a) unioned cell keys across seeds**, which `docs/SCORING.md` R2 forbids outright — "per-seed
+   codebooks are independent; cell keys are never compared across seeds". A template species id is
+   minted in per-campaign first-seen order, so the same key bytes name different behaviour in two
+   campaigns. Each campaign's archive is now keyed in its own namespace: `total_cells` sums
+   per-campaign counts and `coverage` normalizes the per-campaign *mean* by `|K|`. The twin-control
+   evidence moved with it — on the steered slice the trigger-*aligned* candidate now shows more
+   cells, not fewer, and the blind twin's apparent breadth advantage there was an artifact of the
+   cross-seed union. The conclusion is unchanged and sharper: on the *unsteered* ablation slice, the
+   only slice free of the exploit's confound, the twins are indistinguishable on every axis.
+2. **The menu's collapse fingerprint omitted a reported axis.** `v1-shipped` (0.310), `quant-identity`
+   (0.233) and `lastnew-only` (0.931) were folded together as "identical on every axis" while their
+   coverage differed. The fingerprint is now a **partition digest**: every arrival's cell, relabelled
+   by first-claim order, hashed campaign by campaign. Equal digests mean the two candidates sorted
+   every arrival into the same equivalence classes, so no *measured* axis can disagree. They may
+   still differ in `|K|` — which counts the cells a config *could* key, not the ones it did — and the
+   menu now says exactly that where it collapses them.
+3. **Disqualified candidates could fill a menu slot.** `menu()` now skips any row failing axis (c)
+   before filling or collapsing: a chain-breaking candidate is a gate failure, not a tie-break.
+
+Three P2 hardening items, all fixed rather than rebutted: the inflater now refuses output past a
+256 MiB cap (a gzip stream's CRC lives in its *trailer*, so it cannot bound the allocation its body
+drives); `Corpus::load` rejects any manifest whose `version` is not `MANIFEST_VERSION`; and
+`rekey manifest` without `--write` propagates a read error instead of passing vacuously.
+
 ## Deviations considered
 
 - **Bug 1 as the degenerate control (spec §corpus) — impossible, and it is not a scoping
@@ -80,9 +109,13 @@ Two results, both stronger than the spec anticipated, both gated by tests:
   `draw-top-256 → draw-top-only-256 → draw-low-256`. Go-Explore's penalty `√(|n/T−1|+1)` is
   asymmetric (undershoot costs at most `√2`, overshoot is unbounded). Both targets are reported.
   `T` is a human judgment; `TARGET_CELLS`/`TARGET_SENSITIVITY` in `score.rs` name it.
-- **Normalized breadth saturates.** `pooled / |K|` is QD coverage, so the coarsest candidates score
-  a perfect `1.000000` on their own trivial grids (`no-channels` covers its one cell). Raw and
+- **Normalized breadth saturates.** `mean cells / |K|` is QD coverage, so the coarsest candidate
+  scores a perfect `1.000000` on its own trivial grid (`no-channels` covers its one cell). Raw and
   normalized are both printed; neither is a ranking key on its own.
+- **`|K|` is analytic, coverage is not a partition property.** Two candidates can induce an identical
+  cell partition and still report different coverage, because `|K|` counts the cells a config *could*
+  key. That is why the menu collapses on the partition digest and names the `|K|` difference rather
+  than hiding it.
 - **`cell_id_of` mirrors a private `conductor` function.** The FNV-1a fold is duplicated (conductor
   is outside this task's surface and pulls the whole live plane). Drift would be loud, not silent:
   the control gate compares this function's output against the committed campaign logs on all 60
@@ -94,7 +127,7 @@ Two results, both stronger than the spec anticipated, both gated by tests:
 
 ## For the integrator
 
-- **Gates.** `build` / `nextest` (56 tests) / `clippy -D warnings` / `fmt` / `deny` all green on
+- **Gates.** `build` / `nextest` (63 tests) / `clippy -D warnings` / `fmt` / `deny` all green on
   macOS, plus `cargo check --target x86_64-unknown-linux-gnu --all-targets` (the crate has **no
   `unsafe`**, no `cfg(target_os)` fork, and no platform API — so no Miri job entry is needed and
   the `ci-cfg-linux-review-gap` failure mode does not apply).

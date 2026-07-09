@@ -42,6 +42,19 @@ pub enum Error {
         found: String,
     },
 
+    /// The manifest declares a schema version this build does not implement.
+    /// Reading it with v1 semantics would silently ignore exactly the fields a
+    /// later version added.
+    #[error(
+        "corpus manifest declares schema version {found}, but this build implements {expected}"
+    )]
+    ManifestVersion {
+        /// The version the manifest declares.
+        found: u32,
+        /// The version this build implements.
+        expected: u32,
+    },
+
     /// The manifest names an archive member that the archive does not contain.
     #[error("archive {archive} has no member {member}")]
     MissingMember {

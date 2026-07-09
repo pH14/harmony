@@ -119,6 +119,12 @@ const DIST_EXTRA: [u8; 30] = [
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
     13,
 ];
+/// The largest output any corpus archive may inflate to (256 MiB). The committed
+/// trace archives expand to ~27 MB each; a crafted stream must not be able to
+/// exhaust memory before the CRC-32 at the *end* of the stream can reject it
+/// (the module's untrusted-input contract).
+const MAX_INFLATED: usize = 256 << 20;
+
 /// The order code-length code lengths arrive in, for a dynamic block.
 const CLEN_ORDER: [usize; 19] = [
     16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
@@ -350,6 +356,7 @@ fn inflate(input: &[u8]) -> std::result::Result<(Vec<u8>, usize), String> {
                 let body = input
                     .get(br.byte..br.byte + len)
                     .ok_or_else(|| "truncated stored block".to_string())?;
+                grow(out.len(), len)?;
                 out.extend_from_slice(body);
                 br.byte += len;
             }
@@ -363,7 +370,10 @@ fn inflate(input: &[u8]) -> std::result::Result<(Vec<u8>, usize), String> {
                 loop {
                     let sym = lit.decode(&mut br)?;
                     match sym {
-                        0..=255 => out.push(sym as u8),
+                        0..=255 => {
+                            grow(out.len(), 1)?;
+                            out.push(sym as u8);
+                        }
                         256 => break,
                         257..=285 => {
                             let i = sym as usize - 257;
@@ -378,6 +388,7 @@ fn inflate(input: &[u8]) -> std::result::Result<(Vec<u8>, usize), String> {
                             if d > out.len() {
                                 return Err("distance points before the output start".into());
                             }
+                            grow(out.len(), len)?;
                             // Byte-at-a-time, so an overlapping copy (d < len)
                             // repeats as DEFLATE specifies.
                             let start = out.len() - d;
@@ -396,6 +407,18 @@ fn inflate(input: &[u8]) -> std::result::Result<(Vec<u8>, usize), String> {
         }
     }
     Ok((out, br.consumed()))
+}
+
+/// Refuse an output that would exceed [`MAX_INFLATED`]. A gzip stream's CRC and
+/// length live in its *trailer*, so they cannot bound the allocation the body
+/// drives — only this can.
+fn grow(have: usize, by: usize) -> std::result::Result<(), String> {
+    if have.saturating_add(by) > MAX_INFLATED {
+        return Err(format!(
+            "inflated output exceeds the {MAX_INFLATED}-byte cap; refusing to allocate"
+        ));
+    }
+    Ok(())
 }
 
 /// The CRC-32 of `data` (the gzip / zlib polynomial, reflected).
@@ -557,6 +580,22 @@ mod tests {
     }
 
     /// CRC-32 against the canonical `"123456789"` check value.
+    /// A stream that would inflate past the cap is refused before the allocation,
+    /// not after — the trailer's CRC comes too late to help.
+    #[test]
+    fn inflate_refuses_to_exceed_the_output_cap() {
+        assert!(grow(0, MAX_INFLATED).is_ok());
+        assert!(grow(1, MAX_INFLATED).is_err());
+        assert!(grow(usize::MAX, 1).is_err(), "no overflow wrap");
+
+        // A stored block claiming more bytes than the cap errors (and, here,
+        // errors on truncation first — the point is that it never allocates).
+        let mut raw = vec![0x01];
+        raw.extend_from_slice(&u16::MAX.to_le_bytes());
+        raw.extend_from_slice(&(!u16::MAX).to_le_bytes());
+        assert!(inflate(&raw).is_err());
+    }
+
     #[test]
     fn crc32_matches_the_canonical_check_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);

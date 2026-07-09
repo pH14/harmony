@@ -140,6 +140,15 @@ pub fn fmt_q32(v: u64) -> String {
     format!("{}.{:06}", scaled / 1_000_000, scaled % 1_000_000)
 }
 
+/// Divide a Q32.32 value by an integer, keeping the fixed-point scale. `n == 0`
+/// yields `0`.
+pub fn div_int_q32(v: u64, n: u64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    (u128::from(v) / u128::from(n)) as u64
+}
+
 /// The arithmetic mean of Q32.32 values; `0` for an empty slice.
 pub fn mean_q32(vs: &[u64]) -> u64 {
     if vs.is_empty() {
@@ -248,6 +257,13 @@ mod tests {
         assert_eq!(fmt_q32(((149u128 << 32) / 40) as u64), "3.725000");
         // A carry out of the fraction propagates into the integer part.
         assert_eq!(fmt_q32(ONE - 1), "1.000000");
+    }
+
+    #[test]
+    fn div_int_keeps_the_fixed_point_scale() {
+        assert_eq!(fmt_q32(div_int_q32(3 * ONE, 4)), "0.750000");
+        assert_eq!(div_int_q32(ONE, 0), 0, "no divide by zero");
+        assert_eq!(div_int_q32(0, 7), 0);
     }
 
     #[test]

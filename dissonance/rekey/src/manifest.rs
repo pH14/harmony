@@ -391,6 +391,14 @@ impl Corpus {
                 what: manifest_path.display().to_string(),
                 source,
             })?;
+        // A future (or zeroed) schema must not be read with v1 semantics: the
+        // field a later version adds is exactly the one this build would ignore.
+        if manifest.version != MANIFEST_VERSION {
+            return Err(Error::ManifestVersion {
+                found: manifest.version,
+                expected: MANIFEST_VERSION,
+            });
+        }
 
         let mut campaigns = Vec::new();
         for slice in &manifest.slices {
@@ -483,6 +491,30 @@ pub fn manifest_path(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A manifest from another schema version is refused, not reinterpreted.
+    #[test]
+    fn a_foreign_manifest_version_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut m = CorpusManifest {
+            version: MANIFEST_VERSION + 1,
+            note: "n".into(),
+            slices: Vec::new(),
+            references: Vec::new(),
+            exclusions: Vec::new(),
+            totals: Totals::default(),
+        };
+        std::fs::write(manifest_path(dir.path()), render(&m)).expect("write");
+        assert!(matches!(
+            Corpus::load(dir.path()),
+            Err(Error::ManifestVersion { .. })
+        ));
+
+        // The current version loads (an empty corpus is legal, if useless).
+        m.version = MANIFEST_VERSION;
+        std::fs::write(manifest_path(dir.path()), render(&m)).expect("write");
+        assert!(Corpus::load(dir.path()).is_ok());
+    }
 
     #[test]
     fn sha256_matches_the_canonical_empty_digest() {
