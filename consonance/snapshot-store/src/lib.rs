@@ -25,7 +25,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // cannot reach any output, hash, or encoded byte. See the field doc below.
 #[allow(clippy::disallowed_types)]
 use std::collections::HashMap;
-use std::io::{Seek, SeekFrom, Write};
 
 /// Size in bytes of one guest page.
 pub const PAGE_SIZE: usize = 4096;
@@ -279,20 +278,28 @@ impl Store {
             cur = layer.parent;
         }
 
-        let mut file = tempfile::tempfile()?;
+        let file = tempfile::tempfile()?;
         file.set_len(len)?;
-        for (&gfn, &pref) in &resolved {
-            if let PageRef::Data(hash) = pref {
-                if let Some(entry) = self.pages.get(&hash) {
-                    // gfn < mem_pages and mem_pages * PAGE_SIZE fits in u64 (checked
-                    // above), so this offset cannot overflow.
-                    file.seek(SeekFrom::Start(gfn * PAGE_SIZE as u64))?;
-                    file.write_all(&entry.data)?;
-                } else {
-                    debug_assert!(false, "dangling page ref");
-                }
-            }
-        }
+        // One write mapping, one memcpy per resolved non-zero page — not a `seek` +
+        // `write_all` pair of syscalls each. Zero/absent pages are skipped entirely, so
+        // the file stays sparse.
+        Mapping::populate(
+            &file,
+            len,
+            resolved.iter().filter_map(|(&gfn, &pref)| match pref {
+                PageRef::Zero => None,
+                PageRef::Data(hash) => match self.pages.get(&hash) {
+                    Some(entry) => Some((gfn, &*entry.data)),
+                    None => {
+                        // Unreachable: every PageRef::Data held by a resident layer
+                        // keeps its entry's refcount >= 1. Leave the page a hole (i.e.
+                        // zeros) rather than panic, as `read_page` does.
+                        debug_assert!(false, "dangling page ref");
+                        None
+                    }
+                },
+            }),
+        )?;
         Ok(Mapping::new(file, len)?)
     }
 
