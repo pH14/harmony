@@ -94,7 +94,8 @@ Candidates are **declarative configs**, each recorded in the report verbatim:
   order under the candidate and check that **every ancestor of every bug-finding run still
   claims a cell when it arrives**. A candidate that would have judged any link of a finding
   chain uninteresting would have lost the bug. Report per-bug; discovery curves alone are
-  disqualified as evidence. The bug-1 slice guards against noise-fitting here.
+  disqualified as evidence. The trigger-orthogonal twin control (see the corpus amendment)
+  guards against noise-fitting here.
 
 ### 4. The deliverable: `dissonance/benchmark/REKEY-REPORT.md`
 
