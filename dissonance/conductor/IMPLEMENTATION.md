@@ -944,18 +944,23 @@ shape:
 
 ## Deviations considered
 
-- **No `serde`/JSON `--out` flag was added**, despite the spec's "serialized into the
-  campaign's `--out` JSON" language. Checked: `conductor` currently has **no** `--out`
-  flag or JSON output anywhere (campaign, sweep, or materialize modes) — `CampaignReport`
-  is a plain, non-serde struct today, and neither `benchmark-report` nor any task-69 stats
-  tool reads a conductor-emitted JSON. Adding `serde`+`serde_json` as a direct dependency
-  of `conductor` would be a **new dependency**, which this task's Environment section
-  explicitly bans ("No new dependencies"). Resolution: `Phase::as_str()` returns the
-  stable snake_case name (`"base_seal"`, `"branch"`, …) a future serde derive would emit,
-  pinned by a unit test — so the naming contract exists today without the dependency. If
-  a conductor JSON output is added later (task-95 M2 or beyond), `CampaignReport` is
-  already shaped for a `#[derive(Serialize)]` with `#[serde(rename = "…")]` matching
-  `as_str()`, or a hand-written `Serialize` impl using it.
+- **No `serde` dependency, no `--out` JSON flag — a direct conflict in the spec, resolved
+  in favor of the harder constraint.** The spec's §3 says `timing` should be "serialized
+  into the campaign's `--out` JSON" and read like `serde`-tagged snake_case; the spec's
+  Environment section says, flatly, "No new dependencies." Both cannot hold: `conductor`
+  today has **zero** `--out`/JSON machinery anywhere (verified by grep — no `--out` flag,
+  no `serde_json` use, no `Serialize` on any report type, in campaign/sweep/materialize
+  modes alike), so satisfying §3 literally means adding `serde`+`serde_json` as new direct
+  dependencies. I read "no new dependencies" as the binding rule (explicit, environment-
+  scoped, unambiguous) over "serialized into JSON" (descriptive, assumes infrastructure
+  that doesn't exist in this crate) — the spec's Environment section is where a task
+  states its hard boundary, and this task's says nothing about wiring JSON output being
+  in scope. **What ships instead:** `Phase::as_str()` returns the exact stable snake_case
+  name (`"base_seal"`, `"branch"`, …) a future `#[derive(Serialize)]` would emit, pinned by
+  a unit test, so the naming contract is locked in today. Wiring an actual `--out` JSON
+  (adding `serde` to `Cargo.toml`, deriving `Serialize` on `CampaignReport` with
+  `#[serde(rename = "...")]` matching `as_str()`) is a small, well-scoped follow-up for
+  whichever task first needs machine-readable campaign output — not invented here.
 - **The timing section in `render_campaign_table` is conditioned on
   `!report.timing.is_empty()`**, not on the presence of any specific field. This keeps
   every report built before this task (synthetic test reports with a default-empty
