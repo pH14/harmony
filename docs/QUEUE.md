@@ -6,7 +6,7 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Last regenerated: 2026-07-09 morning._
+_Last regenerated: 2026-07-09 ~07:25._
 
 ## In flight
 
@@ -16,12 +16,13 @@ _Last regenerated: 2026-07-09 morning._
 - **Benchmark NO-GO report + explore-only addendum** — final read + merge as one artifact
   (PR #90) · `hm-ias`
 - **Snapshot-store speedups, part 1** — bench + three opts; final read + merge (PR #91) · `hm-b3g`
-- **Campaign timing instrument (stopwatch)** — final read + merge (PR #92) · `hm-chh`
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
-- **Paul supplies the Super Mario Bros ROM** (`HARMONY_SMB_ROM`; gates SKIP loudly
-  without it) · `hm-bjc`
+- **Paul (away, queued for his return):** supply the Super Mario Bros ROM
+  (`HARMONY_SMB_ROM`) · `hm-bjc` — apply the foreman skill patch
+  (`memory/foreman-2026-07-09.patch`) · `hm-svi` — approve closing the five legacy
+  GitHub issues · `hm-fdk`
 - **Behavioral diff / findings front page** — run-over-run New/Resolved/Ongoing view;
   was queued behind two long-done tasks and forgotten · `hm-m78`
 - **Deterministic-preemption soundness gap** — oldest open debt; needs a decision, not
@@ -46,6 +47,9 @@ _Last regenerated: 2026-07-09 morning._
   exploration-gate implementation `hm-cs5`
 
 ## Recently done (this week)
+
+- Campaign timing instrument merged — every box run now self-reports its phase
+  decomposition (PR #92, task 96)
 
 - Film / visible replay crate — merged, live gate re-homed into the game workload (PR #87)
 - Exec-in-fork + lineage taint guard — merged with box gates green (PR #86, task 81)
