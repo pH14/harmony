@@ -187,21 +187,46 @@ fn base_seal() {
     let hash_only = t.elapsed();
     black_box(sink);
 
+    // The floor the *post-M1.2a* store can reach: it hashes only the non-zero frames.
+    let t = Instant::now();
+    let mut sink = 0u8;
+    for gfn in 0..mem_pages {
+        if page_seed(gfn).is_some() {
+            sink ^= blake3::hash(frame(&img, gfn)).as_bytes()[0];
+        }
+    }
+    let hash_nonzero = t.elapsed();
+    black_box(sink);
+
+    // Split the write loop (hash + zero-test + intern) from `seal` (the redundancy pass
+    // over every buffered write) — they point at different optimizations, and M1.2d's
+    // go/no-go turns on which one holds the residual over the hash-only baseline.
     let mut store = Store::new(StoreConfig { mem_pages });
     let t = Instant::now();
-    let base = seal_full_base(&mut store, &img, mem_pages);
-    let total = t.elapsed();
+    let mut b = store.begin_base();
+    for gfn in 0..mem_pages {
+        b.write_page(gfn, frame(&img, gfn)).unwrap();
+    }
+    let writes = t.elapsed();
+    let t = Instant::now();
+    let base = b.seal(vec![0u8; 64]);
+    let seal = t.elapsed();
+    let total = writes + seal;
 
     let owned = store.stats(base).unwrap().owned_pages;
     let unique = store.store_stats().stored_unique_pages;
     println!(
-        "[BENCH] base_seal {} total_s={:.3} us_per_page={:.3} owned_pages={owned} \
-         stored_unique_pages={unique} hash_only_s={:.3} hash_only_us_per_page={:.3}",
+        "[BENCH] base_seal {} total_s={:.3} us_per_page={:.3} writes_s={:.3} seal_s={:.3} \
+         owned_pages={owned} stored_unique_pages={unique} hash_only_s={:.3} \
+         hash_only_us_per_page={:.3} hash_nonzero_s={:.3}",
         shape(mem_pages),
         total.as_secs_f64(),
         us_per(total, mem_pages),
+        writes.as_secs_f64(),
+        seal.as_secs_f64(),
         hash_only.as_secs_f64(),
         us_per(hash_only, mem_pages),
+        hash_nonzero.as_secs_f64(),
     );
 }
 

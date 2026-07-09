@@ -114,6 +114,41 @@ pub struct StoreStats {
 /// BLAKE3 digest of one page's content; the store-wide content address.
 type PageHash = [u8; 32];
 
+/// Hasher for [`PageHash`] keys in [`Store::pages`].
+///
+/// The key is *already* a 256-bit cryptographic hash, so re-hashing it with SipHash
+/// buys nothing but cycles. This folds the written bytes into a `u64` by XOR over
+/// 8-byte little-endian chunks: uniform because the digest is, and robust to the
+/// standard library's `Hash for [u8; N]` pattern of a length-prefix `write_usize`
+/// followed by one `write` of the bytes (the length is a constant 32 for every key, so
+/// it contributes a constant term and cannot cluster keys).
+#[derive(Default)]
+struct PageHashHasher(u64);
+
+impl std::hash::Hasher for PageHashHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            // `chunks_exact(8)` yields exactly 8 bytes; the conversion cannot fail.
+            let word: [u8; 8] = chunk.try_into().unwrap_or([0; 8]);
+            self.0 ^= u64::from_le_bytes(word);
+        }
+        let rest = chunks.remainder();
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.0 ^= u64::from_le_bytes(word);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// [`BuildHasher`](std::hash::BuildHasher) for [`PageHashHasher`].
+type BuildPageHashHasher = std::hash::BuildHasherDefault<PageHashHasher>;
+
 /// What a layer records (or a resolution yields) for one gfn.
 ///
 /// The all-zero page is special-cased: it is never interned, so sparse images cost
@@ -164,7 +199,18 @@ pub struct Store {
     /// iteration in `gc` and `store_stats`).
     layers: BTreeMap<u64, Layer>,
     /// Content-addressed page storage: one entry per distinct page content.
-    pages: BTreeMap<PageHash, PageEntry>,
+    ///
+    /// **This map is never iterated.** `store_stats` reads only `.len()`; `gc` iterates
+    /// `layers` (a `BTreeMap`), never this. That is what makes an unordered map sound
+    /// here: no output, hash, or encoded byte can observe its layout. Any future code
+    /// that iterates it must collect-and-sort first, or it is a determinism bug.
+    ///
+    /// Hash-keyed rather than tree-keyed (task 95 M1.2c): the keys are uniformly-random
+    /// BLAKE3 digests, so a `BTreeMap` made every seal/intern/release lookup a
+    /// cache-hostile pointer-chasing descent.
+    // not order-observable: lookup-only, never iterated (see doc above).
+    #[allow(clippy::disallowed_types)]
+    pages: HashMap<PageHash, PageEntry, BuildPageHashHasher>,
     /// Hash of the all-zero page. `write_page` detects zero writes by scanning the
     /// bytes rather than hashing them, so this is now only the reference value for the
     /// debug assertion that the two tests agree.
@@ -178,7 +224,10 @@ impl Store {
             cfg,
             next_id: 0,
             layers: BTreeMap::new(),
-            pages: BTreeMap::new(),
+            // not order-observable: `pages` is lookup-only and never iterated; see its
+            // field doc. `HashMap` is the point of M1.2c.
+            #[allow(clippy::disallowed_types)]
+            pages: HashMap::default(),
             zero_hash: *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes(),
         }
     }
@@ -625,6 +674,79 @@ mod tests {
 
     fn cfg(mem_pages: u64) -> StoreConfig {
         StoreConfig { mem_pages }
+    }
+
+    /// Task 95 M1.2c: the XOR-folding hasher must behave as a hasher — equal keys hash
+    /// equal, the fold spreads distinct keys, and a `HashMap` under it round-trips.
+    #[test]
+    fn page_hash_hasher_backs_a_working_map() {
+        use std::hash::{BuildHasher, Hash, Hasher};
+
+        fn fold(key: &PageHash) -> u64 {
+            let mut h = PageHashHasher::default();
+            key.hash(&mut h);
+            h.finish()
+        }
+
+        // Equal keys fold equally; distinct keys (here: known BLAKE3 digests) do not.
+        let a: PageHash = *blake3::hash(b"a").as_bytes();
+        let b: PageHash = *blake3::hash(b"b").as_bytes();
+        let zero: PageHash = [0u8; 32];
+        assert_eq!(fold(&a), fold(&a));
+        assert_ne!(fold(&a), fold(&b));
+
+        // `write` alone folds only the bytes; `Hash for [u8; 32]` prepends a
+        // `write_usize(32)` length prefix, so `fold` carries that constant term for
+        // every key — a constant cannot cluster keys.
+        let mut raw = PageHashHasher::default();
+        raw.write(&zero);
+        assert_eq!(raw.finish(), 0);
+        assert_ne!(fold(&zero), 0);
+
+        // XOR-folding is not a mixer: two keys whose four 8-byte words cancel to the
+        // same value fold identically — [0xFF; 32] and [0; 32] both cancel to 0. That
+        // is sound *here* only because these keys are BLAKE3 digests of page content,
+        // never attacker-shaped inputs — the same premise `intern_page` documents.
+        // Pinned, so that keying this map on anything else trips a failing test.
+        assert_eq!(fold(&[0xFFu8; 32]), fold(&zero));
+
+        // A difference in any single byte moves the fold.
+        for probe in [0usize, 7, 8, 31] {
+            let mut k = zero;
+            k[probe] = 1;
+            assert_ne!(
+                fold(&k),
+                fold(&zero),
+                "byte {probe} does not reach the fold"
+            );
+        }
+
+        // Over real digests the fold disperses: 512 distinct keys, 512 distinct folds.
+        let keys: Vec<PageHash> = (0..512u32)
+            .map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes())
+            .collect();
+        let folds: BTreeSet<u64> = keys.iter().map(fold).collect();
+        assert_eq!(
+            folds.len(),
+            keys.len(),
+            "XOR-fold collided on BLAKE3 digests"
+        );
+
+        // Insert / lookup / remove round-trip through the real BuildHasher.
+        #[allow(clippy::disallowed_types)] // not order-observable: test-local, never iterated
+        let mut map: HashMap<PageHash, u32, BuildPageHashHasher> = HashMap::default();
+        for (i, k) in keys.iter().enumerate() {
+            assert!(map.insert(*k, i as u32).is_none());
+        }
+        assert_eq!(map.len(), keys.len());
+        for (i, k) in keys.iter().enumerate() {
+            assert_eq!(map.get(k), Some(&(i as u32)));
+        }
+        for k in &keys {
+            assert!(map.remove(k).is_some());
+        }
+        assert!(map.is_empty());
+        assert_eq!(BuildPageHashHasher::default().hash_one(a), fold(&a));
     }
 
     #[test]
