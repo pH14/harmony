@@ -38,6 +38,10 @@ pub mod control;
 pub mod corpus;
 pub mod devices;
 pub mod entry;
+// Task 81 — the `exec` improvisation's pure sentinel state machine (what bytes to
+// type at the serial shell + how to detect completion/status). Portable and
+// off-record by ruling; the real serial wiring lives in `vmm`/`control`.
+pub mod exec;
 pub mod hostassert;
 pub mod linux_loader;
 pub mod multiboot;

@@ -51,6 +51,19 @@ const OFF_IER: u16 = 1;
 /// read rather than echoing the shadowed FCR byte.
 const OFF_IIR: u16 = 2;
 
+/// `LSR` bit 0 — **data ready** (a received byte is waiting in the RBR). Set by
+/// the model **only while [`Uart8250::rx`] has an injected byte** (task 81's `exec`
+/// serial-input channel); clear otherwise, so every non-`exec` run reads the same
+/// `LSR` as before (the input path is inert when no bytes are queued).
+const UART_LSR_DATA_READY: u8 = 0x01;
+/// `IER` bit 0 — **received-data-available interrupt enable**. A serial-console
+/// guest sets it so the COM1 IRQ fires when input arrives; the model raises the
+/// receive interrupt only when this is set **and** a byte is queued (task 81).
+const UART_IER_RDI: u8 = 0x01;
+/// `IIR` value reported when the **received-data-available** interrupt is pending:
+/// bit 0 (`NO_INT`) clear, interrupt-id `0b010` (`0x04`). Takes priority over THRE
+/// so a serial-console guest's IRQ handler reads a queued input byte (task 81).
+const UART_IIR_RDI: u8 = 0x04;
 /// `IER` bit 1 — **THRE interrupt enable** (transmitter-holding-register empty).
 /// When the guest sets it (with `DLAB` clear) the kernel's interrupt-driven 8250
 /// TX path expects the COM1 line (IRQ 4) to fire as soon as THR is empty; that is
@@ -102,6 +115,17 @@ pub struct Uart8250 {
     /// on the polled M1/M2/corpus paths (divisor `0x0001`), so omitting it keeps
     /// those `DEV`-chunk hashes byte-identical.
     dlm: u8,
+    /// **Injected serial-input queue** (task 81's `exec` channel): bytes the host
+    /// has typed at the guest's serial console, consumed FIFO by guest RBR reads.
+    /// **Empty on every non-`exec` run** — the whole input path is inert until
+    /// [`Self::inject_input`] is called, so an existing capture/hash is byte-
+    /// identical (gate 4). Deliberately **not** part of the state hash or the
+    /// snapshot device blob: `exec` is a live-only, off-record improvisation that
+    /// taints its timeline, so this ephemeral input is never carried across a
+    /// snapshot/restore (a fresh restore target starts with an empty queue). A
+    /// `VecDeque` — pop-front consume order is a deterministic function of guest
+    /// reads, never observed via iteration.
+    rx: std::collections::VecDeque<u8>,
 }
 
 impl Uart8250 {
@@ -163,19 +187,83 @@ impl Uart8250 {
         }
         let off = port - UART_PORT_BASE;
         let value = match off {
-            OFF_LSR => UART_LSR_THR_EMPTY,
+            // THR always empty; the **data-ready** bit reflects a queued input byte
+            // (task 81). With no `exec` input queued this is exactly the old value.
+            OFF_LSR => UART_LSR_THR_EMPTY | self.rx_status_bits(),
             // IIR is a distinct read-only register from the FCR written at the same
             // port: report the live interrupt status, not the FCR shadow (a stale
             // `NO_INT`-clear FCR byte would make the kernel believe an interrupt is
             // always pending and mis-detect the TX path).
             OFF_IIR => self.iir_value(),
-            OFF_BASE if !self.dlab => 0, // RBR with no pending input
+            // RBR: **peek** the next queued input byte (non-consuming — a consuming
+            // read for the guest I/O path is [`Self::read_in`]); `0` when the input
+            // queue is empty (the pre-task-81 behavior — "we never feed input").
+            OFF_BASE if !self.dlab => self.rx.front().copied().unwrap_or(0),
             // DLAB set ⇒ offset 1 reads back the divisor-latch high byte (DLM), the
             // companion of the offset-1 write split above — never the IER shadow.
             OFF_IER if self.dlab => self.dlm,
             _ => self.regs[off as usize],
         };
         Some(value)
+    }
+
+    /// Service a guest port read on the **I/O path** (`&mut`): identical to
+    /// [`Self::read`] except a byte read of the RBR (offset 0, `DLAB` clear)
+    /// **consumes** the next queued input byte (task 81's `exec` channel), the way
+    /// real 8250 hardware pops the receive FIFO. Every other register is delegated
+    /// to the non-consuming [`Self::read`]. Returns `None` for a port this device
+    /// does not own.
+    pub(crate) fn read_in(&mut self, port: u16) -> Option<u8> {
+        if !(UART_PORT_BASE..=UART_PORT_TOP).contains(&port) {
+            return None;
+        }
+        let off = port - UART_PORT_BASE;
+        if off == OFF_BASE && !self.dlab {
+            // RBR consume: pop the next injected byte, or 0 when the queue is empty
+            // (inert on every non-`exec` run).
+            return Some(self.rx.pop_front().unwrap_or(0));
+        }
+        self.read(port)
+    }
+
+    /// Queue host-typed bytes on the guest's serial input (task 81's `exec`
+    /// channel), consumed FIFO by guest RBR reads. Off-record and live-only: the
+    /// queue is never snapshotted or hashed.
+    pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
+        self.rx.extend(bytes.iter().copied());
+    }
+
+    /// Whether an injected input byte is waiting to be read (task 81).
+    pub(crate) fn rx_has_input(&self) -> bool {
+        !self.rx.is_empty()
+    }
+
+    /// The `LSR` status bits contributed by the input queue: [`UART_LSR_DATA_READY`]
+    /// while a byte is queued (and `DLAB` clear — the divisor window does not report
+    /// receive status), else `0`.
+    fn rx_status_bits(&self) -> u8 {
+        if !self.dlab && self.rx_has_input() {
+            UART_LSR_DATA_READY
+        } else {
+            0
+        }
+    }
+
+    /// Whether the COM1 **received-data-available interrupt** is asserted (task 81):
+    /// a byte is queued, `DLAB` is clear, and the guest enabled `IER.RDI`. This is
+    /// the receive half of the COM1 line the VMM routes to IRQ 4 so an
+    /// interrupt-driven serial console picks up injected input; inert (always
+    /// `false`) whenever the input queue is empty.
+    pub(crate) fn rx_irq_asserted(&self) -> bool {
+        !self.dlab && self.rx_has_input() && (self.regs[OFF_IER as usize] & UART_IER_RDI != 0)
+    }
+
+    /// Whether **any** COM1 interrupt is asserted — the received-data-available
+    /// (task 81) or the THRE (transmitter-empty) line. The VMM routes this to IRQ 4.
+    /// Equal to [`Self::thre_irq_asserted`] whenever no input is queued, so a
+    /// non-`exec` run's interrupt behavior is unchanged (gate 4).
+    pub(crate) fn serial_irq_asserted(&self) -> bool {
+        self.rx_irq_asserted() || self.thre_irq_asserted()
     }
 
     /// Is the COM1 **THRE (transmitter-empty) interrupt** currently asserted? True
@@ -190,11 +278,15 @@ impl Uart8250 {
         !self.dlab && (self.regs[OFF_IER as usize] & UART_IER_THRI != 0)
     }
 
-    /// The value a read of the IIR (offset 2) returns: [`UART_IIR_THRI`] while the
-    /// THRE interrupt is asserted, else [`UART_IIR_NONE`]. (No receive/line-status
-    /// interrupts: the model never feeds input, so only THRE can be pending.)
+    /// The value a read of the IIR (offset 2) returns: the **received-data-
+    /// available** interrupt ([`UART_IIR_RDI`]) takes priority when it is asserted
+    /// (task 81's `exec` input), else [`UART_IIR_THRI`] while the THRE interrupt is
+    /// asserted, else [`UART_IIR_NONE`]. With no input queued this is exactly the
+    /// pre-task-81 THRE-or-none result (the receive path is inert).
     fn iir_value(&self) -> u8 {
-        if self.thre_irq_asserted() {
+        if self.rx_irq_asserted() {
+            UART_IIR_RDI
+        } else if self.thre_irq_asserted() {
             UART_IIR_THRI
         } else {
             UART_IIR_NONE
@@ -241,6 +333,9 @@ impl Uart8250 {
         self.regs = regs;
         self.dlab = dlab;
         self.dlm = dlm;
+        // The injected-input queue is off-record, live-only state (task 81): a
+        // restored timeline never inherits mid-`exec` input — it starts empty.
+        self.rx.clear();
     }
 }
 
@@ -553,6 +648,86 @@ mod tests {
         assert!(u.thre_irq_asserted());
         u.write(UART_PORT_BASE + 1, 0x00);
         assert!(!u.thre_irq_asserted());
+    }
+
+    // --- injected serial input (task 81's `exec` channel) ------------------
+
+    /// The input path is fully inert until [`Uart8250::inject_input`]: LSR reports
+    /// no data-ready, RBR reads `0`, and no receive interrupt asserts — so every
+    /// non-`exec` run is byte-identical (gate 4).
+    #[test]
+    fn serial_input_is_inert_until_injected() {
+        let u = Uart8250::new();
+        assert!(!u.rx_has_input());
+        assert_eq!(u.read(UART_PORT_LSR), Some(UART_LSR_THR_EMPTY), "no DR bit");
+        assert_eq!(u.read(UART_PORT_BASE), Some(0), "RBR is 0 with no input");
+        assert!(!u.rx_irq_asserted());
+        assert!(!u.serial_irq_asserted());
+    }
+
+    /// Injected bytes are read FIFO out of the RBR (consuming), the LSR data-ready
+    /// bit tracks the queue, and the read-path `read_in` pops while the peek `read`
+    /// does not.
+    #[test]
+    fn injected_input_is_consumed_fifo_with_data_ready() {
+        let mut u = Uart8250::new();
+        u.inject_input(b"hi");
+        assert!(u.rx_has_input());
+        // LSR now reports data-ready (bit 0) on top of THR-empty.
+        assert_eq!(
+            u.read(UART_PORT_LSR),
+            Some(UART_LSR_THR_EMPTY | UART_LSR_DATA_READY)
+        );
+        // A non-consuming peek returns the front byte without popping.
+        assert_eq!(u.read(UART_PORT_BASE), Some(b'h'));
+        assert_eq!(u.read(UART_PORT_BASE), Some(b'h'), "peek does not consume");
+        // The I/O path consumes: 'h' then 'i', then the queue drains to 0.
+        assert_eq!(u.read_in(UART_PORT_BASE), Some(b'h'));
+        assert_eq!(u.read_in(UART_PORT_BASE), Some(b'i'));
+        assert!(!u.rx_has_input());
+        assert_eq!(u.read_in(UART_PORT_BASE), Some(0), "empty queue reads 0");
+        // Data-ready clears once drained.
+        assert_eq!(u.read(UART_PORT_LSR), Some(UART_LSR_THR_EMPTY));
+    }
+
+    /// The receive-data-available interrupt asserts only with input queued AND
+    /// `IER.RDI` enabled, and IIR reports it with priority over THRE.
+    #[test]
+    fn receive_interrupt_asserts_only_when_enabled_and_queued() {
+        let mut u = Uart8250::new();
+        // Enable both RDI (0x01) and THRI (0x02); no input yet ⇒ only THRE asserts.
+        u.write(UART_PORT_BASE + 1, UART_IER_RDI | UART_IER_THRI);
+        assert!(!u.rx_irq_asserted(), "no input ⇒ no receive IRQ");
+        assert!(u.thre_irq_asserted());
+        assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_THRI));
+        // Inject input ⇒ receive IRQ asserts and takes IIR priority.
+        u.inject_input(b"x");
+        assert!(u.rx_irq_asserted());
+        assert!(u.serial_irq_asserted());
+        assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_RDI));
+        // Consume it ⇒ receive IRQ de-asserts, THRE resumes.
+        assert_eq!(u.read_in(UART_PORT_BASE), Some(b'x'));
+        assert!(!u.rx_irq_asserted());
+        assert_eq!(u.read(UART_PORT_BASE + 2), Some(UART_IIR_THRI));
+        // With RDI disabled, queued input does NOT raise the interrupt (still readable).
+        u.write(UART_PORT_BASE + 1, UART_IER_THRI);
+        u.inject_input(b"y");
+        assert!(!u.rx_irq_asserted(), "RDI disabled ⇒ no receive IRQ");
+        assert_eq!(
+            u.read(UART_PORT_LSR).unwrap() & UART_LSR_DATA_READY,
+            UART_LSR_DATA_READY
+        );
+    }
+
+    /// A restore drops any queued input — `exec` input is live-only, off-record
+    /// state and is never carried across a snapshot/restore.
+    #[test]
+    fn restore_clears_injected_input() {
+        let mut u = Uart8250::new();
+        u.inject_input(b"leftover");
+        u.restore(vec![], [0; 8], false, 0);
+        assert!(!u.rx_has_input());
+        assert_eq!(u.read(UART_PORT_BASE), Some(0));
     }
 
     /// With `DLAB` set, port +1 is the divisor-latch high byte (DLM), **not** the

@@ -239,6 +239,39 @@ pub enum Request {
     /// register *view*, not the save/restore format — additive evolution, no
     /// round-trip obligation.
     Regs,
+    /// **Improvisation** (task 81): inject `cmd` on the guest's serial input (as if
+    /// typed at the serial shell), run until a completion sentinel or the V-time
+    /// `deadline`, and capture the serial output → [`ExecResult`](Reply::ExecResult).
+    ///
+    /// **Off the record, by ruling** (`docs/RESOLUTION.md` §Improvisations). `exec`
+    /// is a one-off *improvisation*: it is **never recorded into any [`Environment`]**
+    /// and carries **no determinism guarantee** — the serial byte channel is
+    /// deliberately crude. What is airtight is the **taint guard** the server
+    /// enforces around it: the first `exec` against a timeline sets that timeline's
+    /// **taint bit**, every snapshot taken from it reports [`tainted`](Reply::Snapshot)
+    /// `= true`, and minting a reproducer from it
+    /// ([`RecordedEnv`](Request::RecordedEnv)) is a loud
+    /// [`Tainted`](crate::ControlError::Tainted). The server **refuses nothing** — a
+    /// caller may deliberately sacrifice a timeline; the taint bit makes the
+    /// consequence structural rather than conventional (fork-first is a usage
+    /// discipline, not a server rule).
+    Exec {
+        /// The command to inject on the serial shell (crude — no protocol beyond
+        /// the shell itself). Carried as a UTF-8 string.
+        cmd: String,
+        /// The V-time deadline: the run stops at the completion sentinel or here,
+        /// whichever is first.
+        deadline: VTime,
+    },
+    /// **Reproducer mint** (task 81): return the **recorded reproducer** — the
+    /// genesis-complete [`Environment`] that replays the current point — →
+    /// [`Recorded`](Reply::Recorded), **or** a loud
+    /// [`Tainted`](crate::ControlError::Tainted) when the current timeline has been
+    /// tainted by an [`Exec`](Request::Exec) improvisation. This is the fail-loud
+    /// site of the taint guard: an improvised timeline is off the record and has no
+    /// honest reproducer, so the server refuses to mint one rather than hand back an
+    /// [`Environment`] that does not reproduce (mirrors resolution's `recorded_env`).
+    RecordedEnv,
 }
 
 /// A successful reply to a [`Request`]. Pairs with [`ControlError`](crate::ControlError)
@@ -265,6 +298,46 @@ pub enum Reply {
     Bytes(Vec<u8>),
     /// The current register view (reply to [`Regs`](Request::Regs)).
     Regs(RegsView),
+    /// The result of an [`Exec`](Request::Exec) improvisation (task 81): the serial
+    /// output captured while the command ran and whether it reached its completion
+    /// sentinel before the deadline. There is **no** determinism guarantee on this
+    /// payload — it is off the record by ruling; the taint bit (surfaced on
+    /// [`Snapshot`](Reply::Snapshot) and enforced at [`RecordedEnv`](Request::RecordedEnv))
+    /// is the airtight part, not this.
+    ExecResult {
+        /// The serial output captured while the command ran (crude; may include the
+        /// shell's echo of the injected line — see the sentinel scheme in
+        /// vmm-core's `IMPLEMENTATION.md`).
+        output: Vec<u8>,
+        /// Whether the command reached its completion sentinel before the deadline
+        /// (`false` on a deadline timeout — the output is then whatever was captured
+        /// so far).
+        ok: bool,
+    },
+    /// A **taint-carrying** snapshot handle (task 81) — the reply to
+    /// [`Snapshot`](Request::Snapshot) **when the captured timeline is tainted**.
+    ///
+    /// The pre-81 taint-free [`SnapId`](Reply::SnapId) reply is retained and is still
+    /// what the server sends for an **untainted** snapshot (so every pre-81 consumer
+    /// — the explorer, the conductor — and every existing golden/live capture is
+    /// byte-identical). A snapshot taken from a timeline an [`Exec`](Request::Exec)
+    /// improvisation has tainted instead comes back here with `tainted = true`, so a
+    /// future Archive/donation path (task 64+) can refuse admission **without asking**
+    /// — the taint rides the reply, not a side channel. See vmm-core's
+    /// `IMPLEMENTATION.md` for why this is additive rather than a reshape of
+    /// [`SnapId`](Reply::SnapId).
+    Snapshot {
+        /// The pool-wide snapshot handle.
+        id: SnapId,
+        /// Whether the captured timeline is tainted (always `true` on this
+        /// variant; carried for wire uniformity with the donation path's contract).
+        tainted: bool,
+    },
+    /// The recorded reproducer (reply to [`RecordedEnv`](Request::RecordedEnv)): the
+    /// genesis-complete [`Environment`] that replays the current point. Only ever
+    /// sent for an **untainted** timeline — a tainted one is a loud
+    /// [`Tainted`](crate::ControlError::Tainted) instead, never a lying reproducer.
+    Recorded(Environment),
 }
 
 /// A **versioned** register view (task 80) — the observation surface for

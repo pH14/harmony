@@ -3895,3 +3895,256 @@ pinned nightly; `vmm-core`'s Linux-frozen snapshot hand-extended with
   nowhere special (it is `#[ignore]`d and `cfg(linux)`, like `live_host_plane`); no
   new `-p` entries are needed beyond the existing `control-proto`/`vmm-core` gates.
   The box table above must be filled before the task is considered fully closed.
+
+---
+
+# Task 81 — improvisations: `exec`-in-fork + lineage taint
+
+The **interrogation verb** made buildable now by the `docs/RESOLUTION.md`
+§Improvisations ruling: `exec` runs a command inside a live guest over a
+deliberately crude serial channel, is **never recorded into any `Environment`**,
+and is **exempt from the determinism discipline**. What must be airtight is the
+**taint guard** that keeps improvised timelines out of the reproducer story — that
+is where the care went (the channel is crude on purpose). Explicitly does **not**
+depend on task 61 (the deterministic guest-plane seam); this builds the disposable
+one. Builds on task 80 (merged `6f6f147`): the moment address, `read`/`regs`, and
+the `ControlServer`-driven-via-`handle()` box-harness pattern.
+
+## What landed, by surface
+
+- **`dissonance/control-proto`** — the wire surface (`APP_PROTOCOL_VERSION` 5 → 6):
+  - `Request::Exec { cmd: String, deadline: VTime }` → `Reply::ExecResult { output,
+    ok }` — the crude, off-record improvisation verb.
+  - `Request::RecordedEnv` → `Reply::Recorded(Environment)` — the **reproducer
+    mint**, the taint guard's fail-loud site: a tainted timeline is
+    `Err(ControlError::Tainted)`, never a lying `Environment`. (No such verb existed
+    before — task 80 added `read`/`regs` but nothing that mints the recorded env
+    over the wire. It mirrors `resolution`'s `Server::recorded_env`.)
+  - `Reply::Snapshot { id, tainted }` — the **taint-carrying** snapshot reply.
+  - `ControlError::Tainted`.
+  - Full codec + golden + loopback + roundtrip/adversarial proptest coverage.
+- **`consonance/vmm-core`**:
+  - `src/exec.rs` — the pure, portable `ExecSession` sentinel state machine.
+  - `src/devices.rs` `Uart8250` — the injected serial-input RX path (inert until used).
+  - `src/vmm.rs` — `inject_serial_input` / `serial_output` seams; `dispatch_in`
+    consumes the RX; `pending_serial_vector` folds the receive line.
+  - `src/control.rs` — the taint guard: `timeline_tainted` + `tainted_snaps`, the
+    `exec` run loop, the `RecordedEnv` mint, the taint-carrying snapshot reply.
+  - `tests/live_exec_improvisation.rs` — the box gate (2 + 3).
+- **`guest/linux`** — `exec-init.sh` (a root shell on ttyS0) + `build-exec-image.sh`
+  + the `exec-image` Makefile target: the exec-capable image gate 2's *output* half
+  talks to.
+
+## The additive `Reply::Snapshot` decision (why not reshape `Reply::SnapId`)
+
+The natural encoding of "snapshot replies carry `tainted`" is to reshape
+`Reply::SnapId(SnapId)` into a struct variant. **Rejected — it is not additive.**
+`Reply::SnapId(SnapId)`'s tuple shape is pinned by the *already-merged*
+`dissonance/resolution/tests/wire.rs` (`Ok(Reply::SnapId(SnapId(7)))`) and matched
+by `dissonance/explorer` and `dissonance/conductor` (both out of this task's
+surface). Reshaping it breaks all three at compile time and breaks the workspace.
+
+So the taint bit rides a **new, additive** variant `Reply::Snapshot { id, tainted }`,
+and the server emits it **only for a tainted snapshot**; an untainted snapshot keeps
+the pre-81 `Reply::SnapId(id)`. This makes every existing consumer and every existing
+golden/live capture **byte-identical** (gate 4) — the explorer and conductor never
+`exec`, so they only ever see `Reply::SnapId`. `resolution`'s real socket adapter
+(foreman-side, unbuilt) maps both: `SnapId → {tainted:false}`, `Snapshot → {tainted}`.
+A future protocol version could switch to always-`Snapshot` once all consumers
+migrate. The one out-of-surface edit this forced — three arms in
+`conductor::record::seal_base`'s exhaustive "unexpected reply" match — is the same
+mechanical cross-crate update task 80 made there for `Bytes`/`Regs`.
+
+## The taint guard (the airtight part) — the state machine
+
+Two pieces of server state (`ControlServer`):
+- `timeline_tainted: bool` — the **current live timeline**'s taint.
+- `tainted_snaps: BTreeSet<u64>` — the wire `SnapId`s whose sealed timeline was tainted.
+
+| event | effect on taint |
+|---|---|
+| `exec` issued | `timeline_tainted = true`, set **first**, before any fallible work |
+| `snapshot` on a tainted timeline | record the new `SnapId` in `tainted_snaps`; reply `Snapshot{tainted:true}` |
+| `snapshot` on an untainted timeline | reply `SnapId(id)` (untainted); not recorded |
+| `branch`/`replay` from snapshot `S` | `timeline_tainted = tainted_snaps.contains(S)` (inherit) |
+| `RestoreFailed` recoverable fresh boot | `timeline_tainted = false` (a clean boot — an untainted ancestor) |
+| `drop(S)` | remove `S` from `tainted_snaps` (`SnapId` is monotonic; no handle reuse) |
+| `RecordedEnv` | `Err(Tainted)` iff `timeline_tainted`, else mint the reproducer |
+
+This gives exactly the spec's propagation: **taint follows snapshot ancestry, never
+crosses, never clears downstream** — an untainted timeline is reachable only from an
+untainted ancestor (or a fresh `RestoreFailed` boot). A rewind to a snapshot sealed
+*before* any `exec` legitimately reaches untainted, recordable state again.
+
+### Conservative taint (the review-attacked corner — cf. PR #82's 8 rounds)
+
+`exec` sets `timeline_tainted = true` as its **first** statement, before injecting
+serial bytes or stepping the guest. So **every** failure mode of the run — a
+`ServeError::Poisoned` VM, a mid-run step error, a terminal before the sentinel —
+leaves the timeline (correctly) tainted. There is no window in which an
+improvisation has begun but the guard would still mint a clean reproducer. This
+mirrors `resolution`'s client-side conservative taint (set before the round-trip);
+the server bit is the **authoritative** half for server-side taint, the client bit
+covers a lost/dropped reply the server never saw. The two are belt-and-suspenders,
+by design (see `resolution/src/session.rs`).
+
+The specific PR-82 failure patterns and how the *server* side avoids each:
+- *taint-before-fallible-op*: taint is the first write in `exec`; nothing fallible
+  precedes it.
+- *no clean coordinate from tainted state*: `RecordedEnv` is the only reproducer
+  mint over the wire, and it is guarded; the in-process `recorded_env()` accessor
+  (`&EnvSpec`, used by other live tests on untainted timelines) is deliberately
+  **not** a wire verb.
+- *failure-path desync*: taint is not undone on any path; only a restore
+  *re-derives* it from the (immutable) snapshot taint set.
+
+### Gate 1 (portable) — how it is proven
+
+`control.rs`'s `taint_propagates_exactly_along_ancestry` proptest (300 cases) drives
+the **real `ControlServer<MockBackend>`** through `handle()` over arbitrary DAGs of
+`snapshot`/`branch`/`replay`/`exec`, checking against an independent oracle after
+**every** op: the snapshot reply's taint bit matches the live timeline, `RecordedEnv`
+errors `Tainted` iff tainted (untainted lineage never blocked, tainted always
+blocked). `exec` in the proptest uses a `VTime(0)` (already-expired) deadline so it
+taints and returns immediately without stepping the mock (no hang). Four targeted
+unit tests cover the readable cases incl. rewind-to-untainted-ancestor recovery. The
+`exec.rs` sentinel state machine has 9 unit tests against a scripted mock serial.
+
+## The `exec` channel (crude, off the record) — the sentinel scheme
+
+`exec` injects `"<cmd>\necho <M>:$?:<M>\n"` on the serial RX, where `<M>` is the
+**plain-printable** `HXEC-<nonce>-` (nonce-salted so two `exec`s can't alias).
+Completion is detected by scanning serial **output** for `<M>:<digits>:<M>`: the
+shell's *echo of the typed line* shows `<M>:$?:<M>` with `$?` **literal** (not
+digits) and never matches; the *executed* `echo` emits real digits and does. The
+parsed digits are the shell exit status; output is reported up to the sentinel line.
+
+**The marker must stay printable** (PR #86 r2, blocking). An earlier version
+bracketed it with SOH (`0x01`) to reduce output collisions, but the exec-capable
+image's *interactive* `busybox ash` has line editing on (`CONFIG_FEATURE_EDITING=y`,
+from defconfig), which eats control bytes as editing keystrokes — `^A` is
+cursor-to-start — scrambling the injected line so the sentinel never reaches the
+wire (reproduced against busybox ash 1.37: every `exec` timed out). The
+digits-vs-literal-`$?` rule is the load-bearing disambiguation, not the brackets;
+the nonce salt carries the collision-avoidance. `scan()` resumes from
+`len - sentinel_max_len` each feed, so a chatty guest stays linear (not O(n²)) while
+a sentinel split across V-time steps is still caught.
+
+**Documented failure modes** (out of scope to *fix* by ruling): deadline-before-
+sentinel → `ok=false` with partial capture; marker collision in binary output (the
+distinctive `HXEC-` tag + nonce salt make this astronomically unlikely for text);
+output cap at 1 MiB (bounded, no OOM); non-echoing/cooked-mode shells time out (the
+exec-capable image provides an echoing root shell). See `src/exec.rs` module docs.
+
+**Server run loop** (`ControlServer::exec`): inject once, then step until the
+sentinel matches, the V-time deadline is reached (opportunistic, like `run`), or a
+terminal. No fault-schedule interaction — `exec` is off-record, so it never touches
+`recorded`, `schedule`, or `reseed_schedule`.
+
+## Inertness (gate 4) — the serial-input path when no `exec` is active
+
+The `Uart8250` RX queue is **empty on every non-`exec` run**, and every RX-dependent
+output is gated on it:
+- `LSR` gains the data-ready bit (0x01) **only** when the queue is non-empty →
+  every existing `LSR` read is byte-identical.
+- RBR reads return 0 with an empty queue (the pre-81 "we never feed input").
+- `serial_irq_asserted()` == `thre_irq_asserted()` with an empty queue → interrupt
+  behavior unchanged.
+- The RX queue is **not** in the `state_hash` or the snapshot device blob (it is
+  ephemeral, live-only, off-record state; a restore clears it).
+
+So `state_hash` is byte-unchanged on every non-`exec` path (the 375 portable
+`vmm-core` lib tests confirm no behavioral drift), and the existing `live_*` gates
+stay byte-identical. Verified portably by
+`devices::tests::serial_input_is_inert_until_injected`.
+
+## Box gates — ALL PASSED (2026-07-09, box released after task-69 M2)
+
+Ran on the determinism box once the task-69 M2 campaign completed and released it
+(stock KVM `1396736` verified before and after every run; each gate held a
+`scripts/box-window.sh` lease in a long-lived driver, CPU-pinned to the leased core,
+patched KVM only inside the window, reverted + verified on a fresh connection).
+Built with `make -C guest/linux exec-image` (the r3 self-contained target) +
+`postgres-image`; test binaries pre-compiled outside the window.
+
+- **Smoke** (fire-once channel probe): `exec 'echo HELLO-SMOKE-42' ok=true
+  output_len=14802` — the printable-marker sentinel scraped end-to-end through real
+  busybox ash (the r2 fix works live). `/root/t81-smoke.log`.
+- **Gate 2** (improvisation + determinism, exec image, strict forced): `exec 'ls /'
+  ok=true output_len=14780`; `original continuation IDENTICAL before/after the fork`.
+  `/root/t81-gate23.log`.
+- **Gate 3** (taint guard, live on the exec'd fork): `recorded_env=Tainted ·
+  dirty_snapshot.tainted=true · branch-of-tainted=Tainted`. Same log.
+- **Gate 4** (byte-identity): task-80 `live_moment_address` re-run on Postgres — all
+  4 moments IDENTICAL twice + observation-invariance SAME. `/root/t81-gate4.log`.
+
+**One box-only harness fix during the run** (`cfg(linux)`, not a code/guard change):
+gate 3's one-shot snapshot helper hit `NotQuiescent` because after `exec` the fork
+sits at an opportunistic V-time deadline stop, not a sealable boundary. The guard was
+already correct (`recorded_env=Tainted` passed live before it; taint is on the
+timeline regardless of quiescence); the harness now nudges the still-tainted fork to
+a snapshottable point (tolerating the shell going idle) before sealing.
+
+### How to re-run (for the record)
+
+The output assertion is **strict by default** (gate 2's "capture non-empty output"),
+and **forced** strict on the `exec`-named image, so a by-the-docs dispatch cannot
+pass vacuously (PR #86 r2, blocking). `EXEC_TAINT_ONLY=1` runs only the guard half
+against a shell-less image and announces it does NOT satisfy gate 2.
+
+| gate | test | how to run |
+|---|---|---|
+| 2 (improvisation + determinism, incl. non-empty output) | `tests/live_exec_improvisation.rs` | the **exec-capable** image (strict forced): full gate 2 + gate 3 |
+| 3 (the guard) | same test | asserted inline (`recorded_env=Tainted`, `dirty snapshot tainted`, branch-of-tainted refuses); also runnable against Postgres with `EXEC_TAINT_ONLY=1` |
+| 4 (byte-identity) | the **existing** `live_*` gates | unchanged; re-run one (e.g. `live_moment_address`) to confirm byte-identity |
+
+```text
+# on ssh <det-box>, LOADED patched KVM, CPU-pinned (det-cfl-v1 host); lease a core:
+# Full gate 2 + gate 3 — the exec-capable image (strict is forced):
+make -C guest fetch && make -C guest/linux exec-image
+INITRAMFS=initramfs-exec.cpio.gz taskset -c <core> \
+  cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
+# Guard half only, against the real Postgres workload (does NOT satisfy gate 2):
+make -C guest/linux postgres-image
+EXEC_TAINT_ONLY=1 taskset -c <core> \
+  cargo test -p vmm-core --release --test live_exec_improvisation -- --ignored --nocapture
+# ALWAYS revert KVM to stock 1396736 + verify on a fresh ssh after any patched run.
+```
+
+## Deviations considered and rejected
+
+- **Reshaping `Reply::SnapId` to carry `tainted`.** Rejected — breaks merged
+  `resolution`/`explorer`/`conductor`; used the additive `Reply::Snapshot` instead
+  (above).
+- **`exec` as a recorded `Action`.** Rejected by ruling (spec Non-goals). No hook
+  for it exists; `exec` never touches `recorded`/`schedule`.
+- **A guest agent / RPC protocol for `exec`.** Out of scope — the serial shell is
+  the v1 transport; a richer channel is a later ruling.
+- **Putting the RX queue in the `state_hash` / snapshot.** Rejected — it is
+  off-record live-only state; hashing it would perturb gate 4 and admit tainted
+  input into the reproducible story.
+- **Guarding the in-process `recorded_env()` accessor.** Left unguarded — it returns
+  `&EnvSpec` and is used by other live tests on untainted timelines; the *wire*
+  `RecordedEnv` verb is the guarded surface.
+- **A hard force-exit at the `exec` deadline.** Not needed — `exec` is off-record,
+  so opportunistic deadline observation (like `run`) is sufficient; the guest reading
+  serial input generates the exits that advance V-time.
+
+## Known limitations / integrator notes
+
+- **`exec` needs a serial shell for output.** Gate 2's *output* half requires a root
+  shell reading ttyS0 (the `exec-image`); the stock Postgres image has none, so
+  against it `exec` returns `ok=false`/empty — the taint guard and gate-2
+  determinism still hold. A single Postgres-image-with-concurrent-serial-shell would
+  let one run cover both halves, but backgrounding a shell alongside postgres is a
+  larger guest change that could perturb the Postgres golden, so it is kept a
+  separate image variant.
+- **MANIFEST.sha256:** the base kernel + base `initramfs.cpio.gz` hashes are
+  **unchanged** (no edit to `init.sh`/the base build). The new `initramfs-exec.cpio.gz`
+  is off-record test scaffolding; record its sha256 per the task-90 hashed-input
+  ruling only if it becomes a gated artifact (noted in `build-exec-image.sh`).
+- **CI wiring (root files off-limits, rule 1):** `tests/live_exec_improvisation.rs`
+  is `#[ignore]`d + `cfg(linux)` like the other `live_*` tests; no new `-p` entries
+  are needed. The box table above must be filled before the task is fully closed.
+- **`APP_PROTOCOL_VERSION` is now 6.** Any peer negotiating an older version rejects
+  at `hello` (the additive-tag-mid-session hazard the bump exists to prevent).

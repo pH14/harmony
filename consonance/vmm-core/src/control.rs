@@ -100,17 +100,19 @@
 //! client surfaces a transport error, and the campaign aborts loudly. Nothing
 //! is ever silently absorbed or misclassified across the categories.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
 use control_proto::{
-    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Moment,
-    READ_CAP, RegsView, Reply, Request, SnapId, StopReason, VTime, decode_request, encode_reply,
+    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, Environment, EventRef, HashScope,
+    Moment, READ_CAP, RegsView, Reply, Request, SnapId, StopReason, VTime, decode_request,
+    encode_reply,
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
+use crate::exec::ExecSession;
 use crate::snapshot::{SnapshotEngine, SnapshotError};
 use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
@@ -257,6 +259,32 @@ pub struct ControlServer<B: Backend> {
     /// prefix) so a fork's `net_decide` answers do not diverge from the sequential
     /// run. Ephemeral, removed with its snapshot on `drop`.
     net_snaps: BTreeMap<u64, NetSnap>,
+    /// **The lineage taint bit** for the *current live timeline* (task 81). Set the
+    /// instant an [`Request::Exec`] improvisation is issued (conservatively, before
+    /// it runs — so no failure mode leaves an improvised timeline looking clean),
+    /// and **re-derived on every restore** from the branched/replayed snapshot's
+    /// taint ([`tainted_snaps`](Self::tainted_snaps)). Taint never clears downstream:
+    /// an untainted timeline is reachable only by restoring an untainted ancestor
+    /// (or the fresh boot after a `RestoreFailed`). Gates the reproducer mint
+    /// ([`Request::RecordedEnv`] → [`ControlError::Tainted`]) and stamps the
+    /// snapshot reply.
+    timeline_tainted: bool,
+    /// **The set of tainted snapshots** (task 81), keyed by wire [`SnapId`]. A
+    /// [`snapshot`](ControlServer::snapshot) taken from a tainted timeline records
+    /// its handle here (and its reply carries `tainted: true`); a `branch`/`replay`
+    /// of a handle in this set yields a tainted timeline. This is the durable half
+    /// of the taint guard — it survives across timelines so the taint propagates
+    /// **exactly along snapshot ancestry**, and a future Archive/donation path
+    /// (task 64+) can consult a snapshot's `tainted` flag without a session.
+    /// Removed with its handle on `drop`. A `BTreeSet` so membership order never
+    /// reaches an output.
+    tainted_snaps: BTreeSet<u64>,
+    /// A monotonically-increasing counter salting each [`Request::Exec`]'s
+    /// completion-sentinel marker ([`ExecSession`]), so two `exec`s on one session
+    /// cannot alias their sentinels. Not wall-clock / RNG (conventions rule 4);
+    /// `exec` is off the record, so this never needs to be reproducible — only
+    /// unique-enough within a session.
+    exec_nonce: u64,
 }
 
 /// The per-snapshot `Net` state the control server retains (task 61): the
@@ -327,6 +355,10 @@ impl<B: Backend> ControlServer<B> {
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
             net_snaps: BTreeMap::new(),
+            // A fresh session's live timeline is untainted; no snapshots exist yet.
+            timeline_tainted: false,
+            tainted_snaps: BTreeSet::new(),
+            exec_nonce: 0,
         }
     }
 
@@ -450,6 +482,15 @@ impl<B: Backend> ControlServer<B> {
                 let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                 Ok(Ok(Reply::Regs(regs_view(vmm))))
             }
+            // Improvisation (task 81): inject `cmd` on the serial input, run to a
+            // completion sentinel or the deadline, capture output. The FIRST thing
+            // it does is set the timeline's taint bit — conservatively, before any
+            // fallible work — so no failure mode can leave an improvised timeline
+            // looking clean (the taint guard's authoritative half).
+            Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
+            // Reproducer mint (task 81) — the taint guard's fail-loud site: a
+            // tainted timeline is a loud `Tainted`, never a lying reproducer.
+            Request::RecordedEnv => Ok(self.recorded_env_reply()),
         }
     }
 
@@ -718,7 +759,20 @@ impl<B: Backend> ControlServer<B> {
             let policy = self.recorded.policy().clone();
             self.net_snaps.insert(id, NetSnap { channel, policy });
         }
-        Ok(Ok(Reply::SnapId(SnapId(id))))
+        // Task 81: a snapshot inherits the live timeline's taint. If the timeline
+        // was tainted by an `exec` improvisation, record the handle (so any
+        // `branch`/`replay` of it yields a tainted timeline) and surface the
+        // taint-carrying reply; otherwise the pre-81 taint-free `SnapId` reply,
+        // byte-identical to every existing capture (gate 4).
+        if self.timeline_tainted {
+            self.tainted_snaps.insert(id);
+            Ok(Ok(Reply::Snapshot {
+                id: SnapId(id),
+                tainted: true,
+            }))
+        } else {
+            Ok(Ok(Reply::SnapId(SnapId(id))))
+        }
     }
 
     /// `drop`: release the store layer behind a wire handle and GC.
@@ -731,6 +785,10 @@ impl<B: Backend> ControlServer<B> {
         self.sdk_snaps.remove(&snap.0);
         // Task 61: drop the Net channel snapshot with its handle too.
         self.net_snaps.remove(&snap.0);
+        // Task 81: drop its taint record with the handle. (The `SnapId` is
+        // monotonic — [`next_snap`] never reuses a number — so a later snapshot can
+        // never inherit this one's taint by handle reuse.)
+        self.tainted_snaps.remove(&snap.0);
         // The handle was minted by `snapshot`, which retains exactly one ref;
         // releasing it can only fail if the store lost the layer — an
         // invariant failure we still answer on the wire (the handle is gone
@@ -895,6 +953,11 @@ impl<B: Backend> ControlServer<B> {
                 // session on the reset fresh boot. Callers treat `RestoreFailed` as
                 // "the session VM was replaced; re-establish your point."
                 self.reset_schedule_to_fresh_vm();
+                // Task 81: the kept VM is a **fresh boot** (a clean genesis-like
+                // timeline), not the tainted snapshot's state — so it is untainted,
+                // whatever the failed-to-restore handle's taint was. (An untainted
+                // state reachable only from an untainted ancestor: this boot is one.)
+                self.timeline_tainted = false;
                 // Task 73 (round-4 P3): the kept fresh VM must carry an SDK channel
                 // too — `GUEST_HAS_SDK` is advertised unconditionally, so a doorbell
                 // on it after a recoverable `RestoreFailed` would otherwise be a
@@ -936,6 +999,12 @@ impl<B: Backend> ControlServer<B> {
             }
         }
         self.vmm = Some(fresh);
+        // Task 81: the restored timeline **inherits the snapshot's taint** — a
+        // `branch`/`replay` from a tainted snapshot is tainted; from an untainted
+        // one, untainted. This is the propagation rule that makes taint follow
+        // snapshot ancestry exactly (and lets a rewind to an untainted ancestor
+        // legitimately reach untainted state). Both `branch` and `replay` land here.
+        self.timeline_tainted = self.tainted_snaps.contains(&snap.0);
         // 5. A restore rewinds the VM, so **re-arm the host-plane schedule** from
         //    scratch (task 59): drop any stale staged faults and reset the recorded
         //    reproducer to a bare `Seeded` at the **restored stream's** seed
@@ -1338,6 +1407,102 @@ impl<B: Backend> ControlServer<B> {
             }
         }
     }
+
+    /// `exec(cmd, deadline)`: the **improvisation** (task 81). Inject `cmd` on the
+    /// guest's serial input (as if typed at the serial shell), step the VM until the
+    /// completion sentinel or the V-time `deadline`, and capture the serial output.
+    ///
+    /// **Taints the timeline first — before any fallible work** (the conservative
+    /// taint invariant). Even if injection, a step, or a terminal aborts the run
+    /// below, the timeline is already (correctly) tainted, so the reproducer guard
+    /// ([`recorded_env_reply`](Self::recorded_env_reply)) can never mint a clean
+    /// reproducer after an attempted `exec`. The server **refuses nothing** — a
+    /// caller may deliberately sacrifice a timeline; fork-first is a usage
+    /// discipline, not a server rule.
+    ///
+    /// **Off the record by ruling** (`docs/RESOLUTION.md` §Improvisations): the
+    /// serial channel is deliberately crude, there is **no determinism guarantee**
+    /// on this path, and nothing here is recorded into the reproducer
+    /// ([`recorded`](Self::recorded) is untouched) or the fault schedule. See the
+    /// sentinel scheme + failure modes in [`crate::exec`] and `IMPLEMENTATION.md`.
+    fn exec(
+        &mut self,
+        cmd: &str,
+        deadline: VTime,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
+        // 1. Conservative taint: set BEFORE touching the guest, covering every
+        //    failure point below.
+        self.timeline_tainted = true;
+        let nonce = self.exec_nonce;
+        self.exec_nonce = self.exec_nonce.wrapping_add(1);
+
+        let mut session = ExecSession::new(cmd, nonce);
+        let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+        // 2. Inject the command line on the serial RX and note the current capture
+        //    length, so only NEW output is fed to the completion scanner.
+        vmm.inject_serial_input(session.input());
+        let mut cursor = vmm.serial_output().len();
+
+        // 3. Step toward the sentinel / deadline / terminal. The deadline is
+        //    observed opportunistically at each V-time boundary (like `run`): a hung
+        //    or shell-less guest ends here `ok = false`. No fault-schedule
+        //    interaction — `exec` is off the record.
+        loop {
+            let out = vmm.serial_output();
+            if out.len() > cursor {
+                session.feed(&out[cursor..]);
+                cursor = out.len();
+            }
+            if session.is_done() {
+                break;
+            }
+            let vns = vmm.effective_vns().unwrap_or(0);
+            if vns >= deadline.0 {
+                session.finish_timeout();
+                break;
+            }
+            match vmm.step()? {
+                Step::Continued => {}
+                // A cooperating-SDK doorbell during an improvisation is consumed and
+                // ignored (exec is not an SDK-driven run); keep stepping.
+                Step::SdkStop => {
+                    let _ = vmm.take_sdk_stop();
+                }
+                // The guest halted / crashed / rebooted before the sentinel: drain
+                // any final output and close as an (unsuccessful) timeout.
+                Step::Terminal(_) => {
+                    let out = vmm.serial_output();
+                    if out.len() > cursor {
+                        session.feed(&out[cursor..]);
+                    }
+                    session.finish_timeout();
+                    break;
+                }
+            }
+        }
+        let outcome = session.into_outcome();
+        Ok(Ok(Reply::ExecResult {
+            output: outcome.output,
+            ok: outcome.ok,
+        }))
+    }
+
+    /// The reply to [`Request::RecordedEnv`] (task 81) — the taint guard's
+    /// **fail-loud site**. Mint the recorded reproducer (the [`recorded`](Self::recorded)
+    /// [`EnvSpec`] as a wire [`Environment`]) **only** on an untainted timeline; a
+    /// timeline an `exec` improvisation has tainted returns [`ControlError::Tainted`]
+    /// instead — an improvised timeline is off the record and has no honest
+    /// reproducer, so the server refuses rather than hand back an `Environment` that
+    /// does not reproduce. Pure (no VM mutation), so it is answerable at any point.
+    fn recorded_env_reply(&self) -> Result<Reply, ControlError> {
+        if self.timeline_tainted {
+            return Err(ControlError::Tainted);
+        }
+        Ok(Reply::Recorded(Environment {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: self.recorded.encode(),
+        }))
+    }
 }
 
 /// Map a substrate [`TerminalReason`] to the wire [`StopReason`], stamped with
@@ -1635,8 +1800,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 5,
-            "task 80 bumped for the read/regs observation verbs"
+            caps.protocol_version, 6,
+            "task 81 bumped for the exec/recorded_env improvisation verbs"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -5390,5 +5555,213 @@ mod tests {
         // A replay rewinds and clears the latch.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
         assert!(run_all_res(&mut s).is_ok());
+    }
+
+    // ===================== task 81: the taint guard =======================
+
+    /// Take a snapshot, returning its handle and the taint bit its reply carries
+    /// (`Reply::SnapId` ⇒ untainted; `Reply::Snapshot{tainted}` ⇒ the flag).
+    fn snap_tainted(server: &mut ControlServer<MockBackend>) -> (SnapId, bool) {
+        match server.handle(&Request::Snapshot).unwrap() {
+            Ok(Reply::SnapId(id)) => (id, false),
+            Ok(Reply::Snapshot { id, tainted }) => (id, tainted),
+            other => panic!("snapshot reply: {other:?}"),
+        }
+    }
+
+    /// Improvise: `exec` with an already-expired deadline (`VTime(0)`), so it taints
+    /// the timeline and returns immediately without stepping the mock guest.
+    fn exec(server: &mut ControlServer<MockBackend>, cmd: &str) -> (Vec<u8>, bool) {
+        match server
+            .handle(&Request::Exec {
+                cmd: cmd.to_string(),
+                deadline: VTime(0),
+            })
+            .unwrap()
+        {
+            Ok(Reply::ExecResult { output, ok }) => (output, ok),
+            other => panic!("exec reply: {other:?}"),
+        }
+    }
+
+    /// The reproducer mint result: `Ok(Environment)` or the loud `Tainted`.
+    fn recorded_env_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
+        server.handle(&Request::RecordedEnv).unwrap()
+    }
+
+    fn branch(
+        server: &mut ControlServer<MockBackend>,
+        snap: SnapId,
+        seed: u64,
+    ) -> Result<Reply, ControlError> {
+        server
+            .handle(&Request::Branch {
+                snap,
+                env: seeded_env(seed),
+            })
+            .unwrap()
+    }
+
+    fn replay(
+        server: &mut ControlServer<MockBackend>,
+        snap: SnapId,
+    ) -> Result<Reply, ControlError> {
+        server.handle(&Request::Replay(snap)).unwrap()
+    }
+
+    /// `exec` taints the live timeline: the reproducer mints cleanly before, is a
+    /// loud `Tainted` after, and the `ExecResult` (crude, deadline-0) is unsuccessful
+    /// with empty capture — but the guard fired regardless of the run's outcome.
+    #[test]
+    fn exec_taints_and_recorded_env_then_fails_loud() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        // Untainted: the reproducer mints.
+        assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
+        // Improvise.
+        let (output, ok) = exec(&mut s, "ps aux");
+        assert!(!ok, "deadline-0 exec on a non-shell mock does not complete");
+        assert!(output.is_empty());
+        // Tainted: the mint is refused, loud.
+        assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+    }
+
+    /// A snapshot taken from a tainted timeline reports `tainted: true`; one taken
+    /// before any `exec` reports untainted (and via the pre-81 `SnapId` reply).
+    #[test]
+    fn snapshot_reply_carries_the_taint() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let (_clean, clean_taint) = snap_tainted(&mut s);
+        assert!(!clean_taint, "a pre-exec snapshot is untainted");
+        exec(&mut s, "ls /");
+        let (_dirty, dirty_taint) = snap_tainted(&mut s);
+        assert!(dirty_taint, "a post-exec snapshot is tainted");
+    }
+
+    /// A `branch` **and** a `replay` from a tainted snapshot both yield a tainted
+    /// timeline (taint follows ancestry through either restore verb), and the mint
+    /// stays refused on the restored fork.
+    #[test]
+    fn branch_and_replay_from_a_tainted_snapshot_stay_tainted() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        exec(&mut s, "ls /");
+        let (tainted_snap, t) = snap_tainted(&mut s);
+        assert!(t);
+        // Branch: tainted → mint refused, and a snapshot here is tainted.
+        assert_eq!(branch(&mut s, tainted_snap, 0x1111), Ok(Reply::Unit));
+        assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+        assert!(
+            snap_tainted(&mut s).1,
+            "branch-of-tainted snapshots tainted"
+        );
+        // Replay: same.
+        assert_eq!(replay(&mut s, tainted_snap), Ok(Reply::Unit));
+        assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+    }
+
+    /// **Taint never crosses, and a rewind to an untainted ancestor recovers.** A
+    /// clean snapshot taken *before* any `exec` restores to an untainted timeline —
+    /// even from a currently-tainted live state — so the mint works again. This is
+    /// the "untainted state is only reachable from an untainted ancestor" rule: the
+    /// clean ancestor is one.
+    #[test]
+    fn rewind_to_an_untainted_ancestor_clears_the_live_taint() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let (clean_snap, _) = snap_tainted(&mut s); // taken before any exec
+        exec(&mut s, "rm -rf /"); // sacrifice the live timeline
+        assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+        // Rewind to the clean ancestor via replay: untainted again.
+        assert_eq!(replay(&mut s, clean_snap), Ok(Reply::Unit));
+        assert!(
+            matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))),
+            "an untainted ancestor restores an untainted, recordable timeline"
+        );
+        // And a branch off the clean snapshot is likewise untainted.
+        assert_eq!(branch(&mut s, clean_snap, 0x2222), Ok(Reply::Unit));
+        assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
+        assert!(!snap_tainted(&mut s).1);
+    }
+
+    /// One op in the arbitrary-DAG proptest.
+    #[derive(Clone, Debug)]
+    enum TaintOp {
+        Snapshot,
+        Exec,
+        /// Branch/replay reference an existing snapshot by index (mod the count).
+        Branch(usize),
+        Replay(usize),
+    }
+
+    fn arb_taint_ops() -> impl Strategy<Value = Vec<TaintOp>> {
+        let op = prop_oneof![
+            Just(TaintOp::Snapshot),
+            Just(TaintOp::Exec),
+            any::<usize>().prop_map(TaintOp::Branch),
+            any::<usize>().prop_map(TaintOp::Replay),
+        ];
+        prop::collection::vec(op, 0..40)
+    }
+
+    proptest! {
+        // Gate 1: over an arbitrary DAG of snapshot/branch/replay/exec, taint
+        // propagates EXACTLY along ancestry — never across, never cleared — a
+        // `recorded_env` on a tainted timeline ALWAYS errors, and an untainted
+        // lineage is NEVER blocked. The real `ControlServer<MockBackend>` is driven
+        // through `handle()` and checked against an independent oracle at every step.
+        #![proptest_config(ProptestConfig::with_cases(300))]
+        #[test]
+        fn taint_propagates_exactly_along_ancestry(ops in arb_taint_ops()) {
+            let mut s = server(vec![Exit::Hlt]);
+            hello(&mut s);
+            // Oracle: taint of each snapshot (by creation order; SnapId is monotonic
+            // from 1), and the live timeline's taint. Genesis is untainted.
+            let mut snap_taint: Vec<bool> = Vec::new();
+            let mut snap_ids: Vec<SnapId> = Vec::new();
+            let mut current = false;
+
+            for op in ops {
+                match op {
+                    TaintOp::Snapshot => {
+                        let (id, reported) = snap_tainted(&mut s);
+                        // The reply's taint bit must match the live timeline exactly.
+                        prop_assert_eq!(reported, current, "snapshot taint mismatch");
+                        snap_ids.push(id);
+                        snap_taint.push(current);
+                    }
+                    TaintOp::Exec => {
+                        exec(&mut s, "echo hi");
+                        current = true; // conservative taint: set unconditionally
+                    }
+                    TaintOp::Branch(i) => {
+                        if snap_ids.is_empty() {
+                            continue;
+                        }
+                        let k = i % snap_ids.len();
+                        prop_assert_eq!(branch(&mut s, snap_ids[k], 0x99), Ok(Reply::Unit));
+                        // A branch inherits the snapshot's taint (never across).
+                        current = snap_taint[k];
+                    }
+                    TaintOp::Replay(i) => {
+                        if snap_ids.is_empty() {
+                            continue;
+                        }
+                        let k = i % snap_ids.len();
+                        prop_assert_eq!(replay(&mut s, snap_ids[k]), Ok(Reply::Unit));
+                        current = snap_taint[k];
+                    }
+                }
+                // The load-bearing invariant, checked after EVERY op: the reproducer
+                // mint errors `Tainted` iff the live timeline is tainted — untainted
+                // lineage is never blocked, tainted lineage always is.
+                match recorded_env_res(&mut s) {
+                    Ok(Reply::Recorded(_)) => prop_assert!(!current, "clean mint on a tainted timeline"),
+                    Err(ControlError::Tainted) => prop_assert!(current, "Tainted on an untainted timeline"),
+                    other => prop_assert!(false, "unexpected recorded_env reply: {:?}", other),
+                }
+            }
+        }
     }
 }

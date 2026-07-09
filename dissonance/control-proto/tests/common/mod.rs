@@ -87,6 +87,11 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
         any::<u32>().prop_map(|offset| Request::SdkEvents { offset }),
         (any::<u64>(), any::<u32>()).prop_map(|(gpa, len)| Request::Read { gpa, len }),
         Just(Request::Regs),
+        ("[ -~]{0,64}", any::<u64>()).prop_map(|(cmd, deadline)| Request::Exec {
+            cmd,
+            deadline: VTime(deadline),
+        }),
+        Just(Request::RecordedEnv),
     ]
 }
 
@@ -179,6 +184,7 @@ fn arb_control_error() -> impl Strategy<Value = ControlError> {
         (any::<u64>(), any::<u32>(), any::<u64>())
             .prop_map(|(gpa, len, ram_len)| ControlError::ReadOutOfRange { gpa, len, ram_len }),
         (any::<u32>(), any::<u32>()).prop_map(|(len, cap)| ControlError::ReadTooLarge { len, cap }),
+        Just(ControlError::Tainted),
         arb_protocol_error().prop_map(ControlError::Protocol),
     ]
 }
@@ -192,6 +198,12 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
         proptest::array::uniform32(any::<u8>()).prop_map(Reply::Hash),
         arb_bytes().prop_map(Reply::Bytes),
         arb_regs_view().prop_map(Reply::Regs),
+        (arb_bytes(), any::<bool>()).prop_map(|(output, ok)| Reply::ExecResult { output, ok }),
+        (any::<u64>(), any::<bool>()).prop_map(|(id, tainted)| Reply::Snapshot {
+            id: SnapId(id),
+            tainted
+        }),
+        arb_environment().prop_map(Reply::Recorded),
     ]
 }
 
