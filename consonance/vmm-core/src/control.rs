@@ -450,6 +450,15 @@ impl<B: Backend> ControlServer<B> {
         self.engine.set_max_chain_len(max_chain_len);
     }
 
+    /// The store-side derive-chain length behind a wire handle (`1` = a base
+    /// layer, `> 1` = a dirty-set derive; task 95 M2.1) — gate evidence and
+    /// diagnostics for which capture path a seal took. `None` for an unknown or
+    /// dropped handle. Read-only; not a wire verb.
+    pub fn snapshot_chain_len(&self, snap: SnapId) -> Option<u32> {
+        let id = self.snaps.get(&snap.0)?;
+        self.engine.stats(*id).ok().map(|s| s.chain_len)
+    }
+
     /// Serve one session over a byte stream (a connected unix socket, or an
     /// in-process socketpair end): decode request frames, dispatch each through
     /// [`ControlServer::handle`], and write the reply frames back, until the
