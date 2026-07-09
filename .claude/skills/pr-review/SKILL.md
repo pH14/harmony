@@ -6,7 +6,7 @@ description: >
   delegated agent's work, or give feedback on a change — even if they just say
   "take a look at PR 3" or name a task branch like task-02-snapshot-store. Covers
   finding the right task spec, running the gates, a cross-model second pass (codex /
-  GPT-5.5), and posting the review via gh.
+  GPT-5.6 Sol), and posting the review via gh.
 ---
 
 # PR review
@@ -163,7 +163,7 @@ first-pass reading misses real bugs:
 ## 5. Cross-model second pass (MANDATORY)
 
 Single-reviewer variance is real and large — your own read misses things a different model
-catches. The cross-model pass is **`codex review` (GPT-5.5)**: a model different from the one
+catches. The cross-model pass is **`codex review` (GPT-5.6 Sol)**: a model different from the one
 doing the primary review, run over the same diff. In a live calibration on the CPU/MSR
 contract it independently caught real blocking findings the primary read missed (a
 backend-mechanism gap — instructions the contract says it traps that stock KVM has no
@@ -174,7 +174,8 @@ independent one covers what you missed.
 
 ### Primary: `codex review` (reliable, agentic, near-zero setup)
 
-`codex review` is OpenAI's native non-interactive reviewer hitting GPT-5.5 directly — it
+`codex review` is OpenAI's native non-interactive reviewer hitting GPT-5.6 Sol directly
+(model pinned in `~/.codex/config.toml`; integrator switched 5.5 → 5.6 Sol 2026-07-09) — it
 reads the repo and runs tools itself, so there's no worktree-inlining dance and no headless
 stall. Run it from a detached PR-head worktree against `main`:
 
@@ -253,7 +254,7 @@ Notes on the mechanics:
 - `event` is `APPROVE`, `REQUEST_CHANGES`, or `COMMENT`. Any `[blocking]` finding ⇒
   `REQUEST_CHANGES`. `APPROVE` requires **all three**: clean gates, no blocking findings,
   and a **clean cross-model pass** (§5) on the current head — if blocking findings were
-  fixed, that means a *fresh* GPT-5.5 pass after the fixes, not the original one
+  fixed, that means a *fresh* GPT-5.6 Sol pass after the fixes, not the original one
   (suggestions alone shouldn't hold a delegated-task PR hostage; the integrator merges,
   the author iterates).
 - Omitting `event` creates a *pending* (draft) review only you can see — useful if the

@@ -18,10 +18,6 @@ _Last regenerated: 2026-07-09 ~12:05._
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
-- **Paul (away, queued for his return):** supply the Super Mario Bros ROM
-  (`HARMONY_SMB_ROM`) · `hm-bjc` — apply the foreman skill patch
-  (`memory/foreman-2026-07-09.patch`) · `hm-svi` — approve closing the five legacy
-  GitHub issues · `hm-fdk`
 - **Behavioral diff / findings front page** — run-over-run New/Resolved/Ongoing view;
   was queued behind two long-done tasks and forgotten · `hm-m78`
 - **Deterministic-preemption soundness gap** — oldest open debt; needs a decision, not

@@ -40,21 +40,28 @@ review or verification) per iteration.
 Everything is derived fresh each time from GitHub, the box, and the repo. Any fresh
 session running this skill must reach the same conclusions.
 
-**Current frontier + review posture (integrator directive, 2026-06).** The north star is
-**running a real workload deterministically on the box** — the consonance Postgres stream
-(tasks 36 → 37 → 38, ending at `docker run postgres` deterministic-twice) in parallel with the
-dissonance branching stream (39 → 40). **Maximize box (real-KVM) execution; minimize ceremony on
-theory-only PRs.** Concretely, overriding the per-PR review default below:
+**Current frontier + review posture (integrator directive, 2026-07-09 — supersedes the
+2026-06 Wave-3 posture).** The north star is **testing on actual workloads with visual
+inspection**: the NES game-workload bring-up (task 86 M0) + film contact sheets, with the
+post-NO-GO signal iteration (E-fails playbook) and the snapshot-perf D5 work (campaign
+seeds in minutes) as the supporting streams. Synthetic benchmarks are cheap red-flag
+checks, never quarter-roadmap stops (the task-69 lesson). **Maximize box (real-KVM)
+execution; minimize ceremony on theory-only PRs.** Concretely, overriding the per-PR
+review default below:
 - **Tier the review.** *Substantive* PRs (crate code, determinism leaks, the CPU/MSR contract,
   wire formats, `unsafe`) get the full **pr-review** treatment incl. the mandatory cross-model
-  pass (`codex review`, GPT-5.5 — the sole cross-model pass). *Light* PRs (docs, specs, ROADMAP, feedback, handoff plans) get a foreman
+  pass (`codex review`, GPT-5.6 Sol — the sole cross-model pass). *Light* PRs (docs, specs, ROADMAP, feedback, handoff plans) get a foreman
   sanity read + the standard gates, then merge — **no cross-model pass, no multi-round loop.**
 - **A green box gate outranks a review round.** For box-only frontier tasks the determinism gate
   on the box (boots, runs, bit-identical `state_hash`) is the decisive signal; once it is green and
   the diff has had one substantive review, merge — do not hold frontier progress for extra rounds.
-- **Keep both trains moving.** Spawn up to **3** workers during the Wave-3 push (the two box
-  frontier streams + one Mac-only quality/docs worker); pin concurrent box runs to distinct cores
-  (see `docs/BOX-PINNING.md`). Prioritize the box/Postgres frontier over backlog and quality tasks.
+- **Keep the trains moving.** Default cap: **3 ACTIVE workers** — sessions parked awaiting a
+  box window or a user ruling don't count against it; Paul can authorize surges (precedent
+  2026-07-08: five concurrent on "can we parallelize this"). Pin concurrent box runs to
+  distinct cores (`docs/BOX-PINNING.md`). **Smoke-fire-once before campaign spend**: every
+  box dispatch probes its riskiest live assumption with a minutes-long fire-once run and
+  reports it before the full gate/campaign budget (standing discipline from the task-69
+  retrospective).
 
 ## 1. Sync (every iteration, cheap)
 
@@ -62,7 +69,16 @@ theory-only PRs.** Concretely, overriding the per-PR review default below:
 git -C ~/workspace/harmony pull -q
 gh pr list --json number,title,headRefName,isDraft,reviewDecision,updatedAt
 ~/workspace/harmony/scripts/agents-status.sh
+bd ready --json          # the unblocked frontier (beads, .beads/, adopted 2026-07-09)
 ```
+
+**Beads is the queue of record.** Task/PR *stage* is still derived fresh from GitHub + tmux
+(statelessness rule) — but *what work exists and what blocks it* lives in beads (`bd list`,
+`bd ready`, `bd dep tree <id>`). Reconcile every iteration: PR merged ⇒ `bd close <id>`;
+follow-up/split/debt discovered ⇒ `bd create` with real `--deps` edges (prose triggers in
+spec headers or memory notes are BANNED — they are how work got lost); a cleared blocker
+surfaces in `bd ready` automatically. After acting, regenerate `docs/QUEUE.md` (grouped
+In flight / Ready / Blocked / Recently done; descriptive names first, IDs as anchors).
 
 For each open PR additionally: `gh pr view <N> --json reviews,commits,headRefName` —
 compare the timestamp of YOUR latest review against the head commit.
@@ -129,12 +145,12 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
 2. ★ **Verify** one `needs-verification`: fetch the branch into a review worktree, re-run
    the gates, check every `[blocking]` finding from your review is actually addressed
    (not just claimed). If your prior review had **any** blocking finding, you MUST rerun
-   the blind GPT-5.5 cross-model pass on the fixed head (pr-review skill §5) — fixes can
+   the blind GPT-5.6 Sol cross-model pass on the fixed head (pr-review skill §5) — fixes can
    introduce new bugs; iterate until a *clean* cross-model pass confirms it. Only then
    post APPROVE; otherwise REQUEST_CHANGES.
 3. ★ **Review** one `needs-review`, **tiered** (see the review-posture rule above):
    - *Substantive* (crate code, determinism, contract, wire formats, `unsafe`): invoke the
-     **pr-review skill** in full — spec conformance, gates, the **mandatory** blind GPT-5.5
+     **pr-review skill** in full — spec conformance, gates, the **mandatory** blind GPT-5.6 Sol
      cross-model pass, batched inline review. Never skip the cross-model pass for this tier.
    - *Light* (docs, specs, ROADMAP, feedback, handoff plans): a foreman sanity read + the
      standard gates, then merge — no cross-model pass. (This is a *cheap* action, not the
@@ -156,9 +172,11 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
    `tmux capture-pane -p -t agent-<slug> | tail -30`. If it's waiting on a
    permission prompt or confused, send-keys what unblocks it; nudge at most once. Stalled
    again next iteration ⇒ kill, respawn fresh, note it. Fails twice ⇒ escalate.
-7. **Spawn** the next task while live workers < **3** (Wave-3 push cap; see the posture rule).
-   Priority: the box/Postgres frontier (36 → 37 → 38) ‖ the dissonance branching stream (39 → 40)
-   ahead of backlog/quality tasks (else numeric order):
+7. **Spawn** the next task while active workers < **3** (see the posture rule; parked
+   sessions don't count).
+   Priority: **`bd ready` order (P0 first)** — the tracker encodes the standing directives
+   (workloads-first, frontier-over-backlog) as priorities and dependency edges; numeric
+   task order is dead as a scheduling signal:
    `~/workspace/harmony/scripts/agent-spawn.sh <slug>` (defaults to Opus 4.8; add
    `--model claude-fable-5` when the spec is high-complexity — deep architectural
    reasoning, cross-crate refactors, gnarly determinism bugs, or heavy spec ambiguity
