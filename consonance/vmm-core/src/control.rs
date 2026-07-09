@@ -127,6 +127,38 @@ use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, V
 /// guarantees that ordering.
 pub type VmmFactory<B> = Box<dyn FnMut() -> Result<Vmm<B>, VmmError>>;
 
+/// Boots a fresh restore target **around a materialized snapshot mapping** —
+/// the task-95 M2.2 remap-restore factory (see
+/// [`crate::bringup::compose_restore_target`]): the mapping's buffer becomes the
+/// guest RAM the memslots register, so the restore performs **no** full-image
+/// memcpy and untouched pages fault lazily. Must compose its VMs exactly like
+/// the session's [`VmmFactory`] (same RAM size, wiring, contract) minus the
+/// boot-image load; the server then restores only the non-memory half
+/// ([`Vmm::restore_vm_state`]). Same drop-the-old-VM-first discipline as
+/// [`VmmFactory`].
+pub type RemapVmmFactory<B> = Box<dyn FnMut(snapshot_store::Mapping) -> Result<Vmm<B>, VmmError>>;
+
+/// How `branch`/`replay` restore guest memory (task 95 M2.2) — the A/B knob of
+/// the restore determinism gate, and the fallback if a box gate fails.
+///
+/// **The mode always tells the truth** (PR #95 round-1): a server starts in
+/// [`RestoreMode::Memcpy`] — the only path it *can* take — and
+/// [`ControlServer::set_remap_factory`] flips it to [`RestoreMode::Remap`] as
+/// part of installing the capability, so `Remap` is the default exactly where
+/// remapping is possible and a composition that never opts in never *claims*
+/// to remap. There is no silent degrade: [`ControlServer::restore_mode`]
+/// reports the path restores actually take.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RestoreMode {
+    /// The mapping becomes the memslot backing (no memcpy; lazy faults). The
+    /// default once a [`RemapVmmFactory`] is installed.
+    Remap,
+    /// Materialize, boot a fresh owned-RAM VM, memcpy the image in — the
+    /// pre-task-95 path, byte-for-byte. The default until a remap factory
+    /// exists (there is nothing else a factory-less server could do).
+    Memcpy,
+}
+
 /// An unrecoverable, session-fatal server failure — the loud half of the
 /// two-result-categories rule. [`ControlServer::serve`] returns it after which
 /// the transport is closed (the peer sees EOF and surfaces a transport error);
@@ -191,7 +223,25 @@ pub struct ControlServer<B: Backend> {
     /// before the factory boots its replacement).
     vmm: Option<Vmm<B>>,
     factory: VmmFactory<B>,
+    /// The remap-restore factory (task 95 M2.2), when the composition root
+    /// provides one; `None` = memcpy-only (the pre-task-95 behavior, and what
+    /// every existing composition gets unchanged).
+    remap_factory: Option<RemapVmmFactory<B>>,
+    /// The restore-mode A/B knob. Effective only with a [`RemapVmmFactory`]
+    /// installed; see [`RestoreMode`].
+    restore_mode: RestoreMode,
     engine: SnapshotEngine,
+    /// The **derive parent** for the next seal (task 95 M2.1): the store id of
+    /// the snapshot the live VM's state is a tracked continuation of — set after
+    /// a successful seal (the new snapshot) and after a successful
+    /// `branch`/`replay` (the restore source), `None` for a fresh boot or
+    /// whenever the dirty-tracking window could not be armed. When `Some` and
+    /// the parent is still live with `chain_len < max_chain_len`, a seal
+    /// captures via `snapshot_derive` over the harvested dirty set; on **any**
+    /// doubt it falls back to `snapshot_base` (the safety rule: the dirty set is
+    /// a cost hint, never a correctness input — a seal never fails because the
+    /// optimization was unavailable).
+    derive_parent: Option<SnapshotId>,
     /// Wire [`SnapId`] → store [`SnapshotId`]. Wire handles are minted here,
     /// monotonically; a dropped handle is removed (using it again is a loud
     /// [`ControlError::UnknownSnapshot`]).
@@ -342,7 +392,13 @@ impl<B: Backend> ControlServer<B> {
         ControlServer {
             vmm: Some(vmm),
             factory,
+            remap_factory: None,
+            // Truthful default: with no remap factory, memcpy is the only
+            // path this server can take; `set_remap_factory` flips to `Remap`.
+            restore_mode: RestoreMode::Memcpy,
             engine,
+            // A fresh boot is no snapshot's continuation: the first seal is a base.
+            derive_parent: None,
             snaps: BTreeMap::new(),
             next_snap: 1,
             hello_done: false,
@@ -375,6 +431,46 @@ impl<B: Backend> ControlServer<B> {
     /// the serial capture after a session ends). `None` after a fatal error.
     pub fn vmm(&self) -> Option<&Vmm<B>> {
         self.vmm.as_ref()
+    }
+
+    /// Install the remap-restore factory (task 95 M2.2) **and switch the
+    /// restore mode to [`RestoreMode::Remap`]** — installing the capability is
+    /// the opt-in, so remap becomes the default exactly where it is possible
+    /// (a factory-less server stays truthfully on `Memcpy`; PR #95 round-1).
+    /// Every `branch`/`replay` then builds the fresh VM **around** the
+    /// materialized mapping instead of memcpying the image into a fresh
+    /// allocation; [`Self::set_restore_mode`] can still flip back for A/B. The
+    /// factory must mirror the session's [`VmmFactory`] composition (RAM size,
+    /// wiring, contract) minus the boot-image load.
+    pub fn set_remap_factory(&mut self, factory: RemapVmmFactory<B>) {
+        self.remap_factory = Some(factory);
+        self.restore_mode = RestoreMode::Remap;
+    }
+
+    /// Flip the restore-mode A/B knob (task 95 M2.2's determinism gate arm; no
+    /// effect unless a [`RemapVmmFactory`] is installed).
+    pub fn set_restore_mode(&mut self, mode: RestoreMode) {
+        self.restore_mode = mode;
+    }
+
+    /// The active restore mode (informational; see [`RestoreMode`]).
+    pub fn restore_mode(&self) -> RestoreMode {
+        self.restore_mode
+    }
+
+    /// Tune the engine's derive-chain bound (task 95 M2.1; see
+    /// [`SnapshotEngine::set_max_chain_len`]).
+    pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
+        self.engine.set_max_chain_len(max_chain_len);
+    }
+
+    /// The store-side derive-chain length behind a wire handle (`1` = a base
+    /// layer, `> 1` = a dirty-set derive; task 95 M2.1) — gate evidence and
+    /// diagnostics for which capture path a seal took. `None` for an unknown or
+    /// dropped handle. Read-only; not a wire verb.
+    pub fn snapshot_chain_len(&self, snap: SnapId) -> Option<u32> {
+        let id = self.snaps.get(&snap.0)?;
+        self.engine.stats(*id).ok().map(|s| s.chain_len)
     }
 
     /// Serve one session over a byte stream (a connected unix socket, or an
@@ -725,8 +821,53 @@ impl<B: Backend> ControlServer<B> {
         Ok(())
     }
 
-    /// `snapshot`: seal the current point into the engine as a base layer
-    /// (memory image + canonical `vm_state` blob) and mint a wire handle.
+    /// The capture-path chooser for one seal (task 95 M2.1). Derive over the
+    /// harvested dirty set **only** when everything is provably right: a tracked
+    /// parent exists, it is still live in the store, its chain is under the
+    /// bound, and the harvest vouches for completeness ([`Vmm::harvest_dirty_gfns`]
+    /// returns `Some` — backend log readable, no untracked host write). On any
+    /// doubt — including a failed derive itself — fall back to `snapshot_base`
+    /// (correct-by-construction; content-dedup keeps a flatten cheap in storage).
+    /// The seal RPC never fails because the optimization was unavailable.
+    /// Returns `(id, window_consumed)`: `window_consumed` is `true` iff the
+    /// harvest ran (and therefore reset the tracking window as its own
+    /// retrieve-and-reset side effect) — the caller then arms the next window
+    /// directly instead of issuing a redundant second drain.
+    fn seal_into_store(
+        engine: &mut SnapshotEngine,
+        vmm: &mut Vmm<B>,
+        parent: Option<SnapshotId>,
+        blob: &[u8],
+    ) -> Result<(SnapshotId, bool), SnapshotError> {
+        if let Some(parent) = parent {
+            // Still live (a `drop` verb may have released it since) and bounded:
+            // at the chain cap the seal flattens via a fresh base instead.
+            let chain_ok = engine
+                .stats(parent)
+                .is_ok_and(|s| s.chain_len < engine.max_chain_len());
+            if chain_ok && let Some(gfns) = vmm.harvest_dirty_gfns() {
+                // From here the window is consumed either way. A derive error
+                // (unreachable in practice: liveness and image size were just
+                // checked, and a dropped builder releases its interned pages)
+                // still falls back to the full scan rather than failing the seal.
+                return match engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob) {
+                    Ok(id) => Ok((id, true)),
+                    Err(_) => engine
+                        .snapshot_base(vmm.guest_memory(), blob)
+                        .map(|id| (id, true)),
+                };
+            }
+        }
+        engine
+            .snapshot_base(vmm.guest_memory(), blob)
+            .map(|id| (id, false))
+    }
+
+    /// `snapshot`: seal the current point into the engine (memory image +
+    /// canonical `vm_state` blob) and mint a wire handle. Since task 95 M2.1 the
+    /// memory half derives from the tracked parent over the harvested dirty set
+    /// when it safely can ([`Self::seal_into_store`]); the reply and semantics
+    /// are identical either way.
     ///
     /// **Rejects loudly while a host-fault schedule is pending** (PR #51 round-3):
     /// a snapshot seals only VM state, and every restore of it clears the schedule
@@ -742,7 +883,7 @@ impl<B: Backend> ControlServer<B> {
         if !self.schedule.is_empty() || !self.reseed_schedule.is_empty() {
             return Ok(Err(ControlError::SnapshotWhileArmed));
         }
-        let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+        let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let vm_state = match vmm.save_vm_state() {
             Ok(s) => s,
             // The remaining fail-closed boundaries (RNG mid-exit completion,
@@ -754,7 +895,23 @@ impl<B: Backend> ControlServer<B> {
             Err(e) => return Err(e.into()),
         };
         let blob = vm_state.encode().map_err(SnapshotError::from)?;
-        let store_id = self.engine.snapshot_base(vmm.guest_memory(), &blob)?;
+        // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
+        // full-scan otherwise — then re-arm the window with the new snapshot as
+        // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
+        //
+        // `take()` the parent across the fallible seal: if the seal errors
+        // AFTER the harvest drained the window, a caller that treats the error
+        // as retryable (the pub `handle` API permits it) must NOT find the old
+        // parent still armed — a retried seal would then derive over a window
+        // missing everything dirtied before the failure. A failed seal always
+        // leaves `derive_parent = None` (the retry full-scans).
+        let parent = self.derive_parent.take();
+        let (store_id, window_consumed) =
+            Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
+        // A consumed window was already reset by the harvest itself (nothing
+        // ran since — the VM is stopped between verbs), so arm directly and
+        // skip the redundant per-slot drain; otherwise harvest-and-discard now.
+        self.derive_parent = (window_consumed || vmm.reset_dirty_tracking()).then_some(store_id);
         // Task 73: capture the SDK channel's replay-relevant state (seeded stream
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
@@ -942,9 +1099,30 @@ impl<B: Backend> ControlServer<B> {
         // 2. Drop the live VM (frees its work counter — the box allows one
         //    open at a time), then boot the fresh restore target. A factory
         //    failure is fatal: the session has no VM anymore.
+        //
+        //    Task 95 M2.2: with a remap factory installed (and the Remap mode
+        //    active, the default), the fresh VM is composed **around** the
+        //    materialized mapping — its buffer is the guest RAM the memslots
+        //    register — and only the non-memory half is restored
+        //    (`restore_vm_state`): no full-image memcpy, untouched pages fault
+        //    lazily, guest writes stay CoW-private. Otherwise the pre-task-95
+        //    memcpy path runs byte-for-byte (`restore_snapshot`).
+        let use_remap = self.restore_mode == RestoreMode::Remap && self.remap_factory.is_some();
         self.vmm = None;
-        let mut fresh = (self.factory)()?;
-        // 3. Restore, splitting the two result categories (mirrors `snapshot`).
+        let (mut fresh, restore_result) = if use_remap {
+            let factory = self
+                .remap_factory
+                .as_mut()
+                .expect("use_remap checked is_some");
+            let mut fresh = factory(mapping)?;
+            let result = fresh.restore_vm_state(&vm_state);
+            (fresh, result)
+        } else {
+            let mut fresh = (self.factory)()?;
+            let result = fresh.restore_snapshot(mapping.as_slice(), &vm_state);
+            (fresh, result)
+        };
+        // 3. Split the two result categories (mirrors `snapshot`).
         //    `restore_vm_state` validates the untrusted blob **before** mutating
         //    any live state, so a *validation-class* rejection leaves the fresh
         //    VM intact at its boot point — keep it (the session stays usable) and
@@ -954,12 +1132,25 @@ impl<B: Backend> ControlServer<B> {
         //    for, so the VM is dropped (stays `None` → poisoned) and the session
         //    is torn down (`ServeError`) rather than let a client run from
         //    unvouched state.
-        match fresh.restore_snapshot(mapping.as_slice(), &vm_state) {
+        match restore_result {
             Ok(()) => {}
             // Pre-commit rejection (a bad/foreign blob, mismatched wiring, or an
             // invalid clock config) — the fresh VM never mutated, so keep it.
             Err(VmmError::ContractViolation(_) | VmmError::Snapshot(_) | VmmError::Vtime(_)) => {
+                // Task 95 M2.2: on the remap path `fresh` is a restore-target
+                // shell (its RAM is the rejected snapshot's mapping; no booted
+                // guest, no entry state) — not a usable session VM. Replace it
+                // with a genuine fresh boot so a `RestoreFailed` leaves the
+                // session on exactly what the memcpy path leaves it on. A
+                // factory failure here is fatal, as in step 2.
+                if use_remap {
+                    drop(fresh);
+                    fresh = (self.factory)()?;
+                }
                 self.vmm = Some(fresh);
+                // Task 95 M2.1: the kept VM is a fresh boot — no snapshot's
+                // tracked continuation, so the next seal full-scans.
+                self.derive_parent = None;
                 // The VM was still REPLACED (a fresh boot), so the old timeline's
                 // staged faults + recorded reproducer must not survive attached to
                 // it (PR #51 round-2 finding): reset on every path that swaps the VM,
@@ -1110,6 +1301,16 @@ impl<B: Backend> ControlServer<B> {
                 .and_then(|v| v.entropy_state())
                 .unwrap_or(0);
             self.recorded.record_reseed(restored_floor, stream);
+        }
+        // Task 95 M2.1: the restored VM's memory IS `store_id`'s image (memcpy
+        // wrote exactly it; remap maps exactly it), so arm the dirty window with
+        // the branch/replay source as the next seal's derive parent. The
+        // harvest-and-discard resets the backend log (dropping any stale
+        // pre-restore guest-write bits) and clears the memcpy path's wholesale
+        // latch; if it cannot arm, the next seal simply full-scans.
+        {
+            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+            self.derive_parent = vmm.reset_dirty_tracking().then_some(store_id);
         }
         Ok(Ok(Reply::Unit))
     }
@@ -1685,9 +1886,22 @@ mod tests {
     /// image loaded and the canonical-blob hash wired (as the box composition
     /// does), advanced to a synchronized (post-RDTSC) boundary.
     fn vmm_at_sync(exits: Vec<Exit>, work: u64, seed: u64) -> Vmm<MockBackend> {
+        vmm_at_sync_from(MockBackend::new(), exits, work, seed)
+    }
+
+    /// [`vmm_at_sync`] over a caller-prepared mock (e.g. one with dirty tracking
+    /// enabled, task 95 M2.1) — the sync `Rdtsc` prelude + `exits` are
+    /// **appended** to anything the mock already has scripted, so pass a mock
+    /// with an empty exit script unless you mean to run yours first.
+    fn vmm_at_sync_from(
+        mut m: MockBackend,
+        exits: Vec<Exit>,
+        work: u64,
+        seed: u64,
+    ) -> Vmm<MockBackend> {
         let mut exits_with_sync = vec![Exit::Rdtsc];
         exits_with_sync.extend(exits);
-        let mut m = MockBackend::with_exits(exits_with_sync);
+        m.extend_exits(exits_with_sync);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
         m.set_msr_filter(&vmm_backend::MsrFilter::default())
             .unwrap();
@@ -1753,6 +1967,69 @@ mod tests {
         ControlServer::new(live, factory)
     }
 
+    /// [`server`] whose live VM's mock has **dirty tracking armed** (task 95
+    /// M2.1), so a second seal can derive from the first.
+    fn server_tracked() -> ControlServer<MockBackend> {
+        let mut m = MockBackend::new();
+        m.enable_dirty_tracking();
+        let live = vmm_at_sync_from(m, vec![Exit::Hlt], 500, 0xBA5E);
+        // Mirror `server`'s factory (unused by the seal-path tests, present so
+        // the composition invariant holds if one branches).
+        let factory = Box::new(move || {
+            let mut m = MockBackend::with_exits(vec![Exit::Hlt]);
+            m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
+            m.set_msr_filter(&vmm_backend::MsrFilter::default())
+                .unwrap();
+            let mut v = Vmm::new(m, GuestRam::new(RAM).unwrap());
+            v.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(9_999)),
+                    0,
+                )
+                .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            v.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            Ok(v)
+        });
+        ControlServer::new(live, factory)
+    }
+
+    /// [`server`] plus a remap-restore factory (task 95 M2.2) mirroring the
+    /// memcpy factory's composition — built through the production
+    /// `compose_restore_target`, so the portable A/B drives the real seam.
+    /// `wire_lapic: false` mis-composes the target on purpose when
+    /// `sabotage_lapic` (the RestoreFailed-recovery test's arm).
+    fn server_with_remap(
+        fork_exits: Vec<Exit>,
+        sabotage_lapic: bool,
+    ) -> ControlServer<MockBackend> {
+        let mut s = server(fork_exits.clone());
+        let remap: super::RemapVmmFactory<MockBackend> = Box::new(move |mapping| {
+            let m = MockBackend::with_exits(fork_exits.clone());
+            let mut v = crate::bringup::compose_restore_target(m, mapping, !sabotage_lapic)?;
+            v.wire_vtime(
+                VtimeWiring::new(
+                    contract_vclock_config(),
+                    Box::new(ScriptedWork::at(9_999)),
+                    0,
+                )
+                .unwrap(),
+            );
+            v.wire_snapshot_hashing();
+            Ok(v)
+        });
+        s.set_remap_factory(remap);
+        s
+    }
+
     fn hello(server: &mut ControlServer<MockBackend>) {
         let reply = server.handle(&Request::Hello(server_caps())).unwrap();
         assert_eq!(reply, Ok(Reply::Hello(server_caps())));
@@ -1788,6 +2065,207 @@ mod tests {
             Ok(Reply::Stop(stop)) => stop,
             other => panic!("run reply: {other:?}"),
         }
+    }
+
+    // ---- task 95 M2: O(dirty) capture + remap restore -------------------------
+
+    /// The store-side chain length of a wire handle (1 = a base layer; >1 = a
+    /// derived capture) — through the same public accessor the box gate uses,
+    /// so the accessor's handle→stats mapping is exercised portably too.
+    fn chain_len(s: &ControlServer<MockBackend>, id: SnapId) -> u32 {
+        s.snapshot_chain_len(id).expect("handle is live")
+    }
+
+    /// M2.1 wiring: with tracking armed, the second seal derives from the first
+    /// (chain 2), the harvested set covers a host-side write, and the derived
+    /// snapshot materializes exactly the live image — byte-identical to what a
+    /// full-scan base seal of the same state stores.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "materialize uses mmap, which Miri cannot execute; the seal-path logic is covered by the non-mmap tests"
+    )]
+    fn seal_derives_from_tracked_parent_and_reproduces_the_image() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let first = snap(&mut s);
+        // Mutate guest state host-side between the seals (the CorruptMemory
+        // apply path — a write KVM's log could never see).
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .apply_host_fault(&EnvHostFault::CorruptMemory {
+                gpa: 0x40,
+                mask: BitMask(0xDEAD_BEEF),
+            })
+            .unwrap();
+        let second = snap(&mut s);
+        assert_eq!(chain_len(&s, first), 1, "first seal is the base");
+        assert_eq!(chain_len(&s, second), 2, "second seal derived (O(dirty))");
+        // Full closure: the derived capture resolves to exactly the live image.
+        let map = s.engine.materialize(s.snaps[&second.0]).unwrap();
+        assert_eq!(map.as_slice(), s.vmm().unwrap().guest_memory());
+        // And a base seal of the same state stores the same bytes.
+        let base_twin = {
+            let vmm = s.vmm.as_ref().unwrap();
+            s.engine.snapshot_base(vmm.guest_memory(), b"twin").unwrap()
+        };
+        let twin = s.engine.materialize(base_twin).unwrap();
+        assert_eq!(map.as_slice(), twin.as_slice());
+    }
+
+    /// PR #95 round-1: the restore mode is truthful — `Memcpy` until a remap
+    /// factory exists (the only path a factory-less server can take), flipped
+    /// to `Remap` by installing one. No silent degrade.
+    #[test]
+    fn restore_mode_is_memcpy_until_a_remap_factory_installs() {
+        let s = server(vec![Exit::Hlt]);
+        assert_eq!(s.restore_mode(), super::RestoreMode::Memcpy);
+        let s = server_with_remap(vec![Exit::Hlt], false);
+        assert_eq!(s.restore_mode(), super::RestoreMode::Remap);
+    }
+
+    /// The safety default: without backend dirty tracking every seal full-scans
+    /// (base layers throughout) — nothing ever derives on an unvouched window.
+    #[test]
+    fn untracked_seals_always_full_scan() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let first = snap(&mut s);
+        let second = snap(&mut s);
+        assert_eq!(chain_len(&s, first), 1);
+        assert_eq!(chain_len(&s, second), 1, "no tracking ⇒ base, never derive");
+    }
+
+    /// The chain bound (M2.1): at `max_chain_len` the seal flattens via a fresh
+    /// base instead of deriving deeper.
+    #[test]
+    fn seal_flattens_at_the_chain_bound() {
+        let mut s = server_tracked();
+        s.set_max_chain_len(2);
+        hello(&mut s);
+        let a = snap(&mut s);
+        let b = snap(&mut s);
+        let c = snap(&mut s);
+        assert_eq!(chain_len(&s, a), 1);
+        assert_eq!(chain_len(&s, b), 2, "under the bound: derive");
+        assert_eq!(chain_len(&s, c), 1, "at the bound: flatten to a base");
+    }
+
+    /// A released parent (the client dropped the handle) makes the next seal
+    /// fall back to a base — the parent-liveness check of the safety rule.
+    #[test]
+    fn seal_falls_back_to_base_when_the_parent_was_dropped() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let first = snap(&mut s);
+        assert_eq!(s.handle(&Request::Drop(first)).unwrap(), Ok(Reply::Unit));
+        let second = snap(&mut s);
+        assert_eq!(chain_len(&s, second), 1, "dead parent ⇒ full scan");
+    }
+
+    /// An untrackable full-image host write between seals forces the fallback
+    /// (the wholesale poison), and the state still captures correctly.
+    #[test]
+    fn seal_falls_back_after_a_wholesale_host_write() {
+        let mut s = server_tracked();
+        hello(&mut s);
+        let _first = snap(&mut s);
+        let image = vec![0x5Au8; RAM];
+        s.vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let second = snap(&mut s);
+        assert_eq!(chain_len(&s, second), 1, "wholesale write ⇒ full scan");
+    }
+
+    /// M2.2's determinism A/B (the portable arm of box gate b): branching the
+    /// same snapshot with the same env under `Memcpy` and under `Remap` yields
+    /// bit-identical guest memory, identical run outcomes, and identical
+    /// `state_hash` — and the remap arm really is mapping-backed (no memcpy).
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "materialize uses mmap, which Miri cannot execute; the mode plumbing is covered by the non-mmap tests"
+    )]
+    fn branch_remap_and_memcpy_agree_bit_for_bit() {
+        let mut s = server_with_remap(vec![Exit::Rdtsc, Exit::Hlt], false);
+        hello(&mut s);
+        let sp = snap(&mut s);
+
+        s.set_restore_mode(super::RestoreMode::Memcpy);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: sp,
+                env: seeded_env(7)
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(!s.vmm().unwrap().ram_backing_is_snapshot());
+        let stop_memcpy = run_all(&mut s);
+        let mem_memcpy = s.vmm().unwrap().guest_memory().to_vec();
+        let hash_memcpy = s.handle(&Request::Hash {
+            scope: HashScope::Whole,
+        });
+
+        s.set_restore_mode(super::RestoreMode::Remap);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: sp,
+                env: seeded_env(7)
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(
+            s.vmm().unwrap().ram_backing_is_snapshot(),
+            "the remap arm's guest RAM is the materialized mapping itself"
+        );
+        let stop_remap = run_all(&mut s);
+        let mem_remap = s.vmm().unwrap().guest_memory().to_vec();
+        let hash_remap = s.handle(&Request::Hash {
+            scope: HashScope::Whole,
+        });
+
+        assert_eq!(stop_memcpy, stop_remap);
+        assert_eq!(mem_memcpy, mem_remap);
+        assert_eq!(hash_memcpy.unwrap(), hash_remap.unwrap());
+    }
+
+    /// A remap-path restore that rejects (mis-composed target: the snapshot has
+    /// an xAPIC, the target none) answers the recoverable `RestoreFailed` and
+    /// leaves the session on a genuine fresh boot — usable, exactly like the
+    /// memcpy path's recovery.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "materialize uses mmap, which Miri cannot execute; the mode plumbing is covered by the non-mmap tests"
+    )]
+    fn remap_restore_failure_keeps_a_usable_session() {
+        let mut s = server_with_remap(vec![Exit::Hlt], true); // sabotaged target
+        hello(&mut s);
+        let sp = snap(&mut s);
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: sp,
+                env: seeded_env(7)
+            })
+            .unwrap(),
+            Err(ControlError::RestoreFailed)
+        );
+        // The kept VM is a fresh boot from the NORMAL factory (owned RAM, not a
+        // half-restored shell), and the session still answers verbs.
+        assert!(!s.vmm().unwrap().ram_backing_is_snapshot());
+        assert!(matches!(
+            s.handle(&Request::Hash {
+                scope: HashScope::Whole
+            })
+            .unwrap(),
+            Ok(Reply::Hash(_))
+        ));
     }
 
     /// Like `run_all` but arms the SDK `SNAPSHOT_POINT` class (round-7), so a

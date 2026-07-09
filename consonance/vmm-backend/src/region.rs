@@ -238,6 +238,39 @@ pub(crate) fn split_around_hole(
         .flatten()
 }
 
+/// Decode one KVM dirty bitmap (`KVM_GET_DIRTY_LOG`: one bit per page of the
+/// memslot, bit `n` of word `w` = page `w * 64 + n` of the slot, LSB-first —
+/// i.e. `test_bit` order) into **absolute guest frame numbers**, appended to
+/// `out` in ascending order (task 95 M2.1's portable decode half).
+///
+/// `slot_gpa`/`slot_size` are the memslot's guest-physical base and byte length
+/// (page-aligned, as every registered slot is); bits at or beyond the slot's
+/// page count are ignored — the bitmap KVM fills is rounded up to whole `u64`
+/// words, so the tail bits of the last word are padding, never pages. Pure
+/// interval arithmetic, no syscall — unit-tested portably; the box-only ioctl
+/// side (`KvmBackend::harvest_dirty_gfns`, Linux-only) only iterates its
+/// recorded slot table and calls this per slot.
+pub(crate) fn decode_dirty_bitmap(
+    slot_gpa: u64,
+    slot_size: u64,
+    bitmap: &[u64],
+    out: &mut Vec<u64>,
+) {
+    let slot_pages = slot_size / PAGE;
+    let base_gfn = slot_gpa / PAGE;
+    for (word_idx, &word) in bitmap.iter().enumerate() {
+        let mut w = word;
+        while w != 0 {
+            let bit = u64::from(w.trailing_zeros());
+            w &= w - 1; // clear the bit just decoded
+            let page = (word_idx as u64) * 64 + bit;
+            if page < slot_pages {
+                out.push(base_gfn + page);
+            }
+        }
+    }
+}
+
 #[cfg(kani)]
 #[path = "region_proofs.rs"]
 mod proofs;
@@ -477,6 +510,84 @@ mod tests {
     fn degenerate_regions_yield_no_slots() {
         assert!(parts(0x1000, 0, LAPIC_PAGE, 0x1000).is_empty());
         assert!(parts(0x1000, 0x1000, 0, 0x1_0000).is_empty());
+    }
+
+    // ---- the portable dirty-bitmap decode (task 95 M2.1) ----------------------
+
+    fn decoded(slot_gpa: u64, slot_size: u64, bitmap: &[u64]) -> Vec<u64> {
+        let mut out = Vec::new();
+        decode_dirty_bitmap(slot_gpa, slot_size, bitmap, &mut out);
+        out
+    }
+
+    /// Exact-value: bit `n` of word `w` is page `w * 64 + n` of the slot, offset
+    /// by the slot's base gfn — the `KVM_GET_DIRTY_LOG` layout, LSB-first.
+    #[test]
+    fn dirty_bitmap_decodes_bit_positions_to_absolute_gfns() {
+        // Slot at gpa 0: bits 0, 3, 63 of word 0 and bit 1 of word 1.
+        let bm = [(1u64 << 0) | (1 << 3) | (1 << 63), 1u64 << 1];
+        assert_eq!(decoded(0, 128 * PAGE, &bm), vec![0, 3, 63, 65]);
+        // Same bitmap for a slot based at gpa 0x1_0000 (gfn 16): every gfn shifts.
+        assert_eq!(decoded(0x1_0000, 128 * PAGE, &bm), vec![16, 19, 79, 81]);
+        // An all-zero bitmap decodes to nothing.
+        assert_eq!(decoded(0, 128 * PAGE, &[0, 0]), Vec::<u64>::new());
+    }
+
+    /// The final word's padding bits (page indices at or beyond the slot's page
+    /// count) are ignored: KVM rounds the bitmap up to whole u64 words.
+    #[test]
+    fn dirty_bitmap_ignores_padding_bits_past_the_slot() {
+        // A 3-page slot whose (single-word) bitmap has bits 0, 2, 3, and 63 set:
+        // pages 3 and 63 do not exist in the slot.
+        let bm = [(1u64 << 0) | (1 << 2) | (1 << 3) | (1 << 63)];
+        assert_eq!(decoded(0x2000, 3 * PAGE, &bm), vec![2, 4]);
+    }
+
+    /// Decoding the two LAPIC-split halves of one guest RAM (the production
+    /// 8 GiB shape) yields disjoint, ascending gfn runs whose union is exactly
+    /// the dirty pages — and never the hole page.
+    #[test]
+    fn dirty_bitmap_two_split_slots_translate_back_disjointly() {
+        let hole = LAPIC_PAGE; // 4 KiB at 0xFEE00000
+        let ram = 8u64 << 30;
+        let ps: Vec<MemSlotPart> = parts(0, ram, hole, 0x1000);
+        assert_eq!(ps.len(), 2);
+        let mut out = Vec::new();
+        // Low slot: first page dirty; high slot: its first page dirty too.
+        decode_dirty_bitmap(ps[0].gpa, ps[0].size, &[1u64], &mut out);
+        decode_dirty_bitmap(ps[1].gpa, ps[1].size, &[1u64], &mut out);
+        let hole_gfn = hole / PAGE;
+        // The high slot's page 0 is the first page AFTER the hole.
+        assert_eq!(out, vec![0, hole_gfn + 1]);
+        assert!(
+            !out.contains(&hole_gfn),
+            "the hole page is never a dirty gfn"
+        );
+    }
+
+    proptest! {
+        #![proptest_config(cases(512))]
+
+        /// Decode contract over arbitrary bit sets: output is exactly the set
+        /// bits below the slot's page count, translated by the base gfn, in
+        /// strictly ascending order (sorted + deduplicated by construction).
+        #[test]
+        fn dirty_bitmap_decode_matches_a_naive_bit_scan(
+            base_pages in 0u64..0x10_0000,
+            slot_pages in 1u64..192,
+            words in proptest::collection::vec(proptest::num::u64::ANY, 1..4),
+        ) {
+            let out = decoded(base_pages * PAGE, slot_pages * PAGE, &words);
+            let mut expect = Vec::new();
+            for page in 0..slot_pages.min(words.len() as u64 * 64) {
+                let (w, b) = ((page / 64) as usize, page % 64);
+                if words[w] & (1 << b) != 0 {
+                    expect.push(base_pages + page);
+                }
+            }
+            prop_assert_eq!(&out, &expect);
+            prop_assert!(out.windows(2).all(|p| p[0] < p[1]), "strictly ascending");
+        }
     }
 
     proptest! {

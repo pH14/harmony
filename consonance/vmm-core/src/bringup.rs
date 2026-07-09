@@ -20,7 +20,7 @@ use crate::contract;
 use crate::entry;
 use crate::linux_loader::{self, LinuxImage};
 use crate::multiboot;
-use crate::vmm::{GuestRam, Vmm, VmmError};
+use crate::vmm::{GuestRam, RamBacking, Vmm, VmmError};
 
 /// `IA32_EFER` MSR index. `EFER` is an **allow-stateful** MSR, so the backend's
 /// `restore` rewrites it from the snapshot's MSR map **after** `KVM_SET_SREGS2` —
@@ -262,6 +262,66 @@ pub(crate) fn compose_linux<B: Backend>(
     Ok(vmm)
 }
 
+/// Compose a **restore target around a materialized snapshot** (task 95 M2.2,
+/// the memslot-remap restore): install the contract policy, then `unsafe`-map
+/// the [`snapshot_store::Mapping`]'s buffer as the guest RAM itself — no
+/// [`GuestRam`] allocation, no image load, no entry state, and **no memcpy**.
+/// The returned [`Vmm`] owns the mapping ([`RamBacking::Snapshot`]); the caller
+/// completes it exactly like its normal factory target — wire the xAPIC iff the
+/// snapshot source had one (`wire_lapic: true` for the Linux composition),
+/// V-time ([`Vmm::wire_vtime`]) and hash opt-ins as usual — then restores the
+/// non-memory half with [`Vmm::restore_vm_state`] (NOT `restore_snapshot`: the
+/// memory half is already in place).
+///
+/// Boot-time image loading is deliberately skipped: the mapping already holds
+/// the snapshot's memory, and a loader write would clobber it (privately — CoW
+/// keeps the store safe — but wrongly). The vCPU needs no entry state either:
+/// `restore_vm_state` overwrites the complete register file from the snapshot.
+/// `MAP_PRIVATE` does the rest — guest writes stay private to this VM, and
+/// untouched pages fault lazily instead of being copied eagerly.
+pub fn compose_restore_target<B: Backend>(
+    mut backend: B,
+    mut mapping: snapshot_store::Mapping,
+    wire_lapic: bool,
+) -> Result<Vmm<B>, VmmError> {
+    // 1. Install policy through the trait, before the first run (same order as
+    //    `compose`/`compose_linux`: policy precedes any entry).
+    backend.set_cpuid(&contract::cpuid_model())?;
+    backend.set_msr_filter(&contract::msr_filter_allow())?;
+
+    // 2. The mapping IS the guest RAM. `map_memory` requires page-aligned length
+    //    (the mmap base is page-aligned by construction); a store sized per
+    //    `SnapshotEngine` always satisfies this — reject a hand-rolled misuse.
+    if mapping.is_empty() || !mapping.len().is_multiple_of(4096) {
+        return Err(VmmError::Backend(vmm_backend::BackendError::Memory(
+            "snapshot mapping length must be a non-zero multiple of 4 KiB",
+        )));
+    }
+    // SAFETY (granted purpose 2): identical argument to `compose` — the mapping
+    // is moved into the returned `Vmm` (step 3) and its mmap pages never move
+    // when the owning struct does, so the pointer stays valid for the backend's
+    // lifetime; the run loop holds `&mut self`, so the backing is never aliased
+    // while a run is in flight; the buffer is an `mmap` (page-aligned) as
+    // `KVM_SET_USER_MEMORY_REGION` requires.
+    unsafe {
+        backend.map_memory(Gpa(0), mapping.as_mut_slice())?;
+    }
+
+    // 3. Hand the configured backend + owned mapping to the Vmm; mirror the
+    //    snapshot source's device composition so `restore_vm_state`'s wiring
+    //    check passes (the restored LAPIC state replaces this fresh one wholesale).
+    let mut vmm = Vmm::with_backing(backend, RamBacking::Snapshot(mapping));
+    if wire_lapic {
+        let lapic = lapic::Lapic::new(lapic::LapicConfig {
+            apic_id: BSP_APIC_ID,
+            timer_hz: LAPIC_TIMER_HZ,
+        })
+        .map_err(|e| VmmError::ContractViolation(format!("lapic init: {e}")))?;
+        vmm.wire_lapic(lapic);
+    }
+    Ok(vmm)
+}
+
 /// Overlay the long-mode entry registers/segments/control-regs **and the GDTR**
 /// onto a backend `save()` template, keeping the template's valid
 /// `TR`/`LDT`/`IDT`/`apic_base`/XSAVE/MSR shape. Like [`apply_entry`] but also
@@ -361,10 +421,43 @@ pub fn boot_linux_selected(
             boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?
         }
         BackendKind::Patched => {
-            let backend: Box<dyn Backend> = Box::new(vmm_backend::PatchedKvmBackend::new()?);
-            boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?
+            return boot_linux_patched_with_dirty_log(
+                kernel,
+                initramfs,
+                guest_ram_len,
+                cmdline,
+                seed,
+                true,
+            );
         }
     };
+    let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
+    let wiring = crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
+    vmm.wire_vtime(wiring);
+    Ok(vmm)
+}
+
+/// [`boot_linux_selected`]'s `Patched` composition with the task-95 dirty-log
+/// knob explicit — **the one shared body both arms of the tracking-is-inert A/B
+/// gate boot through**, so the gate compares two identically-composed VMs that
+/// differ in nothing but `KVM_MEM_LOG_DIRTY_PAGES` (a hand-copied composition
+/// would silently drift and mis-attribute a divergence to dirty logging).
+/// `dirty_log = true` is exactly `boot_linux_selected(BackendKind::Patched, ..)`.
+#[cfg(target_os = "linux")]
+pub fn boot_linux_patched_with_dirty_log(
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+    dirty_log: bool,
+) -> Result<Vmm<Box<dyn Backend>>, VmmError> {
+    let mut b = vmm_backend::PatchedKvmBackend::new()?;
+    // Before `map_memory` (inside boot_linux): the knob applies to the RAM
+    // memslots registered there.
+    b.set_dirty_log_enabled(dirty_log);
+    let backend: Box<dyn Backend> = Box::new(b);
+    let mut vmm = boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?;
     let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
     let wiring = crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);
@@ -383,6 +476,34 @@ mod tests {
 
     use super::*;
     use crate::vmm::TerminalReason;
+
+    /// Task 95 M2.2: [`compose_restore_target`] maps the materialized snapshot
+    /// AS the guest RAM — the marker page reads through, no loader ran (the
+    /// image is exactly the snapshot, zeros where the snapshot is zero), the
+    /// xAPIC is wired on request, and the backing is the mapping itself.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "materialize/Mapping use file-backed mmap, which Miri cannot execute; the map seam \
+                  is covered under Miri by compose_drives_guestram_and_unsafe_map_memory"
+    )]
+    fn compose_restore_target_maps_the_snapshot_without_loading() {
+        let mut store = snapshot_store::Store::new(snapshot_store::StoreConfig { mem_pages: 4 });
+        let mut base = store.begin_base();
+        let mut page = vec![0u8; 4096];
+        page[..4].copy_from_slice(b"SNAP");
+        base.write_page(2, &page).unwrap();
+        let id = base.seal(b"vm".to_vec());
+        let mapping = store.materialize(id).unwrap();
+
+        let vmm = compose_restore_target(MockBackend::new(), mapping, true).unwrap();
+        assert!(vmm.ram_backing_is_snapshot());
+        assert!(vmm.lapic_wired());
+        let mem = vmm.guest_memory();
+        assert_eq!(mem.len(), 4 * 4096);
+        assert_eq!(&mem[2 * 4096..2 * 4096 + 4], b"SNAP");
+        assert!(mem[..4096].iter().all(|&b| b == 0), "no loader ever ran");
+    }
 
     /// 40 KiB — the minimum 4 KiB-multiple covering the boot-info struct at
     /// `BOOT_INFO_GPA = 0x9000` (`+0x78`) and the synthetic load region. Small so

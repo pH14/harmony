@@ -740,7 +740,10 @@ fn seal_rate_sweep() {
     // 2 GiB memory snapshot, which is expensive (~seconds each) and would make branching all N
     // impractical — so a spread subset of `DET_SUBSET` successful seals is fully snapshotted and
     // branch-verified (see IMPLEMENTATION.md; the ruling needs a determinism-clean spread, not
-    // all N). Independent `snapshot_base`s (not a derive chain) keep materialize O(1)-layer.
+    // all N). Independent `snapshot_base`s here keep materialize O(1)-layer — this harness
+    // predates the tracked-window derive; production seals now derive over the harvested
+    // dirty set with the chain bounded by `max_chain_len` (task 95 M2.1 supersedes the
+    // independent-bases trade for the seal RPC; this diagnostic harness keeps bases).
     let n_det = env_usize("DET_SUBSET", 24).max(2);
     eprintln!(
         "[sweep] TARGETS={n} DET_SUBSET={n_det} BRANCH_HORIZON_VNS={horizon} \
@@ -840,6 +843,8 @@ fn seal_rate_sweep() {
                     // §1 rate: this target sealed. For the spread subset (+ the deepest), also take
                     // the full 2 GiB snapshot for the §2 determinism check + §4/§4b. Independent
                     // `snapshot_base`s so materialize is O(1)-layer; the store dedups store-wide.
+                    // (Production seals derive over the KVM dirty-log harvest instead, bounded by
+                    // `max_chain_len` — task 95 M2.1; this harness's independent bases stay.)
                     if take_snapshot {
                         // The probe-laden hash: `state_hash` AFTER probe_seal — §4b replays with the
                         // same probe schedule to reproduce it.
