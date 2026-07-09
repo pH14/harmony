@@ -54,8 +54,13 @@ often. Baseline explores a fresh draw every branch and covers more of the seed s
 
 The within-signal correlation **ρ = −0.671** (more cells discovered → shorter TTB, the *right*
 direction) is a genuine positive nuance — the log-template novelty *does* track this bug's
-progress among the runs that find it — but it is computed on only **11 finders (< the Klees
-≥20-trial floor)**, so it is underpowered, and it does **not** make the signal *beat* baseline.
+progress among the runs that find it — but it is (a) computed on only **11 finders (< the Klees
+≥20-trial floor)**, so underpowered; and (b) **degenerate**: `cells@256` takes only *two* values
+(3 or 4), and the negative ρ is produced entirely by the two 3-cell seeds (10, 15) happening to
+be the two slowest, not by a graded novelty↔progress relationship. It is reproducible from the
+committed per-seed JSONs — derivation + series + a reproduce script in
+`campaign-data/bug3/results/measure1-signal-derivation.md` (ρ = −0.6708). It does **not** make
+the signal *beat* baseline.
 
 ### Bug 1 — degenerate, not a discriminator (as designed)
 
@@ -132,14 +137,20 @@ decision-relevant.
 
 - **Retained traces (SCORING R1/R2 substrate):** every branch's `RunTrace` is retained per
   campaign (`campaign-data/bug3/results/traces.tar.gz` → `b3-<config>-<seed>.traces.json`, each
-  an ordered `(branch, RunTrace)` array; 40 campaigns × 512 branches; 26 MB raw → 936 KB) —
-  the offline evaluation set a future `CellFn` candidate replays through its pure fold to re-key
-  this campaign without re-running it. This is a first-class deliverable **regardless of the
-  verdict**, and is precisely the E-fails evaluation set.
+  an ordered `(branch, RunTrace)` array; 26 MB raw → 936 KB) — the offline evaluation set a future
+  `CellFn` candidate replays through its pure fold to re-key this campaign without re-running it.
+  A first-class deliverable **regardless of the verdict**, and precisely the E-fails evaluation
+  set. **Contents: 43 files** — the **40** campaign traces (`b3-{baseline,signal}-{1..20}`) plus
+  **3 solo determinism-check traces** (`b3-baseline-{1,2,3}-solo`). An offline re-key **must
+  exclude the 3 `-solo` files** — they are duplicate baseline runs for the co-tenant-vs-solo
+  check, not additional seeds.
 - **Determinism (co-tenant vs solo):** seed 1 `5281f249…` and seed 2 `38a6540c…` match exactly
-  (co-tenant == solo). Seed 3's `P0-DIVERGENCE co=[] solo=[]` is a **false positive** — baseline
-  seed 3 found nothing in *both* the co-tenant and the solo run (empty == empty), consistent, not
-  a leak. No real divergence.
+  (co-tenant == solo). Seed 3's raw `determinism.log` line reads `P0-DIVERGENCE co=[] solo=[]`,
+  but this is a **false positive of the label** — baseline seed 3 found nothing in *both* the
+  co-tenant and the solo run (empty == empty is *agreement*, a non-event), consistent, not a leak.
+  No real divergence. *(Orchestrator fixed post-hoc: `run-bug{1,2,3}-campaign.sh` phase 3 now
+  prints `AGREE (…non-event…)` for empty==empty; `P0-DIVERGENCE` fires only on a genuine hash
+  mismatch. The committed `determinism.log` predates the fix.)*
 - **Cell counts (fairness):** ~4 cells for both bugs 1 and 3 under both configs — the small,
   fixed template vocabulary is the honest condition (the logging is bug-agnostic **by design**;
   it was *not* enriched to help the signal). **Zero-cell scope statement:** the log-template

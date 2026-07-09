@@ -132,7 +132,7 @@ impl BenchConfig {
             campaign_seed,
             max_branches,
             replay_n,
-            explore_period: 4,
+            explore_period: explore_period_knob(),
             fault_rebase: BASE_VTIME,
             deadline_delta: Some(deadline_delta),
             // Task-60's box defaults: a fine 10k-V-time retry step seals close to
@@ -220,6 +220,20 @@ fn order_offset_range() -> u64 {
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|&r| r > 0)
         .unwrap_or(64)
+}
+
+/// The signal config's explore period (every Nth step explores fresh, the rest
+/// exploit a frontier exemplar). Default 4 = the committed campaign's behavior;
+/// overridden by `BENCH_EXPLORE_PERIOD` for the PR#90 ablation (Paul-authorized):
+/// `=1` makes every step explore (no exploit) so a signal-config-only run isolates
+/// "cells blind" from "the exploit budget is harmful on rare-value bugs". Read once
+/// here, so a fixed value keeps [`BenchConfig::box_campaign`] deterministic.
+fn explore_period_knob() -> u64 {
+    std::env::var("BENCH_EXPLORE_PERIOD")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&p| p > 0)
+        .unwrap_or(4)
 }
 
 fn one_of(xs: &[u64], p: &mut Prng) -> u64 {

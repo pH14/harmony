@@ -558,17 +558,11 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
         outcome.certs.len(),
         args.out.display(),
     );
-    if matches!(config, Configuration::Signal) && distinct_cells.is_empty() {
-        eprintln!(
-            "[conductor] benchcampaign box: WARNING — the SIGNAL config produced ZERO cells. The \
-             real LogSensor/CellFnV1 saw no guest console, so the signal has nothing to steer on. \
-             Do NOT treat this as a valid signal campaign — investigate the console capture before \
-             using this log in the ruling."
-        );
-    }
     // The finding certificates: `bug branch state_hash` per certified find — the
     // determinism stress-test compares these solo vs co-tenant (a mismatch is a P0
-    // leak). Printed so a wrapper script can diff them across co-tenancy.
+    // leak). Printed so a wrapper script can diff them across co-tenancy. (Printed
+    // BEFORE the zero-cell hard-fail so the evidence — CampaignLog + traces already
+    // written above, plus these certs — is preserved even on the guardrail exit.)
     for c in &outcome.certs {
         println!(
             "[conductor] FIND bug {} branch {} state_hash {}",
@@ -576,6 +570,23 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
             c.branch,
             hex32(&c.state_hash),
         );
+    }
+    // The signal GUARDRAIL — HARD FAIL (Paul's CellFn ruling, 2026-07-06 + the
+    // PR#90 round-1 finding): the REAL LogSensor/CellFnV1 must actually produce
+    // cells on the box path. A signal campaign that makes ZERO distinct cells is
+    // measuring NOTHING (the sensor saw no guest console, so the signal has nothing
+    // to steer on) and must NEVER be silently accepted as a valid gate input.
+    // Outputs are already written above, so the evidence is preserved for triage,
+    // but the campaign EXITS FAILURE so a wrapper/orchestrator cannot fold it into
+    // the ruling. (Baseline makes no cells by design, so this fires on Signal only.)
+    if matches!(config, Configuration::Signal) && distinct_cells.is_empty() {
+        eprintln!(
+            "[conductor] benchcampaign box: FATAL — the SIGNAL config produced ZERO cells. The \
+             real LogSensor/CellFnV1 saw no guest console, so the signal has nothing to steer on. \
+             This is NOT a valid signal campaign — failing hard (fix the console capture / guest \
+             logging before re-running); the written log MUST NOT be used in the ruling."
+        );
+        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }

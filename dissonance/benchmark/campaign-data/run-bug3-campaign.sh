@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Task 69 M2 bug-3 campaign orchestrator (runs ON THE BOX, detached via setsid).
 # 20 seeds x 2 configs, 3-wide, small deadline + marker-based certification
 # (foreman-approved). Then 3 solo --exclusive determinism spot-checks: co-tenant
@@ -87,8 +88,13 @@ echo "$(date +%FT%T) PHASE2 solo done" >> "$PROG"
   for seed in 1 2 3; do
     co=$(grep "^b3-baseline-$seed " "$OUT/finds.log" | grep -o 'state_hash [0-9a-f]*' | head -1)
     so=$(grep "^b3-baseline-$seed-solo " "$OUT/finds.log" | grep -o 'state_hash [0-9a-f]*' | head -1)
-    if [ -n "$co" ] && [ "$co" = "$so" ]; then echo "seed $seed OK $co"
-    else echo "seed $seed P0-DIVERGENCE co=[$co] solo=[$so]"; fi
+    if [ -z "$co" ] && [ -z "$so" ]; then
+      echo "seed $seed AGREE (no certified find in EITHER config — a non-event; empty==empty is agreement, NOT a divergence)"
+    elif [ -n "$co" ] && [ "$co" = "$so" ]; then
+      echo "seed $seed OK $co"
+    else
+      echo "seed $seed P0-DIVERGENCE co=[$co] solo=[$so]"
+    fi
   done
 } >> "$OUT/determinism.log"
 echo "$(date +%FT%T) ORCH DONE" >> "$PROG"

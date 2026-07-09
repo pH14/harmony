@@ -531,8 +531,17 @@ impl CorrelationReport {
                 && b.signal_finders >= 1
                 && b.baseline_finders >= 1
         });
-        // Given full coverage: novelty correlates with progress on ≥2 of 3 bugs,
-        // and the signal median is not worse than baseline on any bug.
+        // ⚠️ SUPERSEDED by the M2 amendment (integrator ruling `fa9d323`, Paul
+        // 2026-07-07). This binary "novelty correlates on ≥2 of 3 bugs AND signal
+        // not worse on any" verdict is the PRE-AMENDMENT rule. With bug 2 deferred
+        // (structurally uncalibratable) and bug 1 degenerate by design, ≥2-of-3 can
+        // never be met, so this auto-verdict is now ADVISORY only. The AUTHORITATIVE
+        // gate-4 ruling is DIRECTIONAL and lives in the hand-written
+        // `CORRELATION-REPORT.md`: bug 3 (the sole real discriminator) clearly
+        // positive AND no bug inverted → provisional GO; else NO-GO → SCORING
+        // E-fails. This computed `ruling` field is retained only so the renderer can
+        // print the measures with a banner pointing at the directional rule; do NOT
+        // treat it as the gate decision.
         let correlating = bugs.iter().filter(|b| b.correlates).count();
         let not_worse_all = bugs.iter().all(|b| b.signal_not_worse);
         let ruling = if every_bug_covered && correlating >= 2 && not_worse_all {
@@ -646,7 +655,16 @@ impl CorrelationReport {
             let _ = writeln!(s, "```\n{}\n```\n", sparkline(&m.curve));
         }
 
-        let _ = writeln!(s, "## The ruling\n");
+        let _ = writeln!(s, "## The ruling (advisory — SUPERSEDED)\n");
+        let _ = writeln!(
+            s,
+            "> ⚠️ The verdict below is the **pre-amendment** binary \"≥2 of 3 bugs\" auto-rule. It \
+             is **superseded** by the M2 amendment (integrator ruling `fa9d323`): with bug 2 \
+             deferred and bug 1 degenerate, ≥2-of-3 can never be met. The **authoritative** gate-4 \
+             ruling is **directional** — bug 3 (the sole real discriminator) clearly positive AND \
+             no bug inverted → provisional GO, else NO-GO — and is stated in the hand-written \
+             `CORRELATION-REPORT.md`. Read this section as the measures' summary, not the gate.\n"
+        );
         let correlating = self.bugs.iter().filter(|b| b.correlates).count();
         match self.ruling {
             Ruling::Go => {
