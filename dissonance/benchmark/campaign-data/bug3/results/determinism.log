@@ -1,0 +1,4 @@
+=== determinism spot-check (co-tenant vs solo) ===
+seed 1 OK state_hash 5281f2492e3aaefa18099efe92b60d482edd6f8e02f0bc96b193c64e7f889f0a
+seed 2 OK state_hash 38a6540c6fdce9b471c2c001b07a1ee53ba58927c128c44346073fc506bded06
+seed 3 P0-DIVERGENCE co=[] solo=[]
