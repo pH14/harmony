@@ -91,7 +91,15 @@ pub enum SnapshotError {
 pub struct SnapshotEngine {
     store: Store,
     mem_pages: u64,
+    max_chain_len: u32,
 }
+
+/// Default [`SnapshotEngine::max_chain_len`]: `materialize` is O(chain), so a
+/// dirty-log derive chain (task 95 M2.1) is bounded — at this depth a seal
+/// flattens via `snapshot_base` instead (one full scan; content-dedup keeps the
+/// storage cost near zero). 32 sits well below the flat region of the M1
+/// depth-sweep (materialize was depth-flat at 1/8/32 on the bench machine).
+pub const DEFAULT_MAX_CHAIN_LEN: u32 = 32;
 
 impl SnapshotEngine {
     /// Create an engine for guest images of `mem_bytes` bytes. `mem_bytes` must be a
@@ -102,12 +110,27 @@ impl SnapshotEngine {
         SnapshotEngine {
             store: Store::new(StoreConfig { mem_pages }),
             mem_pages,
+            max_chain_len: DEFAULT_MAX_CHAIN_LEN,
         }
     }
 
     /// The configured guest image size in pages.
     pub fn mem_pages(&self) -> u64 {
         self.mem_pages
+    }
+
+    /// The configured derive-chain bound (task 95 M2.1): a capture whose parent
+    /// already has `chain_len >= max_chain_len` must seal as a fresh base (one
+    /// flattening full scan) instead of deriving deeper — keeping `materialize`
+    /// O(bounded chain). Default [`DEFAULT_MAX_CHAIN_LEN`].
+    pub fn max_chain_len(&self) -> u32 {
+        self.max_chain_len
+    }
+
+    /// Override the derive-chain bound (a config knob, not a magic number).
+    /// `0` disables deriving entirely (every seal is a base).
+    pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
+        self.max_chain_len = max_chain_len;
     }
 
     /// Read-only access to the underlying store (for `store_stats` / `stats`).

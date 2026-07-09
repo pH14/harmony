@@ -204,6 +204,55 @@ pub struct RunResult {
     pub exit_counts: vmm_backend::ExitCounts,
 }
 
+/// The guest-RAM backing a [`Vmm`] owns — either a fresh allocation
+/// ([`GuestRam`]) or, on the task-95 M2.2 **remap restore** path, the private
+/// copy-on-write [`snapshot_store::Mapping`] a snapshot materialized into: the
+/// mapping's buffer *is* the memory the backend's memslots register, so a
+/// restore never memcpys the image into a second allocation — untouched pages
+/// fault lazily from the mapping and guest writes stay private to this VM
+/// (`MAP_PRIVATE`), never reaching the store or its tempfile.
+///
+/// Both variants uphold `map_memory`'s contract identically: page-aligned,
+/// pinned (the mmap pages never move when the owning struct does), and live for
+/// the backend's lifetime because the `Vmm` owns them.
+pub enum RamBacking {
+    /// A zeroed, owned allocation — the boot path, and the memcpy-restore path.
+    Owned(GuestRam),
+    /// A materialized snapshot's private CoW mapping — the remap-restore path.
+    Snapshot(snapshot_store::Mapping),
+}
+
+impl RamBacking {
+    /// The backing length in bytes.
+    pub fn len(&self) -> usize {
+        match self {
+            RamBacking::Owned(ram) => ram.len(),
+            RamBacking::Snapshot(map) => map.len(),
+        }
+    }
+
+    /// Whether the backing is empty (never, for a well-formed VM).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The guest bytes (the [`Vmm::state_blob`] `MEM\0` chunk reads this).
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            RamBacking::Owned(ram) => ram.as_bytes(),
+            RamBacking::Snapshot(map) => map.as_slice(),
+        }
+    }
+
+    /// Mutable view (the loader / restore / host-fault write path).
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+        match self {
+            RamBacking::Owned(ram) => ram.as_mut_bytes(),
+            RamBacking::Snapshot(map) => map.as_mut_slice(),
+        }
+    }
+}
+
 /// Owned, pinned host backing for guest RAM. The backend registers a pointer
 /// **into this buffer** via the `unsafe` [`vmm_backend::Backend::map_memory`], and
 /// [`Vmm`] owns it so the backing **outlives every `run`** and [`Vmm::state_blob`]
@@ -550,7 +599,24 @@ pub struct NetSnapshot {
 
 pub struct Vmm<B: Backend> {
     backend: B,
-    ram: GuestRam,
+    ram: RamBacking,
+    /// Guest frame numbers written **host-side** since the last
+    /// [`Vmm::reset_dirty_tracking`] / [`Vmm::harvest_dirty_gfns`] drain (task 95
+    /// M2.1). The backend's dirty log sees only *guest* writes (KVM tracks sptes,
+    /// not the userspace mapping), so every place vmm-core itself writes guest
+    /// RAM — the doorbell response page, a `CorruptMemory` host fault — records
+    /// the touched gfns here, and the harvest unions them in. A `BTreeSet` so no
+    /// order can reach the (already order-insensitive) capture. **Not hashed**
+    /// (host bookkeeping, like the exit counters); the writes themselves are what
+    /// the hash sees.
+    host_dirty: std::collections::BTreeSet<u64>,
+    /// Latched when guest RAM was host-written **wholesale or untrackably**
+    /// ([`Vmm::restore_guest_memory`]'s full-image overwrite). While set,
+    /// [`Vmm::harvest_dirty_gfns`] answers `None` — the safety rule: a dirty set
+    /// that cannot be proven complete is never handed out; the caller full-scans.
+    /// Cleared only by [`Vmm::reset_dirty_tracking`] (the caller's explicit
+    /// "this state is my new baseline" arm point).
+    host_dirty_wholesale: bool,
     uart: Uart8250,
     /// The ordered **report stream** (corpus box-integration): every value the
     /// guest wrote to [`REPORT_PORT`] via `OUT`, in execution order. Each
@@ -682,9 +748,20 @@ impl<B: Backend> Vmm<B> {
     /// Construct over an already-configured backend (CPUID/MSR-filter installed,
     /// entry state restored, RAM mapped) **and the [`GuestRam`] it owns**.
     pub fn new(backend: B, guest_ram: GuestRam) -> Self {
+        Self::with_backing(backend, RamBacking::Owned(guest_ram))
+    }
+
+    /// Construct over an already-configured backend and **either** RAM backing —
+    /// the [`RamBacking::Snapshot`] arm is the task-95 M2.2 remap-restore target
+    /// (see [`crate::bringup::compose_restore_target`]). Same contract as
+    /// [`Vmm::new`]: the backend's memslots must already point into `ram`'s
+    /// buffer, which this `Vmm` now owns for the backend's lifetime.
+    pub fn with_backing(backend: B, ram: RamBacking) -> Self {
         Self {
             backend,
-            ram: guest_ram,
+            ram,
+            host_dirty: std::collections::BTreeSet::new(),
+            host_dirty_wholesale: false,
             uart: Uart8250::new(),
             report_stream: Vec::new(),
             preemption_landings: Vec::new(),
@@ -752,10 +829,18 @@ impl<B: Backend> Vmm<B> {
         self.snapshot_hashing
     }
 
-    /// The current full guest-memory image (the owned [`GuestRam`] backing) — the
+    /// The current full guest-memory image (the owned [`RamBacking`]) — the
     /// memory half a snapshot captures into [`crate::snapshot::SnapshotEngine`].
     pub fn guest_memory(&self) -> &[u8] {
         self.ram.as_bytes()
+    }
+
+    /// `true` when this VM's guest RAM is a materialized snapshot's private CoW
+    /// mapping ([`RamBacking::Snapshot`], the task-95 M2.2 remap restore) rather
+    /// than an owned allocation — the gate evidence that a remap restore
+    /// actually engaged (no full-image memcpy happened).
+    pub fn ram_backing_is_snapshot(&self) -> bool {
+        matches!(self.ram, RamBacking::Snapshot(_))
     }
 
     /// Inject bytes on the guest's serial input (the 8250 RBR) — the crude,
@@ -873,6 +958,11 @@ impl<B: Backend> Vmm<B> {
             )));
         }
         ram.copy_from_slice(image);
+        // A full-image host write: per-gfn tracking is meaningless from here, so
+        // poison the harvest (fail closed to the full scan) until the caller
+        // re-arms at its next baseline (`reset_dirty_tracking`). The control
+        // server's branch path does exactly that right after a restore.
+        self.host_dirty_wholesale = true;
         Ok(())
     }
 
@@ -2311,6 +2401,9 @@ impl<B: Backend> Vmm<B> {
             )));
         };
         dst.copy_from_slice(resp);
+        // A host-side RAM write the backend's dirty log cannot see — record it
+        // for the harvest union (task 95 M2.1 safety rule).
+        self.mark_host_dirty(RESP_GPA as u64, resp.len() as u64);
         Ok(())
     }
 
@@ -2987,7 +3080,63 @@ impl<B: Backend> Vmm<B> {
                 .expect("slice is exactly 8 bytes"),
         );
         ram[start..end].copy_from_slice(&(word ^ mask).to_le_bytes());
+        // A host-side RAM write the backend's dirty log cannot see — record it
+        // (the 8-byte upset may straddle a page boundary; the helper covers both).
+        self.mark_host_dirty(gpa, 8);
         Ok(())
+    }
+
+    /// Record `[gpa, gpa + len)` as **host-written** for the dirty harvest (task
+    /// 95 M2.1): every gfn the range touches. Called by the exhaustive set of
+    /// production host-write paths — [`Vmm::write_doorbell_response`] and
+    /// [`Vmm::corrupt_memory`]; the third, [`Vmm::restore_guest_memory`], is a
+    /// full-image write and latches [`Self::host_dirty_wholesale`] instead. Any
+    /// **new** host write into guest RAM must call one of the two, or derived
+    /// snapshots silently corrupt — that invariant is the review centerpiece.
+    fn mark_host_dirty(&mut self, gpa: u64, len: u64) {
+        if len == 0 {
+            return;
+        }
+        let first = gpa / 4096;
+        let last = (gpa + len - 1) / 4096;
+        self.host_dirty.extend(first..=last);
+    }
+
+    /// Harvest the **complete dirty-gfn set since the last drain** — the
+    /// backend's guest-write log unioned with the host-side writes this `Vmm`
+    /// performed — sorted ascending, deduplicated; and re-arm both for the next
+    /// window (task 95 M2.1).
+    ///
+    /// Returns `None` on **any doubt**: the backend cannot harvest (no dirty
+    /// tracking, an ioctl error) or an untrackable full-image host write
+    /// happened ([`Vmm::restore_guest_memory`]). `None` obliges the caller to
+    /// full-scan — the dirty set is a cost hint, never a correctness input, so
+    /// this deliberately returns an `Option`, not a `Result` whose error a
+    /// caller could act on. After a `None` the tracking window is NOT re-armed; call
+    /// [`Vmm::reset_dirty_tracking`] at the next baseline.
+    pub fn harvest_dirty_gfns(&mut self) -> Option<Vec<u64>> {
+        if self.host_dirty_wholesale {
+            return None;
+        }
+        let mut gfns = self.backend.harvest_dirty_gfns().ok()?;
+        // The backend half is already sorted+deduped; fold in the host-side gfns.
+        gfns.extend(self.host_dirty.iter().copied());
+        gfns.sort_unstable();
+        gfns.dedup();
+        self.host_dirty.clear();
+        Some(gfns)
+    }
+
+    /// Harvest-and-discard: reset the dirty tracking so the **current** state is
+    /// the baseline the next [`Vmm::harvest_dirty_gfns`] measures from (task 95
+    /// M2.1's arm point — right after a seal or a branch restore). Clears the
+    /// host-side set and the wholesale latch, and drains the backend log.
+    /// Returns `true` iff the backend log was actually reset — `false` means
+    /// tracking is not armed and the next capture must full-scan.
+    pub fn reset_dirty_tracking(&mut self) -> bool {
+        self.host_dirty.clear();
+        self.host_dirty_wholesale = false;
+        self.backend.harvest_dirty_gfns().is_ok()
     }
 
     /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ
@@ -4028,6 +4177,66 @@ mod tests {
         let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
         vmm.wire_vtime(VtimeWiring::new(contract_vclock_config(), work, seed).unwrap());
         vmm
+    }
+
+    // ---- task 95 M2.1: the dirty harvest (backend log ∪ host-side writes) ----
+
+    /// The harvest unions the backend's guest-write log with the host-side
+    /// writes the Vmm performed (here a `CorruptMemory` straddling a page
+    /// boundary), sorted + deduplicated — and draining re-arms the window.
+    #[test]
+    fn harvest_unions_backend_log_with_host_writes_and_drains() {
+        let mut m = configured_mock(vec![]);
+        m.push_dirty_gfns(vec![5, 3, 5]); // scripted guest writes, unsorted + dup
+        let mut vmm = Vmm::new(m, GuestRam::new(0x2_0000).unwrap());
+        // An 8-byte upset straddling the page-6/page-7 boundary: both gfns count.
+        vmm.apply_host_fault(&environment::HostFault::CorruptMemory {
+            gpa: 7 * 4096 - 4,
+            mask: environment::BitMask(0xFFFF_FFFF_FFFF_FFFF),
+        })
+        .unwrap();
+        assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![3, 5, 6, 7]));
+        // Drained: the next window starts empty (the mock's exhausted script is
+        // an empty guest-write set, and the host set was cleared).
+        assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![]));
+    }
+
+    /// The doorbell response write — the run loop's host-side RAM write — lands
+    /// in the harvest (the safety rule's production case).
+    #[test]
+    fn doorbell_response_write_is_harvested_as_host_dirty() {
+        let mut m = configured_mock(vec![]);
+        m.enable_dirty_tracking();
+        let mut vmm = Vmm::new(m, GuestRam::new(0x2_0000).unwrap());
+        vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
+        // RESP_GPA = 0xF000 → gfn 15.
+        assert_eq!(
+            vmm.harvest_dirty_gfns(),
+            Some(vec![(RESP_GPA as u64) / 4096])
+        );
+    }
+
+    /// A full-image host write (`restore_guest_memory`) poisons the harvest —
+    /// per-gfn tracking cannot vouch for it — until the explicit re-arm.
+    #[test]
+    fn wholesale_host_write_poisons_the_harvest_until_reset() {
+        let mut m = configured_mock(vec![]);
+        m.enable_dirty_tracking();
+        let mut vmm = Vmm::new(m, GuestRam::new(0x2_0000).unwrap());
+        vmm.restore_guest_memory(&vec![7u8; 0x2_0000]).unwrap();
+        assert_eq!(vmm.harvest_dirty_gfns(), None, "untrackable ⇒ no dirty set");
+        assert!(vmm.reset_dirty_tracking(), "re-arm at the new baseline");
+        assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![]));
+    }
+
+    /// Without backend dirty tracking the harvest always declines (`None`) and
+    /// the window never arms — the caller full-scans forever, never corrupts.
+    #[test]
+    fn harvest_declines_without_backend_tracking() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        vmm.write_doorbell_response(&[1]).unwrap();
+        assert_eq!(vmm.harvest_dirty_gfns(), None);
+        assert!(!vmm.reset_dirty_tracking());
     }
 
     /// A work source that yields a strictly increasing value (current, then
