@@ -215,7 +215,7 @@ mod real {
         let rom = std::fs::read(&rom_path).map_err(|e| format!("ROM {rom_path}: {e}"))?;
         println!("play-agent: rom {rom_path} ({} bytes)", rom.len());
 
-        let mut core = retro::LibretroCore::load(&core_path, &rom)?;
+        let mut core = retro::LibretroCore::load(&core_path, &rom_path, &rom)?;
         println!("play-agent: core {core_path} loaded");
 
         // The deterministic scripted start (round-4 P1): press START through
@@ -402,9 +402,17 @@ mod real {
 
         impl LibretroCore {
             /// dlopen the core, wire the null callbacks, init, and load the
-            /// ROM from memory. Fails loudly on any missing symbol or a
-            /// rejected ROM — never a silently dead core.
-            pub fn load(path: &str, rom: &[u8]) -> Result<LibretroCore, String> {
+            /// ROM. The `RetroGameInfo` carries BOTH the in-image ROM path and
+            /// the in-memory bytes (first box smoke, 2026-07-09): FCEUmm
+            /// declares `need_fullpath = true` and — absent the
+            /// `GET_GAME_INFO_EXT` env service — rejects a null `path`
+            /// outright (`libretro.c`: `if (!info || string_is_empty(
+            /// info->path)) return false;`), loading from the path instead;
+            /// memory-loading cores read `data`/`size`. Both sources are the
+            /// same baked initramfs file, so either route is deterministic.
+            /// Fails loudly on any missing symbol or a rejected ROM — never a
+            /// silently dead core.
+            pub fn load(path: &str, rom_path: &str, rom: &[u8]) -> Result<LibretroCore, String> {
                 let cpath = CString::new(path).map_err(|_| format!("core path {path:?}"))?;
                 // SAFETY: dlopen with a valid C string; the handle is checked
                 // for null and then intentionally leaked (the core lives for
@@ -443,14 +451,18 @@ mod real {
                 }
 
                 let rom = rom.to_vec();
+                let rom_cpath =
+                    CString::new(rom_path).map_err(|_| format!("rom path {rom_path:?}"))?;
                 let info = RetroGameInfo {
-                    path: std::ptr::null(),
+                    path: rom_cpath.as_ptr(),
                     data: rom.as_ptr().cast(),
                     size: rom.len(),
                     meta: std::ptr::null(),
                 };
-                // SAFETY: `info` points at `rom`, which this struct keeps
-                // alive for the process's life (see `_rom`).
+                // SAFETY: `info` points at `rom` (kept alive for the process's
+                // life, see `_rom`) and `rom_cpath` (alive past the call — the
+                // libretro contract only reads `info` during retro_load_game;
+                // a path-loading core reads the file itself).
                 let loaded = unsafe { sym::<LoadGameFn>(handle, "retro_load_game")?(&info) };
                 if !loaded {
                     return Err("retro_load_game rejected the ROM".to_string());
