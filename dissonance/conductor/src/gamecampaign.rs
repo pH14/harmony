@@ -142,6 +142,88 @@ pub enum GameCampaignError {
         /// The stop the guest surfaced instead of the snapshot point.
         stop: String,
     },
+    /// An exemplar env inside the quiet campaign carries fault vocabulary
+    /// (host actions or standing faults) — a contradiction of the quiet arm
+    /// (round-6 P1), surfaced loudly rather than propagated into further
+    /// branches.
+    #[error(
+        "quiet-arm exemplar env carries fault vocabulary ({what}) — the game campaign is \
+         FaultPolicy::none() / zero fault vocabulary; refusing to mutate it"
+    )]
+    QuietEnvCarriesFaults {
+        /// What was found (host actions / standing faults).
+        what: &'static str,
+    },
+    /// An exemplar env failed to decode — a malformed blob in the frontier.
+    #[error("quiet-arm exemplar env failed to decode: {0}")]
+    MalformedExemplar(String),
+}
+
+/// The **quiet-arm mutator** (round-6 P1): the input-only exploit move.
+///
+/// `SpecEnvCodec::mutate` is the wrong tool here — its documented behavior
+/// inserts a host-plane `Action::Host` override, i.e. a **fault**, and this
+/// campaign is the quiet arm (`FaultPolicy::none()`, zero fault vocabulary).
+/// The quiet arm's one legitimate exploration dimension is the **entropy
+/// stream** the guest draws its inputs from, and the codebase already has the
+/// exact vocabulary for perturbing it: the task-78 **reseed markers**. This
+/// mutator re-encodes the exemplar's env with ONE added reseed marker at a
+/// salt-derived `Moment` inside `window`: the branch replays the exemplar's
+/// inputs up to that Moment (reaching its discovered state), then draws fresh
+/// entropy — coverage-guided branching, faults-off.
+///
+/// **Structural exclusion, not convention:** this function never constructs
+/// an [`environment::Action`] of any kind — it copies the exemplar's existing
+/// override map verbatim and touches only the reseed table — so it *cannot*
+/// produce `Action::Host`. Defense in depth: an exemplar that already carries
+/// host actions or standing faults (impossible in a quiet campaign; a defect
+/// if seen) is refused loudly, so fault vocabulary can never propagate
+/// through the frontier.
+pub fn quiet_mutate(
+    env: &Environment,
+    salt: u64,
+    window: u64,
+) -> Result<Environment, GameCampaignError> {
+    let decoded = explorer::AdapterEnv::decode(env)
+        .map_err(|e| GameCampaignError::MalformedExemplar(e.to_string()))?;
+    if decoded.spec.host_faults().next().is_some() {
+        return Err(GameCampaignError::QuietEnvCarriesFaults {
+            what: "host actions",
+        });
+    }
+    if let environment::EnvSpec::Recorded { standing, .. } = &decoded.spec
+        && !standing.is_empty()
+    {
+        return Err(GameCampaignError::QuietEnvCarriesFaults {
+            what: "standing faults",
+        });
+    }
+
+    let seed = decoded.spec.seed();
+    // The salt-derived reseed Moment, strictly inside the rollout window.
+    let at = 1 + salt % window.max(1);
+    let mut reseeds = decoded.spec.reseeds().clone();
+    reseeds.insert(at, salt);
+    // The floor-marker discipline (task 78 / PR #62): a non-empty reseed
+    // table must carry its origin marker, else the branch would continue the
+    // parent stream instead of starting at `seed`.
+    reseeds.entry(0).or_insert(seed);
+
+    let spec = environment::EnvSpec::Recorded {
+        seed,
+        policy: decoded.spec.policy().clone(),
+        // The exemplar's guest-plane decision history, verbatim (proven
+        // host-action-free above); no Action is ever minted here.
+        overrides: decoded.spec.overrides().clone(),
+        standing: Vec::new(),
+        reseeds,
+    };
+    Ok(explorer::AdapterEnv {
+        base_offset: decoded.base_offset,
+        pos: decoded.pos,
+        spec,
+    }
+    .encode())
 }
 
 /// Pack the `(game mode, world, level, x-bucket)` tuple into one 64-bit cell
@@ -229,7 +311,14 @@ pub fn run_game_campaign<M: Machine>(
             && !step.is_multiple_of(cfg.explore_period);
         let env = if exploit {
             let pick = (prng.next_u64() % frontier.len() as u64) as usize;
-            codec.mutate(&frontier[pick].env, prng.next_u64())
+            // The QUIET-ARM exploit move (round-6 P1): reseed the entropy
+            // stream at a salt-derived Moment — never `codec.mutate`, whose
+            // contract inserts a host-plane fault override.
+            quiet_mutate(
+                &frontier[pick].env,
+                prng.next_u64(),
+                cfg.deadline_delta.unwrap_or(TOY_RESEED_WINDOW),
+            )?
         } else {
             codec.seeded(prng.next_u64())
         };
@@ -382,6 +471,12 @@ pub struct GameToyMachine {
 /// The toy's quiescent boot V-time.
 const TOY_BASE_VTIME: u64 = 1_000;
 
+/// The reseed-Moment window the toy path uses when no rollout deadline is
+/// configured (the quiet mutator places its salt-derived marker inside the
+/// rollout's Moment span; the toy ignores absolute Moments, so only the
+/// derived table contents matter to it).
+const TOY_RESEED_WINDOW: u64 = 1_000;
+
 impl Default for GameToyMachine {
     fn default() -> Self {
         GameToyMachine::new()
@@ -399,11 +494,19 @@ impl GameToyMachine {
         }
     }
 
-    /// The simulated per-window SMB observations for the current env's seed:
-    /// `(window, world, level, x_bucket, depth_ordinal)`.
+    /// The simulated per-window SMB observations for the current env:
+    /// `(window, world, level, x_bucket, depth_ordinal)`. The behavior folds
+    /// the env's **reseed-marker table** into the effective seed (a crude
+    /// stand-in for "fresh entropy after the marker"), so the quiet mutator's
+    /// exploit branches genuinely diverge on the toy exactly as a reseeded
+    /// guest would.
     fn windows(&self) -> Vec<(u64, u64, u64, u64, u64)> {
         let seed = explorer::AdapterEnv::decode(&self.current)
-            .map(|d| d.spec.seed())
+            .map(|d| {
+                d.spec.reseeds().iter().fold(d.spec.seed(), |acc, (at, s)| {
+                    acc ^ s.rotate_left((*at % 63) as u32)
+                })
+            })
             .unwrap_or(0);
         let mut p = Prng::new(seed);
         let mut x = 40u64;
@@ -643,6 +746,64 @@ mod tests {
         fn recorded_env(&self) -> Result<Environment, MachineError> {
             Ok(self.env.clone())
         }
+    }
+
+    /// Round-6 P1: the quiet mutator is structurally fault-free — a
+    /// 256-mutation sweep (fresh exemplars and chained mutate-of-mutate)
+    /// yields envs with ZERO host actions and no standing faults, while the
+    /// mutations still genuinely vary (every env distinct).
+    #[test]
+    fn quiet_mutation_sweep_produces_zero_host_actions() {
+        let codec = SpecEnvCodec;
+        let mut distinct = BTreeSet::new();
+        let mut env = codec.seeded(42);
+        for salt in 0..256u64 {
+            let source = if salt.is_multiple_of(4) {
+                codec.seeded(salt) // a fresh exemplar every few steps…
+            } else {
+                env.clone() // …and chains, so reseed tables accumulate
+            };
+            env = quiet_mutate(&source, salt * 31 + 7, 1_000).unwrap();
+            let d = explorer::AdapterEnv::decode(&env).unwrap();
+            assert!(
+                d.spec.host_faults().next().is_none(),
+                "salt {salt} minted a host action in the QUIET arm"
+            );
+            if let environment::EnvSpec::Recorded { standing, .. } = &d.spec {
+                assert!(standing.is_empty(), "salt {salt} minted a standing fault");
+            }
+            assert!(
+                !d.spec.reseeds().is_empty(),
+                "the mutation must land on the entropy dimension"
+            );
+            distinct.insert(env.bytes.clone());
+        }
+        assert_eq!(distinct.len(), 256, "mutations must actually vary");
+    }
+
+    /// Defense in depth: an exemplar that already carries fault vocabulary
+    /// (impossible in a quiet campaign; a defect if seen) is refused loudly,
+    /// so faults can never propagate through the frontier.
+    #[test]
+    fn quiet_mutate_refuses_fault_carrying_envs() {
+        use environment::{EnvSpec, FaultPolicy, HostFault};
+        let mut spec = EnvSpec::Seeded {
+            seed: 1,
+            policy: FaultPolicy::none(),
+        };
+        spec.perturb(HostFault::InjectInterrupt { vector: 32 }, 5);
+        let env = explorer::AdapterEnv {
+            base_offset: 0,
+            pos: 0,
+            spec,
+        }
+        .encode();
+        assert!(matches!(
+            quiet_mutate(&env, 1, 100),
+            Err(GameCampaignError::QuietEnvCarriesFaults {
+                what: "host actions"
+            })
+        ));
     }
 
     /// The round-5 P1 regression: in box mode (`require_snapshot_point`), a
