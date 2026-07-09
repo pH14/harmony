@@ -169,7 +169,7 @@ unmodified. Standard gates: build / nextest / clippy `-D warnings` / fmt /
   copy at all for untouched pages) plus the removed memcpy, and the next
   lever is not materializing eagerly at all (task 68's territory).
 
-## Box gates (det box, patched KVM, 2026-07-09 — a0/a/b PASSED; c in flight)
+## Box gates (det box, patched KVM, 2026-07-09 — ALL PASSED)
 
 Harness: `consonance/vmm-core/tests/live_dirty_remap.rs`, run per
 `docs/BOX-PINNING.md` on a `box-window.sh` lease (core 2), smoke-fired (a0
@@ -182,7 +182,7 @@ seed `0x0095_D127_5EED_C0DE`, `DR_RUN_VNS=20e6` / `DR_DELTA_VNS=5e6` defaults.
 | a0 | dirty logging inert (same stop + `state_hash`, no seal) | **PASS** — logging-on and `flags: 0` arms bit-identical at the same Moment |
 | a | harvested derive ≡ full-scan capture | **PASS** — chains (1, 2) vs (1, 1), both arms sealed at V-times (74 060 614, 80 078 537); post-replay whole-state hashes identical (`0fc751a9…`) |
 | b | `Remap` ≡ `Memcpy` branch | **PASS** — identical stop `Deadline(80 078 537)` + hash (`9fb44634…`); remap arm asserted mapping-backed |
-| c | `seal_rate_sweep` + `live_materialization` unchanged | in flight (exclusive window, results appended below) |
+| c | `seal_rate_sweep` + `live_materialization` unchanged | **PASS** (see the gate-c note below — includes a main-tree control run) |
 | d | the numbers | see below |
 
 ### (d) — the numbers (box, core-pinned, exclusive window)
@@ -212,3 +212,31 @@ materialize + fresh-target composition + restore + reseed):
 Chain-depth distribution under `max_chain_len = 32`: the gate schedule only
 reaches depth 2 by construction; campaign-shape distributions land with the
 conductor remap-factory opt-in + task-96 stopwatch (bead filed).
+
+### Gate (c) — the full story (three box rounds)
+
+- **`seal_rate_sweep` (c2): PASS**, 827 s, exclusive window, current image,
+  dirty logging on by default throughout — every §1–§4b determinism assertion
+  green, mechanical summary "GO (grid-restricted)" as before. Always-on
+  `KVM_MEM_LOG_DIRTY_PAGES` did not perturb the sweep.
+- **`live_materialization` (c1): PASS in task-78's sanctioned shape**
+  (`HOPS=4`, the Jul-2 pr44-built Postgres image — exactly the configuration
+  task 78's own box gate passed with; draw probes came back `[f,f,f,true]`,
+  matching that run) — with conductor's seals now taking the **new derive
+  path** end-to-end: parent-rooted depth beats the task-63 baseline, eviction
+  round-trip bit-identical (folded + from-genesis), composed reproducer
+  replays with identical stop + `state_hash`.
+- **The first c1 attempt failed — and the failure is NOT task 95's.** With
+  default knobs (`HOPS=3`) on the box's *current* image, the task-78
+  `REQUIRE_DRAWS` precondition fails (`hop_draws` all false; the tail draws)
+  while **every substantive assertion inside still passes** (round-trip
+  identities, reproducer closure, 4 509 ppm vs the 15 463 baseline). A
+  **main-tree control run failed identically**, pinning the cause: the box's
+  canonical `initramfs-postgres.cpio.gz` was rebuilt 2026-07-09 02:56 (the
+  t81 checkout's build, md5 `9860a065…`) and differs from the Jul-2 pr44
+  build (md5 `46b14619…`) the task-78 gate was proven on — the new image's
+  first entropy draw lands past the default hop windows. Filed as a P2 bug
+  bead (the gate is broken **on main** with default knobs on the current
+  image); evidence in `/tmp/t95-gatec.log` on the box (c0 section).
+
+Box left on stock KVM **1396736, REVERT OK**, zero leases, after every round.
