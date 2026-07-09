@@ -140,14 +140,22 @@ pub type RemapVmmFactory<B> = Box<dyn FnMut(snapshot_store::Mapping) -> Result<V
 
 /// How `branch`/`replay` restore guest memory (task 95 M2.2) — the A/B knob of
 /// the restore determinism gate, and the fallback if a box gate fails.
+///
+/// **The mode always tells the truth** (PR #95 round-1): a server starts in
+/// [`RestoreMode::Memcpy`] — the only path it *can* take — and
+/// [`ControlServer::set_remap_factory`] flips it to [`RestoreMode::Remap`] as
+/// part of installing the capability, so `Remap` is the default exactly where
+/// remapping is possible and a composition that never opts in never *claims*
+/// to remap. There is no silent degrade: [`ControlServer::restore_mode`]
+/// reports the path restores actually take.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestoreMode {
     /// The mapping becomes the memslot backing (no memcpy; lazy faults). The
-    /// default — used whenever a [`RemapVmmFactory`] is installed; without one
-    /// the server can only memcpy and does so regardless of this setting.
+    /// default once a [`RemapVmmFactory`] is installed.
     Remap,
     /// Materialize, boot a fresh owned-RAM VM, memcpy the image in — the
-    /// pre-task-95 path, byte-for-byte.
+    /// pre-task-95 path, byte-for-byte. The default until a remap factory
+    /// exists (there is nothing else a factory-less server could do).
     Memcpy,
 }
 
@@ -385,7 +393,9 @@ impl<B: Backend> ControlServer<B> {
             vmm: Some(vmm),
             factory,
             remap_factory: None,
-            restore_mode: RestoreMode::Remap,
+            // Truthful default: with no remap factory, memcpy is the only
+            // path this server can take; `set_remap_factory` flips to `Remap`.
+            restore_mode: RestoreMode::Memcpy,
             engine,
             // A fresh boot is no snapshot's continuation: the first seal is a base.
             derive_parent: None,
@@ -423,14 +433,18 @@ impl<B: Backend> ControlServer<B> {
         self.vmm.as_ref()
     }
 
-    /// Install the remap-restore factory (task 95 M2.2). With one installed —
-    /// and [`RestoreMode::Remap`] active, which is the default — every
-    /// `branch`/`replay` builds the fresh VM **around** the materialized
-    /// mapping instead of memcpying the image into a fresh allocation. The
+    /// Install the remap-restore factory (task 95 M2.2) **and switch the
+    /// restore mode to [`RestoreMode::Remap`]** — installing the capability is
+    /// the opt-in, so remap becomes the default exactly where it is possible
+    /// (a factory-less server stays truthfully on `Memcpy`; PR #95 round-1).
+    /// Every `branch`/`replay` then builds the fresh VM **around** the
+    /// materialized mapping instead of memcpying the image into a fresh
+    /// allocation; [`Self::set_restore_mode`] can still flip back for A/B. The
     /// factory must mirror the session's [`VmmFactory`] composition (RAM size,
     /// wiring, contract) minus the boot-image load.
     pub fn set_remap_factory(&mut self, factory: RemapVmmFactory<B>) {
         self.remap_factory = Some(factory);
+        self.restore_mode = RestoreMode::Remap;
     }
 
     /// Flip the restore-mode A/B knob (task 95 M2.2's determinism gate arm; no
@@ -2061,6 +2075,17 @@ mod tests {
         };
         let twin = s.engine.materialize(base_twin).unwrap();
         assert_eq!(map.as_slice(), twin.as_slice());
+    }
+
+    /// PR #95 round-1: the restore mode is truthful — `Memcpy` until a remap
+    /// factory exists (the only path a factory-less server can take), flipped
+    /// to `Remap` by installing one. No silent degrade.
+    #[test]
+    fn restore_mode_is_memcpy_until_a_remap_factory_installs() {
+        let s = server(vec![Exit::Hlt]);
+        assert_eq!(s.restore_mode(), super::RestoreMode::Memcpy);
+        let s = server_with_remap(vec![Exit::Hlt], false);
+        assert_eq!(s.restore_mode(), super::RestoreMode::Remap);
     }
 
     /// The safety default: without backend dirty tracking every seal full-scans

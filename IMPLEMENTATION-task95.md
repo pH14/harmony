@@ -256,3 +256,28 @@ Gate (c) baselines against the same pinned image per the ruling (never
 recalibrated against the drifted canonical build); the a0/a/b results were
 re-run on the pinned image after the ruling — numbers below supersede the
 earlier (drifted-image, self-relative, still-valid) run.
+
+### PR #95 round-1 fixes
+
+- **Remap default made truthful (P1).** The first cut defaulted
+  `restore_mode = Remap` while no production composition installs a remap
+  factory, so every production restore silently memcpyed under a mode that
+  said otherwise. Chosen fix (recorded per review): the server starts in
+  `Memcpy` — the only path it can take — and `set_remap_factory` flips the
+  mode to `Remap` as part of installing the capability. `Remap` is therefore
+  the default exactly where remapping is possible, `restore_mode()` always
+  reports the path restores actually take, and the production flip arrives
+  with the conductor opt-in bead (hm-lld) rather than by silent claim.
+  Fail-loud (erroring on factory-less Remap) was rejected — it would brick
+  every existing factory-less session for a config default they never chose;
+  pulling the conductor opt-in into this PR was rejected as outside the M2
+  surface waiver.
+- **Public-API snapshots regenerated (P1)** for `vmm-backend` + `vmm-core`
+  (the Linux-frozen surface, `UPDATE_PUBLIC_API=1` on the box with the pinned
+  nightly): `Backend::harvest_dirty_gfns`, `RamBacking`, `Vmm::with_backing`/
+  `ram_backing_is_snapshot`/`harvest_dirty_gfns`/`reset_dirty_tracking`,
+  `compose_restore_target`, `boot_linux_patched_with_dirty_log`,
+  `RemapVmmFactory`/`RestoreMode` + the `ControlServer` accessors,
+  `SnapshotEngine::{max_chain_len,set_max_chain_len}` + `DEFAULT_MAX_CHAIN_LEN`,
+  `KvmBackend::set_dirty_log_enabled`, and the mock's
+  `enable_dirty_tracking`/`push_dirty_gfns`.
