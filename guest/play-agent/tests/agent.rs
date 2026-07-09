@@ -205,7 +205,14 @@ fn parse_billboard(buf: &[u8]) -> Result<ParsedBillboard, String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 8 } else { 256 }))]
+    // Under Miri: fewer cases (interpretation is 10–100× slower) and no
+    // failure-persistence files (proptest's getcwd is unsupported under
+    // Miri's isolation).
+    #![proptest_config(if cfg!(miri) {
+        ProptestConfig { cases: 8, failure_persistence: None, ..ProptestConfig::default() }
+    } else {
+        ProptestConfig::with_cases(256)
+    })]
 
     /// Any entropy stream: every held chord is a member of the alphabet, one
     /// draw happens per window, and the billboard stays valid on every frame.

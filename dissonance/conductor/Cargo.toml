@@ -54,16 +54,15 @@ vmm-core = { path = "../../consonance/vmm-core", version = "0.1.0" }
 vmm-backend = { path = "../../consonance/vmm-backend", version = "0.1.0", features = ["mock"] }
 # CLI for the `conductor` bin only (whitelist: clap is bins-only).
 clap = { version = "4", features = ["derive"], optional = true }
-# The task-86 game campaign's discovery-event log artifact (the JSON array the
-# offline `exploration-report` renders). Whitelisted (rule 5).
-serde_json = "1"
 # The toy planted-bug machine's `state_hash` digest (task 60, portable gate).
 # Whitelisted; the campaign loop + oracle themselves reuse the explorer's
 # canonical bug fingerprint, so `sha2` is only the toy backend's state hash.
 sha2 = "0.10"
 # Task 69 M2: the box benchmark-campaign bin (de)serializes the box-calibrated
 # manifest and emits the per-(config,seed) CampaignLog + finding certificates as
-# JSON for the offline `benchmark-report`. Whitelisted (std serde_json).
+# JSON for the offline `benchmark-report`. Also the task-86 game campaign's
+# discovery-event log artifact (the JSON array the offline `exploration-report`
+# renders). Whitelisted (std serde_json).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
