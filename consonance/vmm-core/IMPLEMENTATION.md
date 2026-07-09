@@ -4058,12 +4058,34 @@ So `state_hash` is byte-unchanged on every non-`exec` path (the 375 portable
 stay byte-identical. Verified portably by
 `devices::tests::serial_input_is_inert_until_injected`.
 
-## Box gates — PENDING A BOX WINDOW (coordinate with the foreman/Paul)
+## Box gates — ALL PASSED (2026-07-09, box released after task-69 M2)
 
-The box was contended (task-69 M2 campaign holds cores {1,2,3} + the patched-KVM
-window; the M2 worker calibrates on core 4) when this landed. All Mac-portable work
-(gate 1) is **green and pushed**; the box gates are authored and ready but **not yet
-run**. They must be run before the task is fully closed:
+Ran on the determinism box once the task-69 M2 campaign completed and released it
+(stock KVM `1396736` verified before and after every run; each gate held a
+`scripts/box-window.sh` lease in a long-lived driver, CPU-pinned to the leased core,
+patched KVM only inside the window, reverted + verified on a fresh connection).
+Built with `make -C guest/linux exec-image` (the r3 self-contained target) +
+`postgres-image`; test binaries pre-compiled outside the window.
+
+- **Smoke** (fire-once channel probe): `exec 'echo HELLO-SMOKE-42' ok=true
+  output_len=14802` — the printable-marker sentinel scraped end-to-end through real
+  busybox ash (the r2 fix works live). `/root/t81-smoke.log`.
+- **Gate 2** (improvisation + determinism, exec image, strict forced): `exec 'ls /'
+  ok=true output_len=14780`; `original continuation IDENTICAL before/after the fork`.
+  `/root/t81-gate23.log`.
+- **Gate 3** (taint guard, live on the exec'd fork): `recorded_env=Tainted ·
+  dirty_snapshot.tainted=true · branch-of-tainted=Tainted`. Same log.
+- **Gate 4** (byte-identity): task-80 `live_moment_address` re-run on Postgres — all
+  4 moments IDENTICAL twice + observation-invariance SAME. `/root/t81-gate4.log`.
+
+**One box-only harness fix during the run** (`cfg(linux)`, not a code/guard change):
+gate 3's one-shot snapshot helper hit `NotQuiescent` because after `exec` the fork
+sits at an opportunistic V-time deadline stop, not a sealable boundary. The guard was
+already correct (`recorded_env=Tainted` passed live before it; taint is on the
+timeline regardless of quiescence); the harness now nudges the still-tainted fork to
+a snapshottable point (tolerating the shell going idle) before sealing.
+
+### How to re-run (for the record)
 
 The output assertion is **strict by default** (gate 2's "capture non-empty output"),
 and **forced** strict on the `exec`-named image, so a by-the-docs dispatch cannot
