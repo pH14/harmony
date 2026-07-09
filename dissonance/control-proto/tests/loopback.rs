@@ -101,6 +101,14 @@ impl StubServer {
                 (10, 0x0100_0001, vec![1, 2, 3]),
                 (20, 0x0000_0000, vec![]),
             ])),
+            Request::Console { offset } => {
+                let serial = b"ORDER_READY\nphase\n".as_slice();
+                let start = (*offset as usize).min(serial.len());
+                Ok(Reply::Console {
+                    total: serial.len() as u32,
+                    chunk: serial[start..].to_vec(),
+                })
+            }
             // Observation verbs (task 80): a stubbed guest returns `len` bytes and
             // a fixed register view — the point here is that they cross the wire
             // and round-trip, not that the bytes are a real guest's.

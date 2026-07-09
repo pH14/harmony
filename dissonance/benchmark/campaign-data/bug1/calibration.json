@@ -1,0 +1,53 @@
+{
+  "bugs": [
+    {
+      "id": 1,
+      "name": "fault-timing-crash",
+      "class": "FaultTiming",
+      "serial_marker": "CAMPAIGN_BUG",
+      "crash_kind": "Shutdown",
+      "trigger": {
+        "FaultTiming": {
+          "gpa": 2143166464,
+          "mask": 2147483648,
+          "window": [
+            1500,
+            1520
+          ]
+        }
+      },
+      "expected_naive_ttf_branches": 128
+    },
+    {
+      "id": 2,
+      "name": "ordering-interrupt-window",
+      "class": "OrderingInterrupt",
+      "serial_marker": "ORDER_BUG",
+      "crash_kind": "Shutdown",
+      "trigger": {
+        "OrderingInterrupt": {
+          "vector": 129,
+          "window": [
+            1008,
+            1012
+          ]
+        }
+      },
+      "expected_naive_ttf_branches": 256
+    },
+    {
+      "id": 3,
+      "name": "rare-entropy-prefix",
+      "class": "RareEntropy",
+      "serial_marker": "UUID_BUG",
+      "crash_kind": "Shutdown",
+      "trigger": {
+        "RareEntropy": {
+          "prefix": 11889503016258109440,
+          "prefix_bits": 8
+        }
+      },
+      "expected_naive_ttf_branches": 256
+    }
+  ]
+}

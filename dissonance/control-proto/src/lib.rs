@@ -82,8 +82,12 @@ pub const PROTO_VERSION: u16 = 1;
 /// version must reject at `hello` rather than hit a mid-session `ShortFrame` on a
 /// tag it does not know. Bumped to **6** by task 81: the improvisation surface —
 /// the `Exec` + `RecordedEnv` verbs, the `ExecResult` / `Snapshot` (taint-carrying)
-/// / `Recorded` reply tags, and the `ControlError::Tainted` reply tag.
-pub const APP_PROTOCOL_VERSION: u16 = 6;
+/// / `Recorded` reply tags, and the `ControlError::Tainted` reply tag. Bumped to
+/// **7** by task 69 M2: the `Console` scrape verb (`Request::Console` /
+/// `Reply::Console`, the socket console-capture tier) extends the wire vocabulary,
+/// so a v≤6 peer must reject at `Hello` rather than fail mid-session on an unknown
+/// tag.
+pub const APP_PROTOCOL_VERSION: u16 = 7;
 
 /// The maximum bytes one [`Read`](Request::Read) may request. A larger `len` is a
 /// loud [`ReadTooLarge`](ControlError::ReadTooLarge), rejected **before any
@@ -113,7 +117,7 @@ mod tests {
     fn wire_constants_are_pinned() {
         assert_eq!(MAX_FRAME_LEN, 16_777_216); // == 16 * 1024 * 1024 (16 MiB)
         assert_eq!(PROTO_VERSION, 1);
-        assert_eq!(APP_PROTOCOL_VERSION, 6); // task 81: exec/recorded_env improvisation verbs
+        assert_eq!(APP_PROTOCOL_VERSION, 7); // task 69 M2: Console scrape verb added to the wire vocabulary
         assert_eq!(READ_CAP, 65_536); // == 1 << 16 (64 KiB)
     }
 }

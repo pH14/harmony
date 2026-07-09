@@ -441,6 +441,12 @@ struct SnapMeta {
     /// The (branch-local) spec active at capture — its overrides are keyed
     /// relative to [`branch_offset`](Self::branch_offset).
     spec: EnvSpec,
+    /// The server-side serial capture length at capture time — the byte offset a
+    /// `branch`/`replay` off this snapshot restores the console to. A run off this
+    /// snapshot appends past it, so [`console`](Machine::console) baselines its
+    /// cursor here to read only that run's NEW bytes (task 69, mirroring the
+    /// in-process recorder's `serial_len` cursor).
+    serial_len: u32,
 }
 
 /// The socket-backed [`Machine`]: every verb is one request/reply exchange on
@@ -474,6 +480,10 @@ pub struct SocketMachine<S: Read + Write> {
     /// The stop `Moment` of the surfaced-but-unanswered decision, if any —
     /// where the next `run(resolve)`'s answer is stamped (tail-completeness).
     pending_decision: Option<u64>,
+    /// The serial-capture byte offset the current Modulation started at — set at
+    /// `branch`/`replay` to the snapshot's [`SnapMeta::serial_len`], so
+    /// [`console`](Machine::console) reads only the current run's new bytes.
+    console_cursor: u32,
 }
 
 impl<S: Read + Write> SocketMachine<S> {
@@ -515,6 +525,7 @@ impl<S: Read + Write> SocketMachine<S> {
             branch_offset: 0,
             pos: 0,
             pending_decision: None,
+            console_cursor: 0,
         };
         let hello = control_proto::Request::Hello(client_caps());
         let caps = match machine.call(&hello)? {
@@ -613,6 +624,19 @@ impl<S: Read + Write> SocketMachine<S> {
             }
         }
     }
+
+    /// Probe the server-side serial-capture length without draining it (task 69):
+    /// a `Console` request at `offset = u32::MAX` returns an empty chunk and the
+    /// capture's total length. A pure read used to baseline a snapshot's console
+    /// cursor at capture time.
+    fn console_total(&mut self) -> Result<u32, MachineError> {
+        match self.call(&control_proto::Request::Console { offset: u32::MAX })? {
+            control_proto::Reply::Console { total, .. } => Ok(total),
+            other => Err(MachineError::Transport(format!(
+                "console answered with an unexpected reply: {other:?}"
+            ))),
+        }
+    }
 }
 
 /// The client half of the caps exchange: same pins as the server (the negotiated
@@ -641,6 +665,24 @@ fn control_error_to_machine(err: control_proto::ControlError) -> MachineError {
         Ce::NotQuiescent | Ce::SnapshotWhileArmed => MachineError::NotQuiescent,
         Ce::BadEnvVersion(v) => MachineError::BadEnvironment(v),
         Ce::MalformedEnvironment => MachineError::BadEnvironment(EnvSpec::BLOB_VERSION),
+        // A well-formed PROPOSAL the backend rejects as inadmissible — a distinct,
+        // recoverable category from a torn transport (task-69 M2). All four decode
+        // cleanly; the backend simply refuses to apply the fault: an out-of-range
+        // `CorruptMemory` gpa (`PerturbOutOfRange`), a `Moment` behind the restore
+        // point (`PerturbPastMoment`) or already carrying a fault
+        // (`PerturbMomentTaken`), or an out-of-scope fault / capability this
+        // backend does not service (`Unsupported`). Mapping these to the DISTINCT
+        // `Inadmissible` variant lets a proposing loop discard the proposal and
+        // continue — which the benchmark campaign loop (`conductor::benchcampaign`)
+        // does. The generic `Explorer::modulation` does NOT yet handle this variant:
+        // it propagates `Inadmissible` as an error and aborts (skip/retry for the
+        // generic explorer is tracked in bead hm-f30). Either way, the genuine
+        // failures below fall through to `Transport` and abort — so this remap NEVER
+        // masks a backend death or a determinism divergence.
+        e @ (Ce::PerturbOutOfRange { .. }
+        | Ce::PerturbPastMoment { .. }
+        | Ce::PerturbMomentTaken { .. }
+        | Ce::Unsupported) => MachineError::Inadmissible(format!("control error: {e}")),
         other => MachineError::Transport(format!("control error: {other}")),
     }
 }
@@ -696,6 +738,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
         let origin = meta.vtime;
+        let restored_serial_len = meta.serial_len;
         // The single outbound frame conversion (module doc, "Coordinate
         // frames"): the blob's override keys are RELATIVE to its origin, the
         // server's contract is ABSOLUTE Moments (task 59 validates against
@@ -730,6 +773,9 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
                 self.branch_offset = origin;
                 self.pos = origin;
                 self.pending_decision = None;
+                // The restored console starts at the snapshot's capture length;
+                // this run's console appends past it (task 69).
+                self.console_cursor = restored_serial_len;
                 Ok(())
             }
             other => Err(MachineError::Transport(format!(
@@ -751,7 +797,12 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         // snapshot point, so a post-replay `recorded_env` would advertise the
         // wrong `base_offset` — a silent mis-key once keys exist (dormant in v1:
         // no decisions ⇒ no keys). `pos` is the snapshot point (`vtime`).
-        let (branch_offset, pos, spec) = (meta.branch_offset, meta.vtime, meta.spec.clone());
+        let (branch_offset, pos, spec, serial_len) = (
+            meta.branch_offset,
+            meta.vtime,
+            meta.spec.clone(),
+            meta.serial_len,
+        );
         match self.call(&control_proto::Request::Replay(control_proto::SnapId(
             snap.0,
         )))? {
@@ -760,6 +811,9 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
                 self.branch_offset = branch_offset;
                 self.pos = pos;
                 self.pending_decision = None;
+                // The verbatim restore also restores the console to the snapshot's
+                // capture length; a re-run's console appends past it (task 69).
+                self.console_cursor = serial_len;
                 Ok(())
             }
             other => Err(MachineError::Transport(format!(
@@ -831,22 +885,30 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
     }
 
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
-        match self.call(&control_proto::Request::Snapshot)? {
-            control_proto::Reply::SnapId(id) => {
-                self.snaps.insert(
-                    id.0,
-                    SnapMeta {
-                        vtime: self.pos,
-                        branch_offset: self.branch_offset,
-                        spec: self.current.clone(),
-                    },
-                );
-                Ok(SnapId(id.0))
+        let id = match self.call(&control_proto::Request::Snapshot)? {
+            control_proto::Reply::SnapId(id) => id,
+            other => {
+                return Err(MachineError::Transport(format!(
+                    "snapshot answered with an unexpected reply: {other:?}"
+                )));
             }
-            other => Err(MachineError::Transport(format!(
-                "snapshot answered with an unexpected reply: {other:?}"
-            ))),
-        }
+        };
+        // Baseline the console cursor for branches off this snapshot: probe the
+        // server-side serial length now (the length a later `branch`/`replay` will
+        // restore the console to), so `console()` reads only a run's NEW bytes.
+        // A pure read — `snapshot` did not advance the VM, so this is the captured
+        // length. Probed once per snapshot (rare), never per branch (hot).
+        let serial_len = self.console_total()?;
+        self.snaps.insert(
+            id.0,
+            SnapMeta {
+                vtime: self.pos,
+                branch_offset: self.branch_offset,
+                spec: self.current.clone(),
+                serial_len,
+            },
+        );
+        Ok(SnapId(id.0))
     }
 
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -912,6 +974,62 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         }
         Ok(all)
     }
+
+    /// The guest console (serial) capture of the current run (task 69): the
+    /// server-side serial bytes emitted since the branch/replay that started this
+    /// Modulation, split into `Moment`-stamped lines. Like [`sdk_events`] the
+    /// capture lives only server-side, so this pages the wire `Console` verb from
+    /// the branch-baselined [`console_cursor`](SocketMachine::console_cursor) until
+    /// the capture is drained. Lines are split exactly as the in-process recorder's
+    /// `runtrace::decode_chunks` does over a single chunk — each completed line
+    /// keeps its `\n`; a trailing unterminated remainder is a final line — and all
+    /// are stamped at the run's stop `Moment` (`pos`, stop-granular), so the
+    /// scrape signal (task 67 `logtmpl`) sees the same records the recording loop
+    /// would produce. A pure read: it never advances the VM, so a run's
+    /// `state_hash` is identical whether or not this is called.
+    fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            let offset = self.console_cursor.saturating_add(bytes.len() as u32);
+            let (total, chunk) = match self.call(&control_proto::Request::Console { offset })? {
+                control_proto::Reply::Console { total, chunk } => (total, chunk),
+                other => {
+                    return Err(MachineError::Transport(format!(
+                        "console answered with an unexpected reply: {other:?}"
+                    )));
+                }
+            };
+            if chunk.is_empty() {
+                break;
+            }
+            bytes.extend(chunk);
+            if self.console_cursor.saturating_add(bytes.len() as u32) >= total {
+                break;
+            }
+        }
+        Ok(split_console_lines(&bytes, self.pos))
+    }
+}
+
+/// Split a console byte run into `Moment`-stamped lines, matching
+/// `runtrace::decode_chunks` for a single chunk: a line ends at (and includes)
+/// each `\n`; a trailing run with no terminator is a final line. All stamped at
+/// `at` — the run's stop `Moment`, exactly as the in-process recorder stamps the
+/// whole console at the stop (stop-granular). Explorer cannot depend on `runtrace`
+/// (a layering cycle), so the single-chunk split is replicated here.
+fn split_console_lines(bytes: &[u8], at: u64) -> Vec<(u64, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut line = Vec::new();
+    for &b in bytes {
+        line.push(b);
+        if b == b'\n' {
+            out.push((at, std::mem::take(&mut line)));
+        }
+    }
+    if !line.is_empty() {
+        out.push((at, line));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1287,11 +1405,30 @@ mod tests {
             control_error_to_machine(Ce::MalformedEnvironment),
             MachineError::BadEnvironment(EnvSpec::BLOB_VERSION)
         );
+        // Well-formed but inadmissible PROPOSALS map to the recoverable
+        // `Inadmissible` category (task-69 M2), NOT `Transport` — a proposing
+        // driver discards them and continues. `Unsupported` (out-of-scope fault /
+        // absent capability) rides with the stage-time perturb rejections here.
+        for err in [
+            Ce::PerturbOutOfRange {
+                gpa: 0xdead_beef_dead_beef,
+                ram_len: 1 << 31,
+            },
+            Ce::PerturbPastMoment { at: 3, floor: 10 },
+            Ce::PerturbMomentTaken { at: 7 },
+            Ce::Unsupported,
+        ] {
+            assert!(
+                matches!(control_error_to_machine(err), MachineError::Inadmissible(_)),
+                "inadmissible proposals are the recoverable category"
+            );
+        }
+        // Genuine failures remain `Transport` — never conflated with a rejected
+        // proposal, so skipping the latter can never mask one of these.
         for err in [
             Ce::RestoreFailed,
             Ce::ResolveWithoutDecision,
             Ce::MalformedAnswer,
-            Ce::Unsupported,
             Ce::Protocol(control_proto::ProtocolError::ShortFrame),
         ] {
             assert!(
@@ -1350,14 +1487,27 @@ mod tests {
         }
     }
 
-    /// Build a scripted stream from a sequence of `(seq, reply)` frames.
-    fn scripted(frames: &[(u32, control_proto::Reply)]) -> ScriptedStream {
+    /// Build a scripted stream from an ordered list of reply frames. Sequence
+    /// numbers are assigned **by position** (1, 2, …) so the seq-echo check passes
+    /// and inserting a frame — e.g. the console-length probe a `snapshot` now
+    /// issues (task 69) — never desyncs the rest of the script.
+    fn scripted(frames: &[control_proto::Reply]) -> ScriptedStream {
         let mut bytes = Vec::new();
-        for (seq, reply) in frames {
-            control_proto::encode_reply(*seq, &Ok(reply.clone()), &mut bytes).unwrap();
+        for (i, reply) in frames.iter().enumerate() {
+            control_proto::encode_reply((i + 1) as u32, &Ok(reply.clone()), &mut bytes).unwrap();
         }
         ScriptedStream {
             replies: Cursor::new(bytes),
+        }
+    }
+
+    /// A `Console` reply carrying the capture's total length and an empty chunk —
+    /// the shape a `snapshot`'s console-length probe (`offset = u32::MAX`) gets
+    /// back. The scripted/mock guest emits no serial, so `total` is 0.
+    fn console_reply(total: u32) -> control_proto::Reply {
+        control_proto::Reply::Console {
+            total,
+            chunk: Vec::new(),
         }
     }
 
@@ -1405,10 +1555,11 @@ mod tests {
     fn snapshot_immediately_after_connect_records_the_true_origin_not_zero() {
         use control_proto::{Reply, SnapId as WsSnapId};
         let stream = scripted(&[
-            (1, server_caps_reply()),        // hello
-            (2, probe_reply(5000)),          // connect's V-time probe: post-readiness
-            (3, Reply::SnapId(WsSnapId(1))), // snapshot (taken immediately, no run)
-            (4, Reply::Unit),                // branch
+            server_caps_reply(),        // hello
+            probe_reply(5000),          // connect's V-time probe: post-readiness
+            Reply::SnapId(WsSnapId(1)), // snapshot (taken immediately, no run)
+            console_reply(0),           // snapshot's console-length probe (cursor baseline)
+            Reply::Unit,                // branch
         ]);
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
         let snap = m.snapshot().unwrap();
@@ -1434,18 +1585,17 @@ mod tests {
     fn replay_restores_the_branch_origin_at_capture_not_the_snapshot_vtime() {
         use control_proto::{Reply, SnapId as WsSnapId, StopReason as Ws, VTime as WsVTime};
         let stream = scripted(&[
-            (1, server_caps_reply()),        // hello
-            (2, probe_reply(50)),            // connect probe → origin 50
-            (3, Reply::SnapId(WsSnapId(1))), // snapshot S1 @ 50 (branch base)
-            (4, Reply::Unit),                // branch(S1, seeded) → timeline rooted at 50
-            (
-                5,
-                Reply::Stop(Ws::Deadline {
-                    vtime: WsVTime(200),
-                }),
-            ), // run → advance pos to 200 (branch_offset stays 50)
-            (6, Reply::SnapId(WsSnapId(2))), // snapshot S2 @ vtime 200, branch_offset 50
-            (7, Reply::Unit),                // replay(S2)
+            server_caps_reply(),        // hello
+            probe_reply(50),            // connect probe → origin 50
+            Reply::SnapId(WsSnapId(1)), // snapshot S1 @ 50 (branch base)
+            console_reply(0),           // S1 console-length probe
+            Reply::Unit,                // branch(S1, seeded) → timeline rooted at 50
+            Reply::Stop(Ws::Deadline {
+                vtime: WsVTime(200),
+            }), // run → advance pos to 200 (branch_offset stays 50)
+            Reply::SnapId(WsSnapId(2)), // snapshot S2 @ vtime 200, branch_offset 50
+            console_reply(0),           // S2 console-length probe
+            Reply::Unit,                // replay(S2)
         ]);
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
         let s1 = m.snapshot().unwrap();
@@ -1475,20 +1625,20 @@ mod tests {
     #[test]
     fn connect_refuses_a_non_zero_coverage_geometry() {
         // A huge map_bytes is exactly the unbounded-allocation risk.
-        let stream = scripted(&[(1, server_caps_reply_geo(u32::MAX, 0))]);
+        let stream = scripted(&[server_caps_reply_geo(u32::MAX, 0)]);
         assert!(matches!(
             SocketMachine::connect(stream, seeded_env(1)),
             Err(MachineError::Transport(_))
         ));
         // A non-zero producer tag (with zero map_bytes) is likewise unexpected in v1.
-        let stream = scripted(&[(1, server_caps_reply_geo(0, 3))]);
+        let stream = scripted(&[server_caps_reply_geo(0, 3)]);
         assert!(matches!(
             SocketMachine::connect(stream, seeded_env(1)),
             Err(MachineError::Transport(_))
         ));
         // Zero-width geometry is accepted (the negotiated v1 shape); the probe
         // then completes the handshake.
-        let stream = scripted(&[(1, server_caps_reply()), (2, probe_reply(0))]);
+        let stream = scripted(&[server_caps_reply(), probe_reply(0)]);
         assert!(SocketMachine::connect(stream, seeded_env(1)).is_ok());
     }
 
@@ -1541,13 +1691,17 @@ mod tests {
         use control_proto::{Reply, SnapId as WsSnapId};
         let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut reply_bytes = Vec::new();
-        for (seq, reply) in [
-            (1, server_caps_reply()),        // hello
-            (2, probe_reply(200)),           // connect's V-time probe → origin 200
-            (3, Reply::SnapId(WsSnapId(1))), // snapshot @ 200
-            (4, Reply::Unit),                // branch
-        ] {
-            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        for (i, reply) in [
+            server_caps_reply(),        // hello
+            probe_reply(200),           // connect's V-time probe → origin 200
+            Reply::SnapId(WsSnapId(1)), // snapshot @ 200
+            console_reply(0),           // snapshot's console-length probe
+            Reply::Unit,                // branch
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            control_proto::encode_reply((i + 1) as u32, &Ok(reply), &mut reply_bytes).unwrap();
         }
         let stream = CapturingStream {
             replies: Cursor::new(reply_bytes),
@@ -1609,12 +1763,16 @@ mod tests {
         use control_proto::{Reply, SnapId as WsSnapId};
         let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut reply_bytes = Vec::new();
-        for (seq, reply) in [
-            (1, server_caps_reply()),
-            (2, probe_reply(200)),
-            (3, Reply::SnapId(WsSnapId(1))),
-        ] {
-            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        for (i, reply) in [
+            server_caps_reply(),
+            probe_reply(200),
+            Reply::SnapId(WsSnapId(1)),
+            console_reply(0), // snapshot's console-length probe
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            control_proto::encode_reply((i + 1) as u32, &Ok(reply), &mut reply_bytes).unwrap();
         }
         let stream = CapturingStream {
             replies: Cursor::new(reply_bytes),
@@ -1652,28 +1810,19 @@ mod tests {
     fn a_none_resolve_between_a_decision_and_its_answer_keeps_the_pending_decision() {
         use control_proto::{DecisionId, Reply, StopReason as Ws, VTime as WsVTime};
         let stream = scripted(&[
-            (1, server_caps_reply()), // hello
-            (2, probe_reply(0)),      // connect's V-time probe (origin 0)
-            (
-                3,
-                Reply::Stop(Ws::Decision {
-                    vtime: WsVTime(100),
-                    id: DecisionId(5),
-                    ctx: vec![],
-                }),
-            ), // run #1
-            (
-                4,
-                Reply::Stop(Ws::SnapshotPoint {
-                    vtime: WsVTime(110),
-                }),
-            ), // run #2: the None-resolve probe
-            (
-                5,
-                Reply::Stop(Ws::Quiescent {
-                    vtime: WsVTime(120),
-                }),
-            ), // run #3: the answering resolve
+            server_caps_reply(), // hello
+            probe_reply(0),      // connect's V-time probe (origin 0)
+            Reply::Stop(Ws::Decision {
+                vtime: WsVTime(100),
+                id: DecisionId(5),
+                ctx: vec![],
+            }), // run #1
+            Reply::Stop(Ws::SnapshotPoint {
+                vtime: WsVTime(110),
+            }), // run #2: the None-resolve probe
+            Reply::Stop(Ws::Quiescent {
+                vtime: WsVTime(120),
+            }), // run #3: the answering resolve
         ]);
         let mut m = SocketMachine::connect(stream, seeded_env(7)).unwrap();
         let until = StopConditions {
@@ -1732,14 +1881,18 @@ mod tests {
         use control_proto::{Reply, SnapId as WsSnapId};
         let written = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut reply_bytes = Vec::new();
-        for (seq, reply) in [
-            (1, server_caps_reply()),        // hello
-            (2, probe_reply(200)),           // connect probe → origin 200
-            (3, Reply::SnapId(WsSnapId(1))), // snapshot @ 200
-            (4, Reply::Unit),                // branch (no-marker env)
-            (5, Reply::Unit),                // branch (marker env)
-        ] {
-            control_proto::encode_reply(seq, &Ok(reply), &mut reply_bytes).unwrap();
+        for (i, reply) in [
+            server_caps_reply(),        // hello
+            probe_reply(200),           // connect probe → origin 200
+            Reply::SnapId(WsSnapId(1)), // snapshot @ 200
+            console_reply(0),           // snapshot's console-length probe
+            Reply::Unit,                // branch (no-marker env)
+            Reply::Unit,                // branch (marker env)
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            control_proto::encode_reply((i + 1) as u32, &Ok(reply), &mut reply_bytes).unwrap();
         }
         let stream = CapturingStream {
             replies: Cursor::new(reply_bytes),

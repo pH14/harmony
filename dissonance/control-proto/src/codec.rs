@@ -44,6 +44,9 @@ const REQ_READ: u8 = 10;
 const REQ_REGS: u8 = 11;
 const REQ_EXEC: u8 = 12;
 const REQ_RECORDED_ENV: u8 = 13;
+// task 69 M2 Console scrape verb — assigned 14 (10–13 taken by tasks 80/81 read/
+// regs/exec/recorded_env on the merge) so the wire tags stay collision-free.
+const REQ_CONSOLE: u8 = 14;
 
 // ---- Reply-body top-level result discriminants. ----
 const RESULT_OK: u8 = 0;
@@ -61,6 +64,9 @@ const REPLY_REGS: u8 = 8;
 const REPLY_EXEC_RESULT: u8 = 9;
 const REPLY_SNAPSHOT: u8 = 10;
 const REPLY_RECORDED: u8 = 11;
+// task 69 M2 Console scrape reply — assigned 12 (7–11 taken by tasks 80/81) so the
+// wire tags stay collision-free.
+const REPLY_CONSOLE: u8 = 12;
 
 // ---- StopReason variant discriminants. ----
 const SR_DEADLINE: u8 = 1;
@@ -261,6 +267,10 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             w.push(REQ_SDK_EVENTS);
             put_u32(w, *offset);
         }
+        Request::Console { offset } => {
+            w.push(REQ_CONSOLE);
+            put_u32(w, *offset);
+        }
         Request::Read { gpa, len } => {
             w.push(REQ_READ);
             put_u64(w, *gpa);
@@ -298,6 +308,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             at: Moment(r.u64()?),
         },
         REQ_SDK_EVENTS => Request::SdkEvents { offset: r.u32()? },
+        REQ_CONSOLE => Request::Console { offset: r.u32()? },
         REQ_READ => Request::Read {
             gpa: r.u64()?,
             len: r.u32()?,
@@ -367,6 +378,11 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
                 put_bytes(w, bytes);
             }
         }
+        Reply::Console { total, chunk } => {
+            w.push(REPLY_CONSOLE);
+            put_u32(w, *total);
+            put_bytes(w, chunk);
+        }
         Reply::Bytes(bytes) => {
             w.push(REPLY_BYTES);
             put_bytes(w, bytes);
@@ -413,6 +429,10 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
             }
             Reply::SdkEvents(events)
         }
+        REPLY_CONSOLE => Reply::Console {
+            total: r.u32()?,
+            chunk: r.bytes()?.to_vec(),
+        },
         REPLY_BYTES => Reply::Bytes(r.bytes()?.to_vec()),
         REPLY_REGS => Reply::Regs(read_regs_view(r)?),
         REPLY_EXEC_RESULT => Reply::ExecResult {

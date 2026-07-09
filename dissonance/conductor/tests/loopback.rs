@@ -108,6 +108,64 @@ fn every_verb_round_trips_over_the_socket() {
     served.expect("server session ends cleanly");
 }
 
+/// End-to-end console capture over the socket (task 69 M2): a fork guest that
+/// writes a serial banner (`recording_fork_script`) is driven through the real
+/// vmm-core control server, and `SocketMachine::console()` pages that banner back
+/// off the wire into stamped lines — the scrape channel the log-template signal
+/// reads. And it is **determinism-neutral**: an identical branch+run hashes the
+/// same whether or not the console is drained first (records are host-side
+/// observation, never coupled into `state_hash`).
+#[test]
+fn console_capture_round_trips_over_the_socket() {
+    let mut server = mock::server(mock::recording_fork_script()).unwrap();
+    let (served, ()) = run_session(&mut server, |stream| {
+        let mut m = SocketMachine::connect(stream, boot_env()).expect("hello negotiates");
+        let base = m.snapshot().expect("snapshot");
+
+        // Branch + run: the fork guest emits "MOCK-READY\n" to COM1.
+        m.branch(base, &SpecEnvCodec.seeded(0x1234))
+            .expect("branch");
+        m.run(
+            &StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            None,
+        )
+        .expect("run");
+        let drained_hash = m.hash().expect("hash");
+
+        // console() pages the banner off the wire as stamped line(s).
+        let console = m.console().expect("console");
+        let joined: Vec<u8> = console.iter().flat_map(|(_, l)| l.clone()).collect();
+        assert!(
+            joined
+                .windows(b"MOCK-READY".len())
+                .any(|w| w == b"MOCK-READY"),
+            "console() must page the guest serial banner off the wire; got {console:?}"
+        );
+
+        // Determinism-neutral: an identical branch+run WITHOUT draining hashes the
+        // same (draining the console cannot perturb state).
+        m.branch(base, &SpecEnvCodec.seeded(0x1234))
+            .expect("branch");
+        m.run(
+            &StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            None,
+        )
+        .expect("run");
+        let undrained_hash = m.hash().expect("hash");
+        assert_eq!(
+            drained_hash, undrained_hash,
+            "draining the console over the wire is determinism-neutral"
+        );
+    });
+    served.expect("server session ends cleanly");
+}
+
 #[test]
 fn raw_wire_cases_the_typed_adapter_cannot_express() {
     let mut server = mock::server(default_fork_script()).unwrap();

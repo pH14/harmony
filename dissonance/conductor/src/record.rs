@@ -201,6 +201,7 @@ fn seal_base<B: Backend>(
                 | Reply::Hash(_)
                 | Reply::Stop(_)
                 | Reply::SdkEvents(_)
+                | Reply::Console { .. }
                 // Task 80 observation replies: never answered to a `snapshot`.
                 | Reply::Bytes(_)
                 | Reply::Regs(_)

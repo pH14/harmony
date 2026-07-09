@@ -113,6 +113,28 @@ pub struct CampaignLog {
     pub events: Vec<BranchEvent>,
     /// Per-bug find records (a bug may be absent if this seed never found it).
     pub finds: Vec<FindRecord>,
+    /// The signal config's **effective** explore period (every Nth step explores;
+    /// the rest exploit). Recorded so the artifact is **self-describing** — a
+    /// same-seed result must never depend on an ambient env var invisibly (PR#90
+    /// round-2). `#[serde(default)]` = 4 for pre-record logs (the committed campaign
+    /// ran the default 4). The PR#90 ablation records 1 here.
+    #[serde(default = "default_explore_period")]
+    pub explore_period: u64,
+    /// The **effective** bug-2 (`OrderingInterrupt`) mint fault-offset search width.
+    /// Same self-describing rule as `explore_period`; `#[serde(default)]` = 64 for
+    /// pre-record logs. Irrelevant to bugs 1/3 (no `OrderingInterrupt` mint), kept
+    /// so every campaign artifact fully pins its search knobs.
+    #[serde(default = "default_order_range")]
+    pub order_range: u64,
+}
+
+/// Pre-record default (the committed campaign's value) — see [`CampaignLog::explore_period`].
+fn default_explore_period() -> u64 {
+    4
+}
+/// Pre-record default (the committed campaign's value) — see [`CampaignLog::order_range`].
+fn default_order_range() -> u64 {
+    64
 }
 
 impl CampaignLog {
@@ -531,8 +553,17 @@ impl CorrelationReport {
                 && b.signal_finders >= 1
                 && b.baseline_finders >= 1
         });
-        // Given full coverage: novelty correlates with progress on ≥2 of 3 bugs,
-        // and the signal median is not worse than baseline on any bug.
+        // ⚠️ SUPERSEDED by the M2 amendment (integrator ruling `fa9d323`, Paul
+        // 2026-07-07). This binary "novelty correlates on ≥2 of 3 bugs AND signal
+        // not worse on any" verdict is the PRE-AMENDMENT rule. With bug 2 deferred
+        // (structurally uncalibratable) and bug 1 degenerate by design, ≥2-of-3 can
+        // never be met, so this auto-verdict is now ADVISORY only. The AUTHORITATIVE
+        // gate-4 ruling is DIRECTIONAL and lives in the hand-written
+        // `CORRELATION-REPORT.md`: bug 3 (the sole real discriminator) clearly
+        // positive AND no bug inverted → provisional GO; else NO-GO → SCORING
+        // E-fails. This computed `ruling` field is retained only so the renderer can
+        // print the measures with a banner pointing at the directional rule; do NOT
+        // treat it as the gate decision.
         let correlating = bugs.iter().filter(|b| b.correlates).count();
         let not_worse_all = bugs.iter().all(|b| b.signal_not_worse);
         let ruling = if every_bug_covered && correlating >= 2 && not_worse_all {
@@ -646,7 +677,16 @@ impl CorrelationReport {
             let _ = writeln!(s, "```\n{}\n```\n", sparkline(&m.curve));
         }
 
-        let _ = writeln!(s, "## The ruling\n");
+        let _ = writeln!(s, "## The ruling (advisory — SUPERSEDED)\n");
+        let _ = writeln!(
+            s,
+            "> ⚠️ The verdict below is the **pre-amendment** binary \"≥2 of 3 bugs\" auto-rule. It \
+             is **superseded** by the M2 amendment (integrator ruling `fa9d323`): with bug 2 \
+             deferred and bug 1 degenerate, ≥2-of-3 can never be met. The **authoritative** gate-4 \
+             ruling is **directional** — bug 3 (the sole real discriminator) clearly positive AND \
+             no bug inverted → provisional GO, else NO-GO — and is stated in the hand-written \
+             `CORRELATION-REPORT.md`. Read this section as the measures' summary, not the gate.\n"
+        );
         let correlating = self.bugs.iter().filter(|b| b.correlates).count();
         match self.ruling {
             Ruling::Go => {
@@ -741,6 +781,8 @@ mod tests {
                 path_len: 4,
                 novel_on_path: 4,
             }],
+            explore_period: 4,
+            order_range: 64,
         }
     }
 
@@ -761,6 +803,8 @@ mod tests {
                 path_len: 4,
                 novel_on_path: 0,
             }],
+            explore_period: 4,
+            order_range: 64,
         }
     }
 
@@ -1138,6 +1182,8 @@ mod tests {
                 path_len: 4,
                 novel_on_path: 4,
             }],
+            explore_period: 4,
+            order_range: 64,
         };
         let rep = CorrelationReport::compute(&bench, &[log], 50, (3, 10), (1, 1000)).unwrap();
         let m = rep.bugs.iter().find(|b| b.bug == bug).unwrap();

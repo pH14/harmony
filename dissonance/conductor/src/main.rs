@@ -66,6 +66,80 @@ enum Mode {
     /// the box-side gates run via `cargo test -p conductor --test
     /// live_materialization -- --ignored` on the determinism box).
     Materialize(MatArgs),
+    /// Task 69 M2 (GO/NO-GO #2): ONE benchmark campaign — a `(bug, config, seed)`
+    /// signal-vs-baseline run against a real planted-bug guest on patched KVM,
+    /// emitting the `CampaignLog` + finding state hashes as JSON. Box-only; one
+    /// campaign per invocation so the operator parallelizes across leased cores and
+    /// compares solo vs co-tenant outputs (the determinism stress-test).
+    BenchCampaign(BenchBoxArgs),
+}
+
+/// Task 69 M2 box benchmark-campaign arguments.
+#[derive(Parser)]
+struct BenchBoxArgs {
+    /// Which planted bug (manifest `BugId`): `1` fault-timing, `2`
+    /// ordering-interrupt, `3` rare-entropy.
+    #[arg(long)]
+    bug: u16,
+    /// The configuration: `signal` (the real task-67 `LogSensor` + `CellFnV1`) or
+    /// `baseline` (task 60's blind seed search).
+    #[arg(long)]
+    config: String,
+    /// The campaign seed. Klees discipline: run ≥20 distinct seeds per config (one
+    /// invocation each), so the offline report meets its per-bug/config floor.
+    #[arg(long)]
+    seed: u64,
+    /// Branch budget: the campaign logs to this many branches even after a find, so
+    /// measure 1 (discovery at equal budget) is comparable.
+    #[arg(long, default_value_t = 4096)]
+    max_branches: u64,
+    /// Replays to certify a find (bit-identical crash). Floored at the spec
+    /// [`REPLAY_BAR`] (25) — the flag may raise it, never lower it.
+    #[arg(long, default_value_t = REPLAY_BAR)]
+    replay_n: usize,
+    /// V-time each branch runs past the sealed base before its deadline — far
+    /// enough for the fault to land and the guest to react, but bounded so a
+    /// non-triggering / hung branch cannot wedge the campaign. Scope it to the
+    /// workload's fault-sensitive loop, well under any real hang.
+    #[arg(long, default_value_t = 5_000_000_000)]
+    deadline_delta: u64,
+    /// Optional **box-calibrated** manifest JSON (a serialized `Benchmark` whose
+    /// per-bug trigger params are the pinned real gpa / window-offset / prefix).
+    /// Absent = the `wave5()` fixture, whose windows are toy stand-ins — calibrate
+    /// for the box (see IMPLEMENTATION-task69-m2.md's runbook).
+    #[arg(long)]
+    calibration: Option<PathBuf>,
+    /// Kernel bzImage filename under guest/build (or guest/linux).
+    #[arg(long, default_value = "bzImage")]
+    kernel: String,
+    /// The bug's initramfs (default the fault-timing campaign image; override
+    /// per bug, e.g. `initramfs-order.cpio.gz` / `initramfs-uuid.cpio.gz`).
+    #[arg(long, default_value = "initramfs-campaign.cpio.gz")]
+    initramfs: String,
+    /// The readiness marker after which the base snapshot is sealed (mid-workload,
+    /// post-readiness) — per bug (`CAMPAIGN_READY` / `ORDER_READY` / `UUID_READY`).
+    #[arg(long, default_value = "CAMPAIGN_READY")]
+    ready_marker: String,
+    /// Where to write the `CampaignLog` JSON (the offline `benchmark-report` input).
+    #[arg(long)]
+    out: PathBuf,
+    /// Optional: write every branch's `RunTrace` (ordered `(branch, trace)` JSON) to
+    /// this path — the **retained re-key substrate** (M2 amendment / `docs/SCORING.md`
+    /// R1/R2): the offline evaluation set a future `CellFn` replays through its pure
+    /// fold. A first-class deliverable of every M2 campaign; absent = not retained.
+    #[arg(long)]
+    record: Option<PathBuf>,
+    /// Signal-config explore period (every Nth step explores; the rest exploit). The
+    /// PR#90 ablation sets `1` (explore-only). An **explicit, recorded** knob (lands
+    /// in the CampaignLog) — no ambient env, so a same-seed result is self-describing
+    /// (PR#90 round-2 replaced the old `BENCH_EXPLORE_PERIOD` env read).
+    #[arg(long, default_value_t = 4)]
+    explore_period: u64,
+    /// Bug-2 (`OrderingInterrupt`) mint fault-offset search width. Same recorded,
+    /// no-env rule as `--explore-period` (replaced `BENCH_ORDER_RANGE`). Irrelevant
+    /// to bugs 1/3.
+    #[arg(long, default_value_t = 64)]
+    order_range: u64,
 }
 
 #[derive(Parser)]
@@ -268,7 +342,24 @@ fn main() -> ExitCode {
         Mode::Campaign(CampaignMode::Mock(args)) => run_campaign_mock(args),
         Mode::Campaign(CampaignMode::Box(args)) => run_campaign_box(args),
         Mode::Materialize(args) => run_mock_materialize(args),
+        Mode::BenchCampaign(args) => run_benchcampaign_box(args),
     }
+}
+
+/// Task 69 M2 box benchmark-campaign (GO/NO-GO #2). Linux-only; refuses loudly off
+/// Linux + patched KVM.
+#[cfg(target_os = "linux")]
+fn run_benchcampaign_box(args: BenchBoxArgs) -> ExitCode {
+    boxrun::run_bench_campaign_box(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_benchcampaign_box(_args: BenchBoxArgs) -> ExitCode {
+    eprintln!(
+        "[conductor] benchcampaign box needs Linux + patched KVM + a built planted-bug image + \
+         the det-cfl-v1 host (docs/BOX-PINNING.md). This is not a Linux host."
+    );
+    ExitCode::FAILURE
 }
 
 /// The portable campaign (task 60, gate 2): the seed-driven search over the toy

@@ -42,6 +42,33 @@
 // isa-debug-exit terminal. FAIL_CODE 0x63 tags "benchmark bug 3".
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x63
+// Post-READY operational-loop length + work cycle. On a NON-firing branch the
+// process runs this loop emitting the same bug-agnostic operational logs the
+// other supers do, giving the log-template signal (task 67) a workload to read
+// until the campaign deadline cuts it off. Mirrors campaign-super.c's
+// ITERS/`BUDGET_MAX/2` so all three supers share the SAME log cadence — the
+// apples-to-apples signal workload (task 69 M2). A FIRING branch never reaches
+// the loop: it crashes at the prefix match, emitting the UUID_BUG marker well
+// before the deadline (marker-based certification, terminal-agnostic).
+#define ITERS 200000000L
+#define WORK_CYCLE 500000L
+// Pre-draw stabilization span (task 69 M2 fix — box calibration 2026-07-07). A
+// short bounded busy loop runs after UUID_READY and BEFORE the entropy draw so
+// `seal_base`'s snapshot-retry (advancing `snapshot_retry_step` = 10_000 ns each
+// try) lands a snapshottable base INSIDE this loop — before the draw — the way
+// campaign-super's long loop gives its seal a landing point. WITHOUT it uuid-super
+// draws+decides+crashes within a few instructions of UUID_READY, faster than one
+// retry step, so the seal OVERSHOOTS the draw and bakes it into the base — every
+// branch then inherits the same (baked) draw and the rare-entropy search is a
+// no-op (0 fires on the box, confirmed 2026-07-07). The span must exceed the
+// 10_000 ns retry step yet stay well under the campaign deadline (50_000 ns) so
+// the post-seal draw still lands in time; ~250k iters ≈ tens of µs of V-time.
+// Tuned on the box (smoke-fire probe 2026-07-07): the draw must land AFTER the
+// seal (which lands at one of the early checkpoint writes, i=0 or i=4096) yet
+// within the campaign deadline (~8.9 ns/iter with checkpoints every 4096 ⇒ ~50k
+// ns budget ≈ a few thousand iters). i=8192 puts the draw just past the i=4096
+// checkpoint. `volatile`/writes below defeat -O2 elision.
+#define STABILIZE_ITERS 8192L
 
 static int prefix_matches(uint64_t draw)
 {
@@ -110,41 +137,69 @@ int main(void)
         fflush(stdout);
     }
 
-    // The base snapshot is sealed here — BEFORE the seed-dependent draw, so each
-    // branch re-runs the draw with ITS OWN seed. (If the draw ran before this
-    // marker it would be baked into the sealed base and every branch would
-    // inherit the same value, making the seed search a no-op — the milestone-1
-    // review's P1.)
+    // The base snapshot is sealed just after here — inside the stabilization loop
+    // below, BEFORE the seed-dependent draw, so each branch re-runs the draw with
+    // ITS OWN seed. (If the draw ran before the seal it would be baked into the
+    // sealed base and every branch would inherit the same value, making the seed
+    // search a no-op — the milestone-1 review's P1, which the box seal *also*
+    // re-introduces unless the seal is given a pre-draw landing point; see below.)
     printf("UUID_READY\n");
     fflush(stdout);
 
-    // Draw the seeded entropy AFTER the snapshot point, from the VMM's RDRAND
-    // intercept (per-branch, campaign-controlled) — NOT a pre-snapshot env var.
-    // The RDRAND word IS the seeded-entropy draw (the first word of
-    // `SeededEntropy::new(EnvSpec.seed)`), so it is checked DIRECTLY — no extra
-    // hashing. `dissonance/benchmark::trigger::entropy_draw` replicates the exact
-    // same value, so the guest and the offline model agree on which seeds fire
-    // (the round-3 stream-matching fix — an earlier draft re-hashed with a
-    // splitmix64 the model did not share, so they disagreed).
-    uint64_t draw = draw_campaign_entropy();
-    if (getenv("UUID_DEBUG")) {
-        printf("UUID_DRAW: draw=0x%llx prefix_bits=%d\n",
-               (unsigned long long)draw, PREFIX_BITS);
-        fflush(stdout);
-    }
+    // Pre-draw stabilization + operational logging, unified in ONE bounded loop.
+    // The periodic console writes below are BOTH the bug-agnostic signal workload
+    // (identical idiom to bugs 1/2) AND — crucially — the snapshottable boundaries
+    // `seal_base` needs to land a base BEFORE the draw. A SILENT busy loop has no
+    // such boundary, so the seal's only landing point is the RDRAND intercept
+    // itself and it bakes the draw into the base (0 fires on the box; both the
+    // silent-loop and no-loop variants confirmed this 2026-07-07). Each `fflush`
+    // is a console-write exit the seal can land on. The draw is taken ONCE, at
+    // iteration STABILIZE_ITERS — by then many checkpoint writes have given the
+    // seal a home earlier in the loop, so the draw executes POST-seal, per-branch.
+    // STABILIZE_ITERS is tuned (box smoke probe) so the post-seal draw lands within
+    // the campaign deadline; a non-matching draw keeps the loop logging to the
+    // deadline exactly like bugs 1/2 (the rare branch is dead code otherwise).
+    // No RDRAND runs in the loop except the single draw, so the seeded-entropy
+    // stream the model replicates is not advanced.
+    long last_phase = -1;
+    for (long i = 0; i < ITERS; i++) {
+        long work = i % WORK_CYCLE;
+        long phase = (work * 3) / WORK_CYCLE; // {0,1,2} across the normal cycle
+        if (phase != last_phase) {
+            const char *name = phase <= 0 ? "warmup" : (phase == 1 ? "steady" : "drain");
+            printf("supervisor: lifecycle phase %s\n", name);
+            if (phase >= 2) {
+                printf("supervisor: backpressure engaged, shedding retries\n");
+            }
+            fflush(stdout);
+            last_phase = phase;
+        }
+        if (i % 4096 == 0) {
+            printf("supervisor: checkpoint committed, batch complete\n");
+            fflush(stdout);
+        }
 
-    // The rare branch: taken only when the seeded draw matches the target prefix.
-    // Nominally dead code; the campaign searches seeds until one hits.
-    if (prefix_matches(draw)) {
-        // Emit the marker + terminal code BEFORE the faulting access, so the
-        // per-bug attribution gate always sees `UUID_BUG:` for this bug.
-        announce_bug();
-        // The planted defect: poison a pointer and dereference it — the crash
-        // mechanism /init's reboot terminal reports on the container kernel (where
-        // isa-debug-exit above was unreachable). `volatile` so it is not elided.
-        volatile uint64_t *poisoned = (volatile uint64_t *)(uintptr_t)0xdead000000000000ULL;
-        (void)*poisoned;
-        _exit(FAIL_CODE); // fallback if the deref somehow did not fault
+        // Draw the seeded entropy ONCE, post-seal (earlier checkpoint writes gave
+        // the seal a landing point before here), from the VMM's RDRAND intercept —
+        // per-branch, NOT baked into the base. The RDRAND word IS the seeded draw
+        // (first word of `SeededEntropy::new(EnvSpec.seed)`); the offline model
+        // `trigger::entropy_draw` replicates it. On a prefix match the rare branch
+        // poisons a pointer and crashes (marker emitted FIRST for attribution).
+        if (i == STABILIZE_ITERS) {
+            uint64_t draw = draw_campaign_entropy();
+            if (getenv("UUID_DEBUG")) {
+                printf("UUID_DRAW: draw=0x%llx prefix_bits=%d\n",
+                       (unsigned long long)draw, PREFIX_BITS);
+                fflush(stdout);
+            }
+            if (prefix_matches(draw)) {
+                announce_bug();
+                volatile uint64_t *poisoned =
+                    (volatile uint64_t *)(uintptr_t)0xdead000000000000ULL;
+                (void)*poisoned;
+                _exit(FAIL_CODE); // fallback if the deref somehow did not fault
+            }
+        }
     }
 
     printf("UUID_DONE\n");

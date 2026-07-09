@@ -2,11 +2,21 @@ pub mod conductor
 pub mod conductor::benchcampaign
 pub struct conductor::benchcampaign::BenchConfig
 pub conductor::benchcampaign::BenchConfig::campaign_seed: u64
+pub conductor::benchcampaign::BenchConfig::deadline_delta: core::option::Option<u64>
 pub conductor::benchcampaign::BenchConfig::explore_period: u64
+pub conductor::benchcampaign::BenchConfig::fault_rebase: u64
 pub conductor::benchcampaign::BenchConfig::max_branches: u64
+pub conductor::benchcampaign::BenchConfig::order_range: u64
 pub conductor::benchcampaign::BenchConfig::replay_n: usize
+pub conductor::benchcampaign::BenchConfig::snapshot_max_attempts: usize
+pub conductor::benchcampaign::BenchConfig::snapshot_retry_step: u64
 impl conductor::benchcampaign::BenchConfig
+pub fn conductor::benchcampaign::BenchConfig::box_campaign(u64, u64, usize, u64) -> Self
 pub fn conductor::benchcampaign::BenchConfig::smoke(u64) -> Self
+pub struct conductor::benchcampaign::BenchOutcome
+pub conductor::benchcampaign::BenchOutcome::certs: alloc::vec::Vec<conductor::benchcampaign::FindCert>
+pub conductor::benchcampaign::BenchOutcome::log: benchmark::report::CampaignLog
+pub conductor::benchcampaign::BenchOutcome::traces: alloc::vec::Vec<(u64, explorer::spine::RunTrace)>
 pub struct conductor::benchcampaign::BenchToyMachine
 impl conductor::benchcampaign::BenchToyMachine
 pub fn conductor::benchcampaign::BenchToyMachine::new(benchmark::manifest::BugSpec) -> Self
@@ -20,10 +30,14 @@ pub fn conductor::benchcampaign::BenchToyMachine::recorded_env(&self) -> core::r
 pub fn conductor::benchcampaign::BenchToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub struct conductor::benchcampaign::FindCert
+pub conductor::benchcampaign::FindCert::branch: u64
+pub conductor::benchcampaign::FindCert::bug: benchmark::manifest::BugId
+pub conductor::benchcampaign::FindCert::env: explorer::Environment
+pub conductor::benchcampaign::FindCert::state_hash: [u8; 32]
 pub const conductor::benchcampaign::BASE_VTIME: u64
-pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec) -> explorer::Environment
-pub fn conductor::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &benchmark::manifest::BugSpec, &conductor::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<benchmark::report::CampaignLog, explorer::error::MachineError>
-pub fn conductor::benchcampaign::verify_replays<M: explorer::seam::Machine>(&mut M, explorer::SnapId, &explorer::Environment, usize) -> core::result::Result<alloc::vec::Vec<(explorer::StopReason, [u8; 32])>, explorer::error::MachineError>
+pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec, u64, u64) -> explorer::Environment
+pub fn conductor::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &benchmark::manifest::BugSpec, &conductor::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<conductor::benchcampaign::BenchOutcome, explorer::error::MachineError>
 pub mod conductor::campaign
 pub struct conductor::campaign::CampaignConfig
 pub conductor::campaign::CampaignConfig::campaign_seed: u64

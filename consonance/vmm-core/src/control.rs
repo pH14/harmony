@@ -470,6 +470,24 @@ impl<B: Backend> ControlServer<B> {
                     *offset as usize,
                 ))))
             }
+            // Task 69: surface the guest **console** (serial) capture over the wire,
+            // so a remote `SocketMachine` client can fill `RunTrace.records` — the
+            // scrape channel the task-67 log-template signal reads (a socket client
+            // cannot see the server-side `Vmm::serial` capture directly, exactly as
+            // `SdkEvents` surfaces the SDK capture). This is a **pure read**: it
+            // reads the uart capture buffer and never advances the VM or touches any
+            // hashable state, so a run's `state_hash` is identical whether or not a
+            // client drains the console — the determinism-neutrality the signal
+            // channel requires. **Paged** like `SdkEvents`: `total` is the full
+            // capture length and `chunk` is `serial[offset..]` bounded to the frame
+            // limit, so the client pages `offset..total` until drained. Unlike
+            // `SdkEvents` it returns an empty capture (not `Poisoned`) when there is
+            // no live VM — a drained console off a torn-down VM is defined as empty.
+            Request::Console { offset } => {
+                let serial = self.vmm.as_ref().map(|v| v.serial()).unwrap_or(&[]);
+                let (total, chunk) = page_console(serial, *offset as usize);
+                Ok(Ok(Reply::Console { total, chunk }))
+            }
             // Observation verbs (task 80): `read`/`regs` look at guest state without
             // moving it. Both borrow `self.vmm` immutably and touch nothing else —
             // not the schedule, not `recorded`, not V-time — so `hash(Whole)` before
@@ -1538,6 +1556,25 @@ fn page_sdk_events(all: &[(u64, u32, Vec<u8>)], offset: usize) -> Vec<(u64, u32,
     page
 }
 
+/// Page the guest serial capture for [`Request::Console`]: `total` is the full
+/// capture byte length (the client's paging bound), `chunk` is `serial[offset..]`
+/// bounded to the control frame limit so an arbitrarily long console never
+/// overflows a single reply. Pure over `serial` — no VM state is read or touched,
+/// so it cannot perturb a subsequent `state_hash`.
+fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
+    // result tag + reply tag + total(u32) + chunk-len(u32) — the reply's fixed
+    // overhead, kept off the frame budget the chunk may fill.
+    const REPLY_OVERHEAD: usize = 2 + 4 + 4;
+    // The uart capture is bounded to well under u32 in every real run; a capture
+    // that somehow exceeded u32 would only under-report `total`, never mis-slice
+    // (the client pages by the returned chunk lengths, not `total`).
+    let total = serial.len().min(u32::MAX as usize) as u32;
+    let start = offset.min(serial.len());
+    let cap = control_proto::MAX_FRAME_LEN.saturating_sub(REPLY_OVERHEAD);
+    let end = (start.saturating_add(cap)).min(serial.len());
+    (total, serial[start..end].to_vec())
+}
+
 /// Assemble the wire [`RegsView`] for the `regs` observation verb (task 80) from
 /// the VM's best-effort vCPU read ([`Vmm::inspect_vcpu`]) and its effective V-time
 /// ([`Vmm::effective_vns`]). Pure and non-mutating.
@@ -1638,7 +1675,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::{ControlServer, ServeError, page_sdk_events, server_caps};
+    use super::{ControlServer, ServeError, page_console, page_sdk_events, server_caps};
     use crate::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
     use crate::work::ScriptedWork;
 
@@ -1800,8 +1837,8 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 6,
-            "task 81 bumped for the exec/recorded_env improvisation verbs"
+            caps.protocol_version, 7,
+            "task 69 M2 bumped for the Console scrape verb (over task 81's 6)"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
         assert_eq!(caps.env_version_max, EnvSpec::BLOB_VERSION);
@@ -5555,6 +5592,89 @@ mod tests {
         // A replay rewinds and clears the latch.
         assert_eq!(s.handle(&Request::Replay(base)).unwrap(), Ok(Reply::Unit));
         assert!(run_all_res(&mut s).is_ok());
+    }
+
+    /// Page `Request::Console` from offset 0 until drained (the discipline the
+    /// remote `SocketMachine` uses), returning the full serial capture.
+    fn drain_console(server: &mut ControlServer<MockBackend>) -> Vec<u8> {
+        let mut buf = Vec::new();
+        loop {
+            let (total, chunk) = match server
+                .handle(&Request::Console {
+                    offset: buf.len() as u32,
+                })
+                .unwrap()
+            {
+                Ok(Reply::Console { total, chunk }) => (total, chunk),
+                other => panic!("console reply: {other:?}"),
+            };
+            if chunk.is_empty() {
+                break;
+            }
+            buf.extend(chunk);
+            if buf.len() as u32 >= total {
+                break;
+            }
+        }
+        buf
+    }
+
+    /// `page_console` reports the full length as `total`, returns the requested
+    /// suffix, and yields an empty chunk at/past the end (the paging terminator)
+    /// and for an absent VM.
+    #[test]
+    fn page_console_paging_math() {
+        let serial = b"ORDER_READY\nphase one\nphase two\n";
+        let (total, chunk) = page_console(serial, 0);
+        assert_eq!(total as usize, serial.len());
+        assert_eq!(chunk, serial);
+        // A mid-offset returns the suffix, same total.
+        let (total2, chunk2) = page_console(serial, 12);
+        assert_eq!(total2 as usize, serial.len());
+        assert_eq!(chunk2, &serial[12..]);
+        // At/past the end ⇒ empty chunk (the client stops paging).
+        assert!(page_console(serial, serial.len()).1.is_empty());
+        assert!(page_console(serial, serial.len() + 99).1.is_empty());
+        // No live VM ⇒ empty capture, total 0.
+        assert_eq!(page_console(&[], 0), (0u32, Vec::new()));
+    }
+
+    /// A `Console` drain is a **pure read**: an identical (branch, run) off the
+    /// same base yields the identical `state_hash` whether or not the console is
+    /// drained before hashing. This is the determinism-neutrality task 69 requires
+    /// — `RunTrace.records` are host-side observation and never couple into the
+    /// hash. (The mock guest may emit an empty console; the invariant is the hash.)
+    #[test]
+    fn console_drain_is_determinism_neutral() {
+        let mut s = server(vec![Exit::Hlt]);
+        hello(&mut s);
+        let base = snap(&mut s);
+
+        // Trajectory A: branch + run, hash without draining.
+        s.handle(&Request::Branch {
+            snap: base,
+            env: seeded_env(7),
+        })
+        .unwrap()
+        .unwrap();
+        run_all(&mut s);
+        let without_drain = hash(&mut s);
+
+        // Trajectory B: the identical branch + run, but drain the console first.
+        s.handle(&Request::Branch {
+            snap: base,
+            env: seeded_env(7),
+        })
+        .unwrap()
+        .unwrap();
+        run_all(&mut s);
+        let _drained = drain_console(&mut s);
+        let with_drain = hash(&mut s);
+
+        assert_eq!(
+            without_drain, with_drain,
+            "draining the console must not perturb state_hash (determinism-neutral)"
+        );
     }
 
     // ===================== task 81: the taint guard =======================
