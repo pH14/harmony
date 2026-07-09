@@ -176,12 +176,15 @@ Harness: `consonance/vmm-core/tests/live_dirty_remap.rs`, run per
 alone) before the full spend; the window reverted to stock KVM **1396736,
 REVERT OK** on release. Guest: the 2 GiB Postgres image, patched backend,
 seed `0x0095_D127_5EED_C0DE`, `DR_RUN_VNS=20e6` / `DR_DELTA_VNS=5e6` defaults.
+All results below are from the **re-run on the hash-pinned image pair**
+(hm-xdp ruling; the first run, on the since-drifted Jul-9 image, passed
+identically — being self-relative A/Bs — with numbers within a few percent).
 
 | gate | what | result |
 |---|---|---|
 | a0 | dirty logging inert (same stop + `state_hash`, no seal) | **PASS** — logging-on and `flags: 0` arms bit-identical at the same Moment |
-| a | harvested derive ≡ full-scan capture | **PASS** — chains (1, 2) vs (1, 1), both arms sealed at V-times (74 060 614, 80 078 537); post-replay whole-state hashes identical (`0fc751a9…`) |
-| b | `Remap` ≡ `Memcpy` branch | **PASS** — identical stop `Deadline(80 078 537)` + hash (`9fb44634…`); remap arm asserted mapping-backed |
+| a | harvested derive ≡ full-scan capture | **PASS** — chains (1, 2) vs (1, 1), both arms sealed at V-times (74 060 614, 80 078 537); post-replay whole-state hashes identical (`5aa03fc8…`) |
+| b | `Remap` ≡ `Memcpy` branch | **PASS** — identical stop `Deadline(80 078 537)` + hash (`953938a1…`); remap arm asserted mapping-backed |
 | c | `seal_rate_sweep` + `live_materialization` unchanged | **PASS** (see the gate-c note below — includes a main-tree control run) |
 | d | the numbers | see below |
 
@@ -189,19 +192,19 @@ seed `0x0095_D127_5EED_C0DE`, `DR_RUN_VNS=20e6` / `DR_DELTA_VNS=5e6` defaults.
 
 Seal (gate a's schedule; second seal covers a 5 M-vns mid-boot span):
 
-- **base seal (full 2 GiB scan): 170 ms** — the box floor M1's laptop 487 ms
+- **base seal (full 2 GiB scan): 164 ms** — the box floor M1's laptop 487 ms
   corresponds to.
-- **derive seal over the harvested dirty set: 17 ms — 10× the full scan**, and
+- **derive seal over the harvested dirty set: 17 ms — ~10× the full scan**, and
   that includes the per-slot `KVM_GET_DIRTY_LOG` ioctl + decode.
-- flags:0 arm's second seal (full rescan → base): 139 ms (scan-domination —
+- flags:0 arm's second seal (full rescan → base): 135 ms (scan-domination —
   what a derive-without-dirty-set costs).
 
 Restore (gate b's branch verb, wall time of the whole `Branch` RPC —
 materialize + fresh-target composition + restore + reseed):
 
-- **memcpy path: 1 387 ms** (materialize → full factory boot with kernel load
+- **memcpy path: 1 351 ms** (materialize → full factory boot with kernel load
   → 2 GiB `copy_from_slice`).
-- **remap path: 73 ms — 19×**: no boot-image load, no memcpy; the mapping is
+- **remap path: 87 ms — 15×**: no boot-image load, no memcpy; the mapping is
   the memslot backing and untouched pages fault lazily. (At this mid-boot
   Moment the resident set is small, so `materialize`'s tempfile write — M1's
   16:1 floor warning — is far from dominant; at campaign-scale resident
