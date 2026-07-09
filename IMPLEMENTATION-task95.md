@@ -169,32 +169,46 @@ unmodified. Standard gates: build / nextest / clippy `-D warnings` / fmt /
   copy at all for untouched pages) plus the removed memcpy, and the next
   lever is not materializing eagerly at all (task 68's territory).
 
-## Box gates (pending — box occupied by task-69/86 queue at hand-off)
+## Box gates (det box, patched KVM, 2026-07-09 — a0/a/b PASSED; c in flight)
 
-Harness: `consonance/vmm-core/tests/live_dirty_remap.rs` (gates a0/a/b + the
-`[GATE-D]` numbers); gate (c) = `seal_rate_sweep.rs` + conductor
-`live_materialization.rs` run unchanged. Full live path:
-
-```sh
-# lease a core first (scripts/box-window.sh discipline); smoke-fire ONE test
-# (a0) before spending the full run; patched KVM loaded; revert to stock
-# 1396736 + verify afterwards.
-taskset -c <core> timeout 7200 cargo test -p vmm-core --release --test live_dirty_remap \
-    -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/live_dirty_remap.log
-taskset -c <core> timeout 7200 cargo test -p vmm-core --release --test seal_rate_sweep \
-    -- --ignored --nocapture --test-threads=1
-taskset -c <core> timeout 7200 cargo test -p conductor --test live_materialization \
-    -- --ignored --nocapture --test-threads=1
-```
+Harness: `consonance/vmm-core/tests/live_dirty_remap.rs`, run per
+`docs/BOX-PINNING.md` on a `box-window.sh` lease (core 2), smoke-fired (a0
+alone) before the full spend; the window reverted to stock KVM **1396736,
+REVERT OK** on release. Guest: the 2 GiB Postgres image, patched backend,
+seed `0x0095_D127_5EED_C0DE`, `DR_RUN_VNS=20e6` / `DR_DELTA_VNS=5e6` defaults.
 
 | gate | what | result |
 |---|---|---|
-| a0 | dirty logging inert (same stop + `state_hash`, no seal) | _pending_ |
-| a | harvested derive ≡ full-scan capture (chain 2 vs 1; replay-hash equal) | _pending_ |
-| b | `Remap` ≡ `Memcpy` branch (stop + `state_hash`; mapping-backed asserted) | _pending_ |
-| c | `seal_rate_sweep` + `live_materialization` unchanged | _pending_ |
-| d | seal full-scan vs dirty-set; restore memcpy vs remap; chain depth @ 32 | _pending_ |
+| a0 | dirty logging inert (same stop + `state_hash`, no seal) | **PASS** — logging-on and `flags: 0` arms bit-identical at the same Moment |
+| a | harvested derive ≡ full-scan capture | **PASS** — chains (1, 2) vs (1, 1), both arms sealed at V-times (74 060 614, 80 078 537); post-replay whole-state hashes identical (`0fc751a9…`) |
+| b | `Remap` ≡ `Memcpy` branch | **PASS** — identical stop `Deadline(80 078 537)` + hash (`9fb44634…`); remap arm asserted mapping-backed |
+| c | `seal_rate_sweep` + `live_materialization` unchanged | in flight (exclusive window, results appended below) |
+| d | the numbers | see below |
 
-(d) also lands in campaign stopwatch output (task 96) once the conductor's
-composition root opts into the remap factory — a one-line follow-up outside
-this surface, filed as a bead.
+### (d) — the numbers (box, core-pinned, exclusive window)
+
+Seal (gate a's schedule; second seal covers a 5 M-vns mid-boot span):
+
+- **base seal (full 2 GiB scan): 170 ms** — the box floor M1's laptop 487 ms
+  corresponds to.
+- **derive seal over the harvested dirty set: 17 ms — 10× the full scan**, and
+  that includes the per-slot `KVM_GET_DIRTY_LOG` ioctl + decode.
+- flags:0 arm's second seal (full rescan → base): 139 ms (scan-domination —
+  what a derive-without-dirty-set costs).
+
+Restore (gate b's branch verb, wall time of the whole `Branch` RPC —
+materialize + fresh-target composition + restore + reseed):
+
+- **memcpy path: 1 387 ms** (materialize → full factory boot with kernel load
+  → 2 GiB `copy_from_slice`).
+- **remap path: 73 ms — 19×**: no boot-image load, no memcpy; the mapping is
+  the memslot backing and untouched pages fault lazily. (At this mid-boot
+  Moment the resident set is small, so `materialize`'s tempfile write — M1's
+  16:1 floor warning — is far from dominant; at campaign-scale resident
+  counts the remap win narrows toward the materialize floor, which is
+  task 68's lazy-materialization territory, as the M1 baseline section
+  predicted.)
+
+Chain-depth distribution under `max_chain_len = 32`: the gate schedule only
+reaches depth 2 by construction; campaign-shape distributions land with the
+conductor remap-factory opt-in + task-96 stopwatch (bead filed).
