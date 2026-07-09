@@ -1,0 +1,39 @@
+[package]
+name = "rekey"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Task 97: the E-fails re-key harness — offline CellFn iteration over the retained benchmark trace corpus (docs/SCORING.md R1/R2, playbook steps 2-4). Pure logic, no guest re-execution."
+
+[lints]
+workspace = true
+
+[features]
+default = ["cli"]
+# The `rekey` binary and its only extra dep, `clap` (bins-only per the rule-5
+# whitelist). The library — corpus manifest, replay, scoring, report rendering —
+# pulls no clap.
+cli = ["dep:clap"]
+
+[[bin]]
+name = "rekey"
+path = "src/bin/rekey.rs"
+required-features = ["cli"]
+
+[dependencies]
+# The three read-only crates the task spec names, plus `benchmark` for the
+# recorded `CampaignLog` shape and the bug manifest's serial markers (the
+# attribution filter `cells_of` applies before clustering). All read-only.
+# Pinned `version` alongside `path` for `cargo deny`'s wildcard ban.
+explorer = { path = "../explorer", version = "0.1.0" }
+logtmpl = { path = "../logtmpl", version = "0.1.0" }
+benchmark = { path = "../benchmark", version = "0.1.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"

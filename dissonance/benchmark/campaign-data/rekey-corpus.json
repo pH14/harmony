@@ -1,0 +1,853 @@
+{
+  "version": 1,
+  "note": "The tasks/97 E-fails re-key evaluation set. The harness loads ONLY through this manifest and fails loudly on a hash mismatch. Regenerate with `rekey manifest`.",
+  "slices": [
+    {
+      "slice": "bug3-campaign",
+      "bug": 3,
+      "description": "GO/NO-GO #2 bug-3 campaign: 20 seeds x {baseline, signal}, explore_period = 4, 512 branches each",
+      "archive": "bug3/results/traces.tar.gz",
+      "archive_sha256": "29d84ad27d6d466d45096a9d60613022be099bb5110fbc7688a7b488473b60fd",
+      "explore_period": 4,
+      "traces": [
+        {
+          "member": "./b3-baseline-1.traces.json",
+          "sha256": "420dd9dac3cc1c269802ceea29d8f372521ba8cd9c83a423ac4fabeda5435239",
+          "log": "bug3/results/b3-baseline-1.json",
+          "log_sha256": "02af146375cd12920941b2b298b0ae06c446801c9c08af7023bbd7d2e534b56e",
+          "config": "Baseline",
+          "seed": 1,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-2.traces.json",
+          "sha256": "ac388fad255be0836d274969f5373f5df380c9cfa52d0f3dec7ff1599ea95c0e",
+          "log": "bug3/results/b3-baseline-2.json",
+          "log_sha256": "9e0bee221c020c3e912e445c15b8a60a73259945d5f83d0d220045d2779042ea",
+          "config": "Baseline",
+          "seed": 2,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-3.traces.json",
+          "sha256": "80c129fcd994fbc316ca14a34d2c4bb95d6d4d4879969ac42df7daf64507d674",
+          "log": "bug3/results/b3-baseline-3.json",
+          "log_sha256": "dd43ef0a5b5383942f9490c35dd3b98ada1d7f448e384462fa9cd25d75c71771",
+          "config": "Baseline",
+          "seed": 3,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-4.traces.json",
+          "sha256": "61e098d5344389d99a5504bc732e5a09983985333ecb9c86e473fac5e1989db1",
+          "log": "bug3/results/b3-baseline-4.json",
+          "log_sha256": "06783fc4a5f50d7e659bc2557524a8217fff47ffd73cf1b5969cd726aea0c460",
+          "config": "Baseline",
+          "seed": 4,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-5.traces.json",
+          "sha256": "7cd56dea34ea8ca1e4c5a8bc65faf83510eba6ac6054f59c1f3db289f968e8c2",
+          "log": "bug3/results/b3-baseline-5.json",
+          "log_sha256": "a61856b874b1b3aa6df7fc7bce25fa91c379d345f1e1a6b695cd1bda49246f04",
+          "config": "Baseline",
+          "seed": 5,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-6.traces.json",
+          "sha256": "89fa77eed3a844179514b00811708fb0f8d93c15ca2c07b25af8497ba49cbb39",
+          "log": "bug3/results/b3-baseline-6.json",
+          "log_sha256": "03c47a2859efdec5244a1af1f09f83785513c3aa83dd631301e87c0da03b42e1",
+          "config": "Baseline",
+          "seed": 6,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-7.traces.json",
+          "sha256": "00aa82b09740fd403628f761814174c4105fef6413949f4044c4eba0f21b05fe",
+          "log": "bug3/results/b3-baseline-7.json",
+          "log_sha256": "5b882c98f9e25c23407a0d4b554dbfd30442fbf2df49350333998d4a064e96ae",
+          "config": "Baseline",
+          "seed": 7,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-8.traces.json",
+          "sha256": "7be9ca2588c1ff268d3a443394a699975d264db553de23f96545a01ddd9420c9",
+          "log": "bug3/results/b3-baseline-8.json",
+          "log_sha256": "86ebd515f967f64444c7081edfb7c5dd28a79c97288c5e214b64cb25382bb988",
+          "config": "Baseline",
+          "seed": 8,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-9.traces.json",
+          "sha256": "292e2084568cec6bbf0ef0bfc3e879ffc101387604aba171ea9a6a8e1c3553cf",
+          "log": "bug3/results/b3-baseline-9.json",
+          "log_sha256": "fac28ddb37a681dadb7d464ecb37d82aff3b6779399a05b41e2d1c9a45e89232",
+          "config": "Baseline",
+          "seed": 9,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-10.traces.json",
+          "sha256": "4bf9e040e5818227d6fccc02c8d038e78ff15e0833d793adb3e559bfcd67c455",
+          "log": "bug3/results/b3-baseline-10.json",
+          "log_sha256": "6aed7ec3de77cb4f1e181955d50be45d907b2af035b9302e47d0144b5c2f0287",
+          "config": "Baseline",
+          "seed": 10,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-11.traces.json",
+          "sha256": "ddc0345b78a47db138aaf3eb516399f043180075a22b34b18e82ad5816213b15",
+          "log": "bug3/results/b3-baseline-11.json",
+          "log_sha256": "bca834d02cf1769318ba3ef339df2e59034548e7255b5a43ac5f2b62b10e057f",
+          "config": "Baseline",
+          "seed": 11,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-12.traces.json",
+          "sha256": "387923fe1fae1a6028345c0b9368c3b11a2d6faf5c4fc5e2e43146e8d97dbf48",
+          "log": "bug3/results/b3-baseline-12.json",
+          "log_sha256": "d3d10fc233776bdf6d68b1a56a9ec1d938312cf60b202b7990463921853efd2a",
+          "config": "Baseline",
+          "seed": 12,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-13.traces.json",
+          "sha256": "e4ad3fd7cfab7f9dc171075e7643811a1e992df86918fa33407bd54f51a40e13",
+          "log": "bug3/results/b3-baseline-13.json",
+          "log_sha256": "b7df316d2bdcab8c23417138a53b73eeebea007107c7c8862af165d8bcd9199c",
+          "config": "Baseline",
+          "seed": 13,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-14.traces.json",
+          "sha256": "1fa3c0a6e800c556cd2c6aede822a0ea951dc80c19b5998641e6e8b9dad4ae49",
+          "log": "bug3/results/b3-baseline-14.json",
+          "log_sha256": "c25d3a1291afb9b0f7a03085210bc62af81755d69dfa10fe94ba1af7462ffd54",
+          "config": "Baseline",
+          "seed": 14,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-15.traces.json",
+          "sha256": "b3346c169dcdf8f344dbbf7a2c91dd1d571e209074b8e58cb9bcf58dda4f58d7",
+          "log": "bug3/results/b3-baseline-15.json",
+          "log_sha256": "660eb82f6871c5bffd6bf30955371f06367d6a8bf9f8a8e1ee8ad30389116004",
+          "config": "Baseline",
+          "seed": 15,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-16.traces.json",
+          "sha256": "e3af25cb7606a9b785bb90c527d16a8ee63eae70b03793e943ab059d99728578",
+          "log": "bug3/results/b3-baseline-16.json",
+          "log_sha256": "af330e908b5f18acf8f719125db53fcd0a6eb4c80c664a101ff41347331783dc",
+          "config": "Baseline",
+          "seed": 16,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-17.traces.json",
+          "sha256": "88e85b0fc199922feb99f6789b3616bef9cbc4461bcc155a0fca1705ed45064c",
+          "log": "bug3/results/b3-baseline-17.json",
+          "log_sha256": "91ce4cf958b5364ee7ac2c09b29059323240c3fd47cb4e659250412f7cceda0f",
+          "config": "Baseline",
+          "seed": 17,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-18.traces.json",
+          "sha256": "5aaab90b68eefa4e07f253fd07a1f59c3749e52d1c9b70be4c58869685b1628b",
+          "log": "bug3/results/b3-baseline-18.json",
+          "log_sha256": "ca5bd723e75924bd4a30d742e9ccb7663b6038ccca1835f278935bce3e793c8e",
+          "config": "Baseline",
+          "seed": 18,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-19.traces.json",
+          "sha256": "7ecc9e42a646898e1bca4f67f52847774cfed53c7730550938bfc204540456ec",
+          "log": "bug3/results/b3-baseline-19.json",
+          "log_sha256": "6d298d55280cdf129c1dfac305a1b00dc728de8e4d3f725e5dfdc551df579d4e",
+          "config": "Baseline",
+          "seed": 19,
+          "branches": 512
+        },
+        {
+          "member": "./b3-baseline-20.traces.json",
+          "sha256": "ac45137efd432e7c5e4409406bf74e240dbc0d9f66a02ef52bcc6d64bad771ed",
+          "log": "bug3/results/b3-baseline-20.json",
+          "log_sha256": "469ed656dcb5cdd267ef71c7f3874f5a0d702cf12cbcc5258ec7b3111b676c77",
+          "config": "Baseline",
+          "seed": 20,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-1.traces.json",
+          "sha256": "7783dedfe574c283b690ef37886bfe0576ade0ed2565930411f74d23f5d84ad0",
+          "log": "bug3/results/b3-signal-1.json",
+          "log_sha256": "053f72e7c9695c1a93638ed80426add2e35db776788fdfbdd41355462c5fa852",
+          "config": "Signal",
+          "seed": 1,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-2.traces.json",
+          "sha256": "102d81bb89577a9c2cfebbe952fe13b83ecadb7dbe5ecbda8abcd863ad6e6e90",
+          "log": "bug3/results/b3-signal-2.json",
+          "log_sha256": "cb6aaeb6926c68a3a0a00175542c619d7b5df4d964c2d1d4372de836e43e294b",
+          "config": "Signal",
+          "seed": 2,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-3.traces.json",
+          "sha256": "2e04d21e655f1bb5c8328689930154b8525445a3c066656ae0e9957ed90aa0b0",
+          "log": "bug3/results/b3-signal-3.json",
+          "log_sha256": "74fa0ba7c1448d5e346a09c9ce16aa51a2635254efb229a2a3e83137bcd2a357",
+          "config": "Signal",
+          "seed": 3,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-4.traces.json",
+          "sha256": "13ed7923052412f92c6d57500a99c1474ae174203b06999aa325208bc491a3bc",
+          "log": "bug3/results/b3-signal-4.json",
+          "log_sha256": "02fb3e4c699081d0a3f453447917ee6c83d1cc619896b0d31e9e9ed98db76203",
+          "config": "Signal",
+          "seed": 4,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-5.traces.json",
+          "sha256": "8f2d47cdf189fe3235f98185d7dc818e36a0157b94e6ed894090e4b2d1cec5db",
+          "log": "bug3/results/b3-signal-5.json",
+          "log_sha256": "72da370f5c937bc0ead9d13574864c89883e16a05fbfa4bdb30c5ac8b06b6f09",
+          "config": "Signal",
+          "seed": 5,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-6.traces.json",
+          "sha256": "261f758c4b2fc9210b8e46d9aa7593fb58a67335a1666f2c77183f49cc75ce24",
+          "log": "bug3/results/b3-signal-6.json",
+          "log_sha256": "fd4ae3568594de4bd6c5903528415c178c5285c2e2097ecbc8f957a7d0e23db4",
+          "config": "Signal",
+          "seed": 6,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-7.traces.json",
+          "sha256": "a83f68d65551204c31df8a4878a01dd4dab9c1cf02575882806e1cc082776374",
+          "log": "bug3/results/b3-signal-7.json",
+          "log_sha256": "f2d04854f24c3e486e2be9008333d46258f40bde9c68e9ef8b60df3ae16eed62",
+          "config": "Signal",
+          "seed": 7,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-8.traces.json",
+          "sha256": "ff96d2c37bb55648bf881773a8e59d6c1b5ee7543f3b77359934af3b123d3b08",
+          "log": "bug3/results/b3-signal-8.json",
+          "log_sha256": "5e14ae1e6d818edaa327dbe02e358a8eb9d6a62a2526533b406bd069877e5e98",
+          "config": "Signal",
+          "seed": 8,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-9.traces.json",
+          "sha256": "79c6a13abf00a030d0a07579708924494210a2ab17e97502a0ef7e4887afb685",
+          "log": "bug3/results/b3-signal-9.json",
+          "log_sha256": "b12ebcb909cb4ab7eb93b30b5ec2f7e94b77a03fc910142dc33f32359123a73f",
+          "config": "Signal",
+          "seed": 9,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-10.traces.json",
+          "sha256": "5990a43c863f6545dd82221524ba965fb2378769c8ac52eae769352dd64527da",
+          "log": "bug3/results/b3-signal-10.json",
+          "log_sha256": "f5350d655ff0b921417abb9fce2077e39c9e172bce461d31f65159aab7dbb20d",
+          "config": "Signal",
+          "seed": 10,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-11.traces.json",
+          "sha256": "6344b8d85d4401217638e66047587c14605c37edd1e7f226de866306bade5920",
+          "log": "bug3/results/b3-signal-11.json",
+          "log_sha256": "4989773bbc1af252fdd8984ad925588e61405185a7854894f5a8a3297ebff6b7",
+          "config": "Signal",
+          "seed": 11,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-12.traces.json",
+          "sha256": "cdb43bfa397354a937d412596e3908b884f0b6471ed3e878233db659b4a372c4",
+          "log": "bug3/results/b3-signal-12.json",
+          "log_sha256": "6864acc4f996cc681f3bffcee5b93504a7996370901818d0c51f9a4cfe74df11",
+          "config": "Signal",
+          "seed": 12,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-13.traces.json",
+          "sha256": "9d93ff86a9e9428decd0bbabb7ae656884dde7ad1369818a4ead7b4b05d11edd",
+          "log": "bug3/results/b3-signal-13.json",
+          "log_sha256": "edcf78eb91974732686ccfa8132f16c4c42ddd1fe0756ef8214c98e9dd426a9c",
+          "config": "Signal",
+          "seed": 13,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-14.traces.json",
+          "sha256": "3525db6db9cc96d5ef7b2ed55dc880316260283f2ce0354456a6237acdbc33e7",
+          "log": "bug3/results/b3-signal-14.json",
+          "log_sha256": "74c3dddef4166f9819d9613099aa46e7c1b3e9b7b440e4b91c0fc5a0dbb5805d",
+          "config": "Signal",
+          "seed": 14,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-15.traces.json",
+          "sha256": "cc08cc61dacc9bec51ab5584b6715808cbc6cf37ea2e243a463b112ce2ba0ada",
+          "log": "bug3/results/b3-signal-15.json",
+          "log_sha256": "5f35ef55bcaefe420e7f4cf2473378521456b38a509d610aa9e8ba23701afd29",
+          "config": "Signal",
+          "seed": 15,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-16.traces.json",
+          "sha256": "31f9fa22d2fe335c0574260cdf3219c0626d5f64c65952cee56447a8989b4e8e",
+          "log": "bug3/results/b3-signal-16.json",
+          "log_sha256": "5a3eb5872fe40cb273f6a330cd3b0dbb64f8edd30ca5d117baef6bdb45bacf50",
+          "config": "Signal",
+          "seed": 16,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-17.traces.json",
+          "sha256": "ed26c4713800ae68a5a3fd33118ce12b9985136df61ac09a172b92495b00823e",
+          "log": "bug3/results/b3-signal-17.json",
+          "log_sha256": "3f93f7b9606b5de2f2b4d2af73f19138a202136ce69fc5e4f4fcb64b9d7e4312",
+          "config": "Signal",
+          "seed": 17,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-18.traces.json",
+          "sha256": "909c0203f149c7e53bc50dead24364f4cb936d88600309d9fac3be907a58c944",
+          "log": "bug3/results/b3-signal-18.json",
+          "log_sha256": "7b076079040dce70551e6be1914f9f1bc2ea964c97d5487f290000aa3c0f74d3",
+          "config": "Signal",
+          "seed": 18,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-19.traces.json",
+          "sha256": "c610e3dcb581aa958c87d182bb0cf1fbf36fec943c74aedf0a295f6fd3c3400c",
+          "log": "bug3/results/b3-signal-19.json",
+          "log_sha256": "5bf6e82de1f42901d5373a5364d25c6576e7c70b567c492fe12228d65683da3b",
+          "config": "Signal",
+          "seed": 19,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-20.traces.json",
+          "sha256": "664d8203b9f4b37d3819eb338e61bb43c755adea5766256519c2dc6e4e71469f",
+          "log": "bug3/results/b3-signal-20.json",
+          "log_sha256": "c6ea6837568cb1b3dc927f16cc5ee17d04e102d337a3e92ae0e78f9d80343fd5",
+          "config": "Signal",
+          "seed": 20,
+          "branches": 512
+        }
+      ]
+    },
+    {
+      "slice": "bug3-ablation",
+      "bug": 3,
+      "description": "The Paul-authorized explore/exploit ablation: signal config at explore_period = 1 (never exploits), 20 seeds. The only slice showing what the sensor sees on an UNSTEERED search",
+      "archive": "bug3/ablation/results/traces.tar.gz",
+      "archive_sha256": "a7205daef89bf10185a23938675784d01847fdcd17ccc5b7bcaf90d61a098928",
+      "explore_period": 1,
+      "traces": [
+        {
+          "member": "./b3-signal-ep1-1.traces.json",
+          "sha256": "420dd9dac3cc1c269802ceea29d8f372521ba8cd9c83a423ac4fabeda5435239",
+          "log": "bug3/ablation/results/b3-signal-ep1-1.json",
+          "log_sha256": "2e40b3c44b20d5d3f65e34f424d03430d3afe380baeb0a922b56468c314fc8de",
+          "config": "Signal",
+          "seed": 1,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-2.traces.json",
+          "sha256": "ac388fad255be0836d274969f5373f5df380c9cfa52d0f3dec7ff1599ea95c0e",
+          "log": "bug3/ablation/results/b3-signal-ep1-2.json",
+          "log_sha256": "4b17b4a2a40d2a1c60a2499f719f1d891388f9c8edd898f879ea0042e11b1153",
+          "config": "Signal",
+          "seed": 2,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-3.traces.json",
+          "sha256": "80c129fcd994fbc316ca14a34d2c4bb95d6d4d4879969ac42df7daf64507d674",
+          "log": "bug3/ablation/results/b3-signal-ep1-3.json",
+          "log_sha256": "11b9cb95cf7b25ff59fab662a364808f414a04b75e429efb531ef9f642d52d0a",
+          "config": "Signal",
+          "seed": 3,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-4.traces.json",
+          "sha256": "61e098d5344389d99a5504bc732e5a09983985333ecb9c86e473fac5e1989db1",
+          "log": "bug3/ablation/results/b3-signal-ep1-4.json",
+          "log_sha256": "02d611528e4fa39da86121a346097feb4e940c3d46408b4e874818845e6c5a88",
+          "config": "Signal",
+          "seed": 4,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-5.traces.json",
+          "sha256": "7cd56dea34ea8ca1e4c5a8bc65faf83510eba6ac6054f59c1f3db289f968e8c2",
+          "log": "bug3/ablation/results/b3-signal-ep1-5.json",
+          "log_sha256": "3f8cbd1dbb91d684ed8c231860977d1e250dc107f8602fd8f06972add3366067",
+          "config": "Signal",
+          "seed": 5,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-6.traces.json",
+          "sha256": "89fa77eed3a844179514b00811708fb0f8d93c15ca2c07b25af8497ba49cbb39",
+          "log": "bug3/ablation/results/b3-signal-ep1-6.json",
+          "log_sha256": "1d0c04e8afd47991d11ccbc34e982ba361f0c00b3ddf2955ea8da6eac1453db8",
+          "config": "Signal",
+          "seed": 6,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-7.traces.json",
+          "sha256": "00aa82b09740fd403628f761814174c4105fef6413949f4044c4eba0f21b05fe",
+          "log": "bug3/ablation/results/b3-signal-ep1-7.json",
+          "log_sha256": "49a44d2066c419ab7423c116ef452a9319edf189f89d93e2300ce63f5f278e00",
+          "config": "Signal",
+          "seed": 7,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-8.traces.json",
+          "sha256": "7be9ca2588c1ff268d3a443394a699975d264db553de23f96545a01ddd9420c9",
+          "log": "bug3/ablation/results/b3-signal-ep1-8.json",
+          "log_sha256": "aff2be9794e2c5eb45039831a379dc0a514027b24bbc0b3f6a78fb56efdb6688",
+          "config": "Signal",
+          "seed": 8,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-9.traces.json",
+          "sha256": "292e2084568cec6bbf0ef0bfc3e879ffc101387604aba171ea9a6a8e1c3553cf",
+          "log": "bug3/ablation/results/b3-signal-ep1-9.json",
+          "log_sha256": "ca24665e10c224b07a15b4c2f094c6b51feb970da6adc52fe69623f20756cc8b",
+          "config": "Signal",
+          "seed": 9,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-10.traces.json",
+          "sha256": "4bf9e040e5818227d6fccc02c8d038e78ff15e0833d793adb3e559bfcd67c455",
+          "log": "bug3/ablation/results/b3-signal-ep1-10.json",
+          "log_sha256": "b4b494ea459915961ef0e2b75efdc2ee9bc07f8bc39a381b1dc02784ee90adc5",
+          "config": "Signal",
+          "seed": 10,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-11.traces.json",
+          "sha256": "ddc0345b78a47db138aaf3eb516399f043180075a22b34b18e82ad5816213b15",
+          "log": "bug3/ablation/results/b3-signal-ep1-11.json",
+          "log_sha256": "3596f17c9d01996c97af9687264c73ab6ef33e195c02d3f04a937a1ba455ec38",
+          "config": "Signal",
+          "seed": 11,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-12.traces.json",
+          "sha256": "387923fe1fae1a6028345c0b9368c3b11a2d6faf5c4fc5e2e43146e8d97dbf48",
+          "log": "bug3/ablation/results/b3-signal-ep1-12.json",
+          "log_sha256": "2af577a79fd90a00429cbfc9ae0ae73be5650f9b443c6e30b73bde018e4ea7f0",
+          "config": "Signal",
+          "seed": 12,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-13.traces.json",
+          "sha256": "e4ad3fd7cfab7f9dc171075e7643811a1e992df86918fa33407bd54f51a40e13",
+          "log": "bug3/ablation/results/b3-signal-ep1-13.json",
+          "log_sha256": "aa6e77bf16058df4cf896f2ecaf8552b4a288780c6baf6bbee6c40e9b0222391",
+          "config": "Signal",
+          "seed": 13,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-14.traces.json",
+          "sha256": "1fa3c0a6e800c556cd2c6aede822a0ea951dc80c19b5998641e6e8b9dad4ae49",
+          "log": "bug3/ablation/results/b3-signal-ep1-14.json",
+          "log_sha256": "d22780ae44b4d5d99d51fc4d44dd2e089965de719696b4d366b90c8bcf42cbf9",
+          "config": "Signal",
+          "seed": 14,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-15.traces.json",
+          "sha256": "b3346c169dcdf8f344dbbf7a2c91dd1d571e209074b8e58cb9bcf58dda4f58d7",
+          "log": "bug3/ablation/results/b3-signal-ep1-15.json",
+          "log_sha256": "b5292c6ed1a84a02750eb73c8cce04f32bb8648102b6bf014d1e9d9722f8620f",
+          "config": "Signal",
+          "seed": 15,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-16.traces.json",
+          "sha256": "e3af25cb7606a9b785bb90c527d16a8ee63eae70b03793e943ab059d99728578",
+          "log": "bug3/ablation/results/b3-signal-ep1-16.json",
+          "log_sha256": "851cefe097f79a299901db27289b75aa1e29dfbeb6047d3f1ff474ff4afc00eb",
+          "config": "Signal",
+          "seed": 16,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-17.traces.json",
+          "sha256": "88e85b0fc199922feb99f6789b3616bef9cbc4461bcc155a0fca1705ed45064c",
+          "log": "bug3/ablation/results/b3-signal-ep1-17.json",
+          "log_sha256": "4eda661257e7446f79cf6583355d83a2ae51bfc4512937bbebdca29451f3c685",
+          "config": "Signal",
+          "seed": 17,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-18.traces.json",
+          "sha256": "5aaab90b68eefa4e07f253fd07a1f59c3749e52d1c9b70be4c58869685b1628b",
+          "log": "bug3/ablation/results/b3-signal-ep1-18.json",
+          "log_sha256": "a4b2db045606117cbef7f97265268fa7524a89df776ef931bde47e91e9618cd3",
+          "config": "Signal",
+          "seed": 18,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-19.traces.json",
+          "sha256": "7ecc9e42a646898e1bca4f67f52847774cfed53c7730550938bfc204540456ec",
+          "log": "bug3/ablation/results/b3-signal-ep1-19.json",
+          "log_sha256": "da11addbc7dd8f4a3de62ef8d7888ca1117273025ccaffaf2dfa97cc9cf67803",
+          "config": "Signal",
+          "seed": 19,
+          "branches": 512
+        },
+        {
+          "member": "./b3-signal-ep1-20.traces.json",
+          "sha256": "ac45137efd432e7c5e4409406bf74e240dbc0d9f66a02ef52bcc6d64bad771ed",
+          "log": "bug3/ablation/results/b3-signal-ep1-20.json",
+          "log_sha256": "4720818958778765c79ca20621651b46c7bbf46646d23a17a29dcb1681319f61",
+          "config": "Signal",
+          "seed": 20,
+          "branches": 512
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "slice": "bug1-reference",
+      "bug": 1,
+      "reason": "Bug 1's campaign ran before the trace-retention amendment, so no RunTraces were retained and it CANNOT be re-keyed (docs/SCORING.md R1: retained traces are the substrate). Its recorded per-campaign cell counts appear in REKEY-REPORT.md as a reference row only. Bead hm-5sv.",
+      "logs": [
+        {
+          "log": "bug1/results/b1-baseline-1.json",
+          "log_sha256": "a939392fd28a769496f94bc16625f7af506dba420aba676a5b063506512a6cd5",
+          "config": "Baseline",
+          "seed": 1
+        },
+        {
+          "log": "bug1/results/b1-baseline-2.json",
+          "log_sha256": "261e9db907bdb0c10696be854b0ef14fea2e5ecd72ef3565c8bf6c4d2edbd022",
+          "config": "Baseline",
+          "seed": 2
+        },
+        {
+          "log": "bug1/results/b1-baseline-3.json",
+          "log_sha256": "cb4a6908a0348b1d00103b3e4f087bb34ccedbc973a6ce47d2c3acbfa5abee7c",
+          "config": "Baseline",
+          "seed": 3
+        },
+        {
+          "log": "bug1/results/b1-baseline-4.json",
+          "log_sha256": "54a2438a152b0eedf823600765a5ab0626c972e2f13caa28b0624e39a66321c0",
+          "config": "Baseline",
+          "seed": 4
+        },
+        {
+          "log": "bug1/results/b1-baseline-5.json",
+          "log_sha256": "33b665401e683f7f202fda5a5fcdfbbcb9cd5aaec6a72253f2aa37956e7ef06b",
+          "config": "Baseline",
+          "seed": 5
+        },
+        {
+          "log": "bug1/results/b1-baseline-6.json",
+          "log_sha256": "64d7ce0b57e9401f1eff8126ec7a0a67dfd5e9ffdff3bf512eddd18898639f54",
+          "config": "Baseline",
+          "seed": 6
+        },
+        {
+          "log": "bug1/results/b1-baseline-7.json",
+          "log_sha256": "5938a007ac842416c612777e8720b63d3662cc735dab5ee246685e73eacdb65e",
+          "config": "Baseline",
+          "seed": 7
+        },
+        {
+          "log": "bug1/results/b1-baseline-8.json",
+          "log_sha256": "b223b84240135273ff6efc7ac0033fa25cf8adcb92c6c8e78bb84f7c545da3c5",
+          "config": "Baseline",
+          "seed": 8
+        },
+        {
+          "log": "bug1/results/b1-baseline-9.json",
+          "log_sha256": "d9ec68653c8d5dd3d49b8be0c41c7bb1a57088b49926cf15e13dab9bca7acb12",
+          "config": "Baseline",
+          "seed": 9
+        },
+        {
+          "log": "bug1/results/b1-baseline-10.json",
+          "log_sha256": "8b057f8a0020110fac3087941d9251b6b60ebd709a3e30207175579c2e234fa3",
+          "config": "Baseline",
+          "seed": 10
+        },
+        {
+          "log": "bug1/results/b1-baseline-11.json",
+          "log_sha256": "e9aa2870f9fc9e1a31919571ec41546f726b43dce6c89268f2d619c49498b0b4",
+          "config": "Baseline",
+          "seed": 11
+        },
+        {
+          "log": "bug1/results/b1-baseline-12.json",
+          "log_sha256": "76a7c25a10ce739315d4575c5c02a852c3051fe809fcdc4cf0012fbe2936f77f",
+          "config": "Baseline",
+          "seed": 12
+        },
+        {
+          "log": "bug1/results/b1-baseline-13.json",
+          "log_sha256": "7d5f2d641e76858e41ab3dac58398c988d579fd5eecdb53782878e3ddd7f0089",
+          "config": "Baseline",
+          "seed": 13
+        },
+        {
+          "log": "bug1/results/b1-baseline-14.json",
+          "log_sha256": "554bd6f2a1964c850bf39e9524ed72a0581898e7e8696d98166c753b20df11b3",
+          "config": "Baseline",
+          "seed": 14
+        },
+        {
+          "log": "bug1/results/b1-baseline-15.json",
+          "log_sha256": "f36a0a70a5c65a3db6bcc7803c7b507303789aa62411434400748a8a18a3f651",
+          "config": "Baseline",
+          "seed": 15
+        },
+        {
+          "log": "bug1/results/b1-baseline-16.json",
+          "log_sha256": "e9cf4e53adaf5ed07915ca7dc30cacc5a1abc797e3a41bab78bfa71f8f2ceec5",
+          "config": "Baseline",
+          "seed": 16
+        },
+        {
+          "log": "bug1/results/b1-baseline-17.json",
+          "log_sha256": "8f46ef6cceee4d23820f8f00ced5c7c5da54f9de84a9c099b7ab7b2189b6a2e7",
+          "config": "Baseline",
+          "seed": 17
+        },
+        {
+          "log": "bug1/results/b1-baseline-18.json",
+          "log_sha256": "c209ff009fc7a4c14a5a071fa875c49b7600e6cde7e0ad700f2e094cfb22df2c",
+          "config": "Baseline",
+          "seed": 18
+        },
+        {
+          "log": "bug1/results/b1-baseline-19.json",
+          "log_sha256": "9497f8b5bd160290c8b1422a63d4b1bf7c3e72474975d778544b137be6cb8da9",
+          "config": "Baseline",
+          "seed": 19
+        },
+        {
+          "log": "bug1/results/b1-baseline-20.json",
+          "log_sha256": "48116ea3d5e1321aa584603f6c4d4f278dbb3381f2cc4e23a060fd679e3e5a10",
+          "config": "Baseline",
+          "seed": 20
+        },
+        {
+          "log": "bug1/results/b1-signal-1.json",
+          "log_sha256": "54ef35cc8be8416ed438fcffce553b9787db4cfc6d0ccd93d9912e2c0663bc7e",
+          "config": "Signal",
+          "seed": 1
+        },
+        {
+          "log": "bug1/results/b1-signal-2.json",
+          "log_sha256": "21b72169b3b2336276e663a98dd904c12f10a3e1eacf07faf6d19fd219987847",
+          "config": "Signal",
+          "seed": 2
+        },
+        {
+          "log": "bug1/results/b1-signal-3.json",
+          "log_sha256": "ab174a323371424381ce839beef40914b94b6a432303cb32dbc52cb6d1d7eb6f",
+          "config": "Signal",
+          "seed": 3
+        },
+        {
+          "log": "bug1/results/b1-signal-4.json",
+          "log_sha256": "11011df9faa1e8c82c8a94783906d43193f5cc95c7ecea0d423f8a1202d8e041",
+          "config": "Signal",
+          "seed": 4
+        },
+        {
+          "log": "bug1/results/b1-signal-5.json",
+          "log_sha256": "0b32bea904e892940038846eb6a15264d6ed1758c461aab5567123cac5dc9c79",
+          "config": "Signal",
+          "seed": 5
+        },
+        {
+          "log": "bug1/results/b1-signal-6.json",
+          "log_sha256": "a5bd5a142ae9f96fafb72f5b65ec52328bcf2bb88f28b02cc53832b8f6cb337e",
+          "config": "Signal",
+          "seed": 6
+        },
+        {
+          "log": "bug1/results/b1-signal-7.json",
+          "log_sha256": "798ace83b9e3fc5f0e57dd130efcd85d77bd30d1a83b9b91bda54e8c6958b8c0",
+          "config": "Signal",
+          "seed": 7
+        },
+        {
+          "log": "bug1/results/b1-signal-8.json",
+          "log_sha256": "f3005deae15ec7c6d082b38374aa66eb361123c0a6f882b7067fb9d48ef32a3c",
+          "config": "Signal",
+          "seed": 8
+        },
+        {
+          "log": "bug1/results/b1-signal-9.json",
+          "log_sha256": "542044fac10314a7eee1306ab52ed10cfebdcfca279688288fc29df893927d5a",
+          "config": "Signal",
+          "seed": 9
+        },
+        {
+          "log": "bug1/results/b1-signal-10.json",
+          "log_sha256": "764207e8f9dd0f11715de7b30a1cf03a2543024846cfe8c0c14b5627cadc05bc",
+          "config": "Signal",
+          "seed": 10
+        },
+        {
+          "log": "bug1/results/b1-signal-11.json",
+          "log_sha256": "08bd06ed5143cffbb7dbeae268ec11f83f65574915f61cc45a21ca456620bd4a",
+          "config": "Signal",
+          "seed": 11
+        },
+        {
+          "log": "bug1/results/b1-signal-12.json",
+          "log_sha256": "aed6c0cfd9867940475c721291f2197bb1a93d7e76611049c4f10e6290f9b948",
+          "config": "Signal",
+          "seed": 12
+        },
+        {
+          "log": "bug1/results/b1-signal-13.json",
+          "log_sha256": "57adccc63756e6d0ea136f40da1d629e911ac2b788c63bfc4c8e9606fc2e086c",
+          "config": "Signal",
+          "seed": 13
+        },
+        {
+          "log": "bug1/results/b1-signal-14.json",
+          "log_sha256": "fbacaa5c3b7cc8b75a46d8e1aa6d775347689e79f16f1cf068f2858965e1c5c8",
+          "config": "Signal",
+          "seed": 14
+        },
+        {
+          "log": "bug1/results/b1-signal-15.json",
+          "log_sha256": "d2e02c543c5196afbc5cecb3b4a996be6da1df635567ee8ae0edc629bd8497e7",
+          "config": "Signal",
+          "seed": 15
+        },
+        {
+          "log": "bug1/results/b1-signal-16.json",
+          "log_sha256": "5bb5a4c7b2c3fb6f26c338e3a35eab32f5bb04b8bee4753d69d7f82628e01374",
+          "config": "Signal",
+          "seed": 16
+        },
+        {
+          "log": "bug1/results/b1-signal-17.json",
+          "log_sha256": "fe7c5f17151a8d1432b544f242be13f2308560358bab92b460f84201047094a9",
+          "config": "Signal",
+          "seed": 17
+        },
+        {
+          "log": "bug1/results/b1-signal-18.json",
+          "log_sha256": "ba99d3343f74ab4fd32c423525a7e16389245d73f707c9b3850e8dd61579152b",
+          "config": "Signal",
+          "seed": 18
+        },
+        {
+          "log": "bug1/results/b1-signal-19.json",
+          "log_sha256": "688aaa38cd86c32428b54dde736c25bc172c471451b86165b776f787d28e3c63",
+          "config": "Signal",
+          "seed": 19
+        },
+        {
+          "log": "bug1/results/b1-signal-20.json",
+          "log_sha256": "c21457ca59217b2c2a26e6254898098bb8cbd9fc56edcdb308fe05ac5da9f099",
+          "config": "Signal",
+          "seed": 20
+        }
+      ]
+    }
+  ],
+  "exclusions": [
+    {
+      "slice": "bug3-campaign",
+      "member": "./b3-baseline-1-solo.traces.json",
+      "sha256": "420dd9dac3cc1c269802ceea29d8f372521ba8cd9c83a423ac4fabeda5435239",
+      "reason": "solo determinism re-run: a replica of seed 1, not an additional seed. Double-counting it would bias every axis"
+    },
+    {
+      "slice": "bug3-campaign",
+      "member": "./b3-baseline-2-solo.traces.json",
+      "sha256": "ac388fad255be0836d274969f5373f5df380c9cfa52d0f3dec7ff1599ea95c0e",
+      "reason": "solo determinism re-run: a replica of seed 2, not an additional seed. Double-counting it would bias every axis"
+    },
+    {
+      "slice": "bug3-campaign",
+      "member": "./b3-baseline-3-solo.traces.json",
+      "sha256": "80c129fcd994fbc316ca14a34d2c4bb95d6d4d4879969ac42df7daf64507d674",
+      "reason": "solo determinism re-run: a replica of seed 3, not an additional seed. Double-counting it would bias every axis"
+    },
+    {
+      "slice": "bug3-ablation",
+      "member": "./b3-signal-ep1-1-solo.traces.json",
+      "sha256": "420dd9dac3cc1c269802ceea29d8f372521ba8cd9c83a423ac4fabeda5435239",
+      "reason": "solo determinism re-run: a replica of seed 1, not an additional seed. Double-counting it would bias every axis"
+    },
+    {
+      "slice": "bug3-ablation",
+      "member": "./b3-signal-ep1-2-solo.traces.json",
+      "sha256": "ac388fad255be0836d274969f5373f5df380c9cfa52d0f3dec7ff1599ea95c0e",
+      "reason": "solo determinism re-run: a replica of seed 2, not an additional seed. Double-counting it would bias every axis"
+    }
+  ],
+  "totals": {
+    "trace_files": 60,
+    "branches": 30720,
+    "excluded_traces": 5,
+    "reference_logs": 40
+  }
+}
