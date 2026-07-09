@@ -20,6 +20,11 @@ name = "benchmark-report"
 path = "src/bin/report.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "exploration-report"
+path = "src/bin/exploration_report.rs"
+required-features = ["cli"]
+
 [dependencies]
 # The species estimators (STADS) live in `explorer::stads` — this is the
 # contract that module was placed on (task 69 spec). Pinned `version` alongside

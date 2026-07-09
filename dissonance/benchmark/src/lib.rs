@@ -30,11 +30,16 @@
 //! stopping rule) is an exact integer/rational cross-multiplication (conventions
 //! rule 4).
 
+pub mod exploration;
 pub mod manifest;
 pub mod report;
 pub mod stats;
 pub mod trigger;
 
+pub use exploration::{
+    DiscoveryEvent, ExplorationConfig, ExplorationError, ExplorationLog, ExplorationReport,
+    GameManifest, Verdict,
+};
 pub use manifest::{Benchmark, BugClass, BugId, BugSpec, CrashKind, TriggerParams};
 pub use report::{
     BranchEvent, CampaignLog, Configuration, CorrelationReport, ReportError, Ruling,
