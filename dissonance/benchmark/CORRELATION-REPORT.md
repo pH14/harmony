@@ -182,3 +182,43 @@ If a tiebreaker is wanted before committing to the CellFn iteration, the amendme
 follow-up applies: bug 2's rare-value-gate successor is a *conjunctive* bug on which the one-
 dimension exploit should converge — the case where the signal has its best chance to beat
 baseline — and would sharpen an otherwise underpowered (n=11) discriminator.
+
+## Addendum — the explore/exploit ablation (Paul-authorized; does NOT reopen the NO-GO)
+
+To separate *"the cells are blind"* from *"the exploit budget is harmful on rare-value bugs,"* the
+signal config was re-run on bug 3 with the exploit turned off: **20 seeds, signal config,
+`explore_period = 1`** (every step explores fresh, none exploit), same seeds / budget (512) /
+deadline (50 000) / calibration / image as the campaign. The knob is the **recorded** `--explore-period`
+flag (`explore_period: 1` in every ablation CampaignLog — no ambient env). Data:
+`campaign-data/bug3/ablation/results/` (+ `traces.tar.gz`).
+
+| bug-3 signal config | Found | Censored median TTB (@512) |
+|---|---|---|
+| `explore_period = 1` (explore-only, this ablation) | **18/20** | **225** |
+| baseline (blind seed search) | 18/20 | 225 |
+| `explore_period = 4` (the shipped campaign, ¾ exploit) | 11/20 | 299 |
+
+**The ablation is byte-identical to baseline — seed-for-seed.** Every seed's time-to-bug matches
+baseline exactly (the missed seeds are the same, {3, 11}); the co-tenant vs solo determinism check
+matches baseline's hashes (seed 1 `5281f249…`, seed 2 `38a6540c…`). This is expected *by
+construction*: at `explore_period = 1` the signal config never exploits, so it draws the **identical
+PRNG stream** as baseline and mints the same fresh draws — the log-template sensor still runs and
+records cells (4/campaign), but nothing uses them to redirect the search.
+
+**Conclusion — it is the exploit, not the cells.** The campaign's drop from baseline's 18/20 to the
+signal config's 11/20 (and 225 → 299 median) is caused **entirely by the exploit budget**: at
+`explore_period = 4` the signal spends ~¾ of its branches jittering a frontier exemplar's fault, and
+for bug 3 — a single-dimension, locality-free rare-value trigger — that jitter is non-convergent
+(nudging a near-miss seed does not move it toward the target prefix), so those branches are wasted
+and exploration is starved. The cell-guided *explore* is fine (it equals baseline); the *exploit* is
+what hurts. This **sharpens** the NO-GO — it does not reopen it: the signal configuration *as shipped*
+(with exploitation) is still worse than baseline on the sole discriminator.
+
+**Implication for the E-fails route.** The fix is not only a better `CellFn` (task 67 — cells that
+actually track a bug's trigger) but also the **selector's explore/exploit policy for non-conjunctive
+bugs**: exploitation only pays where the trigger has locality the one-dimension jitter can climb
+(conjunctive fault-timing / interrupt-window bugs), and actively costs on rare-value bugs. A CellFn
+whose cells correlated with trigger-proximity would let the selector exploit the *right* parents;
+absent that, exploitation on a locality-free bug is pure budget waste. Re-key CellFn candidates
+offline against the retained traces (this campaign's + this ablation's) and re-measure both the
+correlation *and* the explore/exploit split before Phase F.
