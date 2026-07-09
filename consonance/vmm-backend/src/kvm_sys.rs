@@ -134,6 +134,12 @@ pub struct KvmBackend {
     /// (both LAPIC-split halves of one backing get their own entries); entries of
     /// a failed (rolled-back) map are removed with it.
     dirty_slots: Vec<(u32, u64, u64)>,
+    /// Latched (never cleared) when a RAM memslot is registered **without**
+    /// `KVM_MEM_LOG_DIRTY_PAGES`: that slot's guest writes are permanently
+    /// invisible to the log, so `harvest_dirty_gfns` declines for this
+    /// backend's whole lifetime — completeness is a property of the slots, not
+    /// of the current [`Self::set_dirty_log_enabled`] knob position.
+    unlogged_slot: bool,
     msr_filter: Option<MsrFilter>,
     cpuid_installed: bool,
     msr_filter_installed: bool,
@@ -264,6 +270,7 @@ impl KvmBackend {
             mem_slot_count: 0,
             dirty_log: true,
             dirty_slots: Vec::new(),
+            unlogged_slot: false,
             msr_filter: None,
             cpuid_installed: false,
             msr_filter_installed: false,
@@ -1208,6 +1215,11 @@ impl Backend for KvmBackend {
         let host_base = host.as_ptr() as u64;
         let base_slot = self.mem_slot_count;
         let mut registered = 0u32;
+        // For the error-path rollback: entries are pushed only when `dirty_log`
+        // is on, so the truncate target is the length at entry — NOT
+        // `len - registered`, which would underflow (or eat earlier slots'
+        // entries) on a partial failure of an unlogged map.
+        let dirty_slots_before = self.dirty_slots.len();
         // Task 95 M2.1: register guest RAM with dirty logging on (both split
         // parts), so `harvest_dirty_gfns` can feed the O(dirty) snapshot derive.
         // Guest-inert (gate a0); `set_dirty_log_enabled(false)` is the A/B arm.
@@ -1239,8 +1251,7 @@ impl Backend for KvmBackend {
                 // counter is not advanced, so a retry reuses these slot ids cleanly.
                 // The harvest slot table shrinks with it (no stale harvest target).
                 self.regions.rollback_last();
-                self.dirty_slots
-                    .truncate(self.dirty_slots.len() - registered as usize);
+                self.dirty_slots.truncate(dirty_slots_before);
                 for j in 0..registered {
                     let undo = kvm_userspace_memory_region {
                         slot: base_slot + j,
@@ -1263,6 +1274,13 @@ impl Backend for KvmBackend {
             registered += 1;
         }
         self.mem_slot_count += registered;
+        if !self.dirty_log {
+            // A RAM slot now exists whose guest writes KVM will never log —
+            // latch the harvest closed for this backend's whole lifetime (the
+            // safety rule: never vouch for a set that cannot be complete, even
+            // if the knob is flipped back on later).
+            self.unlogged_slot = true;
+        }
         Ok(())
     }
 
@@ -1272,6 +1290,15 @@ impl Backend for KvmBackend {
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "harvest_dirty_gfns (dirty logging disabled)",
+            });
+        }
+        // Completeness is a property of the SLOTS, not the current knob: if any
+        // RAM slot was ever registered without `KVM_MEM_LOG_DIRTY_PAGES`, its
+        // guest writes are permanently invisible to the log, so no harvest from
+        // this backend can be vouched complete — decline forever.
+        if self.unlogged_slot {
+            return Err(BackendError::Unsupported {
+                what: "harvest_dirty_gfns (a RAM slot was mapped without dirty logging)",
             });
         }
         let mut gfns = Vec::new();

@@ -797,30 +797,38 @@ impl<B: Backend> ControlServer<B> {
     /// doubt — including a failed derive itself — fall back to `snapshot_base`
     /// (correct-by-construction; content-dedup keeps a flatten cheap in storage).
     /// The seal RPC never fails because the optimization was unavailable.
+    /// Returns `(id, window_consumed)`: `window_consumed` is `true` iff the
+    /// harvest ran (and therefore reset the tracking window as its own
+    /// retrieve-and-reset side effect) — the caller then arms the next window
+    /// directly instead of issuing a redundant second drain.
     fn seal_into_store(
         engine: &mut SnapshotEngine,
         vmm: &mut Vmm<B>,
         parent: Option<SnapshotId>,
         blob: &[u8],
-    ) -> Result<SnapshotId, SnapshotError> {
+    ) -> Result<(SnapshotId, bool), SnapshotError> {
         if let Some(parent) = parent {
             // Still live (a `drop` verb may have released it since) and bounded:
             // at the chain cap the seal flattens via a fresh base instead.
             let chain_ok = engine
                 .stats(parent)
                 .is_ok_and(|s| s.chain_len < engine.max_chain_len());
-            if chain_ok
-                && let Some(gfns) = vmm.harvest_dirty_gfns()
-                // A gfn past the image would be a slot-decode bug; don't feed it
-                // to the engine (whose loud error is for callers) — full-scan.
-                && gfns.iter().all(|&g| g < engine.mem_pages())
-                && let Ok(id) =
-                    engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob)
-            {
-                return Ok(id);
+            if chain_ok && let Some(gfns) = vmm.harvest_dirty_gfns() {
+                // From here the window is consumed either way. A derive error
+                // (unreachable in practice: liveness and image size were just
+                // checked, and a dropped builder releases its interned pages)
+                // still falls back to the full scan rather than failing the seal.
+                return match engine.snapshot_derive(parent, vmm.guest_memory(), Some(&gfns), blob) {
+                    Ok(id) => Ok((id, true)),
+                    Err(_) => engine
+                        .snapshot_base(vmm.guest_memory(), blob)
+                        .map(|id| (id, true)),
+                };
             }
         }
-        engine.snapshot_base(vmm.guest_memory(), blob)
+        engine
+            .snapshot_base(vmm.guest_memory(), blob)
+            .map(|id| (id, false))
     }
 
     /// `snapshot`: seal the current point into the engine (memory image +
@@ -858,8 +866,20 @@ impl<B: Backend> ControlServer<B> {
         // Task 95 M2.1: capture O(dirty) when the tracked window allows it,
         // full-scan otherwise — then re-arm the window with the new snapshot as
         // the next seal's parent (the arm fails ⇒ the next seal full-scans too).
-        let store_id = Self::seal_into_store(&mut self.engine, vmm, self.derive_parent, &blob)?;
-        self.derive_parent = vmm.reset_dirty_tracking().then_some(store_id);
+        //
+        // `take()` the parent across the fallible seal: if the seal errors
+        // AFTER the harvest drained the window, a caller that treats the error
+        // as retryable (the pub `handle` API permits it) must NOT find the old
+        // parent still armed — a retried seal would then derive over a window
+        // missing everything dirtied before the failure. A failed seal always
+        // leaves `derive_parent = None` (the retry full-scans).
+        let parent = self.derive_parent.take();
+        let (store_id, window_consumed) =
+            Self::seal_into_store(&mut self.engine, vmm, parent, &blob)?;
+        // A consumed window was already reset by the harvest itself (nothing
+        // ran since — the VM is stopped between verbs), so arm directly and
+        // skip the redundant per-slot drain; otherwise harvest-and-discard now.
+        self.derive_parent = (window_consumed || vmm.reset_dirty_tracking()).then_some(store_id);
         // Task 73: capture the SDK channel's replay-relevant state (seeded stream
         // position + event log) alongside the guest snapshot — owned, so `vmm`'s
         // borrow ends before we touch `self.sdk_snaps`.
@@ -1819,7 +1839,9 @@ mod tests {
     }
 
     /// [`vmm_at_sync`] over a caller-prepared mock (e.g. one with dirty tracking
-    /// enabled, task 95 M2.1) — the mock's exit script is overwritten.
+    /// enabled, task 95 M2.1) — the sync `Rdtsc` prelude + `exits` are
+    /// **appended** to anything the mock already has scripted, so pass a mock
+    /// with an empty exit script unless you mean to run yours first.
     fn vmm_at_sync_from(
         mut m: MockBackend,
         exits: Vec<Exit>,
@@ -1997,9 +2019,10 @@ mod tests {
     // ---- task 95 M2: O(dirty) capture + remap restore -------------------------
 
     /// The store-side chain length of a wire handle (1 = a base layer; >1 = a
-    /// derived capture) — how these tests observe which capture path a seal took.
+    /// derived capture) — through the same public accessor the box gate uses,
+    /// so the accessor's handle→stats mapping is exercised portably too.
     fn chain_len(s: &ControlServer<MockBackend>, id: SnapId) -> u32 {
-        s.engine.stats(s.snaps[&id.0]).unwrap().chain_len
+        s.snapshot_chain_len(id).expect("handle is live")
     }
 
     /// M2.1 wiring: with tracking armed, the second seal derives from the first

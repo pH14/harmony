@@ -128,13 +128,17 @@ pub struct MockBackend {
     /// before acceptance.
     defer_accept: bool,
     completions: Vec<Completion>,
-    /// Scripted dirty-page harvests (task 95 M2.1): `None` = no dirty tracking
+    /// Scripted dirty-page tracking (task 95 M2.1): `None` = no dirty tracking
     /// (`harvest_dirty_gfns` answers `Unsupported`, like a `flags: 0` live
-    /// backend); `Some(queue)` = tracking enabled — each harvest pops the next
-    /// scripted gfn set (empty queue ⇒ an empty harvest: nothing dirtied). The
-    /// mock cannot observe real guest writes (it never writes RAM), so the set is
-    /// scripted, exactly like the exit script.
-    dirty_script: Option<VecDeque<Vec<u64>>>,
+    /// backend); `Some(pending)` = tracking enabled — [`Self::push_dirty_gfns`]
+    /// **accumulates** gfns exactly as guest writes accumulate in KVM's log,
+    /// and each harvest drains the whole accumulated set (retrieve-and-reset).
+    /// An accumulate-then-drain model, NOT a queue of per-harvest sets: a
+    /// caller is free to harvest more than once per operation (e.g. a
+    /// harvest-and-discard re-arm right after a seal) without a scripted set
+    /// being silently swallowed by the extra call. The mock cannot observe real
+    /// guest writes (it never writes RAM), so the set is scripted.
+    dirty_pending: Option<Vec<u64>>,
 }
 
 impl Default for MockBackend {
@@ -161,7 +165,7 @@ impl MockBackend {
             accepted_irq: VecDeque::new(),
             defer_accept: false,
             completions: Vec::new(),
-            dirty_script: None,
+            dirty_pending: None,
         }
     }
 
@@ -243,22 +247,20 @@ impl MockBackend {
     }
 
     /// Turn on dirty tracking (task 95 M2.1): after this, `harvest_dirty_gfns`
-    /// answers `Ok` — the next scripted set from [`Self::push_dirty_gfns`], or
-    /// empty when the script is exhausted (nothing dirtied). Off (`Unsupported`,
-    /// the trait default's shape) until called.
+    /// answers `Ok` — whatever [`Self::push_dirty_gfns`] has accumulated since
+    /// the last harvest (empty if nothing). Off (`Unsupported`, the trait
+    /// default's shape) until called.
     pub fn enable_dirty_tracking(&mut self) -> &mut Self {
-        self.dirty_script.get_or_insert_with(VecDeque::new);
+        self.dirty_pending.get_or_insert_with(Vec::new);
         self
     }
 
-    /// Enqueue one scripted harvest result (implies
-    /// [`Self::enable_dirty_tracking`]). Sets are consumed in order, one per
-    /// `harvest_dirty_gfns` call — mind that a caller may harvest more than once
-    /// per operation (e.g. a harvest-and-discard re-arm after a seal).
+    /// Record scripted guest writes (implies [`Self::enable_dirty_tracking`]):
+    /// the gfns **accumulate** — as writes do in KVM's log — until the next
+    /// `harvest_dirty_gfns` drains them all, however many harvests a caller
+    /// issues in between operations.
     pub fn push_dirty_gfns(&mut self, gfns: Vec<u64>) -> &mut Self {
-        self.dirty_script
-            .get_or_insert_with(VecDeque::new)
-            .push_back(gfns);
+        self.dirty_pending.get_or_insert_with(Vec::new).extend(gfns);
         self
     }
 
@@ -357,12 +359,13 @@ impl Backend for MockBackend {
     }
 
     fn harvest_dirty_gfns(&mut self) -> Result<Vec<u64>> {
-        match self.dirty_script.as_mut() {
+        match self.dirty_pending.as_mut() {
             None => Err(BackendError::Unsupported {
                 what: "harvest_dirty_gfns (mock dirty tracking not enabled)",
             }),
-            Some(queue) => {
-                let mut gfns = queue.pop_front().unwrap_or_default();
+            Some(pending) => {
+                // Retrieve-and-reset, like the live log.
+                let mut gfns = std::mem::take(pending);
                 // Honor the trait contract regardless of how the test scripted it.
                 gfns.sort_unstable();
                 gfns.dedup();

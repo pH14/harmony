@@ -52,7 +52,7 @@ use control_proto::{
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;
-use vmm_core::bringup::{BackendKind, boot_linux_selected, compose_restore_target};
+use vmm_core::bringup::{boot_linux_patched_with_dirty_log, compose_restore_target};
 use vmm_core::control::{ControlServer, RemapVmmFactory, RestoreMode, VmmFactory, server_caps};
 use vmm_core::vmm::{VtimeWiring, contract_vclock_config};
 
@@ -137,33 +137,16 @@ fn guest_images() -> (Vec<u8>, Vec<u8>) {
 /// Boot the Postgres guest on patched KVM with dirty logging at its **default
 /// (enabled)** — the production composition.
 fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
-    boot_linux_selected(
-        BackendKind::Patched,
-        kernel,
-        initramfs,
-        GUEST_RAM_LEN,
-        &cmdline(),
-        seed,
-    )
-    .expect("boot_linux_selected (patched) — needs the LOADED patched KVM + perf + det-cfl-v1 host")
+    boot_linux_patched_with_dirty_log(kernel, initramfs, GUEST_RAM_LEN, &cmdline(), seed, true)
+        .expect("patched Linux boot — needs the LOADED patched KVM + perf + det-cfl-v1 host")
 }
 
-/// Boot the same composition with dirty logging **disabled** (`flags: 0`) — the
-/// A/B arm of gates (a0) and (a). Mirrors `boot_linux_selected`'s `Patched` arm
-/// with the one knob flipped before `map_memory`.
+/// The **same shared composition** with dirty logging disabled (`flags: 0`) —
+/// the A/B arm of gates (a0) and (a). One body, one knob: the two arms cannot
+/// drift apart in wiring.
 fn boot_pg_no_dirty_log(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
-    let mut b = vmm_backend::PatchedKvmBackend::new()
-        .expect("PatchedKvmBackend::new — patched KVM modules must be loaded");
-    b.set_dirty_log_enabled(false);
-    let backend: Box<dyn Backend> = Box::new(b);
-    let mut vmm =
-        vmm_core::bringup::boot_linux(backend, kernel, initramfs, GUEST_RAM_LEN, &cmdline())
-            .expect("boot_linux (flags: 0 arm)");
-    let work = Box::new(
-        vmm_core::work_perf::PerfWorkCounter::open().expect("perf retired-branch counter"),
-    );
-    vmm.wire_vtime(VtimeWiring::new(contract_vclock_config(), work, seed).expect("contract clock"));
-    vmm
+    boot_linux_patched_with_dirty_log(kernel, initramfs, GUEST_RAM_LEN, &cmdline(), seed, false)
+        .expect("patched Linux boot (flags: 0 arm)")
 }
 
 fn call<B: Backend>(

@@ -421,10 +421,43 @@ pub fn boot_linux_selected(
             boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?
         }
         BackendKind::Patched => {
-            let backend: Box<dyn Backend> = Box::new(vmm_backend::PatchedKvmBackend::new()?);
-            boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?
+            return boot_linux_patched_with_dirty_log(
+                kernel,
+                initramfs,
+                guest_ram_len,
+                cmdline,
+                seed,
+                true,
+            );
         }
     };
+    let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
+    let wiring = crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
+    vmm.wire_vtime(wiring);
+    Ok(vmm)
+}
+
+/// [`boot_linux_selected`]'s `Patched` composition with the task-95 dirty-log
+/// knob explicit — **the one shared body both arms of the tracking-is-inert A/B
+/// gate boot through**, so the gate compares two identically-composed VMs that
+/// differ in nothing but `KVM_MEM_LOG_DIRTY_PAGES` (a hand-copied composition
+/// would silently drift and mis-attribute a divergence to dirty logging).
+/// `dirty_log = true` is exactly `boot_linux_selected(BackendKind::Patched, ..)`.
+#[cfg(target_os = "linux")]
+pub fn boot_linux_patched_with_dirty_log(
+    kernel: &[u8],
+    initramfs: &[u8],
+    guest_ram_len: usize,
+    cmdline: &str,
+    seed: u64,
+    dirty_log: bool,
+) -> Result<Vmm<Box<dyn Backend>>, VmmError> {
+    let mut b = vmm_backend::PatchedKvmBackend::new()?;
+    // Before `map_memory` (inside boot_linux): the knob applies to the RAM
+    // memslots registered there.
+    b.set_dirty_log_enabled(dirty_log);
+    let backend: Box<dyn Backend> = Box::new(b);
+    let mut vmm = boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?;
     let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
     let wiring = crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);

@@ -100,6 +100,44 @@ was needed; its public API sufficed, as predicted).
   a released snapshot alive for a cost optimization inverts the retention
   pool's authority over what stays resident.
 
+## Review-pass fixes (multi-agent review, 2026-07-09 — findings folded in)
+
+Three confirmed correctness defects in the first cut, all fixed:
+
+1. **`map_memory` rollback truncated `dirty_slots` by the part count** even
+   when logging was off and nothing had been pushed — a debug-build underflow
+   panic on a partial `flags: 0` split map, or silent deletion of earlier
+   slots' harvest entries (an under-report path). Now truncates to the length
+   recorded at entry.
+2. **A failed seal left `derive_parent` armed after the harvest had drained
+   the window** — a caller retrying `Snapshot` through the pub `handle` API
+   would derive over a window missing everything dirtied before the failure.
+   `snapshot()` now `take()`s the parent across the fallible seal: a failed
+   seal always leaves the next seal full-scanning.
+3. **`harvest_dirty_gfns` gated completeness on the current knob, not the
+   slots**: map RAM with logging off, flip the knob on → an empty harvest
+   vouched as complete. The backend now latches `unlogged_slot` forever once
+   any RAM slot is registered unlogged — completeness is a property of the
+   slots, not the knob position.
+
+Plus: the mock's scripted harvest became **accumulate-then-drain** (KVM's
+actual semantics) instead of a queue of per-harvest sets, killing the
+two-harvests-per-seal consumption landmine that could make cross-seal tests
+vacuous; the redundant second dirty-log drain per derived seal was removed
+(the harvest's own retrieve-and-reset is the re-arm); the a0/a A/B arms now
+boot through **one shared composition** (`boot_linux_patched_with_dirty_log`)
+so the gate can never compare differently-wired VMs; the redundant gfn-bound
+pre-check was dropped (the engine's own check + fallback covers it); two test
+helpers were de-duplicated/doc-fixed.
+
+**Known cost accepted (review finding, PLAUSIBLE):** dirty logging defaults
+on for every KVM composition, so never-snapshot workloads pay the one-time
+write-protect fault per touched page (and KVM's hugepage-split behavior on
+logged slots). This is what the spec mandates; gate (a0) proves it
+hash-inert, gate (c)/(d) and the task-96 stopwatch quantify the wall-clock
+cost, and `set_dirty_log_enabled(false)` is the composition-root revert if a
+regression shows up. Called out here so the number gets read, not assumed.
+
 ## Portable evidence (all green, macOS + x86_64-linux cross-check)
 
 486 tests across `vmm-backend` + `vmm-core` (60 + 426), including new:
