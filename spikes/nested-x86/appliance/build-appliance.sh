@@ -11,11 +11,11 @@
 # Usage: build-appliance.sh <gate-binary> [<gate-binary> ...]
 set -euo pipefail
 
-BASE=/root/nested-x86-spike/n1
+BASE="${APPLIANCE_BASE:-/root/nested-x86-spike/n1}"
 KVER=6.12.90+deb13.1-amd64
 PATCHED=/root/kvm-spike/deb612/hdr/usr/src/linux-headers-$KVER/arch/x86/kvm
-SRCROOT=/root/harmony-nested
-PG=/root/harmony-pr44/guest/build
+SRCROOT="${SRCROOT:-/root/harmony-nested}"
+PG="${PG_IMAGES:-/root/harmony-pr44/guest/build}"
 IR=$BASE/initramfs
 
 # pinned L2 postgres pair (pr44 build; foreman ruling hm-xdp)
@@ -88,7 +88,7 @@ mkdir -p "$IR/root/harmony-nested/docs" "$IR/root/harmony-nested/guest/golden"
 cp "$SRCROOT/docs/corpus-manifest.toml" "$IR/root/harmony-nested/docs/"
 cp -r "$SRCROOT/guest/golden/." "$IR/root/harmony-nested/guest/golden/"
 
-cp /root/nested-x86-spike/n1/src/l1-appliance-init.sh "$IR/init"
+cp "${INIT_SCRIPT:-/root/nested-x86-spike/n1/src/l1-appliance-init.sh}" "$IR/init"
 chmod +x "$IR/init"
 [ -e "$IR/dev/console" ] || mknod "$IR/dev/console" c 5 1
 

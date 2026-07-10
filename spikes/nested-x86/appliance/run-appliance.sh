@@ -4,7 +4,7 @@
 #   extra-cmdline e.g. "harmony.gates=n2_nested_hammer harmony.env=N2_DEADLINES=250000"
 set -euo pipefail
 
-BASE=/root/nested-x86-spike/n1
+BASE="${APPLIANCE_BASE:-/root/nested-x86-spike/n1}"
 KVER=6.12.90+deb13.1-amd64
 RS="${1:?results dir required}"
 case "$RS" in /*) ;; *) RS="$BASE/results/$RS" ;; esac
