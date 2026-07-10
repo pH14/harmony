@@ -29,11 +29,14 @@ PIN_KVM_INTEL_KO=b6e6d3d2c4fd6f08a67ce00d39d9a735219625e5bca4e33a572ce943da13ed2
 
 rm -rf "$IR"
 mkdir -p "$BASE" "$IR"/{bin,dev,proc,sys,tmp,mod,gate,lib/x86_64-linux-gnu,lib64}
-mkdir -p "$IR/root/harmony-nested/guest/build"
-mkdir -p "$IR/root/harmony-nested/guest/payloads/target/x86_64-unknown-none/release"
+# stage the artifact tree at the SAME absolute path the gate binaries baked in
+# at compile time (CARGO_MANIFEST_DIR/../..): $SRCROOT, not a fixed name
+mkdir -p "$IR$SRCROOT/guest/build"
+mkdir -p "$IR$SRCROOT/guest/payloads/target/x86_64-unknown-none/release"
 # tests resolve artifacts via CARGO_MANIFEST_DIR/../.. — the manifest dir chain
 # must exist in the initramfs for `..` traversal to resolve
-mkdir -p "$IR/root/harmony-nested/consonance/vmm-core"
+mkdir -p "$IR$SRCROOT/consonance/vmm-core"
+echo "$SRCROOT" > "$IR/srcroot"
 
 pin() { # pin <file> <sha256>
     local got; got=$(sha256sum "$1" | cut -d' ' -f1)
@@ -76,17 +79,17 @@ cp "$PATCHED/kvm-intel.ko" "$IR/mod/kvm-intel.ko"
 # pinned L2 postgres pair, at the exact compile-time repo_root() path
 pin "$PG/bzImage" "$PIN_BZIMAGE"
 pin "$PG/initramfs-postgres.cpio.gz" "$PIN_INITRAMFS"
-cp "$PG/bzImage" "$IR/root/harmony-nested/guest/build/"
-cp "$PG/initramfs-postgres.cpio.gz" "$IR/root/harmony-nested/guest/build/"
+cp "$PG/bzImage" "$IR$SRCROOT/guest/build/"
+cp "$PG/initramfs-postgres.cpio.gz" "$IR$SRCROOT/guest/build/"
 
 # C1 payload ELFs (live_preemption + box_corpus), at their compile-time path
 find "$SRCROOT/guest/payloads/target/x86_64-unknown-none/release" -maxdepth 1 -type f -executable \
-    -exec cp {} "$IR/root/harmony-nested/guest/payloads/target/x86_64-unknown-none/release/" \;
+    -exec cp {} "$IR$SRCROOT/guest/payloads/target/x86_64-unknown-none/release/" \;
 
 # corpus manifest + committed goldens (box_corpus O2)
-mkdir -p "$IR/root/harmony-nested/docs" "$IR/root/harmony-nested/guest/golden"
-cp "$SRCROOT/docs/corpus-manifest.toml" "$IR/root/harmony-nested/docs/"
-cp -r "$SRCROOT/guest/golden/." "$IR/root/harmony-nested/guest/golden/"
+mkdir -p "$IR$SRCROOT/docs" "$IR$SRCROOT/guest/golden"
+cp "$SRCROOT/docs/corpus-manifest.toml" "$IR$SRCROOT/docs/"
+cp -r "$SRCROOT/guest/golden/." "$IR$SRCROOT/guest/golden/"
 
 cp "${INIT_SCRIPT:-/root/nested-x86-spike/n1/src/l1-appliance-init.sh}" "$IR/init"
 chmod +x "$IR/init"

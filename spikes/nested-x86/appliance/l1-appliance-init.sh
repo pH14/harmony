@@ -24,7 +24,7 @@ ls /dev/kvm >/dev/null 2>&1 && echo "L1_DEV_KVM_PRESENT" || echo "L1_DEV_KVM_ABS
 
 # content-hash-verify the L2 pair from INSIDE L1 before any boot of it
 echo "NESTED_X86_L2_PIN_CHECK_BEGIN"
-cd /root/harmony-nested
+cd "$(cat /srcroot 2>/dev/null || echo /root/harmony-nested)"
 sha256sum guest/build/bzImage guest/build/initramfs-postgres.cpio.gz
 echo "NESTED_X86_L2_PIN_CHECK_END"
 
