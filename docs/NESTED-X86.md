@@ -292,6 +292,31 @@ bound below the declared margin. Report confidence and coverage; do not call it 
 **NO-GO:** one unexplained mismatch. "It only works if L0 never preempts" is a NO-GO unless a
 supported mechanism actually enforces that condition and is itself probeable at boot.
 
+> **Disposition (2026-07-10): PROVISIONAL GO** (the stage's own success label). Evidence:
+> `spikes/nested-x86/results/n2/`. **1,052,000 armed deadlines → 1,052,000 exact landings,
+> zero mismatches, zero missed/duplicate overflows** (a lost PMI hangs `run_until`, a
+> duplicate stops short — both would surface as mismatches; every attempted sample is in the
+> `N2JSON` summaries), via the SPIKE `n2_nested_hammer` driving the **production**
+> `run_until` path (patch-0004 arm + patch-0005 MTF landing) on seeded-random targets
+> (deltas 1..100k, MTF-edge/skid-bracket/pure-overflow classes interleaved). Condition
+> matrix: idle 400k; other-core stress 200k; **same-core stress 150k** (stress-ng sharing
+> the L1 vCPU's pinned core); memory pressure 100k; same-core timer storm 100k; **vCPU
+> migration 100k with 1,509 forced cross-pCPU migrations of the unpinned QEMU threads**.
+> Bonus cross-condition check: timerstorm and migrate shared one delta stream (harness
+> `seed|1` collapse, recorded) and produced **bit-identical `final_work` (1752162978)**
+> under entirely different L0 interference. Skid: the **bare-metal production
+> `skid_margin = 256` held on every landing** — the 8× candidate allowance was never
+> consumed; the measured result lowers the nested margin claim to 1× bare-metal.
+> Count exactness across payload classes: corpus sweep **6/6 items O1+O2 PASS nested,
+> digest-for-digest equal to the bare-metal control** (trapped insns, MSR allow/deny,
+> rdtsc, rng, rdpmc; `nested-corpus-001` vs `metal-corpus-002`); syscall/page-fault/
+> interrupt/HLT-heavy classes via the N-1 postgres + irq-landing gates. **Finding for
+> main:** the committed `insn-cpuid` O2 golden was stale (metal reproduces the nested
+> digest `cd321ad6f9…` exactly; only that golden changed on re-bless — spike commit
+> 46a6b5b); box_corpus O2 currently fails on main on the box. PROVISIONAL: the
+> after-L0-reboot count-stability check is bundled with N-0's deferred two-reboot check at
+> spike end (one recorded reboot, rerun exactness smoke, then restore-verify).
+
 ### N-3 — full-stack determinism gates nested + adversarial L0 + the portability gate
 
 **Question:** Does the whole system hold its determinism claim as a guest, under a hostile
