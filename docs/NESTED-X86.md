@@ -347,6 +347,31 @@ the standard corpus. Every sample accounted for.
 
 **NO-GO:** any silent divergence under 1–4, or an undetectable divergence class under 5.
 
+> **Disposition (2026-07-10): GO** (with one bounded availability finding and an owner
+> rep-count ruling, both recorded). Evidence: `spikes/nested-x86/results/n3/`. One reference
+> pair — `state_hash 6163f1109b5677de…` / `observable_digest 0fe06bf4…` (insn-rng at the
+> pinned corpus seed) — was reproduced bit-identically by **every** repetition of **every**
+> condition, nested and metal:
+> **(1) solo** 1000/1000; **(2) co-tenant stress** other-core 1000/1000 + same-core 75 clean
+> (full-length runs trimmed by owner ruling 2026-07-10 — "reduce reps, prioritize reaching
+> N-4"; the same-core dose is separately evidenced by N-2's 150k exact landings under
+> identical stress); **(3) vCPU migration** 250/250 with 5,810 forced thread migrations;
+> **(4) pause/resume** SIGSTOP 2s/30s 250/250 (103 pauses) + QEMU QMP stop/cont 250/250
+> (104 cycles). **Finding (bounded):** aggressive SIGSTOP cycling (2s of every 7s) wedged
+> one run — vCPU spinning in KVM_RUN after an apparently lost work-clock event across the
+> freeze (`pause-sigstop-001/FINDING.json`, thread diagnostics retained). It is an
+> **observable hang (fails loud), not silent divergence**; gentle host-freeze and the
+> cloud-representative QMP path are clean. Follow-up for main: make `run_until` re-arm or
+> time-bound after freeze/thaw. **(5) live-migration rehearsal:** QEMU local live migration
+> mid-gate **completed** and the gate finished on the destination 250/250 bit-identical —
+> determinism held outright, exceeding the fail-closed bar. **(6) portability gate:**
+> nested == metal exact `state_hash` equality on three independent surfaces — repeat gate
+> `6163f110…` (nested, all conditions) == metal 100/100; postgres p2 `73e38ded…` nested ==
+> metal; preemption landings `[410851, 963853, 1410689, 1553858]` + `a8386821…` nested ==
+> metal; plus the 6/6 corpus digest equality (N-2). Postgres-workload reps beyond N-1's
+> gates were not mass-repeated (owner ruling); the corpus-item form carried the ≥1000-rep
+> load.
+
 ### N-4 — performance envelope + exit-budget memo
 
 Characterization, after correctness — not part of the feasibility claim. Measure nested vs
@@ -357,6 +382,26 @@ capture (the task-95 benches) nested. Deliverable: a short memo with ppm-style r
 sizing recommendation for the paravirtual vtime clock page (the guest kernel is ours; a
 work-derived kvmclock-shaped page would remove RDTSC exits from the hot path) — decision
 input only, no implementation in this spike.
+
+> **Disposition (2026-07-10): GO (characterization delivered).** Evidence:
+> `results/n1/`, `results/n2/` (nested-corpus vs metal-corpus), `results/n3/metal-reference-001/`.
+> **Workload-level nested/metal wall-clock ratios (same box, same source, same pinned
+> images):** postgres 3-gate suite 507.3s / 470.0s = **1.08×**; live_preemption 70.3s /
+> 69.4s = **1.01×**; corpus O1+O2 sweep 287.1s / 285.3s = **1.006×**; live_determinism
+> sub-second on both. **Exact-landing hot path:** deadline hammer 2k/15.07s nested vs
+> 10k/14s metal = **~5.4× per armed deadline** — the nested tax concentrates in MTF
+> single-step reflection + PMI service (L1 PMI ≈ 2.5–5.0 µs, N-0 runset-004), not in bulk
+> execution. Harness artifact noted: per-rep VM setup in the repeat gate is memory-residency
+> bound and NOT a valid cross-substrate ratio (metal faults 256 MiB fresh per rep; L1 reuses
+> pre-faulted RAM). **Paravirt-clock memo:** RDTSC userspace exits remain the standing
+> deferred risk (R-BACKEND); nested multiplies each such exit's cost, and the 1.08×
+> postgres ratio shows current workloads tolerate it. A work-derived kvmclock-shaped page
+> in the guest kernel (we own it) would remove RDTSC exits from the hot path entirely and
+> is the right first lever **if** a future workload class shows RDTSC-exit dominance in the
+> per-exit-reason counts; sizing: one 4 KiB shared page + vDSO plumbing, no ABI change.
+> **Named gaps (not run, out of prioritization ruling):** task-95 snapshot/dirty-log benches
+> nested; a standalone RDTSC-exit-rate-per-virtual-second measurement; boot-to-userspace
+> ratio (nested L1 boot ≈ 7 s to init, no metal-equivalent single number captured).
 
 ### N-5 — appliance packaging rehearsal (only after N-3 GO)
 
