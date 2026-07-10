@@ -45,19 +45,23 @@ for tok in $(cat /proc/cmdline); do
 done
 [ -n "$GATES" ] || GATES="live_determinism live_preemption live_postgres"
 
-run_gate() { # run_gate <name>
+run_gate() { # run_gate <name> [test-filter]
     name=$1
-    echo "NESTED_X86_GATE_BEGIN $name"
-    /gate/$name --ignored --nocapture --test-threads=1 2>&1
+    filter=${2:-}
+    echo "NESTED_X86_GATE_BEGIN $name $filter"
+    /gate/$name --ignored --nocapture --test-threads=1 $filter 2>&1
     echo "NESTED_X86_GATE_RC $name rc=$?"
     echo "NESTED_X86_GATE_END $name"
 }
 
 for g in $GATES; do
-    if [ -x "/gate/$g" ]; then
-        run_gate "$g"
+    bin=${g%%:*}
+    filter=""
+    [ "$g" != "$bin" ] && filter=${g#*:}
+    if [ -x "/gate/$bin" ]; then
+        run_gate "$bin" "$filter"
     else
-        echo "NESTED_X86_GATE_MISSING $g"
+        echo "NESTED_X86_GATE_MISSING $bin"
     fi
 done
 
