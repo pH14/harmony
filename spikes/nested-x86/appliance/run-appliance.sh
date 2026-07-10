@@ -31,6 +31,8 @@ CPUSET="${CPUSET_OVERRIDE:-3}"   # pinned per box core discipline; override for 
 } > "$RS/env.json"
 
 rc=0
+# QEMU_EXTRA_ARGS: optional extra QEMU flags (e.g. a QMP socket for the N-3
+# pause / live-migration conditions), word-split intentionally.
 timeout "$TIMEOUT" taskset -c $CPUSET $QEMU \
     -machine q35,accel=kvm \
     -cpu host,pmu=on \
@@ -41,6 +43,7 @@ timeout "$TIMEOUT" taskset -c $CPUSET $QEMU \
     -display none -monitor none -no-reboot \
     -pidfile "$RS/qemu.pid" \
     -serial "file:$RS/console.log" \
+    ${QEMU_EXTRA_ARGS:-} \
     </dev/null >"$RS/qemu-stdout.log" 2>&1 || rc=$?
 
 echo "qemu_rc=$rc" > "$RS/env.json.rc"
