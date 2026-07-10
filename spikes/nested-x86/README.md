@@ -7,9 +7,9 @@ Evidence formats: `schemas/README.md`. Box side lives under `/root/nested-x86-sp
 
 | Stage | Disposition | Evidence |
 |---|---|---|
-| N-0 capability truth table | **PROVISIONAL GO** (2026-07-10) | `results/n0/` runsets 001–004 |
+| N-0 capability truth table | **GO** (2026-07-10) | `results/n0/` runsets 001–005 (reboot identity closed) |
 | N-1 appliance runs nested | **GO** (2026-07-10) | `results/n1/` runset-002 |
-| N-2 existential trio | **PROVISIONAL GO** (2026-07-10) | `results/n2/` — 1,052,000/1,052,000 exact |
+| N-2 existential trio | **GO** (2026-07-10) | `results/n2/` — 1,052,000/1,052,000 exact + post-reboot 10k/10k |
 | N-3 full-stack + adversarial L0 | **GO** (2026-07-10) | `results/n3/` — one hash across all conditions, nested==metal |
 | N-4 perf envelope | **GO** (2026-07-10) | workloads 1.01–1.08×; exact-landing ~5.4×/deadline |
 | N-5 packaging rehearsal | **GO** (2026-07-10) | `results/n5/` — one-command fresh-tree demo PASS |

@@ -221,6 +221,9 @@ kernel version; if still missing, NO-GO for this L0 class with the capability di
 > check is deferred to the spike-end restore phase (a mid-spike box reboot risks the shared
 > determinism host for a formality); the flip/restore-script proof is vacuous — no flip was
 > needed, restore = verify-unchanged at spike end.
+> **Upgraded to GO (2026-07-10, spike end):** the deferred check ran — capability surface
+> **byte-identical across the recorded L0 reboot** (runset-005 vs 002/003/004), count sniff
+> still 15/15 exact n+2. Restore verification passed (see N-5 section note).
 
 ### N-1 — the consonance appliance boots and runs nested
 
@@ -316,6 +319,10 @@ supported mechanism actually enforces that condition and is itself probeable at 
 > 46a6b5b); box_corpus O2 currently fails on main on the box. PROVISIONAL: the
 > after-L0-reboot count-stability check is bundled with N-0's deferred two-reboot check at
 > spike end (one recorded reboot, rerun exactness smoke, then restore-verify).
+> **Upgraded to GO (2026-07-10, spike end):** after the recorded L0 reboot the hammer ran
+> **10,000/10,000 exact** with `final_work` bit-equal to the same-config bare-metal run
+> (175286435), and the repeat gate reproduced the reference hash 100/100
+> (`results/n3/post-reboot-001/`).
 
 ### N-3 — full-stack determinism gates nested + adversarial L0 + the portability gate
 
