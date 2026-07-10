@@ -23,3 +23,8 @@ spikes/*
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# SPIKE(nested-x86): track this spike's scripts + evidence on the spike branch
+# (overrides spikes/* and *.log above; last match wins)
+!spikes/nested-x86
+!spikes/nested-x86/**

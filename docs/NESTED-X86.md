@@ -199,6 +199,29 @@ machine-readable; restore script proven once (flip back, verify, flip forward).
 **Stop:** a missing required control or no usable vPMU → try one alternate pinned QEMU/L0
 kernel version; if still missing, NO-GO for this L0 class with the capability diff recorded.
 
+> **Disposition (2026-07-10): PROVISIONAL GO.** Evidence: `spikes/nested-x86/results/n0/`
+> (runsets 001–004). The box was found *already in the target L0 posture* (stock Debian
+> 6.12.90 KVM, `nested=Y`, `enable_pmu=Y`) — no module surgery performed; restore manifest
+> captured first (`results/box-restore-manifest.json`). All required controls present as
+> virtualized for L1: RDTSC/RDRAND/RDSEED exiting, MTF, secondary controls, EPT +
+> unrestricted guest, PML, and **both** PERF_GLOBAL_CTRL entry/exit load controls. vPMU:
+> arch-perfmon v2, 4 GP counters × 48-bit, full-width writes, no unavailable events. Stock
+> kvm/kvm_intel load *inside* L1; `/dev/kvm` present at L1 (runsets 002+; 001 had an insmod
+> ordering bug, fixed). Capability surface byte-identical across three fresh VM instances
+> (002/003/004). Count sniff: raw `0x1c4` against an exact `dec/jnz` loop = **n+2 on 60/60
+> samples across four runsets, zero variance, differentially exact across 1e6/1e7/1e8** —
+> while the instructions-retired control event showed ±1 jitter (validating the
+> conditional-branch event choice). PMI delivery (runset-004): sampling-mode `0x1c4` with
+> mmap ring + SIGIO — **120/120 armed overflows delivered exactly once inside L1** (ring
+> samples == floor(count/period) == signals on 15/15 reps across three n×period combos,
+> zero throttle records; counts stayed exactly n+2 in sampling mode). Caveat for N-2/N-4:
+> the L1 kernel logged `perf: interrupt took too long (2.5–5.0 µs)` and auto-lowered
+> `perf_event_max_sample_rate` — nested PMI service is µs-scale (irrelevant to patch-0004's
+> in-KVM arming, but budgets PMI cost). PROVISIONAL because the two-L0-reboot stability
+> check is deferred to the spike-end restore phase (a mid-spike box reboot risks the shared
+> determinism host for a formality); the flip/restore-script proof is vacuous — no flip was
+> needed, restore = verify-unchanged at spike end.
+
 ### N-1 — the consonance appliance boots and runs nested
 
 **Question:** Does the unmodified patched stack function as L1?
