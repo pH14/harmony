@@ -1,7 +1,10 @@
 #!/bin/sh
-# nested-x86 N-1: init for the consonance appliance L1 guest.
+# nested-x86: init for the consonance appliance L1 guest.
 # Loads the PATCHED kvm modules, verifies the L2 image pins from inside L1,
-# then runs the determinism-ABI gates. All output goes to the serial console.
+# then runs the gate sequence named on the kernel cmdline:
+#   harmony.gates=live_determinism,live_preemption   (default: all baked gates)
+#   harmony.env=N2_DEADLINES=250000,N2_SEED=123      (exported before gates run)
+# All output goes to the serial console.
 export PATH=/bin
 mount -t proc proc /proc
 mount -t sysfs sys /sys
@@ -11,6 +14,7 @@ mount -t tmpfs -o size=512m tmpfs /tmp
 echo "NESTED_X86_L1_BOOT_OK"
 uname -a
 free -m | head -2
+cat /proc/cmdline
 
 insmod /mod/msr.ko          && echo "msr: loaded"       || echo "msr: FAILED"
 insmod /mod/irqbypass.ko    && echo "irqbypass: loaded" || echo "irqbypass: FAILED"
@@ -27,17 +31,35 @@ echo "NESTED_X86_L2_PIN_CHECK_END"
 export RUST_BACKTRACE=1
 export TMPDIR=/tmp
 
-run_gate() { # run_gate <name> [args...]
-    name=$1; shift
+# parse harmony.gates= and harmony.env= from the kernel cmdline
+GATES=""
+for tok in $(cat /proc/cmdline); do
+    case "$tok" in
+        harmony.gates=*) GATES=$(echo "${tok#harmony.gates=}" | sed 's/,/ /g') ;;
+        harmony.env=*)
+            for kv in $(echo "${tok#harmony.env=}" | sed 's/,/ /g'); do
+                export "$kv"
+                echo "ENV $kv"
+            done ;;
+    esac
+done
+[ -n "$GATES" ] || GATES="live_determinism live_preemption live_postgres"
+
+run_gate() { # run_gate <name>
+    name=$1
     echo "NESTED_X86_GATE_BEGIN $name"
-    /gate/$name --ignored --nocapture --test-threads=1 "$@" 2>&1
+    /gate/$name --ignored --nocapture --test-threads=1 2>&1
     echo "NESTED_X86_GATE_RC $name rc=$?"
     echo "NESTED_X86_GATE_END $name"
 }
 
-run_gate live_determinism
-run_gate live_preemption
-run_gate live_postgres
+for g in $GATES; do
+    if [ -x "/gate/$g" ]; then
+        run_gate "$g"
+    else
+        echo "NESTED_X86_GATE_MISSING $g"
+    fi
+done
 
 echo "--- L1 dmesg tail (kvm/vmx/pmu/perf) ---"
 dmesg | grep -iE "kvm|vmx|pmu|perf" | tail -30

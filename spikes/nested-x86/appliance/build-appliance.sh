@@ -79,11 +79,14 @@ pin "$PG/initramfs-postgres.cpio.gz" "$PIN_INITRAMFS"
 cp "$PG/bzImage" "$IR/root/harmony-nested/guest/build/"
 cp "$PG/initramfs-postgres.cpio.gz" "$IR/root/harmony-nested/guest/build/"
 
-# C1 payload ELFs for live_preemption, at their compile-time path
-for p in irq-landing irq-landing-rng; do
-    cp "$SRCROOT/guest/payloads/target/x86_64-unknown-none/release/$p" \
-       "$IR/root/harmony-nested/guest/payloads/target/x86_64-unknown-none/release/"
-done
+# C1 payload ELFs (live_preemption + box_corpus), at their compile-time path
+find "$SRCROOT/guest/payloads/target/x86_64-unknown-none/release" -maxdepth 1 -type f -executable \
+    -exec cp {} "$IR/root/harmony-nested/guest/payloads/target/x86_64-unknown-none/release/" \;
+
+# corpus manifest + committed goldens (box_corpus O2)
+mkdir -p "$IR/root/harmony-nested/docs" "$IR/root/harmony-nested/guest/golden"
+cp "$SRCROOT/docs/corpus-manifest.toml" "$IR/root/harmony-nested/docs/"
+cp -r "$SRCROOT/guest/golden/." "$IR/root/harmony-nested/guest/golden/"
 
 cp /root/nested-x86-spike/n1/src/l1-appliance-init.sh "$IR/init"
 chmod +x "$IR/init"

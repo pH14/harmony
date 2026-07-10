@@ -243,6 +243,26 @@ evidence.
 **Stop:** patched KVM cannot arm `0x1c4` guest-only at L1, or MTF arm fails architecturally,
 or L1 is unstable in ways that survive two independent rebuilds → classify REDESIGN vs NO-GO.
 
+> **Disposition (2026-07-10): GO.** Evidence: `spikes/nested-x86/results/n1/` (runset-002 is
+> the accepted run; runset-001 documents an initramfs `..`-traversal artifact-path bug, fixed
+> in `build-appliance.sh`). The appliance builds from one command
+> (`appliance/build-appliance.sh`) with a complete sha256 manifest
+> (`results/n1/build-manifest.json`: source = spike/nested-x86@bb6b292, patched
+> kvm/kvm-intel.ko, pinned pr44 L2 pair, gate binaries, L1 kernel). Patched 6.12.90 kvm
+> modules load *inside* L1; the pinned L2 pair hash-verifies from inside L1 before boot.
+> **All seven gate tests pass nested** (verdicts exceeded the stage bar — execution alone
+> gated): `live_determinism` 2/2 in 0.70s (patches 0001–0003: RDTSC/RDTSCP/RDRAND/RDSEED
+> `KVM_EXIT_DETERMINISM` round-trips, same-seed bit-identical `state_hash`, snapshot/restore
+> mid-run); `live_preemption` 2/2 in 70.3s (patch-0004 `KVM_ARM_PREEMPT_EXIT`→
+> `KVM_EXIT_PREEMPT` + patch-0005 MTF exact landing: fixed deadlines seed-invariant, RNG
+> deadlines seed-dependent, deterministic twice — nested landings recorded, e.g. irq-landing-rng
+> `[410851, 963853, 1410689, 1553858]`, `state_hash a838682179…`); `live_postgres` 3/3 in
+> 507.3s (pinned L2 postgres pair to userspace ×10 boots, workload streamed, **deterministic
+> twice nested** — `state_hash 73e38ded06…` A==B — and seed-sensitive). `hostassert` passed
+> *unchanged* inside L1 (QEMU `-cpu host` forwards the det-cfl-v1-relevant surface incl.
+> microcode rev and MXCSR mask) — **no spike-only nested acknowledgment was needed**; zero
+> production-crate edits so far.
+
 ### N-2 — count exactness, overflow delivery, exact landing (the existential trio)
 
 **Question:** Is the nested work clock exact?

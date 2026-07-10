@@ -1,12 +1,15 @@
 #!/bin/bash
-# nested-x86 N-1: boot the consonance appliance under stock-KVM L0. One run-set.
-# Usage: run-appliance.sh <runset-name> [timeout-seconds]
+# nested-x86: boot the consonance appliance under stock-KVM L0. One run-set.
+# Usage: run-appliance.sh <results-dir> [timeout-seconds] [extra-cmdline]
+#   extra-cmdline e.g. "harmony.gates=n2_nested_hammer harmony.env=N2_DEADLINES=250000"
 set -euo pipefail
 
 BASE=/root/nested-x86-spike/n1
 KVER=6.12.90+deb13.1-amd64
-RS="$BASE/results/${1:?runset name required}"
+RS="${1:?results dir required}"
+case "$RS" in /*) ;; *) RS="$BASE/results/$RS" ;; esac
 TIMEOUT="${2:-1800}"
+EXTRA_CMDLINE="${3:-}"
 mkdir -p "$RS"
 
 QEMU=/usr/bin/qemu-system-x86_64
@@ -21,6 +24,7 @@ CPUSET=3   # pinned per box core discipline (leased core set)
   echo "  \"l0_kvm_enable_pmu\": \"$(cat /sys/module/kvm/parameters/enable_pmu)\","
   echo "  \"cpuset\": \"$CPUSET\","
   echo "  \"cmdline\": \"q35,accel=kvm -cpu host,pmu=on -smp 1 -m 8192\","
+  echo "  \"extra_cmdline\": \"$EXTRA_CMDLINE\","
   echo "  \"timeout_s\": $TIMEOUT,"
   echo "  \"started\": \"$(date -u +%FT%TZ)\""
   echo "}"
@@ -33,7 +37,7 @@ timeout "$TIMEOUT" taskset -c $CPUSET $QEMU \
     -smp 1 -m 8192 \
     -kernel /boot/vmlinuz-$KVER \
     -initrd "$BASE/appliance.cpio.gz" \
-    -append "console=ttyS0 rdinit=/init panic=-1" \
+    -append "console=ttyS0 rdinit=/init panic=-1 $EXTRA_CMDLINE" \
     -display none -monitor none -no-reboot \
     -serial "file:$RS/console.log" \
     </dev/null >"$RS/qemu-stdout.log" 2>&1 || rc=$?
