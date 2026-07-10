@@ -12,7 +12,7 @@ Evidence formats: `schemas/README.md`. Box side lives under `/root/nested-x86-sp
 | N-2 existential trio | **PROVISIONAL GO** (2026-07-10) | `results/n2/` — 1,052,000/1,052,000 exact |
 | N-3 full-stack + adversarial L0 | **GO** (2026-07-10) | `results/n3/` — one hash across all conditions, nested==metal |
 | N-4 perf envelope | **GO** (2026-07-10) | workloads 1.01–1.08×; exact-landing ~5.4×/deadline |
-| N-5 packaging rehearsal | pending | |
+| N-5 packaging rehearsal | **GO** (2026-07-10) | `results/n5/` — one-command fresh-tree demo PASS |
 
 ## Commands (box)
 

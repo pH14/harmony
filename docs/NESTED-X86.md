@@ -409,6 +409,24 @@ One documented command, fresh checkout, on the box: build the appliance image, b
 L0, run the same-seed nested gate, emit the evidence bundle. This is the "download image, boot
 VM, deterministic machine" demonstration and the seed of any future distribution story.
 
+> **Disposition (2026-07-10): GO.** Evidence: `spikes/nested-x86/results/n5/`. The command,
+> from a fresh source tree on the box (shipped as a sha256-verified `git archive` tarball of
+> the spike branch because the branch is unpushed — a git checkout becomes equivalent the
+> moment it is pushed):
+>
+> ```sh
+> bash spikes/nested-x86/n5-demo.sh /root/nested-x86-n5
+> ```
+>
+> It cold-built the gate binaries + C1 payloads, assembled the content-pinned appliance
+> (manifest `results/n5/build-manifest.json`), booted it under stock-KVM L0, ran
+> `live_determinism` + the 100-rep same-seed repeat gate nested, and **PASSED** — the gate
+> reproduced the N-3 reference `state_hash 6163f1109b5677de…` 100/100
+> (`results/n5/n5-demo/verdict.json`). Attempt 1 caught a real packaging bug (the appliance
+> staged artifacts under a hardcoded prefix instead of mirroring the fresh tree's baked-in
+> source path) — fixed in `build-appliance.sh`/`l1-appliance-init.sh`; the rehearsal did its
+> job.
+
 ## Decision ladder
 
 Each stage ends with exactly one recorded disposition:

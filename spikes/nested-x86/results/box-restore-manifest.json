@@ -45,7 +45,9 @@
     "packages": "any apt installs will be appended to packages_installed below",
     "module_changes": "NONE PLANNED - box is already stock KVM with nested=Y, which is the spike's L0 posture",
     "kernel_changes": "none planned",
-    "reboots": []
+    "reboots": [
+      "2026-07-10T20:05Z spike-end reboot (recorded, exclusive lock): closes N-0's two-reboot capability-identity check and N-2's after-L0-reboot count-stability check; all runner units verified enabled beforehand"
+    ]
   },
   "packages_installed": [
     "busybox-static (2026-07-10, for L1 probe initramfs; displaces no existing busybox binary usage)",
