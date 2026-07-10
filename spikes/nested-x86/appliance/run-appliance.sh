@@ -13,7 +13,7 @@ EXTRA_CMDLINE="${3:-}"
 mkdir -p "$RS"
 
 QEMU=/usr/bin/qemu-system-x86_64
-CPUSET=3   # pinned per box core discipline (leased core set)
+CPUSET="${CPUSET_OVERRIDE:-3}"   # pinned per box core discipline; override for the migration condition
 
 {
   echo "{"
@@ -39,6 +39,7 @@ timeout "$TIMEOUT" taskset -c $CPUSET $QEMU \
     -initrd "$BASE/appliance.cpio.gz" \
     -append "console=ttyS0 rdinit=/init panic=-1 $EXTRA_CMDLINE" \
     -display none -monitor none -no-reboot \
+    -pidfile "$RS/qemu.pid" \
     -serial "file:$RS/console.log" \
     </dev/null >"$RS/qemu-stdout.log" 2>&1 || rc=$?
 

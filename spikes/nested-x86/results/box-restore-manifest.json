@@ -47,7 +47,10 @@
     "kernel_changes": "none planned",
     "reboots": []
   },
-  "packages_installed": ["busybox-static (2026-07-10, for L1 probe initramfs; displaces no existing busybox binary usage)"],
+  "packages_installed": [
+    "busybox-static (2026-07-10, for L1 probe initramfs; displaces no existing busybox binary usage)",
+    "stress-ng 0.19.02 (2026-07-10, N-2 contamination-probe load generator)"
+  ],
   "restore_procedure": [
     "1. kill any spike-launched QEMU processes (pidfiles under /root/nested-x86-spike/run/)",
     "2. verify lsmod kvm/kvm_intel identity + params match kvm_as_found (no module changes were planned)",
