@@ -1,0 +1,217 @@
+
+running 1 test
+test c1_corpus_o1_o2_on_the_patched_backend ... [box-corpus] === sweep 1 ===
+[box-corpus] insn-rdtsc     O1=PASS O2=PASS digest=1065ab4cf566433b2eec2b756810c4c5e75775012d63f46aafefc273bdb78ae3 identical; both halted at 1
+[box-corpus] insn-rng       O1=PASS O2=PASS digest=0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926 identical; both halted at 1
+[box-corpus] insn-cpuid     O1=PASS O2=PASS digest=cd321ad6f98a9b33f1277a243b06ff5eb5390b652b31f74bb8c39a55f87282f5 identical; both halted at 1
+[box-corpus] insn-rdpmc     O1=PASS O2=PASS digest=25222db6da48e96daf022a1141e288918db4024e8e0e35fc966d7c3021b76dc1 identical; both halted at 1
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0x100148 work=1498 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0x100148 work=1499 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x35 data=n/a rip=0x100148 work=1500 disposition=AllowFixed(65537)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0x100148 work=1501 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0x100148 work=1502 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xce data=n/a rip=0x100148 work=1503 disposition=AllowFixed(5120)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0x100148 work=1504 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0x100148 work=1505 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x100148 work=1506 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0x100148 work=1498 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0x100148 work=1499 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x35 data=n/a rip=0x100148 work=1500 disposition=AllowFixed(65537)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0x100148 work=1501 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0x100148 work=1502 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xce data=n/a rip=0x100148 work=1503 disposition=AllowFixed(5120)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0x100148 work=1504 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0x100148 work=1505 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x100148 work=1506 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0x100148 work=1498 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0x100148 work=1499 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x35 data=n/a rip=0x100148 work=1500 disposition=AllowFixed(65537)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0x100148 work=1501 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0x100148 work=1502 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xce data=n/a rip=0x100148 work=1503 disposition=AllowFixed(5120)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0x100148 work=1504 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0x100148 work=1505 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x100148 work=1506 disposition=AllowFixed(6145)
+[box-corpus] msr-allowed    O1=PASS O2=PASS digest=c1ebdcd7089394d73b3570007c6d27ba66c2a199eb32724dbb32558a4c906dde identical; both halted at 1
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x0 data=n/a rip=0x100117 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x0 data=0x0 rip=0x100140 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x13 data=n/a rip=0x100117 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x13 data=0x0 rip=0x100140 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x39 data=n/a rip=0x100117 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x39 data=0x0 rip=0x100140 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x150 data=n/a rip=0x100117 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x150 data=0x0 rip=0x100140 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfff data=n/a rip=0x100117 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xfff data=0x0 rip=0x100140 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x2000 data=n/a rip=0x100117 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x2000 data=0x0 rip=0x100140 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10000 data=n/a rip=0x100117 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x10000 data=0x0 rip=0x100140 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x40000fff data=n/a rip=0x100117 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x40000fff data=0x0 rip=0x100140 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xc0000200 data=n/a rip=0x100117 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xc0000200 data=0x0 rip=0x100140 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xdeadbeef data=n/a rip=0x100117 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xdeadbeef data=0x0 rip=0x100140 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xffffffff data=n/a rip=0x100117 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xffffffff data=0x0 rip=0x100140 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x0 data=n/a rip=0x100117 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x0 data=0x0 rip=0x100140 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x13 data=n/a rip=0x100117 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x13 data=0x0 rip=0x100140 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x39 data=n/a rip=0x100117 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x39 data=0x0 rip=0x100140 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x150 data=n/a rip=0x100117 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x150 data=0x0 rip=0x100140 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfff data=n/a rip=0x100117 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xfff data=0x0 rip=0x100140 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x2000 data=n/a rip=0x100117 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x2000 data=0x0 rip=0x100140 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10000 data=n/a rip=0x100117 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x10000 data=0x0 rip=0x100140 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x40000fff data=n/a rip=0x100117 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x40000fff data=0x0 rip=0x100140 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xc0000200 data=n/a rip=0x100117 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xc0000200 data=0x0 rip=0x100140 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xdeadbeef data=n/a rip=0x100117 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xdeadbeef data=0x0 rip=0x100140 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xffffffff data=n/a rip=0x100117 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xffffffff data=0x0 rip=0x100140 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x0 data=n/a rip=0x100117 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x0 data=0x0 rip=0x100140 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x13 data=n/a rip=0x100117 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x13 data=0x0 rip=0x100140 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x39 data=n/a rip=0x100117 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x39 data=0x0 rip=0x100140 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x150 data=n/a rip=0x100117 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x150 data=0x0 rip=0x100140 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfff data=n/a rip=0x100117 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xfff data=0x0 rip=0x100140 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x2000 data=n/a rip=0x100117 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x2000 data=0x0 rip=0x100140 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10000 data=n/a rip=0x100117 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x10000 data=0x0 rip=0x100140 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x40000fff data=n/a rip=0x100117 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x40000fff data=0x0 rip=0x100140 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xc0000200 data=n/a rip=0x100117 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xc0000200 data=0x0 rip=0x100140 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xdeadbeef data=n/a rip=0x100117 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xdeadbeef data=0x0 rip=0x100140 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xffffffff data=n/a rip=0x100117 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xffffffff data=0x0 rip=0x100140 work=1102 disposition=DenyGp
+[box-corpus] msr-denied     O1=PASS O2=PASS digest=b29a3e8591e1c03062f3efc905888425eeaa8df455ecb612a2ab499f0b9fbc60 identical; both halted at 1
+[box-corpus] insn-hlt       O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] insn-mwait     O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] irq-landing    O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] pit-pic-stub   O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] === sweep 2 ===
+[box-corpus] insn-rdtsc     O1=PASS O2=PASS digest=1065ab4cf566433b2eec2b756810c4c5e75775012d63f46aafefc273bdb78ae3 identical; both halted at 1
+[box-corpus] insn-rng       O1=PASS O2=PASS digest=0fe06bf4edf727fc1d200f810a307c30e65915b7c1ed230a5e513defbb2a3926 identical; both halted at 1
+[box-corpus] insn-cpuid     O1=PASS O2=PASS digest=cd321ad6f98a9b33f1277a243b06ff5eb5390b652b31f74bb8c39a55f87282f5 identical; both halted at 1
+[box-corpus] insn-rdpmc     O1=PASS O2=PASS digest=25222db6da48e96daf022a1141e288918db4024e8e0e35fc966d7c3021b76dc1 identical; both halted at 1
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0x100148 work=1498 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0x100148 work=1499 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x35 data=n/a rip=0x100148 work=1500 disposition=AllowFixed(65537)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0x100148 work=1501 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0x100148 work=1502 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xce data=n/a rip=0x100148 work=1503 disposition=AllowFixed(5120)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0x100148 work=1504 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0x100148 work=1505 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x100148 work=1506 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0x100148 work=1498 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0x100148 work=1499 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x35 data=n/a rip=0x100148 work=1500 disposition=AllowFixed(65537)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0x100148 work=1501 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0x100148 work=1502 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xce data=n/a rip=0x100148 work=1503 disposition=AllowFixed(5120)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0x100148 work=1504 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0x100148 work=1505 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x100148 work=1506 disposition=AllowFixed(6145)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x17 data=n/a rip=0x100148 work=1498 disposition=AllowFixed(0)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1b data=n/a rip=0x100148 work=1499 disposition=AllowFixed(4276095232)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x35 data=n/a rip=0x100148 work=1500 disposition=AllowFixed(65537)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x3a data=n/a rip=0x100148 work=1501 disposition=AllowFixed(1)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x8b data=n/a rip=0x100148 work=1502 disposition=AllowFixed(4294967296)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xce data=n/a rip=0x100148 work=1503 disposition=AllowFixed(5120)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfe data=n/a rip=0x100148 work=1504 disposition=AllowFixed(1288)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10a data=n/a rip=0x100148 work=1505 disposition=AllowFixed(167775241)
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x1a0 data=n/a rip=0x100148 work=1506 disposition=AllowFixed(6145)
+[box-corpus] msr-allowed    O1=PASS O2=PASS digest=c1ebdcd7089394d73b3570007c6d27ba66c2a199eb32724dbb32558a4c906dde identical; both halted at 1
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x0 data=n/a rip=0x100117 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x0 data=0x0 rip=0x100140 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x13 data=n/a rip=0x100117 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x13 data=0x0 rip=0x100140 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x39 data=n/a rip=0x100117 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x39 data=0x0 rip=0x100140 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x150 data=n/a rip=0x100117 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x150 data=0x0 rip=0x100140 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfff data=n/a rip=0x100117 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xfff data=0x0 rip=0x100140 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x2000 data=n/a rip=0x100117 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x2000 data=0x0 rip=0x100140 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10000 data=n/a rip=0x100117 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x10000 data=0x0 rip=0x100140 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x40000fff data=n/a rip=0x100117 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x40000fff data=0x0 rip=0x100140 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xc0000200 data=n/a rip=0x100117 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xc0000200 data=0x0 rip=0x100140 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xdeadbeef data=n/a rip=0x100117 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xdeadbeef data=0x0 rip=0x100140 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xffffffff data=n/a rip=0x100117 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xffffffff data=0x0 rip=0x100140 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x0 data=n/a rip=0x100117 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x0 data=0x0 rip=0x100140 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x13 data=n/a rip=0x100117 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x13 data=0x0 rip=0x100140 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x39 data=n/a rip=0x100117 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x39 data=0x0 rip=0x100140 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x150 data=n/a rip=0x100117 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x150 data=0x0 rip=0x100140 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfff data=n/a rip=0x100117 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xfff data=0x0 rip=0x100140 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x2000 data=n/a rip=0x100117 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x2000 data=0x0 rip=0x100140 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10000 data=n/a rip=0x100117 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x10000 data=0x0 rip=0x100140 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x40000fff data=n/a rip=0x100117 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x40000fff data=0x0 rip=0x100140 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xc0000200 data=n/a rip=0x100117 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xc0000200 data=0x0 rip=0x100140 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xdeadbeef data=n/a rip=0x100117 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xdeadbeef data=0x0 rip=0x100140 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xffffffff data=n/a rip=0x100117 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xffffffff data=0x0 rip=0x100140 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x0 data=n/a rip=0x100117 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x0 data=0x0 rip=0x100140 work=1092 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x13 data=n/a rip=0x100117 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x13 data=0x0 rip=0x100140 work=1093 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x39 data=n/a rip=0x100117 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x39 data=0x0 rip=0x100140 work=1094 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x150 data=n/a rip=0x100117 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x150 data=0x0 rip=0x100140 work=1095 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xfff data=n/a rip=0x100117 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xfff data=0x0 rip=0x100140 work=1096 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x2000 data=n/a rip=0x100117 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x2000 data=0x0 rip=0x100140 work=1097 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x10000 data=n/a rip=0x100117 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x10000 data=0x0 rip=0x100140 work=1098 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0x40000fff data=n/a rip=0x100117 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0x40000fff data=0x0 rip=0x100140 work=1099 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xc0000200 data=n/a rip=0x100117 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xc0000200 data=0x0 rip=0x100140 work=1100 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xdeadbeef data=n/a rip=0x100117 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xdeadbeef data=0x0 rip=0x100140 work=1101 disposition=DenyGp
+[vmm-core] msr-exit dir=RDMSR exit-reason=KVM_EXIT_X86_RDMSR index=0xffffffff data=n/a rip=0x100117 work=1102 disposition=DenyGp
+[vmm-core] msr-exit dir=WRMSR exit-reason=KVM_EXIT_X86_WRMSR index=0xffffffff data=0x0 rip=0x100140 work=1102 disposition=DenyGp
+[box-corpus] msr-denied     O1=PASS O2=PASS digest=b29a3e8591e1c03062f3efc905888425eeaa8df455ecb612a2ab499f0b9fbc60 identical; both halted at 1
+[box-corpus] insn-hlt       O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] insn-mwait     O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] irq-landing    O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] pit-pic-stub   O2-deferred (timer/IRQ payload — needs vmm-core LAPIC/PIT/IRQ modeling, a later phase); not box-gated
+[box-corpus] aggregate sweep 1 = e5c7432a6ebf674d8bf842fab54922939c176d034457a3c552fccb20bf3333dc
+[box-corpus] aggregate sweep 2 = e5c7432a6ebf674d8bf842fab54922939c176d034457a3c552fccb20bf3333dc
+[box-corpus] PASS: 6 conformance item(s) O1+O2 green, deterministic twice; 4 item(s) O2-deferred (aggregate e5c7432a6ebf674d8bf842fab54922939c176d034457a3c552fccb20bf3333dc)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 285.28s
+
