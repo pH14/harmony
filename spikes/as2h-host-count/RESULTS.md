@@ -57,33 +57,66 @@ Floors, with N=0 control (PC set directly at the HVC):
   quantized and infrequent, not noise — it must be **excluded** (EL
   filtering), not modeled, because host IRQ arrival is nondeterministic.
 
-## What this changes
+## H3 — kpc configurable counters are blind to guest execution (NO-GO)
 
-AS-2's NO-GO killed "counter visible to the EL2 monitor". H2 shows the
-counter exists **outside** the VM with exact guest attribution. The remaining
-existential questions move to the kpc layer (root required):
+Run as root on the M4. `INST_BRANCH` on a configurable counter, thread-scoped,
+across EL masks {EL0A64, EL1, EL0A64|EL1} × N ∈ {0, 1M, 10M}, 500 reps each:
+the counter reads **exactly 74 in every configuration** (100% mode, usually
+distinct=1) — the constant host-userspace sliver around `hv_vcpu_run` — while
+the guest retired 1M–10M branches. `INST_ALL` likewise reads a constant 312.
+In the same windows the fixed counter saw the guest's 2M/20M instructions.
 
-1. **H3 — EL-filtered branch counting.** Configure `INST_BRANCH` on a
-   configurable counter via kpc with per-EL enables such that guest EL1/EL0
-   count and host-kernel does not (macOS kernel runs at EL2 under VHE, guest
-   kernel at EL1 — the EL split is exactly the guest/host split). Kills the
-   +74 quantum by construction if the filter bits behave. Risk: XNU's kpc may
-   pin PMCR1 EL enables to host user+kernel, leaving guest EL1 invisible to
-   configurable counters — the mirror image of H2. Empirical question.
-2. **H4 — overflow/PMI delivery.** `kpc_set_period` + kperf action: is there
-   a bounded-skid interrupt near a counter threshold usable to stop the vCPU
-   (kperf sample → helper → `hv_vcpus_exit`)? Fallback: conservative-margin
-   chunked stopping (wall-clock hint is allowed to be nondeterministic when
-   landing is exact) + AS-4-style single-step final approach.
-3. **Contract question for Paul:** the no-root fixed counter is
-   *instructions*, not branches. `INST_BRANCH` needs kpc (root). If H3 shows
-   EL-filtered `INST_BRANCH` works thread-scoped, the retired-branch contract
-   survives unchanged; if only `INST_ALL` filtering works, adopting an
-   instructions-retired V-time on this backend is an explicit ruling, never a
-   silent substitution.
+Conclusions: XNU disables/swaps **configurable** counters in guest context but
+keeps **fixed** counters (cycles, instructions) running; the config-word EL
+bits made no observable difference. Host-side retired-branch counting via
+stock kpc is dead.
 
-## Access needed
+## H3b — no remaining kpc mechanism (root, M4)
 
-kpc configuration is root-gated; `rentamac` sudo requires a password we don't
-hold. H3/H4 need either a NOPASSWD sudoers entry for the probe binaries or a
-root-run helper window.
+`pmu_version=2`; fixed: 2 counters / **0 configs**; configurable: 8/8;
+power: 0/0; **rawpmu: 0/0 (class not implemented on ARM64)**. There is no
+stock-kernel interface left that could EL-filter or guest-scope a counter.
+With AS-2's in-VM NO-GO, the hardware options on stock macOS are **exhausted**.
+
+## H4a — the contamination is a family of state-dependent entry paths
+
+Fixed-counter windows over N ∈ {0.5M..16M} × 300 reps plus paced variants
+(1ms / 10ms sleeps between windows):
+
+- The clean floor is globally exact: `floor(N) − 2N` is one of a small
+  discrete set of path lengths — **5770 (minimal), 5778 (+8), 5852 (+82)** —
+  and the guest-work slope is exactly 2 instructions/iteration across a 32×
+  range on top of whichever path fired.
+- Which path fires depends on **ambient machine state, not N**: +74-class
+  offsets dominated N=1M yesterday (95%) and vanished at N=1M today; after
+  1ms idle gaps 247/300 windows ran +8; after 10ms gaps a +165-ish cluster
+  appears (deeper idle ⇒ longer wake/entry work charged to the thread).
+- Rare large offsets (+5.8K–9.8K) are real async events (timer ticks),
+  Poisson-ish, more frequent in longer windows, absent when the box is quiet
+  (tickless idle).
+
+## Verdict and design implications for an instructions-retired approach
+
+What exists on stock macOS: an **exact-when-clean, no-root, per-thread
+instructions-retired counter with 1:1 guest attribution**, contaminated
+additively by (a) a discrete family of guest-entry path costs selected by
+ambient host state and (b) rare async kernel events — neither filterable,
+both landing on the same counter as guest work.
+
+- **Usable:** as the *hint* in an overshoot-impossible landing design
+  (max-retire-rate-bounded chunked stops + AS-4-style single-step final
+  approach, where the authoritative position comes from stepping, not the
+  counter). Contamination costs performance, never correctness.
+- **Not usable as-is:** as the *authoritative record* V-time (assigning
+  Moments to observed events). Contamination is state-dependent, so
+  dual-run-agreement filtering has correlated failure modes (paced idle
+  reproduces the same +8 in both runs), and record/replay/cross-machine runs
+  do not share ambient state.
+- Any adoption of an instructions clock in place of retired branches on this
+  backend is an explicit contract ruling (GLOSSARY/SCORING lineage), never a
+  silent substitution.
+
+Scope of all conclusions: Mac16,10 / M4 / macOS 26.5 and J316c / M1 Max /
+macOS 26.4.1, stock kernels, public + private-framework interfaces, root
+where noted. A future macOS could reopen any of these doors; the probes here
+re-answer the question in minutes.

@@ -1,0 +1,5 @@
+{"pmu_version":2}
+{"class":"fixed","mask":1,"counter_count":2,"config_count":0}
+{"class":"configurable","mask":2,"counter_count":8,"config_count":8}
+{"class":"power","mask":4,"counter_count":0,"config_count":0}
+{"class":"rawpmu","mask":8,"counter_count":0,"config_count":0}
