@@ -23,3 +23,10 @@ spikes/*
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# AS-2H spike evidence is tracked on this branch
+!spikes/
+!spikes/as2h-host-count/
+!spikes/as2h-host-count/**
+spikes/as2h-host-count/probes/h1_selfcount
+spikes/as2h-host-count/probes/h2_guest_attrib
