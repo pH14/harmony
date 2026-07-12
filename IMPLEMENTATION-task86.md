@@ -193,6 +193,37 @@ recorded — the mode 1→3→0 arc the campaign cell keys showed, now visible.
    pinnable genesis so the Session roots at the scraped base). Promotion
    into `resolution` proper is follow-up work.
 
+### Gate 3 — the measurement: ✅ RUN 2026-07-12 (M0 scope; verdict INCOMPLETE by construction)
+
+`dissonance/benchmark/SMB-EXPLORATION-REPORT.md` committed, over **20 seeds
+× {pure-random, selector-v1}** at the recorded budget (B=32,
+`deadline_delta` 2·10⁹, ROM sha256 stamped on every log; the two lanes
+co-ran on distinct leased cores — the sanctioned co-tenancy stress test —
+each writing its own logs file, merged after byte-identical-manifest
+verification). Raw logs + manifest committed under
+`dissonance/benchmark/campaign-data/smb-m0/` (the retention discipline).
+
+- **The baseline-plateau record (non-vacuity documentation):** pure-random
+  is demonstrably live — median **29.5 distinct cells** (IQR [28, 32.5])
+  — but **depth median 0, IQR [0, 0]**: no random seed cleared any level
+  in 32 branches × 2 v-s. Pits and enemies plateau random input within
+  the first screens, exactly the spec's premise; the control a future
+  Signal must beat is alive and hard.
+- **Attribution finding:** selector-v1 ≈ pure-random (27.5 [26, 29.5]
+  cells, depth likewise 0) — the task-84-era archive alone does NOT beat
+  random restarts on this workload at this budget. That sharpens the M1
+  referendum: any selector win must come from the selector, not from
+  archive-branching per se.
+- **Verdict: INCOMPLETE — "missing configuration(s): signal"** — correct
+  by construction (task 70 was NO-GO'd; the driver refuses to fake a
+  Signal). Gates 3/4's PASS/FAIL verdict is M1's, after a selector
+  artifact exists.
+
+**M0 is now complete: all box gates green** (boot/smoke + vacuity check,
+gate-2 determinism 25/25, the film live gate's five sub-gates, the M0
+campaign report + committed artifacts), portable gates green incl. the
+nightly Miri lines, box left on stock KVM (verified, zero leases).
+
 ## Box gates — the live path (handed to the foreman)
 
 **Blocked on the ROM**: `HARMONY_SMB_ROM` is user-supplied (Paul owes the
