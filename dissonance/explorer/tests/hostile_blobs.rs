@@ -523,21 +523,66 @@ proptest! {
         }
     }
 
-    /// The core untrusted-input property: **arbitrary bytes at any declared
-    /// version never panic** — both public decode-path methods return a typed
-    /// `Ok`/`Err`, never abort (conventions rule 4).
+    /// The core untrusted-input property: **hostile mutations of a valid blob
+    /// never panic** — both public decode-path methods return a typed `Ok`/`Err`,
+    /// never abort (conventions rule 4).
+    ///
+    /// It fuzzes a **valid current-version encoding**, not arbitrary bytes: a
+    /// uniform-random blob would fail the outer version guard (~65,535/65,536 of
+    /// the time) or the 4-byte magic (almost always) and short-circuit *before*
+    /// the header/inner-`EnvSpec`/length-field parser — so a panic deep in the
+    /// decoder (an out-of-bounds read on a corrupted length prefix) could hide
+    /// behind a green property. Instead: declare the adapter version, keep a
+    /// **valid prefix that always covers the full 22-byte wrapper header** (so
+    /// the wrapper decodes and `EnvSpec::decode` is entered), retain a random
+    /// amount of the valid inner spec, then append hostile bytes. The base is
+    /// generated with a variable override/reseed count so the inner spec has the
+    /// length-prefixed sections whose parsing is the target. Wrong-version
+    /// coverage lives in `any_wrong_version_is_malformed`.
     #[test]
-    fn arbitrary_bytes_never_panic(
-        va in any::<u16>(),
-        a in prop::collection::vec(any::<u8>(), 0..300),
+    fn mutations_of_a_valid_encoding_never_panic(
+        seed in any::<u64>(),
+        keys in prop::collection::vec(0u64..2000, 0..8),
+        base_offset in 0u64..2000,
+        span in 0u64..2000,
+        keep in any::<usize>(),
+        tail in prop::collection::vec(any::<u8>(), 0..96),
         salt in any::<u64>(),
     ) {
-        let env = Environment { blob_version: va, bytes: a };
+        // A well-formed base (pos >= base_offset) with the given overrides, so
+        // its encoding carries the deep length-prefixed sections.
+        let full = valid_blob(base_offset, base_offset + span, seed, &keys).bytes;
+        // Retain a valid prefix in [HEADER_LEN, full.len()] — always the whole
+        // wrapper header plus a random slice of the inner spec, so the wrapper
+        // decodes and the inner parser is always entered — then append garbage.
+        // With an empty tail this is truncation at an arbitrary inner boundary;
+        // with a non-empty tail it is corruption/extension past that boundary.
+        let cut = HEADER_LEN + keep % (full.len() - HEADER_LEN + 1);
+        let mut bytes = full[..cut].to_vec();
+        bytes.extend_from_slice(&tail);
+        let env = Environment { blob_version: ADAPTER_BLOB_VERSION, bytes };
         let good = good_partner();
         // A panic in any call fails the test; assert totality explicitly. The
         // hostile blob is driven as mutate's operand, as compose's base, AND as
         // compose's tail (valid base ⇒ the tail-decode path is reached), so a
-        // panic that only fires while decoding the second operand is caught.
+        // panic that only fires while decoding the second operand is caught too.
+        prop_assert!(matches!(SpecEnvCodec.mutate(&env, salt), Ok(_) | Err(_)));
+        prop_assert!(matches!(SpecEnvCodec.compose(&env, &good), Ok(_) | Err(_)));
+        prop_assert!(matches!(SpecEnvCodec.compose(&good, &env), Ok(_) | Err(_)));
+    }
+
+    /// Complements the above with **fully arbitrary bytes at the correct declared
+    /// version**: these pass the version guard and stress the outer magic/length
+    /// guards on wild input (they almost never reach the deep parser — that is the
+    /// job of `mutations_of_a_valid_encoding_never_panic` — but they must still
+    /// never panic).
+    #[test]
+    fn arbitrary_current_version_bytes_never_panic(
+        a in prop::collection::vec(any::<u8>(), 0..300),
+        salt in any::<u64>(),
+    ) {
+        let env = Environment { blob_version: ADAPTER_BLOB_VERSION, bytes: a };
+        let good = good_partner();
         prop_assert!(matches!(SpecEnvCodec.mutate(&env, salt), Ok(_) | Err(_)));
         prop_assert!(matches!(SpecEnvCodec.compose(&env, &good), Ok(_) | Err(_)));
         prop_assert!(matches!(SpecEnvCodec.compose(&good, &env), Ok(_) | Err(_)));
