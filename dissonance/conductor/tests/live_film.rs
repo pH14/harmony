@@ -626,7 +626,16 @@ fn run_gate<S: Read + Write>(
     // the distinct stamp moments and read each header's ACTUAL frame counter
     // — the observed (frame, moment) pairs are exact by determinism, so
     // film()'s landings re-observe them by construction.
-    let header_len32 = u32::try_from(film::HEADER_LEN).expect("HEADER_LEN fits u32");
+    // The header parse validates the region table against the buffer it is
+    // given, so calibration reads the WHOLE window (15–35 KiB, under the
+    // read cap), not just the 32 header bytes.
+    let window_len32 = u32::try_from(len).map_err(|_| "billboard len exceeds u32")?;
+    if window_len32 > resolution::READ_CAP {
+        return Err(format!(
+            "billboard window ({window_len32} bytes) exceeds the read cap — chunked calibration \
+             not implemented"
+        ));
+    }
     adapter
         .branch(base, &wire_env)
         .map_err(|e| format!("calibration branch: {e}"))?;
@@ -645,10 +654,10 @@ fn run_gate<S: Read + Write>(
             StopReason::Deadline { .. } => {}
             other => return Err(format!("guest died during calibration: {other:?}")),
         }
-        let head = adapter
-            .read(gpa, header_len32)
+        let window = adapter
+            .read(gpa, window_len32)
             .map_err(|e| format!("calibration read: {e}"))?;
-        let header = film::BillboardHeader::parse(&head)
+        let header = film::BillboardHeader::parse(&window)
             .map_err(|e| format!("calibration header at {}: {e}", stamp.moment))?;
         match ticks.last() {
             Some(prev) if prev.frame == header.frame => {}
