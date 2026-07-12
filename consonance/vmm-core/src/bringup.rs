@@ -484,8 +484,8 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
-        ignore = "materialize/Mapping use file-backed mmap, which Miri cannot execute; the map seam \
-                  is covered under Miri by compose_drives_guestram_and_unsafe_map_memory"
+        ignore = "materialize's tempfile+mmap can't run under Miri; the unsafe map_memory over the \
+                  Mapping is exercised under Miri by compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn compose_restore_target_maps_the_snapshot_without_loading() {
         let mut store = snapshot_store::Store::new(snapshot_store::StoreConfig { mem_pages: 4 });
@@ -502,6 +502,41 @@ mod tests {
         let mem = vmm.guest_memory();
         assert_eq!(mem.len(), 4 * 4096);
         assert_eq!(&mem[2 * 4096..2 * 4096 + 4], b"SNAP");
+        assert!(mem[..4096].iter().all(|&b| b == 0), "no loader ever ran");
+    }
+
+    /// The **Miri arm** of the test above (round-1 review, blocking item 1).
+    /// `compose_restore_target` has its OWN `unsafe` `map_memory` — mapping a
+    /// [`snapshot_store::Mapping`]'s buffer as guest RAM, a different backing
+    /// *lifetime* than `compose()`'s owned [`GuestRam`] (the mapping is moved into the
+    /// returned `Vmm` and must stay valid there). `Store::materialize`'s real `mmap`
+    /// can't run under Miri, so drive the identical seam over the mmap-free
+    /// [`snapshot_store::Mapping::anonymous`] buffer: Miri checks the `&mut [u8]`
+    /// handed to `map_memory`, and — because the mapping is then moved into the `Vmm`
+    /// and read back through [`Vmm::guest_memory`] — that the buffer stays valid across
+    /// the move. This keeps the restore-side `map_memory` site UB-watched even though
+    /// every `Store::materialize`-driven test is Miri-ignored.
+    #[test]
+    fn compose_restore_target_map_memory_over_an_anonymous_mapping() {
+        const PAGES: usize = 4;
+        let mut mapping = snapshot_store::Mapping::anonymous(PAGES * 4096);
+        // A sentinel at page 2 (mirrors the `SNAP` marker above) so the assertion
+        // proves the mapped buffer IS the guest RAM after the unsafe map.
+        mapping.as_mut_slice()[2 * 4096..2 * 4096 + 4].copy_from_slice(b"SNAP");
+
+        let vmm = compose_restore_target(MockBackend::new(), mapping, true).unwrap();
+        assert!(
+            vmm.ram_backing_is_snapshot(),
+            "the mapping itself is the guest RAM backing"
+        );
+        assert!(vmm.lapic_wired());
+        let mem = vmm.guest_memory();
+        assert_eq!(mem.len(), PAGES * 4096);
+        assert_eq!(
+            &mem[2 * 4096..2 * 4096 + 4],
+            b"SNAP",
+            "the mapped buffer reads through as guest RAM"
+        );
         assert!(mem[..4096].iter().all(|&b| b == 0), "no loader ever ran");
     }
 

@@ -4207,9 +4207,15 @@ directly or via the `branch`/`replay`/`run_obs_script` helpers — issues
 `Request::Branch`/`Replay` on a *live* snapshot, or calls `engine.materialize()`) is
 ignored under Miri. Detection was exhaustive over those four call paths; `restore()`
 materializes **before** it validates the branch env, so even the "rejected branch"
-tests reach it. The one branch test excluded, `branch_validates_the_env_before_touching_the_vm`,
-only exercises the *pre*-materialize reject paths (bad blob version / malformed env /
-unknown snapshot), so it never reaches the host op and still runs under Miri.
+tests reach it. Two branch/replay tests are *excluded* because their calls hit an early
+return **before** materialize: `branch_validates_the_env_before_touching_the_vm` (bad
+blob version / malformed env / unknown snapshot) and — caught in round-1 review (P2) —
+`snapshot_mints_fresh_handles_and_drop_releases_them`, whose only `Replay` is on a
+**dropped** handle (an `UnknownSnapshot` early-return). Both were re-audited to run
+under Miri. The other 37 rationale strings were re-checked against the same
+copy-paste-error question: every one reaches materialize (a successful branch, or a
+reject raised *after* materialize — `check_fault_admissible`, `PerturbPastMoment`,
+`RestoreFailed`); `snapshot_mints` was the only false one.
 
 **Why gate rather than a Miri-safe `image_bytes` seam (the spec's preferred shape).**
 A seam was built and verified first: route the memcpy restore's image bytes through an
@@ -4228,17 +4234,32 @@ under the shared ceiling** (SIGKILL 137). A seam that trades an abort for a time
 not a fix. Gating keeps the Miri run to the fast boot/logic tests, well inside budget.
 
 **Why coverage is preserved (shown, not asserted).** The unsafe this gate guards is
-the `Backend::map_memory` pointer seam reached through `bringup::compose*`. That seam
-fires identically on **every** VM boot — a restore composes a fresh VM through the
-*same* `compose*` path a cold boot does; it adds no new `unsafe`. It is exercised
-under Miri by, among others, `bringup::compose_drives_guestram_and_unsafe_map_memory`
-and every `server()`/`hello()`-based boot test that still runs (e.g.
-`hello_negotiates_the_pinned_caps`, the event-loop suite). So ignoring the restore
-tests drops **zero** unique UB surface; their *behavioural* assertions (schedule
-replay, taint propagation, reseed folds) are pure-logic and fully covered by the
-native `nextest` run. The three tests that were already `#[cfg_attr(miri, ignore)]`d
-(the two remap-path A/B tests + the one direct `engine.materialize()`) keep their
-existing "materialize uses mmap" rationale and are a subset of this same class.
+the `Backend::map_memory` pointer seam. There are **two** call sites in `bringup`, and
+both stay Miri-exercised:
+
+- `compose` / `compose_linux` map an **owned `GuestRam`** (a `Vec` under Miri) — the
+  cold-boot path, fired on every `server()`/`hello()` boot and pinned by
+  `bringup::compose_drives_guestram_and_unsafe_map_memory`.
+- `compose_restore_target` (the task-95 M2.2 restore path) has its **own**
+  `unsafe map_memory`, over a `snapshot_store::Mapping` rather than owned RAM — a
+  **different backing lifetime** (the mapping is moved into the returned `Vmm` and must
+  stay valid there). This is *not* the same reasoning as `compose()`, so the boot tests
+  do not cover it. Round-1 review (blocking) caught that gating every restore test left
+  it unwatched. Fixed by a Miri-executable seam: `snapshot_store::Mapping::anonymous(len)`
+  builds the same `Mapping` interface over a plain heap buffer (no `mmap`/tempfile), and
+  the dedicated **non-ignored** test
+  `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping` drives
+  `compose_restore_target` over it under Miri — checking the `&mut [u8]` handed to
+  `map_memory` and that the buffer survives the move into the `Vmm` and the later
+  `guest_memory()` read.
+
+So the ignored restore tests drop **zero** unique UB surface (both `map_memory` sites
+are covered by a running Miri test); their *behavioural* assertions (schedule replay,
+taint propagation, reseed folds) are pure-logic and fully covered by the native
+`nextest` run. The three tests already `#[cfg_attr(miri, ignore)]`d (two remap-path A/B
++ one direct `engine.materialize()`) are a subset of this same class; the
+`compose_restore_target_maps_the_snapshot_without_loading` gate's rationale was updated
+to point at the new anonymous test rather than the (wrong) `compose_drives_guestram` one.
 
 **Proptest `getcwd` fix.** Once the materialize abort is gone, the crate's property
 tests that *don't* touch restore surface a second Miri-isolation abort: proptest

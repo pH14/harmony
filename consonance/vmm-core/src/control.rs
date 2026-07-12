@@ -2692,10 +2692,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the map_memory unsafe is covered by the boot tests (task 98)"
-    )]
     fn snapshot_mints_fresh_handles_and_drop_releases_them() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);

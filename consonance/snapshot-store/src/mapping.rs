@@ -15,13 +15,34 @@ use memmap2::{MmapMut, MmapOptions};
 /// touched page privately and never reach the file or the [`Store`](crate::Store) —
 /// the snapshot stays immutable no matter what is written here. The unlinked tempfile
 /// is reclaimed by the OS when the `Mapping` drops.
+///
+/// [`Store::materialize`](crate::Store::materialize) always produces the mmap backing.
+/// The [`Mapping::anonymous`] seam produces the same *interface* over a plain heap
+/// buffer, so code that takes a `Mapping` — including `unsafe` code that maps its
+/// [`as_mut_slice`](Mapping::as_mut_slice) as memory — stays exercisable under the Miri
+/// interpreter, which cannot execute `mmap`.
 pub struct Mapping {
-    /// `None` only for zero-length images (`mmap` rejects zero-length maps).
-    map: Option<MmapMut>,
-    /// Keeps the backing tempfile open for the mapping's lifetime. The kernel would
-    /// keep the pages alive anyway, but holding the handle makes the ownership story
-    /// explicit and the SAFETY argument below local.
-    _file: File,
+    backing: Backing,
+}
+
+/// How a [`Mapping`]'s bytes are held.
+enum Backing {
+    /// The production path: a copy-on-write `mmap` over a sparse tempfile.
+    Mapped {
+        /// `None` only for zero-length images (`mmap` rejects zero-length maps).
+        map: Option<MmapMut>,
+        /// Keeps the backing tempfile open for the mapping's lifetime. The kernel would
+        /// keep the pages alive anyway, but holding the handle makes the ownership story
+        /// explicit and the SAFETY argument below local.
+        _file: File,
+    },
+    /// A test/Miri seam: a plain heap buffer — no `mmap`, no tempfile. Same observable
+    /// bytes and interface as `Mapped`; built only by [`Mapping::anonymous`]. Its base
+    /// is heap- (not page-) aligned, which is fine for its only use: driving a
+    /// **mock** backend that records the region rather than a real
+    /// `KVM_SET_USER_MEMORY_REGION` (that page-alignment requirement lives on the
+    /// `mmap` path).
+    Anonymous(Vec<u8>),
 }
 
 impl Mapping {
@@ -88,27 +109,80 @@ impl Mapping {
             // through it never reach the file.
             Some(unsafe { MmapOptions::new().len(len).map_copy(&file)? })
         };
-        Ok(Mapping { map, _file: file })
+        Ok(Mapping {
+            backing: Backing::Mapped { map, _file: file },
+        })
+    }
+
+    /// A `len`-byte, zero-filled mapping backed by a **plain heap buffer** instead of a
+    /// tempfile `mmap` — the Miri-executable seam behind `Store::materialize`'s
+    /// interface.
+    ///
+    /// Byte-observably identical to a freshly materialized all-zero image, but with no
+    /// `mmap`/tempfile, so a consumer that takes a `Mapping` (and the `unsafe` pointer
+    /// handling it performs on [`as_mut_slice`](Mapping::as_mut_slice) — e.g. mapping the
+    /// buffer as a mock backend's guest RAM) can be driven under the Miri interpreter,
+    /// which cannot execute `mmap`. Intended for tests / the UB safety net; production
+    /// restores always go through `Store::materialize`. Fill via `as_mut_slice`.
+    pub fn anonymous(len: usize) -> Mapping {
+        Mapping {
+            backing: Backing::Anonymous(vec![0u8; len]),
+        }
     }
 
     /// The full logical image as bytes.
     pub fn as_slice(&self) -> &[u8] {
-        self.map.as_deref().unwrap_or(&[])
+        match &self.backing {
+            Backing::Mapped { map, .. } => map.as_deref().unwrap_or(&[]),
+            Backing::Anonymous(buf) => buf,
+        }
     }
 
     /// The full logical image as mutable bytes. Writes are private to this mapping.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        self.map.as_deref_mut().unwrap_or(&mut [])
+        match &mut self.backing {
+            Backing::Mapped { map, .. } => map.as_deref_mut().unwrap_or(&mut []),
+            Backing::Anonymous(buf) => buf,
+        }
     }
 
     /// Length in bytes (`mem_pages * PAGE_SIZE`).
     pub fn len(&self) -> usize {
-        self.map.as_ref().map_or(0, |m| m.len())
+        match &self.backing {
+            Backing::Mapped { map, .. } => map.as_ref().map_or(0, |m| m.len()),
+            Backing::Anonymous(buf) => buf.len(),
+        }
     }
 
     /// True for a zero-length image.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+// The `anonymous` seam is `mmap`-free, so unlike the rest of this module it runs under
+// Miri — its whole point is to give the interpreter a `Mapping` to exercise.
+#[cfg(test)]
+mod anon_tests {
+    use super::*;
+    use crate::PAGE_SIZE;
+
+    #[test]
+    fn anonymous_is_zero_filled_and_writes_are_visible() {
+        let mut m = Mapping::anonymous(2 * PAGE_SIZE);
+        assert_eq!(m.len(), 2 * PAGE_SIZE);
+        assert!(!m.is_empty());
+        assert!(m.as_slice().iter().all(|&b| b == 0), "starts zero-filled");
+        m.as_mut_slice()[PAGE_SIZE] = 0xAB;
+        assert_eq!(m.as_slice()[PAGE_SIZE], 0xAB, "a write is visible");
+        assert_eq!(m.as_slice()[0], 0, "untouched bytes stay zero");
+    }
+
+    #[test]
+    fn anonymous_zero_length_is_empty() {
+        let m = Mapping::anonymous(0);
+        assert!(m.is_empty());
+        assert_eq!(m.as_slice(), &[] as &[u8]);
     }
 }
 
