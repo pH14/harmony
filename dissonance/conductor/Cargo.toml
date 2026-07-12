@@ -68,6 +68,13 @@ serde_json = "1"
 
 [dev-dependencies]
 proptest = "1"
+# The task-86 M0 film live gate (tests/live_film.rs, box-only): film() + the
+# render half, resolution's Session over a test-local control-proto wire
+# adapter (the module doc records the judgment call). Dev-only — none of
+# these enter the crate's build surface.
+film = { path = "../film", version = "0.1.0", features = ["core-replay"] }
+resolution = { path = "../resolution", version = "0.1.0", default-features = false }
+control-proto = { path = "../control-proto", version = "0.1.0" }
 # The recording gate records into a throwaway store dir per test.
 tempfile = "3"
 # The loopback SDK-events gate encodes an Event doorbell frame to stage in guest
