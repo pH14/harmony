@@ -304,6 +304,29 @@ fn chain_preservation_discriminates_nothing_here() {
     assert_eq!(any.chains_checked, 29);
     assert_eq!(any.ancestors_checked, 4, "depth-2 chains only");
 
+    // The report's branch-0 claim is *measured*, and scoped to exactly the
+    // population where it holds. Every one of the four finding-chain proper
+    // ancestors is branch 0 — but that is a fact about the shallow first-finding
+    // chains, not about the search at large: of the slice's 7 660 exploit
+    // branches, 1 524 descend from a non-genesis parent (a find enters the
+    // frontier and a later exploit step selects it). Conflating the two would
+    // over-generalize, which is why both are computed and both are reported.
+    let anc = primary_slice.ancestry;
+    assert_eq!(anc.finding_ancestors, 4, "== ancestors_checked");
+    assert_eq!(anc.finding_ancestors_at_zero, 4);
+    assert!(
+        anc.all_finding_ancestors_at_zero(),
+        "the scoped claim holds"
+    );
+    assert_eq!(
+        anc.exploit_branches, 7_660,
+        "~3/4 of 10 240 signal branches"
+    );
+    assert_eq!(
+        anc.nonzero_parent, 1_524,
+        "the search does exploit non-genesis parents — the claim is NOT corpus-wide"
+    );
+
     // The ablation never exploits, so its finds have no ancestors whatsoever.
     let ablation = analysis()
         .slices

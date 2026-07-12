@@ -59,7 +59,7 @@ use crate::candidate::Candidate;
 use crate::manifest::{Corpus, Totals};
 use crate::observe::CampaignObs;
 use crate::replay::Chains;
-use crate::score::{Constants, DebutAudit, ExploitLocality, SliceScore};
+use crate::score::{AncestryStats, Constants, DebutAudit, ExploitLocality, SliceScore};
 
 /// The slice the ranking is decided on: bug 3 is the only real discriminator
 /// (bug 1 is degenerate — it fires on any canary bit-flip — and bug 2 was
@@ -84,6 +84,9 @@ pub struct SliceAnalysis {
     pub debut: DebutAudit,
     /// How local the exploit kernel's seed twiddle actually is on this slice.
     pub locality: ExploitLocality,
+    /// The measured parent-branch distribution — grounds axis (c)'s vacuity
+    /// claim in the data rather than asserting it.
+    pub ancestry: AncestryStats,
 }
 
 /// A bug-1 reference row: recorded, never re-keyed.
@@ -191,6 +194,7 @@ pub fn analyze(root: &Path) -> Result<Analysis> {
             explore_period: slice.explore_period,
             campaigns: obs.len() as u64,
             locality: score::exploit_locality(&obs, &ch),
+            ancestry: score::ancestry_stats(&ch),
             scores,
             debut: score::debut_audit(&obs),
         });

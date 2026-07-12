@@ -44,12 +44,22 @@ pub fn gunzip(archive: &str, input: &[u8]) -> Result<Vec<u8>> {
     let flags = input[3];
     let mut at = 10usize;
 
-    // FEXTRA: a 2-byte length then that many bytes.
+    // FEXTRA: a little-endian u16 length, then that many bytes. Decoded with
+    // `from_le_bytes` rather than a hand-rolled `hi << 8 | lo`: the shift-or is
+    // indistinguishable from a shift-xor for any `lo < 256`, so that spelling
+    // carries a mutant no test could ever kill.
     if flags & 0x04 != 0 {
-        let lo = *input.get(at).ok_or_else(|| bad("truncated FEXTRA"))? as usize;
-        let hi = *input.get(at + 1).ok_or_else(|| bad("truncated FEXTRA"))? as usize;
+        // Read a fixed `[u8; 2]`, not a slice we index into: `try_into` requires
+        // the slice to be *exactly* two bytes, so `at..at + 2` cannot be widened
+        // (an `at * 2` / `at - 2` misread of the range fails the length check and
+        // errors, rather than silently reading the same first two bytes).
+        let field: [u8; 2] = input
+            .get(at..at + 2)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| bad("truncated FEXTRA"))?;
+        let xlen = usize::from(u16::from_le_bytes(field));
         at = at
-            .checked_add(2 + (hi << 8 | lo))
+            .checked_add(2 + xlen)
             .ok_or_else(|| bad("FEXTRA length overflows"))?;
     }
     // FNAME / FCOMMENT: NUL-terminated strings.
@@ -271,13 +281,28 @@ fn fixed_distance() -> std::result::Result<Huffman, String> {
     Huffman::build(&[5u8; 32])
 }
 
+/// The error a dynamic header fails with when it declares more literal/length
+/// codes than RFC 1951 defines. Pinned as a constant so the tests can assert
+/// *which* check rejected a header, not merely that something did.
+const TOO_MANY_CODES: &str = "dynamic block declares too many codes";
+
 /// Read a dynamic block's literal/length and distance codes.
+///
+/// `HLIT` is a 5-bit field read as `+257`, so it can declare up to 288
+/// literal/length codes where RFC 1951 defines only 286 — 287 and 288 do not
+/// exist, and a header over that bound is refused before a Huffman code is built
+/// over symbols with no meaning. `HDIST` (`+1`) spans `1..=32`, and **every one
+/// of those counts is legal**: RFC 1951 permits `HDIST+1 ∈ 1..=32`, with distance
+/// symbols 30 and 31 merely *reserved* rather than absent — caught at decode time
+/// by the `dsym >= 30` guard if a stream actually uses one. So there is no HDIST
+/// count bound to check here (a 5-bit field cannot exceed 32 in any case); only
+/// the literal/length overrun is a real rejection.
 fn dynamic_codes(br: &mut BitReader) -> std::result::Result<(Huffman, Huffman), String> {
     let hlit = br.bits(5)? as usize + 257;
     let hdist = br.bits(5)? as usize + 1;
     let hclen = br.bits(4)? as usize + 4;
-    if hlit > 286 || hdist > 30 {
-        return Err("dynamic block declares too many codes".into());
+    if hlit > 286 {
+        return Err(TOO_MANY_CODES.into());
     }
 
     let mut clen = [0u8; 19];
@@ -552,6 +577,182 @@ mod tests {
         assert_eq!(out, b"aaaaa", "one literal then a 4-byte self-overlap");
     }
 
+    /// The first 17 bits of a dynamic block: `BFINAL`, `BTYPE = 10`, then the
+    /// `HLIT` / `HDIST` / `HCLEN` counts. Enough to reach the header check; what
+    /// follows is deliberately absent.
+    fn dynamic_header(hlit: usize, hdist: usize, hclen: usize) -> Vec<u8> {
+        let mut w = BitWriter::default();
+        w.bits(1, 1); // BFINAL
+        w.bits(2, 2); // BTYPE = dynamic
+        w.bits((hlit - 257) as u32, 5);
+        w.bits((hdist - 1) as u32, 5);
+        w.bits((hclen - 4) as u32, 4);
+        w.finish()
+    }
+
+    /// Whichever error `inflate` returned on this header.
+    fn header_error(hlit: usize, hdist: usize) -> String {
+        inflate(&dynamic_header(hlit, hdist, 4)).expect_err("a bare header cannot decode")
+    }
+
+    /// A dynamic header declaring more literal/length codes than RFC 1951 defines
+    /// is refused — at the first value past the limit, not only at the field's
+    /// maximum. `HLIT` is a 5-bit `+257` field, so it can encode 287 and 288
+    /// literal/length codes where the format defines only 286; without this check
+    /// the decoder would build a Huffman code over symbols that have no meaning.
+    ///
+    /// `HDIST` is deliberately *not* rejected on count — its whole `1..=32` range
+    /// is legal (see [`every_legal_code_count_passes_the_header_check`]) — so the
+    /// distance count never contributes to this rejection: the cases below pin
+    /// HLIT as the sole cause, once with the maximum legal distance count.
+    #[test]
+    fn a_dynamic_header_declaring_too_many_codes_is_refused() {
+        assert_eq!(header_error(288, 1), TOO_MANY_CODES, "HLIT at its maximum");
+        assert_eq!(
+            header_error(287, 1),
+            TOO_MANY_CODES,
+            "HLIT one past the limit"
+        );
+        // HLIT over the limit even with the maximum *legal* distance count: the
+        // rejection is HLIT's alone, never a distance overrun.
+        assert_eq!(
+            header_error(288, 32),
+            TOO_MANY_CODES,
+            "HLIT over, HDIST at its legal maximum"
+        );
+    }
+
+    /// Every legal code count passes the header check and fails only later, on the
+    /// truncated code-length table. RFC 1951 permits `HLIT+257 ∈ 257..=286` and
+    /// `HDIST+1 ∈ 1..=32` — so the distance counts **31 and 32**, which the earlier
+    /// `hdist > 30` bound wrongly rejected, must get past this check (distance
+    /// symbols 30/31 are reserved *when used*, which the decode-time `dsym >= 30`
+    /// guard handles, not the declaration).
+    #[test]
+    fn every_legal_code_count_passes_the_header_check() {
+        for (hlit, hdist) in [(286, 1), (286, 30), (286, 31), (286, 32), (257, 32)] {
+            let err = header_error(hlit, hdist);
+            assert_ne!(
+                err, TOO_MANY_CODES,
+                "HLIT {hlit} / HDIST {hdist} are legal counts"
+            );
+            assert!(err.contains("truncated"), "it fails later, not here: {err}");
+        }
+    }
+
+    /// A dynamic block whose code-length table is a complete 2-bit code over the
+    /// symbols `{0, 8, 16, 18}` (canonical codes `00`, `01`, `10`, `11`), with
+    /// `HLIT = 257` / `HDIST = 1` — so the code-length table it decodes into holds
+    /// exactly 258 entries. `body` writes the code-length symbol stream.
+    fn dynamic_block_with_clen_stream(body: impl Fn(&mut BitWriter)) -> Vec<u8> {
+        // Slots, in CLEN_ORDER: 16, 17, 18, 0, 8 — the first five, so HCLEN = 5.
+        let clen: [u8; 5] = [2, 0, 2, 2, 2];
+        let mut w = BitWriter::default();
+        w.bits(1, 1); // BFINAL
+        w.bits(2, 2); // BTYPE = dynamic
+        w.bits(0, 5); // HLIT  = 257
+        w.bits(0, 5); // HDIST = 1
+        w.bits(1, 4); // HCLEN = 5
+        for len in clen {
+            w.bits(u32::from(len), 3);
+        }
+        body(&mut w);
+        w.finish()
+    }
+
+    /// The code-length symbols of [`dynamic_block_with_clen_stream`]'s table,
+    /// MSB-first as DEFLATE packs Huffman codes.
+    const CLEN_SYM_0: u32 = 0b00;
+    const CLEN_SYM_8: u32 = 0b01;
+    const CLEN_SYM_16: u32 = 0b10;
+    const CLEN_SYM_18: u32 = 0b11;
+
+    /// A code-length repeat (symbol 16) that would write past the end of the
+    /// table is refused. Without the bound the `fill` would panic — or, under the
+    /// `i + n` → `i - n` mutation, silently write the wrong window.
+    #[test]
+    fn a_code_length_repeat_that_overruns_the_table_is_refused() {
+        let raw = dynamic_block_with_clen_stream(|w| {
+            w.code(CLEN_SYM_8, 2); // lengths[0] = 8; i = 1
+            w.code(CLEN_SYM_18, 2);
+            w.bits(115, 7); // 11 + 115 = 126 zeros; i = 127
+            w.code(CLEN_SYM_18, 2);
+            w.bits(115, 7); // …and 126 more; i = 253
+            w.code(CLEN_SYM_16, 2);
+            w.bits(3, 2); // repeat the previous length 3 + 3 = 6 times → i + n = 259 > 258
+        });
+        assert_eq!(
+            inflate(&raw).expect_err("the repeat overruns the table"),
+            "code-length repeat overruns"
+        );
+    }
+
+    /// The same bound on the zero-run symbols (17 / 18).
+    #[test]
+    fn a_zero_length_repeat_that_overruns_the_table_is_refused() {
+        let raw = dynamic_block_with_clen_stream(|w| {
+            w.code(CLEN_SYM_8, 2); // lengths[0] = 8; i = 1
+            w.code(CLEN_SYM_18, 2);
+            w.bits(127, 7); // 11 + 127 = 138 zeros; i = 139
+            w.code(CLEN_SYM_18, 2);
+            w.bits(127, 7); // …138 more → i + n = 277 > 258
+        });
+        assert_eq!(
+            inflate(&raw).expect_err("the zero run overruns the table"),
+            "zero-length repeat overruns"
+        );
+    }
+
+    /// A code-length repeat with nothing to repeat is refused rather than
+    /// indexing `lengths[-1]`.
+    #[test]
+    fn a_code_length_repeat_with_no_previous_length_is_refused() {
+        let raw = dynamic_block_with_clen_stream(|w| {
+            w.code(CLEN_SYM_16, 2); // the very first symbol
+            w.bits(0, 2);
+        });
+        assert_eq!(
+            inflate(&raw).expect_err("nothing to repeat"),
+            "code-length repeat with no previous length"
+        );
+    }
+
+    /// A table with no end-of-block code is refused: a stream that can never
+    /// terminate must not begin decoding. Here every one of the 258 code lengths
+    /// is zero, so symbol 256 has no code.
+    #[test]
+    fn a_dynamic_table_without_an_end_of_block_code_is_refused() {
+        let raw = dynamic_block_with_clen_stream(|w| {
+            w.code(CLEN_SYM_18, 2);
+            w.bits(127, 7); // 11 + 127 = 138 zeros; i = 138
+            w.code(CLEN_SYM_18, 2);
+            w.bits(109, 7); // 11 + 109 = 120 more → i = 258, the table is full
+        });
+        assert_eq!(
+            inflate(&raw).expect_err("no end-of-block code"),
+            "dynamic block has no end-of-block code"
+        );
+    }
+
+    /// The `0..=15` arm: a literal code length is stored verbatim. Reached here
+    /// through `CLEN_SYM_0`, which the overrun tests also lean on.
+    #[test]
+    fn a_literal_code_length_symbol_is_stored_verbatim() {
+        let raw = dynamic_block_with_clen_stream(|w| {
+            w.code(CLEN_SYM_0, 2); // lengths[0] = 0
+            w.code(CLEN_SYM_18, 2);
+            w.bits(127, 7); // i = 139
+            w.code(CLEN_SYM_18, 2);
+            w.bits(108, 7); // i = 258
+        });
+        // Still no end-of-block code (every length is zero), so it is refused —
+        // but by the *end-of-block* check, proving the `0..=15` arm advanced `i`.
+        assert_eq!(
+            inflate(&raw).expect_err("no end-of-block code"),
+            "dynamic block has no end-of-block code"
+        );
+    }
+
     /// Over-subscribed code lengths are refused, never decoded into garbage.
     #[test]
     fn huffman_rejects_an_over_subscribed_code() {
@@ -577,6 +778,197 @@ mod tests {
         );
         // Not gzip at all.
         assert!(gunzip("t", &[0u8; 32]).is_err());
+    }
+
+    /// Assemble a gzip member around a **stored** deflate block, exercising the
+    /// optional header fields the committed corpus never uses (`tar czf` emits
+    /// none of them, so only a hand-built stream reaches this code).
+    fn gzip(
+        extra: Option<&[u8]>,
+        name: Option<&[u8]>,
+        comment: Option<&[u8]>,
+        fhcrc: bool,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut flags = 0u8;
+        if extra.is_some() {
+            flags |= 0x04;
+        }
+        if name.is_some() {
+            flags |= 0x08;
+        }
+        if comment.is_some() {
+            flags |= 0x10;
+        }
+        if fhcrc {
+            flags |= 0x02;
+        }
+
+        let mut out = vec![0x1f, 0x8b, 0x08, flags, 0, 0, 0, 0, 0, 0];
+        if let Some(extra) = extra {
+            out.extend_from_slice(&(extra.len() as u16).to_le_bytes());
+            out.extend_from_slice(extra);
+        }
+        for field in [name, comment].into_iter().flatten() {
+            out.extend_from_slice(field);
+            out.push(0);
+        }
+        if fhcrc {
+            out.extend_from_slice(&[0xAB, 0xCD]); // unchecked; the sha256 pin is stronger
+        }
+        // One final stored block.
+        out.push(0x01);
+        out.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(!(payload.len() as u16)).to_le_bytes());
+        out.extend_from_slice(payload);
+        out.extend_from_slice(&crc32(payload).to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out
+    }
+
+    /// The gzip framing round-trips with **every combination** of the optional
+    /// header fields, so each field's skip arithmetic is pinned: a mis-skipped
+    /// `FEXTRA` length, an `FNAME` scan that stops on the wrong byte, or an
+    /// off-by-one on `FHCRC` all land the deflate reader on the wrong byte and
+    /// produce garbage or an error.
+    #[test]
+    fn gzip_skips_every_optional_header_field() {
+        let payload = b"supervisor: checkpoint committed";
+
+        // No optional fields at all — the shape `tar czf` actually writes.
+        assert_eq!(
+            gunzip("t", &gzip(None, None, None, false, payload)).expect("plain"),
+            payload
+        );
+
+        // `FEXTRA`'s length is a little-endian u16: 0x0102 = 258 bytes, chosen so
+        // both halves are non-zero and `hi << 8 | lo` cannot be confused with
+        // `hi >> 8`, `hi & lo`, or `hi ^ lo`.
+        let extra = vec![0x5Au8; 0x0102];
+        assert_eq!(
+            gunzip("t", &gzip(Some(&extra), None, None, false, payload)).expect("extra"),
+            payload
+        );
+        // …and a single-byte extra, where `2 + len` must not become `2 - len`.
+        assert_eq!(
+            gunzip("t", &gzip(Some(b"x"), None, None, false, payload)).expect("extra1"),
+            payload
+        );
+        // …and an empty one, where `2 * len` would swallow the length field.
+        assert_eq!(
+            gunzip("t", &gzip(Some(b""), None, None, false, payload)).expect("extra0"),
+            payload
+        );
+
+        // NUL-terminated strings: the scan must advance one byte at a time and
+        // stop on the NUL, not on the first non-NUL.
+        assert_eq!(
+            gunzip("t", &gzip(None, Some(b"traces.tar"), None, false, payload)).expect("name"),
+            payload
+        );
+        assert_eq!(
+            gunzip("t", &gzip(None, None, Some(b"a comment"), false, payload)).expect("comment"),
+            payload
+        );
+        assert_eq!(
+            gunzip("t", &gzip(None, Some(b""), None, false, payload)).expect("empty name"),
+            payload
+        );
+
+        // The 2-byte header CRC is skipped, not read.
+        assert_eq!(
+            gunzip("t", &gzip(None, None, None, true, payload)).expect("fhcrc"),
+            payload
+        );
+
+        // All four at once, in the order RFC 1952 fixes.
+        let all = gzip(Some(&extra), Some(b"n"), Some(b"c"), true, payload);
+        assert_eq!(gunzip("t", &all).expect("all fields"), payload);
+    }
+
+    /// A truncated optional header errors rather than reading past the buffer.
+    #[test]
+    fn a_truncated_optional_header_is_refused() {
+        let payload = b"x";
+        for cut in [11usize, 12, 13] {
+            let mut raw = gzip(Some(b"abcd"), None, None, false, payload);
+            raw.truncate(cut);
+            assert!(gunzip("t", &raw).is_err(), "FEXTRA truncated at {cut}");
+        }
+        // An FNAME with no terminating NUL runs off the end.
+        let mut raw = gzip(None, Some(b"name"), None, false, payload);
+        let end = raw.len();
+        raw.truncate(end - 12); // drop the trailer, the block, and the NUL
+        assert!(gunzip("t", &raw).is_err());
+    }
+
+    /// The magic is checked **byte by byte**: either half wrong is not a gzip
+    /// stream. (A `||` → `&&` here would accept `\x1f\x00…`.)
+    #[test]
+    fn each_half_of_the_gzip_magic_is_checked() {
+        let good = gzip(None, None, None, false, b"x");
+        for (i, wrong) in [(0usize, 0x00u8), (1, 0x00)] {
+            let mut raw = good.clone();
+            raw[i] = wrong;
+            assert_eq!(
+                gunzip("t", &raw).expect_err("bad magic").to_string(),
+                "cannot decode archive t: not a gzip stream (bad magic)"
+            );
+        }
+        // A non-deflate compression method is refused separately.
+        let mut raw = good.clone();
+        raw[2] = 9;
+        assert!(
+            gunzip("t", &raw)
+                .expect_err("bad method")
+                .to_string()
+                .contains("not deflate")
+        );
+    }
+
+    /// The length floor is a *strict* `<`: 18 bytes is the smallest input that
+    /// can carry a header plus a trailer, so it must get past the floor and fail
+    /// somewhere later.
+    #[test]
+    fn the_minimum_length_floor_is_strict() {
+        let short = |n: usize| {
+            let mut raw = vec![0x1f, 0x8b, 0x08, 0x00];
+            raw.resize(n, 0);
+            gunzip("t", &raw).expect_err("cannot decode").to_string()
+        };
+        assert!(short(17).contains("shorter than a gzip header plus trailer"));
+        assert!(
+            !short(18).contains("shorter than a gzip header plus trailer"),
+            "18 bytes clears the floor and fails on its contents instead"
+        );
+    }
+
+    /// A corrupted payload fails the trailer's CRC-32, and a corrupted trailer
+    /// length fails the length check — the two independent trailer guards.
+    #[test]
+    fn the_gzip_trailer_guards_both_the_crc_and_the_length() {
+        let payload = b"supervisor";
+        let good = gzip(None, None, None, false, payload);
+
+        let mut bad_crc = good.clone();
+        let n = bad_crc.len();
+        bad_crc[n - 8] ^= 0xFF;
+        assert!(
+            gunzip("t", &bad_crc)
+                .expect_err("crc")
+                .to_string()
+                .contains("CRC-32 mismatch")
+        );
+
+        let mut bad_len = good.clone();
+        let n = bad_len.len();
+        bad_len[n - 4] = bad_len[n - 4].wrapping_add(1);
+        assert!(
+            gunzip("t", &bad_len)
+                .expect_err("length")
+                .to_string()
+                .contains("length mismatch")
+        );
     }
 
     /// CRC-32 against the canonical `"123456789"` check value.

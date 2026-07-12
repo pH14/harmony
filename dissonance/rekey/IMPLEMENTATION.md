@@ -57,6 +57,55 @@ Three P2 hardening items, all fixed rather than rebutted: the inflater now refus
 drives); `Corpus::load` rejects any manifest whose `version` is not `MANIFEST_VERSION`; and
 `rekey manifest` without `--write` propagates a read error instead of passing vacuously.
 
+## Foreman review, round 1 (PR #94)
+
+Four blocking items, all fixed rather than rebutted.
+
+1. **The `rekey` binary was mutation-gated with nothing exercising it** (`src/bin/rekey.rs`).
+   `.cargo/mutants.toml` excludes `**/main.rs`, which does not match `src/bin/rekey.rs`, so the
+   `cargo mutants --in-diff` job mutates `run`/`main` — and every mutant was *missed*, because every
+   test called library functions and nothing drove the CLI dispatch. Fixed per the config's own bar
+   ("exercised by a smoke test"), not with an exclusion glob: `tests/cli.rs` drives the built binary
+   (via `CARGO_BIN_EXE_rekey`, no new dependency) through **every** `Command` branch and asserts a
+   *distinct observable effect* for each — `score --stdout` vs `--out FILE` (so a `*stdout` flip is
+   caught), `manifest` (prints + freshness-checks) vs `manifest --write` (writes, into a private
+   corpus mirror so the committed tree is untouched), `verify` on the real corpus (success + stderr),
+   and a missing corpus (non-zero exit, pinning `main`'s `Err → FAILURE` arm). The whole file is
+   `cli`-gated so it compiles away when the binary is not built.
+2. **Valid DEFLATE streams were rejected** (`src/gz.rs`). `hdist > 30` refused dynamic blocks
+   declaring 31 or 32 distance code lengths, but RFC 1951 permits `HDIST+1 ∈ 1..=32`; symbols 30/31
+   are merely *reserved when used*, which the decode-time `dsym >= 30` guard already handles. The
+   count check is now `hlit > 286` alone — the HDIST clause is dropped rather than raised to a
+   `hdist > 32` that a 5-bit field can never satisfy (which would leave a provably-equivalent
+   surviving mutant, `hdist > 32 → false`, failing the mutation gate). The tests move with it:
+   `every_legal_code_count_passes_the_header_check` pins that HDIST 31 and 32 — the values the old
+   bound wrongly rejected — get past the check, and the too-many-codes test now attributes the
+   rejection to HLIT alone.
+3. **Unknown-slice exclusions silently skipped verification** (`src/manifest.rs`). Exclusions are
+   hash-checked inside the per-slice loop via `.filter(|e| e.slice == slice.slice)`, so an exclusion
+   naming a misspelled or stale slice was visited by no iteration — never hash-checked — yet `load`
+   succeeded and the report called it verified, breaking the crate's core guarantee. `Corpus::load`
+   now calls `validate_exclusions`, which requires every exclusion to name **exactly one** loaded
+   slice (a factored, unit-tested free function; the test covers the zero-match and the duplicate-id
+   cases, so both sides of `!= 1` are constrained).
+4. **The axis-(c) branch-0 claim was asserted prose, not computed** (`src/report.rs`). "every one of
+   them is branch 0" was a fixed sentence with only the counts interpolated. It is now derived:
+   `score::ancestry_stats` measures, over the reconstructed ancestry, both how many finding-chain
+   proper ancestors sit on branch 0 **and** how many of the search's exploit branches descend from a
+   *non*-genesis parent. On the primary slice those are `4/4` and `1 524 of 7 660` respectively — so
+   the report states the all-branch-0 property and immediately scopes it to the shallow first-finding
+   chains, noting that the search at large *does* select non-genesis parents (a find enters the
+   frontier; a later exploit step picks it). The corpus test pins both figures, so the claim can
+   never drift back to prose.
+
+One earlier hardening item also rides in this round: **manifest paths could escape the corpus root**
+(`src/manifest.rs`). `root.join(rel)` is not a containment primitive — it discards the root for an
+absolute path and walks `..` upwards, and content-addressing cannot save it (the manifest supplies
+both the path *and* the sha256 it is checked against). Every archive, trace-log and reference-log
+path now goes through `resolve()`: reject any non-`Normal` component before touching the filesystem,
+then canonicalize and require containment beneath the canonicalized root — which also closes the
+symlink case.
+
 ## Deviations considered
 
 - **Bug 1 as the degenerate control (spec §corpus) — impossible, and it is not a scoping
@@ -96,11 +145,13 @@ drives); `Corpus::load` rejects any manifest whose `version` is not `MANIFEST_VE
 ## Known limitations
 
 - **Axis (c) has no discriminating power on this corpus, and the report says so in its own
-  section.** The primary slice's 29 finding chains hold 4 proper ancestors *in total*, and every
-  one is branch 0 — a direct consequence of the NO-GO's diagnosis (the frontier never exceeds two
-  entries). Branch 0 claims a cell under every candidate, so even the one-cell `no-channels` floor
-  "preserves" every chain. The playbook's one bug-based axis therefore crowns nothing and kills
-  nothing here. It is still computed and reported (it is mandatory, and it *does* fail candidates
+  section.** The primary slice's 29 finding chains hold 4 proper ancestors *in total*, and all 4 are
+  branch 0 — a direct consequence of the NO-GO's diagnosis (a first-finding chain is at most
+  genesis → find). This is scoped, and measured (`ancestry_stats`): it is a fact about the shallow
+  first-finding chains, **not** about the search's ancestry at large, where 1 524 of the slice's
+  7 660 exploit branches descend from a non-genesis parent. Branch 0 claims a cell under every
+  candidate, so even the one-cell `no-channels` floor "preserves" every chain. The playbook's one
+  bug-based axis therefore crowns nothing and kills nothing here. It is still computed and reported (it is mandatory, and it *does* fail candidates
   on a corpus with real chain depth — `score.rs`'s unit tests exercise exactly that). The
   consequence is that the ranking rests on the two curve axes law 6 disqualifies as sole evidence,
   which is why the deliverable is a menu and not a winner.
@@ -127,10 +178,13 @@ drives); `Corpus::load` rejects any manifest whose `version` is not `MANIFEST_VE
 
 ## For the integrator
 
-- **Gates.** `build` / `nextest` (63 tests) / `clippy -D warnings` / `fmt` / `deny` all green on
-  macOS, plus `cargo check --target x86_64-unknown-linux-gnu --all-targets` (the crate has **no
-  `unsafe`**, no `cfg(target_os)` fork, and no platform API — so no Miri job entry is needed and
-  the `ci-cfg-linux-review-gap` failure mode does not apply).
+- **Gates.** `build` / `nextest` (82 tests) / `clippy -D warnings` / `fmt` / `deny` /
+  `cargo mutants --in-diff` all green on macOS, plus
+  `cargo check --target x86_64-unknown-linux-gnu --all-targets` (the crate has **no `unsafe`**, no
+  `cfg(target_os)` fork, and no platform API — so no Miri job entry is needed and the
+  `ci-cfg-linux-review-gap` failure mode does not apply). The `rekey` binary is inside the mutation
+  gate (the `**/main.rs` exclusion does not match `src/bin/rekey.rs`) and is killed by
+  `tests/cli.rs`, per the config's smoke-test bar.
 - **The committed artifacts are gated.** `tests/corpus.rs` fails if `rekey-corpus.json` or
   `REKEY-REPORT.md` is stale. Regenerate with `cargo run -p rekey -- manifest --write` then
   `cargo run -p rekey -- score`. `cargo run -p rekey -- verify` runs the corpus and

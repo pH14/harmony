@@ -55,6 +55,32 @@ pub enum Error {
         expected: u32,
     },
 
+    /// The manifest names a path outside the corpus root. The manifest also
+    /// supplies the hash each artifact is checked against, so content-addressing
+    /// cannot enforce containment — only this can.
+    #[error("corpus manifest path {path} escapes the corpus root {root}")]
+    PathEscape {
+        /// The offending path, as the manifest wrote it.
+        path: String,
+        /// The corpus root it must stay beneath.
+        root: PathBuf,
+    },
+
+    /// An exclusion names a slice no loaded slice matches, so its member is
+    /// never visited and its hash never checked. Silently skipping it would break
+    /// the crate's core guarantee — that every excluded artifact is present and
+    /// hash-checked — so a misspelled or stale exclusion is a loud failure.
+    #[error(
+        "exclusion for member {member} names slice {slice}, which matches no loaded slice \
+         (expected exactly one)"
+    )]
+    UnknownExclusionSlice {
+        /// The slice id the exclusion named.
+        slice: String,
+        /// The member the exclusion would have kept out.
+        member: String,
+    },
+
     /// The manifest names an archive member that the archive does not contain.
     #[error("archive {archive} has no member {member}")]
     MissingMember {

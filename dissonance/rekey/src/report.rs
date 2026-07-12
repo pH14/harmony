@@ -430,17 +430,33 @@ fn ranking(out: &mut String, a: &Analysis) {
         names(&alt),
     ));
 
-    let ancestors: u64 = primary.scores.first().map_or(0, |s| s.ancestors_checked);
     let chains: u64 = primary.scores.first().map_or(0, |s| s.chains_checked);
+    // The parent distribution is measured, not asserted: how many finding-chain
+    // proper ancestors sit on branch 0, and — separately — how many of the
+    // search's exploit branches descend from a *non*-genesis parent. The two are
+    // different populations, and conflating them would over-generalize a claim
+    // that is only true of the short first-finding chains.
+    let anc = primary.ancestry;
+    let ancestors = anc.finding_ancestors;
+    let ancestors_at_zero = anc.finding_ancestors_at_zero;
+    let exploit_branches = anc.exploit_branches;
+    let nonzero_parent = anc.nonzero_parent;
     let floor = a.primary("no-channels");
     out.push_str(&format!(
         "\n### Axis (c) has no discriminating power on this corpus — say it out loud\n\n\
          The primary slice's {chains} finding chains contain **{ancestors} proper ancestors in \
-         total**, and every one of them is branch 0. That follows directly from the NO-GO's own \
-         diagnosis: v1 admits branch 0 (three fresh cells) and then, at most, the finding branch \
-         (the crash cell), so the frontier never holds more than two entries and every exploit \
-         jitters branch 0's seed. Branch 0 claims a fresh cell under *every* candidate, because \
-         the archive starts empty.\n\n\
+         total**, of which **{ancestors_at_zero} are branch 0** — measured over the reconstructed \
+         ancestry, not assumed. That follows from the NO-GO's own diagnosis: v1 \
+         admits branch 0 (three fresh cells) and then, at most, the finding branch (the crash \
+         cell), so a first-finding chain is at most genesis → find. Branch 0 claims a fresh cell \
+         under *every* candidate, because the archive starts empty.\n\n\
+         **This is a claim about the short first-finding chains, not about the search's ancestry \
+         at large.** Across the slice's **{exploit_branches} exploit branches, {nonzero_parent} \
+         descend from a parent that is not branch 0** — a finding branch enters the frontier and a \
+         later exploit step selects it. So axis (c)'s vacuity here is a fact about the finding \
+         chains being *shallow* (their proper ancestors are genesis), not about the search never \
+         leaving genesis; on a corpus with deeper finding chains the same computation would put \
+         non-genesis branches under axis (c)'s microscope, where a coarse candidate could fail.\n\n\
          The consequence is not subtle: **`no-channels` — the candidate that keys all 30 720 \
          branches into a single cell — passes axis (c) with {}.** The playbook's one **bug-based** \
          axis, the one law 6 makes mandatory, cannot distinguish the shipped descriptor from a \

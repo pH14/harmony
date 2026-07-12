@@ -198,6 +198,60 @@ impl ExploitLocality {
     }
 }
 
+/// The parent-branch distribution over a slice, **measured** from the
+/// reconstructed ancestry rather than asserted.
+///
+/// Axis (c) is vacuous on this corpus because the *finding chains'* proper
+/// ancestors are branch 0 — but that is a fact about the short first-finding
+/// chains, not about the search's ancestry at large. Across all exploit branches
+/// the search does select non-genesis parents (a finding branch enters the
+/// frontier, and a later exploit step picks it), so a bare "every ancestor is
+/// branch 0" would over-generalize. The report emits both counts so the claim is
+/// scoped to exactly where it is true.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct AncestryStats {
+    /// Branches with a reconstructed parent (the exploit branches).
+    pub exploit_branches: u64,
+    /// …of which the parent is a branch other than 0.
+    pub nonzero_parent: u64,
+    /// Proper ancestors across every finding chain (equals `ancestors_checked`).
+    pub finding_ancestors: u64,
+    /// …of which the ancestor branch is branch 0.
+    pub finding_ancestors_at_zero: u64,
+}
+
+impl AncestryStats {
+    /// Whether every finding-chain proper ancestor is branch 0 — the precise
+    /// scope of the report's vacuity claim. Vacuously true with no ancestors.
+    pub fn all_finding_ancestors_at_zero(&self) -> bool {
+        self.finding_ancestors_at_zero == self.finding_ancestors
+    }
+}
+
+/// Measure [`AncestryStats`] over a slice from its reconstructed [`Chains`].
+pub fn ancestry_stats(chains: &[&Chains]) -> AncestryStats {
+    let mut out = AncestryStats::default();
+    for chain in chains {
+        for parent in &chain.parent {
+            if let Some(p) = *parent {
+                out.exploit_branches += 1;
+                if p != 0 {
+                    out.nonzero_parent += 1;
+                }
+            }
+        }
+        for ancestors in chain.find_ancestors() {
+            for a in ancestors {
+                out.finding_ancestors += 1;
+                if a == 0 {
+                    out.finding_ancestors_at_zero += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The first draw a branch recorded, if any.
 fn branch_draw(obs: &CampaignObs, branch: u64) -> Option<u64> {
     obs.branches
@@ -963,6 +1017,41 @@ mod tests {
         );
         // A genuinely coarser descriptor partitions differently.
         assert_ne!(digest("v1-shipped"), digest("no-channels"));
+    }
+
+    /// The parent distribution is measured, and it separates the two claims the
+    /// report must not conflate: the finding chains' proper ancestors are all
+    /// branch 0, while the search at large *does* exploit non-genesis parents.
+    #[test]
+    fn ancestry_stats_separates_finding_ancestors_from_exploit_parents() {
+        // Branch 0 explores; 1 exploits 0; 2 exploits 1 (a non-genesis parent);
+        // 3 explores; the find at 2 descends 0→1→2, so its proper ancestors are
+        // {0, 1} — one of which is *not* branch 0.
+        let chains = Chains {
+            parent: vec![None, Some(0), Some(1), None],
+            admitted: vec![true, true, true, true],
+            find_chains: vec![vec![0, 1, 2]],
+        };
+        let s = ancestry_stats(&[&chains]);
+        assert_eq!(s.exploit_branches, 2, "branches 1 and 2 have a parent");
+        assert_eq!(s.nonzero_parent, 1, "branch 2's parent is branch 1, not 0");
+        assert_eq!(s.finding_ancestors, 2, "proper ancestors {{0, 1}}");
+        assert_eq!(s.finding_ancestors_at_zero, 1, "only branch 0 of the two");
+        assert!(
+            !s.all_finding_ancestors_at_zero(),
+            "branch 1 is an ancestor too"
+        );
+
+        // A chain whose only proper ancestor is genesis: the corpus's real shape.
+        let genesis_only = Chains {
+            parent: vec![None, Some(0)],
+            admitted: vec![true, true],
+            find_chains: vec![vec![0, 1]],
+        };
+        let g = ancestry_stats(&[&genesis_only]);
+        assert_eq!(g.finding_ancestors, 1);
+        assert_eq!(g.finding_ancestors_at_zero, 1);
+        assert!(g.all_finding_ancestors_at_zero(), "here the claim holds");
     }
 
     /// A disqualified candidate never fills a menu slot, even when too few

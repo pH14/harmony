@@ -190,7 +190,9 @@ Chain preservation **gates**: a candidate that breaks any finding chain is disqu
 
 ### Axis (c) has no discriminating power on this corpus — say it out loud
 
-The primary slice's 29 finding chains contain **4 proper ancestors in total**, and every one of them is branch 0. That follows directly from the NO-GO's own diagnosis: v1 admits branch 0 (three fresh cells) and then, at most, the finding branch (the crash cell), so the frontier never holds more than two entries and every exploit jitters branch 0's seed. Branch 0 claims a fresh cell under *every* candidate, because the archive starts empty.
+The primary slice's 29 finding chains contain **4 proper ancestors in total**, of which **4 are branch 0** — measured over the reconstructed ancestry, not assumed. That follows from the NO-GO's own diagnosis: v1 admits branch 0 (three fresh cells) and then, at most, the finding branch (the crash cell), so a first-finding chain is at most genesis → find. Branch 0 claims a fresh cell under *every* candidate, because the archive starts empty.
+
+**This is a claim about the short first-finding chains, not about the search's ancestry at large.** Across the slice's **7660 exploit branches, 1524 descend from a parent that is not branch 0** — a finding branch enters the frontier and a later exploit step selects it. So axis (c)'s vacuity here is a fact about the finding chains being *shallow* (their proper ancestors are genesis), not about the search never leaving genesis; on a corpus with deeper finding chains the same computation would put non-genesis branches under axis (c)'s microscope, where a coarse candidate could fail.
 
 The consequence is not subtle: **`no-channels` — the candidate that keys all 30 720 branches into a single cell — passes axis (c) with 29/29 chains, 4/4 ancestors.** The playbook's one **bug-based** axis, the one law 6 makes mandatory, cannot distinguish the shipped descriptor from a constant function. It is computed and reported because it is mandatory, and because it *would* fail a candidate on a corpus with real chain depth (the unit tests exercise exactly that). Here it crowns nothing and kills nothing.
 

@@ -26,7 +26,7 @@
 //!   (tasks/97 amendment).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -179,6 +179,47 @@ fn read(path: &Path) -> Result<Vec<u8>> {
     })
 }
 
+/// Resolve a manifest-supplied relative path against the corpus root, refusing
+/// anything that leaves it.
+///
+/// `Path::join` is not a containment primitive: it **discards the root entirely**
+/// for an absolute path (`root.join("/etc/passwd")` is `/etc/passwd`) and happily
+/// walks `..` upwards. And content-addressing cannot save us here — the manifest
+/// supplies both the path *and* the sha256 it is checked against, so a hostile
+/// manifest simply pins the hash of whatever it points at.
+///
+/// Two lines of defence: reject any component that is absolute, a prefix, a root,
+/// or `..` before touching the filesystem; then canonicalize and require the
+/// result to stay beneath the canonicalized root, which also closes the symlink
+/// path (a `traces.tar.gz` that is a link to `~/.ssh/id_rsa`).
+fn resolve(root: &Path, rel: &str) -> Result<PathBuf> {
+    let escape = || Error::PathEscape {
+        path: rel.to_string(),
+        root: root.to_path_buf(),
+    };
+    let candidate = Path::new(rel);
+    let lexically_contained = candidate
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    if !lexically_contained {
+        return Err(escape());
+    }
+
+    let root = std::fs::canonicalize(root).map_err(|source| Error::Io {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let joined = root.join(candidate);
+    let resolved = std::fs::canonicalize(&joined).map_err(|source| Error::Io {
+        path: joined,
+        source,
+    })?;
+    if !resolved.starts_with(&root) {
+        return Err(escape());
+    }
+    Ok(resolved)
+}
+
 /// How many `(branch, RunTrace)` pairs a trace member holds, without decoding
 /// the traces themselves.
 fn branch_count(member: &str, bytes: &[u8]) -> Result<u64> {
@@ -247,8 +288,7 @@ pub fn build(root: &Path) -> Result<CorpusManifest> {
     let mut totals = Totals::default();
 
     for layout in &LAYOUTS {
-        let archive_path = root.join(layout.archive);
-        let archive_bytes = read(&archive_path)?;
+        let archive_bytes = read(&resolve(root, layout.archive)?)?;
         let members = archive_members(layout.archive, &archive_bytes)?;
 
         let mut traces = Vec::new();
@@ -260,7 +300,7 @@ pub fn build(root: &Path) -> Result<CorpusManifest> {
                     member: member.clone(),
                 })?;
                 let log = format!("{}/{stem}-{seed}.json", layout.log_dir);
-                let log_bytes = read(&root.join(&log))?;
+                let log_bytes = read(&resolve(root, &log)?)?;
                 totals.branches += branch_count(&member, data)?;
                 traces.push(TraceEntry {
                     branches: branch_count(&member, data)?,
@@ -309,7 +349,7 @@ pub fn build(root: &Path) -> Result<CorpusManifest> {
     for (config, stem) in [("Baseline", "b1-baseline"), ("Signal", "b1-signal")] {
         for seed in SEEDS {
             let log = format!("bug1/results/{stem}-{seed}.json");
-            let bytes = read(&root.join(&log))?;
+            let bytes = read(&resolve(root, &log)?)?;
             logs.push(ReferenceLog {
                 log_sha256: sha256_hex(&bytes),
                 log,
@@ -400,9 +440,11 @@ impl Corpus {
             });
         }
 
+        validate_exclusions(&manifest)?;
+
         let mut campaigns = Vec::new();
         for slice in &manifest.slices {
-            let archive_bytes = read(&root.join(&slice.archive))?;
+            let archive_bytes = read(&resolve(root, &slice.archive)?)?;
             check_hash(&slice.archive, &slice.archive_sha256, &archive_bytes)?;
             let members = archive_members(&slice.archive, &archive_bytes)?;
 
@@ -428,7 +470,7 @@ impl Corpus {
                     member: t.member.clone(),
                 })?;
                 check_hash(&t.member, &t.sha256, data)?;
-                let log_json = read(&root.join(&t.log))?;
+                let log_json = read(&resolve(root, &t.log)?)?;
                 check_hash(&t.log, &t.log_sha256, &log_json)?;
                 campaigns.push(VerifiedCampaign {
                     slice: slice.slice.clone(),
@@ -444,7 +486,7 @@ impl Corpus {
         let mut reference_logs = Vec::new();
         for r in &manifest.references {
             for l in &r.logs {
-                let bytes = read(&root.join(&l.log))?;
+                let bytes = read(&resolve(root, &l.log)?)?;
                 check_hash(&l.log, &l.log_sha256, &bytes)?;
                 reference_logs.push((l.clone(), bytes));
             }
@@ -457,6 +499,33 @@ impl Corpus {
             reference_logs,
         })
     }
+}
+
+/// Every exclusion must name **exactly one** loaded slice.
+///
+/// Exclusions are hash-checked inside [`Corpus::load`]'s per-slice loop via
+/// `.filter(|e| e.slice == slice.slice)`, so an exclusion naming a misspelled or
+/// stale slice would be visited by no iteration — never hash-checked, yet `load`
+/// would succeed and the report would present it as verified. That silently
+/// breaks the crate's core guarantee (every excluded artifact present and
+/// hash-checked), so a slice with no — or more than one — match is a loud
+/// failure, checked before any file is read.
+fn validate_exclusions(manifest: &CorpusManifest) -> Result<()> {
+    for ex in &manifest.exclusions {
+        if manifest
+            .slices
+            .iter()
+            .filter(|s| s.slice == ex.slice)
+            .count()
+            != 1
+        {
+            return Err(Error::UnknownExclusionSlice {
+                slice: ex.slice.clone(),
+                member: ex.member.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The loud hash check. Never a warning, never a repair.
@@ -491,6 +560,114 @@ pub fn manifest_path(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A manifest path may never leave the corpus root.** `Path::join` is not a
+    /// containment primitive: it discards the root for an absolute path and walks
+    /// `..` upwards. And the manifest supplies the expected hash as well as the
+    /// path, so content-addressing cannot enforce containment either.
+    #[test]
+    fn manifest_paths_cannot_escape_the_corpus_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub")).expect("mkdir");
+        std::fs::write(root.join("sub/inside.txt"), b"ok").expect("write");
+        std::fs::write(root.join("sibling.txt"), b"ok").expect("write");
+
+        // Contained paths resolve, with or without a `./` prefix.
+        assert!(resolve(root, "sub/inside.txt").is_ok());
+        assert!(resolve(root, "./sub/inside.txt").is_ok());
+
+        // Absolute: `join` would silently return the absolute path itself.
+        let absolute = root.join("sibling.txt").display().to_string();
+        assert!(matches!(
+            resolve(root, &absolute),
+            Err(Error::PathEscape { .. })
+        ));
+        assert!(matches!(
+            resolve(root, "/etc/passwd"),
+            Err(Error::PathEscape { .. })
+        ));
+
+        // Upward traversal, both bare and disguised by a descent first.
+        for escape in ["../outside.txt", "sub/../../outside.txt", ".."] {
+            assert!(
+                matches!(resolve(root, escape), Err(Error::PathEscape { .. })),
+                "{escape} must be refused"
+            );
+        }
+
+        // A path that stays inside lexically but resolves out through a symlink
+        // is refused too — canonicalization is the second line of defence.
+        #[cfg(unix)]
+        {
+            let outside = dir.path().parent().expect("parent").join("escape-target");
+            std::fs::write(&outside, b"secret").expect("write");
+            std::os::unix::fs::symlink(&outside, root.join("link.txt")).expect("symlink");
+            assert!(matches!(
+                resolve(root, "link.txt"),
+                Err(Error::PathEscape { .. })
+            ));
+            std::fs::remove_file(&outside).ok();
+        }
+
+        // A contained path that does not exist is an I/O error, not an escape.
+        assert!(matches!(resolve(root, "sub/absent"), Err(Error::Io { .. })));
+    }
+
+    /// An exclusion must name **exactly one** loaded slice. Its member is
+    /// hash-checked only inside `Corpus::load`'s per-slice loop, so an exclusion
+    /// naming a slice that is missing (misspelled) — or duplicated — would never
+    /// be visited, and the harness would call an unverified artifact verified.
+    #[test]
+    fn an_exclusion_naming_an_unknown_slice_is_refused() {
+        let slice = CorpusSlice {
+            slice: "bug3-campaign".into(),
+            bug: 3,
+            description: String::new(),
+            archive: "a.tar.gz".into(),
+            archive_sha256: String::new(),
+            explore_period: 4,
+            traces: Vec::new(),
+        };
+        let exclusion = |s: &str| Exclusion {
+            slice: s.into(),
+            member: "solo.json".into(),
+            sha256: String::new(),
+            reason: String::new(),
+        };
+        let manifest = |exclusions| CorpusManifest {
+            version: MANIFEST_VERSION,
+            note: String::new(),
+            slices: vec![slice.clone()],
+            references: Vec::new(),
+            exclusions,
+            totals: Totals::default(),
+        };
+
+        // Names the loaded slice exactly once — accepted.
+        assert!(validate_exclusions(&manifest(vec![exclusion("bug3-campaign")])).is_ok());
+        // No exclusions at all — trivially accepted.
+        assert!(validate_exclusions(&manifest(Vec::new())).is_ok());
+
+        // A misspelled / unknown slice: refused, and it names the offending
+        // member so the failure points at what went unchecked.
+        match validate_exclusions(&manifest(vec![exclusion("bug3-campgin")])) {
+            Err(Error::UnknownExclusionSlice { slice, member }) => {
+                assert_eq!(slice, "bug3-campgin");
+                assert_eq!(member, "solo.json");
+            }
+            other => panic!("expected UnknownExclusionSlice, got {other:?}"),
+        }
+
+        // Two slices sharing the id → "exactly one" fails on the *high* side too,
+        // not only the missing side.
+        let mut dup = manifest(vec![exclusion("bug3-campaign")]);
+        dup.slices.push(slice.clone());
+        assert!(matches!(
+            validate_exclusions(&dup),
+            Err(Error::UnknownExclusionSlice { .. })
+        ));
+    }
 
     /// A manifest from another schema version is refused, not reinterpreted.
     #[test]
