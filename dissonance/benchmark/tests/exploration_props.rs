@@ -78,7 +78,7 @@ proptest! {
         let back: ExplorationLog = serde_json::from_str(&json).unwrap();
         prop_assert_eq!(&back, &log);
 
-        let m = GameManifest::smb(Some("abc123".to_string()), budget);
+        let m = GameManifest::smb(Some("abc123".to_string()), budget, None);
         let mjson = serde_json::to_string(&m).unwrap();
         let mback: GameManifest = serde_json::from_str(&mjson).unwrap();
         prop_assert_eq!(&mback, &m);
@@ -97,7 +97,7 @@ proptest! {
         jitter in prop::collection::vec(0u64..2, MIN_SEEDS as usize),
     ) {
         let budget = 4u64;
-        let manifest = GameManifest::smb(Some("d00d".into()), budget);
+        let manifest = GameManifest::smb(Some("d00d".into()), budget, None);
         let mk = |config, cells_per: u64, depth: u64, seed: u64| {
             let branches: Vec<(Vec<u64>, u64)> = (0..budget)
                 .map(|b| {

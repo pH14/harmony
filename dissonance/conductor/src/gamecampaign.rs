@@ -172,6 +172,16 @@ pub enum GameCampaignError {
     /// An exemplar env failed to decode — a malformed blob in the frontier.
     #[error("quiet-arm exemplar env failed to decode: {0}")]
     MalformedExemplar(String),
+    /// The box setup prefix never published a valid billboard `(gpa, len)`
+    /// window (round-9 P1): the billboard is M0's unconditional film seam, so
+    /// a campaign with no window has nothing film can consume — refused
+    /// loudly rather than reported as a windowless "success".
+    #[error(
+        "the setup prefix published no valid billboard (gpa, len) window — the billboard is \
+         unconditional on the box (film's input); check the play-agent's REG_BILLBOARD_GPA/LEN \
+         emission before setup_complete"
+    )]
+    BillboardMissing,
     /// A box-mode rollout ended somewhere other than its deadline — the
     /// play-agent DIED mid-rollout (round-8 P1; e.g. `retro_serialize`
     /// failing on a frame). Crashed rollouts must never be recorded as
@@ -360,6 +370,15 @@ pub fn run_game_campaign<M: Machine>(
     // out of branch 0's trace.
     let setup_events = drain_events(machine)?;
     let billboard = billboard_window_of(&setup_events);
+    // Round-9 P1: on the box (`require_snapshot_point`) the billboard is
+    // M0's unconditional film seam — a setup prefix that never published a
+    // valid `(gpa, len)` window means film has no input, so the campaign
+    // must not proceed to a "determinism PASS" with nothing to show for it.
+    // The portable no-SDK toy path (`require_snapshot_point = false`) stays
+    // billboard-tolerant.
+    if cfg.require_snapshot_point && billboard.is_none() {
+        return Err(GameCampaignError::BillboardMissing);
+    }
 
     let until = StopConditions {
         deadline: cfg
@@ -414,9 +433,15 @@ pub fn run_game_campaign<M: Machine>(
             });
         }
         let state_hash = machine.hash()?;
+        // Round-9 P1: the retained trace carries the RECORDED environment —
+        // genesis-complete, every decision actually drawn, keyed from the
+        // branch origin — never the pre-run proposal `env` (whose adapter
+        // coords are all-zero, so same-seed runs under different deadlines
+        // would collide on TraceId and the sidecar could not reconstruct the
+        // actual timeline; the R1 discipline).
         let trace = RunTrace {
             terminal: stop,
-            env: env.clone(),
+            env: machine.recorded_env()?,
             coverage: None,
             events: drain_events(machine)?,
             records: Vec::new(),
@@ -495,6 +520,46 @@ fn drain_events<M: Machine>(
         .map(|(m, id, b)| (Moment(m), id, b))
         .collect();
     Ok(link::decode_events(&raw))
+}
+
+/// Extract the booted image's ROM sha256 from its boot serial: the last
+/// `GAME_ROM_SHA256: <hex>` line game-init prints (from the hash baked in at
+/// image-build time) before `GAME_READY`. Returns the lowercased hex, or
+/// `None` when the transcript carries no such line (a ROM-less image prints
+/// `GAME_SKIP` instead). The box driver cross-checks this **fact** against
+/// the operator's `--rom-sha256` **claim** and refuses a mismatch (round-9
+/// P1 — the content-hash discipline).
+pub fn serial_rom_sha256(serial: &[u8]) -> Option<String> {
+    const TAG: &[u8] = b"GAME_ROM_SHA256:";
+    let mut found = None;
+    let mut from = 0;
+    while from + TAG.len() <= serial.len() {
+        let Some(at) = serial[from..]
+            .windows(TAG.len())
+            .position(|w| w == TAG)
+            .map(|p| from + p)
+        else {
+            break;
+        };
+        let rest = &serial[at + TAG.len()..];
+        let hex: Vec<u8> = rest
+            .iter()
+            .copied()
+            .skip_while(|b| *b == b' ')
+            .take_while(u8::is_ascii_hexdigit)
+            .collect();
+        if hex.len() == 64 {
+            // Guest bytes are untrusted input, but a 64-hexdigit run is ASCII
+            // by construction.
+            found = Some(
+                String::from_utf8(hex)
+                    .expect("hex digits are ASCII")
+                    .to_lowercase(),
+            );
+        }
+        from = at + TAG.len();
+    }
+    found
 }
 
 /// Extract the billboard `(gpa, len)` from the setup prefix's decoded state
@@ -868,6 +933,7 @@ mod tests {
             vtime: u64,
             next_snap: u64,
             env: Environment,
+            billboard_drained: bool,
         }
         impl Machine for SealsThenCrashes {
             fn branch(
@@ -921,12 +987,26 @@ mod tests {
             fn recorded_env(&self) -> Result<Environment, MachineError> {
                 Ok(self.env.clone())
             }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                // The first drain is the setup prefix: publish the billboard
+                // window (a box-shaped guest always does — the round-9
+                // billboard gate would otherwise refuse the campaign before
+                // any rollout runs).
+                if self.sealed && !self.billboard_drained {
+                    self.billboard_drained = true;
+                    let (gid, gp) = state_event(reg::BILLBOARD_GPA, 0, 0x4000_0000);
+                    let (lid, lp) = state_event(reg::BILLBOARD_LEN, 0, 36 * 1024);
+                    return Ok(vec![(1_000, gid, gp), (1_001, lid, lp)]);
+                }
+                Ok(Vec::new())
+            }
         }
         let mut m = SealsThenCrashes {
             sealed: false,
             vtime: 1_000,
             next_snap: 1,
             env: SpecEnvCodec.seeded(0),
+            billboard_drained: false,
         };
         let cfg = GameCampaignConfig {
             require_snapshot_point: true,
@@ -938,6 +1018,194 @@ mod tests {
             matches!(err, GameCampaignError::RolloutDied { branch: 0, .. }),
             "expected RolloutDied on the first crashed rollout, got {err:?}"
         );
+    }
+
+    /// Round-9 P1: a box campaign whose setup prefix never published a valid
+    /// billboard `(gpa, len)` window is refused BEFORE any rollout — the
+    /// billboard is M0's unconditional film seam, so a windowless
+    /// "determinism success" would be a campaign with nothing film can
+    /// consume.
+    #[test]
+    fn box_campaign_without_billboard_refuses() {
+        /// Seals at a snapshot point, rollouts end at their deadline (the
+        /// otherwise-healthy shape) — but never publishes billboard registers.
+        struct SealsNoBillboard {
+            sealed: bool,
+            vtime: u64,
+            next_snap: u64,
+        }
+        impl Machine for SealsNoBillboard {
+            fn branch(
+                &mut self,
+                _s: explorer::SnapId,
+                _env: &Environment,
+            ) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn run(
+                &mut self,
+                until: &StopConditions,
+                _resolve: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                self.vtime += 100;
+                if until.deadline == Some(explorer::VTime(0)) {
+                    return Ok(StopReason::Deadline {
+                        vtime: explorer::VTime(self.vtime),
+                    });
+                }
+                if !self.sealed {
+                    self.sealed = true;
+                    return Ok(StopReason::SnapshotPoint {
+                        vtime: explorer::VTime(self.vtime),
+                    });
+                }
+                Ok(StopReason::Deadline {
+                    vtime: explorer::VTime(self.vtime),
+                })
+            }
+            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+                let id = self.next_snap;
+                self.next_snap += 1;
+                Ok(explorer::SnapId(id))
+            }
+            fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+                Ok(())
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                Ok([0u8; 32])
+            }
+            fn coverage(&self) -> &[u8] {
+                &[]
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(SpecEnvCodec.seeded(0))
+            }
+        }
+        let mut m = SealsNoBillboard {
+            sealed: false,
+            vtime: 1_000,
+            next_snap: 1,
+        };
+        let cfg = GameCampaignConfig {
+            require_snapshot_point: true,
+            ..GameCampaignConfig::smoke(7)
+        };
+        let err = run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
+            .unwrap_err();
+        assert!(
+            matches!(err, GameCampaignError::BillboardMissing),
+            "expected BillboardMissing, got {err:?}"
+        );
+    }
+
+    /// Round-9 P1: the retained deep trace carries the machine's RECORDED
+    /// environment, never the pre-run proposal — two campaigns identical in
+    /// every proposal but differing in what the machine actually recorded
+    /// must retain different traces (distinct TraceIds).
+    #[test]
+    fn retained_trace_uses_the_recorded_env_not_the_proposal() {
+        /// Delegates to the toy but reports a salted recorded env.
+        struct SaltedRecording {
+            inner: GameToyMachine,
+            salt: u64,
+        }
+        impl Machine for SaltedRecording {
+            fn branch(
+                &mut self,
+                s: explorer::SnapId,
+                env: &Environment,
+            ) -> Result<(), MachineError> {
+                self.inner.branch(s, env)
+            }
+            fn replay(&mut self, s: explorer::SnapId) -> Result<(), MachineError> {
+                self.inner.replay(s)
+            }
+            fn run(
+                &mut self,
+                until: &StopConditions,
+                resolve: Option<&explorer::Answer>,
+            ) -> Result<StopReason, MachineError> {
+                self.inner.run(until, resolve)
+            }
+            fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+                self.inner.snapshot()
+            }
+            fn drop_snap(&mut self, s: explorer::SnapId) -> Result<(), MachineError> {
+                self.inner.drop_snap(s)
+            }
+            fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+                self.inner.hash()
+            }
+            fn coverage(&self) -> &[u8] {
+                self.inner.coverage()
+            }
+            fn recorded_env(&self) -> Result<Environment, MachineError> {
+                Ok(SpecEnvCodec.seeded(self.salt))
+            }
+            fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+                self.inner.sdk_events()
+            }
+        }
+        let deep_id = |salt: u64| {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = GameCampaignConfig {
+                max_branches: 4,
+                trace_dir: Some(dir.path().to_path_buf()),
+                ..GameCampaignConfig::smoke(7)
+            };
+            let mut m = SaltedRecording {
+                inner: GameToyMachine::new(),
+                salt,
+            };
+            run_game_campaign(&mut m, &SpecEnvCodec, &cfg, ExplorationConfig::PureRandom)
+                .expect("campaign runs")
+                .deep
+                .expect("deep branch tracked")
+                .trace_id
+                .expect("retention configured")
+        };
+        assert_ne!(
+            deep_id(1),
+            deep_id(2),
+            "identical proposals with different recorded envs must retain distinct traces — \
+             the trace env must come from recorded_env(), not the proposal"
+        );
+    }
+
+    /// The ROM serial cross-check's parser (round-9 P1): the exact game-init
+    /// line yields the baked hash; GAME_SKIP transcripts yield None; the last
+    /// line wins; a truncated hash is not a hash; case is normalized.
+    #[test]
+    fn serial_rom_sha256_parses_the_game_init_line() {
+        let h = "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea";
+        let serial = format!("boot...\nGAME_ROM_SHA256: {h}\nGAME_READY: launching play-agent\n");
+        assert_eq!(serial_rom_sha256(serial.as_bytes()), Some(h.to_string()));
+
+        // Case-normalized.
+        let upper = format!("GAME_ROM_SHA256: {}\n", h.to_uppercase());
+        assert_eq!(serial_rom_sha256(upper.as_bytes()), Some(h.to_string()));
+
+        // The last full-length line wins (a re-printed banner).
+        let twice = format!(
+            "GAME_ROM_SHA256: {}\nGAME_ROM_SHA256: {h}\n",
+            "a".repeat(64)
+        );
+        assert_eq!(serial_rom_sha256(twice.as_bytes()), Some(h.to_string()));
+
+        // ROM-less image: no line at all.
+        assert_eq!(
+            serial_rom_sha256(b"GAME_SKIP: no ROM in this image\n"),
+            None
+        );
+        // A truncated hex run is not a hash.
+        assert_eq!(
+            serial_rom_sha256(format!("GAME_ROM_SHA256: {}\n", &h[..40]).as_bytes()),
+            None
+        );
+        assert_eq!(serial_rom_sha256(b""), None);
     }
 
     /// The campaign is a pure function of (campaign_seed, config): a rerun is

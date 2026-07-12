@@ -501,12 +501,15 @@ fn finish_game(
                 Ok(existing) if existing == *manifest => {}
                 Ok(existing) => {
                     eprintln!(
-                        "[conductor] manifest drift: {} records budget={} rom={:?}, this run is \
-                         budget={} rom={:?} — one logs file measures ONE manifest",
+                        "[conductor] manifest drift: {} records budget={} deadline={:?} rom={:?}, \
+                         this run is budget={} deadline={:?} rom={:?} — one logs file measures \
+                         ONE manifest",
                         mpath.display(),
                         existing.branch_budget,
+                        existing.deadline_delta,
                         existing.rom_sha256,
                         manifest.branch_budget,
+                        manifest.deadline_delta,
                         manifest.rom_sha256,
                     );
                     return ExitCode::FAILURE;
@@ -583,7 +586,11 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
         trace_dir: args.trace_out.clone(),
         ..GameCampaignConfig::smoke(args.campaign_seed)
     };
-    let manifest = benchmark::GameManifest::smb(args.rom_sha256.clone(), args.max_branches);
+    let manifest = benchmark::GameManifest::smb(
+        args.rom_sha256.clone(),
+        args.max_branches,
+        cfg.deadline_delta,
+    );
     let mut machine = GameToyMachine::new();
     match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
         Ok(outcome) => {

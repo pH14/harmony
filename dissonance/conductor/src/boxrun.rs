@@ -144,11 +144,17 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
 /// loud reason (never a vacuous success). Shared verbatim by the sweep
 /// ([`run`](run)) and the campaign ([`run_campaign`](run_campaign)) so both
 /// boot the guest identically.
+/// What [`boot_server`] hands back: the composed control server, the
+/// boot-to-ready wall-clock (µs, task 96 — observation only), and the boot
+/// serial transcript up to the readiness marker (the game path's ROM-hash
+/// cross-check input).
+type BootedServer = (ControlServer<Box<dyn Backend>>, u64, Vec<u8>);
+
 fn boot_server(
     kernel_name: &str,
     initramfs_name: &str,
     ready_marker: &str,
-) -> Result<(ControlServer<Box<dyn Backend>>, u64), ExitCode> {
+) -> Result<BootedServer, ExitCode> {
     if !std::path::Path::new("/dev/kvm").exists() {
         eprintln!(
             "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
@@ -228,7 +234,13 @@ fn boot_server(
             BOOT_SEED,
         )
     });
-    Ok((ControlServer::new(live, factory), boot_us))
+    // The serial transcript up to readiness rides back to the caller: the
+    // game path cross-checks the operator's `--rom-sha256` against the
+    // guest's own `GAME_ROM_SHA256:` line (round-9 P1 — the content-hash
+    // discipline; an operator-typed hash is a claim, the booted image is the
+    // fact). Boot-sized (tens of KB), snapshotted once.
+    let serial = live.serial().to_vec();
+    Ok((ControlServer::new(live, factory), boot_us, serial))
 }
 
 /// The initial environment the box's live VM boots under (the seed/policy the
@@ -248,7 +260,7 @@ pub fn run(args: BoxArgs) -> ExitCode {
     }
     // `SweepReport` carries no timing (task 96 only extends `CampaignReport`)
     // — the boot duration is already in the printed readiness line above.
-    let (mut server, _boot_us) =
+    let (mut server, _boot_us, _serial) =
         match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
             Ok(s) => s,
             Err(code) => return code,
@@ -368,11 +380,43 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // is allowed to carry over between repeats.
         // `boot_us` is the task-96 stopwatch's boot-to-ready wall-clock —
         // host-side observation only (printed, never fed to the campaign).
-        let (mut server, boot_us) =
+        let (mut server, boot_us, serial) =
             match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
                 Ok(s) => s,
                 Err(code) => return code,
             };
+        // Round-9 P1 — the ROM content-hash discipline: the operator's
+        // `--rom-sha256` is a claim; the booted image's own
+        // `GAME_ROM_SHA256:` serial line (printed by game-init before
+        // GAME_READY, from the hash baked in at image build) is the fact.
+        // Every repetition boots fresh, so every boot is checked.
+        let booted = conductor::gamecampaign::serial_rom_sha256(&serial);
+        match (&args.game.rom_sha256, &booted) {
+            (Some(claim), Some(fact)) if !claim.eq_ignore_ascii_case(fact) => {
+                eprintln!(
+                    "[conductor] game box: ROM hash mismatch — --rom-sha256 {claim} but the \
+                     booted image reports {fact}; the log would be stamped with the wrong dump. \
+                     Rebuild/point at the right image or fix the flag."
+                );
+                return ExitCode::FAILURE;
+            }
+            (Some(claim), None) => {
+                eprintln!(
+                    "[conductor] game box: --rom-sha256 {claim} was claimed but the booted image \
+                     printed no GAME_ROM_SHA256 line (ROM-less image?) — refusing to stamp."
+                );
+                return ExitCode::FAILURE;
+            }
+            (None, Some(fact)) => {
+                eprintln!(
+                    "[conductor] game box: the booted image reports GAME_ROM_SHA256 {fact} but \
+                     no --rom-sha256 was passed — an unstamped log defeats the mixed-dump check; \
+                     rerun with --rom-sha256 {fact}."
+                );
+                return ExitCode::FAILURE;
+            }
+            _ => {}
+        }
         let rep_cfg = cfg.clone();
         let initial = boot_env();
         println!(
@@ -448,8 +492,11 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         );
     }
     print_game_artifacts(&outcome);
-    let manifest =
-        benchmark::GameManifest::smb(args.game.rom_sha256.clone(), args.game.max_branches);
+    let manifest = benchmark::GameManifest::smb(
+        args.game.rom_sha256.clone(),
+        args.game.max_branches,
+        Some(args.deadline_delta),
+    );
     finish_game(&outcome.log, args.game.logs_out.as_ref(), &manifest)
 }
 
@@ -457,11 +504,11 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
 const DETERMINISM_BAR: usize = 25;
 
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
-    let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
-    {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+    let (mut server, boot_us, _serial) =
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
 
     let gpa_candidates: Vec<u64> = (0..args.gpa_count)
         .map(|i| {
@@ -610,11 +657,11 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     //    cost. The campaign run + the zero-cell hard-fail below are NOT inside a
     //    timed phase (no PhaseStats report is built on this measurement path), so
     //    there is nothing further to time; the boot phase is the only timed segment.
-    let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
-    {
-        Ok(t) => t,
-        Err(code) => return code,
-    };
+    let (mut server, boot_us, _serial) =
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(t) => t,
+            Err(code) => return code,
+        };
     println!(
         "[conductor] benchcampaign box: boot-to-ready {} ms (hash-neutral).",
         boot_us / 1_000

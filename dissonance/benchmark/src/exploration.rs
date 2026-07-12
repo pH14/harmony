@@ -134,11 +134,22 @@ pub struct GameManifest {
     /// The fixed branch budget every configuration runs at (identical across
     /// configurations — task 84's ruling).
     pub branch_budget: u64,
+    /// The per-rollout v-time deadline (ns past the sealed base) every
+    /// configuration ran with — part of the budget (round-9 P1): logs
+    /// measured under different rollout durations are not comparable, so a
+    /// `--deadline-delta` change across appends is manifest drift, exactly
+    /// like a branch-budget or ROM change. `None` = the portable toy's
+    /// natural-terminal rollouts (no v-time deadline).
+    pub deadline_delta: Option<u64>,
 }
 
 impl GameManifest {
     /// The SMB manifest with the play-agent's default input shaping.
-    pub fn smb(rom_sha256: Option<String>, branch_budget: u64) -> Self {
+    pub fn smb(
+        rom_sha256: Option<String>,
+        branch_budget: u64,
+        deadline_delta: Option<u64>,
+    ) -> Self {
         GameManifest {
             workload: "smb".to_string(),
             rom_sha256,
@@ -148,6 +159,7 @@ impl GameManifest {
             window: 12,
             x_bucket_px: 128,
             branch_budget,
+            deadline_delta,
         }
     }
 }
@@ -461,7 +473,11 @@ impl ExplorationReport {
         };
         let cells_beats = signal.zip(baseline).map(|(s, b)| strict(s, b, true));
         let depth_beats = signal.zip(baseline).map(|(s, b)| strict(s, b, false));
-        let baseline_live = baseline.map(|b| b.cells_median > Frac::whole(0));
+        // Round-9 P1: "live" means MOVEMENT — a guest frozen on its initial
+        // gameplay cell still touches exactly one cell every branch, so the
+        // bar is strictly more than one distinct cell at the median, not
+        // merely nonzero.
+        let baseline_live = baseline.map(|b| b.cells_median > Frac::whole(1));
 
         // Pooled STADS for the signal configuration: one branch = one sample,
         // logs folded in (config, seed) order, the running Good–Turing
@@ -528,8 +544,9 @@ impl ExplorationReport {
     ) -> Verdict {
         match (signal, baseline, baseline_live) {
             (Some(_), Some(_), Some(false)) => Verdict::Incomplete {
-                reason: "the pure-random control discovered no cells — a dead control cannot \
-                         ground a win (check the workload wiring before scoring)"
+                reason: "the pure-random control never moved beyond a single cell at the median \
+                         — a dead or frozen control cannot ground a win (check the workload \
+                         wiring before scoring)"
                     .to_string(),
             },
             (Some(_), Some(_), Some(true)) => {
@@ -591,6 +608,20 @@ impl ExplorationReport {
             "- Branch budget (identical for every configuration): {}",
             m.branch_budget
         );
+        match m.deadline_delta {
+            Some(d) => {
+                let _ = writeln!(
+                    md,
+                    "- Rollout deadline (v-time ns past the sealed base): {d}"
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    md,
+                    "- Rollout deadline: none (portable toy — natural terminals)"
+                );
+            }
+        }
         let _ = writeln!(
             md,
             "- Input shaping: window {} frames, x-bucket {} px, alphabet `{}`",
@@ -741,7 +772,7 @@ mod tests {
     }
 
     fn manifest() -> GameManifest {
-        GameManifest::smb(Some("f00d".to_string()), 8)
+        GameManifest::smb(Some("f00d".to_string()), 8, None)
     }
 
     fn twenty(config: ExplorationConfig, cells_per: u64, max_depth: u64) -> Vec<ExplorationLog> {
@@ -795,6 +826,37 @@ mod tests {
         }));
         let report = ExplorationReport::compute(&manifest(), &logs, (1, 1000)).unwrap();
         assert!(matches!(report.verdict, Verdict::Incomplete { .. }));
+    }
+
+    /// Round-9 P1: a control frozen on its single initial gameplay cell
+    /// (every branch touches exactly the same one cell, depth 0) is NOT a
+    /// live control — "live" means movement beyond the initial cell, so the
+    /// verdict is Incomplete, never a Pass grounded on a frozen guest.
+    #[test]
+    fn one_cell_frozen_control_is_incomplete_not_pass() {
+        let mut logs = twenty(ExplorationConfig::Signal, 8, 12);
+        logs.extend((0..MIN_SEEDS).map(|s| ExplorationLog {
+            workload: "smb".to_string(),
+            rom_sha256: None,
+            config: ExplorationConfig::PureRandom,
+            seed: s,
+            // The frozen shape: the same single cell, every branch.
+            events: (0..8).map(|b| ev(b, &[42], 0)).collect(),
+        }));
+        let report = ExplorationReport::compute(&manifest(), &logs, (1, 1000)).unwrap();
+        assert_eq!(report.baseline_live, Some(false));
+        assert!(matches!(report.verdict, Verdict::Incomplete { .. }));
+        // Two distinct cells at the median is movement — live again.
+        let mut logs = twenty(ExplorationConfig::Signal, 8, 12);
+        logs.extend((0..MIN_SEEDS).map(|s| ExplorationLog {
+            workload: "smb".to_string(),
+            rom_sha256: None,
+            config: ExplorationConfig::PureRandom,
+            seed: s,
+            events: (0..8).map(|b| ev(b, &[42, 43], 0)).collect(),
+        }));
+        let report = ExplorationReport::compute(&manifest(), &logs, (1, 1000)).unwrap();
+        assert_eq!(report.baseline_live, Some(true));
     }
 
     #[test]
@@ -867,7 +929,7 @@ mod tests {
         // A stamped log under a ROM-less manifest is inconsistent metadata.
         let logs = twenty(ExplorationConfig::PureRandom, 2, 3); // stamped "f00d"
         assert!(matches!(
-            ExplorationReport::compute(&GameManifest::smb(None, 8), &logs, (1, 1000)),
+            ExplorationReport::compute(&GameManifest::smb(None, 8, None), &logs, (1, 1000)),
             Err(ExplorationError::RomMismatch { .. })
         ));
     }
@@ -891,7 +953,7 @@ mod tests {
         // …must be a SKIP under a ROM-less one. (Unstamped logs, so the SKIP
         // verdict path is exercised — stamped logs under a ROM-less manifest
         // are the RomMismatch error, tested separately.)
-        let m = GameManifest::smb(None, 8);
+        let m = GameManifest::smb(None, 8, None);
         for log in &mut logs {
             log.rom_sha256 = None;
         }

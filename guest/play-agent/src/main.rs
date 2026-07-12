@@ -324,7 +324,9 @@ mod real {
     ///   libretro contract supplies for `GET_CAN_DUPE`. The command→action
     ///   decision is `glue::env_response` (Miri-tested); the null check is
     ///   safe code beside the store; the store itself is irreducibly an FFI
-    ///   pointer write (nothing left to hoist).
+    ///   pointer write (nothing left to hoist) — and it is **Miri-executed**
+    ///   (round-9 P1) by this module's own unit tests, which drive `env_cb`
+    ///   with a real `bool*` and no FFI (the nightly job's `--bins` run).
     /// - `sym`'s `dlsym` + `transmute_copy` — raw symbol resolution; the
     ///   fn-pointer size equality is `debug_assert`ed, the ABI match is the
     ///   libretro contract.
@@ -571,6 +573,55 @@ mod real {
                 // The copy/clamp/zero-fill bounds logic is glue::copy_work_ram
                 // (Miri-covered).
                 glue::copy_work_ram(src, out)
+            }
+        }
+
+        /// Round-9 P1: the ONE residual value-carrying unsafe in this binary
+        /// (`env_cb`'s `bool` store) is executed under Miri here — no FFI is
+        /// involved in these paths, only the callback contract itself. The
+        /// nightly Miri job runs the bin's unit tests (`--bins`) on its Linux
+        /// host, where this cfg'd module compiles.
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            use harmony_play_agent::glue::RETRO_ENVIRONMENT_GET_CAN_DUPE;
+
+            #[test]
+            fn env_cb_writes_can_dupe_through_the_supplied_pointer() {
+                let mut flag = false;
+                let ok = env_cb(
+                    RETRO_ENVIRONMENT_GET_CAN_DUPE,
+                    std::ptr::from_mut(&mut flag).cast::<c_void>(),
+                );
+                assert!(ok);
+                assert!(flag, "the CAN_DUPE store must land through the pointer");
+            }
+
+            #[test]
+            fn env_cb_refuses_a_null_pointer_and_unknown_commands() {
+                assert!(!env_cb(
+                    RETRO_ENVIRONMENT_GET_CAN_DUPE,
+                    std::ptr::null_mut()
+                ));
+                // An unsupported command touches no pointer at all.
+                assert!(!env_cb(0xdead, std::ptr::null_mut()));
+            }
+
+            #[test]
+            fn input_state_cb_reads_the_held_joypad_byte() {
+                JOYPAD.store(0b1000_0001, Ordering::Relaxed);
+                // Bit 0 = A (id 8 in libretro's joypad map is handled by
+                // glue; here we only assert the callback threads the byte).
+                let a = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, 8);
+                let l = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, 6);
+                JOYPAD.store(0, Ordering::Relaxed);
+                assert_eq!(
+                    (a, l),
+                    (
+                        glue::input_state_response(0b1000_0001, 0, RETRO_DEVICE_JOYPAD, 8),
+                        glue::input_state_response(0b1000_0001, 0, RETRO_DEVICE_JOYPAD, 6)
+                    )
+                );
             }
         }
     }
