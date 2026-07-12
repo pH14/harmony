@@ -872,6 +872,11 @@ mod tests {
     /// trace_dir, retained as a real task-65 store entry (env sidecar + full
     /// journal — the re-key/film currency).
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "real filesystem (tempdir + TraceStore) — Miri isolation forbids it; the \
+                  retention logic itself is Miri-covered via the in-memory campaign path"
+    )]
     fn deep_reproducer_is_tracked_and_retained() {
         // Without retention configured: the deep branch is still identified.
         let outcome = run_outcome(ExplorationConfig::PureRandom, 42);
@@ -1106,6 +1111,11 @@ mod tests {
     /// every proposal but differing in what the machine actually recorded
     /// must retain different traces (distinct TraceIds).
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "real filesystem (tempdir + TraceStore) — Miri isolation forbids it, same as \
+                  deep_reproducer_is_tracked_and_retained"
+    )]
     fn retained_trace_uses_the_recorded_env_not_the_proposal() {
         /// Delegates to the toy but reports a salted recorded env.
         struct SaltedRecording {
