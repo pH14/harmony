@@ -32,6 +32,17 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmcall-transport
       - name: miri — vm-state
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
+      # vmm-core's UB is the `Backend::map_memory` pointer seam through
+      # `bringup::compose*`, exercised under Miri on every VM boot (e.g.
+      # `compose_drives_guestram_and_unsafe_map_memory`, the `hello`/`server` boot
+      # tests). Task 98: the `ControlServer` restore-driving tests (`Branch`/`Replay`/
+      # `engine.materialize()`) are `#[cfg_attr(miri, ignore)]`d — they hit
+      # `snapshot-store`'s tempfile+mmap, which Miri can't execute, and a restore
+      # interprets 50–120× slower than a boot (measured), so running ~37 of them would
+      # blow this job's shared ceiling. A restore composes the fresh VM through the
+      # SAME `compose*` map_memory seam a boot does, so gating drops no unique UB
+      # surface. Job-level `-Zmiri-permissive-provenance` only — no disable-isolation.
+      # See consonance/vmm-core/IMPLEMENTATION.md (task 98).
       - name: miri — vmm-core
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
       - name: miri — vmm-backend
