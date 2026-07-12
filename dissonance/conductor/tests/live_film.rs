@@ -526,8 +526,11 @@ fn run_gate<S: Read + Write>(
         .map_err(|e| format!("hello: {e}"))?;
 
     // The base: the server sits at GAME_READY; probe its v-time (deadline-0
-    // run — checked before entering the guest) and snapshot.
-    let base_vtime = match adapter
+    // run — checked before entering the guest) and snapshot. GAME_READY is not
+    // necessarily a snapshottable boundary — retry with small v-time steps
+    // until one is reached, exactly the campaign's seal shape (same constants
+    // as `GameCampaignConfig`: 1 ms steps, bounded attempts).
+    let mut base_vtime = match adapter
         .run(StopConditions {
             deadline: Some(VTime(0)),
             on: StopMask::NONE,
@@ -537,10 +540,31 @@ fn run_gate<S: Read + Write>(
         StopReason::Deadline { vtime } => vtime.0,
         other => return Err(format!("vtime probe stopped oddly: {other:?}")),
     };
-    let base = adapter
-        .snapshot()
-        .map_err(|e| format!("base snapshot: {e}"))?
-        .id;
+    const SNAPSHOT_RETRY_STEP: u64 = 1_000_000;
+    const SNAPSHOT_MAX_ATTEMPTS: usize = 100_000;
+    let mut base = None;
+    for _ in 0..SNAPSHOT_MAX_ATTEMPTS {
+        match adapter.snapshot() {
+            Ok(snap) => {
+                base = Some(snap.id);
+                break;
+            }
+            Err(SessionError::Control(control_proto::ControlError::NotQuiescent)) => {
+                base_vtime = match adapter
+                    .run(StopConditions {
+                        deadline: Some(VTime(base_vtime.saturating_add(SNAPSHOT_RETRY_STEP))),
+                        on: StopMask::NONE,
+                    })
+                    .map_err(|e| format!("seal-retry run: {e}"))?
+                {
+                    StopReason::Deadline { vtime } => vtime.0,
+                    other => return Err(format!("guest died during the seal retry: {other:?}")),
+                };
+            }
+            Err(e) => return Err(format!("base snapshot: {e}")),
+        }
+    }
+    let base = base.ok_or("no snapshottable boundary within the retry budget")?;
     let terminal = base_vtime.saturating_add(delta);
     eprintln!("[live_film] base at v-time {base_vtime}; terminal {terminal}");
 
