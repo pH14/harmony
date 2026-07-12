@@ -456,7 +456,7 @@ fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u
             .map(|(m, id, b)| (explorer::Moment(*m), *id, b.clone()))
             .collect::<Vec<_>>(),
     );
-    let mut ticks = Vec::new();
+    let mut ticks: Vec<FrameTick> = Vec::new();
     let (mut gpa, mut len) = (None, None);
     for (moment, ev) in &decoded {
         if ev.kind != link::KIND_STATE {
@@ -468,10 +468,21 @@ fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u
             continue;
         };
         match *reg {
-            reg::FRAME => ticks.push(FrameTick {
-                frame: u32::try_from(*value).unwrap_or(u32::MAX),
-                moment: moment.0,
-            }),
+            reg::FRAME => {
+                let tick = FrameTick {
+                    frame: u32::try_from(*value).unwrap_or(u32::MAX),
+                    moment: moment.0,
+                };
+                // SDK events are batch-stamped at drain time, so several
+                // frames can share one `Moment`. Only the LAST frame written
+                // at-or-before a moment is what the billboard holds when a
+                // `run(until = moment)` lands there — keep-last per moment
+                // (FilmPlan::derive requires strictly increasing moments).
+                match ticks.last_mut() {
+                    Some(prev) if prev.moment == tick.moment => *prev = tick,
+                    _ => ticks.push(tick),
+                }
+            }
             reg::BILLBOARD_GPA => gpa = Some(*value),
             reg::BILLBOARD_LEN => len = Some(*value),
             _ => {}
