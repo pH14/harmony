@@ -137,6 +137,20 @@ the gate *machinery* is built and committed; only its Signal input is absent.
   drivers: `~/t86-det25.sh`, `~/t86-campaign.sh` (box-window leases,
   auto-revert to stock on release).
 
+### Gate 2 — determinism: ✅ PASSED 2026-07-12
+
+`DETERMINISM PASS: 25/25 identical per-branch state_hash sequences (gate
+floor 25)` — 25 fresh-boot repetitions of the identical campaign
+(`--config pure-random --campaign-seed 1 --max-branches 32
+--deadline-delta 2_000_000_000`, ROM cross-check green every boot,
+boot-to-ready ~770 ms each), 166 min wall on one leased core, deep
+reproducer + billboard window retained per repetition
+(`/root/t86-det25-logs.json`, `/root/t86-det25-traces`). The box-window
+lease reverted to stock KVM and verified on release. Every branch is
+itself a reproducer replayed 25/25 across the repetitions (outcome
+equality is over the full log incl. every branch's `state_hash` and the
+deep reproducer's trace id).
+
 ## Box gates — the live path (handed to the foreman)
 
 **Blocked on the ROM**: `HARMONY_SMB_ROM` is user-supplied (Paul owes the
