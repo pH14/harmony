@@ -61,14 +61,39 @@ fn valid_blob(base_offset: u64, pos: u64, seed: u64, keys: &[u64]) -> Environmen
     .encode()
 }
 
-/// Both untrusted decode-path methods, so every test asserts the property on the
-/// whole public surface at once. `mutate` takes one blob; `compose` takes the
-/// blob as both operands (enough to exercise its decode of each side).
-fn drive_both(env: &Environment) -> [Result<Environment, EnvCodecError>; 2] {
-    [
-        SpecEnvCodec.mutate(env, 0xA11CE),
-        SpecEnvCodec.compose(env, env),
-    ]
+/// A known-good blob to pair a hostile one against, so `compose`'s **second**
+/// operand decode is reached: with a valid base, `require(base)?` succeeds and
+/// execution proceeds to decode the (hostile) tail. A round trip proves it is
+/// genuinely well-formed.
+fn good_partner() -> Environment {
+    let g = valid_blob(0, 100, 7, &[10, 40]);
+    assert!(
+        AdapterEnv::decode(&g).is_ok(),
+        "partner must be well-formed"
+    );
+    g
+}
+
+/// Assert a hostile blob is rejected as `Malformed(version)` on **every** public
+/// decode entry point — including both `compose` operands independently, since
+/// `require(base)?` short-circuits before the tail is decoded. Passing the
+/// hostile blob only as `compose(env, env)` would leave the tail-decode path
+/// with zero coverage (round-1 blocking finding), so this drives it as the base
+/// (`compose(env, good)`) **and** as the tail (`compose(good, env)`) separately.
+fn assert_malformed_everywhere(env: &Environment, version: u16, ctx: &str) {
+    let want = Err(EnvCodecError::Malformed(version));
+    let good = good_partner();
+    assert_eq!(SpecEnvCodec.mutate(env, 0xA11CE), want, "mutate: {ctx}");
+    assert_eq!(
+        SpecEnvCodec.compose(env, &good),
+        want,
+        "compose malformed base: {ctx}"
+    );
+    assert_eq!(
+        SpecEnvCodec.compose(&good, env),
+        want,
+        "compose malformed tail (second operand): {ctx}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -97,13 +122,7 @@ fn truncation_at_every_boundary_is_malformed() {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: full.bytes[..cut].to_vec(),
         };
-        for r in drive_both(&env) {
-            assert_eq!(
-                r,
-                Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)),
-                "a blob truncated to {cut} bytes must be a typed Malformed"
-            );
-        }
+        assert_malformed_everywhere(&env, ADAPTER_BLOB_VERSION, &format!("truncated to {cut}"));
     }
 }
 
@@ -120,13 +139,11 @@ fn magic_bit_flip_is_malformed() {
                 blob_version: ADAPTER_BLOB_VERSION,
                 bytes,
             };
-            for r in drive_both(&env) {
-                assert_eq!(
-                    r,
-                    Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)),
-                    "magic byte {byte} bit {bit} flip must be Malformed"
-                );
-            }
+            assert_malformed_everywhere(
+                &env,
+                ADAPTER_BLOB_VERSION,
+                &format!("magic byte {byte} bit {bit} flip"),
+            );
         }
     }
 }
@@ -143,9 +160,7 @@ fn wrapper_version_skew_is_malformed() {
             blob_version: v,
             bytes: full.bytes.clone(),
         };
-        for r in drive_both(&env) {
-            assert_eq!(r, Err(EnvCodecError::Malformed(v)));
-        }
+        assert_malformed_everywhere(&env, v, &format!("declared version {v}"));
     }
     // A header-internal version byte flip (the declared version stays 1) is
     // caught by the in-body magic/version check.
@@ -155,9 +170,7 @@ fn wrapper_version_skew_is_malformed() {
         blob_version: ADAPTER_BLOB_VERSION,
         bytes,
     };
-    for r in drive_both(&env) {
-        assert_eq!(r, Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)));
-    }
+    assert_malformed_everywhere(&env, ADAPTER_BLOB_VERSION, "header version byte flip");
 }
 
 /// A skewed **inner** `EnvSpec` version (bytes 26..28) is `Malformed`: the
@@ -172,9 +185,7 @@ fn inner_spec_version_skew_is_malformed() {
         blob_version: ADAPTER_BLOB_VERSION,
         bytes,
     };
-    for r in drive_both(&env) {
-        assert_eq!(r, Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)));
-    }
+    assert_malformed_everywhere(&env, ADAPTER_BLOB_VERSION, "inner spec version skew");
 }
 
 /// A length field claiming far more bytes than the buffer holds is `Malformed`,
@@ -190,9 +201,7 @@ fn length_field_overflow_is_malformed() {
         blob_version: ADAPTER_BLOB_VERSION,
         bytes,
     };
-    for r in drive_both(&env) {
-        assert_eq!(r, Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)));
-    }
+    assert_malformed_everywhere(&env, ADAPTER_BLOB_VERSION, "policy length overflow");
 }
 
 /// An unknown inner variant tag (neither `0` Seeded nor `1` Recorded) is
@@ -207,9 +216,7 @@ fn unknown_variant_tag_is_malformed() {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes,
         };
-        for r in drive_both(&env) {
-            assert_eq!(r, Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)));
-        }
+        assert_malformed_everywhere(&env, ADAPTER_BLOB_VERSION, &format!("variant tag {tag}"));
     }
 }
 
@@ -256,6 +263,72 @@ fn misordered_chain_is_typed() {
     ));
 }
 
+/// `compose`'s **second** operand (the branch-local tail) is decoded on its own
+/// untrusted path, reached only when the base decodes cleanly — so a valid base
+/// with a hostile tail must still be a typed error, never a panic (round-1
+/// blocking finding: `require(base)?` short-circuits the whole-surface gate).
+/// One direct case per malformed-tail shape, keyed off a known-good base.
+#[test]
+fn compose_rejects_a_malformed_tail_behind_a_valid_base() {
+    let good = good_partner();
+    let full = valid_blob(0, 200, 7, &[10, 90]);
+
+    // Truncation of the tail at every boundary.
+    for cut in 0..full.bytes.len() {
+        let tail = Environment {
+            blob_version: ADAPTER_BLOB_VERSION,
+            bytes: full.bytes[..cut].to_vec(),
+        };
+        assert_eq!(
+            SpecEnvCodec.compose(&good, &tail),
+            Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)),
+            "valid base + tail truncated to {cut} must be a typed Malformed"
+        );
+    }
+
+    // A structural tail corruption at each header/spec anchor, and a skewed
+    // declared tail version.
+    let corruptions: &[(usize, u8, u16, &str)] = &[
+        (0, 0x01, ADAPTER_BLOB_VERSION, "tail magic bit-flip"),
+        (
+            INNER_VERSION_OFF,
+            0xFF,
+            ADAPTER_BLOB_VERSION,
+            "tail inner-version skew",
+        ),
+        (
+            INNER_VARIANT_OFF,
+            0x07,
+            ADAPTER_BLOB_VERSION,
+            "tail unknown variant",
+        ),
+    ];
+    for &(off, xor, ver, ctx) in corruptions {
+        let mut bytes = full.bytes.clone();
+        bytes[off] ^= xor;
+        let tail = Environment {
+            blob_version: ADAPTER_BLOB_VERSION,
+            bytes,
+        };
+        assert_eq!(
+            SpecEnvCodec.compose(&good, &tail),
+            Err(EnvCodecError::Malformed(ver)),
+            "valid base + {ctx}"
+        );
+    }
+
+    // A skewed declared tail version (payload intact).
+    let tail = Environment {
+        blob_version: 99,
+        bytes: full.bytes.clone(),
+    };
+    assert_eq!(
+        SpecEnvCodec.compose(&good, &tail),
+        Err(EnvCodecError::Malformed(99)),
+        "valid base + off-version tail"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Proptest fuzzers over the whole hostile space.
 // ---------------------------------------------------------------------------
@@ -281,9 +354,14 @@ proptest! {
         salt in any::<u64>(),
     ) {
         let env = Environment { blob_version: va, bytes: a };
-        // A panic in either call fails the test; assert totality explicitly.
+        let good = good_partner();
+        // A panic in any call fails the test; assert totality explicitly. The
+        // hostile blob is driven as mutate's operand, as compose's base, AND as
+        // compose's tail (valid base ⇒ the tail-decode path is reached), so a
+        // panic that only fires while decoding the second operand is caught.
         prop_assert!(matches!(SpecEnvCodec.mutate(&env, salt), Ok(_) | Err(_)));
-        prop_assert!(matches!(SpecEnvCodec.compose(&env, &env), Ok(_) | Err(_)));
+        prop_assert!(matches!(SpecEnvCodec.compose(&env, &good), Ok(_) | Err(_)));
+        prop_assert!(matches!(SpecEnvCodec.compose(&good, &env), Ok(_) | Err(_)));
     }
 
     /// Any blob whose declared version is not the adapter version is a typed
@@ -294,8 +372,7 @@ proptest! {
         bytes in prop::collection::vec(any::<u8>(), 0..300),
     ) {
         let env = Environment { blob_version: v, bytes };
-        prop_assert_eq!(SpecEnvCodec.mutate(&env, 0), Err(EnvCodecError::Malformed(v)));
-        prop_assert_eq!(SpecEnvCodec.compose(&env, &env), Err(EnvCodecError::Malformed(v)));
+        assert_malformed_everywhere(&env, v, "arbitrary off-version blob");
     }
 
     /// Truncating a valid blob to any length below the full encoding is always a
@@ -308,14 +385,7 @@ proptest! {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: full.bytes[..cut].to_vec(),
         };
-        prop_assert_eq!(
-            SpecEnvCodec.mutate(&env, 0),
-            Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION))
-        );
-        prop_assert_eq!(
-            SpecEnvCodec.compose(&env, &env),
-            Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION))
-        );
+        assert_malformed_everywhere(&env, ADAPTER_BLOB_VERSION, "arbitrary truncation");
     }
 
     /// A single bit flipped anywhere in the fixed header region (magic + inner
@@ -331,13 +401,21 @@ proptest! {
         // decode — so only assert on the never-panic guarantee for that byte and
         // require Malformed for the pure structural (magic/version) bytes.
         let full = valid_blob(0, 0, 1, &[]);
+        let good = good_partner();
         let mut bytes = full.bytes.clone();
         bytes[byte] ^= 1 << bit;
         let env = Environment { blob_version: ADAPTER_BLOB_VERSION, bytes };
         let m = SpecEnvCodec.mutate(&env, 0);
+        let as_base = SpecEnvCodec.compose(&env, &good);
+        let as_tail = SpecEnvCodec.compose(&good, &env);
         prop_assert!(matches!(m, Ok(_) | Err(_)));
+        prop_assert!(matches!(as_base, Ok(_) | Err(_)));
+        prop_assert!(matches!(as_tail, Ok(_) | Err(_)));
         if byte != INNER_VARIANT_OFF {
-            prop_assert_eq!(m, Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION)));
+            let want = Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION));
+            prop_assert_eq!(m, want.clone());
+            prop_assert_eq!(as_base, want.clone());
+            prop_assert_eq!(as_tail, want, "malformed tail (second operand)");
         }
     }
 }

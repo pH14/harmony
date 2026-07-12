@@ -135,7 +135,9 @@ proptest! {
                 let suffix = m.recorded_env().expect("suffix");
                 fold = Some(match fold {
                     None => suffix,
-                    Some(prev) => codec.compose(&prev, &suffix),
+                    Some(prev) => codec
+                        .compose(&prev, &suffix)
+                        .expect("compose adapter-minted blobs"),
                 });
                 cur_at = at;
             }

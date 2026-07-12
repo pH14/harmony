@@ -43,13 +43,16 @@ replaced by a fallible seam:
   tag, unsupported composition, rekey overflow, mis-ordered chain). The four
   in-crate `#[should_panic]` codec tests became `Err(...)` assertions.
 
-**Integrator note.** `EnvCodec::mutate`/`compose` are now fallible, so
-`dissonance/conductor`'s call sites (`campaign.rs`, `materialize.rs`,
-`benchcampaign.rs`, `record.rs`, `lib.rs`) need the mechanical `?` added — those
-functions already return `Result<_, MachineError>` and `MachineError: From<EnvCodecError>`,
-so it is a one-token change per call, no new imports. This crate's gates
-(`-p explorer`) are all green; conductor is a sibling crate outside this task's
-directory (conventions rule 1) and is updated at integration.
+**Cross-crate propagation (done in this PR).** `EnvCodec::mutate`/`compose` are
+now fallible, so `dissonance/conductor`'s consumers were updated to propagate the
+error: `src/materialize.rs` (the two lineage/bug `compose` folds) rides it onto
+`MachineError` via `?` — those functions already return `Result<_, MachineError>`
+and `MachineError: From<EnvCodecError>`, so no new imports were needed — and the
+three trusted-blob test call sites (`tests/materialize_loopback.rs`,
+`tests/reseed_fold_proptest.rs`) `.expect(...)` on adapter-minted blobs. The gate
+is now `cargo check --workspace --all-features --all-targets` (round-1 caught the
+per-crate gate missing this — the Step::SdkStop review-gap class); the whole
+workspace and `cargo nextest -p conductor` are green.
 
 ## What task 64 built
 
