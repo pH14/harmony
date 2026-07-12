@@ -105,6 +105,38 @@ the gate *machinery* is built and committed; only its Signal input is absent.
   `conductor game mock` runs and appends logs; `--config signal` refuses;
   `play-agent --smoke` runs the frame loop + billboard with no core/ROM/host.
 
+## 2026-07-12 update: rebase, round-9, and the live smoke
+
+- **Rebased onto main** (PRs 90/91/92/95). One semantic adaptation: task 96's
+  `boot_server` returns a `(server, boot_us)` stopwatch tuple — the game path
+  adopts it (boot time printed per repetition, observation-only), and
+  `boot_server` now also returns the boot serial (the ROM cross-check input).
+- **Round-9 fixes** (all 6 blocking P1s — commit `ac8422f`): recorded-env
+  trace retention; ROM serial cross-check (`serial_rom_sha256`); manifest
+  `deadline_delta` (+drift); `BillboardMissing` on windowless box campaigns;
+  live-control-requires-movement (`cells_median > 1`); bin unsafe
+  Miri-executed (`--bins` on the nightly play-agent step).
+- **Smoke re-fired at this head, green, 51.7s wall** (box, 2026-07-12):
+  `GAME_ROM_SHA256` serial line == the operator pin (cross-check live),
+  billboard window `gpa=0x4e00000 len=15838`, 4 branches → 20 distinct
+  cells. **Cell-decode nuance (the vacuity check, resolved):** branch cells
+  decode to a mode-1 run (`(1,0,0,x)` for x-buckets 0..9 — real rightward
+  play from the sealed base), then one mode-3 cell (game over at the death
+  bucket), then mode-0 cells (the title-screen **attract demo** after game
+  over — SMB's demo moves the player X under OperMode 0). A 2·10⁹ ns rollout
+  at unthrottled emulation speed spans a whole life + game over + demo, so
+  mode-0 cells are a *late-rollout* observation, not a title-screen seal —
+  the seal is proven in-gameplay by the in-guest FATAL gate (round-8) plus
+  mode-1 bucket-0 cells in every branch. Reviewers hitting the "mode-0 ⇒
+  vacuous" alarm: check for the mode-1 run first. (Whether attract-demo
+  cells should count as discovery is a cell-key tuning question — host-side,
+  M1's sanctioned retune, applied equally to every configuration.)
+- **Budget sizing (recorded in the manifest):** measured ≈8s wall/branch at
+  `--deadline-delta 2_000_000_000`, boot <1s, ≈20s window overhead ⇒
+  **B=32**: gate 2 (25 reps) ≈ 1.8h, the 40-run campaign ≈ 2.9h. Box
+  drivers: `~/t86-det25.sh`, `~/t86-campaign.sh` (box-window leases,
+  auto-revert to stock on release).
+
 ## Box gates — the live path (handed to the foreman)
 
 **Blocked on the ROM**: `HARMONY_SMB_ROM` is user-supplied (Paul owes the
