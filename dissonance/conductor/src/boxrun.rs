@@ -366,19 +366,23 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // A fresh, identically-seeded boot per repetition: the determinism
         // claim is over the whole boot → seal → campaign pipeline, so nothing
         // is allowed to carry over between repeats.
-        let mut server = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
+        // `boot_us` is the task-96 stopwatch's boot-to-ready wall-clock —
+        // host-side observation only (printed, never fed to the campaign).
+        let (mut server, boot_us) =
+            match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
         let rep_cfg = cfg.clone();
         let initial = boot_env();
         println!(
             "[conductor] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
-             rollout)…",
+             rollout; boot-to-ready {} ms)…",
             rep + 1,
             config,
             rep_cfg.max_branches,
             args.deadline_delta,
+            boot_us / 1_000,
         );
         let (served, client) = run_session(&mut server, move |stream| {
             let mut machine = SocketMachine::connect(stream, initial)?;
