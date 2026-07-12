@@ -283,7 +283,10 @@ impl Strategy for CoverageStrategy {
         let pick = self.rng.next_u64();
         let salt = self.rng.next_u64();
         match corpus.select(pick) {
-            Some((snap, base)) => (snap, env.mutate(base, salt)),
+            Some((snap, base)) => (
+                snap,
+                env.mutate(base, salt).expect("toy codec is infallible"),
+            ),
             None => (genesis, env.seeded(salt)),
         }
     }
@@ -455,7 +458,9 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
             let env = if base_snap == self.genesis {
                 pending.env
             } else if let Some(base) = &base_genesis {
-                self.env.compose(base, &pending.env)
+                self.env
+                    .compose(base, &pending.env)
+                    .expect("toy codec is infallible")
             } else {
                 self.machine.drop_snap(pending.snap)?;
                 continue;
@@ -489,7 +494,9 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
         let env = if base_snap == self.genesis {
             outcome.env.clone()
         } else if let Some(base) = self.corpus.base_env(base_snap) {
-            self.env.compose(base, &outcome.env)
+            self.env
+                .compose(base, &outcome.env)
+                .expect("toy codec is infallible")
         } else {
             outcome.env.clone()
         };

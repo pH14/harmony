@@ -197,7 +197,9 @@ fn sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin()
         // The fold carries BOTH reseed markers (the collapsed hop's at its
         // splice position), so the server re-executes the S1 reseed at its
         // recorded Moment and the draw stream matches hop-by-hop exactly.
-        let folded = codec.compose(&suffix1, &suffix2);
+        let folded = codec
+            .compose(&suffix1, &suffix2)
+            .expect("compose adapter-minted blobs");
         let decoded = AdapterEnv::decode(&folded).expect("adapter blob");
         assert_eq!(
             decoded.spec.reseeds().len(),
@@ -414,7 +416,9 @@ fn host_fault_below_a_parent_rooted_fold_applies_at_the_absolute_moment() {
 
         // The compose-folded, genesis-complete reproducer re-anchors from the
         // BASE's origin and must hit the same absolute point: bit-identical.
-        let folded = codec.compose(&suffix1, &suffix2f);
+        let folded = codec
+            .compose(&suffix1, &suffix2f)
+            .expect("compose adapter-minted blobs");
         m.branch(g, &folded).expect("branch the fold from the base");
         assert_eq!(run_to(&mut m, a2), a2);
         let h_fold = m.hash().expect("fold hash");

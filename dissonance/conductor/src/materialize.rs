@@ -256,7 +256,9 @@ pub fn run_materialize<M: Machine>(
         let suffix = machine.recorded_env()?;
         let env = match &entry_env {
             None => suffix.clone(),
-            Some(base) => codec.compose(base, &suffix),
+            // A malformed lineage blob is a loud control error
+            // (`MachineError::EnvCodec`), never a bug (task 99).
+            Some(base) => codec.compose(base, &suffix)?,
         };
         let r = frontier.insert(FrontierEntry {
             exemplar: VirtualExemplar {
@@ -346,7 +348,7 @@ pub fn run_materialize<M: Machine>(
     let delta = machine.recorded_env()?;
     // Exactly how `Explorer::report` mints a Bug.env: the branch-local delta
     // composed onto the entry's genesis-complete env. No SnapId anywhere.
-    let bug_env = codec.compose(&deep_env, &delta);
+    let bug_env = codec.compose(&deep_env, &delta)?;
     machine.branch(genesis, &bug_env)?;
     let replay_stop = machine.run(
         &StopConditions {

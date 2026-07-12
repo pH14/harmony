@@ -164,7 +164,9 @@ fn build_chain(
         let suffix = machine.recorded_env().expect("recorded_env");
         let env = match &entry_env {
             None => suffix.clone(),
-            Some(base) => codec.compose(base, &suffix),
+            Some(base) => codec
+                .compose(base, &suffix)
+                .expect("toy codec is infallible"),
         };
         let r = frontier.insert(FrontierEntry {
             exemplar: VirtualExemplar {

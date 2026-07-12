@@ -106,13 +106,17 @@ fn compose_rebases_a_non_genesis_run_to_genesis() {
     );
 
     // Branch off that seal with a branch-local mutation and run a Modulation.
-    let branch_local_in = codec.mutate(&base_env, 0xABCD);
+    let branch_local_in = codec
+        .mutate(&base_env, 0xABCD)
+        .expect("toy codec is infallible");
     let outcome = ex.modulation(snap, &branch_local_in, &all()).unwrap();
     let mid_hash = ex.machine_mut().hash().unwrap();
     let mid_stop = outcome.stop.clone();
 
     // Rebase to genesis and replay from genesis — same hash, same stop.
-    let composed = codec.compose(&base_env, &outcome.env);
+    let composed = codec
+        .compose(&base_env, &outcome.env)
+        .expect("toy codec is infallible");
     ex.machine_mut().branch(genesis, &composed).unwrap();
     let g_stop = drive_to_terminal(ex.machine_mut(), &all(), None).unwrap();
     let g_hash = ex.machine_mut().hash().unwrap();
@@ -191,7 +195,9 @@ fn bug_below_a_continued_snapshot_replays_from_genesis() {
     assert!(mid_stop.is_bug(), "the forced suffix override yields a bug");
 
     // Rebase to genesis exactly as `progression_step` reports a bug, and replay.
-    let bug_env = codec.compose(&entry_env, &outcome.env);
+    let bug_env = codec
+        .compose(&entry_env, &outcome.env)
+        .expect("toy codec is infallible");
     ex.machine_mut().branch(genesis, &bug_env).unwrap();
     let g_stop = drive_to_terminal(ex.machine_mut(), &all(), None).unwrap();
     let g_hash = ex.machine_mut().hash().unwrap();
@@ -228,13 +234,17 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
 
     // 2. Branch off that seal and drive down to its NESTED SnapshotPoint
     //    (SNAP_AT2), capturing the nested snapshot + its branch-local prefix env.
-    let into_outer = codec.mutate(&e_outer, 0x99);
+    let into_outer = codec
+        .mutate(&e_outer, 0x99)
+        .expect("toy codec is infallible");
     ex.machine_mut().branch(s_outer, &into_outer).unwrap();
     let (s_nested, prefix_nested) = common::drive_to_snapshot(ex.machine_mut(), &all());
 
     // 3. Rebase the nested prefix to genesis-complete exactly as progression_step
     //    does for a fork below a non-genesis exemplar.
-    let e_nested = codec.compose(&e_outer, &prefix_nested);
+    let e_nested = codec
+        .compose(&e_outer, &prefix_nested)
+        .expect("toy codec is infallible");
     let de = decode(&e_nested).unwrap();
     assert_eq!(de.base_offset, 0, "nested frontier env is genesis-complete");
     assert_eq!(de.pos, SNAP_AT2, "and records the nested fork offset");
@@ -262,7 +272,9 @@ fn bug_below_a_nested_snapshot_replays_from_genesis() {
     );
 
     // 5. Rebase the bug through the nested base and replay from genesis.
-    let bug_env = codec.compose(&e_nested, &outcome.env);
+    let bug_env = codec
+        .compose(&e_nested, &outcome.env)
+        .expect("toy codec is infallible");
     ex.machine_mut().branch(genesis, &bug_env).unwrap();
     let g_stop = drive_to_terminal(ex.machine_mut(), &all(), None).unwrap();
     let g_hash = ex.machine_mut().hash().unwrap();
@@ -313,14 +325,14 @@ proptest! {
         prop_assert_ne!(snap, genesis, "frontier seals are mid-run snapshots");
 
         // A run branched below the non-genesis exemplar produces the delta.
-        let branch_local_in = codec.mutate(&base_env, salt);
+        let branch_local_in = codec.mutate(&base_env, salt).expect("toy codec is infallible");
         let outcome = ex.modulation(snap, &branch_local_in, &all).unwrap();
         let mid_hash = ex.machine_mut().hash().unwrap();
         let mid_stop = outcome.stop.clone();
 
         // The property: composing the base with the delta yields a
         // genesis-complete env that reproduces that run from genesis.
-        let composed = codec.compose(&base_env, &outcome.env);
+        let composed = codec.compose(&base_env, &outcome.env).expect("toy codec is infallible");
         prop_assert_eq!(
             decode(&composed).unwrap().base_offset, 0,
             "the composed env is genesis-complete"

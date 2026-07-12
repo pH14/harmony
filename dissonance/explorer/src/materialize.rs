@@ -407,10 +407,13 @@ impl Materializer {
             let mut env = self.lineage[&walk.fold[0]].suffix.clone();
             let mut folded = 0u64;
             for mid in &walk.fold[1..] {
-                env = codec.compose(&env, &self.lineage[mid].suffix);
+                // A malformed lineage suffix aborts the materialization as a
+                // loud control error (`MachineError::EnvCodec`), never a bug
+                // (task 99).
+                env = codec.compose(&env, &self.lineage[mid].suffix)?;
                 folded += 1;
             }
-            env = codec.compose(&env, &entry.exemplar.suffix);
+            env = codec.compose(&env, &entry.exemplar.suffix)?;
             folded += 1;
             (env, folded)
         };

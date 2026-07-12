@@ -77,17 +77,25 @@
 //!   tail-complete (and always the [`EnvSpec::Recorded`] variant, never
 //!   `Seeded`, so compose's variant check cannot fire on adapter-minted
 //!   artifacts).
-//! - **Fallibility.** [`SpecEnvCodec`]'s `compose` (and `mutate`) **panic** on
-//!   `UnsupportedComposition`/`Overflow` or a malformed adapter blob — the
-//!   ruling's chosen alternative: these seams receive only adapter-minted
-//!   artifacts, so a failure is a defect in the adapter/contract, not a run
-//!   outcome, and the campaign aborts loudly rather than minting a reproducer
-//!   that does not replay. (A fallible seam remains the allowed API adjustment
-//!   the ruling names; the panic is its default.)
+//! - **Fallibility (task 99, bead `hm-5d9`).** [`SpecEnvCodec`]'s `compose` and
+//!   `mutate` are **fallible**: a malformed adapter blob, a mis-ordered chain,
+//!   an `UnsupportedComposition`/`Overflow`, or a standing-fault-carrying base
+//!   returns a typed [`EnvCodecError`] — **never a
+//!   panic**. A serialized reproducer is the artifact users pass around, load
+//!   from disk, and feed back in, so it is untrusted by definition and the
+//!   library rule (conventions rule 4: never panic on untrusted input) governs
+//!   it. The failure is still a **loud control error**: the engine and campaign
+//!   loops surface it via [`MachineError::EnvCodec`],
+//!   which aborts the step and is never recorded as a guest [`Bug`](crate::Bug)
+//!   — a bad reproducer artifact fails the run/campaign, it does not mint a
+//!   finding. (This supersedes the earlier task-93 default, which panicked; the
+//!   ruling named a fallible seam as the allowed adjustment, and it is now
+//!   taken.)
 //! - **Standing-fault confinement** is vacuous in the v1 vocabulary (no
-//!   standing faults exist); `mutate` still refuses (panics on) a
-//!   standing-fault-carrying base rather than slicing one into a branch-local
-//!   delta, so the confinement rule is enforced here the day they appear.
+//!   standing faults exist); `mutate` still refuses a standing-fault-carrying
+//!   base (with `EnvCodecError::UnsupportedComposition`) rather than slicing one
+//!   into a branch-local delta, so the confinement rule is enforced here the day
+//!   they appear.
 //! - **Parent-rooted chains (task 68).** `mutate`/`compose` operate in the
 //!   base's **own coordinate system**: a base's override keys are relative to
 //!   its `base_offset` (absolute keys are the `base_offset == 0` special
@@ -96,9 +104,16 @@
 //!   suffix chain (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage) yields one
 //!   delta still rooted at the chain's retained ancestor — exactly what the
 //!   task-68 materialization engine replays with **one** branch. `mutate`
-//!   slices at `b.pos − b.base_offset`. A delta keyed **before** its base's
-//!   root (`d.base_offset < b.base_offset`) is a mis-ordered chain — a defect,
-//!   panicked on (the same fail-loud, never-silently-mis-key discipline).
+//!   slices at `b.pos − b.base_offset`. The `compose` operand-pair contract is
+//!   total and enumerated on the [`EnvCodecError`](crate::EnvCodecError) doc; the
+//!   two positional invariants are: each operand's **own** `pos ≥ base_offset`
+//!   (checked once at the codec-seam decode, `require`, so `mutate` and both
+//!   `compose` operands reject an internally-inconsistent blob with the same
+//!   `MisorderedChain`), and **adjacency** `d.base_offset == b.pos` (the delta
+//!   was recorded off the base's snapshot). Adjacency implies root ordering, so
+//!   the relative cut `d.base_offset − b.base_offset` reduces to `b.pos −
+//!   b.base_offset` and cannot underflow; a gap or overlap is refused with
+//!   `EnvCodecError::NonAdjacentChain` (never silently mis-keyed).
 //!
 //! ## Error mapping (two categories, preserved)
 //!
@@ -114,7 +129,7 @@ use std::io::{Read, Write};
 
 use environment::{Action, EnvSpec, FaultPolicy};
 
-use crate::error::MachineError;
+use crate::error::{EnvCodecError, MachineError};
 use crate::{Answer, Environment, Machine, SnapId, StopConditions, StopReason, VTime};
 
 /// The adapter blob format version, mirrored into [`Environment::blob_version`]
@@ -264,25 +279,39 @@ fn recorded(spec: &EnvSpec) -> EnvSpec {
 /// the test-side toy codec. A unit type; every operation is a pure function of
 /// its inputs.
 ///
-/// **Panics** (all three methods) on a malformed adapter blob, and `compose`
-/// additionally on `UnsupportedComposition`/`Overflow` — per the task-93
-/// ruling these seams receive only adapter-minted artifacts, so any failure is
-/// an invariant violation that must abort the campaign loudly, never a run
-/// outcome (see the module doc's contract section).
+/// **Fallible** (task 99): `mutate` and `compose` decode untrusted serialized
+/// reproducers and return a typed [`EnvCodecError`] — never a panic. `compose`'s
+/// acceptance contract is total and enumerated on the [`EnvCodecError`] doc
+/// (byte well-formedness, per-operand `pos >= base_offset`, pair adjacency,
+/// spec compatibility, no `Moment`-axis overflow). `seeded` mints from a
+/// caller-supplied seed and is infallible. See the module doc's contract section
+/// for how callers surface the error as a loud control failure.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SpecEnvCodec;
 
 impl SpecEnvCodec {
-    /// Decode at a codec seam, where a malformed blob is an invariant
-    /// violation (the ruling's loud abort), not untrusted input.
-    fn require(env: &Environment, seam: &str) -> AdapterEnv {
-        match AdapterEnv::decode(env) {
-            Ok(e) => e,
-            Err(e) => panic!(
-                "SpecEnvCodec::{seam}: not an adapter-minted blob ({e}); the EnvCodec seam \
-                 receives only adapter-minted artifacts (task-93 ruling — defect, not data)"
-            ),
+    /// Decode a reproducer blob at the codec seam and validate its internal
+    /// invariants. The blob is untrusted input (a user-supplied artifact), so a
+    /// byte-level decode failure is a typed [`EnvCodecError::Malformed`] carrying
+    /// the declared version, and a structurally-decodable but semantically
+    /// impossible lineage is [`EnvCodecError::MisorderedChain`] — never a panic
+    /// (task 99).
+    ///
+    /// The one internal invariant a lone blob can violate is `pos >= base_offset`:
+    /// a capture position **before** the blob's own root would mean a snapshot
+    /// taken before the branch it is keyed from. Enforcing it here — the single
+    /// codec-seam decode point — means `mutate` and **both** `compose` operands
+    /// are guarded uniformly, so neither can splice an operand whose capture
+    /// precedes its splice into an inconsistent artifact (round-3 finding).
+    fn require(env: &Environment) -> Result<AdapterEnv, EnvCodecError> {
+        let decoded =
+            AdapterEnv::decode(env).map_err(|_| EnvCodecError::Malformed(env.blob_version))?;
+        if decoded.pos < decoded.base_offset {
+            return Err(EnvCodecError::MisorderedChain(
+                "capture position precedes the blob's own root offset",
+            ));
         }
+        Ok(decoded)
     }
 }
 
@@ -299,19 +328,14 @@ impl crate::EnvCodec for SpecEnvCodec {
         .encode()
     }
 
-    fn mutate(&self, base: &Environment, salt: u64) -> Environment {
-        let b = Self::require(base, "mutate");
+    fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError> {
+        let b = Self::require(base)?;
         // Coordinate system (task 68): the base's override keys are relative
         // to its own `base_offset`, so the slice point is the **relative**
-        // distance from the base's root to its capture position. A capture
-        // position behind the root is a malformed blob — a defect, loud.
-        let cut = b.pos.checked_sub(b.base_offset).unwrap_or_else(|| {
-            panic!(
-                "SpecEnvCodec::mutate: base captured at pos {} BEFORE its own root offset {} — \
-                 a malformed chain blob (task-93 ruling: defect, never silently mis-key)",
-                b.pos, b.base_offset
-            )
-        });
+        // distance from the base's root to its capture position. `require`
+        // already refused a capture behind the root (`pos < base_offset` is a
+        // `MisorderedChain`), so this subtraction cannot underflow.
+        let cut = b.pos - b.base_offset;
         // The branch this delta seeds runs from the base snapshot's capture
         // point, so slice the suffix at `cut` into a branch-local delta (keys
         // re-based to the branch origin), preserving seed/policy so a later
@@ -330,11 +354,9 @@ impl crate::EnvCodec for SpecEnvCodec {
         {
             // Standing-fault confinement (task-93 ruling): a standing-fault-
             // carrying base is never sliced into a branch-local delta. Vacuous
-            // in the v1 vocabulary; enforced loudly the day they appear.
-            panic!(
-                "SpecEnvCodec::mutate: base carries standing faults — confined to genesis-based \
-                 runs (task-93 ruling), never sliced into a branch-local delta"
-            );
+            // in the v1 vocabulary; enforced the day they appear — as a typed
+            // error (task 99), never a panic.
+            return Err(EnvCodecError::UnsupportedComposition);
         }
         let suffix: BTreeMap<u64, Action> = b
             .spec
@@ -372,49 +394,75 @@ impl crate::EnvCodec for SpecEnvCodec {
         // One deterministic host-plane tweak via the real codec (guest
         // overrides are preserved verbatim by its contract).
         let mutated = environment::EnvCodec::mutate(&sliced, salt);
-        AdapterEnv {
+        Ok(AdapterEnv {
             base_offset: b.pos,
             pos: b.pos,
             spec: mutated,
         }
-        .encode()
+        .encode())
     }
 
-    fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment {
-        let b = Self::require(base, "compose");
-        let d = Self::require(branch_local, "compose");
-        // Coordinate system (task 68), symmetric with `mutate`: the base's
-        // keys are relative to its own `base_offset`, so the splice point is
-        // the **relative** distance from the base's root to the delta's branch
-        // origin (the ruling's "`at` provenance" — the delta carries the
-        // absolute Moment it is keyed from, so the cut is recoverable from the
-        // two blobs alone). With a genesis-complete base (`base_offset == 0`)
-        // this reduces to the absolute splice the v1 flow always used; with a
-        // parent-rooted base it is the chain fold the task-68 materialization
-        // engine drives (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage), whose
-        // result stays rooted at the base's own origin. A delta branched
-        // BEFORE its base's root is a mis-ordered chain — a defect, loud.
-        let cut = d.base_offset.checked_sub(b.base_offset).unwrap_or_else(|| {
-            panic!(
-                "SpecEnvCodec::compose: delta keyed from {} BEFORE the base's root offset {} — \
-                 a mis-ordered chain (task-93 ruling: defect, never silently mis-key)",
-                d.base_offset, b.base_offset
-            )
-        });
-        let composed = match environment::EnvCodec::compose(&b.spec, &d.spec, cut) {
-            Ok(spec) => spec,
-            Err(e) => panic!(
-                "SpecEnvCodec::compose failed ({e}) — unreachable under the task-93 adapter \
-                 contract (tail-complete Recorded deltas, matching seed/policy, no standing \
-                 faults); aborting rather than minting a reproducer that does not replay"
-            ),
-        };
-        AdapterEnv {
+    fn compose(
+        &self,
+        base: &Environment,
+        branch_local: &Environment,
+    ) -> Result<Environment, EnvCodecError> {
+        let b = Self::require(base)?;
+        let d = Self::require(branch_local)?;
+        // The complete operand-pair contract (see the `EnvCodecError` doc for the
+        // full enumeration and why each is necessary). `require` above already
+        // established per-operand `pos >= base_offset` for both.
+        //
+        // **Adjacency** (task 99, round 4): the trait defines `branch_local` as
+        // recorded from a run branched off *base's snapshot*, so the delta's
+        // origin must be exactly where the base was captured. A gap
+        // (`d.base_offset > b.pos`) would splice a base prefix that never
+        // produced this tail; an overlap (`d.base_offset < b.pos`) would discard
+        // base state the tail assumed. Either mints a reproducer that does not
+        // replay, so refuse it. This subsumes root ordering: with adjacency and
+        // `b.pos >= b.base_offset`, `d.base_offset == b.pos >= b.base_offset`.
+        if d.base_offset != b.pos {
+            return Err(EnvCodecError::NonAdjacentChain(
+                "branch-local delta's origin does not meet the base's capture point",
+            ));
+        }
+        // Coordinate system (task 68): the splice point is the base's capture
+        // relative to its own root. Adjacency makes this `d.base_offset -
+        // b.base_offset`; `require`'s `b.pos >= b.base_offset` makes the
+        // subtraction underflow-free. With a genesis-complete base this is the
+        // absolute splice the v1 flow always used; with a parent-rooted base it
+        // is the chain fold the task-68 materialization engine drives
+        // (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage), whose result stays
+        // rooted at the base's own origin.
+        let cut = b.pos - b.base_offset;
+        // A positionally-valid pair can still be an unsupported or overflowing
+        // composition — both `Recorded`, equal seed/policy, no standing faults,
+        // no Moment re-key past the axis. These spec-content invariants are
+        // delegated to the wire codec and surfaced as typed errors, rather than
+        // minting a reproducer that does not replay.
+        let composed =
+            environment::EnvCodec::compose(&b.spec, &d.spec, cut).map_err(map_env_err)?;
+        Ok(AdapterEnv {
             base_offset: b.base_offset,
             pos: d.pos,
             spec: composed,
         }
-        .encode()
+        .encode())
+    }
+}
+
+/// Map the underlying `environment` codec's [`EnvError`](environment::EnvError)
+/// onto the seam's [`EnvCodecError`]. `compose` can only return `Overflow` or
+/// `UnsupportedComposition` (both inputs already decoded cleanly via
+/// [`AdapterEnv::decode`]); a residual `Malformed`/`BadVersion` is mapped
+/// defensively so the match stays total.
+fn map_env_err(e: environment::EnvError) -> EnvCodecError {
+    use environment::EnvError as E;
+    match e {
+        E::Overflow => EnvCodecError::Overflow,
+        E::UnsupportedComposition => EnvCodecError::UnsupportedComposition,
+        E::BadVersion(v) => EnvCodecError::Malformed(v),
+        E::Malformed => EnvCodecError::Malformed(ADAPTER_BLOB_VERSION),
     }
 }
 
@@ -1049,7 +1097,8 @@ mod tests {
         ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
     };
     use crate::{
-        Answer, EnvCodec, Environment, Machine, MachineError, StopConditions, StopMask, VTime,
+        Answer, EnvCodec, EnvCodecError, Environment, Machine, MachineError, StopConditions,
+        StopMask, VTime,
     };
 
     fn spec_with_overrides(seed: u64, keys: &[u64]) -> EnvSpec {
@@ -1143,7 +1192,7 @@ mod tests {
             spec: spec_with_overrides(7, &[5, 60]),
         }
         .encode();
-        let composed = SpecEnvCodec.compose(&base, &delta);
+        let composed = SpecEnvCodec.compose(&base, &delta).unwrap();
         let decoded = AdapterEnv::decode(&composed).unwrap();
         assert_eq!(decoded.base_offset, 0, "composed is genesis-complete");
         assert_eq!(decoded.pos, 260, "pos is the delta's capture point");
@@ -1155,8 +1204,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "SpecEnvCodec::compose failed")]
-    fn compose_panics_on_a_seed_mismatch_per_the_ruling() {
+    fn compose_errors_on_a_seed_mismatch() {
         let base = AdapterEnv {
             base_offset: 0,
             pos: 100,
@@ -1169,12 +1217,16 @@ mod tests {
             spec: spec_with_overrides(8, &[]), // different seed
         }
         .encode();
-        let _ = SpecEnvCodec.compose(&base, &delta);
+        // A well-formed pair the wire codec cannot compose (task 99): a typed
+        // error, never a panic.
+        assert_eq!(
+            SpecEnvCodec.compose(&base, &delta),
+            Err(EnvCodecError::UnsupportedComposition)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "SpecEnvCodec::compose failed")]
-    fn compose_panics_on_a_rekey_overflow_per_the_ruling() {
+    fn compose_errors_on_a_rekey_overflow() {
         let base = AdapterEnv {
             base_offset: 0,
             pos: u64::MAX - 1,
@@ -1187,17 +1239,28 @@ mod tests {
             spec: spec_with_overrides(7, &[10]), // 10 + (MAX-1) overflows
         }
         .encode();
-        let _ = SpecEnvCodec.compose(&base, &delta);
+        assert_eq!(
+            SpecEnvCodec.compose(&base, &delta),
+            Err(EnvCodecError::Overflow)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "not an adapter-minted blob")]
-    fn codec_seams_panic_on_a_non_adapter_blob() {
+    fn codec_seams_error_on_a_non_adapter_blob() {
         let junk = Environment {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: vec![1, 2, 3],
         };
-        let _ = SpecEnvCodec.compose(&junk, &junk);
+        // The untrusted-input class: arbitrary bytes are a typed `Malformed`,
+        // never a panic (task 99).
+        assert_eq!(
+            SpecEnvCodec.compose(&junk, &junk),
+            Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION))
+        );
+        assert_eq!(
+            SpecEnvCodec.mutate(&junk, 0),
+            Err(EnvCodecError::Malformed(ADAPTER_BLOB_VERSION))
+        );
     }
 
     // The task-68 coordinate system: `mutate`/`compose` operate in the base's
@@ -1222,7 +1285,7 @@ mod tests {
             spec: spec_with_overrides(7, &[5, 60]),
         }
         .encode();
-        let folded = SpecEnvCodec.compose(&base, &delta);
+        let folded = SpecEnvCodec.compose(&base, &delta).unwrap();
         let decoded = AdapterEnv::decode(&folded).unwrap();
         assert_eq!(
             decoded.base_offset, 100,
@@ -1259,7 +1322,9 @@ mod tests {
             spec: spec_with_overrides(7, &[10]),
         }
         .encode();
-        let folded = SpecEnvCodec.compose(&SpecEnvCodec.compose(&b, &s1), &s2);
+        let folded = SpecEnvCodec
+            .compose(&SpecEnvCodec.compose(&b, &s1).unwrap(), &s2)
+            .unwrap();
         let decoded = AdapterEnv::decode(&folded).unwrap();
         assert_eq!(decoded.base_offset, 0, "genesis-complete");
         assert_eq!(decoded.pos, 300);
@@ -1290,7 +1355,7 @@ mod tests {
             },
         }
         .encode();
-        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let out = SpecEnvCodec.mutate(&base, 0x5A17).unwrap();
         let decoded = AdapterEnv::decode(&out).unwrap();
         assert_eq!(
             decoded.base_offset, 160,
@@ -1314,38 +1379,65 @@ mod tests {
             "the suffix sliced at the RELATIVE cut (60), not the absolute pos"
         );
         // Deterministic: same (base, salt) ⇒ same blob.
-        assert_eq!(out, SpecEnvCodec.mutate(&base, 0x5A17));
+        assert_eq!(out, SpecEnvCodec.mutate(&base, 0x5A17).unwrap());
     }
 
     #[test]
-    #[should_panic(expected = "mis-ordered chain")]
-    fn compose_panics_on_a_mis_ordered_chain() {
+    fn compose_errors_on_a_non_adjacent_chain() {
+        // Both operands are individually well-formed (pos >= base_offset), so
+        // this exercises the pair-adjacency invariant, not `require`.
         let base = AdapterEnv {
             base_offset: 200,
             pos: 300,
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
-        // A delta keyed BEFORE the base's root: not a suffix of it.
-        let delta = AdapterEnv {
-            base_offset: 100,
-            pos: 250,
+        // Gap: delta origin 400 is beyond the base's capture point 300.
+        let gap = AdapterEnv {
+            base_offset: 400,
+            pos: 500,
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
-        let _ = SpecEnvCodec.compose(&base, &delta);
+        assert!(matches!(
+            SpecEnvCodec.compose(&base, &gap),
+            Err(EnvCodecError::NonAdjacentChain(_))
+        ));
+        // Overlap: delta origin 250 is before the base's capture point 300
+        // (also before the base's root would be the same taxonomy, since
+        // adjacency subsumes root ordering).
+        let overlap = AdapterEnv {
+            base_offset: 250,
+            pos: 350,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        assert!(matches!(
+            SpecEnvCodec.compose(&base, &overlap),
+            Err(EnvCodecError::NonAdjacentChain(_))
+        ));
+        // The adjacent pair (delta origin 300 == base pos 300) composes.
+        let adjacent = AdapterEnv {
+            base_offset: 300,
+            pos: 400,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        assert!(SpecEnvCodec.compose(&base, &adjacent).is_ok());
     }
 
     #[test]
-    #[should_panic(expected = "BEFORE its own root offset")]
-    fn mutate_panics_on_a_capture_behind_the_root() {
+    fn mutate_errors_on_a_capture_behind_the_root() {
         let base = AdapterEnv {
             base_offset: 200,
-            pos: 100, // malformed: captured before its own root
+            pos: 100, // mis-ordered: captured before its own root
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
-        let _ = SpecEnvCodec.mutate(&base, 0x1);
+        assert!(matches!(
+            SpecEnvCodec.mutate(&base, 0x1),
+            Err(EnvCodecError::MisorderedChain(_))
+        ));
     }
 
     #[test]
@@ -1358,7 +1450,7 @@ mod tests {
             spec: spec_with_overrides(7, &[40, 150, 220]),
         }
         .encode();
-        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let out = SpecEnvCodec.mutate(&base, 0x5A17).unwrap();
         let decoded = AdapterEnv::decode(&out).unwrap();
         assert_eq!(
             decoded.base_offset, 100,
@@ -1374,10 +1466,10 @@ mod tests {
         // survives modulo the codec's single host-plane tweak.
         assert!(!decoded.spec.overrides().contains_key(&40));
         // Deterministic: same (base, salt) ⇒ same blob.
-        assert_eq!(out, SpecEnvCodec.mutate(&base, 0x5A17));
+        assert_eq!(out, SpecEnvCodec.mutate(&base, 0x5A17).unwrap());
         assert_ne!(
             out,
-            SpecEnvCodec.mutate(&base, 0x5A18),
+            SpecEnvCodec.mutate(&base, 0x5A18).unwrap(),
             "salt selects the tweak"
         );
     }
@@ -1975,7 +2067,7 @@ mod tests {
             spec: spec_with_reseeds(7, &[(0, 0xAA), (140, 0xBB)]),
         }
         .encode();
-        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let out = SpecEnvCodec.mutate(&base, 0x5A17).unwrap();
         let decoded = AdapterEnv::decode(&out).unwrap();
         let got: Vec<(u64, u64)> = decoded
             .spec
@@ -1997,7 +2089,7 @@ mod tests {
             spec: spec_with_reseeds(7, &[(100, 0xCC), (140, 0xBB)]),
         }
         .encode();
-        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let out = SpecEnvCodec.mutate(&base, 0x5A17).unwrap();
         let decoded = AdapterEnv::decode(&out).unwrap();
         let got: Vec<(u64, u64)> = decoded
             .spec
@@ -2013,7 +2105,7 @@ mod tests {
             spec: spec_with_reseeds(7, &[(0, 0xAA)]),
         }
         .encode();
-        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let out = SpecEnvCodec.mutate(&base, 0x5A17).unwrap();
         let decoded = AdapterEnv::decode(&out).unwrap();
         assert!(
             decoded.spec.reseeds().is_empty(),
@@ -2035,7 +2127,7 @@ mod tests {
             spec: spec_with_reseeds(7, &[(0, 0xAA), (70, 0xBB)]),
         }
         .encode();
-        let out = SpecEnvCodec.mutate(&base, 0x5A17);
+        let out = SpecEnvCodec.mutate(&base, 0x5A17).unwrap();
         let decoded = AdapterEnv::decode(&out).unwrap();
         let got: Vec<(u64, u64)> = decoded
             .spec
@@ -2064,7 +2156,7 @@ mod tests {
             spec: spec_with_reseeds(7, &[(0, 0xBB), (40, 0xCC)]),
         }
         .encode();
-        let folded = SpecEnvCodec.compose(&s1, &s2);
+        let folded = SpecEnvCodec.compose(&s1, &s2).unwrap();
         let decoded = AdapterEnv::decode(&folded).unwrap();
         let got: Vec<(u64, u64)> = decoded
             .spec
