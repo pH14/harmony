@@ -542,6 +542,29 @@ pub fn rank_by(scores: &[SliceScore], objective: impl Fn(&SliceScore) -> u64) ->
     order
 }
 
+/// The top `n` candidates of a ranking that **preserve every finding chain**.
+///
+/// Chain-breakers are *filtered out*, not merely ranked last: `rank_by` orders
+/// them last, but `.take(n)` would still surface one whenever fewer than `n`
+/// candidates qualify — exactly the non-vacuous-corpus case axis (c) exists for.
+/// A disqualified candidate must never fill a display slot (law 6, the same gate
+/// `menu` applies). Fewer than `n` eligible candidates yield fewer than `n`
+/// entries — the report shows fewer rather than a disqualified one.
+pub fn top_eligible(scores: &[SliceScore], ranking: &[usize], n: usize) -> Vec<usize> {
+    ranking
+        .iter()
+        .copied()
+        .filter(|&i| scores[i].chain_preserved())
+        .take(n)
+        .collect()
+}
+
+/// How many of `scores` preserve every finding chain — the size of the pool the
+/// display is drawn from. Target-independent (axis (c) does not depend on `T`).
+pub fn eligible_count(scores: &[SliceScore]) -> usize {
+    scores.iter().filter(|s| s.chain_preserved()).count()
+}
+
 /// What two candidates must share to be *the same descriptor on this corpus*:
 /// an identical **cell partition** of the recorded arrivals.
 ///
@@ -857,6 +880,52 @@ mod tests {
             order[0], 1,
             "the alt ranking gates on chain preservation too"
         );
+    }
+
+    /// **The display gate.** `top_eligible` filters chain-breakers out *before*
+    /// taking `n` — so when fewer than `n` candidates qualify it shows fewer, and
+    /// a disqualified candidate never fills a slot even at the head of the
+    /// ranking. This is the hole `rank_by` + `.take(n)` alone left open.
+    #[test]
+    fn top_eligible_never_shows_a_disqualified_candidate() {
+        // Four rows; only the two `keep-*` preserve their chain.
+        let mut rows: Vec<SliceScore> = ["breaker", "keep-a", "keep-b", "breaker2"]
+            .iter()
+            .map(|name| {
+                let obs = campaign(&[&[0]], None);
+                let chains = Chains {
+                    parent: vec![None],
+                    admitted: vec![true],
+                    find_chains: Vec::new(),
+                };
+                let mut s = score_slice(&v1(), "s", &[&obs], &[&chains], &K);
+                s.candidate = (*name).to_string();
+                // Give every row a real chain to (dis)satisfy.
+                s.chains_checked = 1;
+                s.ancestors_checked = 1;
+                s
+            })
+            .collect();
+        for s in &mut rows {
+            let preserved = s.candidate.starts_with("keep");
+            s.chains_preserved = u64::from(preserved);
+            s.ancestors_preserved = u64::from(preserved);
+        }
+
+        let ranking: Vec<usize> = (0..rows.len()).collect(); // declaration order
+        assert_eq!(eligible_count(&rows), 2, "only the two keep-* preserve");
+
+        // Asking for three yields the two eligible ones, in ranking order — the
+        // disqualified `breaker` at the head is skipped, not shown.
+        let shown = top_eligible(&rows, &ranking, 3);
+        assert_eq!(shown, vec![1, 2], "fewer than three, and no breaker");
+        assert!(
+            shown.iter().all(|&i| rows[i].chain_preserved()),
+            "never a disqualified row"
+        );
+
+        // And it still respects `n`: one eligible slot yields one row.
+        assert_eq!(top_eligible(&rows, &ranking, 1), vec![1]);
     }
 
     /// Axis (c) is *vacuous* when the finds have no proper ancestors — the

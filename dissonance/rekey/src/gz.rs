@@ -545,6 +545,30 @@ mod tests {
 
     use proptest::prelude::*;
 
+    /// A **syntactically valid** ustar member (the magic at offset 257) with a
+    /// fuzzed octal `size` field and `typeflag`, followed by `body` and a
+    /// terminating zero block. This is what carries `untar` *past* the magic
+    /// check into the size/padding arithmetic and the bounded body read — the
+    /// code uniform random bytes (which hit the 40-bit `ustar` magic with
+    /// p≈2⁻⁴⁰) never reach. `declared_size` spans small (a real body read + pad)
+    /// to ≈ 8.6e9 (out of bounds → a clean truncation error, never a panic).
+    fn ustar_archive(declared_size: u64, typeflag: u8, body: &[u8]) -> Vec<u8> {
+        let mut header = [0u8; 512];
+        header[0..4].copy_from_slice(b"file"); // a name
+        header[257..262].copy_from_slice(b"ustar"); // the magic `untar` checks
+        header[156] = typeflag;
+        // The ustar size is 11 octal digits then a field terminator (left NUL).
+        let octal = format!("{:011o}", declared_size % 8u64.pow(11));
+        header[124..135].copy_from_slice(octal.as_bytes());
+        let mut out = header.to_vec();
+        out.extend_from_slice(body);
+        // Pad to a 512 boundary and append a terminating zero block, so a
+        // well-formed member is *possible*; the fuzz is size / type / body /
+        // truncation, not the framing.
+        out.resize(out.len().div_ceil(512) * 512 + 512, 0);
+        out
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -561,6 +585,9 @@ mod tests {
             let _ = gunzip("fuzz", &bytes);
         }
 
+        /// Uniform random bytes almost never pass ustar's 40-bit magic, so this
+        /// alone only exercises the early return; the *meaningful* ustar gate is
+        /// [`untar_is_total_over_valid_headers_with_fuzzed_fields`] below.
         #[test]
         fn untar_is_total_over_arbitrary_bytes(
             bytes in prop::collection::vec(any::<u8>(), 0..8192),
@@ -581,6 +608,24 @@ mod tests {
             let mut input = vec![0x1f, 0x8b, 0x08, flags];
             input.extend_from_slice(&body);
             let _ = gunzip("fuzz", &input);
+        }
+
+        /// **ustar totality where it matters**: a *valid* header with fuzzed
+        /// size / typeflag / body, then truncated at an arbitrary point. This
+        /// reaches the attacker-controlled arithmetic — `at + size`,
+        /// `size.div_ceil(512) * 512`, and the bounded `get(at..at + size)` — and
+        /// asserts it never panics, reads out of bounds, or loops, whether the
+        /// declared size fits, runs off the end, or the stream is cut mid-member.
+        #[test]
+        fn untar_is_total_over_valid_headers_with_fuzzed_fields(
+            declared_size in any::<u64>(),
+            typeflag in any::<u8>(),
+            body in prop::collection::vec(any::<u8>(), 0..2048),
+            truncate in 0usize..3200,
+        ) {
+            let mut archive = ustar_archive(declared_size, typeflag, &body);
+            archive.truncate(truncate.min(archive.len()));
+            let _ = untar("fuzz", &archive);
         }
     }
 

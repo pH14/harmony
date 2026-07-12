@@ -135,6 +135,44 @@ Round-1's four items verified fixed; the clean-pass rerun found three more in th
    noise stops at byte 0. (`untar`'s size field is octal, capped at ≤ 2³⁶, and every read is a bounded
    `get` before `to_vec`, so there is no attacker-controlled allocation for the property to trip.)
 
+## Foreman review, round 3 (PR #94)
+
+The round-2 fixes were shallow; this round takes each finding to its root. (A recurring lesson: a
+gate is only real if its **display/consumer** path enforces it, not just an intermediate ordering —
+and a check on faith-trusted metadata must compare against the self-describing artifact, and a
+declared count must be recomputed, or none of them actually constrain anything.)
+
+1. **[blocking] The chain gate was still bypassed in the *displayed* top three** (`src/report.rs` +
+   `src/score.rs`). Round 2 made `rank_by` order chain-breakers last, but the prose used `.take(3)`,
+   which still surfaces a disqualified row whenever fewer than three candidates qualify — the
+   non-vacuous case the gate exists for. Fixed with `score::top_eligible`, which `filter`s on
+   `chain_preserved()` **before** `.take(n)`: fewer than `n` eligible ⇒ fewer shown, never a
+   chain-breaker. The report now also states `{eligible} of {total}` preserve every chain and that
+   any breaker is omitted — a factual clause interpolated from counts, not an inert `if` (which would
+   be a report-invariant equivalent mutant on this vacuous corpus). Unit-tested with a fixture where
+   only two of four rows qualify and the best-ranked one is a breaker.
+2. **[P2] Dedup keyed on unverified identity** (`src/manifest.rs` + `src/observe.rs`). `observe`
+   scores under `log.config` but keyed the seed and deduped on the *manifest* strings, so the same
+   member relabelled with a different `config` would dedge as distinct and double-score. Now
+   `observe::check_identity` cross-checks the manifest `(config, seed)` against the self-describing
+   `CampaignLog` and errors (`IdentityMismatch`) on any disagreement — making the manifest label
+   trustworthy, so the existing `(slice, config, seed)` dedup is now on *verified* identity. Both
+   spoofed labels (caught by the cross-check) and exact duplicates (caught by the dedup) are refused.
+   Factored and unit-tested (matching passes; wrong config and wrong seed each fail).
+3. **[P2] Declared counts were echoed, not verified** (`src/manifest.rs`). `TraceEntry.branches` and
+   `manifest.totals` were hash-adjacent but never recomputed, so a stale count could report a
+   512-branch trace as a verified zero-branch corpus. `Corpus::load` now recomputes every trace's
+   branch count and the four aggregate totals from the actual bytes and refuses any drift via
+   `check_count` (a factored, unit-tested comparison — both directions of drift covered).
+4. **[P2] The ustar totality property was vacuous** (`src/gz.rs`). Uniform random bytes hit ustar's
+   40-bit magic with p≈2⁻⁴⁰, so all 512 cases returned at the magic check and the size/padding
+   arithmetic was never reached. Added `untar_is_total_over_valid_headers_with_fuzzed_fields`: a
+   *syntactically valid* ustar header (magic at offset 257) with a fuzzed octal size / typeflag /
+   body, truncated at an arbitrary point — so `at + size`, `size.div_ceil(512) * 512`, and the bounded
+   `get(at..at + size)` are actually exercised (a property that cannot reach the code certifies
+   nothing). The arbitrary-bytes ustar property is kept but documented as only covering the early
+   return.
+
 ## Deviations considered
 
 - **Bug 1 as the degenerate control (spec §corpus) — impossible, and it is not a scoping
@@ -207,7 +245,7 @@ Round-1's four items verified fixed; the clean-pass rerun found three more in th
 
 ## For the integrator
 
-- **Gates.** `build` / `nextest` (87 tests, incl. a ≥256-case gunzip/untar totality proptest) /
+- **Gates.** `build` / `nextest` (91 tests, incl. ≥256-case gunzip/untar totality proptests) /
   `clippy -D warnings` / `fmt` / `deny` / `cargo mutants --in-diff` all green on macOS, plus
   `cargo check --target x86_64-unknown-linux-gnu --all-targets` (the crate has **no `unsafe`**, no
   `cfg(target_os)` fork, and no platform API — so no Miri job entry is needed and the

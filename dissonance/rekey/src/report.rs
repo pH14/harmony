@@ -403,22 +403,26 @@ fn ranking(out: &mut String, a: &Analysis) {
     }
 
     // The ranking is a function of the stated target. Show it changing — but the
-    // chain-preservation gate is NOT a function of the target: `rank_by` applies
-    // it (and every tie-break) exactly as the primary ranking does, so a
-    // chain-breaking candidate can never surface in the T=256 top three either.
+    // chain-preservation gate is NOT: both orderings draw their top three only
+    // from candidates that preserve every finding chain (`top_eligible` filters
+    // *before* taking three, so a disqualified candidate can never surface even
+    // when fewer than three qualify — it is omitted, not shown).
     let alt = crate::score::rank_by(&primary.scores, |s| s.objective_alt_q32);
     let names = |order: &[usize]| {
-        order
+        crate::score::top_eligible(&primary.scores, order, 3)
             .iter()
-            .take(3)
             .map(|&i| format!("`{}`", primary.scores[i].candidate))
             .collect::<Vec<_>>()
             .join(" → ")
     };
+    let eligible = crate::score::eligible_count(&primary.scores);
+    let total = primary.scores.len();
     out.push_str(&format!(
-        "\n**The ranking is a function of the stated target, not of the corpus.** At the stated \
-         `T = {TARGET_CELLS}` the order is {}. At `T = {TARGET_SENSITIVITY}` it becomes {} — the \
-         two `draw-top-*` candidates swap, because Go-Explore's penalty term `√(|n/T−1|+1)` is \
+        "\n**The ranking is a function of the stated target, not of the corpus.** The top three are \
+         drawn only from the {eligible} of {total} candidates that preserve every finding chain \
+         (axis (c)); any chain-breaker is omitted here, never shown as a recommendation. At the \
+         stated `T = {TARGET_CELLS}` the order is {}. At `T = {TARGET_SENSITIVITY}` it becomes {} — \
+         the two `draw-top-*` candidates swap, because Go-Explore's penalty term `√(|n/T−1|+1)` is \
          asymmetric (undershooting the target costs at most `√2`, overshooting is unbounded), so \
          `T` alone decides how much resolution is \"too much\". Choosing `T` is a human judgment \
          about how much search energy a cell should get; the harness cannot make it, and it is \

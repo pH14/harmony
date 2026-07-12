@@ -152,6 +152,40 @@ fn filtered(trace: &RunTrace, marker: &[u8]) -> RunTrace {
     }
 }
 
+/// The manifest's spelling of a [`Configuration`], for cross-checking the
+/// manifest label against the self-describing log without depending on `Debug`.
+fn config_label(config: Configuration) -> &'static str {
+    match config {
+        Configuration::Signal => "Signal",
+        Configuration::Baseline => "Baseline",
+    }
+}
+
+/// The manifest's `(config, seed)` label must match the identity the campaign
+/// log carries. Scoring reads `log.config` but keys under the manifest seed, and
+/// the uniqueness gate dedups on the manifest strings, so a mislabelled or
+/// spoofed entry that passed hashing could otherwise be scored under an identity
+/// its trace does not carry. **Both** fields must match; either alone failing is
+/// an [`Error::IdentityMismatch`].
+fn check_identity(
+    member: &str,
+    manifest_config: &str,
+    manifest_seed: u64,
+    log: &CampaignLog,
+) -> Result<()> {
+    if manifest_config == config_label(log.config) && manifest_seed == log.seed {
+        Ok(())
+    } else {
+        Err(Error::IdentityMismatch {
+            member: member.to_string(),
+            manifest_config: manifest_config.to_string(),
+            manifest_seed,
+            log_config: config_label(log.config).to_string(),
+            log_seed: log.seed,
+        })
+    }
+}
+
 /// Replay one verified campaign's sensor observations.
 ///
 /// Fails loudly if the corpus does not have the shape the harness folds: a
@@ -174,6 +208,14 @@ pub fn observe_campaign(raw: &VerifiedCampaign, bugs: &Benchmark) -> Result<Camp
         campaign: name.clone(),
         why,
     };
+
+    // The manifest's `(config, seed)` label is otherwise trusted on faith: scoring
+    // reads `log.config` but keys the campaign under `raw.seed`, and the
+    // uniqueness gate dedups on the manifest strings. Cross-check both against the
+    // self-describing log, so a mislabelled or spoofed entry cannot be scored (or
+    // deduped) under an identity its trace does not actually carry.
+    check_identity(&raw.member, &raw.config, raw.seed, &log)?;
+
     let spec: &BugSpec = bugs
         .get(log.bug)
         .ok_or_else(|| corpus(format!("no manifest entry for bug {:?}", log.bug)))?;
@@ -273,6 +315,49 @@ fn line_text(record: &Record) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The manifest label is cross-checked against the self-describing log: a
+    /// matching `(config, seed)` passes, and a disagreement in **either** field
+    /// is refused — so a spoofed or mislabelled entry cannot be scored (or
+    /// deduped) under an identity its trace does not carry.
+    #[test]
+    fn check_identity_rejects_a_mislabelled_campaign() {
+        let log = |config, seed| CampaignLog {
+            bug: benchmark::BugId(3),
+            config,
+            seed,
+            events: Vec::new(),
+            finds: Vec::new(),
+            explore_period: 4,
+            order_range: 64,
+        };
+        let signal_1 = log(Configuration::Signal, 1);
+
+        // The truthful label passes.
+        assert!(check_identity("m", "Signal", 1, &signal_1).is_ok());
+
+        // A wrong config — the double-score hole: the same member relabelled.
+        match check_identity("m", "Baseline", 1, &signal_1) {
+            Err(Error::IdentityMismatch {
+                manifest_config,
+                log_config,
+                ..
+            }) => {
+                assert_eq!(manifest_config, "Baseline");
+                assert_eq!(log_config, "Signal");
+            }
+            other => panic!("expected IdentityMismatch, got {other:?}"),
+        }
+
+        // A wrong seed is refused too — either field alone failing is enough.
+        assert!(matches!(
+            check_identity("m", "Signal", 2, &signal_1),
+            Err(Error::IdentityMismatch { log_seed: 1, .. })
+        ));
+        // And the Baseline label is accepted when it is the truth (so the check
+        // is not vacuously rejecting one config).
+        assert!(check_identity("m", "Baseline", 7, &log(Configuration::Baseline, 7)).is_ok());
+    }
 
     #[test]
     fn parse_draw_reads_the_chosen_observable() {

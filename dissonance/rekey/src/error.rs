@@ -94,6 +94,42 @@ pub enum Error {
         seed: u64,
     },
 
+    /// A count the manifest declares does not match the count recomputed from the
+    /// actual bytes at load. The hash checks pin the *content*; scoring reads the
+    /// live JSON — so a stale declared `branches` or `totals` could report a
+    /// full corpus as a verified empty one. Recomputed and refused on mismatch.
+    #[error("declared {what} is {declared} but the corpus holds {actual}")]
+    CountMismatch {
+        /// What was counted (a trace member's branches, or a `totals` field).
+        what: String,
+        /// The count the manifest declared.
+        declared: u64,
+        /// The count recomputed from the bytes.
+        actual: u64,
+    },
+
+    /// A trace's manifest `(config, seed)` label disagrees with the identity the
+    /// self-describing campaign log carries. The label is otherwise trusted on
+    /// faith (scoring keys under the manifest seed; the uniqueness gate dedups on
+    /// the manifest strings), so a mislabelled entry could be scored under an
+    /// identity its trace does not carry.
+    #[error(
+        "campaign {member}: manifest label {manifest_config}/{manifest_seed} disagrees with the \
+         log's {log_config}/{log_seed}"
+    )]
+    IdentityMismatch {
+        /// The trace member whose label is wrong.
+        member: String,
+        /// The config the manifest claims.
+        manifest_config: String,
+        /// The seed the manifest claims.
+        manifest_seed: u64,
+        /// The config the log actually carries.
+        log_config: String,
+        /// The seed the log actually carries.
+        log_seed: u64,
+    },
+
     /// The manifest names an archive member that the archive does not contain.
     #[error("archive {archive} has no member {member}")]
     MissingMember {

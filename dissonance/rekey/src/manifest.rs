@@ -394,6 +394,8 @@ fn archive_members(archive: &str, bytes: &[u8]) -> Result<BTreeMap<String, Vec<u
 pub struct VerifiedCampaign {
     /// The slice this campaign belongs to.
     pub slice: String,
+    /// The archive member the traces came from — named in identity errors.
+    pub member: String,
     /// `Baseline` or `Signal`.
     pub config: String,
     /// The campaign seed.
@@ -444,6 +446,11 @@ impl Corpus {
         validate_trace_uniqueness(&manifest)?;
 
         let mut campaigns = Vec::new();
+        // Recompute every count from the bytes rather than trusting the manifest's
+        // declared figures: the hash checks pin content, but scoring reads the
+        // live JSON, so a stale `branches`/`totals` could report a full corpus as
+        // a verified empty one (or the reverse). Any disagreement is a loud error.
+        let mut recomputed = Totals::default();
         for slice in &manifest.slices {
             let archive_bytes = read(&resolve(root, &slice.archive)?)?;
             check_hash(&slice.archive, &slice.archive_sha256, &archive_bytes)?;
@@ -471,10 +478,16 @@ impl Corpus {
                     member: t.member.clone(),
                 })?;
                 check_hash(&t.member, &t.sha256, data)?;
+                // The declared branch count must equal the trace's actual pairs.
+                let actual = branch_count(&t.member, data)?;
+                check_count(&format!("{} branches", t.member), t.branches, actual)?;
+                recomputed.branches += actual;
+                recomputed.trace_files += 1;
                 let log_json = read(&resolve(root, &t.log)?)?;
                 check_hash(&t.log, &t.log_sha256, &log_json)?;
                 campaigns.push(VerifiedCampaign {
                     slice: slice.slice.clone(),
+                    member: t.member.clone(),
                     config: t.config.clone(),
                     seed: t.seed,
                     explore_period: slice.explore_period,
@@ -491,6 +504,31 @@ impl Corpus {
                 check_hash(&l.log, &l.log_sha256, &bytes)?;
                 reference_logs.push((l.clone(), bytes));
             }
+        }
+        recomputed.excluded_traces = manifest.exclusions.len() as u64;
+        recomputed.reference_logs = reference_logs.len() as u64;
+
+        // The aggregate totals the report prints must be the ones the corpus
+        // holds — a declared total is never echoed unchecked.
+        for (field, declared, actual) in [
+            (
+                "trace_files",
+                manifest.totals.trace_files,
+                recomputed.trace_files,
+            ),
+            ("branches", manifest.totals.branches, recomputed.branches),
+            (
+                "excluded_traces",
+                manifest.totals.excluded_traces,
+                recomputed.excluded_traces,
+            ),
+            (
+                "reference_logs",
+                manifest.totals.reference_logs,
+                recomputed.reference_logs,
+            ),
+        ] {
+            check_count(&format!("totals.{field}"), declared, actual)?;
         }
 
         Ok(Corpus {
@@ -551,6 +589,21 @@ fn validate_trace_uniqueness(manifest: &CorpusManifest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A declared count must equal the one recomputed from the bytes. The hash
+/// checks pin content; this pins the *counts* scoring and the report depend on,
+/// so a stale declared figure can never be echoed as verified.
+fn check_count(what: &str, declared: u64, actual: u64) -> Result<()> {
+    if declared == actual {
+        Ok(())
+    } else {
+        Err(Error::CountMismatch {
+            what: what.to_string(),
+            declared,
+            actual,
+        })
+    }
 }
 
 /// The loud hash check. Never a warning, never a repair.
@@ -691,6 +744,33 @@ mod tests {
         assert!(matches!(
             validate_exclusions(&dup),
             Err(Error::UnknownExclusionSlice { .. })
+        ));
+    }
+
+    /// A declared count is verified against the recomputed one: equal passes,
+    /// any disagreement is a loud `CountMismatch` that names what drifted. This
+    /// is the comparison behind both the per-trace branch check and the totals
+    /// check, so scoring can never run against a corpus the manifest miscounts.
+    #[test]
+    fn check_count_refuses_a_declared_count_that_drifted() {
+        assert!(check_count("branches", 512, 512).is_ok(), "equal passes");
+        assert!(check_count("branches", 0, 0).is_ok());
+        match check_count("some.member branches", 512, 0) {
+            Err(Error::CountMismatch {
+                what,
+                declared,
+                actual,
+            }) => {
+                assert_eq!(what, "some.member branches");
+                assert_eq!(declared, 512, "a 512-branch trace...");
+                assert_eq!(actual, 0, "...must never verify as an empty corpus");
+            }
+            other => panic!("expected CountMismatch, got {other:?}"),
+        }
+        // Drift in either direction is caught, not just under-counting.
+        assert!(matches!(
+            check_count("totals.branches", 0, 512),
+            Err(Error::CountMismatch { .. })
         ));
     }
 
