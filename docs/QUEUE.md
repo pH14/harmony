@@ -6,65 +6,133 @@
 > Adopted 2026-07-09 (Paul: "worth a try") to replace prose-trigger sprawl across GitHub
 > issues, task-spec headers, and memory notes.
 
-_Last regenerated: 2026-07-09 ~17:15 (foreman loop iteration 1)._
+_Dissonance strategy/dependency section reconciled with Beads: 2026-07-12. Foreman rows
+reconciled 2026-07-12 (loop iteration under the reach-matrix ruling); the tracker remains
+authoritative._
 
-## In flight
+## The Consonance north star (ruled by Paul, 2026-07-12)
 
-- **NES game-workload bring-up** (task 86 M0, PR #93) — round-8 REQUEST_CHANGES posted
-  (5 verified P1s, theme: vacuous box-gate paths) and dispatched to the live worker;
-  ROM delivered by Paul → smoke-fire-once proceeding on the box, full campaign spend
-  held until the billboard-at-seal / crash-terminal / trace-retention fixes land · `hm-ahb`
-- **E-fails re-key harness** (tasks/97, PR #94) — worker done (`hm-b3h` closed: rekey
-  crate + frozen corpus + REKEY-REPORT.md, all gates green); blind GPT-5.6 Sol pass
-  running, foreman primary read next
-- **Snapshot-store frontier D5: dirty-log capture + remap restore** (task 95 M2, PR #95)
-  — worker done (`hm-b9s` closed, box gates a0/a/b + sweep green on hash-pinned images);
-  blind GPT-5.6 Sol pass running, foreman primary read next
+**Consonance running in as many places as possible**: the reach matrix of vendors
+(Intel / AMD / ARM) × forms (bare metal / virtualized). Intel×metal ships today;
+Intel×virtualized proven by the nested-x86 spike (ALL GO, nested==metal, 1.01–1.08×). A
+cell is filled when one documented command builds the pinned stack, boots on that host,
+and passes the same-seed determinism gate. "Vendor" replaces "personality" (GLOSSARY
+ratification rides the docs-landing PR `hm-2uw`). ARM = Linux/KVM on an incoming Ampere
+Altra (Apple-silicon route dead); AMD = incoming Epyc; ARM > AMD, parallelize the docs.
+
+## In flight (3 workers, at cap)
+
+- **NES game-workload bring-up** (task 86 M0, PR #93) — worker respawned 2026-07-12 on
+  Fable 5 with a rebase-first brief (PR is CONFLICTING with main); round-8 fixes +
+  box-smoke fix 3 already on the branch; ROM delivered; scope per the historical fence in
+  task 86 (no LinkSensor/cell-quality/selector claim). Codex pass deferred until the
+  rebased head exists · `hm-ahb`
+- **vmm-core Miri gate closure** (tasks/98, P1 bug) — worker agent-miri-gate (Opus 4.8)
+  spawned 2026-07-12: make the exact nightly.yml command pass without losing unsafe
+  coverage · `hm-4yj`
+- **SpecEnvCodec fallible decode** (tasks/99, P1 bug) — worker agent-specenvcodec-fallible
+  (Opus 4.8) spawned 2026-07-12: typed errors on hostile reproducer blobs, control errors
+  never guest findings · `hm-5d9`
+- **E-fails re-key harness** (tasks/97, PR #94) — worker done (`hm-b3h` closed); blind
+  GPT-5.6 Sol pass RELAUNCHED 2026-07-12 (the 2026-07-09 runs died unreported); foreman
+  primary read = next iteration's heavy op. Review context: the Differential rewrite
+  supersedes its CellFnV1 ratification path but retains the corpus/evidence value — the
+  read judges the code as delivered, the merge-vs-park call gets flagged to Paul if the
+  supersession makes it ambiguous
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
-- **PAUL: ratify a CellFn from REKEY-REPORT.md's ranked menu, or decline** — playbook
-  step 4 is a human call (draw-top-64 vs v1-shipped vs draw-top-256; the twin-control
-  caveat is in the bead) · `hm-5h7`
-- **Marker-filter hole** — guest crash lines mint template species; v1's post-genesis
-  novelty on bug 3 is the crash itself; land before the next correlation campaign · `hm-mcx`
-- **Trace-retention runbook discipline** — every campaign passes `--record` from branch 0
-  (bug-1 corpus is permanently un-rekeyable); also cited in PR #93 round 8 · `hm-5sv`
+Reach-matrix lane (foreman-owned or spawnable next):
+
+- **Strategy-docs landing PR** (`hm-2uw`, P1, foreman docs work) — the uncommitted
+  2026-07-10..12 strategy docs onto a docs branch + handoff PR: reach-matrix ROADMAP,
+  vendor rename + GLOSSARY ratification, APPLE-SILICON demotion, NESTED-INTEGRATION
+  parked-not-ratified header. Next foreman docs slot.
+- **Land the nested-x86 spike branch** (`hm-l2g`, P1) — push `spike/nested-x86`
+  (b6b2a5d), handoff PR, review, merge. Unblocks the appliance build + preflight CLI.
+- **ARM vendor spike doc: Linux/KVM on Ampere Altra** (`hm-x8g`, P1) ∥ **AMD vendor spike
+  doc: SVM on Epyc** (`hm-wv8`, P2) — both pure doc tasks, spawnable as slots free;
+  hardware-arrival day should be experiment day.
+- **Paravirt work-derived clock spec** (`hm-8h8`, P2) — ARM correctness (no FEAT_ECV
+  anywhere reachable) + x86 RDTSC-exit removal, one design.
+- **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
+  wedge (`hm-440`), both P2 bugs on main.
+- **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
+
+General ready (foreman spawns as slots free):
+
 - **Box image drift on main** — task-78 draw-probe gate broken by the 2026-07-09 image
   rebuild; pin-by-hash ruling recorded, harness retrofit + image-content fix remain
   (`hm-xdp`, image fix `hm-2nt`)
-- **Explorer sdk_events drain gap** — LinkSensor blind on the composed-engine path · `hm-r1x`
-- **Conductor remap-factory opt-in** (task 95 M2 follow-up) · `hm-lld`
+
+Dissonance lane (held — Paul: background reprioritization in progress, foreman does not
+spawn these until that lane re-opens):
+
+- **Dissonance document/naming convergence** — must finish before the Differential children;
+  reserves counterpoint, rules `campaign-runner`, and reconciles ordering/retention/SDK contracts ·
+  `hm-7zx`
+- **Campaign-runner remap-factory opt-in** (task 95 M2 follow-up; current crate still named
+  `conductor`) · `hm-lld`
 - **Deterministic-preemption soundness gap** — oldest open debt; needs a decision, not
   deferral · `hm-5ee`
-- **Behavioral diff / findings front page** (task 83) · `hm-m78`
-- Dormant tier (deliberately unscheduled, revisit at planning): OTel sensor channel
-  (task 74) `hm-qdn` · live net-fault enforcement (task 61b) `hm-wvh` · HLT idle-wake
+- Dormant tier (deliberately unscheduled, revisit at planning): live net-fault enforcement
+  (task 61b) `hm-wvh` · HLT idle-wake
   arbitration (task 77) `hm-k37` · multi-CPU characterization (task 92, do-not-auto-spawn)
-  `hm-c2b` · ARM window next steps `hm-e3o` · guest-SDK follow-ups `hm-1by` · branch
+  `hm-c2b` · guest-SDK follow-ups `hm-1by` · branch
   pruning `hm-069` · inadmissible-proposal retry `hm-f30`
+  (ARM OCI window `hm-e3o` CLOSED 2026-07-12: superseded by the incoming Altra box)
 
 ## Blocked (dependency edges enforce these — they surface via `bd ready` when cleared)
 
-- **Bounded box confirmation of a ratified CellFn** ← Paul's ratification ruling · `hm-5rt`
-- **Vocabulary rename sweep** (conductor→counterpoint, Environment→Reproducer,
+- **Appliance as first-class repo build** `hm-tn9` ← spike-branch merge `hm-l2g`;
+  **host-qualification preflight CLI** (`hm-69y`, renamed from "doctor") ← same.
+  **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
+  consumer exists; appliance ships gate mode only — do not auto-spawn).
+- **ARCH-BOUNDARY restructure → engine/vendor split** `hm-b5n` ← vocabulary rename sweep
+  `hm-u7q` ← game-workload merge `hm-ahb` (the shared post-merge-window slot).
+- **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
+  cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
+  spike and blocks deterministic Revision coordination `hm-bbx.3`; generic Explorer/archive
+  integration `hm-bbx.4` follows schema, spike, and coordinator. A NO-GO must block/supersede
+  production children before the decision closes.
+- **Frankenstein reachability inventory** `hm-dgi` ← `hm-7zx`; obsolete PCT and triage bundles
+  remain blocked on this disposition rather than silently reviving after selector work.
+- **Vocabulary rename sweep** (conductor→campaign-runner, Environment→Reproducer,
   VTime→Moment/Span, Machine→Subject) ← the game-workload merge (open branches would
   conflict with a crate rename) · `hm-u7q`
 - **LAYERS spec reconcile** ← rename sweep · `hm-4o4`
-- **Selector chain** (post-NO-GO): selector artifact `hm-bfr` ← signal iteration; then
-  exact-pct `hm-6rv`, triage suite `hm-4xe`, game-workload selector referendum `hm-2su`,
-  exploration-gate implementation `hm-cs5`
+- **First cooperative Differential exploration gate** `hm-cs5` ← `hm-bbx.4` and the umbrella
+  epic. It uses the simple selector and precedes any selector experiment.
+- **Software-system transfer gate** `hm-ebe` ← `hm-cs5`; proves the same cooperative mechanism on a
+  planted database/distributed-system bug; decision `hm-zlx` must explicitly ratify GO.
+- **Count-based Entry-selector experiment** `hm-bfr` ← `hm-cs5` + software-transfer GO `hm-zlx`.
+  The old task-70 bandit/STADS/Portfolio bundle is gone. `hm-6rv` and `hm-4xe` remain blocked on
+  `hm-dgi`, which must rewrite or supersede them before it closes.
+- **Held-out SMB cooperative evaluation** `hm-2su` ← M0 `hm-ahb`, Differential substrate
+  `hm-bbx`, and the development vertical `hm-cs5`; advanced selector policy is optional.
+- **Retention policy, finalized findings diff, and OTel evidence** — `hm-5sv` is now an epic child
+  after `hm-bbx.4`; `hm-m78` follows `.4`; `hm-qdn` follows SDK normalization, the prefix spike,
+  and `.4` before claiming Explorer integration.
 
 ## Recently done (this week)
+
+- **Multi-arch promotion ruled + slate filed 2026-07-12** (Paul, 12 tracker actions):
+  reach matrix = the Consonance north star; NESTED-INTEGRATION parked as a product sketch
+  (product undecided); Apple-silicon route dead; `hm-e3o` closed superseded; tasks/98+99
+  specs pushed to main (c4c9409) making the two P1 quality-review bugs dispatchable.
+- **Snapshot-store frontier D5 MERGED** (task 95 M2, PR #95, e7963b2): O(dirty) dirty-log
+  capture + memslot-remap restore, box gates green on hash-pinned images.
+- **Legacy scoring path retired for the Differential strategy** — `hm-5h7` and `hm-5rt`
+  superseded by `hm-cs5`; post-crash marker-filter bead `hm-mcx` absorbed as an actual-seal
+  regression in `hm-bbx.4`.
 
 - **Paul-return queue fully cleared 2026-07-09 eve**: foreman skill posture patch applied
   (commit 80f4e50), SMB ROM delivered (`bd memories smb-rom-location`), legacy GitHub
   issues #34/#64/#70/#74/#77 closed with bead pointers
 - **Codex cross-model pass now GPT-5.6 Sol** (config + skills + CLI wrapper fix — see
   `bd memories codex-cli-5-6-sol`)
-- **E-fails re-key harness delivered** (tasks/97, `hm-b3h`): the NO-GO's prescribed
-  offline iteration loop exists and ran; ratification menu on Paul's desk (`hm-5h7`);
-  spun out `hm-mcx`, `hm-5sv`, `hm-5rt`
+- **Historical E-fails re-key harness delivered** (tasks/97, `hm-b3h`): useful corpus and failure
+  evidence retained; its CellFnV1 ratification/live-confirmation path is now superseded.
 - **Snapshot-perf M2 delivered** (`hm-b9s`): O(dirty) seal + remap restore, box gates
   green on content-hash-pinned images (the `hm-xdp` discipline, now in-harness)
 - PR #96 opened in error (duplicate of merged PR #91) and closed same iteration; stale
