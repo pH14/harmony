@@ -601,18 +601,12 @@ fn run_gate<S: Read + Write>(
     let raw = adapter
         .sdk_events()
         .map_err(|e| format!("sdk_events: {e}"))?;
-    let (ticks, billboard) = scrape_plan_inputs(&raw);
+    let (stamps, billboard) = scrape_plan_inputs(&raw);
     let (gpa, len) = billboard.ok_or("scrape saw no billboard (gpa, len) registers")?;
     eprintln!(
-        "[live_film] scraped {} frame ticks; billboard gpa={gpa:#x} len={len}",
-        ticks.len()
+        "[live_film] scraped {} distinct event stamps; billboard gpa={gpa:#x} len={len}",
+        stamps.len()
     );
-    if ticks.len() < min_frames {
-        return Err(format!(
-            "only {} frame ticks within {delta} v-ns (need >= {min_frames}) — raise FILM_DELTA_VNS",
-            ticks.len()
-        ));
-    }
 
     // --- Unfilmed determinism floor: REPS identical terminal hashes.
     for i in 0..reps {
@@ -623,8 +617,67 @@ fn run_gate<S: Read + Write>(
     }
     eprintln!("[live_film] unfilmed terminal hash stable {reps}/{reps}");
 
-    // --- The plan: the first `min_frames` ticks (stride none — a contiguous
-    // clip), chunked reads under the client cap.
+    // --- Calibration: the event stamps are anchored to the last V-time
+    // intercept (~10⁷ v-ns apart on this substrate), so a stamp is a LOWER
+    // BOUND on when its frame ran, not an exact address — landing exactly on
+    // a stamp shows the pre-batch billboard (surfaced live; recorded in
+    // IMPLEMENTATION-task86.md as a spine finding, not patched here). The
+    // billboard itself is the address authority: advance ONE branch through
+    // the distinct stamp moments and read each header's ACTUAL frame counter
+    // — the observed (frame, moment) pairs are exact by determinism, so
+    // film()'s landings re-observe them by construction.
+    let header_len32 = u32::try_from(film::HEADER_LEN).expect("HEADER_LEN fits u32");
+    adapter
+        .branch(base, &wire_env)
+        .map_err(|e| format!("calibration branch: {e}"))?;
+    let mut ticks: Vec<FrameTick> = Vec::new();
+    for stamp in &stamps {
+        if stamp.moment <= base_vtime {
+            continue;
+        }
+        match adapter
+            .run(StopConditions {
+                deadline: Some(VTime(stamp.moment)),
+                on: StopMask::NONE,
+            })
+            .map_err(|e| format!("calibration run: {e}"))?
+        {
+            StopReason::Deadline { .. } => {}
+            other => return Err(format!("guest died during calibration: {other:?}")),
+        }
+        let head = adapter
+            .read(gpa, header_len32)
+            .map_err(|e| format!("calibration read: {e}"))?;
+        let header = film::BillboardHeader::parse(&head)
+            .map_err(|e| format!("calibration header at {}: {e}", stamp.moment))?;
+        match ticks.last() {
+            Some(prev) if prev.frame == header.frame => {}
+            Some(prev) if header.frame < prev.frame => {
+                return Err(format!(
+                    "billboard frame went backwards during calibration ({} then {})",
+                    prev.frame, header.frame
+                ));
+            }
+            _ => ticks.push(FrameTick {
+                frame: header.frame,
+                moment: stamp.moment,
+            }),
+        }
+    }
+    eprintln!(
+        "[live_film] calibrated {} exact (frame, moment) pairs",
+        ticks.len()
+    );
+    if ticks.len() < min_frames {
+        return Err(format!(
+            "only {} calibrated frames within {delta} v-ns (need >= {min_frames}) — raise \
+             FILM_DELTA_VNS",
+            ticks.len()
+        ));
+    }
+
+    // --- The plan: the first `min_frames` calibrated pairs (stride none — a
+    // contiguous clip), chunked reads under the client cap.
     let clip_last = ticks[min_frames - 1].frame;
     let clip_first = ticks[0].frame;
     let len32 = u32::try_from(len).map_err(|_| "billboard len exceeds u32")?;
