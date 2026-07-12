@@ -32,9 +32,9 @@ use proptest::prelude::ProptestConfig;
 use sha2::{Digest, Sha256};
 
 use explorer::{
-    Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, Environment,
-    ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError, MachineFactory,
-    Prng, SnapId, StopConditions, StopReason, Tactic, TerminalOracle, VTime,
+    Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, EnvCodecError,
+    Environment, ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError,
+    MachineFactory, Prng, SnapId, StopConditions, StopReason, Tactic, TerminalOracle, VTime,
 };
 
 // ---- the toy's fixed shape ----
@@ -171,12 +171,14 @@ impl EnvCodec for ToyCodec {
         })
     }
 
-    fn mutate(&self, base: &Environment, salt: u64) -> Environment {
+    fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError> {
         // Produce a branch-local delta keyed from the base snapshot's capture
         // point, slicing at the **relative** cut `pos − base_offset` (task 68:
         // a base's overrides are keyed relative to its own root; a
         // genesis-complete base is the `base_offset == 0` special case). Keep
-        // the base seed so a later recompose is PRNG-consistent.
+        // the base seed so a later recompose is PRNG-consistent. The toy blob is
+        // lenient (a bad blob falls back to a fresh env), so it is infallible —
+        // it still returns `Ok` to satisfy the fallible seam (task 99).
         let b = decode(base).unwrap_or(ToyEnv {
             base_offset: 0,
             pos: SNAP_AT,
@@ -196,15 +198,19 @@ impl EnvCodec for ToyCodec {
         let pick = salt % local_len;
         let val = ((salt >> 8) % K as u64) as u8;
         overrides.insert(pick, val);
-        encode(&ToyEnv {
+        Ok(encode(&ToyEnv {
             base_offset: pos,
             pos: TOTAL_DECISIONS,
             seed: b.seed,
             overrides,
-        })
+        }))
     }
 
-    fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment {
+    fn compose(
+        &self,
+        base: &Environment,
+        branch_local: &Environment,
+    ) -> Result<Environment, EnvCodecError> {
         let b = decode(base).unwrap_or(ToyEnv {
             base_offset: 0,
             pos: 0,
@@ -242,12 +248,12 @@ impl EnvCodec for ToyCodec {
         for (lid, v) in &d.overrides {
             overrides.insert(lid + cut, *v);
         }
-        encode(&ToyEnv {
+        Ok(encode(&ToyEnv {
             base_offset: b.base_offset,
             pos: d.pos,
             seed: b.seed,
             overrides,
-        })
+        }))
     }
 }
 

@@ -81,7 +81,7 @@ pub use defaults::{
     IdentityCells, TerminalOracle,
 };
 pub use engine::{Composition, Explorer, RunOutcome};
-pub use error::MachineError;
+pub use error::{EnvCodecError, MachineError};
 pub use materialize::{Lineage, Materialization, Materializer, SealBudget};
 pub use prng::Prng;
 pub use seam::{EnvCodec, Machine, MachineFactory};

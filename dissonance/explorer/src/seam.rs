@@ -9,7 +9,7 @@
 //! both sides unchanged. [`EnvCodec`] is how the schema-blind explorer mints and
 //! mutates *valid* [`Environment`] blobs without ever parsing task 24's structure.
 
-use crate::error::MachineError;
+use crate::error::{EnvCodecError, MachineError};
 use crate::{Answer, Environment, SnapId, StopConditions, StopReason};
 
 /// The control-plane driver the explorer treats as a black box. Every method is
@@ -115,14 +115,20 @@ pub trait MachineFactory {
 pub trait EnvCodec {
     /// A fresh pure-seeded environment (no overrides) — the explore step's
     /// draw and the empty-frontier / genesis base. Genesis-complete (decision
-    /// index zero).
+    /// index zero). **Infallible**: it mints from a caller-supplied seed and
+    /// decodes no untrusted bytes, so it has no failure mode.
     fn seeded(&self, seed: u64) -> Environment;
 
     /// A coverage-guided mutation of `base`: decode, tweak the seed or one
     /// override, re-encode — always a *valid* blob the backend accepts, never a
     /// raw byte-flip. `salt` makes the choice deterministic (no wall-clock /
     /// host-RNG).
-    fn mutate(&self, base: &Environment, salt: u64) -> Environment;
+    ///
+    /// **Fallible** (task 99): `base` is a serialized reproducer — an untrusted
+    /// artifact a user may have loaded from disk or hand-edited — so a malformed
+    /// or mis-ordered blob returns a typed [`EnvCodecError`], never a panic. A
+    /// valid blob decodes to the identical mutation it always did.
+    fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError>;
 
     /// Compose a genesis-complete `base` with a **branch-local** delta (a
     /// [`Machine::recorded_env`] from a run branched off `base`'s snapshot) into
@@ -130,5 +136,15 @@ pub trait EnvCodec {
     /// IDs onto the end of `base`. This is how a [`Bug`](crate::Bug) found below a
     /// non-genesis corpus snapshot still yields a portable, genesis-replayable
     /// reproducer. Deterministic.
-    fn compose(&self, base: &Environment, branch_local: &Environment) -> Environment;
+    ///
+    /// **Fallible** (task 99): both `base` and `branch_local` are untrusted
+    /// serialized reproducers, so a malformed blob, a mis-ordered chain, an
+    /// unsupported composition, or a `Moment`-axis overflow returns a typed
+    /// [`EnvCodecError`] instead of panicking. Composition of two valid blobs is
+    /// byte-for-byte unchanged from the pre-task-99 contract.
+    fn compose(
+        &self,
+        base: &Environment,
+        branch_local: &Environment,
+    ) -> Result<Environment, EnvCodecError>;
 }

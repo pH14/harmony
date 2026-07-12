@@ -409,7 +409,9 @@ impl<M: Machine> Explorer<M> {
                     None => return Err(MachineError::UnknownExemplar(r.0)),
                 };
                 let salt = self.rng.next_u64();
-                let env = self.codec.mutate(&entry_env, salt);
+                // A malformed corpus reproducer is a loud control error
+                // (`MachineError::EnvCodec`), never a guest bug (task 99).
+                let env = self.codec.mutate(&entry_env, salt)?;
                 let snap = self.materialize(r)?;
                 (snap, Some(entry_env), salt, env)
             }
@@ -423,7 +425,7 @@ impl<M: Machine> Explorer<M> {
         //    an exemplar composes through the entry's genesis-complete env.
         let genesis_env = match &base_env {
             None => outcome.env.clone(),
-            Some(base) => self.codec.compose(base, &outcome.env),
+            Some(base) => self.codec.compose(base, &outcome.env)?,
         };
         // The guest console capture → scrape records, the log-template sensor's
         // input (task 67). Empty for a machine that overrides nothing (the toy),
@@ -462,7 +464,7 @@ impl<M: Machine> Explorer<M> {
         for p in &self.pending_forks {
             let env = match &base_env {
                 None => p.suffix.clone(),
-                Some(base) => self.codec.compose(base, &p.suffix),
+                Some(base) => self.codec.compose(base, &p.suffix)?,
             };
             forks.push(Fork {
                 exemplar: VirtualExemplar {

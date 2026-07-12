@@ -6,6 +6,51 @@ spine + Progression refactor** — the Wave-5 keystone contract. Pure logic: no
 sibling-crate dependencies. Builds and passes every gate on macOS and Linux. No
 `unsafe`, so no Miri obligation.
 
+## Task 99 — `SpecEnvCodec` made fallible on malformed reproducer blobs (`hm-5d9`)
+
+A serialized reproducer is the artifact users pass around, load from disk, and
+feed back in — untrusted by definition — so the `EnvCodec` seam must not panic
+on it (conventions rule 4). The task-93 default (panic-on-defect) is now
+replaced by a fallible seam:
+
+- **`EnvCodec::mutate` / `compose` return `Result<Environment, EnvCodecError>`.**
+  `seeded` stays infallible (it mints from a caller-supplied seed and decodes no
+  untrusted bytes). This is the intentional public-API change; the frozen
+  `tests/public-api.txt` snapshot is refreshed to match.
+- **New `EnvCodecError` (`src/error.rs`)** — a `thiserror` enum with the named
+  malformation classes: `Malformed(u16)` (bad magic/version/truncation/overflowing
+  length field — the untrusted-input class, carrying the declared version),
+  `MisorderedChain(&'static str)` (a structurally-valid but impossible lineage: a
+  capture behind its own root, or a delta keyed before its base's root),
+  `UnsupportedComposition` (seed/policy mismatch, standing faults, seeded variant —
+  mirrors `environment::EnvError::UnsupportedComposition`), and `Overflow` (a
+  `Moment` re-key past `u64::MAX`). Every internal panic on the decode path
+  (`SpecEnvCodec::require`, the `mutate`/`compose` `unwrap_or_else`/`panic!` arms)
+  is gone — grep-provable: no `panic!`/`unwrap`/`expect` in non-test `src/`.
+- **Loud control error, never a guest bug.** `MachineError` gains an
+  `EnvCodec(#[from] EnvCodecError)` variant, so the engine (`progression_step`,
+  `materialize`) and any campaign caller propagate a bad blob with `?` onto the
+  control-plane channel that aborts the step — it is never recorded as a `Bug`
+  (only `Crash`/`Assertion` are). This preserves dissonance's two-category rule.
+- **Valid blobs are byte-for-byte unchanged.** Only the error path changed; the
+  slice/splice/rekey logic is untouched, so every existing round-trip/replay/
+  determinism test stays green (verified). Wire format is out of scope.
+- **Tests.** `tests/hostile_blobs.rs` — proptest fuzzers (arbitrary bytes never
+  panic; any off-version blob is `Malformed`; truncation at any boundary is
+  `Malformed`; structural bit-flips are `Malformed`) plus a named regression test
+  per malformation class the spec calls out (truncation-at-every-boundary, magic
+  bit-flip, wrapper + inner version skew, length-field overflow, unknown variant
+  tag, unsupported composition, rekey overflow, mis-ordered chain). The four
+  in-crate `#[should_panic]` codec tests became `Err(...)` assertions.
+
+**Integrator note.** `EnvCodec::mutate`/`compose` are now fallible, so
+`dissonance/conductor`'s call sites (`campaign.rs`, `materialize.rs`,
+`benchcampaign.rs`, `record.rs`, `lib.rs`) need the mechanical `?` added — those
+functions already return `Result<_, MachineError>` and `MachineError: From<EnvCodecError>`,
+so it is a one-token change per call, no new imports. This crate's gates
+(`-p explorer`) are all green; conductor is a sibling crate outside this task's
+directory (conventions rule 1) and is updated at integration.
+
 ## What task 64 built
 
 - **`src/spine.rs` — the contract** (crate-root re-exports, conventions rule 2:
@@ -314,9 +359,11 @@ the one substantive finding).
   materialization refuses with `MachineError::NotSealable`.
 - **Chain compose (the task-58 handoff)**: `SpecEnvCodec` (and the test
   `ToyCodec`) now splice at the **relative** cut `d.base_offset −
-  b.base_offset` (checked; a mis-ordered chain panics per the task-93
-  never-silently-mis-key discipline) and keep the base's root, so lineage
-  suffixes fold into one delta still rooted at the retained ancestor.
+  b.base_offset` (checked; a mis-ordered chain is refused with
+  `EnvCodecError::MisorderedChain` per the task-93 never-silently-mis-key
+  discipline, now typed rather than panicked — task 99) and keep the base's
+  root, so lineage suffixes fold into one delta still rooted at the retained
+  ancestor.
   `mutate` slices at `b.pos − b.base_offset`. Genesis-complete bases are the
   `base_offset == 0` special case — v1 behavior byte-identical.
 

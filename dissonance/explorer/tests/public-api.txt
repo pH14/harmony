@@ -23,8 +23,8 @@ pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::resul
 pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
 pub struct explorer::adapter::SpecEnvCodec
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
-pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
+pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
+pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub const explorer::adapter::ADAPTER_BLOB_VERSION: u16
 pub fn explorer::adapter::client_caps() -> control_proto::types::Caps
@@ -60,8 +60,15 @@ impl explorer::stads::SpeciesStats
 pub fn explorer::stads::SpeciesStats::chao1(&self) -> explorer::stads::Frac
 pub fn explorer::stads::SpeciesStats::discovery_below(&self, u64, u64) -> bool
 pub fn explorer::stads::SpeciesStats::discovery_probability(&self) -> explorer::stads::Frac
+pub enum explorer::EnvCodecError
+pub explorer::EnvCodecError::Malformed(u16)
+pub explorer::EnvCodecError::MisorderedChain(&'static str)
+pub explorer::EnvCodecError::Overflow
+pub explorer::EnvCodecError::UnsupportedComposition
 pub enum explorer::MachineError
 pub explorer::MachineError::BadEnvironment(u16)
+pub explorer::MachineError::EnvCodec(explorer::EnvCodecError)
+pub explorer::MachineError::Inadmissible(alloc::string::String)
 pub explorer::MachineError::MaterializeDivergence
 pub explorer::MachineError::MaterializeDivergence::at: u64
 pub explorer::MachineError::MaterializeDivergence::exemplar: u64
@@ -312,8 +319,8 @@ pub fn explorer::adapter::SocketMachine<S>::sdk_events(&mut self) -> core::resul
 pub fn explorer::adapter::SocketMachine<S>::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::MachineError>
 pub struct explorer::SpecEnvCodec
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
-pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
+pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
+pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub struct explorer::StopConditions
 pub explorer::StopConditions::deadline: core::option::Option<explorer::VTime>
@@ -352,12 +359,12 @@ pub fn explorer::CellFn::key(&self, explorer::Moment, &explorer::FeatureSet) -> 
 impl explorer::CellFn for explorer::IdentityCells
 pub fn explorer::IdentityCells::key(&self, explorer::Moment, &explorer::FeatureSet) -> explorer::CellKey
 pub trait explorer::EnvCodec
-pub fn explorer::EnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::EnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
+pub fn explorer::EnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
+pub fn explorer::EnvCodec::mutate(&self, &explorer::Environment, u64) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
 pub fn explorer::EnvCodec::seeded(&self, u64) -> explorer::Environment
 impl explorer::EnvCodec for explorer::adapter::SpecEnvCodec
-pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> explorer::Environment
-pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> explorer::Environment
+pub fn explorer::adapter::SpecEnvCodec::compose(&self, &explorer::Environment, &explorer::Environment) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
+pub fn explorer::adapter::SpecEnvCodec::mutate(&self, &explorer::Environment, u64) -> core::result::Result<explorer::Environment, explorer::EnvCodecError>
 pub fn explorer::adapter::SpecEnvCodec::seeded(&self, u64) -> explorer::Environment
 pub trait explorer::Machine
 pub fn explorer::Machine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::MachineError>
