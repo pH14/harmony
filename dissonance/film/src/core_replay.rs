@@ -421,7 +421,7 @@ impl CoreReplay {
         // SAFETY: `handle` is a live `dlopen` handle; each symbol is resolved and
         // transmuted to its declared libretro signature (the C ABI this crate
         // pins). A missing symbol is an error, not UB.
-        let result = unsafe { Self::init_core(handle, &rom_bytes) };
+        let result = unsafe { Self::init_core(handle, &rom_bytes, rom_path) };
         match result {
             Ok((fns, width, height)) => Ok(CoreReplay {
                 handle,
@@ -447,6 +447,7 @@ impl CoreReplay {
     unsafe fn init_core(
         handle: *mut c_void,
         rom_bytes: &[u8],
+        rom_path: &Path,
     ) -> Result<(RetroFns, u32, u32), RenderError> {
         // SAFETY (whole block): each `sym` is resolved from the live `handle` and
         // transmuted to the libretro C-ABI signature declared above; the calls
@@ -483,8 +484,19 @@ impl CoreReplay {
             set_audio_batch(audio_batch_cb);
             init();
 
+            // FCEUmm sets `need_fullpath`: `retro_load_game` loads from the
+            // filesystem, so the path must ride the info struct — the exact
+            // mirror of the play-agent's box-smoke fix (task 86; both specs
+            // pre-document this symmetric edit). Data bytes stay attached for
+            // cores that read them instead.
+            let rom_cpath = CString::new(rom_path.to_string_lossy().as_bytes()).map_err(|_| {
+                RenderError::Unavailable(format!(
+                    "ROM path {} contains a NUL byte",
+                    rom_path.display()
+                ))
+            })?;
             let game = RetroGameInfo {
-                path: std::ptr::null(),
+                path: rom_cpath.as_ptr(),
                 data: rom_bytes.as_ptr() as *const c_void,
                 size: rom_bytes.len(),
                 meta: std::ptr::null(),
