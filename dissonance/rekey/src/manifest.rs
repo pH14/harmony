@@ -400,6 +400,8 @@ pub struct VerifiedCampaign {
     pub config: String,
     /// The campaign seed.
     pub seed: u64,
+    /// The bug the slice targets — cross-checked against each member's own log.
+    pub bug: u16,
     /// The `explore_period` the slice ran under.
     pub explore_period: u64,
     /// The `Vec<(branch, RunTrace)>` JSON.
@@ -490,6 +492,7 @@ impl Corpus {
                     member: t.member.clone(),
                     config: t.config.clone(),
                     seed: t.seed,
+                    bug: slice.bug,
                     explore_period: slice.explore_period,
                     traces_json: data.clone(),
                     log_json,

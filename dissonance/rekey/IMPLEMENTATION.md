@@ -173,6 +173,31 @@ declared count must be recomputed, or none of them actually constrain anything.)
    nothing). The arbitrary-bytes ustar property is kept but documented as only covering the early
    return.
 
+## Foreman review, round 4 (PR #94)
+
+The chain-gate P1 held; two final small P2s.
+
+1. **[P2] The equal-objective tie-break used raw cell count** (`src/score.rs`). `docs/SCORING.md`
+   3(a) normalizes breadth because raw QD counts scale with resolution, so a finer candidate could
+   win an objective tie for minting more bins. The review offered two remedies — normalize the
+   tie-break, or drop breadth from it — and **drop is the correct one here**: among equal-objective
+   candidates, normalized `breadth_q32` differs *only* when partitions differ, and the equal-objective
+   equal-partition candidates (v1's `fold_k`/`Quant` knob variants) differ solely in `|K|`, where
+   normalizing would just reward the smaller key-space, i.e. *dropping a channel* — backwards for
+   generalization, and the menu already collapses those on their identical partition. So the
+   tie-break is now objective → declaration order, keeping the control the representative a knob
+   variant can never displace. (Verified: normalized breadth would have floated `lastnew-only`, a
+   channel-dropped variant, above the `v1-shipped` control and made it the menu's group
+   representative — the exact regression `drop` avoids. Ranking unchanged from before; only the
+   tie-break prose moved.)
+2. **[P2] Slice `bug`/`explore_period` were not cross-checked against the member logs**
+   (`src/observe.rs`). The identity cross-check covered `(config, seed)` only, so a manifest that
+   mislabels a slice's bug (3 → 1) or explore_period passed every gate while the report copied the
+   wrong identity from the slice. `observe::check_slice_membership` now requires each member log's
+   `bug` and `explore_period` to match its slice, erroring (`SliceMismatch`) otherwise —
+   the difference, for an evidence crate, between a *verified* corpus and a merely *labelled* one.
+   Factored and unit-tested (truthful passes; wrong bug and wrong explore_period each fail).
+
 ## Deviations considered
 
 - **Bug 1 as the degenerate control (spec §corpus) — impossible, and it is not a scoping
@@ -245,7 +270,7 @@ declared count must be recomputed, or none of them actually constrain anything.)
 
 ## For the integrator
 
-- **Gates.** `build` / `nextest` (91 tests, incl. ≥256-case gunzip/untar totality proptests) /
+- **Gates.** `build` / `nextest` (92 tests, incl. ≥256-case gunzip/untar totality proptests) /
   `clippy -D warnings` / `fmt` / `deny` / `cargo mutants --in-diff` all green on macOS, plus
   `cargo check --target x86_64-unknown-linux-gnu --all-targets` (the crate has **no `unsafe`**, no
   `cfg(target_os)` fork, and no platform API — so no Miri job entry is needed and the

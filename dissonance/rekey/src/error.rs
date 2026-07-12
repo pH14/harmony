@@ -130,6 +130,23 @@ pub enum Error {
         log_seed: u64,
     },
 
+    /// A slice-level attribute (`bug` or `explore_period`) the manifest declares
+    /// for a slice disagrees with what a member's own log carries. The report
+    /// copies the slice's identity, so a mislabelled slice (bug 3 tagged as bug 1)
+    /// would otherwise pass every gate and publish the wrong bug — for an evidence
+    /// crate the difference between a *verified* corpus and a merely *labelled* one.
+    #[error("campaign {member}: slice {field} is declared {declared} but its log carries {actual}")]
+    SliceMismatch {
+        /// The member whose log disagrees with its slice.
+        member: String,
+        /// The slice attribute that disagrees (`bug` / `explore_period`).
+        field: &'static str,
+        /// What the manifest slice declares.
+        declared: u64,
+        /// What the member's own log carries.
+        actual: u64,
+    },
+
     /// The manifest names an archive member that the archive does not contain.
     #[error("archive {archive} has no member {member}")]
     MissingMember {

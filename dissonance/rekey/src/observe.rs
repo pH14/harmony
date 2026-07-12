@@ -186,6 +186,36 @@ fn check_identity(
     }
 }
 
+/// The slice-level attributes the manifest declares for a member — the `bug` it
+/// targets and the `explore_period` it ran under — must match the member's own
+/// log. `check_identity` covers only `(config, seed)`; without this a manifest
+/// that mislabels a slice's bug passes every hash and identity gate while the
+/// report copies the wrong bug identity from the slice.
+fn check_slice_membership(
+    member: &str,
+    slice_bug: u16,
+    slice_explore_period: u64,
+    log: &CampaignLog,
+) -> Result<()> {
+    if u64::from(log.bug.0) != u64::from(slice_bug) {
+        return Err(Error::SliceMismatch {
+            member: member.to_string(),
+            field: "bug",
+            declared: u64::from(slice_bug),
+            actual: u64::from(log.bug.0),
+        });
+    }
+    if log.explore_period != slice_explore_period {
+        return Err(Error::SliceMismatch {
+            member: member.to_string(),
+            field: "explore_period",
+            declared: slice_explore_period,
+            actual: log.explore_period,
+        });
+    }
+    Ok(())
+}
+
 /// Replay one verified campaign's sensor observations.
 ///
 /// Fails loudly if the corpus does not have the shape the harness folds: a
@@ -215,6 +245,10 @@ pub fn observe_campaign(raw: &VerifiedCampaign, bugs: &Benchmark) -> Result<Camp
     // self-describing log, so a mislabelled or spoofed entry cannot be scored (or
     // deduped) under an identity its trace does not actually carry.
     check_identity(&raw.member, &raw.config, raw.seed, &log)?;
+    // …and the slice-level attributes the report copies (bug, explore_period): a
+    // mislabelled slice (bug 3 tagged as bug 1) must not pass verification and
+    // publish the wrong identity. Each member's own log is the ground truth.
+    check_slice_membership(&raw.member, raw.bug, raw.explore_period, &log)?;
 
     let spec: &BugSpec = bugs
         .get(log.bug)
@@ -357,6 +391,56 @@ mod tests {
         // And the Baseline label is accepted when it is the truth (so the check
         // is not vacuously rejecting one config).
         assert!(check_identity("m", "Baseline", 7, &log(Configuration::Baseline, 7)).is_ok());
+    }
+
+    /// The slice-level attributes (`bug`, `explore_period`) are cross-checked
+    /// against the member's own log, so a mislabelled slice cannot pass
+    /// verification and publish the wrong bug identity.
+    #[test]
+    fn check_slice_membership_rejects_a_mislabelled_slice() {
+        let mut log = CampaignLog {
+            bug: benchmark::BugId(3),
+            config: Configuration::Signal,
+            seed: 1,
+            events: Vec::new(),
+            finds: Vec::new(),
+            explore_period: 4,
+            order_range: 64,
+        };
+
+        // The truthful slice attributes pass.
+        assert!(check_slice_membership("m", 3, 4, &log).is_ok());
+
+        // A slice that claims the wrong bug (3 tagged as 1) is refused, and the
+        // error carries both the declared and the actual bug.
+        match check_slice_membership("m", 1, 4, &log) {
+            Err(Error::SliceMismatch {
+                field,
+                declared,
+                actual,
+                ..
+            }) => {
+                assert_eq!(field, "bug");
+                assert_eq!((declared, actual), (1, 3));
+            }
+            other => panic!("expected a bug SliceMismatch, got {other:?}"),
+        }
+
+        // A slice that claims the wrong explore_period is refused too — the
+        // ablation (ep=1) must never be scored as the campaign (ep=4).
+        assert!(matches!(
+            check_slice_membership("m", 3, 1, &log),
+            Err(Error::SliceMismatch {
+                field: "explore_period",
+                declared: 1,
+                actual: 4,
+                ..
+            })
+        ));
+
+        // The check is symmetric: a genuine ablation log (ep=1) passes at ep=1.
+        log.explore_period = 1;
+        assert!(check_slice_membership("m", 3, 1, &log).is_ok());
     }
 
     #[test]

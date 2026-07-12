@@ -167,7 +167,7 @@ This is not a bug in the marker filter's intent; it is the honest consequence of
 
 ## The ranking (on `bug3-campaign` — the sole real discriminator)
 
-Chain preservation **gates**: a candidate that breaks any finding chain is disqualified outright, whatever its curves. Survivors are ordered by the granularity objective at the stated target, tie-broken by raw breadth and then by declaration order — an exact tie means the two candidates *are the same descriptor on this corpus*, and the control is declared first, so a knob variant can never displace the v1 row it is indistinguishable from. On this corpus the gate disqualifies **nothing**; see below.
+Chain preservation **gates**: a candidate that breaks any finding chain is disqualified outright, whatever its curves. Survivors are ordered by the granularity objective at the stated target, then by declaration order. **Breadth does not enter the tie-break** — raw cell count would reward a finer candidate for minting more bins (`docs/SCORING.md` 3(a)), and normalized breadth, among equal-objective candidates, differs only in `|K|`, where it would just reward dropping a channel. An objective tie therefore means the two candidates *are the same descriptor on this corpus*, and the control is declared first, so a knob variant can never displace the v1 row it is indistinguishable from. On this corpus the gate disqualifies **nothing**; see below.
 
 | # | candidate | (b) O@64 | (a) total | (c) chains | steering | verdict |
 |---:|---|---:|---:|---|---:|---|

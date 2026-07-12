@@ -506,8 +506,20 @@ pub fn score_slice(
 
 /// The ranking: **disqualify any candidate that breaks a finding chain** (law 6
 /// — a descriptor may not be judged on discovery curves alone), then order the
-/// survivors by the granularity objective, tie-broken by raw breadth, then by
-/// declaration order so the order is total and reproducible.
+/// survivors by the granularity objective, tie-broken by declaration order so the
+/// order is total and reproducible.
+///
+/// **Breadth does not enter the tie-break.** Raw cell count must not
+/// (`docs/SCORING.md` 3(a): QD scores scale with resolution, so it would reward a
+/// finer candidate for merely minting more bins). Normalized breadth `breadth_q32`
+/// would avoid *that*, but among candidates with an equal objective it differs
+/// only when their partitions differ — and equal-objective, equal-partition
+/// candidates (the `fold_k`/`Quant` knob variants of v1) differ solely in `|K|`,
+/// where normalized breadth just rewards the smaller key-space, i.e. dropping a
+/// channel. That is backwards for generalization, and the menu already collapses
+/// those on their identical partition. So the tie-break is declaration order,
+/// which keeps the **control** (declared first) as the representative a knob
+/// variant can never displace.
 ///
 /// Declaration order is the last tie-break rather than the candidate id because
 /// an exact tie means the candidates *are the same descriptor on this corpus*,
@@ -532,11 +544,12 @@ pub fn rank_by(scores: &[SliceScore], objective: impl Fn(&SliceScore) -> u64) ->
     let mut order: Vec<usize> = (0..scores.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&scores[a], &scores[b]);
-        // Disqualified last — whatever the target.
+        // Disqualified last — whatever the target. Breadth (raw OR normalized)
+        // is deliberately absent from the tie-break; see the doc comment. An
+        // objective tie falls to declaration order, keeping the control first.
         y.chain_preserved()
             .cmp(&x.chain_preserved())
             .then(objective(y).cmp(&objective(x)))
-            .then(y.total_cells.cmp(&x.total_cells))
             .then(a.cmp(&b))
     });
     order
