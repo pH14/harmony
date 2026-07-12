@@ -4305,18 +4305,22 @@ control tests each boot+run+`state_hash` (sha256) a VM under the interpreter (~1
 apiece), and the non-`materialize` `enforce_run`-based tests (`same_schedule_run_twice…`)
 are the same shape. None abort; none are in the materialize scope of this task; but
 their aggregate runtime against the shared 90-min ceiling should be measured on the
-uncontended CI box. The clean reduction, if needed, is the `image_bytes` seam *plus*
+uncontended CI box — a full local run (aarch64 Mac, uncontended) took **~92 min wall**
+for the vmm-core step alone, so this is likely to bite on CI and wants attention before
+the nightly job is relied on. The clean reduction, if needed, is the `image_bytes` seam *plus*
 `cfg(miri)`-shrinking the guest images (the tests hard-code `RAM`/`BIG_RAM`) and skipping
 `wire_snapshot_hashing` (the `state_blob`-not-`state_hash` precedent), so a restore/enforce
 interprets in seconds — a larger change than this P1 gate-correctness fix warranted.
 
-**Gates.** `build` / `nextest` (428 tests, all still run natively) / `clippy -D
-warnings` / `fmt` / `deny` green on Mac. The exact nightly.yml vmm-core Miri command
-passes on `nightly-2026-06-16`: the lib binary runs **327 passed, 65 ignored, 0
-failed** (the 37 restore tests + `arbitrary_schedule` + `serve_speaks_frames` + the 3
-pre-existing mmap gates are the `ignored`), and the in-workspace integration binaries
-(`event_loop` 19, `corpus_oracle_mock` 3, `loader_proptest` 3, `linux_loader_proptest`
-4) all pass — verified under the interpreter. The `map_memory` unsafe stays exercised
-by the boot suite. (The lib figure is the measured 327 pass / 1 fail run with the last
-gate — `serve_speaks_frames`, a socket test — added; every other test outcome is
-unchanged by that ignore.)
+**Gates.** `build` / `nextest` (429 tests, all still run natively) / `clippy -D
+warnings` / `fmt` / `deny` green on Mac, for both `vmm-core` and `snapshot-store`. The
+exact nightly.yml vmm-core Miri command passes end-to-end on `nightly-2026-06-16`
+(measured full run, exit 0): the lib binary runs **329 passed, 0 failed, 64 ignored**
+(the 37 restore tests + `arbitrary_schedule` + `serve_speaks_frames` + the 3 pre-existing
+mmap gates are the `ignored`; `snapshot_mints…` and the new
+`compose_restore_target_map_memory_over_an_anonymous_mapping` are among the passing),
+and every integration binary is `ok` (`event_loop` 19, `corpus_oracle_mock` 3,
+`loader_proptest` 3, `linux_loader_proptest` 4 pass; the `live_*` /
+`seal_rate_sweep` / `snapshot_branch` / `public_api` binaries are `#[ignore]`d or
+cfg-excluded). Both `map_memory` sites (owned `GuestRam` and the restore `Mapping`) are
+exercised by a running Miri test.
