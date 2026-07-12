@@ -543,6 +543,47 @@ fn octal(field: &[u8]) -> Option<u64> {
 mod tests {
     use super::*;
 
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// **Totality over untrusted bytes.** The hand-written gzip/DEFLATE and
+        /// ustar parsers run over archive bytes the harness did not produce; on
+        /// *any* input each must return `Ok`/`Err` and never panic, read out of
+        /// bounds, or loop unboundedly. proptest fails on a panic or a hang, so
+        /// completing every case *is* the property — the repository's parser
+        /// discipline (selected malformed examples are not this gate).
+        #[test]
+        fn gunzip_is_total_over_arbitrary_bytes(
+            bytes in prop::collection::vec(any::<u8>(), 0..8192),
+        ) {
+            let _ = gunzip("fuzz", &bytes);
+        }
+
+        #[test]
+        fn untar_is_total_over_arbitrary_bytes(
+            bytes in prop::collection::vec(any::<u8>(), 0..8192),
+        ) {
+            let _ = untar("fuzz", &bytes);
+        }
+
+        /// The same for gunzip, but *past the magic check*: a real gzip prefix
+        /// (`1f 8b 08`) plus an arbitrary flag byte and body, so the optional
+        /// header skips (FEXTRA / FNAME / FCOMMENT / FHCRC), the block-type
+        /// dispatch, the Huffman decoders, and the trailer are all reached —
+        /// where pure noise almost always stops at byte 0.
+        #[test]
+        fn gunzip_is_total_past_the_magic(
+            flags in any::<u8>(),
+            body in prop::collection::vec(any::<u8>(), 0..8192),
+        ) {
+            let mut input = vec![0x1f, 0x8b, 0x08, flags];
+            input.extend_from_slice(&body);
+            let _ = gunzip("fuzz", &input);
+        }
+    }
+
     /// A stored (uncompressed) deflate block round-trips: the simplest block
     /// type, hand-assembled.
     #[test]

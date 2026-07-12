@@ -25,7 +25,7 @@
 //!   trigger-orthogonal twin candidate replaces it as the noise-fitting control
 //!   (tasks/97 amendment).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -441,6 +441,7 @@ impl Corpus {
         }
 
         validate_exclusions(&manifest)?;
+        validate_trace_uniqueness(&manifest)?;
 
         let mut campaigns = Vec::new();
         for slice in &manifest.slices {
@@ -523,6 +524,30 @@ fn validate_exclusions(manifest: &CorpusManifest) -> Result<()> {
                 slice: ex.slice.clone(),
                 member: ex.member.clone(),
             });
+        }
+    }
+    Ok(())
+}
+
+/// Every re-keyable trace must have a unique `(slice, config, seed)` identity.
+///
+/// A repeated entry would load twice and pass every hash and ancestry check, yet
+/// double-weight that campaign in breadth, granularity, and the debut audit — a
+/// silent scoring bias exactly like counting a `-solo` re-run would be. Checked
+/// before any campaign is scored, per slice (the same `(config, seed)` may
+/// legitimately appear in a *different* slice — e.g. seed 1 signal in both the
+/// campaign and the ablation).
+fn validate_trace_uniqueness(manifest: &CorpusManifest) -> Result<()> {
+    for slice in &manifest.slices {
+        let mut seen: BTreeSet<(&str, u64)> = BTreeSet::new();
+        for t in &slice.traces {
+            if !seen.insert((t.config.as_str(), t.seed)) {
+                return Err(Error::DuplicateTrace {
+                    slice: slice.slice.clone(),
+                    config: t.config.clone(),
+                    seed: t.seed,
+                });
+            }
         }
     }
     Ok(())
@@ -667,6 +692,68 @@ mod tests {
             validate_exclusions(&dup),
             Err(Error::UnknownExclusionSlice { .. })
         ));
+    }
+
+    /// A repeated `(slice, config, seed)` trace is refused before scoring: it
+    /// would load twice, pass every hash check, and double-weight the campaign in
+    /// every axis. A `(config, seed)` shared across *different* slices is fine.
+    #[test]
+    fn a_duplicate_campaign_identity_is_refused() {
+        let trace = |config: &str, seed: u64| TraceEntry {
+            member: format!("{config}-{seed}.json"),
+            sha256: String::new(),
+            log: format!("{config}-{seed}.log"),
+            log_sha256: String::new(),
+            config: config.into(),
+            seed,
+            branches: 512,
+        };
+        let slice = |id: &str, traces: Vec<TraceEntry>| CorpusSlice {
+            slice: id.into(),
+            bug: 3,
+            description: String::new(),
+            archive: format!("{id}.tar.gz"),
+            archive_sha256: String::new(),
+            explore_period: 4,
+            traces,
+        };
+        let manifest = |slices| CorpusManifest {
+            version: MANIFEST_VERSION,
+            note: String::new(),
+            slices,
+            references: Vec::new(),
+            exclusions: Vec::new(),
+            totals: Totals::default(),
+        };
+
+        // Distinct identities within a slice, and the same (config, seed) across
+        // two different slices — both legal.
+        let ok = manifest(vec![
+            slice(
+                "bug3-campaign",
+                vec![trace("Signal", 1), trace("Baseline", 1), trace("Signal", 2)],
+            ),
+            slice("bug3-ablation", vec![trace("Signal", 1)]),
+        ]);
+        assert!(validate_trace_uniqueness(&ok).is_ok());
+
+        // A repeat *within* a slice is refused, naming the collision.
+        let dup = manifest(vec![slice(
+            "bug3-campaign",
+            vec![trace("Signal", 1), trace("Signal", 1)],
+        )]);
+        match validate_trace_uniqueness(&dup) {
+            Err(Error::DuplicateTrace {
+                slice,
+                config,
+                seed,
+            }) => {
+                assert_eq!(slice, "bug3-campaign");
+                assert_eq!(config, "Signal");
+                assert_eq!(seed, 1);
+            }
+            other => panic!("expected DuplicateTrace, got {other:?}"),
+        }
     }
 
     /// A manifest from another schema version is refused, not reinterpreted.

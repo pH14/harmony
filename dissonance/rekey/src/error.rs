@@ -81,6 +81,19 @@ pub enum Error {
         member: String,
     },
 
+    /// Two trace entries share a `(slice, config, seed)` identity. Loading both
+    /// would double-weight that campaign in every axis while each still passes its
+    /// hash and ancestry checks — a silent scoring bias, so it is refused.
+    #[error("duplicate campaign {config}/{seed} in slice {slice}: a seed is counted at most once")]
+    DuplicateTrace {
+        /// The slice the collision is in.
+        slice: String,
+        /// The campaign configuration (`Baseline` / `Signal`).
+        config: String,
+        /// The campaign seed.
+        seed: u64,
+    },
+
     /// The manifest names an archive member that the archive does not contain.
     #[error("archive {archive} has no member {member}")]
     MissingMember {

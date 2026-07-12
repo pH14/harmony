@@ -402,14 +402,11 @@ fn ranking(out: &mut String, a: &Analysis) {
         ));
     }
 
-    // The ranking is a function of the stated target. Show it changing.
-    let mut alt: Vec<usize> = (0..primary.scores.len()).collect();
-    alt.sort_by(|&x, &y| {
-        primary.scores[y]
-            .objective_alt_q32
-            .cmp(&primary.scores[x].objective_alt_q32)
-            .then(x.cmp(&y))
-    });
+    // The ranking is a function of the stated target. Show it changing — but the
+    // chain-preservation gate is NOT a function of the target: `rank_by` applies
+    // it (and every tie-break) exactly as the primary ranking does, so a
+    // chain-breaking candidate can never surface in the T=256 top three either.
+    let alt = crate::score::rank_by(&primary.scores, |s| s.objective_alt_q32);
     let names = |order: &[usize]| {
         order
             .iter()

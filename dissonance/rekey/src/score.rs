@@ -517,13 +517,25 @@ pub fn score_slice(
 /// `scores` are the primary slice's rows, in declaration order. Returns the row
 /// indices, best first.
 pub fn rank(scores: &[SliceScore]) -> Vec<usize> {
+    rank_by(scores, |s| s.objective_q32)
+}
+
+/// [`rank`], parameterized by which granularity objective decides the order.
+///
+/// The chain-preservation gate and every tie-break are identical to [`rank`]'s —
+/// **the gate is not a property of the target**. The report shows the ranking at
+/// a second sensitivity target ([`TARGET_SENSITIVITY`]) to expose its dependence
+/// on `T`; that alternate ranking must disqualify a chain-breaking candidate just
+/// as `rank`/`menu` do, or a candidate that would have lost a bug could surface in
+/// the reported top three at the second target — the exact outcome law 6 forbids.
+pub fn rank_by(scores: &[SliceScore], objective: impl Fn(&SliceScore) -> u64) -> Vec<usize> {
     let mut order: Vec<usize> = (0..scores.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&scores[a], &scores[b]);
-        // Disqualified last.
+        // Disqualified last — whatever the target.
         y.chain_preserved()
             .cmp(&x.chain_preserved())
-            .then(y.objective_q32.cmp(&x.objective_q32))
+            .then(objective(y).cmp(&objective(x)))
             .then(y.total_cells.cmp(&x.total_cells))
             .then(a.cmp(&b))
     });
@@ -810,6 +822,41 @@ mod tests {
         preserved.objective_q32 = 0;
         let order = rank(&[s.clone(), preserved.clone()]);
         assert_eq!(order[0], 1, "chain preservation gates the ranking");
+    }
+
+    /// The gate is not a function of the target: `rank_by` disqualifies a
+    /// chain-breaker at the *alternate* objective just as `rank` does at the
+    /// primary one — the report's T=256 ranking cannot surface a lost-bug
+    /// candidate.
+    #[test]
+    fn rank_by_gates_on_chain_preservation_at_the_alt_target() {
+        let obs = campaign(&[&[0], &[0], &[0, 1]], Some(2));
+        let chains = Chains {
+            parent: vec![None, Some(0), Some(1)],
+            admitted: vec![true, true, true],
+            find_chains: vec![vec![0, 1, 2]],
+        };
+        // `s` breaks the chain (v1 does not admit branch 1) but is handed the best
+        // alternate-target objective in the field.
+        let mut broken = score_slice(&v1(), "s", &[&obs], &[&chains], &K);
+        assert!(
+            !broken.chain_preserved(),
+            "the fixture must break the chain"
+        );
+        broken.objective_alt_q32 = u64::MAX;
+
+        let mut good = broken.clone();
+        good.chains_preserved = good.chains_checked;
+        good.ancestors_preserved = good.ancestors_checked;
+        good.objective_alt_q32 = 1; // the worst curves, but eligible
+
+        // Ranked by the alternate objective, the eligible row still leads: the
+        // chain-breaker is disqualified whatever its T=256 curve.
+        let order = rank_by(&[broken, good], |s| s.objective_alt_q32);
+        assert_eq!(
+            order[0], 1,
+            "the alt ranking gates on chain preservation too"
+        );
     }
 
     /// Axis (c) is *vacuous* when the finds have no proper ancestors — the

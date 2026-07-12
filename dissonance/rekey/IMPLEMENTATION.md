@@ -106,6 +106,35 @@ path now goes through `resolve()`: reject any non-`Normal` component before touc
 then canonicalize and require containment beneath the canonicalized root — which also closes the
 symlink case.
 
+## Foreman review, round 2 (PR #94)
+
+Round-1's four items verified fixed; the clean-pass rerun found three more in the fix-round code.
+
+1. **[blocking] The alternate-target sensitivity ranking bypassed the chain gate** (`src/report.rs`).
+   The report shows the ranking at a second target (`TARGET_SENSITIVITY`) to expose its dependence on
+   `T`, but that `alt` sort ordered purely by `objective_alt_q32` — `chain_preserved()` reached only
+   the verdict column. On a corpus where axis (c) is non-vacuous, a chain-breaking candidate could
+   surface in the reported `T = 256` top three, the exact outcome the mandatory gate exists to
+   prevent. Fixed by factoring `rank` into `rank_by(scores, objective)` — the chain-preservation gate
+   and every tie-break are identical; only the objective differs — and having the alt ranking call it.
+   The gate is not a property of the target. (On *this* corpus axis (c) is vacuous, so the report is
+   byte-identical; the fix matters for any future corpus with real chain depth, and a unit test pins
+   that `rank_by` disqualifies a chain-breaker even when handed the best `T = 256` curve.)
+2. **[P2] Duplicate campaign entries would double-weight scoring** (`src/manifest.rs`). A repeated
+   `(slice, config, seed)` `TraceEntry` loads twice and passes every hash and ancestry check while
+   biasing every axis — the same harm as counting a `-solo` re-run. `Corpus::load` now calls
+   `validate_trace_uniqueness` before scoring: per slice, a `(config, seed)` may appear at most once
+   (the same `(config, seed)` in a *different* slice — e.g. seed 1 signal in both the campaign and the
+   ablation — is legal). Unit-tested on both the collision and the cross-slice-is-fine cases.
+3. **[P2] The hand-written gzip/DEFLATE/ustar parser had no property test.** `proptest` was declared
+   but unused. Added a ≥256-case (512) malformed-input **totality** property for `gunzip` and `untar`:
+   over arbitrary bytes each must return `Ok`/`Err` and never panic, read out of bounds, or loop
+   unboundedly (proptest fails on a panic or a hang, so completing every case *is* the property). A
+   third property feeds gunzip a valid gzip prefix (`1f 8b 08`) + arbitrary flag byte and body, so the
+   optional-header skips, block-type dispatch, Huffman decoders, and trailer are reached where pure
+   noise stops at byte 0. (`untar`'s size field is octal, capped at ≤ 2³⁶, and every read is a bounded
+   `get` before `to_vec`, so there is no attacker-controlled allocation for the property to trip.)
+
 ## Deviations considered
 
 - **Bug 1 as the degenerate control (spec §corpus) — impossible, and it is not a scoping
@@ -178,8 +207,8 @@ symlink case.
 
 ## For the integrator
 
-- **Gates.** `build` / `nextest` (82 tests) / `clippy -D warnings` / `fmt` / `deny` /
-  `cargo mutants --in-diff` all green on macOS, plus
+- **Gates.** `build` / `nextest` (87 tests, incl. a ≥256-case gunzip/untar totality proptest) /
+  `clippy -D warnings` / `fmt` / `deny` / `cargo mutants --in-diff` all green on macOS, plus
   `cargo check --target x86_64-unknown-linux-gnu --all-targets` (the crate has **no `unsafe`**, no
   `cfg(target_os)` fork, and no platform API — so no Miri job entry is needed and the
   `ci-cfg-linux-review-gap` failure mode does not apply). The `rekey` binary is inside the mutation
