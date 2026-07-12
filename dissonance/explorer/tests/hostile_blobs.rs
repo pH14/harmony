@@ -263,6 +263,44 @@ fn misordered_chain_is_typed() {
     ));
 }
 
+/// A byte-valid blob whose **own** capture precedes its root (`pos < base_offset`)
+/// is a semantically impossible lineage — a snapshot taken before the branch it
+/// is keyed from. It must be `MisorderedChain` on every entry point, and in
+/// particular `compose` must reject it whether it is the base **or** the tail
+/// operand: `require(base)?` short-circuits, so the tail's own invariant is only
+/// enforced when the base is well-formed (round-3 blocking finding — such an
+/// operand previously composed to `Ok` with an inconsistent artifact).
+#[test]
+fn operand_capture_before_its_own_root_is_typed() {
+    let good = good_partner();
+    // base_offset = 100 but pos = 50: capture precedes the root.
+    let inconsistent = valid_blob(100, 50, 7, &[]);
+    // It decodes at the byte level (so `require`, not `decode`, must catch it).
+    assert!(
+        AdapterEnv::decode(&inconsistent).is_ok(),
+        "the blob is byte-valid; only its internal invariant is violated"
+    );
+    let is_misordered =
+        |r: Result<Environment, EnvCodecError>| matches!(r, Err(EnvCodecError::MisorderedChain(_)));
+    assert!(
+        is_misordered(SpecEnvCodec.mutate(&inconsistent, 1)),
+        "mutate"
+    );
+    assert!(
+        is_misordered(SpecEnvCodec.compose(&inconsistent, &good)),
+        "compose: inconsistent base"
+    );
+    assert!(
+        is_misordered(SpecEnvCodec.compose(&good, &inconsistent)),
+        "compose: inconsistent tail (second operand) — must not mint an Ok artifact"
+    );
+    // Even a self-consistent pairing with itself is refused (never Ok).
+    assert!(
+        is_misordered(SpecEnvCodec.compose(&inconsistent, &inconsistent)),
+        "compose: both operands inconsistent"
+    );
+}
+
 /// `compose`'s **second** operand (the branch-local tail) is decoded on its own
 /// untrusted path, reached only when the base decodes cleanly — so a valid base
 /// with a hostile tail must still be a typed error, never a panic (round-1
@@ -373,6 +411,28 @@ proptest! {
     ) {
         let env = Environment { blob_version: v, bytes };
         assert_malformed_everywhere(&env, v, "arbitrary off-version blob");
+    }
+
+    /// A byte-valid blob whose capture precedes its own root (`pos < base_offset`)
+    /// is always `MisorderedChain` — on `mutate` and on **both** `compose`
+    /// operands — regardless of the offsets, and is never composed to `Ok`.
+    #[test]
+    fn operand_capture_before_root_is_misordered(
+        base_offset in 1u64..=u64::MAX,
+        gap in 1u64..=u64::MAX,
+    ) {
+        // pos = base_offset - gap (clamped), so pos < base_offset by construction.
+        let pos = base_offset.saturating_sub(gap).min(base_offset - 1);
+        let bad = valid_blob(base_offset, pos, 7, &[]);
+        let good = good_partner();
+        let is_misordered =
+            |r: Result<Environment, EnvCodecError>| matches!(r, Err(EnvCodecError::MisorderedChain(_)));
+        prop_assert!(is_misordered(SpecEnvCodec.mutate(&bad, 0)), "mutate");
+        prop_assert!(is_misordered(SpecEnvCodec.compose(&bad, &good)), "base");
+        prop_assert!(
+            is_misordered(SpecEnvCodec.compose(&good, &bad)),
+            "tail (second operand) must never mint an Ok artifact"
+        );
     }
 
     /// Truncating a valid blob to any length below the full encoding is always a

@@ -106,7 +106,11 @@
 //!   task-68 materialization engine replays with **one** branch. `mutate`
 //!   slices at `b.pos − b.base_offset`. A delta keyed **before** its base's
 //!   root (`d.base_offset < b.base_offset`) is a mis-ordered chain — refused
-//!   with `EnvCodecError::MisorderedChain` (never silently mis-keyed).
+//!   with `EnvCodecError::MisorderedChain` (never silently mis-keyed). Each
+//!   operand must also satisfy its **own** invariant `pos ≥ base_offset` (a
+//!   capture cannot precede the root it is keyed from); this is checked once, at
+//!   the codec-seam decode (`require`), so `mutate` and both `compose` operands
+//!   reject an internally-inconsistent blob with the same `MisorderedChain`.
 //!
 //! ## Error mapping (two categories, preserved)
 //!
@@ -282,12 +286,28 @@ fn recorded(spec: &EnvSpec) -> EnvSpec {
 pub struct SpecEnvCodec;
 
 impl SpecEnvCodec {
-    /// Decode a reproducer blob at the codec seam. The blob is untrusted input
-    /// (a user-supplied artifact), so a decode failure is a typed
-    /// [`EnvCodecError::Malformed`] carrying the declared version — never a
-    /// panic (task 99).
+    /// Decode a reproducer blob at the codec seam and validate its internal
+    /// invariants. The blob is untrusted input (a user-supplied artifact), so a
+    /// byte-level decode failure is a typed [`EnvCodecError::Malformed`] carrying
+    /// the declared version, and a structurally-decodable but semantically
+    /// impossible lineage is [`EnvCodecError::MisorderedChain`] — never a panic
+    /// (task 99).
+    ///
+    /// The one internal invariant a lone blob can violate is `pos >= base_offset`:
+    /// a capture position **before** the blob's own root would mean a snapshot
+    /// taken before the branch it is keyed from. Enforcing it here — the single
+    /// codec-seam decode point — means `mutate` and **both** `compose` operands
+    /// are guarded uniformly, so neither can splice an operand whose capture
+    /// precedes its splice into an inconsistent artifact (round-3 finding).
     fn require(env: &Environment) -> Result<AdapterEnv, EnvCodecError> {
-        AdapterEnv::decode(env).map_err(|_| EnvCodecError::Malformed(env.blob_version))
+        let decoded =
+            AdapterEnv::decode(env).map_err(|_| EnvCodecError::Malformed(env.blob_version))?;
+        if decoded.pos < decoded.base_offset {
+            return Err(EnvCodecError::MisorderedChain(
+                "capture position precedes the blob's own root offset",
+            ));
+        }
+        Ok(decoded)
     }
 }
 
@@ -308,15 +328,10 @@ impl crate::EnvCodec for SpecEnvCodec {
         let b = Self::require(base)?;
         // Coordinate system (task 68): the base's override keys are relative
         // to its own `base_offset`, so the slice point is the **relative**
-        // distance from the base's root to its capture position. A capture
-        // position behind the root is a mis-ordered chain blob — refused
-        // (never silently mis-keyed).
-        let cut = b
-            .pos
-            .checked_sub(b.base_offset)
-            .ok_or(EnvCodecError::MisorderedChain(
-                "base captured at a position before its own root offset",
-            ))?;
+        // distance from the base's root to its capture position. `require`
+        // already refused a capture behind the root (`pos < base_offset` is a
+        // `MisorderedChain`), so this subtraction cannot underflow.
+        let cut = b.pos - b.base_offset;
         // The branch this delta seeds runs from the base snapshot's capture
         // point, so slice the suffix at `cut` into a branch-local delta (keys
         // re-based to the branch origin), preserving seed/policy so a later
