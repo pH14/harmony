@@ -151,6 +151,48 @@ itself a reproducer replayed 25/25 across the repetitions (outcome
 equality is over the full log incl. every branch's `state_hash` and the
 deep reproducer's trace id).
 
+### Film's re-homed live gate: ✅ PASSED 2026-07-12 (all five sub-gates)
+
+`conductor/tests/live_film.rs` (box-only, `#[ignore]`) drives the whole
+gate; run green in 14.5 min on one leased core (`FILM_RC=0`):
+
+- **(a)** core loads in the box guest (GAME_READY boot);
+- **(b)** film's `env_cb` assumption validated by real `unserialize` +
+  `retro_run` — after **one pre-documented symmetric fix**: `CoreReplay`
+  passed `path: null` in `RetroGameInfo`, and FCEUmm is `need_fullpath`
+  (the exact mirror of the play-agent's box-smoke fix 1; both specs
+  pre-sanction the edit — the one cross-crate change, declared);
+- **(c)** a **300-frame clip** rendered from a real captured campaign
+  timeline (bundle → PPMs + contact sheet, `/root/t86-film/`);
+- **(d)** render-determinism: two renders byte-identical (sheet blake3
+  `82aea5ca…c3b17`);
+- **(e)** hash-neutrality **25/25**: every filmed pass run on to the same
+  terminal hashes identically to the unfilmed baseline (itself stable
+  25/25).
+
+The clip is legible SMB: the life-start interstitial → World 1-1 gameplay
+(score climbing, coin collected) → post-game-over title with the TOP score
+recorded — the mode 1→3→0 arc the campaign cell keys showed, now visible.
+
+**Two live findings, on the record:**
+
+1. **SDK event stamps are V-time-anchor lower bounds, not exact
+   addresses** (spine — escalated, not patched): event Moments are stamped
+   at the last V-time intercept (~10⁷ v-ns apart here), so ~27 frames
+   share one stamp and `run(until = stamp)` lands BEFORE the batch ran.
+   The gate's fix is protocol-level: a **calibration pass** advances one
+   branch through the distinct stamps and reads the billboard header's
+   actual frame counter — observed `(frame, moment)` pairs are exact by
+   determinism, so the projector's landings re-observe them by
+   construction. Anyone addressing moments off SDK-event stamps (task 84's
+   composed engine, future film capture) inherits this until event
+   stamping synchronizes V-time at the emission exit.
+2. **The "real socket `Server` adapter" resolution's docs defer to the
+   foreman does not exist on main** — the gate carries a test-local thin
+   adapter over the real control-proto wire (client-idempotent `hello`, a
+   pinnable genesis so the Session roots at the scraped base). Promotion
+   into `resolution` proper is follow-up work.
+
 ## Box gates — the live path (handed to the foreman)
 
 **Blocked on the ROM**: `HARMONY_SMB_ROM` is user-supplied (Paul owes the
