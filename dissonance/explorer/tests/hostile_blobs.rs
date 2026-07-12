@@ -18,7 +18,7 @@
 //! (`magic(4) | version(2) | variant(1) | seed(8)`) and then a `u32`
 //! length-prefixed policy.
 
-use environment::{Action, EnvSpec, FaultPolicy, HostFault};
+use environment::{Action, DecisionClass, EnvSpec, FaultPolicy, HostFault, StandingFault, VTime};
 use explorer::{
     ADAPTER_BLOB_VERSION, AdapterEnv, EnvCodec, EnvCodecError, Environment, SpecEnvCodec,
 };
@@ -244,23 +244,98 @@ fn compose_rekey_overflow_is_typed() {
     );
 }
 
-/// A structurally-valid but internally mis-ordered chain (a delta keyed before
-/// the base's root; a base captured behind its root) is `MisorderedChain`.
+/// A base captured behind its own root (`pos < base_offset`) is the per-operand
+/// `MisorderedChain` invariant, on both `mutate` and `compose`.
 #[test]
 fn misordered_chain_is_typed() {
-    // compose: delta origin 100 < base root 200.
-    let base = valid_blob(200, 300, 7, &[]);
-    let delta = valid_blob(100, 250, 7, &[]);
-    assert!(matches!(
-        SpecEnvCodec.compose(&base, &delta),
-        Err(EnvCodecError::MisorderedChain(_))
-    ));
     // mutate: capture pos 100 behind root 200.
     let bad = valid_blob(200, 100, 7, &[]);
     assert!(matches!(
         SpecEnvCodec.mutate(&bad, 1),
         Err(EnvCodecError::MisorderedChain(_))
     ));
+    // compose: the same malformed operand as the base (require catches it
+    // before the pair-adjacency check).
+    let good = good_partner();
+    assert!(matches!(
+        SpecEnvCodec.compose(&bad, &good),
+        Err(EnvCodecError::MisorderedChain(_))
+    ));
+}
+
+/// The pair-adjacency invariant: the branch-local delta must begin exactly where
+/// the base was captured (`d.base_offset == b.pos`). A gap or overlap between two
+/// individually-well-formed operands is `NonAdjacentChain` (task 99, round 4).
+#[test]
+fn non_adjacent_chain_is_typed() {
+    let base = valid_blob(0, 300, 7, &[]);
+    // Gap: delta branched past the base's capture point.
+    let gap = valid_blob(400, 500, 7, &[]);
+    assert!(matches!(
+        SpecEnvCodec.compose(&base, &gap),
+        Err(EnvCodecError::NonAdjacentChain(_))
+    ));
+    // Overlap: delta branched before the base's capture point.
+    let overlap = valid_blob(150, 350, 7, &[]);
+    assert!(matches!(
+        SpecEnvCodec.compose(&base, &overlap),
+        Err(EnvCodecError::NonAdjacentChain(_))
+    ));
+    // The adjacent pair composes.
+    let adjacent = valid_blob(300, 450, 7, &[]);
+    assert!(SpecEnvCodec.compose(&base, &adjacent).is_ok());
+}
+
+/// The delegated spec-content invariants (contract point 4): even a positionally
+/// valid, adjacent pair fails closed with `UnsupportedComposition` when the wire
+/// codec cannot splice the specs — a `Seeded` operand, or a standing-fault
+/// carrier. (Seed/policy mismatch is `unsupported_composition_is_typed`; these
+/// complete the enumeration of the delegated cases.)
+#[test]
+fn spec_content_incompatibility_is_typed() {
+    // Adjacent positions (base captured at 100, delta branched at 100), so the
+    // rejection is purely spec-content, not positional.
+    let seeded_spec = EnvSpec::Seeded {
+        seed: 7,
+        policy: FaultPolicy::none(),
+    };
+    let seeded_base = AdapterEnv {
+        base_offset: 0,
+        pos: 100,
+        spec: seeded_spec,
+    }
+    .encode();
+    let recorded_delta = valid_blob(100, 200, 7, &[]);
+    assert_eq!(
+        SpecEnvCodec.compose(&seeded_base, &recorded_delta),
+        Err(EnvCodecError::UnsupportedComposition),
+        "a Seeded operand cannot be spliced"
+    );
+
+    // A standing-fault carrier (a different axis than the Moment offset).
+    let standing_spec = EnvSpec::Recorded {
+        seed: 7,
+        policy: FaultPolicy::none(),
+        overrides: std::collections::BTreeMap::new(),
+        standing: vec![StandingFault {
+            class: DecisionClass::Entropy,
+            target: Vec::new(),
+            window: (VTime(0), VTime(10)),
+        }],
+        reseeds: std::collections::BTreeMap::new(),
+    };
+    let standing_delta = AdapterEnv {
+        base_offset: 100,
+        pos: 200,
+        spec: standing_spec,
+    }
+    .encode();
+    let good_base = valid_blob(0, 100, 7, &[]);
+    assert_eq!(
+        SpecEnvCodec.compose(&good_base, &standing_delta),
+        Err(EnvCodecError::UnsupportedComposition),
+        "a standing-fault carrier cannot be spliced on the Moment axis"
+    );
 }
 
 /// A byte-valid blob whose **own** capture precedes its root (`pos < base_offset`)
@@ -381,6 +456,72 @@ const CASES: u32 = 512;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(CASES))]
+
+    /// **Completeness proof for the `compose` operand-pair contract** (task 99,
+    /// round 4). Over arbitrary positional metadata `(b.base_offset, b.pos,
+    /// d.base_offset, d.pos)` — with the spec-content invariants held constant
+    /// (same seed, both `Recorded`, no overrides/standing, so no
+    /// `UnsupportedComposition`/`Overflow` can fire) — `compose` returns `Ok`
+    /// **exactly** when every positional invariant holds, and the precise typed
+    /// error otherwise:
+    ///   * base ill-formed (`b.pos < b.base_offset`)  → `MisorderedChain`
+    ///   * else delta ill-formed (`d.pos < d.base_offset`) → `MisorderedChain`
+    ///   * else non-adjacent (`d.base_offset != b.pos`) → `NonAdjacentChain`
+    ///   * else → `Ok`
+    /// `d.base_offset` is biased to `b.pos` half the time so the `Ok` region is
+    /// richly sampled. This is the reviewable artifact: the biconditional, not
+    /// any single check.
+    #[test]
+    fn compose_ok_exactly_on_the_valid_operand_pair(
+        b_base in 0u64..200,
+        b_pos in 0u64..200,
+        d_pos in 0u64..200,
+        force_adjacent in any::<bool>(),
+        d_base_rand in 0u64..200,
+    ) {
+        let d_base = if force_adjacent { b_pos } else { d_base_rand };
+        // Identical seed/policy, both Recorded, no overrides ⇒ the spec-content
+        // invariants always hold and no re-key can overflow, isolating the
+        // positional contract.
+        let b = valid_blob(b_base, b_pos, 7, &[]);
+        let d = valid_blob(d_base, d_pos, 7, &[]);
+
+        let base_wf = b_pos >= b_base;
+        let delta_wf = d_pos >= d_base;
+        let adjacent = d_base == b_pos;
+        let valid = base_wf && delta_wf && adjacent;
+
+        let got = SpecEnvCodec.compose(&b, &d);
+        prop_assert_eq!(
+            got.is_ok(), valid,
+            "b=({},{}) d=({},{}) base_wf={} delta_wf={} adjacent={}",
+            b_base, b_pos, d_base, d_pos, base_wf, delta_wf, adjacent
+        );
+        match got {
+            Ok(env) => {
+                // The Ok artifact is itself well-formed: rooted at the base's
+                // root, captured at the delta's pos, and pos >= base_offset (so
+                // it can seed a further compose/mutate).
+                let out = AdapterEnv::decode(&env).expect("Ok artifact decodes");
+                prop_assert_eq!(out.base_offset, b_base);
+                prop_assert_eq!(out.pos, d_pos);
+                prop_assert!(out.pos >= out.base_offset);
+            }
+            Err(e) => {
+                if !base_wf || !delta_wf {
+                    prop_assert!(
+                        matches!(e, EnvCodecError::MisorderedChain(_)),
+                        "expected MisorderedChain, got {e:?}"
+                    );
+                } else {
+                    prop_assert!(
+                        matches!(e, EnvCodecError::NonAdjacentChain(_)),
+                        "expected NonAdjacentChain, got {e:?}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The core untrusted-input property: **arbitrary bytes at any declared
     /// version never panic** — both public decode-path methods return a typed

@@ -104,13 +104,16 @@
 //!   suffix chain (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage) yields one
 //!   delta still rooted at the chain's retained ancestor — exactly what the
 //!   task-68 materialization engine replays with **one** branch. `mutate`
-//!   slices at `b.pos − b.base_offset`. A delta keyed **before** its base's
-//!   root (`d.base_offset < b.base_offset`) is a mis-ordered chain — refused
-//!   with `EnvCodecError::MisorderedChain` (never silently mis-keyed). Each
-//!   operand must also satisfy its **own** invariant `pos ≥ base_offset` (a
-//!   capture cannot precede the root it is keyed from); this is checked once, at
-//!   the codec-seam decode (`require`), so `mutate` and both `compose` operands
-//!   reject an internally-inconsistent blob with the same `MisorderedChain`.
+//!   slices at `b.pos − b.base_offset`. The `compose` operand-pair contract is
+//!   total and enumerated on the [`EnvCodecError`](crate::EnvCodecError) doc; the
+//!   two positional invariants are: each operand's **own** `pos ≥ base_offset`
+//!   (checked once at the codec-seam decode, `require`, so `mutate` and both
+//!   `compose` operands reject an internally-inconsistent blob with the same
+//!   `MisorderedChain`), and **adjacency** `d.base_offset == b.pos` (the delta
+//!   was recorded off the base's snapshot). Adjacency implies root ordering, so
+//!   the relative cut `d.base_offset − b.base_offset` reduces to `b.pos −
+//!   b.base_offset` and cannot underflow; a gap or overlap is refused with
+//!   `EnvCodecError::NonAdjacentChain` (never silently mis-keyed).
 //!
 //! ## Error mapping (two categories, preserved)
 //!
@@ -277,11 +280,12 @@ fn recorded(spec: &EnvSpec) -> EnvSpec {
 /// its inputs.
 ///
 /// **Fallible** (task 99): `mutate` and `compose` decode untrusted serialized
-/// reproducers, so a malformed blob, a mis-ordered chain, an unsupported
-/// composition, or a `Moment`-axis overflow returns a typed
-/// [`EnvCodecError`] — never a panic. `seeded` mints from
-/// a caller-supplied seed and is infallible. See the module doc's contract
-/// section for how callers surface the error as a loud control failure.
+/// reproducers and return a typed [`EnvCodecError`] — never a panic. `compose`'s
+/// acceptance contract is total and enumerated on the [`EnvCodecError`] doc
+/// (byte well-formedness, per-operand `pos >= base_offset`, pair adjacency,
+/// spec compatibility, no `Moment`-axis overflow). `seeded` mints from a
+/// caller-supplied seed and is infallible. See the module doc's contract section
+/// for how callers surface the error as a loud control failure.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SpecEnvCodec;
 
@@ -405,30 +409,37 @@ impl crate::EnvCodec for SpecEnvCodec {
     ) -> Result<Environment, EnvCodecError> {
         let b = Self::require(base)?;
         let d = Self::require(branch_local)?;
-        // Coordinate system (task 68), symmetric with `mutate`: the base's
-        // keys are relative to its own `base_offset`, so the splice point is
-        // the **relative** distance from the base's root to the delta's branch
-        // origin (the ruling's "`at` provenance" — the delta carries the
-        // absolute Moment it is keyed from, so the cut is recoverable from the
-        // two blobs alone). With a genesis-complete base (`base_offset == 0`)
-        // this reduces to the absolute splice the v1 flow always used; with a
-        // parent-rooted base it is the chain fold the task-68 materialization
-        // engine drives (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage), whose
-        // result stays rooted at the base's own origin. A delta branched
-        // BEFORE its base's root is a mis-ordered chain — refused, never
-        // silently mis-keyed.
-        let cut =
-            d.base_offset
-                .checked_sub(b.base_offset)
-                .ok_or(EnvCodecError::MisorderedChain(
-                    "delta keyed from a Moment before the base's root offset",
-                ))?;
-        // A well-formed pair can still be an unsupported or overflowing
-        // composition (seed/policy mismatch, a standing-fault input, a re-key
-        // past the Moment axis). Under the task-93 adapter contract these do not
-        // arise from adapter-minted artifacts, but this seam accepts untrusted
-        // reproducers, so map the underlying codec's typed failure rather than
-        // mint a reproducer that does not replay.
+        // The complete operand-pair contract (see the `EnvCodecError` doc for the
+        // full enumeration and why each is necessary). `require` above already
+        // established per-operand `pos >= base_offset` for both.
+        //
+        // **Adjacency** (task 99, round 4): the trait defines `branch_local` as
+        // recorded from a run branched off *base's snapshot*, so the delta's
+        // origin must be exactly where the base was captured. A gap
+        // (`d.base_offset > b.pos`) would splice a base prefix that never
+        // produced this tail; an overlap (`d.base_offset < b.pos`) would discard
+        // base state the tail assumed. Either mints a reproducer that does not
+        // replay, so refuse it. This subsumes root ordering: with adjacency and
+        // `b.pos >= b.base_offset`, `d.base_offset == b.pos >= b.base_offset`.
+        if d.base_offset != b.pos {
+            return Err(EnvCodecError::NonAdjacentChain(
+                "branch-local delta's origin does not meet the base's capture point",
+            ));
+        }
+        // Coordinate system (task 68): the splice point is the base's capture
+        // relative to its own root. Adjacency makes this `d.base_offset -
+        // b.base_offset`; `require`'s `b.pos >= b.base_offset` makes the
+        // subtraction underflow-free. With a genesis-complete base this is the
+        // absolute splice the v1 flow always used; with a parent-rooted base it
+        // is the chain fold the task-68 materialization engine drives
+        // (`compose(suffixᵢ, suffixᵢ₊₁)` down a lineage), whose result stays
+        // rooted at the base's own origin.
+        let cut = b.pos - b.base_offset;
+        // A positionally-valid pair can still be an unsupported or overflowing
+        // composition — both `Recorded`, equal seed/policy, no standing faults,
+        // no Moment re-key past the axis. These spec-content invariants are
+        // delegated to the wire codec and surfaced as typed errors, rather than
+        // minting a reproducer that does not replay.
         let composed =
             environment::EnvCodec::compose(&b.spec, &d.spec, cut).map_err(map_env_err)?;
         Ok(AdapterEnv {
@@ -1372,24 +1383,47 @@ mod tests {
     }
 
     #[test]
-    fn compose_errors_on_a_mis_ordered_chain() {
+    fn compose_errors_on_a_non_adjacent_chain() {
+        // Both operands are individually well-formed (pos >= base_offset), so
+        // this exercises the pair-adjacency invariant, not `require`.
         let base = AdapterEnv {
             base_offset: 200,
             pos: 300,
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
-        // A delta keyed BEFORE the base's root: not a suffix of it.
-        let delta = AdapterEnv {
-            base_offset: 100,
-            pos: 250,
+        // Gap: delta origin 400 is beyond the base's capture point 300.
+        let gap = AdapterEnv {
+            base_offset: 400,
+            pos: 500,
             spec: spec_with_overrides(7, &[]),
         }
         .encode();
         assert!(matches!(
-            SpecEnvCodec.compose(&base, &delta),
-            Err(EnvCodecError::MisorderedChain(_))
+            SpecEnvCodec.compose(&base, &gap),
+            Err(EnvCodecError::NonAdjacentChain(_))
         ));
+        // Overlap: delta origin 250 is before the base's capture point 300
+        // (also before the base's root would be the same taxonomy, since
+        // adjacency subsumes root ordering).
+        let overlap = AdapterEnv {
+            base_offset: 250,
+            pos: 350,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        assert!(matches!(
+            SpecEnvCodec.compose(&base, &overlap),
+            Err(EnvCodecError::NonAdjacentChain(_))
+        ));
+        // The adjacent pair (delta origin 300 == base pos 300) composes.
+        let adjacent = AdapterEnv {
+            base_offset: 300,
+            pos: 400,
+            spec: spec_with_overrides(7, &[]),
+        }
+        .encode();
+        assert!(SpecEnvCodec.compose(&base, &adjacent).is_ok());
     }
 
     #[test]

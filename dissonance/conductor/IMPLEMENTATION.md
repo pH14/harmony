@@ -33,15 +33,23 @@ adapter on four points. All four are implemented in `dissonance/explorer/src/ada
   toy blob's `base_offset`) and `pos` (the capture point a `mutate` slices at — the toy's `pos`), so
   `compose` recovers `at` from the delta alone. Only the inner `EnvSpec` bytes travel on the wire, so
   the server never learns the wrapper.
-- **Fallibility → panic (the ruling's default).** `SpecEnvCodec::{compose,mutate}` **panic** on
-  `UnsupportedComposition`/`Overflow` or a malformed adapter blob. The ruling permits either the panic
-  or making the seam fallible; the panic is chosen because the seam receives only adapter-minted
-  artifacts, so a failure is an invariant violation (a defect in the adapter/contract), not a run
-  outcome — the campaign aborts loudly rather than minting a reproducer that does not replay. Proven
-  by three `#[should_panic]` tests (seed mismatch, re-key overflow, non-adapter blob).
+- **Fallibility → typed error (task 99, bead `hm-5d9`; supersedes the panic default).**
+  `SpecEnvCodec::{compose,mutate}` are **fallible**, returning `Result<Environment, EnvCodecError>`:
+  a serialized reproducer is untrusted input (users load it from disk and feed it back in), so the
+  seam never panics on it. A malformed blob → `Malformed`; a per-operand `pos < base_offset` →
+  `MisorderedChain`; a non-adjacent `compose` pair (`branch_local.base_offset != base.pos`) →
+  `NonAdjacentChain`; a spec-incompatible pair (seed/policy mismatch, `Seeded`, standing faults) →
+  `UnsupportedComposition`; a `Moment` re-key past the axis → `Overflow`. The failure stays a **loud
+  control error**: conductor's consumers (`src/materialize.rs`) and the explorer engine propagate it
+  through `MachineError::EnvCodec` (`#[from]`), aborting the step — never a guest `Bug`. The
+  `compose` acceptance contract is total and enumerated in the `EnvCodecError` doc, with a
+  `compose_ok_exactly_on_the_valid_operand_pair` property test pinning the biconditional; the earlier
+  `#[should_panic]` gates are gone, replaced by typed-`Err` assertions and the hostile-blob suite
+  (`explorer/tests/hostile_blobs.rs`).
 - **Standing-fault confinement.** Vacuous in the v1 fault vocabulary (no standing faults exist), but
-  `SpecEnvCodec::mutate` still panics on a standing-fault-carrying base rather than slicing one into a
-  branch-local delta — the confinement rule is enforced here the day standing faults appear.
+  `SpecEnvCodec::mutate` still refuses a standing-fault-carrying base (typed
+  `UnsupportedComposition`, not a panic) rather than slicing one into a branch-local delta — the
+  confinement rule is enforced here the day standing faults appear.
 
 The ruling's end-to-end acceptance gate — mint a bug below a non-genesis base, `branch(genesis,
 bug.env)`, require the same stop + hash — is the box gate's job (the toy-machine analogue is already
@@ -106,10 +114,11 @@ in-process unix socketpair, mock guest:
 
 `conductor/tests/determinism_proptest.rs` proves the branch/run/hash + replay properties (and
 session-independence) over **256 cases**. Plus the server's own unit tests (`vmm-core/src/control.rs`,
-16 tests) and the adapter's (`explorer/src/adapter.rs`, incl. the ruling panics — compose
-seed/overflow/non-genesis, mutate non-genesis, non-adapter blob — and the scripted-stream regression
-tests for the connect-origin probe, the replay-origin restore, the tail-completeness recording, and
-the coverage-geometry guard).
+16 tests) and the adapter's (`explorer/src/adapter.rs`, incl. the typed-`Err` codec cases — compose
+seed/overflow/non-adjacent, mutate/compose capture-behind-root, non-adapter blob — plus the
+`hostile_blobs.rs` fuzz + completeness suite, and the scripted-stream regression tests for the
+connect-origin probe, the replay-origin restore, the tail-completeness recording, and the
+coverage-geometry guard).
 
 Demo (`cargo run -p conductor -- mock --seeds 8 --runs 2`): 8 seeds × 2 runs, every seed bit-identical
 across its runs, **8 distinct futures**, replay == capture, GATES PASS.
@@ -193,11 +202,12 @@ box` prints exactly this run table and the gate verdicts (`verify(&report, 2)`).
   alternatives — reusing `Protocol(...)` (a framing error it is not) or inventing an out-of-band
   encoding — are worse. The change is additive (wire discriminant `CE_UNSUPPORTED = 10`); every existing
   golden is byte-identical, and the golden/roundtrip/public-api coverage was extended in step.
-- **Not making `EnvCodec::compose` fallible in `environment`.** The ruling permits either the
-  adapter-panic default or plumbing `Result` through the explorer. The panic is chosen (the ruling's
-  stated default), so `dissonance/environment` is **untouched** — the smallest surface that satisfies
-  the contract. Making the seam fallible remains a clean future adjustment if `Result` plumbing is ever
-  preferred.
+- **Not changing `environment::EnvCodec::compose`'s signature.** The underlying wire codec in
+  `dissonance/environment` was already fallible (`Result<_, EnvError>`); task 99 made the *explorer*
+  seam (`SpecEnvCodec`/`EnvCodec`) fallible too and plumbs `Result` through the explorer and
+  conductor via `MachineError::EnvCodec`, so `dissonance/environment` stays **untouched** — the
+  adapter maps its typed `EnvError` onto `EnvCodecError`. (This replaced the original adapter-panic
+  default, per the round-4 review on PR #97.)
 - **A monotone portable work source (`mock::TickingWork`).** The mock gates need V-time to actually
   advance so the deadline check and snapshot boundaries are exercised; `ScriptedWork::at` is constant.
   `TickingWork` advances a fixed step per read — deterministic for a fixed exit script, which is all

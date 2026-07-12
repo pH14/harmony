@@ -130,18 +130,25 @@ pub trait EnvCodec {
     /// valid blob decodes to the identical mutation it always did.
     fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError>;
 
-    /// Compose a genesis-complete `base` with a **branch-local** delta (a
+    /// Compose a `base` with a **branch-local** delta (a
     /// [`Machine::recorded_env`] from a run branched off `base`'s snapshot) into
-    /// one genesis-complete [`Environment`], by re-indexing the delta's decision
-    /// IDs onto the end of `base`. This is how a [`Bug`](crate::Bug) found below a
-    /// non-genesis corpus snapshot still yields a portable, genesis-replayable
-    /// reproducer. Deterministic.
+    /// one [`Environment`] rooted at `base`'s own root, by re-indexing the
+    /// delta's decision IDs onto the base at its capture point. This is how a
+    /// [`Bug`](crate::Bug) found below a non-genesis corpus snapshot still yields
+    /// a portable reproducer; with a genesis-complete `base` the result is
+    /// genesis-replayable, and with a parent-rooted `base` it is the task-68
+    /// lineage-suffix fold. Deterministic.
     ///
     /// **Fallible** (task 99): both `base` and `branch_local` are untrusted
-    /// serialized reproducers, so a malformed blob, a mis-ordered chain, an
-    /// unsupported composition, or a `Moment`-axis overflow returns a typed
-    /// [`EnvCodecError`] instead of panicking. Composition of two valid blobs is
-    /// byte-for-byte unchanged from the pre-task-99 contract.
+    /// serialized reproducers, so the seam returns a typed [`EnvCodecError`]
+    /// instead of panicking. The acceptance contract is **total and enumerated**
+    /// (see the [`EnvCodecError`] doc): `Ok` **iff** both decode, each satisfies
+    /// `pos >= base_offset`, the pair is adjacent (`branch_local.base_offset ==
+    /// base.pos` — the delta was recorded off the base's snapshot), the specs are
+    /// splice-compatible (same seed/policy, both `Recorded`, no standing faults),
+    /// and no `Moment` re-key overflows; each failure has its own variant.
+    /// Composition of two valid, adjacent blobs is byte-for-byte unchanged from
+    /// the pre-task-99 contract.
     fn compose(
         &self,
         base: &Environment,

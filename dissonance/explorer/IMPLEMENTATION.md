@@ -17,16 +17,35 @@ replaced by a fallible seam:
   `seeded` stays infallible (it mints from a caller-supplied seed and decodes no
   untrusted bytes). This is the intentional public-API change; the frozen
   `tests/public-api.txt` snapshot is refreshed to match.
-- **New `EnvCodecError` (`src/error.rs`)** — a `thiserror` enum with the named
-  malformation classes: `Malformed(u16)` (bad magic/version/truncation/overflowing
+- **New `EnvCodecError` (`src/error.rs`)** — a `thiserror` enum with one variant
+  per invariant class: `Malformed(u16)` (bad magic/version/truncation/overflowing
   length field — the untrusted-input class, carrying the declared version),
-  `MisorderedChain(&'static str)` (a structurally-valid but impossible lineage: a
-  capture behind its own root, or a delta keyed before its base's root),
-  `UnsupportedComposition` (seed/policy mismatch, standing faults, seeded variant —
-  mirrors `environment::EnvError::UnsupportedComposition`), and `Overflow` (a
-  `Moment` re-key past `u64::MAX`). Every internal panic on the decode path
+  `MisorderedChain(&'static str)` (a **per-operand** invariant: a blob whose
+  capture precedes its own root, `pos < base_offset`), `NonAdjacentChain(&'static str)`
+  (a **pair** invariant: `branch_local.base_offset != base.pos`, so the delta was
+  not recorded off the base's snapshot — round 4), `UnsupportedComposition`
+  (seed/policy mismatch, standing faults, seeded variant — mirrors
+  `environment::EnvError::UnsupportedComposition`), and `Overflow` (a `Moment`
+  re-key past `u64::MAX`). Every internal panic on the decode path
   (`SpecEnvCodec::require`, the `mutate`/`compose` `unwrap_or_else`/`panic!` arms)
   is gone — grep-provable: no `panic!`/`unwrap`/`expect` in non-test `src/`.
+- **The complete `compose(base, branch_local)` acceptance contract** (round 4 —
+  do NOT spot-fix a single hole). `compose` returns `Ok` **iff** the decoded pair
+  satisfies every invariant, each with its own typed error, enforced in this order:
+  (1) both operands decode → else `Malformed`; (2) each satisfies `pos >= base_offset`
+  (per-operand well-formedness, checked once in `require`) → else `MisorderedChain`;
+  (3) **adjacency** `branch_local.base_offset == base.pos` → else `NonAdjacentChain`;
+  (4) specs are splice-compatible (both `Recorded`, equal seed/policy, no standing
+  faults, delegated to `environment::EnvCodec::compose`) → else `UnsupportedComposition`;
+  (5) no `Moment` re-key overflow → else `Overflow`. Two facts complete the argument:
+  adjacency **implies** root ordering (`d.base_offset == b.pos >= b.base_offset`), so
+  the old cross-operand root check is subsumed and removed; and base
+  **genesis-completeness is deliberately not required** — the adapter generalizes
+  `compose` to parent-rooted bases for the task-68 lineage fold, so requiring
+  `base_offset == 0` would break materialization. The full enumeration lives on the
+  `EnvCodecError` doc; `compose_ok_exactly_on_the_valid_operand_pair` (a proptest
+  over arbitrary positional metadata) pins the `Ok`-iff-valid biconditional and the
+  exact error per failing invariant.
 - **Loud control error, never a guest bug.** `MachineError` gains an
   `EnvCodec(#[from] EnvCodecError)` variant, so the engine (`progression_step`,
   `materialize`) and any campaign caller propagate a bad blob with `?` onto the
@@ -35,13 +54,15 @@ replaced by a fallible seam:
 - **Valid blobs are byte-for-byte unchanged.** Only the error path changed; the
   slice/splice/rekey logic is untouched, so every existing round-trip/replay/
   determinism test stays green (verified). Wire format is out of scope.
-- **Tests.** `tests/hostile_blobs.rs` — proptest fuzzers (arbitrary bytes never
-  panic; any off-version blob is `Malformed`; truncation at any boundary is
-  `Malformed`; structural bit-flips are `Malformed`) plus a named regression test
-  per malformation class the spec calls out (truncation-at-every-boundary, magic
+- **Tests.** `tests/hostile_blobs.rs` — the `compose_ok_exactly_on_the_valid_operand_pair`
+  completeness proptest (the reviewable artifact), the fuzzers (arbitrary bytes
+  never panic on either `compose` operand; off-version / truncation / structural
+  bit-flip → `Malformed`; `pos < base_offset` → `MisorderedChain`), and a named
+  regression test per invariant class (truncation-at-every-boundary, magic
   bit-flip, wrapper + inner version skew, length-field overflow, unknown variant
-  tag, unsupported composition, rekey overflow, mis-ordered chain). The four
-  in-crate `#[should_panic]` codec tests became `Err(...)` assertions.
+  tag, per-operand capture-before-root, **non-adjacent chain gap/overlap**,
+  spec-content incompatibility, rekey overflow). The four in-crate `#[should_panic]`
+  codec tests became `Err(...)` assertions.
 
 **Cross-crate propagation (done in this PR).** `EnvCodec::mutate`/`compose` are
 now fallible, so `dissonance/conductor`'s consumers were updated to propagate the

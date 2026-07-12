@@ -63,6 +63,7 @@ pub fn explorer::stads::SpeciesStats::discovery_probability(&self) -> explorer::
 pub enum explorer::EnvCodecError
 pub explorer::EnvCodecError::Malformed(u16)
 pub explorer::EnvCodecError::MisorderedChain(&'static str)
+pub explorer::EnvCodecError::NonAdjacentChain(&'static str)
 pub explorer::EnvCodecError::Overflow
 pub explorer::EnvCodecError::UnsupportedComposition
 pub enum explorer::MachineError

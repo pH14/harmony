@@ -21,6 +21,32 @@ use thiserror::Error;
 /// and it is **never** recorded as a guest [`Bug`](crate::Bug) (the `#[from]`
 /// into [`MachineError::EnvCodec`] keeps it on the control-plane channel that
 /// aborts the step, exactly as a transport failure does).
+///
+/// # The complete `compose(base, branch_local)` acceptance contract
+///
+/// `compose` returns `Ok` **iff** the decoded pair satisfies every invariant
+/// below; each maps to exactly one variant here. This is the full set — the
+/// `SpecEnvCodec::compose` doc carries the same list and the
+/// `compose_ok_exactly_on_the_valid_operand_pair` property test pins the
+/// biconditional over arbitrary metadata.
+///
+/// 1. **Byte well-formedness** of each operand → [`Malformed`](Self::Malformed).
+/// 2. **Per-operand lineage** `pos >= base_offset` for *each* operand (a capture
+///    cannot precede its own root) → [`MisorderedChain`](Self::MisorderedChain).
+/// 3. **Adjacency** `branch_local.base_offset == base.pos` (the delta was
+///    recorded off the base's snapshot) → [`NonAdjacentChain`](Self::NonAdjacentChain).
+///    Note this **implies** root ordering (`d.base_offset >= b.base_offset`),
+///    which is therefore not a separate check.
+/// 4. **Spec compatibility** — both `Recorded` (not `Seeded`), equal seed, equal
+///    policy, neither carrying standing faults → [`UnsupportedComposition`](Self::UnsupportedComposition)
+///    (delegated to and surfaced from [`environment::EnvCodec::compose`]).
+/// 5. **No `Moment`-axis overflow** re-keying the tail → [`Overflow`](Self::Overflow).
+///
+/// Deliberately **not** an invariant: base genesis-completeness (`base_offset ==
+/// 0`). The trait doc's "genesis-complete base" describes the engine's top-level
+/// rebase, but the adapter generalizes `compose` to parent-rooted bases so the
+/// task-68 materialization engine can fold a lineage suffix chain
+/// (`compose(suffixᵢ, suffixᵢ₊₁)`); requiring `base_offset == 0` would break it.
 #[derive(Clone, PartialEq, Eq, Debug, Error)]
 pub enum EnvCodecError {
     /// The bytes are not a well-formed adapter reproducer blob: a wrapper
@@ -34,12 +60,25 @@ pub enum EnvCodecError {
     Malformed(u16),
     /// A structurally-valid chain blob is internally **mis-ordered**: a base
     /// captured at a position behind its own root offset
-    /// ([`mutate`](crate::EnvCodec::mutate)), or a delta keyed from a `Moment`
-    /// before its base's root ([`compose`](crate::EnvCodec::compose)). The two
-    /// positions cannot describe a real lineage, so the operation is refused
-    /// rather than silently mis-keyed. Carries a static description of which.
+    /// ([`mutate`](crate::EnvCodec::mutate)). This is the **per-operand
+    /// well-formedness** invariant `pos >= base_offset`: a single blob whose
+    /// capture position precedes the root it is keyed from cannot describe a real
+    /// lineage, so it is refused rather than silently mis-keyed. Carries a static
+    /// description of which. (The **pair**-relationship failure — a delta not
+    /// branched from the base's snapshot — is [`NonAdjacentChain`](Self::NonAdjacentChain).)
     #[error("mis-ordered chain reproducer blob: {0}")]
     MisorderedChain(&'static str),
+    /// [`compose`](crate::EnvCodec::compose)'s two operands do not form a valid
+    /// **parent → child** link: the branch-local delta's origin (`d.base_offset`)
+    /// does not meet the base's capture point (`b.pos`). The trait contract
+    /// defines `branch_local` as recorded from a run branched off *base's
+    /// snapshot*, so the delta must begin exactly where the base was captured; a
+    /// **gap** (`d.base_offset > b.pos`) splices a prefix that never produced the
+    /// tail, and an **overlap** (`d.base_offset < b.pos`) discards base state the
+    /// tail assumed — either way `compose` would mint a reproducer that does not
+    /// replay, so it is refused (task 99, round 4). Carries a static description.
+    #[error("non-adjacent chain: {0}")]
+    NonAdjacentChain(&'static str),
     /// [`compose`](crate::EnvCodec::compose) of two well-formed blobs is outside
     /// the wire codec's supported scope and **fails closed** rather than mint a
     /// reproducer that will not replay: a seed or policy mismatch between the
