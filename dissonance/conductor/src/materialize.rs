@@ -517,6 +517,37 @@ pub fn verify_materialize(r: &MaterializeReport, baseline_ppm: Option<u64>) -> V
         }
     }
 
+    // 1b. VACUITY (task 103, round-2 finding): every gate below is an equality
+    //     between things this run produced, and equalities hold trivially over
+    //     zero-length work. `--hop-delta 0` requests each hop's deadline at the
+    //     V-time it already sits on, so the whole chain seals at one moment and
+    //     the "materializations" span nothing; `--tail-delta 0` stops the
+    //     reproducer leg where it started, so leg == replay proves nothing.
+    //     Both would print GATES PASS. The CLI's positive parsers refuse those
+    //     budgets, and this is the other end: a report that reached us hollow
+    //     — from a library caller, a new flag, a future default — fails here.
+    let mut prior_at = r.genesis_at;
+    for (i, h) in r.hops.iter().enumerate() {
+        if h.at <= prior_at {
+            failures.push(format!(
+                "hop {i}: sealed at {} — NOT below the {} above it; a chain that does not descend \
+                 has no exemplar to materialize, and every gate below it would compare a snapshot \
+                 to itself (a zero-length hop budget)",
+                h.at, prior_at
+            ));
+        }
+        prior_at = h.at;
+    }
+    let leg_at = r.leg_stop.vtime().0;
+    if leg_at <= r.hops[n - 1].at {
+        failures.push(format!(
+            "the reproducer leg stopped at {leg_at} — NOT below the deepest seal {}; a \
+             zero-length leg is reproduced by anything, so `replay == leg` would be a vacuous \
+             pass (a zero-length tail budget)",
+            r.hops[n - 1].at
+        ));
+    }
+
     // 2. Gate (a): parent-rooted, suffix-only.
     let parent_at = r.hops[n - 2].at;
     let deep_at = r.hops[n - 1].at;
@@ -835,13 +866,23 @@ mod tests {
             // worst: from-genesis (depth 100e6).
             worst: mat(0, 100_000_000, 0, true),
             worst_hash: [7; 32],
-            leg_stop: StopReason::Deadline { vtime: VTime(100) },
+            // The bug leg runs BELOW the deepest seal (100e6) — as it must: a
+            // leg that stopped above (or at) its own base could not have run.
+            // (Before task 103's vacuity gate this fixture said `VTime(100)`,
+            // i.e. a leg stopping 99,999,900 ns *above* the seal it started
+            // from — harmless to the equalities it was written to exercise, but
+            // not a run any machine could produce.)
+            leg_stop: StopReason::Deadline {
+                vtime: VTime(100_000_250),
+            },
             leg_hash: [9; 32],
             bug_env: Environment {
                 blob_version: 1,
                 bytes: vec![1, 2, 3],
             },
-            replay_stop: StopReason::Deadline { vtime: VTime(100) },
+            replay_stop: StopReason::Deadline {
+                vtime: VTime(100_000_250),
+            },
             replay_hash: [9; 32],
             hop_draws: vec![true],
             tail_draws: true,
@@ -869,6 +910,49 @@ mod tests {
     }
 
     /// A report tripping every gate failure yields the expected diagnostics.
+    /// Task 103 round-2 finding: the materialize gates are equalities, and
+    /// equalities hold trivially over zero-length work. A chain that never
+    /// descends (`--hop-delta 0`) and a reproducer leg that never runs
+    /// (`--tail-delta 0`) must both FAIL the gate — before this, each printed
+    /// `materialize GATES PASS` over a report that proved nothing.
+    #[test]
+    fn zero_length_hops_and_legs_fail_the_gate() {
+        // `--tail-delta 0`: the leg stops exactly where it started (the deepest
+        // seal), so `replay == leg` compares a snapshot to itself.
+        let mut r = valid_report();
+        let deep_at = r.hops[2].at;
+        r.leg_stop = StopReason::Deadline {
+            vtime: VTime(deep_at),
+        };
+        r.replay_stop = r.leg_stop.clone();
+        let f = verify_materialize(&r, Some(TASK63_BASELINE_PPM));
+        assert!(
+            f.iter().any(|m| m.contains("zero-length tail budget")),
+            "a zero-length reproducer leg must fail the gate: {f:?}"
+        );
+
+        // `--hop-delta 0`: every hop seals at genesis's V-time, so the chain
+        // has no exemplar to materialize and every span below is empty.
+        let mut r = valid_report();
+        for h in &mut r.hops {
+            h.at = r.genesis_at;
+            h.requested = r.genesis_at;
+        }
+        let f = verify_materialize(&r, Some(TASK63_BASELINE_PPM));
+        assert!(
+            f.iter().any(|m| m.contains("zero-length hop budget")),
+            "a chain that never descends must fail the gate: {f:?}"
+        );
+
+        // And a chain that descends but stalls on ONE hop is caught too — the
+        // guard is per-hop, not just endpoint-to-endpoint.
+        let mut r = valid_report();
+        r.hops[1].at = r.hops[0].at;
+        r.hops[1].requested = r.hops[0].at;
+        let f = verify_materialize(&r, Some(TASK63_BASELINE_PPM));
+        assert!(f.iter().any(|m| m.contains("NOT below the")), "{f:?}");
+    }
+
     /// Covers each failure-push arm and the `!=` table branches.
     #[test]
     fn every_gate_failure_is_reported() {

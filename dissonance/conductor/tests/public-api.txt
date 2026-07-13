@@ -99,6 +99,10 @@ pub const conductor::gamecampaign::reg::LEVEL: u64
 pub const conductor::gamecampaign::reg::WORLD: u64
 pub const conductor::gamecampaign::reg::X_BUCKET: u64
 pub enum conductor::gamecampaign::GameCampaignError
+pub conductor::gamecampaign::GameCampaignError::BillboardMalformed
+pub conductor::gamecampaign::GameCampaignError::BillboardMalformed::gpa: u64
+pub conductor::gamecampaign::GameCampaignError::BillboardMalformed::len: u64
+pub conductor::gamecampaign::GameCampaignError::BillboardMalformed::why: &'static str
 pub conductor::gamecampaign::GameCampaignError::BillboardMissing
 pub conductor::gamecampaign::GameCampaignError::Machine(explorer::error::MachineError)
 pub conductor::gamecampaign::GameCampaignError::MalformedExemplar(alloc::string::String)
@@ -111,6 +115,18 @@ pub conductor::gamecampaign::GameCampaignError::RolloutDied::stop: alloc::string
 pub conductor::gamecampaign::GameCampaignError::SetupNotReached
 pub conductor::gamecampaign::GameCampaignError::SetupNotReached::stop: alloc::string::String
 pub conductor::gamecampaign::GameCampaignError::SignalUnavailable
+pub enum conductor::gamecampaign::GateVerdict
+pub conductor::gamecampaign::GateVerdict::BelowFloor
+pub conductor::gamecampaign::GateVerdict::BelowFloor::repeat: usize
+pub conductor::gamecampaign::GateVerdict::Pass
+pub conductor::gamecampaign::GateVerdict::Pass::repeat: usize
+pub conductor::gamecampaign::GateVerdict::Single
+impl conductor::gamecampaign::GateVerdict
+pub fn conductor::gamecampaign::GateVerdict::banner(&self) -> core::option::Option<alloc::string::String>
+pub enum conductor::gamecampaign::Vacuity
+pub conductor::gamecampaign::Vacuity::NoBranches
+pub conductor::gamecampaign::Vacuity::NoFrames
+pub conductor::gamecampaign::Vacuity::NoVTime
 pub struct conductor::gamecampaign::DeepReproducer
 pub conductor::gamecampaign::DeepReproducer::branch: u64
 pub conductor::gamecampaign::DeepReproducer::depth: u64
@@ -119,6 +135,7 @@ pub struct conductor::gamecampaign::GameCampaignConfig
 pub conductor::gamecampaign::GameCampaignConfig::campaign_seed: u64
 pub conductor::gamecampaign::GameCampaignConfig::deadline_delta: core::option::Option<u64>
 pub conductor::gamecampaign::GameCampaignConfig::explore_period: u64
+pub conductor::gamecampaign::GameCampaignConfig::guest_ram_len: u64
 pub conductor::gamecampaign::GameCampaignConfig::max_branches: u64
 pub conductor::gamecampaign::GameCampaignConfig::require_snapshot_point: bool
 pub conductor::gamecampaign::GameCampaignConfig::rom_sha256: core::option::Option<alloc::string::String>
@@ -132,6 +149,9 @@ pub struct conductor::gamecampaign::GameCampaignOutcome
 pub conductor::gamecampaign::GameCampaignOutcome::billboard: core::option::Option<(u64, u64)>
 pub conductor::gamecampaign::GameCampaignOutcome::deep: core::option::Option<conductor::gamecampaign::DeepReproducer>
 pub conductor::gamecampaign::GameCampaignOutcome::log: benchmark::exploration::ExplorationLog
+pub conductor::gamecampaign::GameCampaignOutcome::work: conductor::gamecampaign::WorkEvidence
+impl conductor::gamecampaign::GameCampaignOutcome
+pub fn conductor::gamecampaign::GameCampaignOutcome::vacuity(&self) -> core::option::Option<conductor::gamecampaign::Vacuity>
 pub struct conductor::gamecampaign::GameToyMachine
 impl conductor::gamecampaign::GameToyMachine
 pub fn conductor::gamecampaign::GameToyMachine::new() -> Self
@@ -147,11 +167,20 @@ pub fn conductor::gamecampaign::GameToyMachine::replay(&mut self, explorer::Snap
 pub fn conductor::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub struct conductor::gamecampaign::WorkEvidence
+pub conductor::gamecampaign::WorkEvidence::branches: u64
+pub conductor::gamecampaign::WorkEvidence::min_completed_frames: u64
+pub conductor::gamecampaign::WorkEvidence::min_vtime_span: u64
+pub const conductor::gamecampaign::BILLBOARD_MIN_LEN: u64
+pub const conductor::gamecampaign::DEFAULT_GUEST_RAM_LEN: u64
+pub const conductor::gamecampaign::DETERMINISM_BAR: usize
+pub fn conductor::gamecampaign::determinism_verdict(&conductor::gamecampaign::GameCampaignOutcome, usize) -> core::result::Result<conductor::gamecampaign::GateVerdict, conductor::gamecampaign::Vacuity>
 pub fn conductor::gamecampaign::quiet_mutate(&explorer::Environment, u64, u64) -> core::result::Result<explorer::Environment, conductor::gamecampaign::GameCampaignError>
 pub fn conductor::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<conductor::gamecampaign::GameCampaignOutcome, conductor::gamecampaign::GameCampaignError>
 pub fn conductor::gamecampaign::serial_rom_sha256(&[u8]) -> core::option::Option<alloc::string::String>
 pub fn conductor::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
 pub fn conductor::gamecampaign::smb_cells(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> (alloc::vec::Vec<u64>, u64)
+pub fn conductor::gamecampaign::smb_completed_frames(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> u64
 pub mod conductor::materialize
 pub struct conductor::materialize::HopRow
 pub conductor::materialize::HopRow::at: u64

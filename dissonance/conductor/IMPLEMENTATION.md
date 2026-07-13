@@ -1017,3 +1017,236 @@ bin unit tests (incl. `stopwatch`'s 7 new nearest-rank/passthrough/`as_str` test
 no `unsafe` in this crate, so no Miri gate applies. No box gate — this task's spec
 explicitly has none; the live numbers get their first real exercise on the next scheduled
 box run.
+
+---
+
+# task 103 — box-gate CLI hardening: no green over a run that never happened
+
+Bead `hm-9wa`; the three findings from PR #93's round-9 cross-model pass, accepted in the
+merge disposition as an immediate P1 follow-up. None of them touched the recorded M0
+evidence — they are all **degenerate-input** paths — but each one is a way for a *future*
+box run to print green having done nothing, which is the same gate-integrity class as the
+tasks/102 evidence-integrity countermeasures (a done-marker is never a success condition).
+
+The unifying claim behind all three fixes: **bit-identical repetitions of a campaign that
+did no work are still bit-identical.** Identity was never the evidence; the work was, and
+the gate never asked for it.
+
+## Finding-by-finding
+
+### 1. Degenerate budgets passed the determinism gate
+
+`--max-branches 0` made the gate compare two empty `state_hash` sequences (identical, 25/25);
+`--deadline-delta 0` gave every rollout a deadline the sealed base already met, so the gate
+hashed the base itself, twice. Both ends are fixed, as the spec asked:
+
+- **(a) Input validation** (`main.rs`) — a `parse_positive_u64` / `parse_positive_usize`
+  clap `value_parser` on every budget flag whose zero hollows a gate: `--max-branches`
+  (game, campaign, bench), `--deadline-delta` (game box, campaign box, bench, box sweep),
+  `--setup-deadline-delta`, `--repeat`, `--explore-period`. Zero dies as a clap
+  **usage error** (`ErrorKind::ValueValidation`) at parse time — before a box lease is
+  spent. Hex counts: `0x0` is the same zero.
+- **(b) Gate-side vacuity guard** (`gamecampaign.rs`) — the campaign now carries
+  `WorkEvidence` out with it: the branch count, and the **weakest** rollout's V-time span
+  past the base and `REG_FRAME` observation count. `GameCampaignOutcome::vacuity()` turns
+  absent evidence into a typed `Vacuity` (`NoBranches` / `NoVTime` / `NoFrames`), and
+  `determinism_verdict()` — the gate's whole verdict, hoisted out of the Linux-only
+  `boxrun.rs` so it is portable and testable — returns `Err(Vacuity)` rather than any
+  banner. There is no path from a hollow run to a PASS line, whatever `--repeat` says and
+  whichever flag combination produced it.
+
+Minima, not totals, deliberately: one hollow rollout in an otherwise busy campaign is still
+a hollow rollout, and a total would hide it. `min_completed_frames` is the check that catches
+the degenerate budget a *positivity* test cannot — `--deadline-delta 1` is positive, advances
+V-time, and completes no frame.
+
+**Round 2 — what "a frame" had to mean.** The first cut of this counted `REG_FRAME`
+*observations*, and the cross-model pass found the hole: the play-agent writes that register
+**before** running the frame it announces (`agent.rs`: `state_set(REG_FRAME, frame)` then
+`core.run_frame`), because film addresses that frame's billboard by that Moment. So a deadline
+expiring between the marker and the frame body leaves exactly one observation and **zero
+executed frames** — reported as one frame, sailing straight through the guard built to reject
+that very budget. [`smb_completed_frames`] now counts frame-clock **transitions**: a second,
+different value is what proves the first frame's body completed and the loop came back around.
+The emission order is film's contract and was *not* touched — the fix is conductor-side, where
+the evidence is read. (Any *change* counts, not an increase: the frame clock is a `u32` the
+agent wraps, so demanding monotonicity would eventually call a real frame no frame.)
+
+The round-8 25/25 floor is preserved exactly (`GateVerdict::{Pass, BelowFloor, Single}`);
+it now lives beside the vacuity guard instead of inside the box driver.
+
+### 2. A malformed billboard bypassed `BillboardMissing`
+
+`billboard_window_of` only tested for *presence* (`gpa.zip(len)`), so a guest that published
+`len = 0`, a null gpa, an overflowing or out-of-RAM range — or only one of the two registers
+— sailed through round-8's check into a campaign whose film seam reads nothing. The window is
+now **validated at registration** against the guest's actual RAM (`GameCampaignConfig::guest_ram_len`,
+set by the box composition root from its own `GUEST_RAM_LEN`, so the bound checked is the
+bound the VM was built with). A bad window is `BillboardMalformed { gpa, len, why }` — the
+same loud class as missing, on **both** paths, never a silent fall back to no-billboard.
+
+A half-publish is treated as malformed, not absent: the two registers are written together
+in the setup prefix, so one without the other is a broken agent.
+
+**Round 3 — "nonzero and in-RAM" is not "usable".** The cross-model pass found the next
+gap in the same wall: a window of `(gpa, len = 1)` passed every check above, but
+`FilmPlan::derive` refuses any window shorter than film's 32-byte header
+(`PlanError::BillboardTooSmall`) — and on the box film is M0's **mandatory** artifact. So that
+window was a green `DETERMINISM PASS` over a clip that cannot be produced: the same class as
+the half-publish, one layer further in. `billboard_window_of` now refuses `len <
+BILLBOARD_MIN_LEN`.
+
+The bound is **mirrored, not imported**: `film` is a *dev*-dependency of this crate (its box
+gate lives in `tests/live_film.rs`), and the campaign driver has no business taking a library
+dependency on the renderer just to validate a window. A dev-dep drift test
+(`billboard_min_len_tracks_films_header`) pins the const to `film::HEADER_LEN`, so film growing
+its header breaks a test here instead of silently re-opening the hole — the same single-source
+discipline as `guest_ram_len ← boxrun::GUEST_RAM_LEN`. The boundary is tested from both sides:
+31 bytes refuses, exactly 32 is accepted.
+
+### 1c. The materialize chain had the same hole (round-2 finding)
+
+The sweep in finding 1a missed `conductor materialize`, and the cross-model pass caught it:
+`--tail-delta 0` stops the reproducer leg at the V-time it started from, so gate (c)'s
+`replay == leg` compares a snapshot to itself; `--hop-delta 0` requests each hop's deadline at
+the point it already sits on, so the whole chain seals at one moment and every span below it is
+empty. Both printed `materialize GATES PASS`. **Every gate in `verify_materialize` is an
+equality, and equalities hold trivially over zero-length work** — which is the same sentence as
+the determinism gate's, in a different costume.
+
+Fixed at both ends, like finding 1: the positive parser on both flags, and a vacuity guard in
+`verify_materialize` (the chain must descend hop-by-hop; the leg must stop *below* the deepest
+seal) for a hollow report that reaches the gate from a library caller or a future flag.
+
+Fixing it surfaced a fixture bug worth naming: the synthetic `valid_report()` had the bug leg
+stopping at V-time 100 while its base seal sat at 100,000,000 — a leg finishing 99,999,900 ns
+*above* the seal it started from, which no machine can produce. It was harmless to the
+equalities the fixture was written to exercise, and that is exactly why the vacuity gate is
+worth having: it is the first check that ever asked whether the run in the report was possible.
+The fixture now describes a real run.
+
+### 3. The start script could exceed `max_frames` while settling
+
+(`guest/play-agent/src/start.rs` — see that crate's IMPLEMENTATION.md.) The settle loop ran
+`settle_frames` unconditionally after the first gameplay observation, so a late observation
+overran the bound the script advertises, and `frames` could in principle overflow. The settle
+is now spent from the same budget: a script that cannot fit it is `BadScript` before the
+first frame, and a too-late observation is `SettleExceedsBudget`. `frames <= max_frames` is
+now an invariant, so the overflow is gone by construction rather than by checked arithmetic.
+
+## Deviations considered and rejected
+
+- **Coercing degenerate budgets (`.max(1)`) instead of rejecting them.** The codebase already
+  does this for `--repeat` / `--replay-n` / `--runs`, and it would have been the smaller diff.
+  Rejected: a silently-corrected budget is exactly how an operator ends up believing they ran
+  the campaign they typed. The gate flags get a loud usage error; the pre-existing `.max()`
+  coercions are left alone (they only *raise* a value to its floor, never invent work).
+- **Making the vacuity guard part of `run_game_campaign` itself.** Rejected on the spec's
+  hash-neutrality constraint: validation happens before/around runs, never inside them. The
+  campaign *computes* the evidence (data); the gate *enforces* it (policy).
+- **Putting the guard only in `boxrun.rs`.** That file needs `/dev/kvm` and is excluded from
+  coverage by name — a guard living there could not have a regression test, which is the one
+  thing this task is required to deliver. Hence `determinism_verdict` in the library.
+- **A per-branch frame count in `DiscoveryEvent`.** It would have put the evidence in the
+  logs artifact, but `ExplorationLog` is `benchmark`'s schema and feeds the offline report and
+  the manifest drift check — out of surface, and a schema change for a gate-local need.
+- **Validating `--gpa-count` / `--gpa-stride` / `--order-range` as budgets too.** They shape a
+  search *space*, not a work budget, and their zero already fails loudly downstream (an empty
+  candidate set finds no bug ⇒ the campaign gate fails; `order_range` is `.max(1)`-coerced).
+  `--window-lo 0` is legitimate. Left alone rather than widening the diff. **Round 2 corrected
+  the boundary this reasoning drew**: `materialize`'s `--hop-delta` / `--tail-delta` *are* work
+  budgets and were missed by the same sweep — the rule is "does a zero make the gate's equalities
+  hold over nothing?", not "is the flag on the campaign path?".
+- **Reordering the play-agent's `REG_FRAME` emission to sit after the frame body** (round 2).
+  That would make an observation mean an executed frame, and the naive count would have been
+  right. Rejected: the pre-run order is film's addressing contract (the Moment must see the
+  frame's billboard bytes), and changing it would change the recorded stream — a guest-side
+  change to fix a host-side reading error. The evidence is read conductor-side; that is where
+  it was fixed.
+
+## Known limitations / integrator notes
+
+- **`min_completed_frames` assumes the workload emits `REG_FRAME`, and that its value advances
+  per frame.** The play-agent does both (it is film's shot list), and the M0 evidence confirms
+  it live. Two consequences a future workload inherits: one that does not emit `REG_FRAME` at
+  all would trip `Vacuity::NoFrames` (key the evidence on that workload's own liveness register
+  rather than dropping the check), and one that emits the register *after* its frame body would
+  be undercounted by exactly one frame — harmless (the guard only asks for ≥ 1), but the reason
+  the doc comment on `smb_completed_frames` states the agent's emission order explicitly rather
+  than leaving it to be rediscovered.
+- **`WorkEvidence` is inside `GameCampaignOutcome`'s `PartialEq`**, so the determinism gate now
+  compares it across repetitions too. That is deliberate (it strengthens the comparison) and
+  safe: V-time spans and frame counts are deterministic functions of a deterministic run — if
+  they differed across repetitions, the `state_hash` sequences would already have differed.
+- **`BILLBOARD_MIN_LEN` is a floor, not a full film precondition.** It rejects windows film
+  provably cannot use (shorter than its header). A window ≥ 32 bytes can still be too small for
+  the *regions* its own header declares — but that is a property of bytes the guest has not
+  written yet at validation time (the header is decoded later, by film, from the live window),
+  so checking it here would be checking a value that does not exist. `FilmPlan::derive` remains
+  the authority on the rest; this guard exists to stop the window that is unusable *by its
+  dimensions alone* from greening a gate.
+- **`DEFAULT_GUEST_RAM_LEN` (2 GiB) mirrors `boxrun::GUEST_RAM_LEN`.** The box path sets
+  `guest_ram_len` explicitly from its own constant, so the two cannot drift silently; the
+  default only serves the portable toy, which publishes no billboard at all.
+- No box gate was run: the spec forbids it (the nested-posture re-cert window owns the box),
+  and none of this needs one — every fix is portable logic with a portable fixture.
+
+## Gates
+
+`cargo build -p conductor --all-features`, `cargo nextest run -p conductor --all-features`
+(**146 tests green**, up from 137 on main: 7 new lib + 2 new bin), `cargo clippy -p conductor
+--all-features --all-targets -D warnings` on the host **and** on
+`x86_64-unknown-linux-gnu` (the `cfg(linux)` `boxrun.rs` path — the ci-cfg-linux review gap),
+`cargo fmt --check`, `cargo deny check`, and `cargo check --workspace --all-targets --target
+x86_64-unknown-linux-gnu`. Public-api snapshot regenerated (additive only: `WorkEvidence`,
+`Vacuity`, `GateVerdict`, `determinism_verdict`, `smb_frames`, `DETERMINISM_BAR`,
+`DEFAULT_GUEST_RAM_LEN`, `BillboardMalformed`, `guest_ram_len`). No new `unsafe`.
+
+**Miri — exactly what was verified.** The full `conductor --lib` Miri suite has **no viable
+budget**: PR #99's miri-gate work showed it has never completed in CI (two 4h+ attempts), the
+nightly conductor step was removed loudly, and the debt is tracked as `hm-d4y` (P1). So this
+task did **not** attempt it. What ran instead, on the pinned nightly with the job's
+`MIRIFLAGS`, is a filter over the six lib tests that cover the changed code paths — the
+vacuity guard, the work evidence, and billboard validation, plus the two round-8/9 box-mode
+tests whose fixtures this task's changes flow through:
+
+```
+cargo +nightly-2026-06-16 miri test -p conductor --lib -- --exact \
+  gamecampaign::tests::{the_determinism_gate_refuses_a_run_that_did_no_work,
+    a_real_campaign_carries_its_work_evidence, completed_frames_counts_transitions_not_markers,
+    a_malformed_billboard_refuses_the_campaign, a_half_published_billboard_is_malformed,
+    billboard_min_len_tracks_films_header, box_campaign_without_billboard_refuses,
+    a_dying_rollout_fails_the_box_campaign_loudly} \
+  materialize::tests::{zero_length_hops_and_legs_fail_the_gate,
+    valid_report_passes_all_gates_and_renders, every_gate_failure_is_reported}
+⇒ 11 passed, 0 failed (336.13s)
+```
+
+Eleven tests in under six minutes is itself a data point for `hm-d4y`: the per-test interpreted cost
+here, not any one pathological test, is what makes the whole-suite line unbudgetable. The
+narrower claim is the honest one — **the code this task changed is Miri-clean; the conductor
+lib as a whole is unverified under Miri and is known debt, not this task's.** The new tests
+touch no filesystem (both pre-existing retention tests stay `cfg_attr(miri, ignore)`), so they
+add no new obstacle to whatever `hm-d4y` lands.
+
+play-agent is a different story and needs no caveat: its full `--lib` Miri suite **completes**
+(46 tests, 37s) and is green, including the two new start-script tests.
+
+**Red-before/green-after, verified by reverting each fix against its own test:**
+
+| Finding | Test | With the fix reverted |
+|---|---|---|
+| 1a | `degenerate_budgets_are_refused_by_the_cli` | FAILED — `["conductor","game","box","--max-branches","0"]` must be REFUSED, not accepted |
+| 1b | `the_determinism_gate_refuses_a_run_that_did_no_work` | FAILED — a zero-branch campaign reports `vacuity() == None` (⇒ `Ok(Pass{25})`: the vacuous PASS itself) |
+| 2 | `a_malformed_billboard_refuses_the_campaign`, `a_half_published_billboard_is_malformed` | FAILED — `gpa.zip(len)` accepts `len = 0` |
+| 3 | `a_settle_that_would_overrun_the_budget_is_loud`, `a_budget_that_cannot_hold_the_settle_is_rejected_up_front` | FAILED — the settle runs past `max_frames` silently |
+| round-2 frame evidence | `completed_frames_counts_transitions_not_markers`, `the_determinism_gate_refuses_a_run_that_did_no_work` | FAILED — counting observations reports 1 frame where 0 ran (`left: 1, right: 0`) |
+| round-2 materialize CLI | `degenerate_budgets_are_refused_by_the_cli` | FAILED — `["conductor","materialize","--tail-delta","0"]` must be REFUSED, not accepted |
+| round-2 materialize gate | `zero_length_hops_and_legs_fail_the_gate` | FAILED — a zero-length reproducer leg produces **no** failures (`[]`): `GATES PASS` |
+| round-3 billboard length | `a_malformed_billboard_refuses_the_campaign` | FAILED — a `(gpa=0x1000, len=1)` window campaigns to a **full green outcome** (`billboard: Some((4096, 1))`, 8 branches, healthy work evidence) — the vacuous pass, in one line |
+| round-3 drift pin | `billboard_min_len_tracks_films_header` | FAILED when film's `HEADER_LEN` is simulated at 64 — the mirror cannot drift silently |
+
+(Process note for the next worker: run revert-based red-checks only against **committed** work.
+Mine ran on an uncommitted tree and the restoring `git checkout` ate the round-2 source edits —
+caught immediately by the Linux-target clippy, since `boxrun.rs` was the one file the script
+never touched and it still referenced the renamed field. Cheap to redo, but avoidable.)

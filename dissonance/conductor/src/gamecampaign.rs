@@ -108,6 +108,11 @@ pub struct GameCampaignConfig {
     /// is un-filmable (no `REG_FRAME` moments) and un-rekeyable (no env).
     /// Tracked from branch 0. `None` = no retention (portable smoke loops).
     pub trace_dir: Option<std::path::PathBuf>,
+    /// The guest's RAM size — the range a published billboard window must lie
+    /// inside (task 103 finding 2). Set from the composition root's actual
+    /// guest RAM (`boxrun::GUEST_RAM_LEN`), so the bound the validator checks
+    /// is the bound the VM was built with, single-sourced.
+    pub guest_ram_len: u64,
 }
 
 impl GameCampaignConfig {
@@ -125,9 +130,37 @@ impl GameCampaignConfig {
             rom_sha256: None,
             require_snapshot_point: false,
             trace_dir: None,
+            guest_ram_len: DEFAULT_GUEST_RAM_LEN,
         }
     }
 }
+
+/// The guest RAM the box composition root boots with (2 GiB — `boxrun`'s
+/// `GUEST_RAM_LEN`); the default billboard-range bound for configs that do not
+/// state one. The box path sets [`GameCampaignConfig::guest_ram_len`]
+/// explicitly from its own constant, so the two can never drift apart
+/// silently — this default only serves the portable toy, which publishes no
+/// billboard at all.
+pub const DEFAULT_GUEST_RAM_LEN: u64 = 2 << 30;
+
+/// The shortest billboard window film can actually use: **`film::HEADER_LEN`
+/// (32 bytes)** — the fixed header carrying the frame identity and the region
+/// table, below which `FilmPlan::derive` refuses the window outright
+/// (`PlanError::BillboardTooSmall`).
+///
+/// A published window that is nonzero and inside guest RAM can still be
+/// **unusable**, and on the box film is M0's mandatory artifact — so a
+/// `(gpa, len = 1)` window would otherwise green the determinism gate over a
+/// clip that cannot be produced (round-3 finding). Validating against it is
+/// the same "a malformed window is as fatal as a missing one" rule.
+///
+/// **Mirrored, not imported:** `film` is a *dev*-dependency of this crate (the
+/// box film gate lives in `tests/live_film.rs`), and the campaign driver must
+/// not take a library dependency on the renderer to validate a window. The
+/// value is pinned against film's own constant by a dev-dep drift test
+/// (`billboard_min_len_tracks_films_header`), so a change on film's side breaks
+/// a test here rather than silently re-opening the hole.
+pub const BILLBOARD_MIN_LEN: u64 = 32;
 
 /// Why a game campaign refused to run or died.
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +215,26 @@ pub enum GameCampaignError {
          emission before setup_complete"
     )]
     BillboardMissing,
+    /// The setup prefix published a billboard window that cannot name real
+    /// guest memory (task 103 finding 2): zero-length, null-gpa, overflowing,
+    /// past the end of guest RAM, or only half-published. A malformed window
+    /// is the same loud failure class as a missing one — film would read
+    /// nothing (or the wrong bytes), and a campaign that "passed" over it
+    /// would be vacuous. Never a silent fallback to no-billboard.
+    #[error(
+        "the setup prefix published a MALFORMED billboard window (gpa={gpa:#x}, len={len}): \
+         {why}. A billboard that cannot name real guest memory is as fatal as a missing one \
+         (film reads it); check the play-agent's REG_BILLBOARD_GPA/LEN emission and its \
+         hugetlb/pagemap pinning"
+    )]
+    BillboardMalformed {
+        /// The guest-physical address as published.
+        gpa: u64,
+        /// The length as published.
+        len: u64,
+        /// Which validity rule it broke.
+        why: &'static str,
+    },
     /// A box-mode rollout ended somewhere other than its deadline — the
     /// play-agent DIED mid-rollout (round-8 P1; e.g. `retro_serialize`
     /// failing on a frame). Crashed rollouts must never be recorded as
@@ -219,8 +272,9 @@ pub struct DeepReproducer {
 }
 
 /// What a game campaign produced: the offline-analysis log, the retained deep
-/// reproducer, and the billboard window the guest published in its setup
-/// prefix (film's `FilmPlan` inputs, surfaced from campaign output alone).
+/// reproducer, the billboard window the guest published in its setup prefix
+/// (film's `FilmPlan` inputs, surfaced from campaign output alone), and the
+/// **work evidence** the gate checks before it may print a verdict.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GameCampaignOutcome {
     /// The discovery-event log (`--logs-out`'s artifact).
@@ -230,6 +284,89 @@ pub struct GameCampaignOutcome {
     /// The billboard `(gpa, len)` from the setup prefix's `REG_BILLBOARD_*`
     /// registers, when the guest published them (the toy does not).
     pub billboard: Option<(u64, u64)>,
+    /// Proof this campaign actually ran a workload (task 103 finding 1).
+    pub work: WorkEvidence,
+}
+
+/// What a campaign has to show for itself: how many branches it rolled out,
+/// and the *weakest* rollout among them by V-time advanced past the sealed
+/// base and by guest frames rendered (task 103 finding 1b).
+///
+/// The determinism gate compares per-branch `state_hash` sequences across
+/// repetitions. That comparison is only meaningful if the repetitions did
+/// something: a zero branch budget compares two empty sequences, and a zero
+/// (or absurdly small) rollout deadline compares the sealed base to itself —
+/// both "identical" 25/25, both measuring nothing. So the campaign carries its
+/// evidence out with it and [`GameCampaignOutcome::vacuity`] refuses the
+/// verdict when the evidence is absent, no matter which flag combination
+/// produced it.
+///
+/// Minima, not totals: one hollow rollout in an otherwise busy campaign is
+/// still a hollow rollout, and a total would hide it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct WorkEvidence {
+    /// Branches actually rolled out.
+    pub branches: u64,
+    /// The least V-time any rollout advanced past the sealed base — the
+    /// guest's own clock moved, so instructions retired.
+    pub min_vtime_span: u64,
+    /// The least number of frame bodies any rollout **executed**
+    /// ([`smb_completed_frames`] — `REG_FRAME` *transitions*, since the agent
+    /// writes that register before running the frame): the game's frame clock
+    /// advanced, so the *workload* ran, not merely the guest.
+    pub min_completed_frames: u64,
+}
+
+/// Why a campaign's evidence does not support any gate verdict — each variant
+/// is a way to print `DETERMINISM PASS` over a run that did no work.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+pub enum Vacuity {
+    /// Zero branches ran (`--max-branches 0`): the gate would compare two
+    /// empty `state_hash` sequences and find them identical.
+    #[error(
+        "the campaign rolled out ZERO branches — an empty state_hash sequence is trivially \
+         identical to another empty one; there is no determinism claim here"
+    )]
+    NoBranches,
+    /// A rollout advanced no V-time (`--deadline-delta 0`): its deadline was
+    /// already met at the base, so the gate hashed the sealed base itself.
+    #[error(
+        "a rollout advanced ZERO V-time past the sealed base — its deadline was already met at \
+         the base, so the campaign hashed the base instead of a rollout"
+    )]
+    NoVTime,
+    /// A rollout executed no game frame: V-time moved, but not far enough for
+    /// the workload to complete a single frame body (a deadline below one
+    /// frame — including one that expired after the agent wrote its pre-run
+    /// `REG_FRAME` marker but before the frame it announced actually ran).
+    #[error(
+        "a rollout COMPLETED zero game frames (no REG_FRAME transition — a lone frame marker is \
+         written BEFORE its frame runs, so it proves nothing) — the guest ran, but the workload \
+         never advanced a frame, so the campaign measured no gameplay"
+    )]
+    NoFrames,
+}
+
+impl GameCampaignOutcome {
+    /// The gate's vacuity guard (task 103 finding 1b): `Some(reason)` when this
+    /// campaign's evidence cannot support a verdict.
+    ///
+    /// Checked by the gate **before** any PASS banner, so a degenerate budget
+    /// fails loudly even if it slipped past the CLI's input validation — a new
+    /// flag, a new default, or a library caller are all ways past `--max-branches
+    /// 0`-style rejection, and none of them may reach a green gate.
+    pub fn vacuity(&self) -> Option<Vacuity> {
+        if self.work.branches == 0 {
+            return Some(Vacuity::NoBranches);
+        }
+        if self.work.min_vtime_span == 0 {
+            return Some(Vacuity::NoVTime);
+        }
+        if self.work.min_completed_frames == 0 {
+            return Some(Vacuity::NoFrames);
+        }
+        None
+    }
 }
 
 /// The **quiet-arm mutator** (round-6 P1): the input-only exploit move.
@@ -339,6 +476,46 @@ pub fn smb_cells(features: &[(Moment, Feature)]) -> (Vec<u64>, u64) {
     (cells.into_iter().collect(), depth)
 }
 
+/// Count the frame bodies a rollout actually **executed** — the workload's own
+/// proof of life, and the evidence the vacuity guard rests on (task 103
+/// finding 1b).
+///
+/// **Transitions of `REG_FRAME`, not observations of it.** The play-agent
+/// writes the frame register *before* running the frame body
+/// (`guest/play-agent/src/agent.rs`: `state_set(REG_FRAME, frame)` then
+/// `core.run_frame`), because film addresses that frame's billboard by that
+/// Moment and must see the frame's bytes at it. So a lone `REG_FRAME`
+/// observation proves only that the guest wrote a marker and then the deadline
+/// expired — **zero frames ran**. It takes a *second*, different value to prove
+/// the first frame's body completed and the loop came back around.
+///
+/// Counting observations instead would let a deadline that expires between the
+/// first marker and the first frame body report one frame and sail through the
+/// guard — precisely the positive-but-too-small budget the guard exists to
+/// reject. The emission order is not the bug and must not be "fixed" in the
+/// agent: it is film's addressing contract, and reordering it would change the
+/// recorded stream.
+///
+/// Any change in value counts, not just an increase: a changed value means the
+/// agent went round the loop again, which is what "a frame ran" means. (The
+/// frame clock is a `u32` the agent wraps, so demanding monotonicity would
+/// eventually call a real frame no frame.)
+pub fn smb_completed_frames(features: &[(Moment, Feature)]) -> u64 {
+    let mut completed = 0u64;
+    let mut last: Option<u64> = None;
+    for (_, f) in features {
+        if f.channel != LINK_STATE_CHANNEL || f.id.0 >> 48 != reg::FRAME {
+            continue;
+        }
+        let value = f.id.0 & 0x0000_FFFF_FFFF_FFFF;
+        if last.is_some_and(|prev| prev != value) {
+            completed += 1;
+        }
+        last = Some(value);
+    }
+    completed
+}
+
 /// A novelty-frontier entry for the SelectorV1 configuration.
 struct Exemplar {
     env: Environment,
@@ -367,9 +544,11 @@ pub fn run_game_campaign<M: Machine>(
     // Drain the SETUP prefix's SDK capture: the billboard gpa/len registers
     // were published before the seal, so they ride this capture, not any
     // branch's — surface them for film (round-8 P1). Also keeps setup events
-    // out of branch 0's trace.
+    // out of branch 0's trace. The window is VALIDATED at registration (task
+    // 103 finding 2): a published-but-unusable window is a loud refusal here,
+    // on both paths, never a silent fall back to "no billboard".
     let setup_events = drain_events(machine)?;
-    let billboard = billboard_window_of(&setup_events);
+    let billboard = billboard_window_of(&setup_events, cfg.guest_ram_len)?;
     // Round-9 P1: on the box (`require_snapshot_point`) the billboard is
     // M0's unconditional film seam — a setup prefix that never published a
     // valid `(gpa, len)` window means film has no input, so the campaign
@@ -399,6 +578,13 @@ pub fn run_game_campaign<M: Machine>(
     // (round-8 P1 / hm-5sv retention discipline); strictly-greater keeps the
     // first-deepest.
     let mut deepest: Option<(u64, u64, RunTrace)> = None;
+    // The gate's work evidence (task 103 finding 1b): the weakest rollout in
+    // the campaign, so one hollow branch cannot hide behind 63 busy ones.
+    let mut work = WorkEvidence {
+        branches: 0,
+        min_vtime_span: u64::MAX,
+        min_completed_frames: u64::MAX,
+    };
 
     for branch in 0..cfg.max_branches {
         let step = branch + 1;
@@ -432,6 +618,11 @@ pub fn run_game_campaign<M: Machine>(
                 stop: format!("{stop:?}"),
             });
         }
+        // The rollout's own work evidence, read off the terminal before the
+        // stop is moved into the trace: how far the guest's clock actually
+        // advanced past the base. A `deadline_delta` of 0 (or a deadline the
+        // base already meets) lands here as a zero span.
+        let vtime_span = stop.vtime().0.saturating_sub(base_vtime);
         let state_hash = machine.hash()?;
         // Round-9 P1: the retained trace carries the RECORDED environment —
         // genesis-complete, every decision actually drawn, keyed from the
@@ -446,7 +637,13 @@ pub fn run_game_campaign<M: Machine>(
             events: drain_events(machine)?,
             records: Vec::new(),
         };
-        let (touched, depth) = smb_cells(&sensor.observe(&trace));
+        let features = sensor.observe(&trace);
+        let (touched, depth) = smb_cells(&features);
+        work.branches += 1;
+        work.min_vtime_span = work.min_vtime_span.min(vtime_span);
+        work.min_completed_frames = work
+            .min_completed_frames
+            .min(smb_completed_frames(&features));
 
         // SelectorV1's thin novelty archive: admit an exemplar iff the branch
         // claimed a fresh cell.
@@ -507,6 +704,76 @@ pub fn run_game_campaign<M: Machine>(
         },
         deep,
         billboard,
+        // No branch ran ⇒ there are no minima; report zeroes rather than the
+        // `u64::MAX` sentinels, so the evidence reads as the nothing it is.
+        work: if work.branches == 0 {
+            WorkEvidence::default()
+        } else {
+            work
+        },
+    })
+}
+
+/// The task-86 gate-2 determinism floor: 25 bit-identical repetitions.
+pub const DETERMINISM_BAR: usize = 25;
+
+/// What the determinism gate concluded from `repeat` bit-identical campaigns.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GateVerdict {
+    /// At/above the floor, with work evidence: the task-86 gate-2 PASS.
+    Pass {
+        /// The repetitions that came back bit-identical.
+        repeat: usize,
+    },
+    /// Bit-identical, but below the [`DETERMINISM_BAR`] — a smoke, and it must
+    /// say so: it is NOT the gate (round-8 P1).
+    BelowFloor {
+        /// The repetitions run.
+        repeat: usize,
+    },
+    /// One campaign: nothing was compared, so nothing is claimed.
+    Single,
+}
+
+impl GateVerdict {
+    /// The operator-facing line for this verdict (`None` for [`Self::Single`],
+    /// which claims nothing and so says nothing).
+    pub fn banner(&self) -> Option<String> {
+        match self {
+            GateVerdict::Pass { repeat } => Some(format!(
+                "[conductor] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
+                 state_hash sequences (gate floor {DETERMINISM_BAR})."
+            )),
+            GateVerdict::BelowFloor { repeat } => Some(format!(
+                "[conductor] game box determinism smoke: {repeat}/{repeat} identical — BELOW the \
+                 {DETERMINISM_BAR}-run gate floor, NOT the task-86 determinism gate."
+            )),
+            GateVerdict::Single => None,
+        }
+    }
+}
+
+/// Decide the determinism gate over a campaign that came back bit-identical
+/// `repeat` times — the box driver's verdict, hoisted here so it is portable
+/// and testable (the driver itself needs `/dev/kvm`).
+///
+/// **The vacuity guard is this function's whole point** (task 103 finding 1b):
+/// bit-identical repetitions of a campaign that did no work are still
+/// bit-identical, so identity alone can never be the gate's evidence. A
+/// campaign with no branches, no V-time, or no frames yields `Err(Vacuity)`
+/// here and the driver fails loudly — there is no path from a hollow run to a
+/// PASS banner, whatever `repeat` says and whatever flags produced it.
+pub fn determinism_verdict(
+    outcome: &GameCampaignOutcome,
+    repeat: usize,
+) -> Result<GateVerdict, Vacuity> {
+    if let Some(v) = outcome.vacuity() {
+        return Err(v);
+    }
+    Ok(match repeat {
+        r if r >= DETERMINISM_BAR => GateVerdict::Pass { repeat: r },
+        0 | 1 => GateVerdict::Single,
+        r => GateVerdict::BelowFloor { repeat: r },
     })
 }
 
@@ -563,8 +830,21 @@ pub fn serial_rom_sha256(serial: &[u8]) -> Option<String> {
 }
 
 /// Extract the billboard `(gpa, len)` from the setup prefix's decoded state
-/// events (the last write of each register wins — the agent publishes once).
-fn billboard_window_of(events: &[(Moment, explorer::GuestEvent)]) -> Option<(u64, u64)> {
+/// events (the last write of each register wins — the agent publishes once)
+/// and **validate it at registration** (task 103 finding 2).
+///
+/// `Ok(None)` means the guest published no billboard at all (the portable
+/// toy); the box's `require_snapshot_point` gate turns that into
+/// [`GameCampaignError::BillboardMissing`]. Anything published but unusable —
+/// a half-publish, a zero length, a null gpa, a range that overflows or runs
+/// past the end of guest RAM — is [`GameCampaignError::BillboardMalformed`],
+/// the same loud class: the round-8 missing-billboard check only tested for
+/// *presence*, so a guest that published `len = 0` (or a wild gpa) slipped
+/// through it into a campaign whose film seam reads nothing.
+fn billboard_window_of(
+    events: &[(Moment, explorer::GuestEvent)],
+    guest_ram_len: u64,
+) -> Result<Option<(u64, u64)>, GameCampaignError> {
     let (mut gpa, mut len) = (None, None);
     for (_, ev) in events {
         if ev.kind != link::KIND_STATE {
@@ -581,7 +861,42 @@ fn billboard_window_of(events: &[(Moment, explorer::GuestEvent)]) -> Option<(u64
             _ => {}
         }
     }
-    gpa.zip(len)
+    let (gpa, len) = match (gpa, len) {
+        (None, None) => return Ok(None),
+        (Some(gpa), Some(len)) => (gpa, len),
+        // A half-publish is a broken agent, not an absent billboard: the two
+        // registers are written together in the setup prefix.
+        (gpa, len) => {
+            return Err(GameCampaignError::BillboardMalformed {
+                gpa: gpa.unwrap_or(0),
+                len: len.unwrap_or(0),
+                why: "only one of REG_BILLBOARD_GPA / REG_BILLBOARD_LEN was published — the \
+                      agent must publish both",
+            });
+        }
+    };
+    let why = if len == 0 {
+        Some("zero-length window — film would read no bytes")
+    } else if len < BILLBOARD_MIN_LEN {
+        // Round-3 finding: "nonzero and in-RAM" is not the same as "usable".
+        Some(
+            "shorter than the 32-byte billboard header — film's FilmPlan::derive refuses any \
+             window under a header (BillboardTooSmall), and film is M0's MANDATORY artifact, so \
+             this window would green the determinism gate over a clip that cannot be produced",
+        )
+    } else if gpa == 0 {
+        Some("null guest-physical address — gpa 0 is never a pinned billboard")
+    } else {
+        match gpa.checked_add(len) {
+            None => Some("gpa + len overflows a u64"),
+            Some(end) if end > guest_ram_len => Some("the window runs past the end of guest RAM"),
+            Some(_) => None,
+        }
+    };
+    match why {
+        Some(why) => Err(GameCampaignError::BillboardMalformed { gpa, len, why }),
+        None => Ok(Some((gpa, len))),
+    }
 }
 
 /// Seal the campaign base. Preferred boundary: the play-agent's
@@ -852,6 +1167,485 @@ impl Machine for GameToyMachine {
 mod tests {
     use super::*;
     use explorer::SpecEnvCodec;
+
+    /// A **box-shaped** guest: seals at its `setup_complete` snapshot point,
+    /// publishes a billboard in the setup prefix, and runs every rollout to its
+    /// deadline. The knobs are exactly the ways the real box driver can be
+    /// handed a degenerate budget — a rollout that advances no V-time
+    /// (`--deadline-delta 0`) and a rollout whose deadline expires before a
+    /// frame body completes — so the vacuity guard can be driven against the
+    /// same shape the gate sees.
+    ///
+    /// It emits `REG_FRAME` the way the real agent does: **one marker written
+    /// before each frame body runs**. A rollout that emits `n` markers therefore
+    /// completed `n - 1` frames — and `n = 1` (the marker, then the deadline)
+    /// completed **none**, which is exactly the round-2 finding.
+    struct BoxGuest {
+        sealed: bool,
+        published: bool,
+        vtime: u64,
+        base_vtime: u64,
+        next_snap: u64,
+        env: Environment,
+        /// What the setup prefix publishes (`None` = nothing at all).
+        billboard: Option<(u64, u64)>,
+        /// V-time each rollout advances past the base.
+        rollout_span: u64,
+        /// Pre-run `REG_FRAME` markers each rollout emits (⇒ `n - 1` frames
+        /// actually executed).
+        frame_markers: u64,
+    }
+
+    impl BoxGuest {
+        /// The healthy shape: a valid billboard, rollouts that run and render.
+        fn healthy() -> Self {
+            BoxGuest {
+                sealed: false,
+                published: false,
+                vtime: 1_000,
+                base_vtime: 0,
+                next_snap: 1,
+                env: SpecEnvCodec.seeded(0),
+                billboard: Some((0x04e0_0000, 15_838)),
+                rollout_span: 2_000_000_000,
+                frame_markers: 120,
+            }
+        }
+    }
+
+    impl Machine for BoxGuest {
+        fn branch(&mut self, _s: explorer::SnapId, env: &Environment) -> Result<(), MachineError> {
+            self.env = env.clone();
+            self.vtime = self.base_vtime;
+            Ok(())
+        }
+        fn replay(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+            self.vtime = self.base_vtime;
+            Ok(())
+        }
+        fn run(
+            &mut self,
+            until: &StopConditions,
+            _resolve: Option<&explorer::Answer>,
+        ) -> Result<StopReason, MachineError> {
+            // probe_vtime's already-met deadline: report position, run nothing.
+            if until.deadline == Some(VTime(0)) {
+                return Ok(StopReason::Deadline {
+                    vtime: VTime(self.vtime),
+                });
+            }
+            if !self.sealed {
+                self.sealed = true;
+                self.base_vtime = self.vtime;
+                return Ok(StopReason::SnapshotPoint {
+                    vtime: VTime(self.vtime),
+                });
+            }
+            // A rollout: advance its span (possibly zero) and stop at the deadline.
+            self.vtime = self.base_vtime + self.rollout_span;
+            Ok(StopReason::Deadline {
+                vtime: VTime(self.vtime),
+            })
+        }
+        fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
+            let id = self.next_snap;
+            self.next_snap += 1;
+            Ok(explorer::SnapId(id))
+        }
+        fn drop_snap(&mut self, _s: explorer::SnapId) -> Result<(), MachineError> {
+            Ok(())
+        }
+        fn hash(&mut self) -> Result<[u8; 32], MachineError> {
+            Ok([0u8; 32])
+        }
+        fn coverage(&self) -> &[u8] {
+            &[]
+        }
+        fn recorded_env(&self) -> Result<Environment, MachineError> {
+            Ok(self.env.clone())
+        }
+        fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
+            // The setup prefix's drain: the billboard registers, once.
+            if self.sealed && !self.published {
+                self.published = true;
+                let mut out = Vec::new();
+                if let Some((gpa, len)) = self.billboard {
+                    let (gid, gp) = state_event(reg::BILLBOARD_GPA, 0, gpa);
+                    let (lid, lp) = state_event(reg::BILLBOARD_LEN, 0, len);
+                    out.push((self.base_vtime, gid, gp));
+                    out.push((self.base_vtime + 1, lid, lp));
+                }
+                return Ok(out);
+            }
+            // A rollout's drain: one state tuple per frame the agent announced,
+            // with REG_FRAME written BEFORE that frame's body ran (the agent's
+            // real order — film addresses the billboard by that Moment).
+            let mut out = Vec::new();
+            for f in 0..self.frame_markers {
+                let at = self.base_vtime + f + 1;
+                let (id, p) = state_event(reg::GAME_MODE, 0, 1);
+                out.push((at, id, p));
+                let (id, p) = state_event(reg::X_BUCKET, 0, f % 8);
+                out.push((at, id, p));
+                let (id, p) = state_event(reg::FRAME, 0, f);
+                out.push((at, id, p));
+            }
+            Ok(out)
+        }
+    }
+
+    /// The box config the driver builds (`require_snapshot_point`), with the
+    /// budget knobs under test.
+    fn box_cfg(max_branches: u64, deadline_delta: Option<u64>) -> GameCampaignConfig {
+        GameCampaignConfig {
+            max_branches,
+            deadline_delta,
+            require_snapshot_point: true,
+            ..GameCampaignConfig::smoke(7)
+        }
+    }
+
+    fn run_box(guest: &mut BoxGuest, cfg: &GameCampaignConfig) -> GameCampaignOutcome {
+        run_game_campaign(guest, &SpecEnvCodec, cfg, ExplorationConfig::PureRandom)
+            .expect("the box-shaped guest campaigns cleanly")
+    }
+
+    /// Task 103 finding 1b — **the vacuous determinism PASS**. Each fixture is
+    /// a degenerate budget that the round-9 gate would have called
+    /// `DETERMINISM PASS: 25/25` (identical sequences, because identically
+    /// empty), and each must now be refused by the gate before any banner —
+    /// whatever `--repeat` says.
+    #[test]
+    fn the_determinism_gate_refuses_a_run_that_did_no_work() {
+        // (a) `--max-branches 0`: the gate would compare two empty state_hash
+        //     sequences and find them identical.
+        let outcome = run_box(&mut BoxGuest::healthy(), &box_cfg(0, Some(2_000_000_000)));
+        assert!(outcome.log.events.is_empty());
+        assert_eq!(outcome.vacuity(), Some(Vacuity::NoBranches));
+        assert_eq!(
+            determinism_verdict(&outcome, DETERMINISM_BAR),
+            Err(Vacuity::NoBranches),
+            "25 repetitions of a zero-branch campaign is not a determinism gate"
+        );
+
+        // (b) `--deadline-delta 0`: the rollout's deadline is already met at the
+        //     base, so every branch hashes the sealed base itself.
+        let mut guest = BoxGuest {
+            rollout_span: 0,
+            ..BoxGuest::healthy()
+        };
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(0)));
+        assert_eq!(outcome.log.events.len(), 8, "the branches DID run…");
+        assert_eq!(
+            outcome.vacuity(),
+            Some(Vacuity::NoVTime),
+            "…but none of them advanced the guest's clock"
+        );
+        assert_eq!(
+            determinism_verdict(&outcome, DETERMINISM_BAR),
+            Err(Vacuity::NoVTime)
+        );
+
+        // (c) The budget that sneaks past a positivity check: V-time advances,
+        //     but the guest emits nothing at all — not one frame.
+        let mut guest = BoxGuest {
+            frame_markers: 0,
+            rollout_span: 1,
+            ..BoxGuest::healthy()
+        };
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(1)));
+        assert_eq!(
+            outcome.vacuity(),
+            Some(Vacuity::NoFrames),
+            "a rollout that renders no frame measured no gameplay"
+        );
+        assert_eq!(
+            determinism_verdict(&outcome, DETERMINISM_BAR),
+            Err(Vacuity::NoFrames)
+        );
+
+        // (c2) **The round-2 finding.** The agent writes REG_FRAME *before*
+        //      running the frame it announces (film's addressing contract), so
+        //      a deadline expiring between the marker and the frame body leaves
+        //      exactly ONE observation — and zero frames executed. Counting
+        //      observations would have called that one frame and let 25
+        //      identical repetitions of it print DETERMINISM PASS.
+        let mut guest = BoxGuest {
+            frame_markers: 1,
+            rollout_span: 1_000,
+            ..BoxGuest::healthy()
+        };
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        assert_eq!(
+            outcome.work.min_completed_frames, 0,
+            "one pre-run marker announces a frame; it does not run one"
+        );
+        assert_eq!(
+            outcome.vacuity(),
+            Some(Vacuity::NoFrames),
+            "a lone frame marker is not a frame"
+        );
+        assert_eq!(
+            determinism_verdict(&outcome, DETERMINISM_BAR),
+            Err(Vacuity::NoFrames)
+        );
+
+        // …and TWO markers prove the first frame's body completed (the loop came
+        // back around to announce the next) — the boundary the guard turns on.
+        let mut guest = BoxGuest {
+            frame_markers: 2,
+            rollout_span: 1_000,
+            ..BoxGuest::healthy()
+        };
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        assert_eq!(outcome.work.min_completed_frames, 1);
+        assert_eq!(outcome.vacuity(), None, "one completed frame is real work");
+
+        // (d) One hollow rollout among busy ones still sinks the gate: the
+        //     evidence is the WEAKEST rollout, never the total.
+        let mut guest = BoxGuest::healthy();
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(2_000_000_000)));
+        assert_eq!(outcome.vacuity(), None);
+        let hollowed = GameCampaignOutcome {
+            work: WorkEvidence {
+                min_completed_frames: 0,
+                ..outcome.work
+            },
+            ..outcome.clone()
+        };
+        assert_eq!(hollowed.vacuity(), Some(Vacuity::NoFrames));
+
+        // And the healthy campaign still passes at the floor, smokes below it,
+        // and claims nothing at one repetition — the round-8 floor intact.
+        assert_eq!(
+            determinism_verdict(&outcome, DETERMINISM_BAR),
+            Ok(GateVerdict::Pass { repeat: 25 })
+        );
+        assert!(
+            determinism_verdict(&outcome, DETERMINISM_BAR)
+                .unwrap()
+                .banner()
+                .unwrap()
+                .contains("DETERMINISM PASS")
+        );
+        assert_eq!(
+            determinism_verdict(&outcome, 2),
+            Ok(GateVerdict::BelowFloor { repeat: 2 })
+        );
+        assert!(
+            !determinism_verdict(&outcome, 24)
+                .unwrap()
+                .banner()
+                .unwrap()
+                .contains("DETERMINISM PASS"),
+            "24 repetitions is a smoke, not the gate"
+        );
+        assert_eq!(determinism_verdict(&outcome, 1), Ok(GateVerdict::Single));
+        assert_eq!(determinism_verdict(&outcome, 1).unwrap().banner(), None);
+    }
+
+    /// The healthy box campaign's evidence is the real thing: every branch
+    /// rolled out, advanced the clock, and completed frames — 120 pre-run
+    /// markers ⇒ 119 frame bodies actually executed (the last announced frame
+    /// is cut off by the deadline, exactly as on the box).
+    #[test]
+    fn a_real_campaign_carries_its_work_evidence() {
+        let mut guest = BoxGuest::healthy();
+        let outcome = run_box(&mut guest, &box_cfg(4, Some(2_000_000_000)));
+        assert_eq!(
+            outcome.work,
+            WorkEvidence {
+                branches: 4,
+                min_vtime_span: 2_000_000_000,
+                min_completed_frames: 119,
+            }
+        );
+        assert_eq!(outcome.billboard, Some((0x04e0_0000, 15_838)));
+    }
+
+    /// [`smb_completed_frames`] counts frame-clock TRANSITIONS, not markers:
+    /// the unit-level pin of the round-2 finding.
+    #[test]
+    fn completed_frames_counts_transitions_not_markers() {
+        use explorer::FeatureId;
+        let frame = |value: u64| {
+            (
+                Moment(value + 1),
+                Feature {
+                    channel: LINK_STATE_CHANNEL,
+                    id: FeatureId((reg::FRAME << 48) | value),
+                },
+            )
+        };
+        // No markers at all, and a lone marker, are both zero completed frames.
+        assert_eq!(smb_completed_frames(&[]), 0);
+        assert_eq!(smb_completed_frames(&[frame(0)]), 0);
+        // The second marker proves the first frame's body ran.
+        assert_eq!(smb_completed_frames(&[frame(0), frame(1)]), 1);
+        assert_eq!(smb_completed_frames(&[frame(0), frame(1), frame(2)]), 2);
+        // A repeated value is not a new frame (no transition, no work).
+        assert_eq!(smb_completed_frames(&[frame(7), frame(7), frame(7)]), 0);
+        // The frame clock is a u32 the agent wraps: a wrap is still a frame, so
+        // the count is on CHANGE, not on increase.
+        assert_eq!(smb_completed_frames(&[frame(u32::MAX as u64), frame(0)]), 1);
+        // Non-FRAME registers never count, whatever their values do.
+        let other = (
+            Moment(9),
+            Feature {
+                channel: LINK_STATE_CHANNEL,
+                id: FeatureId((reg::X_BUCKET << 48) | 3),
+            },
+        );
+        assert_eq!(smb_completed_frames(&[other, other]), 0);
+    }
+
+    /// Task 103 finding 2 — **a malformed billboard must not slip past the
+    /// round-8 `BillboardMissing` presence check**. Every fixture here is a
+    /// window the guest actually published, and every one of them is unusable:
+    /// film would read nothing, or the wrong bytes. Each must fail the campaign
+    /// loudly, before a single rollout runs.
+    #[test]
+    fn a_malformed_billboard_refuses_the_campaign() {
+        let ram = GameCampaignConfig::smoke(0).guest_ram_len;
+        let refuses = |billboard: Option<(u64, u64)>| -> GameCampaignError {
+            let mut guest = BoxGuest {
+                billboard,
+                ..BoxGuest::healthy()
+            };
+            run_game_campaign(
+                &mut guest,
+                &SpecEnvCodec,
+                &box_cfg(8, Some(2_000_000_000)),
+                ExplorationConfig::PureRandom,
+            )
+            .expect_err("a malformed billboard must refuse the campaign")
+        };
+
+        // Zero length: the round-8 check saw `Some((gpa, 0))` and called it present.
+        assert!(matches!(
+            refuses(Some((0x04e0_0000, 0))),
+            GameCampaignError::BillboardMalformed { len: 0, .. }
+        ));
+        // Round-3 finding: nonzero and in-RAM, but SHORTER THAN FILM'S HEADER —
+        // `FilmPlan::derive` refuses it (`BillboardTooSmall`), so the campaign
+        // would green the gate over a mandatory artifact that cannot be built.
+        assert!(matches!(
+            refuses(Some((0x0000_1000, 1))),
+            GameCampaignError::BillboardMalformed { len: 1, .. }
+        ));
+        // One byte below the header is still unusable…
+        assert!(matches!(
+            refuses(Some((0x04e0_0000, BILLBOARD_MIN_LEN - 1))),
+            GameCampaignError::BillboardMalformed { .. }
+        ));
+        // …and exactly a header's worth is the boundary film accepts.
+        let mut guest = BoxGuest {
+            billboard: Some((0x04e0_0000, BILLBOARD_MIN_LEN)),
+            ..BoxGuest::healthy()
+        };
+        assert_eq!(
+            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            Some((0x04e0_0000, BILLBOARD_MIN_LEN))
+        );
+        // Null gpa: guest-physical 0 is never a pinned billboard.
+        assert!(matches!(
+            refuses(Some((0, 15_838))),
+            GameCampaignError::BillboardMalformed { gpa: 0, .. }
+        ));
+        // Overflowing range: `gpa + len` wraps a u64.
+        assert!(matches!(
+            refuses(Some((u64::MAX - 8, 4_096))),
+            GameCampaignError::BillboardMalformed { .. }
+        ));
+        // Past the end of guest RAM: the window names memory the VM does not have.
+        assert!(matches!(
+            refuses(Some((ram - 1_024, 4_096))),
+            GameCampaignError::BillboardMalformed { .. }
+        ));
+        // …and the last byte inside RAM is fine (the boundary is inclusive-end).
+        let mut guest = BoxGuest {
+            billboard: Some((ram - 4_096, 4_096)),
+            ..BoxGuest::healthy()
+        };
+        assert_eq!(
+            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            Some((ram - 4_096, 4_096))
+        );
+
+        // Still-absent stays BillboardMissing (round 9's finding, unchanged).
+        assert!(matches!(refuses(None), GameCampaignError::BillboardMissing));
+    }
+
+    /// The drift pin for [`BILLBOARD_MIN_LEN`] (round-3 finding): the bound the
+    /// campaign validates against IS film's header length. `film` is a
+    /// dev-dependency — the driver must not take a *library* dependency on the
+    /// renderer to validate a window — so the value is mirrored in the lib and
+    /// pinned to its source here. If film's header grows, this test fails
+    /// instead of the hole silently re-opening (the same single-source
+    /// discipline as `guest_ram_len` ← `boxrun::GUEST_RAM_LEN`).
+    #[test]
+    fn billboard_min_len_tracks_films_header() {
+        assert_eq!(
+            BILLBOARD_MIN_LEN as usize,
+            film::HEADER_LEN,
+            "BILLBOARD_MIN_LEN must mirror film's HEADER_LEN — a window shorter than film's \
+             header is refused by FilmPlan::derive, so the campaign must refuse it too"
+        );
+    }
+
+    /// Decode `(reg, value)` state writes through the REAL wire path, so these
+    /// fixtures are the same shape a guest's setup prefix produces.
+    fn decoded_state(regs: &[(u64, u64)]) -> Vec<(Moment, explorer::GuestEvent)> {
+        let raw: Vec<(Moment, u32, Vec<u8>)> = regs
+            .iter()
+            .enumerate()
+            .map(|(i, (reg, value))| {
+                let (id, payload) = state_event(*reg, 0, *value);
+                (Moment(i as u64 + 1), id, payload)
+            })
+            .collect();
+        link::decode_events(&raw)
+    }
+
+    /// A half-published window (one register, not both) is a broken agent, not
+    /// an absent billboard — `gpa.zip(len)` used to swallow it into `None`,
+    /// which the toy path then accepted silently and the box path mislabelled
+    /// as "missing".
+    #[test]
+    fn a_half_published_billboard_is_malformed() {
+        let only_gpa = decoded_state(&[(reg::BILLBOARD_GPA, 0x04e0_0000)]);
+        assert!(matches!(
+            billboard_window_of(&only_gpa, DEFAULT_GUEST_RAM_LEN),
+            Err(GameCampaignError::BillboardMalformed {
+                gpa: 0x04e0_0000,
+                len: 0,
+                ..
+            })
+        ));
+        let only_len = decoded_state(&[(reg::BILLBOARD_LEN, 15_838)]);
+        assert!(matches!(
+            billboard_window_of(&only_len, DEFAULT_GUEST_RAM_LEN),
+            Err(GameCampaignError::BillboardMalformed {
+                gpa: 0,
+                len: 15_838,
+                ..
+            })
+        ));
+        // Neither register: a genuine no-billboard guest (the portable toy).
+        assert!(matches!(
+            billboard_window_of(&[], DEFAULT_GUEST_RAM_LEN),
+            Ok(None)
+        ));
+        // Both, valid: the window rides out.
+        let both = decoded_state(&[
+            (reg::BILLBOARD_GPA, 0x04e0_0000),
+            (reg::BILLBOARD_LEN, 15_838),
+        ]);
+        assert!(matches!(
+            billboard_window_of(&both, DEFAULT_GUEST_RAM_LEN),
+            Ok(Some((0x04e0_0000, 15_838)))
+        ));
+    }
 
     fn run(config: ExplorationConfig, seed: u64) -> ExplorationLog {
         run_outcome(config, seed).log

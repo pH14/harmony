@@ -118,3 +118,35 @@ a non-issue there (cross-platform savestates stay best-effort, ungated).
   unsupported in isolation).
 - The `--smoke` mode (mock core + seeded local xorshift, no hypervisor) is the
   off-box bring-up check and runs anywhere.
+
+## task 103 — the settle loop is bounded by `max_frames` (bead `hm-9wa`, finding 3)
+
+PR #93's round-9 pass: the scripted start could **exceed its own frame bound while settling**.
+`run_start_script` ran `settle_frames` unconditionally once gameplay was first observed, so an
+observation late in the budget overran `max_frames` — and `frames += 1` past `u32::MAX` was a
+theoretical wrap on top of it. `max_frames` is the loud-failure bound on the whole script; a
+silent overrun of it is the same class as the round-5 cadence-overflow panic, and the frames a
+rollout spends are budget a box gate paid for.
+
+The settle is now spent from the same budget, checked at both ends:
+
+- **Before the first frame** — a script whose `settle_frames + 1` cannot fit under `max_frames`
+  can never succeed, so it is `BadScript` up front rather than discovered mid-settle (the box
+  would otherwise burn the full press cadence to find out).
+- **At the observation** — gameplay observed too late to settle inside the bound is
+  `StartError::SettleExceedsBudget { observed_at, settle_frames, max_frames }`, naming the three
+  numbers an operator needs to fix it.
+
+`frames <= max_frames` is now an invariant of the loop, so the overflow is gone **by
+construction** rather than by checked arithmetic, and `max_frames - frames` cannot wrap.
+
+Both call sites use `StartScript::default()` (`settle_frames: 16`, `max_frames: 1800`), which is
+unaffected — the defaults sit far inside the bound, and the real start reaches gameplay in a few
+hundred frames. The existing `never_reaching_gameplay_is_loud` fixture (`max_frames: 2`) needed a
+1-frame settle to stay a *bound-exhaustion* test rather than an unusable script; its assertion is
+unchanged.
+
+Gates: `cargo test` (46 lib + 7 agent) and `cargo clippy --all-targets -D warnings` green on the
+host and for `x86_64-unknown-linux-gnu`; `cargo fmt --check`; Miri `--lib` green (46 tests). No
+new `unsafe`, no guest behavior change — the start script draws no entropy and presses the same
+frames; this only bounds what it is allowed to spend.
