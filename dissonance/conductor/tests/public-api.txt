@@ -171,6 +171,7 @@ pub struct conductor::gamecampaign::WorkEvidence
 pub conductor::gamecampaign::WorkEvidence::branches: u64
 pub conductor::gamecampaign::WorkEvidence::min_completed_frames: u64
 pub conductor::gamecampaign::WorkEvidence::min_vtime_span: u64
+pub const conductor::gamecampaign::BILLBOARD_MIN_LEN: u64
 pub const conductor::gamecampaign::DEFAULT_GUEST_RAM_LEN: u64
 pub const conductor::gamecampaign::DETERMINISM_BAR: usize
 pub fn conductor::gamecampaign::determinism_verdict(&conductor::gamecampaign::GameCampaignOutcome, usize) -> core::result::Result<conductor::gamecampaign::GateVerdict, conductor::gamecampaign::Vacuity>

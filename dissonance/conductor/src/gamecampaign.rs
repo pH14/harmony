@@ -143,6 +143,25 @@ impl GameCampaignConfig {
 /// billboard at all.
 pub const DEFAULT_GUEST_RAM_LEN: u64 = 2 << 30;
 
+/// The shortest billboard window film can actually use: **`film::HEADER_LEN`
+/// (32 bytes)** — the fixed header carrying the frame identity and the region
+/// table, below which `FilmPlan::derive` refuses the window outright
+/// (`PlanError::BillboardTooSmall`).
+///
+/// A published window that is nonzero and inside guest RAM can still be
+/// **unusable**, and on the box film is M0's mandatory artifact — so a
+/// `(gpa, len = 1)` window would otherwise green the determinism gate over a
+/// clip that cannot be produced (round-3 finding). Validating against it is
+/// the same "a malformed window is as fatal as a missing one" rule.
+///
+/// **Mirrored, not imported:** `film` is a *dev*-dependency of this crate (the
+/// box film gate lives in `tests/live_film.rs`), and the campaign driver must
+/// not take a library dependency on the renderer to validate a window. The
+/// value is pinned against film's own constant by a dev-dep drift test
+/// (`billboard_min_len_tracks_films_header`), so a change on film's side breaks
+/// a test here rather than silently re-opening the hole.
+pub const BILLBOARD_MIN_LEN: u64 = 32;
+
 /// Why a game campaign refused to run or died.
 #[derive(Debug, thiserror::Error)]
 pub enum GameCampaignError {
@@ -858,6 +877,13 @@ fn billboard_window_of(
     };
     let why = if len == 0 {
         Some("zero-length window — film would read no bytes")
+    } else if len < BILLBOARD_MIN_LEN {
+        // Round-3 finding: "nonzero and in-RAM" is not the same as "usable".
+        Some(
+            "shorter than the 32-byte billboard header — film's FilmPlan::derive refuses any \
+             window under a header (BillboardTooSmall), and film is M0's MANDATORY artifact, so \
+             this window would green the determinism gate over a clip that cannot be produced",
+        )
     } else if gpa == 0 {
         Some("null guest-physical address — gpa 0 is never a pinned billboard")
     } else {
@@ -1500,6 +1526,27 @@ mod tests {
             refuses(Some((0x04e0_0000, 0))),
             GameCampaignError::BillboardMalformed { len: 0, .. }
         ));
+        // Round-3 finding: nonzero and in-RAM, but SHORTER THAN FILM'S HEADER —
+        // `FilmPlan::derive` refuses it (`BillboardTooSmall`), so the campaign
+        // would green the gate over a mandatory artifact that cannot be built.
+        assert!(matches!(
+            refuses(Some((0x0000_1000, 1))),
+            GameCampaignError::BillboardMalformed { len: 1, .. }
+        ));
+        // One byte below the header is still unusable…
+        assert!(matches!(
+            refuses(Some((0x04e0_0000, BILLBOARD_MIN_LEN - 1))),
+            GameCampaignError::BillboardMalformed { .. }
+        ));
+        // …and exactly a header's worth is the boundary film accepts.
+        let mut guest = BoxGuest {
+            billboard: Some((0x04e0_0000, BILLBOARD_MIN_LEN)),
+            ..BoxGuest::healthy()
+        };
+        assert_eq!(
+            run_box(&mut guest, &box_cfg(2, Some(2_000_000_000))).billboard,
+            Some((0x04e0_0000, BILLBOARD_MIN_LEN))
+        );
         // Null gpa: guest-physical 0 is never a pinned billboard.
         assert!(matches!(
             refuses(Some((0, 15_838))),
@@ -1527,6 +1574,23 @@ mod tests {
 
         // Still-absent stays BillboardMissing (round 9's finding, unchanged).
         assert!(matches!(refuses(None), GameCampaignError::BillboardMissing));
+    }
+
+    /// The drift pin for [`BILLBOARD_MIN_LEN`] (round-3 finding): the bound the
+    /// campaign validates against IS film's header length. `film` is a
+    /// dev-dependency — the driver must not take a *library* dependency on the
+    /// renderer to validate a window — so the value is mirrored in the lib and
+    /// pinned to its source here. If film's header grows, this test fails
+    /// instead of the hole silently re-opening (the same single-source
+    /// discipline as `guest_ram_len` ← `boxrun::GUEST_RAM_LEN`).
+    #[test]
+    fn billboard_min_len_tracks_films_header() {
+        assert_eq!(
+            BILLBOARD_MIN_LEN as usize,
+            film::HEADER_LEN,
+            "BILLBOARD_MIN_LEN must mirror film's HEADER_LEN — a window shorter than film's \
+             header is refused by FilmPlan::derive, so the campaign must refuse it too"
+        );
     }
 
     /// Decode `(reg, value)` state writes through the REAL wire path, so these
