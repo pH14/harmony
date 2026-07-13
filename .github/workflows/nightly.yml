@@ -63,10 +63,18 @@ jobs:
   miri:
     name: miri (unsafe crates, UB safety net)
     runs-on: self-hosted
-    # Generous ceiling: Miri interprets everything. vmm-core — the crate that
-    # outgrew this ceiling — runs in its own job above; the remaining steps'
-    # longest measured pole is vmcall-transport (~13 min on the box).
-    timeout-minutes: 90
+    # Budget (task 98, measured): the pre-conductor steps cost ~35 min on the box
+    # (run 29226001494: vmcall 14.2 + vm-state 2.4 + vmm-backend 15.8 + three
+    # small crates), and the conductor step — which runs LAST, see its comment —
+    # measures 1 h 50 min real on an M-class Mac uncontended; the local→box
+    # co-tenant factor measured ~1.47x on vmm-core, so ~165 min expected for
+    # conductor here => ~200 min job total; 240 gives ~1.2x whole-job margin.
+    # This ceiling is deliberately ugly: it is the HONEST cost of the conductor
+    # step today, and bead hm-d4y (P1) exists to shrink it back down (same
+    # hm-d8o class: sha256-dominated VM tests). Do not quietly lower this
+    # number without re-measuring; do not raise it without asking why conductor
+    # grew.
+    timeout-minutes: 240
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
