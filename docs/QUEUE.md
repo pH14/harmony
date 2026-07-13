@@ -18,47 +18,44 @@ decision. NO-GO repairs or supersedes downstream edges before `bd ready` is used
 
 **Consonance running in as many places as possible**: the reach matrix of vendors
 (Intel / AMD / ARM) × forms (bare metal / virtualized). Intel×metal ships today;
-Intel×virtualized proven by the nested-x86 spike (ALL GO, nested==metal, 1.01–1.08×). A
-cell is filled when one documented command builds the pinned stack, boots on that host,
+Intel×virtualized: mechanism demonstrated by the nested-x86 spike (boots nested, ABI
+round-trips, hash-identical on executed runs) — the ALL-GO **certification was voided
+2026-07-12** (evidence-integrity review) and is being re-earned under tasks/102 (PR #98).
+A cell is filled when one documented command builds the pinned stack, boots on that host,
 and passes the same-seed determinism gate. "Vendor" replaces "personality" (GLOSSARY
-ratification rides the docs-landing PR `hm-2uw`). ARM = Linux/KVM on an incoming Ampere
+ratified via PR #103). ARM = Linux/KVM on an incoming Ampere
 Altra (Apple-silicon route dead); AMD = incoming Epyc; ARM > AMD, parallelize the docs.
 
-## In flight (3 workers, at cap)
+## In flight (2 workers, 1 slot open)
 
-- **NES game-workload bring-up** (task 86 M0, PR #93) — worker respawned 2026-07-12 on
-  Fable 5 with a rebase-first brief (PR is CONFLICTING with main); round-8 fixes +
-  box-smoke fix 3 already on the branch; ROM delivered; scope per the historical fence in
-  task 86 (no LinkSensor/cell-quality/selector claim). Codex pass deferred until the
-  rebased head exists · `hm-ahb`
-- **vmm-core Miri gate closure** (tasks/98, P1 bug) — worker agent-miri-gate (Opus 4.8)
-  spawned 2026-07-12: make the exact nightly.yml command pass without losing unsafe
-  coverage · `hm-4yj`
-- **SpecEnvCodec fallible decode** (tasks/99, P1 bug) — worker agent-specenvcodec-fallible
-  (Opus 4.8) spawned 2026-07-12: typed errors on hostile reproducer blobs, control errors
-  never guest findings · `hm-5d9`
-- **E-fails re-key harness** (tasks/97, PR #94) — worker done (`hm-b3h` closed); blind
-  GPT-5.6 Sol pass RELAUNCHED 2026-07-12 (the 2026-07-09 runs died unreported); foreman
-  primary read = next iteration's heavy op. Review context: the Differential rewrite
-  supersedes its CellFnV1 ratification path but retains the corpus/evidence value — the
-  read judges the code as delivered, the merge-vs-park call gets flagged to Paul if the
-  supersession makes it ambiguous
+- **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — Paul's 2026-07-12
+  ruling executing on `spike/nested-x86`: harness-integrity set DONE (e0a62e2 —
+  patched-backend hammer + armed-capability asserts, gate-RC propagation, independent guest
+  oracle, per-record PMI accounting, retained-runset audit); N-2 re-run DONE (e492a69 —
+  1,052,000/1,052,000 exact on the PATCHED mechanism, ≥1M floor met); N-3 floor matrix
+  RUNNING on the box (1,000 reps/condition; solo condition 800/800 identical at the
+  2026-07-13 06:15 foreman check) · `hm-dbh` evidence committed, `hm-jpu` running →
+  disposition re-record + PR #98 merge = `hm-60k` → unblocks appliance `hm-tn9` +
+  preflight CLI `hm-69y`
+- **vmm-core Miri gate closure** (tasks/98, PR #99, worker agent-miri-gate, Opus 4.8) —
+  fix set + measured-honest budgets on the branch; watching the full-green nightly
+  re-dispatch (run 29236400380, ~3.5 h); foreman substantive review on CI-green ·
+  `hm-4yj` (the real conductor-step shrink is filed as `hm-d4y`)
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
 Reach-matrix lane (foreman-owned or spawnable next):
 
-- **Strategy-docs landing PR** (`hm-2uw`, P1, foreman docs work) — the uncommitted
-  2026-07-10..12 strategy docs onto a docs branch + handoff PR: reach-matrix ROADMAP,
-  vendor rename + GLOSSARY ratification, APPLE-SILICON demotion, NESTED-INTEGRATION
-  parked-not-ratified header. Next foreman docs slot.
-- **Land the nested-x86 spike branch** (`hm-l2g`, P1) — push `spike/nested-x86`
-  (b6b2a5d), handoff PR, review, merge. Unblocks the appliance build + preflight CLI.
-- **ARM vendor spike doc: Linux/KVM on Ampere Altra** (`hm-x8g`, P1) ∥ **AMD vendor spike
-  doc: SVM on Epyc** (`hm-wv8`, P2) — both pure doc tasks, spawnable as slots free;
-  hardware-arrival day should be experiment day.
-- **Paravirt work-derived clock spec** (`hm-8h8`, P2) — ARM correctness (no FEAT_ECV
-  anywhere reachable) + x86 RDTSC-exit removal, one design.
+- **Multiarch docs reconcile** (`hm-xi7`, P2, foreman docs work) — bring ROADMAP /
+  ARM-PORT / ARCH-BOUNDARY to the ruled reach-matrix state (their 2026-07-09/10
+  Apple-promoting drafts were dropped from PR #103), plus the two hm-2uw items the slate
+  never contained: APPLE-SILICON.md demotion-status header, NESTED-INTEGRATION
+  parked-not-ratified header.
+- **Box-gate CLI vacuous-pass hardening** (`hm-9wa`, P1 bug, PR-93 round-9 findings) —
+  next crate-code spawn; Mac-side gates immediately, box smoke waits for the nested-posture
+  window to close.
+- **Conductor Miri CI budget shrink** (`hm-d4y`, P1 bug) — dispatch only AFTER PR #99
+  merges (same workflow files).
 - **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
   wedge (`hm-440`), both P2 bugs on main.
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
@@ -126,6 +123,22 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **AMD vendor spike program doc MERGED** (docs/AMD-EPYC.md, PR #102, 2026-07-13):
+  AE-0..AE-6 with the six PR-98 evidence-integrity countermeasures binding per stage;
+  no-MTF single-step ranked-ruling deliverable; one-command demo DoD · `hm-wv8` closed
+- **Strategy-docs slate MERGED** (PR #103, 2026-07-13): DISSONANCE-STRATEGY.md (Resolution
+  kept, scoped inside dissonance), GLOSSARY counterpoint-reserved + campaign-runner,
+  LAYERS/SCORING reconcile, tasks/84+86 amendments, foreman decision guard. Apple-era
+  ROADMAP/ARM-PORT/ARCH-BOUNDARY drafts dropped in round 1 → `hm-xi7` · `hm-2uw` closed
+- **Nested-x86 re-cert duplicate bead chain closed 2026-07-13** (`hm-ymy`/`hm-wd8`/`hm-2ea`
+  were parallel mints of the executing `hm-b5b`→`hm-dbh`/`hm-jpu`→`hm-60k` chain).
+- **E-fails re-key harness PARKED by Paul's ruling 2026-07-12** (tasks/97, PR #94 closed
+  unmerged after 5 non-converging rounds; Differential rewrite supersedes its consumer;
+  corpus + hardening archived at tag `archive/task-97-rekey-harness`).
+- **SpecEnvCodec fallible decode MERGED** (tasks/99, PR #97, 2026-07-12): typed errors on
+  hostile reproducer blobs, full operand-pair contract property-tested · `hm-5d9` closed
+- **NES game-workload M0 MERGED** (task 86, PR #93, 2026-07-12): det 25/25, film's 5
+  sub-gates green (visible SMB clip), campaign report committed · `hm-ahb` closed
 - **Multi-arch promotion ruled + slate filed 2026-07-12** (Paul, 12 tracker actions):
   reach matrix = the Consonance north star; NESTED-INTEGRATION parked as a product sketch
   (product undecided); Apple-silicon route dead; `hm-e3o` closed superseded; tasks/98+99
