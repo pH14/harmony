@@ -273,7 +273,7 @@ pub vmm_core::seal_rate::mock::MockConfig::busy_desync_ppm: u32
 pub vmm_core::seal_rate::mock::MockConfig::inflight_ppm: u32
 pub vmm_core::seal_rate::mock::MockConfig::rng_mid_exit_ppm: u32
 pub vmm_core::seal_rate::mock::MockConfig::seed: u64
-pub vmm_core::seal_rate::mock::MockConfig::sync_stride: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::mock::MockConfig::sync_stride: vmm_core::seal_rate::Span
 pub vmm_core::seal_rate::mock::MockConfig::unrepresentable_ppm: u32
 impl core::default::Default for vmm_core::seal_rate::mock::MockConfig
 pub fn vmm_core::seal_rate::mock::MockConfig::default() -> Self
@@ -312,7 +312,7 @@ pub enum vmm_core::seal_rate::ScheduleError
 pub vmm_core::seal_rate::ScheduleError::EmptySpan
 pub vmm_core::seal_rate::ScheduleError::SpanTooNarrow
 pub vmm_core::seal_rate::ScheduleError::SpanTooNarrow::requested: usize
-pub vmm_core::seal_rate::ScheduleError::SpanTooNarrow::span: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::ScheduleError::SpanTooNarrow::span: vmm_core::seal_rate::Span
 pub vmm_core::seal_rate::ScheduleError::ZeroTargets
 pub enum vmm_core::seal_rate::SealResult
 pub vmm_core::seal_rate::SealResult::Failed(vmm_core::seal_rate::FailureReason)
@@ -320,11 +320,11 @@ pub vmm_core::seal_rate::SealResult::Sealed
 impl vmm_core::seal_rate::SealResult
 pub fn vmm_core::seal_rate::SealResult::is_sealed(&self) -> bool
 pub struct vmm_core::seal_rate::BusyWindow
-pub vmm_core::seal_rate::BusyWindow::end: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::BusyWindow::end: vmm_core::seal_rate::Moment
 pub vmm_core::seal_rate::BusyWindow::kind: vmm_core::seal_rate::BusyKind
-pub vmm_core::seal_rate::BusyWindow::start: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::BusyWindow::start: vmm_core::seal_rate::Moment
 impl vmm_core::seal_rate::BusyWindow
-pub fn vmm_core::seal_rate::BusyWindow::center(&self) -> vmm_core::seal_rate::VTime
+pub fn vmm_core::seal_rate::BusyWindow::center(&self) -> vmm_core::seal_rate::Moment
 pub struct vmm_core::seal_rate::CpuSnapshot
 pub vmm_core::seal_rate::CpuSnapshot::active_injection: bool
 pub vmm_core::seal_rate::CpuSnapshot::inflight_injection: bool
@@ -335,20 +335,20 @@ pub vmm_core::seal_rate::CpuSnapshot::unrepresentable: bool
 impl vmm_core::seal_rate::CpuSnapshot
 pub fn vmm_core::seal_rate::CpuSnapshot::clean_synchronized() -> Self
 pub struct vmm_core::seal_rate::MaterializationDepth
-pub vmm_core::seal_rate::MaterializationDepth::from_genesis: vmm_core::seal_rate::VTime
-pub vmm_core::seal_rate::MaterializationDepth::from_parent: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::MaterializationDepth::from_genesis: vmm_core::seal_rate::Span
+pub vmm_core::seal_rate::MaterializationDepth::from_parent: vmm_core::seal_rate::Span
 impl vmm_core::seal_rate::MaterializationDepth
-pub fn vmm_core::seal_rate::MaterializationDepth::new(vmm_core::seal_rate::VTime, vmm_core::seal_rate::VTime, vmm_core::seal_rate::VTime) -> core::result::Result<Self, vmm_core::seal_rate::DepthError>
+pub fn vmm_core::seal_rate::MaterializationDepth::new(vmm_core::seal_rate::Moment, vmm_core::seal_rate::Moment, vmm_core::seal_rate::Moment) -> core::result::Result<Self, vmm_core::seal_rate::DepthError>
 pub fn vmm_core::seal_rate::MaterializationDepth::ratio_ppm(&self) -> u32
 pub fn vmm_core::seal_rate::MaterializationDepth::savings_ppm(&self) -> u32
 pub struct vmm_core::seal_rate::Overshoot
 pub vmm_core::seal_rate::Overshoot::exact_hits: usize
-pub vmm_core::seal_rate::Overshoot::max: vmm_core::seal_rate::VTime
-pub vmm_core::seal_rate::Overshoot::mean: vmm_core::seal_rate::VTime
-pub vmm_core::seal_rate::Overshoot::min: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::Overshoot::max: vmm_core::seal_rate::Span
+pub vmm_core::seal_rate::Overshoot::mean: vmm_core::seal_rate::Span
+pub vmm_core::seal_rate::Overshoot::min: vmm_core::seal_rate::Span
 pub vmm_core::seal_rate::Overshoot::n: usize
-pub vmm_core::seal_rate::Overshoot::p50: vmm_core::seal_rate::VTime
-pub vmm_core::seal_rate::Overshoot::p90: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::Overshoot::p50: vmm_core::seal_rate::Span
+pub vmm_core::seal_rate::Overshoot::p90: vmm_core::seal_rate::Span
 impl vmm_core::seal_rate::Overshoot
 pub fn vmm_core::seal_rate::Overshoot::of(&[vmm_core::seal_rate::SealAttempt]) -> core::option::Option<Self>
 pub struct vmm_core::seal_rate::PredicateQuality
@@ -372,7 +372,7 @@ pub fn vmm_core::seal_rate::RulingInputs::adversarial_coverage_ok(&self, vmm_cor
 pub fn vmm_core::seal_rate::RulingInputs::determinism_ok(&self) -> bool
 pub fn vmm_core::seal_rate::RulingInputs::determinism_summary(&self) -> alloc::string::String
 pub struct vmm_core::seal_rate::RulingThresholds
-pub vmm_core::seal_rate::RulingThresholds::dense_grid_overshoot: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::RulingThresholds::dense_grid_overshoot: vmm_core::seal_rate::Span
 pub vmm_core::seal_rate::RulingThresholds::min_adversarial_coverage_ppm: u32
 pub vmm_core::seal_rate::RulingThresholds::min_adversarial_ppm: u32
 pub vmm_core::seal_rate::RulingThresholds::min_nominal_ppm: u32
@@ -380,20 +380,20 @@ impl core::default::Default for vmm_core::seal_rate::RulingThresholds
 pub fn vmm_core::seal_rate::RulingThresholds::default() -> Self
 pub struct vmm_core::seal_rate::SamplingSchedule
 impl vmm_core::seal_rate::SamplingSchedule
-pub fn vmm_core::seal_rate::SamplingSchedule::build(vmm_core::seal_rate::VTime, vmm_core::seal_rate::VTime, usize, &[vmm_core::seal_rate::BusyWindow]) -> core::result::Result<Self, vmm_core::seal_rate::ScheduleError>
+pub fn vmm_core::seal_rate::SamplingSchedule::build(vmm_core::seal_rate::Moment, vmm_core::seal_rate::Moment, usize, &[vmm_core::seal_rate::BusyWindow]) -> core::result::Result<Self, vmm_core::seal_rate::ScheduleError>
 pub fn vmm_core::seal_rate::SamplingSchedule::busy_count(&self) -> usize
 pub fn vmm_core::seal_rate::SamplingSchedule::is_empty(&self) -> bool
-pub fn vmm_core::seal_rate::SamplingSchedule::jittered(&self, vmm_core::seal_rate::VTime) -> vmm_core::seal_rate::SamplingSchedule
+pub fn vmm_core::seal_rate::SamplingSchedule::jittered(&self, vmm_core::seal_rate::Span) -> vmm_core::seal_rate::SamplingSchedule
 pub fn vmm_core::seal_rate::SamplingSchedule::len(&self) -> usize
 pub fn vmm_core::seal_rate::SamplingSchedule::targets(&self) -> &[vmm_core::seal_rate::Target]
 pub fn vmm_core::seal_rate::SamplingSchedule::uniform_count(&self) -> usize
 pub struct vmm_core::seal_rate::SealAttempt
-pub vmm_core::seal_rate::SealAttempt::landed_vtime: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::SealAttempt::landed_vtime: vmm_core::seal_rate::Moment
 pub vmm_core::seal_rate::SealAttempt::result: vmm_core::seal_rate::SealResult
 pub vmm_core::seal_rate::SealAttempt::snapshot: vmm_core::seal_rate::CpuSnapshot
 pub vmm_core::seal_rate::SealAttempt::target: vmm_core::seal_rate::Target
 impl vmm_core::seal_rate::SealAttempt
-pub fn vmm_core::seal_rate::SealAttempt::overshoot(&self) -> vmm_core::seal_rate::VTime
+pub fn vmm_core::seal_rate::SealAttempt::overshoot(&self) -> vmm_core::seal_rate::Span
 pub struct vmm_core::seal_rate::SealStats
 pub vmm_core::seal_rate::SealStats::by_reason: alloc::collections::btree::map::BTreeMap<&'static str, usize>
 pub vmm_core::seal_rate::SealStats::n: usize
@@ -404,13 +404,14 @@ pub fn vmm_core::seal_rate::SealStats::failed(&self) -> usize
 pub fn vmm_core::seal_rate::SealStats::of(&[vmm_core::seal_rate::SealAttempt]) -> Self
 pub struct vmm_core::seal_rate::Target
 pub vmm_core::seal_rate::Target::kind: vmm_core::seal_rate::SampleKind
-pub vmm_core::seal_rate::Target::vtime: vmm_core::seal_rate::VTime
+pub vmm_core::seal_rate::Target::vtime: vmm_core::seal_rate::Moment
 pub const vmm_core::seal_rate::PPM: u32
 pub fn vmm_core::seal_rate::ppm_percent(u32) -> alloc::string::String
 pub fn vmm_core::seal_rate::rate_ppm(usize, usize) -> u32
 pub fn vmm_core::seal_rate::rule(&vmm_core::seal_rate::RulingInputs, vmm_core::seal_rate::RulingThresholds) -> vmm_core::seal_rate::Ruling
 pub fn vmm_core::seal_rate::sealable(&vmm_core::seal_rate::CpuSnapshot) -> bool
-pub type vmm_core::seal_rate::VTime = u64
+pub type vmm_core::seal_rate::Moment = u64
+pub type vmm_core::seal_rate::Span = u64
 pub mod vmm_core::snapshot
 pub enum vmm_core::snapshot::SnapshotError
 pub vmm_core::snapshot::SnapshotError::Codec(vm_state::error::VmStateError)
