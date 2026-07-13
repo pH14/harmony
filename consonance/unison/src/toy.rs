@@ -9,7 +9,7 @@
 //! every instruction costs exactly 1 work unit.
 
 use crate::flaky::{Perturbable, Perturbation};
-use crate::{Machine, MachineError, MachineFactory, RunOutcome};
+use crate::{Subject, SubjectError, SubjectFactory, RunOutcome};
 use sha2::{Digest, Sha256};
 
 /// Bytes of toy-machine memory.
@@ -226,10 +226,10 @@ impl ToyMachine {
     }
 }
 
-impl Machine for ToyMachine {
-    fn run_to(&mut self, target: u64) -> Result<RunOutcome, MachineError> {
+impl Subject for ToyMachine {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
         if target < self.work {
-            return Err(MachineError::TargetBehind {
+            return Err(SubjectError::TargetBehind {
                 target,
                 current: self.work,
             });
@@ -297,14 +297,14 @@ impl Perturbable for ToyMachine {
 }
 
 /// Creates [`ToyMachine`]s running a fixed program; the PRNG seed comes from
-/// [`MachineFactory::spawn`].
+/// [`SubjectFactory::spawn`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToyFactory {
     /// The program every spawned machine runs.
     pub program: Vec<Instr>,
 }
 
-impl MachineFactory for ToyFactory {
+impl SubjectFactory for ToyFactory {
     type M = ToyMachine;
 
     fn spawn(&self, seed: u64) -> ToyMachine {
@@ -497,7 +497,7 @@ mod tests {
         m.run_to(2).unwrap();
         assert_eq!(
             m.run_to(1),
-            Err(MachineError::TargetBehind {
+            Err(SubjectError::TargetBehind {
                 target: 1,
                 current: 2
             })

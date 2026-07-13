@@ -2138,7 +2138,7 @@ impl<B: Backend> Vmm<B> {
     /// `sha256` of the **guest-observable conformance output** — the ordered
     /// report stream ‖ the serial banner — the O2/O3 digest the corpus pins to a
     /// golden. Deliberately **distinct** from [`Vmm::state_hash`] (the unison
-    /// `Machine::state_hash`, which folds in latent RAM / V-time / seeded-entropy
+    /// `Subject::state_hash`, which folds in latent RAM / V-time / seeded-entropy
     /// state): the report stream is what the guest *deliberately emits*, so it is
     /// the right conformance signal — a constant payload that happens to be
     /// perfectly deterministic still produces a meaningful (and seed-sensitive,

@@ -33,11 +33,11 @@ pub det_corpus::RunConfig::limit: u64
 pub det_corpus::RunConfig::seed: u64
 pub det_corpus::RunConfig::seed_b: u64
 pub const det_corpus::TOY_MIN_WORK: u64
-pub fn det_corpus::check_conformance<F: unison::MachineFactory>(&F, u64, u64, &str) -> core::result::Result<det_corpus::OracleResult, unison::MachineError>
-pub fn det_corpus::check_determinism<F: unison::MachineFactory>(&F, u64, u64, u64) -> core::result::Result<det_corpus::OracleResult, unison::MachineError>
-pub fn det_corpus::check_seed_sensitivity<F: unison::MachineFactory>(&F, u64, u64, u64, bool) -> core::result::Result<det_corpus::OracleResult, unison::MachineError>
+pub fn det_corpus::check_conformance<F: unison::SubjectFactory>(&F, u64, u64, &str) -> core::result::Result<det_corpus::OracleResult, unison::SubjectError>
+pub fn det_corpus::check_determinism<F: unison::SubjectFactory>(&F, u64, u64, u64) -> core::result::Result<det_corpus::OracleResult, unison::SubjectError>
+pub fn det_corpus::check_seed_sensitivity<F: unison::SubjectFactory>(&F, u64, u64, u64, bool) -> core::result::Result<det_corpus::OracleResult, unison::SubjectError>
 pub fn det_corpus::load_manifest(&str) -> core::result::Result<alloc::vec::Vec<det_corpus::CorpusItem>, det_corpus::ManifestError>
-pub fn det_corpus::run_item<F, G>(&det_corpus::CorpusItem, &F, &det_corpus::RunConfig, G) -> core::result::Result<det_corpus::ItemReport, unison::MachineError> where F: unison::MachineFactory, G: core::ops::function::Fn(&str) -> core::option::Option<alloc::string::String>
+pub fn det_corpus::run_item<F, G>(&det_corpus::CorpusItem, &F, &det_corpus::RunConfig, G) -> core::result::Result<det_corpus::ItemReport, unison::SubjectError> where F: unison::SubjectFactory, G: core::ops::function::Fn(&str) -> core::option::Option<alloc::string::String>
 pub fn det_corpus::to_manifest(&[det_corpus::CorpusItem]) -> alloc::string::String
 pub fn det_corpus::toy_factory(&str) -> unison::toy::ToyFactory
 pub fn det_corpus::validate(&[det_corpus::CorpusItem]) -> core::result::Result<(), det_corpus::ManifestError>

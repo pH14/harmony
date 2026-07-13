@@ -62,9 +62,9 @@ impl<B: vmm_backend::backend::Backend> vmm_core::corpus::CorpusMachine<B>
 pub fn vmm_core::corpus::CorpusMachine<B>::new(vmm_core::vmm::Vmm<B>) -> Self
 pub fn vmm_core::corpus::CorpusMachine<B>::run_error(&self) -> core::option::Option<&str>
 pub fn vmm_core::corpus::CorpusMachine<B>::vmm(&self) -> &vmm_core::vmm::Vmm<B>
-impl<B: vmm_backend::backend::Backend> unison::Machine for vmm_core::corpus::CorpusMachine<B>
+impl<B: vmm_backend::backend::Backend> unison::Subject for vmm_core::corpus::CorpusMachine<B>
 pub fn vmm_core::corpus::CorpusMachine<B>::observable_digest(&self) -> [u8; 32]
-pub fn vmm_core::corpus::CorpusMachine<B>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::MachineError>
+pub fn vmm_core::corpus::CorpusMachine<B>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::SubjectError>
 pub fn vmm_core::corpus::CorpusMachine<B>::state_hash(&self) -> [u8; 32]
 pub fn vmm_core::corpus::CorpusMachine<B>::work(&self) -> u64
 pub fn vmm_core::corpus::boot_patched_payload(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend>>, vmm_core::vmm::VmmError>

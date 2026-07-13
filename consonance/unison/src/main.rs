@@ -28,7 +28,7 @@ enum Cmd {
     /// Compare a toy run against a flaky-wrapped toy run; print a JSON
     /// CompareReport.
     ToyCompare {
-        /// Machine seed (both runs use the same one).
+        /// Subject seed (both runs use the same one).
         #[arg(long)]
         seed: u64,
         /// Work count at which the flaky run is perturbed (18446744073709551615 = never).
@@ -50,7 +50,7 @@ enum Cmd {
     /// Bracket and then bisect the exact divergence point; print a JSON
     /// object {"compare": CompareReport, "point": DivergencePoint | null}.
     ToyBisect {
-        /// Machine seed (both runs use the same one).
+        /// Subject seed (both runs use the same one).
         #[arg(long)]
         seed: u64,
         /// Work count at which the flaky run is perturbed (18446744073709551615 = never).

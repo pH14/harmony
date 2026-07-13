@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 use unison::toy::{ToyFactory, generate_program};
-use unison::{Machine, MachineFactory, RunOutcome, Verdict, compare_runs};
+use unison::{Subject, SubjectFactory, RunOutcome, Verdict, compare_runs};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
