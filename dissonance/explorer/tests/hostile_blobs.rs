@@ -18,7 +18,7 @@
 //! (`magic(4) | version(2) | variant(1) | seed(8)`) and then a `u32`
 //! length-prefixed policy.
 
-use environment::{Action, DecisionClass, EnvSpec, FaultPolicy, HostFault, StandingFault, VTime};
+use environment::{Action, DecisionClass, EnvSpec, FaultPolicy, HostFault, StandingFault};
 use explorer::{
     ADAPTER_BLOB_VERSION, AdapterEnv, EnvCodec, EnvCodecError, Environment, SpecEnvCodec,
 };
@@ -320,7 +320,7 @@ fn spec_content_incompatibility_is_typed() {
         standing: vec![StandingFault {
             class: DecisionClass::Entropy,
             target: Vec::new(),
-            window: (VTime(0), VTime(10)),
+            window: (0, 10),
         }],
         reseeds: std::collections::BTreeMap::new(),
     };

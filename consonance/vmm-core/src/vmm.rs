@@ -5326,7 +5326,7 @@ mod tests {
     /// with the stream position (else divergence could not be witnessed).
     #[test]
     fn net_continuation_resumes_via_the_shared_sdk_stream() {
-        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy, VTime};
+        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy, Span};
         let mut policy = FaultPolicy::none();
         policy
             .set_class(
@@ -5335,7 +5335,7 @@ mod tests {
                 1,
                 &[
                     Fault::NetReset,
-                    Fault::NetLatency(VTime(10)),
+                    Fault::NetLatency(Span(10)),
                     Fault::NetThrottle { bps: 5 },
                 ],
             )

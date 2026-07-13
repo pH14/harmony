@@ -3015,7 +3015,7 @@ mod tests {
         // The out-of-scope clock faults are Unsupported (a follow-on lights them up).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::SkewTime(environment::VTime(5)),
+                environment::HostFault::SkewTime(environment::Span(5)),
                 4000
             ))
             .unwrap(),
@@ -4501,7 +4501,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostFault::SkewTime(environment::VTime(5))),
+                env: host_env(1000, EnvHostFault::SkewTime(environment::Span(5))),
             })
             .unwrap(),
             Err(ControlError::Unsupported)

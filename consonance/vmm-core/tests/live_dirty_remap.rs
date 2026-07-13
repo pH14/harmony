@@ -56,7 +56,7 @@
 use std::time::Duration;
 
 use control_proto::{
-    Environment, HashScope, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+    HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;
@@ -225,7 +225,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
         s,
         &Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -248,8 +248,8 @@ fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
     }
 }
 
-fn seeded_env(seed: u64) -> Environment {
-    Environment {
+fn seeded_env(seed: u64) -> Reproducer {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: EnvSpec::Seeded {
             seed,

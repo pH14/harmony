@@ -68,7 +68,7 @@
 use std::io::{Read, Write};
 
 use control_proto::{
-    Caps, Environment, HashScope, SnapId, StopConditions, StopMask, StopReason, VTime,
+    Caps, HashScope, Moment, Reproducer, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
 use film::{
@@ -224,7 +224,7 @@ impl<S: Read + Write> Server for SocketServer<S> {
         }
     }
 
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
         match self.call(&control_proto::Request::Branch {
             snap,
             env: env.clone(),
@@ -283,7 +283,7 @@ impl<S: Read + Write> Server for SocketServer<S> {
         }
     }
 
-    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+    fn exec(&mut self, cmd: &str, deadline: Moment) -> Result<ExecResult, SessionError> {
         match self.call(&control_proto::Request::Exec {
             cmd: cmd.to_string(),
             deadline,
@@ -322,7 +322,7 @@ impl<S: Read + Write> Server for &mut SocketServer<S> {
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
         (**self).drop_snap(snap)
     }
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
         (**self).branch(snap, env)
     }
     fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
@@ -340,7 +340,7 @@ impl<S: Read + Write> Server for &mut SocketServer<S> {
     fn regs(&mut self) -> Result<RegsView, SessionError> {
         (**self).regs()
     }
-    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+    fn exec(&mut self, cmd: &str, deadline: Moment) -> Result<ExecResult, SessionError> {
         (**self).exec(cmd, deadline)
     }
     fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
@@ -526,7 +526,7 @@ fn run_gate<S: Read + Write>(
         seed,
         policy: FaultPolicy::none(),
     };
-    let wire_env = Environment {
+    let wire_env = Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: spec.encode(),
     };
@@ -543,7 +543,7 @@ fn run_gate<S: Read + Write>(
     // as `GameCampaignConfig`: 1 ms steps, bounded attempts).
     let mut base_vtime = match adapter
         .run(StopConditions {
-            deadline: Some(VTime(0)),
+            deadline: Some(Moment(0)),
             on: StopMask::NONE,
         })
         .map_err(|e| format!("vtime probe: {e}"))?
@@ -563,7 +563,7 @@ fn run_gate<S: Read + Write>(
             Err(SessionError::Control(control_proto::ControlError::NotQuiescent)) => {
                 base_vtime = match adapter
                     .run(StopConditions {
-                        deadline: Some(VTime(base_vtime.saturating_add(SNAPSHOT_RETRY_STEP))),
+                        deadline: Some(Moment(base_vtime.saturating_add(SNAPSHOT_RETRY_STEP))),
                         on: StopMask::NONE,
                     })
                     .map_err(|e| format!("seal-retry run: {e}"))?
@@ -586,7 +586,7 @@ fn run_gate<S: Read + Write>(
             .map_err(|e| format!("branch: {e}"))?;
         match a
             .run(StopConditions {
-                deadline: Some(VTime(terminal)),
+                deadline: Some(Moment(terminal)),
                 on: StopMask::NONE,
             })
             .map_err(|e| format!("run: {e}"))?
@@ -646,7 +646,7 @@ fn run_gate<S: Read + Write>(
         }
         match adapter
             .run(StopConditions {
-                deadline: Some(VTime(stamp.moment)),
+                deadline: Some(Moment(stamp.moment)),
                 on: StopMask::NONE,
             })
             .map_err(|e| format!("calibration run: {e}"))?
