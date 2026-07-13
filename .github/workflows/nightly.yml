@@ -37,10 +37,17 @@ jobs:
   # strings cite the dedicated restore-target test above. Job-level
   # `-Zmiri-permissive-provenance` only — no disable-isolation.
   # See consonance/vmm-core/IMPLEMENTATION.md (task 98).
+  # Budget (task 98, measured): the exact command below runs in ~34 min real on
+  # an M-class Mac after the hm-d8o tail shrink (pre-shrink: ~92 min, the round-2
+  # bug), and the box is ~1.12x slower per the vmcall-transport step (13 min box
+  # vs 11.6 min Mac) — so ~38 min expected here; 90 gives ~2.4x margin. NOTE when
+  # re-measuring: under Miri WITHOUT -Zmiri-disable-isolation, libtest's
+  # "finished in" prints the interpreter's deterministic VIRTUAL clock (~2x real
+  # on the Mac) — time the command externally.
   miri-vmm-core:
     name: miri — vmm-core (UB safety net, own job)
     runs-on: self-hosted
-    timeout-minutes: 75
+    timeout-minutes: 90
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance

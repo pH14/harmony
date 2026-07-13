@@ -4344,15 +4344,30 @@ review, blocking). Fixed on both sides, deliberately:
   being among the heaviest remaining (~319 s + ~202 s pre-shrink) — review
   commitments outrank runtime.
 
-**Gates.** `build` / `nextest` (429 tests, all still run natively) / `clippy -D
-warnings` / `fmt` / `deny` green on Mac, for both `vmm-core` and `snapshot-store`. The
-exact nightly.yml vmm-core Miri command passes end-to-end on `nightly-2026-06-16`
-(measured full run, exit 0): the lib binary runs **329 passed, 0 failed, 64 ignored**
-(the 37 restore tests + `arbitrary_schedule` + `serve_speaks_frames` + the 3 pre-existing
-mmap gates are the `ignored`; `snapshot_mints…` and the new
-`compose_restore_target_map_memory_over_an_anonymous_mapping` are among the passing),
-and every integration binary is `ok` (`event_loop` 19, `corpus_oracle_mock` 3,
-`loader_proptest` 3, `linux_loader_proptest` 4 pass; the `live_*` /
-`seal_rate_sweep` / `snapshot_branch` / `public_api` binaries are `#[ignore]`d or
-cfg-excluded). Both `map_memory` sites (owned `GuestRam` and the restore `Mapping`) are
-exercised by a running Miri test.
+**A measurement gotcha recorded for posterity.** Under Miri **without**
+`-Zmiri-disable-isolation` (this job), libtest's `finished in …s` line reports the
+interpreter's **deterministic virtual clock**, not wall time — about 2× real on the
+Mac (the exact command printed `finished in 4175.78s` for a run that `time` measured
+at 33:48). Per-test `--report-time` figures are virtual too: valid for *ranking*
+(they track interpreted work), wrong for budgets. Every wall figure in this section
+was measured externally with `time`.
+
+**Gates (round 2, re-verified).** `build` / `nextest` (**460 passed / 10 skipped**
+across `vmm-core` + `snapshot-store`, native tallies unchanged by the shrink) /
+`clippy -D warnings` / `fmt` / `deny` green on Mac. The exact nightly.yml vmm-core
+Miri command passes end-to-end on `nightly-2026-06-16`, exit 0, **33 min 48 s real
+wall** (uncontended M-class Mac; pre-shrink baseline ~92 min real — the round-2
+budget bug; the CI box is ~1.12× slower per the vmcall-transport comparison, 13 min
+box vs 11.6 min Mac, so ~38 min expected against the dedicated job's 90-minute
+budget, ~2.4× margin). The lib binary runs **308 passed, 0 failed, 85 ignored** (the
+37 restore tests + `arbitrary_schedule` + `serve_speaks_frames` + the 3 pre-existing
+mmap gates + the 21 hm-d8o tail gates above; `snapshot_mints…`,
+`branch_validates…`, and the retained-pointer
+`compose_restore_target_map_memory_over_an_anonymous_mapping` are among the
+passing), and every integration binary is `ok` (`event_loop` 19,
+`corpus_oracle_mock` 3, `loader_proptest` 3, `linux_loader_proptest` 4; the
+`live_*` / `seal_rate_sweep` / `snapshot_branch` / `public_api` binaries are
+`#[ignore]`d or cfg-excluded). Both `map_memory` sites (owned `GuestRam` and the
+restore `Mapping`) are exercised by a running Miri test, the restore side through a
+retained raw pointer read after the mapping's move. `snapshot-store`'s own nightly
+step (`--lib` + disable-isolation) passes with the new alignment tests (14 passed).
