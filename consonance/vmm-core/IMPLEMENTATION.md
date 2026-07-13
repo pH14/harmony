@@ -4328,6 +4328,21 @@ review, blocking). Fixed on both sides, deliberately:
   48 KiB §6 canonical form, pure unsafe-free code) is Miri-ignored with the same
   rationale as its five §6 serialization siblings. No test's *native* behavior or
   assertions changed.
+- **The extreme unsafe-free tail is gated** (20 tests, each with its own rationale
+  string). The per-test profile showed 38 tests ≥100 s totalling 90% of the run;
+  the worst are multi-hash tests at 200–680 s apiece (sha256 ~2 s/KiB interpreted,
+  several hashes per test). Every gated test is pure safe code over the mock
+  backend — `Vmm::new` directly, **no `map_memory` on the path** (both unsafe
+  seams stay Miri-run in `bringup`) — and each family keeps cheaper Miri-run
+  siblings: the save/restore codec via `save_vm_state_round_trips_through_the_codec`
+  + `report_stream_round_trips_through_save_restore` + three `restore_vm_state_rejects_*`
+  validators; hash-folding via `vtime_state_is_hashed_and_distinguishes_seed_and_vns_base`;
+  the seal/hash family via the four deferred-snapshot-boundary tests; the exec
+  sentinel scan via the small-buffer exec tests. The two tests round 1 committed to
+  keep running (`branch_validates_the_env_before_touching_the_vm`,
+  `snapshot_mints_fresh_handles_and_drop_releases_them`) **stay running** despite
+  being among the heaviest remaining (~319 s + ~202 s pre-shrink) — review
+  commitments outrank runtime.
 
 **Gates.** `build` / `nextest` (429 tests, all still run natively) / `clippy -D
 warnings` / `fmt` / `deny` green on Mac, for both `vmm-core` and `snapshot-store`. The

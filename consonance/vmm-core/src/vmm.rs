@@ -4848,6 +4848,10 @@ mod tests {
     /// RAM and mask the SDK-channel-only difference) so the hash delta is
     /// attributable to `pending_snapshot` alone.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn sdk_snapshot_round_trips_the_pending_deferred_point_hash() {
         use environment::{EnvSpec, FaultPolicy};
         let spec = EnvSpec::Seeded {
@@ -5010,6 +5014,10 @@ mod tests {
     /// reseed provably DID take effect (distinct reseeds ⇒ distinct RNG draws), so
     /// the invariance is not vacuous.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn buggify_decisions_are_independent_of_an_entropy_reseed() {
         use environment::{EnvSpec, FaultPolicy};
         let mut policy = FaultPolicy::none();
@@ -5465,6 +5473,10 @@ mod tests {
     /// **differently**; and a VM with NO SDK channel carries no `SDK\0` chunk, so
     /// an SDK-less golden (M1/M2/corpus/Linux) is byte-for-byte unchanged.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn state_hash_folds_the_sdk_stream_and_is_absent_when_unwired() {
         use environment::{EnvSpec, FaultPolicy};
         let mut policy = FaultPolicy::none();
@@ -5511,6 +5523,10 @@ mod tests {
     /// **differently** — a stream position alone does not determine the buggify
     /// fire/nominal sequence, the policy does, so the divergence must be in the hash.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn state_hash_folds_the_active_buggify_policy() {
         use environment::{EnvSpec, FaultPolicy};
         let mk = |policy: FaultPolicy| {
@@ -8263,6 +8279,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn restore_vm_state_reproduces_the_blob_byte_for_byte() {
         // Live round-trip: save on A, restore into a fresh equivalently-wired B,
         // re-save — the second blob equals the first (the adapter is lossless over
@@ -8351,6 +8371,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn restore_vm_state_rejects_a_different_contract_atomically() {
         let mut a = full_vmm(nonzero_state(), mutate_exits(), 500, 0xABCD);
         step_n(&mut a, 6);
@@ -8412,6 +8436,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn restore_vm_state_rejects_a_clock_rate_mismatch() {
         // Restoring a blob whose V-time *rate* differs from this VM's wired clock is
         // refused (the rate is not applied from the blob, so a silent accept would
@@ -8443,6 +8471,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn restore_into_unwired_vm_rejects_a_vtime_bearing_blob() {
         // A V-time-wired (no-LAPIC) source yields a blob carrying a live V-time
         // block; restoring it into a VM with no V-time wired is refused (wiring must
@@ -8711,6 +8743,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn save_vm_state_captures_in_flight_events_at_a_non_quiescent_point() {
         // Task 41 — the headline inversion: a point with an interrupt/exception **in
         // flight** (the very state task 39 fail-closed-rejected) is now snapshottable,
@@ -8859,6 +8895,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn restore_vm_state_rejects_a_cap_gated_event_blob_before_mutation() {
         // PR #12 round 8 — restore's reject-before-mutation (atomic) contract. A foreign /
         // malformed v3 blob whose `kvm_vcpu_events` would set a cap-disabled validity bit
@@ -9116,6 +9156,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated (each state_hash/state_blob over the TEST_RAM image interprets ~2 s/KiB under Miri and this test hashes repeatedly); pure safe code over the mock backend — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the family keeps Miri-run siblings (task 98 / hm-d8o)"
+    )]
     fn wiring_snapshot_hashing_folds_the_canonical_blob_into_the_hash() {
         // Enabling it adds the VMST chunk and changes the hash; two states whose
         // canonical blob differs (here a TPR write) then hash differently, while the

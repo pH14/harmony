@@ -2136,6 +2136,10 @@ mod tests {
     /// The safety default: without backend dirty tracking every seal full-scans
     /// (base layers throughout) — nothing ever derives on an unvouched window.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn untracked_seals_always_full_scan() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
@@ -2148,6 +2152,10 @@ mod tests {
     /// The chain bound (M2.1): at `max_chain_len` the seal flattens via a fresh
     /// base instead of deriving deeper.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn seal_flattens_at_the_chain_bound() {
         let mut s = server_tracked();
         s.set_max_chain_len(2);
@@ -2163,6 +2171,10 @@ mod tests {
     /// A released parent (the client dropped the handle) makes the next seal
     /// fall back to a base — the parent-liveness check of the safety rule.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn seal_falls_back_to_base_when_the_parent_was_dropped() {
         let mut s = server_tracked();
         hello(&mut s);
@@ -2175,6 +2187,10 @@ mod tests {
     /// An untrackable full-image host write between seals forces the fallback
     /// (the wholesale poison), and the state still captures correctly.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn seal_falls_back_after_a_wholesale_host_write() {
         let mut s = server_tracked();
         hello(&mut s);
@@ -2900,6 +2916,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn hash_whole_matches_the_vmm_and_other_scopes_are_unsupported() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
@@ -3568,6 +3588,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "enforce_run boots + runs + state-hashes VMs several times (~2 s/KiB sha256 under Miri); it never restores, and its boot-path map_memory seam is Miri-run via bringup::tests::compose_drives_guestram_and_unsafe_map_memory — the same grounds as its proptest sibling arbitrary_schedule_applied_twice_is_identical; covered natively (task 98 / hm-d8o)"
+    )]
     fn same_schedule_run_twice_is_bit_identical_and_control_differs() {
         // Gate 1: an arbitrary schedule applied twice is bit-identical; and an
         // ABSENT schedule (the control) differs — the faults are actually landing.
@@ -4195,6 +4219,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn recorded_env_replays_to_the_same_hash() {
         // Task 59 requirement 3 (portable form of the box gate's record→replay
         // closure): every applied fault is stamped into the recorded env, and
@@ -6362,6 +6390,10 @@ mod tests {
     /// A snapshot taken from a tainted timeline reports `tainted: true`; one taken
     /// before any `exec` reports untainted (and via the pre-81 `SnapId` reply).
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "sha256-dominated snapshot-seal/hash logic over the mock server VM (each seal state-hashes + page-hashes the image, ~2 s/KiB under Miri); pure safe code — no map_memory on this path (both seams stay Miri-run in bringup); logic covered natively, and the seal/hash family keeps Miri-run siblings incl. snapshot_mints_fresh_handles_and_drop_releases_them and the deferred-snapshot-boundary tests (task 98 / hm-d8o)"
+    )]
     fn snapshot_reply_carries_the_taint() {
         let mut s = server(vec![Exit::Hlt]);
         hello(&mut s);
