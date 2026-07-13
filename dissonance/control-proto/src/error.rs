@@ -33,7 +33,7 @@ use crate::SnapId;
 ///   version this build cannot parse (≠ [`PROTO_VERSION`](crate::PROTO_VERSION)).
 ///   This is the *framing* version, distinct from the negotiated
 ///   [`Caps::protocol_version`](crate::Caps::protocol_version) and from an
-///   [`Environment::blob_version`](crate::Environment::blob_version), neither of
+///   [`Reproducer::blob_version`](crate::Reproducer::blob_version), neither of
 ///   which the codec validates.
 /// - [`BadLength`](Self::BadLength) — the header advertises a body longer than
 ///   [`MAX_FRAME_LEN`](crate::MAX_FRAME_LEN). Reported from the header alone,
@@ -220,7 +220,7 @@ pub enum ControlError {
     /// minted a reproducer from it ([`RecordedEnv`](crate::Request::RecordedEnv) or
     /// equivalent). An improvised timeline is off the record by ruling
     /// (`docs/RESOLUTION.md` §Improvisations) — its execution carries no determinism
-    /// guarantee, so there is no honest [`Environment`](crate::Environment) that
+    /// guarantee, so there is no honest [`Reproducer`](crate::Reproducer) that
     /// replays it. Refused **loudly** rather than handing back a reproducer that does
     /// not reproduce; the caller must rewind to an untainted ancestor
     /// (`branch`/`replay`) to reach recordable state again. Taint never clears

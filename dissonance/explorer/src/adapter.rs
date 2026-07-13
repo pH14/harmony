@@ -795,7 +795,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         // keys raw would mis-key every host fault under a parent-rooted fold
         // (PR #58 round-1 blocking finding).
         let wire_spec = rebase_to_wire(&decoded.spec, origin)?;
-        let wire_env = control_proto::Environment {
+        let wire_env = control_proto::Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: wire_spec.encode(),
         };
@@ -887,7 +887,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
     ) -> Result<StopReason, MachineError> {
         let req = control_proto::Request::Run {
             until: control_proto::StopConditions {
-                deadline: until.deadline.map(|v| control_proto::VTime(v.0)),
+                deadline: until.deadline.map(|v| control_proto::Moment(v.0)),
                 on: control_proto::StopMask(until.on.0),
             },
             resolve: resolve.map(|a| control_proto::Answer(a.0.clone())),
@@ -1532,7 +1532,7 @@ mod tests {
 
     #[test]
     fn crash_info_keeps_kinds_distinguishable() {
-        use control_proto::{CrashInfo, CrashKind, StopReason as Ws, VTime as WsVTime};
+        use control_proto::{CrashInfo, CrashKind, StopReason as Ws, Moment as WsVTime};
         let stop = |kind| {
             super::stop_from_wire(Ws::Crash {
                 vtime: WsVTime(5),
@@ -1625,7 +1625,7 @@ mod tests {
     /// with `Deadline{vtime}`.
     fn probe_reply(vtime: u64) -> control_proto::Reply {
         control_proto::Reply::Stop(control_proto::StopReason::Deadline {
-            vtime: control_proto::VTime(vtime),
+            vtime: control_proto::Moment(vtime),
         })
     }
 
@@ -1675,7 +1675,7 @@ mod tests {
     /// be mis-keyed once decisions exist (dormant in v1).
     #[test]
     fn replay_restores_the_branch_origin_at_capture_not_the_snapshot_vtime() {
-        use control_proto::{Reply, SnapId as WsSnapId, StopReason as Ws, VTime as WsVTime};
+        use control_proto::{Reply, SnapId as WsSnapId, StopReason as Ws, Moment as WsVTime};
         let stream = scripted(&[
             server_caps_reply(),        // hello
             probe_reply(50),            // connect probe → origin 50
@@ -1900,7 +1900,7 @@ mod tests {
     /// reactive path this recording machinery exists for.)
     #[test]
     fn a_none_resolve_between_a_decision_and_its_answer_keeps_the_pending_decision() {
-        use control_proto::{DecisionId, Reply, StopReason as Ws, VTime as WsVTime};
+        use control_proto::{DecisionId, Reply, StopReason as Ws, Moment as WsVTime};
         let stream = scripted(&[
             server_caps_reply(), // hello
             probe_reply(0),      // connect's V-time probe (origin 0)

@@ -489,7 +489,7 @@ fn behind_snapshot_host_fault_is_rejected_on_the_wire() {
                     mask: BitMask(0xFF),
                 }),
             );
-            control_proto::Environment {
+            control_proto::Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: EnvSpec::Recorded {
                     seed: 7,

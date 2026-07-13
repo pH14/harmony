@@ -13,7 +13,7 @@
 //!
 //! The verbs `control-proto` already carries — `hello` / `snapshot` / `drop` /
 //! `branch` / `replay` / `run` / `hash` — take and return its **real wire
-//! types** ([`control_proto::Environment`], [`StopReason`], [`HashScope`], …),
+//! types** ([`control_proto::Reproducer`], [`StopReason`], [`HashScope`], …),
 //! so this client genuinely speaks that contract (`tests/wire.rs` pins the
 //! request/reply values against `control-proto`'s codec byte-for-byte). The
 //! three verbs tasks 80/81 add but that are unmerged on this branch — `read` /
@@ -21,7 +21,7 @@
 //! shaped exactly as those specs fix them (conventions rule 2). See
 //! [`SessionError`] for why their errors live here too.
 
-use control_proto::{Caps, Environment, HashScope, SnapId, StopConditions, StopReason, VTime};
+use control_proto::{Caps, HashScope, Reproducer, SnapId, StopConditions, StopReason};
 use environment::{EnvSpec, Moment};
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +61,7 @@ pub trait Server {
 
     /// Restore `snap` and reseed from `env` — the explore/materialize path. The
     /// new timeline runs under `env`.
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError>;
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError>;
 
     /// Restore `snap` verbatim — the reproduce/determinism-gate path.
     fn replay(&mut self, snap: SnapId) -> Result<(), SessionError>;
@@ -87,11 +87,11 @@ pub trait Server {
     /// timeline's taint bit. The server refuses nothing (a caller may
     /// deliberately sacrifice a timeline); the taint bit makes the consequence
     /// structural.
-    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError>;
+    fn exec(&mut self, cmd: &str, deadline: control_proto::Moment) -> Result<ExecResult, SessionError>;
 
     /// Mint the genesis-complete reproducer ([`EnvSpec`]) for the current point
     /// — the task-81 taint guard's fail-loud site: a tainted timeline returns
-    /// [`SessionError::Tainted`], never a lying `Environment`.
+    /// [`SessionError::Tainted`], never a lying `Reproducer`.
     fn recorded_env(&mut self) -> Result<EnvSpec, SessionError>;
 }
 

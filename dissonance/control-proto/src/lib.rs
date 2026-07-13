@@ -14,10 +14,10 @@
 //!
 //! - **No bare `restore`.** Every restore is [`Replay`](Request::Replay)
 //!   (verbatim — the determinism-gate / repro path) or [`Branch`](Request::Branch)
-//!   (reseed with a new [`Environment`] — the explore path). The choice is
+//!   (reseed with a new [`Reproducer`] — the explore path). The choice is
 //!   explicit at every call site.
-//! - **Schema-blind to `Environment`.** R2 ferries the modulation unit as an
-//!   opaque, versioned blob ([`Environment`]) and a per-decision answer as opaque
+//! - **Schema-blind to `Reproducer`.** R2 ferries the modulation unit as an
+//!   opaque, versioned blob ([`Reproducer`]) and a per-decision answer as opaque
 //!   [`Answer`]. It never parses them — their structure is task 24's contract.
 //!   This is what lets R2 be coded ahead of the fault model.
 //!
@@ -44,15 +44,15 @@ mod types;
 pub use codec::{decode_reply, decode_request, encode_reply, encode_request};
 pub use error::{ControlError, ProtocolError};
 pub use types::{
-    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Environment,
+    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Reproducer,
     EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
-    StopMask, StopReason, VTime, class_bit,
+    StopMask, StopReason, class_bit,
 };
 
 /// The wire-format version carried in every frame header. Bumps only when the
 /// *framing* layout changes (distinct from the negotiated
 /// [`APP_PROTOCOL_VERSION`] / [`Caps::protocol_version`] and from an
-/// [`Environment::blob_version`], which the codec never validates). A frame whose
+/// [`Reproducer::blob_version`], which the codec never validates). A frame whose
 /// header version differs is rejected with [`ProtocolError::BadVersion`].
 pub const PROTO_VERSION: u16 = 1;
 
@@ -98,7 +98,7 @@ pub const APP_PROTOCOL_VERSION: u16 = 7;
 /// cap still rejects loudly, never truncates.
 pub const READ_CAP: u32 = 1 << 16; // 64 KiB
 
-/// Maximum on-wire frame *body* length. Generous for [`Environment`] blobs and
+/// Maximum on-wire frame *body* length. Generous for [`Reproducer`] blobs and
 /// hashes, but bounded so untrusted transport can never force unbounded
 /// buffering: [`decode_request`] / [`decode_reply`] return
 /// [`ProtocolError::BadLength`] the moment a header's length field exceeds this —

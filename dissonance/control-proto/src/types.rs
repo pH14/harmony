@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The control-plane value types: the opaque carried units the explorer ferries
-//! schema-blind ([`Environment`], [`Answer`]), the handles and addressing
-//! ([`SnapId`], [`VTime`], [`DecisionId`]), the request/reply verbs
+//! schema-blind ([`Reproducer`], [`Answer`]), the handles and addressing
+//! ([`SnapId`], [`Moment`], [`DecisionId`]), the request/reply verbs
 //! ([`Request`], [`Reply`]), the run-control inputs ([`StopConditions`],
 //! [`StopMask`], [`HashScope`]), and the guest-observable run outcomes
 //! ([`StopReason`] and its payloads). All are plain data; the wire codec lives in
 //! [`mod@crate::codec`].
 
-/// One run's **environment** — entropy, scheduling, payload, and faults — carried
-/// as an **opaque, versioned blob**. R2 is schema-blind: it never parses these
+/// One run's **reproducer** — the recorded artifact (entropy, scheduling,
+/// payload, and faults) that reconstitutes its environment — carried as an
+/// **opaque, versioned blob**. R2 is schema-blind: it never parses these
 /// bytes (their structure is `environment::EnvSpec`'s contract). `blob_version`
 /// lets the backend answer [`BadEnvVersion`](crate::ControlError::BadEnvVersion)
 /// without the codec ever validating it (the codec carries any version through).
+/// (The GLOSSARY rename of this crate's former `Environment` struct — the
+/// artifact currency is `Reproducer`; "environment" survives as the live
+/// answering surface the blob reconstitutes.)
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Environment {
+pub struct Reproducer {
     /// The `EnvSpec` blob-format version (validated by the backend, not the codec).
     pub blob_version: u16,
     /// The opaque serialized `EnvSpec`.
@@ -33,20 +37,20 @@ pub struct Answer(pub Vec<u8>);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HostFault(pub Vec<u8>);
 
-/// A moment on the single deterministic axis — a retired-instruction count.
-/// Mirrors `environment::Moment` (conventions rule 2 — defined locally, not
-/// imported); a host fault is staged at one via [`Perturb`](Request::Perturb).
+/// A point on the single deterministic axis. Mirrors `environment::Moment`
+/// (conventions rule 2 — defined locally, not imported). Single-vCPU
+/// determinism makes a bare axis value a unique moment: a host fault is staged
+/// at one via [`Perturb`](Request::Perturb), a run deadline names one, and
+/// every [`StopReason`] is stamped with the one it stopped at. (The GLOSSARY's
+/// one-axis ruling: this type absorbs the former wire `VTime` — same `u64`,
+/// same wire bytes; "V-time" survives as the name of the work-derived clock
+/// mechanism itself.)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Moment(pub u64);
 
 /// A pool-wide snapshot handle returned by [`Snapshot`](Request::Snapshot).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct SnapId(pub u64);
-
-/// A moment in virtual time — a retired-branch count. Single-vCPU determinism
-/// makes a bare V-time a unique moment.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct VTime(pub u64);
 
 /// Identifies the one outstanding [`Decision`](StopReason::Decision). Single-vCPU
 /// determinism guarantees at most one is ever outstanding.
@@ -139,7 +143,7 @@ impl StopMask {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct StopConditions {
     /// Stop with [`Deadline`](StopReason::Deadline) at this V-time, if set.
-    pub deadline: Option<VTime>,
+    pub deadline: Option<Moment>,
     /// Which decision classes surface (vs. auto-service).
     pub on: StopMask,
 }
@@ -175,7 +179,7 @@ pub enum Request {
         /// The base snapshot to restore.
         snap: SnapId,
         /// The new environment to reseed with.
-        env: Environment,
+        env: Reproducer,
     },
     /// Restore verbatim — the reproduce / determinism-gate path →
     /// [`Unit`](Reply::Unit).
@@ -237,7 +241,7 @@ pub enum Request {
     /// **Observation** (task 80): read `len` bytes of guest **physical** memory at
     /// `gpa` → [`Bytes`](Reply::Bytes). A pure observation — it never mutates guest
     /// state, V-time, or any hash, and is never recorded into an
-    /// [`Environment`] (the `docs/RESOLUTION.md` search-surface criterion:
+    /// [`Reproducer`] (the `docs/RESOLUTION.md` search-surface criterion:
     /// observation, not a move). `len` is bounded by the backend's read cap
     /// ([`READ_CAP`](crate::READ_CAP)); an over-cap `len` is a loud
     /// [`ReadTooLarge`](crate::ControlError::ReadTooLarge) and a `[gpa, gpa+len)`
@@ -251,7 +255,7 @@ pub enum Request {
     },
     /// **Observation** (task 80): the current [`RegsView`] → [`Regs`](Reply::Regs).
     /// Like [`Read`](Request::Read) it is a pure observation (no state/V-time/hash
-    /// mutation, never recorded into an [`Environment`]). Returns a **versioned**
+    /// mutation, never recorded into an [`Reproducer`]). Returns a **versioned**
     /// register *view*, not the save/restore format — additive evolution, no
     /// round-trip obligation.
     Regs,
@@ -260,7 +264,7 @@ pub enum Request {
     /// `deadline`, and capture the serial output → [`ExecResult`](Reply::ExecResult).
     ///
     /// **Off the record, by ruling** (`docs/RESOLUTION.md` §Improvisations). `exec`
-    /// is a one-off *improvisation*: it is **never recorded into any [`Environment`]**
+    /// is a one-off *improvisation*: it is **never recorded into any [`Reproducer`]**
     /// and carries **no determinism guarantee** — the serial byte channel is
     /// deliberately crude. What is airtight is the **taint guard** the server
     /// enforces around it: the first `exec` against a timeline sets that timeline's
@@ -277,16 +281,16 @@ pub enum Request {
         cmd: String,
         /// The V-time deadline: the run stops at the completion sentinel or here,
         /// whichever is first.
-        deadline: VTime,
+        deadline: Moment,
     },
     /// **Reproducer mint** (task 81): return the **recorded reproducer** — the
-    /// genesis-complete [`Environment`] that replays the current point — →
+    /// genesis-complete [`Reproducer`] that replays the current point — →
     /// [`Recorded`](Reply::Recorded), **or** a loud
     /// [`Tainted`](crate::ControlError::Tainted) when the current timeline has been
     /// tainted by an [`Exec`](Request::Exec) improvisation. This is the fail-loud
     /// site of the taint guard: an improvised timeline is off the record and has no
     /// honest reproducer, so the server refuses to mint one rather than hand back an
-    /// [`Environment`] that does not reproduce (mirrors resolution's `recorded_env`).
+    /// [`Reproducer`] that does not reproduce (mirrors resolution's `recorded_env`).
     RecordedEnv,
 }
 
@@ -361,10 +365,10 @@ pub enum Reply {
         tainted: bool,
     },
     /// The recorded reproducer (reply to [`RecordedEnv`](Request::RecordedEnv)): the
-    /// genesis-complete [`Environment`] that replays the current point. Only ever
+    /// genesis-complete [`Reproducer`] that replays the current point. Only ever
     /// sent for an **untainted** timeline — a tainted one is a loud
     /// [`Tainted`](crate::ControlError::Tainted) instead, never a lying reproducer.
-    Recorded(Environment),
+    Recorded(Reproducer),
 }
 
 /// A **versioned** register view (task 80) — the observation surface for
@@ -429,17 +433,17 @@ pub enum StopReason {
     /// The run reached its [`deadline`](StopConditions::deadline).
     Deadline {
         /// The V-time at which the run stopped.
-        vtime: VTime,
+        vtime: Moment,
     },
     /// HLT with an empty timer queue — the test ended.
     Quiescent {
         /// The V-time of quiescence.
-        vtime: VTime,
+        vtime: Moment,
     },
     /// The guest crashed.
     Crash {
         /// The V-time of the crash.
-        vtime: VTime,
+        vtime: Moment,
         /// What kind of crash, plus detail.
         info: CrashInfo,
     },
@@ -447,7 +451,7 @@ pub enum StopReason {
     /// with the next [`Run`](Request::Run)'s `resolve`.
     Decision {
         /// The V-time of the decision.
-        vtime: VTime,
+        vtime: Moment,
         /// The outstanding decision's identity.
         id: DecisionId,
         /// Opaque service context for the explorer's policy.
@@ -456,12 +460,12 @@ pub enum StopReason {
     /// An SDK lifecycle "ready" point.
     SnapshotPoint {
         /// The V-time of the snapshot point.
-        vtime: VTime,
+        vtime: Moment,
     },
     /// An SDK assertion fired (an `Always` violated or a `Sometimes` hit).
     Assertion {
         /// The V-time of the assertion.
-        vtime: VTime,
+        vtime: Moment,
         /// The event reference identifying the assertion.
         ev: EventRef,
     },
@@ -505,9 +509,9 @@ pub struct Caps {
     /// The negotiated application protocol version (distinct from the wire
     /// [`PROTO_VERSION`](crate::PROTO_VERSION) carried in the frame header).
     pub protocol_version: u16,
-    /// Lowest `Environment` blob version this peer accepts.
+    /// Lowest `Reproducer` blob version this peer accepts.
     pub env_version_min: u16,
-    /// Highest `Environment` blob version this peer accepts.
+    /// Highest `Reproducer` blob version this peer accepts.
     pub env_version_max: u16,
     /// Where/shape of the coverage shmem map (its bytes are never serialized).
     pub coverage: CoverageGeometry,

@@ -35,8 +35,8 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError, server_caps};
 
 use control_proto::{
-    ControlError, Environment as WireEnv, HashScope, Reply, Request, SnapId, StopConditions,
-    StopMask, VTime as WireVTime,
+    ControlError, Reproducer as WireEnv, HashScope, Reply, Request, SnapId, StopConditions,
+    StopMask, Moment as WireVTime,
 };
 
 /// The **single** V-time → [`Moment`] mapping (task 65 §4: "exactly one

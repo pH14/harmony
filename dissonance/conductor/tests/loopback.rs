@@ -229,7 +229,7 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
                 6,
                 &Request::Branch {
                     snap: SnapId(42),
-                    env: control_proto::Environment {
+                    env: control_proto::Reproducer {
                         blob_version: EnvSpec::BLOB_VERSION,
                         bytes: EnvSpec::Seeded {
                             seed: 1,
