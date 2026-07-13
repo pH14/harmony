@@ -1132,9 +1132,34 @@ now an invariant, so the overflow is gone by construction rather than by checked
 `cargo fmt --check`, `cargo deny check`, and `cargo check --workspace --all-targets --target
 x86_64-unknown-linux-gnu`. Public-api snapshot regenerated (additive only: `WorkEvidence`,
 `Vacuity`, `GateVerdict`, `determinism_verdict`, `smb_frames`, `DETERMINISM_BAR`,
-`DEFAULT_GUEST_RAM_LEN`, `BillboardMalformed`, `guest_ram_len`). Miri (pinned nightly):
-`conductor --lib` and play-agent `--lib` green — the new tests touch no filesystem, so the
-`--lib` Miri line stays clean (the trap round 8 fell into). No new `unsafe`.
+`DEFAULT_GUEST_RAM_LEN`, `BillboardMalformed`, `guest_ram_len`). No new `unsafe`.
+
+**Miri — exactly what was verified.** The full `conductor --lib` Miri suite has **no viable
+budget**: PR #99's miri-gate work showed it has never completed in CI (two 4h+ attempts), the
+nightly conductor step was removed loudly, and the debt is tracked as `hm-d4y` (P1). So this
+task did **not** attempt it. What ran instead, on the pinned nightly with the job's
+`MIRIFLAGS`, is a filter over the six lib tests that cover the changed code paths — the
+vacuity guard, the work evidence, and billboard validation, plus the two round-8/9 box-mode
+tests whose fixtures this task's changes flow through:
+
+```
+cargo +nightly-2026-06-16 miri test -p conductor --lib -- --exact \
+  gamecampaign::tests::{the_determinism_gate_refuses_a_run_that_did_no_work,
+    a_real_campaign_carries_its_work_evidence, a_malformed_billboard_refuses_the_campaign,
+    a_half_published_billboard_is_malformed, box_campaign_without_billboard_refuses,
+    a_dying_rollout_fails_the_box_campaign_loudly}
+⇒ 6 passed, 0 failed (295.66s)
+```
+
+Six tests in five minutes is itself a data point for `hm-d4y`: the per-test interpreted cost
+here, not any one pathological test, is what makes the whole-suite line unbudgetable. The
+narrower claim is the honest one — **the code this task changed is Miri-clean; the conductor
+lib as a whole is unverified under Miri and is known debt, not this task's.** The new tests do
+touch no filesystem (both pre-existing retention tests stay `cfg_attr(miri, ignore)`), so they
+add no new obstacle to whatever `hm-d4y` lands.
+
+play-agent is a different story and needs no caveat: its full `--lib` Miri suite **completes**
+(46 tests, 37s) and is green, including the two new start-script tests.
 
 **Red-before/green-after, verified by reverting each fix against its own test:**
 
