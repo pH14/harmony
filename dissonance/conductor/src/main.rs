@@ -32,6 +32,7 @@ use clap::{Parser, Subcommand};
 use conductor::campaign::{
     CampaignConfig, CampaignReport, render_campaign_table, run_campaign, verify_campaign,
 };
+use conductor::gamecampaign::{GameCampaignConfig, GameToyMachine, run_game_campaign};
 use conductor::planted::{ToyPlantedMachine, Trigger};
 use conductor::record::{
     RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
@@ -72,6 +73,10 @@ enum Mode {
     /// campaign per invocation so the operator parallelizes across leased cores and
     /// compares solo vs co-tenant outputs (the determinism stress-test).
     BenchCampaign(BenchBoxArgs),
+    /// The task-86 SMB game-workload exploration campaign (quiet arm — zero
+    /// faults, entropy-only search).
+    #[command(subcommand)]
+    Game(GameMode),
 }
 
 /// Task 69 M2 box benchmark-campaign arguments.
@@ -140,6 +145,84 @@ struct BenchBoxArgs {
     /// to bugs 1/3.
     #[arg(long, default_value_t = 64)]
     order_range: u64,
+}
+
+/// The two game-campaign paths (task 86 M0): the portable SMB-shaped toy, and
+/// the box campaign against the real game image (QuickNES + the user-supplied
+/// ROM under the play-agent).
+#[derive(Subcommand)]
+enum GameMode {
+    /// Portable SMB-shaped toy machine (no /dev/kvm, no ROM) — the laptop
+    /// smoke for the campaign loop + host-side cell key.
+    Mock(GameArgs),
+    /// Box-only: the real game image on patched KVM. `--repeat 25` reruns the
+    /// identical campaign and enforces the per-branch state_hash determinism
+    /// gate (task 86 gate 2).
+    Box(GameBoxArgs),
+}
+
+/// Shared game-campaign knobs (both modes).
+#[derive(Parser)]
+struct GameArgs {
+    /// The configuration: `pure-random` (the task-84-ruled primary baseline) or
+    /// `selector-v1` (the existing default novelty search — the attribution
+    /// column). `signal` is refused until an M1 selector artifact exists.
+    #[arg(long, default_value = "pure-random")]
+    config: String,
+    /// Branch budget (identical across configurations — task 84's ruling).
+    #[arg(long, default_value_t = 64)]
+    max_branches: u64,
+    /// The campaign stream seed; the whole campaign is a pure function of it.
+    #[arg(long, default_value_t = 0x0086_5F5C_0770_0001)]
+    campaign_seed: u64,
+    /// SelectorV1 only: every Nth step explores fresh from the base.
+    #[arg(long, default_value_t = 4)]
+    explore_period: u64,
+    /// Append the campaign's ExplorationLog (JSON array) here — the input
+    /// `exploration-report` renders (task 86 gate 3).
+    #[arg(long)]
+    logs_out: Option<PathBuf>,
+    /// The sha256 of the ROM the image carries (echoed by `game-image` and on
+    /// the boot serial as GAME_ROM_SHA256) — stamped into the log so the
+    /// offline report refuses logs from a different dump.
+    #[arg(long)]
+    rom_sha256: Option<String>,
+    /// Record the deepest branch's reproducer (canonical env + full journal,
+    /// incl. the REG_FRAME moments film needs) into this task-65 trace-store
+    /// directory — the hm-5sv day-one retention discipline.
+    #[arg(long)]
+    trace_out: Option<PathBuf>,
+}
+
+/// Box-game arguments: the image/marker knobs plus the rollout deadline and
+/// the determinism-gate repeat count.
+#[derive(Parser)]
+struct GameBoxArgs {
+    #[command(flatten)]
+    game: GameArgs,
+    /// V-time (ns) each rollout runs past the sealed base before its deadline
+    /// (the play-agent never exits on its own).
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_u64_flexible)]
+    deadline_delta: u64,
+    /// V-time (ns) allowed for the agent to reach its `setup_complete`
+    /// snapshot point past the GAME_READY marker.
+    #[arg(long, default_value_t = 30_000_000_000, value_parser = parse_u64_flexible)]
+    setup_deadline_delta: u64,
+    /// Rerun the identical campaign this many times (fresh boot each) and
+    /// require bit-identical logs — the per-branch state_hash sequence gate is
+    /// `--repeat 25`.
+    #[arg(long, default_value_t = 1)]
+    repeat: usize,
+    /// Kernel bzImage filename under guest/build (or guest/linux).
+    #[arg(long, default_value = "bzImage")]
+    kernel: String,
+    /// Initramfs filename — defaults to the task-86 game image.
+    #[arg(long, default_value = "initramfs-game.cpio.gz")]
+    initramfs: String,
+    /// The serial marker the boot is driven to before the campaign attaches
+    /// (the base itself seals at the agent's setup_complete snapshot point).
+    #[arg(long, default_value = "GAME_READY")]
+    ready_marker: String,
 }
 
 #[derive(Parser)]
@@ -343,6 +426,8 @@ fn main() -> ExitCode {
         Mode::Campaign(CampaignMode::Box(args)) => run_campaign_box(args),
         Mode::Materialize(args) => run_mock_materialize(args),
         Mode::BenchCampaign(args) => run_benchcampaign_box(args),
+        Mode::Game(GameMode::Mock(args)) => run_game_mock(args),
+        Mode::Game(GameMode::Box(args)) => run_game_box(args),
     }
 }
 
@@ -358,6 +443,200 @@ fn run_benchcampaign_box(_args: BenchBoxArgs) -> ExitCode {
     eprintln!(
         "[conductor] benchcampaign box needs Linux + patched KVM + a built planted-bug image + \
          the det-cfl-v1 host (docs/BOX-PINNING.md). This is not a Linux host."
+    );
+    ExitCode::FAILURE
+}
+
+/// Parse the game-campaign configuration name. `signal` parses (so the CLI can
+/// surface the loud refusal from the campaign itself); unknown names fail here.
+fn parse_game_config(s: &str) -> Result<benchmark::ExplorationConfig, String> {
+    match s {
+        "pure-random" => Ok(benchmark::ExplorationConfig::PureRandom),
+        "selector-v1" => Ok(benchmark::ExplorationConfig::SelectorV1),
+        "signal" => Ok(benchmark::ExplorationConfig::Signal),
+        other => Err(format!(
+            "unknown game configuration {other:?} (expected pure-random | selector-v1 | signal)"
+        )),
+    }
+}
+
+/// The manifest sidecar of a logs file: `smb-logs.json` →
+/// `smb-logs.manifest.json`.
+fn game_manifest_path(logs: &Path) -> PathBuf {
+    logs.with_extension("manifest.json")
+}
+
+/// Summarize a finished game campaign and (optionally) append its log to the
+/// JSON array at `--logs-out` — the input the offline `exploration-report`
+/// renders. Printing is a summary; the log is the artifact.
+///
+/// When logs are written, the matching [`GameManifest`] is emitted beside
+/// them (`<logs>.manifest.json`, round-3 P2): the report binary needs both,
+/// and emitting the pair from the same run means its inputs can never drift.
+/// Across appended runs the manifest must MATCH the existing sidecar — a
+/// budget or ROM drift between appends is a loud error, never a silently
+/// mixed measurement. (The manifest's input-shaping fields are the
+/// play-agent defaults, which `game-init.sh` deliberately does not override;
+/// changing the shaping means changing both in one place,
+/// `GameManifest::smb`.)
+fn finish_game(
+    log: &benchmark::ExplorationLog,
+    out: Option<&PathBuf>,
+    manifest: &benchmark::GameManifest,
+) -> ExitCode {
+    let budget = log.events.len() as u64;
+    let distinct = log.distinct_cells_at(budget);
+    let depth = log.depth_at(budget);
+    println!(
+        "[conductor] game campaign done: config={:?} seed={:#x} branches={} distinct_cells={} \
+         max_depth={}",
+        log.config, log.seed, budget, distinct, depth
+    );
+    if let Some(path) = out {
+        // The manifest consistency check comes FIRST, so a drifting run can
+        // never contaminate the log array before failing.
+        let mpath = game_manifest_path(path);
+        match std::fs::read_to_string(&mpath) {
+            Ok(raw) => match serde_json::from_str::<benchmark::GameManifest>(&raw) {
+                Ok(existing) if existing == *manifest => {}
+                Ok(existing) => {
+                    eprintln!(
+                        "[conductor] manifest drift: {} records budget={} deadline={:?} rom={:?}, \
+                         this run is budget={} deadline={:?} rom={:?} — one logs file measures \
+                         ONE manifest",
+                        mpath.display(),
+                        existing.branch_budget,
+                        existing.deadline_delta,
+                        existing.rom_sha256,
+                        manifest.branch_budget,
+                        manifest.deadline_delta,
+                        manifest.rom_sha256,
+                    );
+                    return ExitCode::FAILURE;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[conductor] {} exists but is not a GameManifest: {e}",
+                        mpath.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(_) => {
+                let json = match serde_json::to_string_pretty(manifest) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        eprintln!("[conductor] cannot serialize the manifest: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                if let Err(e) = std::fs::write(&mpath, json) {
+                    eprintln!("[conductor] cannot write {}: {e}", mpath.display());
+                    return ExitCode::FAILURE;
+                }
+                println!("[conductor] wrote the manifest to {}", mpath.display());
+            }
+        }
+
+        let mut logs: Vec<benchmark::ExplorationLog> = match std::fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!(
+                        "[conductor] {} exists but is not a log array: {e}",
+                        path.display()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(_) => Vec::new(),
+        };
+        logs.push(log.clone());
+        let json = match serde_json::to_string_pretty(&logs) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("[conductor] cannot serialize logs: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(e) = std::fs::write(path, json) {
+            eprintln!("[conductor] cannot write {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("[conductor] appended the log to {}", path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+/// The portable game campaign: the SMB-shaped toy machine through the real
+/// wire-decode → LinkSensor → cell-key path (no /dev/kvm, no ROM).
+fn run_game_mock(args: GameArgs) -> ExitCode {
+    let config = match parse_game_config(&args.config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[conductor] {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cfg = GameCampaignConfig {
+        campaign_seed: args.campaign_seed,
+        max_branches: args.max_branches,
+        explore_period: args.explore_period,
+        rom_sha256: args.rom_sha256.clone(),
+        trace_dir: args.trace_out.clone(),
+        ..GameCampaignConfig::smoke(args.campaign_seed)
+    };
+    let manifest = benchmark::GameManifest::smb(
+        args.rom_sha256.clone(),
+        args.max_branches,
+        cfg.deadline_delta,
+    );
+    let mut machine = GameToyMachine::new();
+    match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
+        Ok(outcome) => {
+            print_game_artifacts(&outcome);
+            finish_game(&outcome.log, args.logs_out.as_ref(), &manifest)
+        }
+        Err(e) => {
+            eprintln!("[conductor] game mock campaign failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Print the campaign's film/re-key artifacts: the retained deep reproducer
+/// and the billboard window from the setup prefix (round-8 P1 — film's
+/// inputs, from campaign output alone).
+fn print_game_artifacts(outcome: &conductor::gamecampaign::GameCampaignOutcome) {
+    if let Some(deep) = &outcome.deep {
+        match &deep.trace_id {
+            Some(id) => println!(
+                "[conductor] deep reproducer: branch {} depth {} -> trace {id}",
+                deep.branch, deep.depth
+            ),
+            None => println!(
+                "[conductor] deep branch: {} depth {} (no --trace-out; NOT retained)",
+                deep.branch, deep.depth
+            ),
+        }
+    }
+    if let Some((gpa, len)) = outcome.billboard {
+        println!("[conductor] billboard window: gpa={gpa:#x} len={len}");
+    }
+}
+
+/// The box game campaign (task 86 M0). Linux-only; refuses loudly elsewhere.
+#[cfg(target_os = "linux")]
+fn run_game_box(args: GameBoxArgs) -> ExitCode {
+    boxrun::run_game(args)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_game_box(_args: GameBoxArgs) -> ExitCode {
+    eprintln!(
+        "[conductor] game box mode needs Linux + patched KVM + the built game image (make -C \
+         guest/linux game-image, HARMONY_SMB_ROM set) — see docs/BOX-PINNING.md. This is not a \
+         Linux host."
     );
     ExitCode::FAILURE
 }
@@ -688,6 +967,78 @@ mod boxrun;
 mod tests {
     use super::*;
     use explorer::{EnvCodec, Oracle};
+
+    // --- the game logs+manifest pair (round-3 P2) ---------------------------
+
+    fn game_args(
+        config: &str,
+        max_branches: u64,
+        seed: u64,
+        logs_out: PathBuf,
+        rom: &str,
+    ) -> GameArgs {
+        GameArgs {
+            config: config.to_string(),
+            max_branches,
+            campaign_seed: seed,
+            explore_period: 4,
+            logs_out: Some(logs_out),
+            rom_sha256: Some(rom.to_string()),
+            trace_out: None,
+        }
+    }
+
+    /// `--logs-out` must emit the matching manifest from the same run, and the
+    /// emitted pair must round-trip through the report path the
+    /// `exploration-report` binary wraps (parse both files → compute →
+    /// render) — so the report's inputs can never drift from the logs.
+    #[test]
+    fn game_logs_out_emits_a_manifest_that_round_trips_the_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs_path = dir.path().join("smb-logs.json");
+        // ≥ MIN_SEEDS seeds per available config, all appended to one file.
+        for seed in 0..benchmark::report::MIN_SEEDS {
+            for config in ["pure-random", "selector-v1"] {
+                let args = game_args(config, 8, seed, logs_path.clone(), "cafe");
+                assert_eq!(run_game_mock(args), ExitCode::SUCCESS);
+            }
+        }
+
+        // The emitted pair, read back exactly as the report binary reads it.
+        let logs: Vec<benchmark::ExplorationLog> =
+            serde_json::from_str(&std::fs::read_to_string(&logs_path).unwrap()).unwrap();
+        assert_eq!(logs.len(), 2 * benchmark::report::MIN_SEEDS as usize);
+        let mpath = game_manifest_path(&logs_path);
+        let manifest: benchmark::GameManifest =
+            serde_json::from_str(&std::fs::read_to_string(&mpath).unwrap()).unwrap();
+        assert_eq!(manifest.branch_budget, 8);
+        assert_eq!(manifest.rom_sha256.as_deref(), Some("cafe"));
+
+        // The pair computes + renders (the report bin's exact library path).
+        // Signal is M1's, so the verdict is the missing-configuration
+        // Incomplete — but every validation (workload, ROM, dense budget,
+        // seed floor) passed, which is the drift-proof this test pins.
+        let report = benchmark::ExplorationReport::compute(&manifest, &logs, (1, 1000)).unwrap();
+        match &report.verdict {
+            benchmark::Verdict::Incomplete { reason } => assert!(reason.contains("signal")),
+            other => panic!("expected the missing-signal Incomplete, got {other:?}"),
+        }
+        assert!(report.render_markdown().contains("cafe"));
+
+        // Drift protection: appending a run with a different budget (or ROM)
+        // to the same logs file fails loudly, before touching the log array.
+        let drifted = game_args("pure-random", 9, 999, logs_path.clone(), "cafe");
+        assert_eq!(run_game_mock(drifted), ExitCode::FAILURE);
+        let drifted_rom = game_args("pure-random", 8, 999, logs_path.clone(), "beef");
+        assert_eq!(run_game_mock(drifted_rom), ExitCode::FAILURE);
+        let after: Vec<benchmark::ExplorationLog> =
+            serde_json::from_str(&std::fs::read_to_string(&logs_path).unwrap()).unwrap();
+        assert_eq!(
+            after.len(),
+            2 * benchmark::report::MIN_SEEDS as usize,
+            "a drifting run must not contaminate the log array"
+        );
+    }
 
     // --- parse_u64_flexible -------------------------------------------------
 

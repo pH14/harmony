@@ -39,9 +39,11 @@ use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
+use conductor::gamecampaign::{GameCampaignConfig, run_game_campaign};
+
 use super::{
-    BenchBoxArgs, BoxArgs, CampaignBoxArgs, finish, finish_campaign, finish_recording,
-    parse_retain, seeds,
+    BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, finish, finish_campaign, finish_game,
+    finish_recording, parse_game_config, parse_retain, print_game_artifacts, seeds,
 };
 
 /// 2 GiB guest RAM (matches `live_postgres.rs` / `live_branching_demo.rs`).
@@ -142,11 +144,17 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
 /// loud reason (never a vacuous success). Shared verbatim by the sweep
 /// ([`run`](run)) and the campaign ([`run_campaign`](run_campaign)) so both
 /// boot the guest identically.
+/// What [`boot_server`] hands back: the composed control server, the
+/// boot-to-ready wall-clock (µs, task 96 — observation only), and the boot
+/// serial transcript up to the readiness marker (the game path's ROM-hash
+/// cross-check input).
+type BootedServer = (ControlServer<Box<dyn Backend>>, u64, Vec<u8>);
+
 fn boot_server(
     kernel_name: &str,
     initramfs_name: &str,
     ready_marker: &str,
-) -> Result<(ControlServer<Box<dyn Backend>>, u64), ExitCode> {
+) -> Result<BootedServer, ExitCode> {
     if !std::path::Path::new("/dev/kvm").exists() {
         eprintln!(
             "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
@@ -226,7 +234,13 @@ fn boot_server(
             BOOT_SEED,
         )
     });
-    Ok((ControlServer::new(live, factory), boot_us))
+    // The serial transcript up to readiness rides back to the caller: the
+    // game path cross-checks the operator's `--rom-sha256` against the
+    // guest's own `GAME_ROM_SHA256:` line (round-9 P1 — the content-hash
+    // discipline; an operator-typed hash is a claim, the booted image is the
+    // fact). Boot-sized (tens of KB), snapshotted once.
+    let serial = live.serial().to_vec();
+    Ok((ControlServer::new(live, factory), boot_us, serial))
 }
 
 /// The initial environment the box's live VM boots under (the seed/policy the
@@ -246,7 +260,7 @@ pub fn run(args: BoxArgs) -> ExitCode {
     }
     // `SweepReport` carries no timing (task 96 only extends `CampaignReport`)
     // — the boot duration is already in the printed readiness line above.
-    let (mut server, _boot_us) =
+    let (mut server, _boot_us, _serial) =
         match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
             Ok(s) => s,
             Err(code) => return code,
@@ -330,12 +344,171 @@ pub fn run(args: BoxArgs) -> ExitCode {
 /// the emitted `Bug`'s env replays it bit-for-bit (the record → replay
 /// closure). The search space is CLI-scoped — the operator narrows `--gpa-*`
 /// once the supervisor's ledger gpa is pinned (see `CampaignBoxArgs`).
-pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
-    let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
-    {
-        Ok(s) => s,
-        Err(code) => return code,
+/// The task-86 M0 box game campaign: boot the game image (QuickNES + the
+/// user-supplied ROM under the play-agent), drive to `GAME_READY`, seal the
+/// base at the agent's `setup_complete` snapshot point, and run the quiet-arm
+/// exploration campaign. `--repeat N` reruns the **identical** campaign from a
+/// fresh boot each time and requires bit-identical logs (the per-branch
+/// `state_hash` sequence gate is `--repeat 25` — task 86 gate 2).
+pub fn run_game(args: GameBoxArgs) -> ExitCode {
+    let config = match parse_game_config(&args.game.config) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[conductor] {e}");
+            return ExitCode::FAILURE;
+        }
     };
+    let cfg = GameCampaignConfig {
+        campaign_seed: args.game.campaign_seed,
+        max_branches: args.game.max_branches,
+        deadline_delta: Some(args.deadline_delta),
+        explore_period: args.game.explore_period,
+        snapshot_retry_step: 1_000_000,
+        snapshot_max_attempts: 100_000,
+        setup_deadline_delta: args.setup_deadline_delta,
+        rom_sha256: args.game.rom_sha256.clone(),
+        // The box workload gate (round-5 P1): no setup_complete ⇒ a dead
+        // play-agent ⇒ loud failure, never a sealed dead base.
+        require_snapshot_point: true,
+        trace_dir: args.game.trace_out.clone(),
+    };
+    let repeat = args.repeat.max(1);
+    let mut first: Option<conductor::gamecampaign::GameCampaignOutcome> = None;
+    for rep in 0..repeat {
+        // A fresh, identically-seeded boot per repetition: the determinism
+        // claim is over the whole boot → seal → campaign pipeline, so nothing
+        // is allowed to carry over between repeats.
+        // `boot_us` is the task-96 stopwatch's boot-to-ready wall-clock —
+        // host-side observation only (printed, never fed to the campaign).
+        let (mut server, boot_us, serial) =
+            match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
+        // Round-9 P1 — the ROM content-hash discipline: the operator's
+        // `--rom-sha256` is a claim; the booted image's own
+        // `GAME_ROM_SHA256:` serial line (printed by game-init before
+        // GAME_READY, from the hash baked in at image build) is the fact.
+        // Every repetition boots fresh, so every boot is checked.
+        let booted = conductor::gamecampaign::serial_rom_sha256(&serial);
+        match (&args.game.rom_sha256, &booted) {
+            (Some(claim), Some(fact)) if !claim.eq_ignore_ascii_case(fact) => {
+                eprintln!(
+                    "[conductor] game box: ROM hash mismatch — --rom-sha256 {claim} but the \
+                     booted image reports {fact}; the log would be stamped with the wrong dump. \
+                     Rebuild/point at the right image or fix the flag."
+                );
+                return ExitCode::FAILURE;
+            }
+            (Some(claim), None) => {
+                eprintln!(
+                    "[conductor] game box: --rom-sha256 {claim} was claimed but the booted image \
+                     printed no GAME_ROM_SHA256 line (ROM-less image?) — refusing to stamp."
+                );
+                return ExitCode::FAILURE;
+            }
+            (None, Some(fact)) => {
+                eprintln!(
+                    "[conductor] game box: the booted image reports GAME_ROM_SHA256 {fact} but \
+                     no --rom-sha256 was passed — an unstamped log defeats the mixed-dump check; \
+                     rerun with --rom-sha256 {fact}."
+                );
+                return ExitCode::FAILURE;
+            }
+            _ => {}
+        }
+        let rep_cfg = cfg.clone();
+        let initial = boot_env();
+        println!(
+            "[conductor] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
+             rollout; boot-to-ready {} ms)…",
+            rep + 1,
+            config,
+            rep_cfg.max_branches,
+            args.deadline_delta,
+            boot_us / 1_000,
+        );
+        let (served, client) = run_session(&mut server, move |stream| {
+            let mut machine = SocketMachine::connect(stream, initial)?;
+            run_game_campaign(&mut machine, &SpecEnvCodec, &rep_cfg, config)
+                .map_err(|e| explorer::MachineError::Transport(e.to_string()))
+        });
+        let outcome = match client {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("[conductor] game box: campaign failed: {e}");
+                if let Err(se) = served {
+                    eprintln!("[conductor] game box: server session ended with: {se}");
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(se) = served {
+            eprintln!("[conductor] game box: server session ended with a fatal error: {se}");
+            return ExitCode::FAILURE;
+        }
+        match &first {
+            None => first = Some(outcome),
+            Some(f) => {
+                if *f != outcome {
+                    // The determinism gate's loud failure: name the first
+                    // diverging branch so the transcript pins it.
+                    let at = f
+                        .log
+                        .events
+                        .iter()
+                        .zip(&outcome.log.events)
+                        .position(|(a, b)| a != b)
+                        .map_or_else(
+                            || "event count/artifacts".to_string(),
+                            |i| format!("branch {i}"),
+                        );
+                    eprintln!(
+                        "[conductor] game box DETERMINISM FAILED: repetition {}/{repeat} \
+                         diverged from the first at {at}.",
+                        rep + 1
+                    );
+                    return ExitCode::FAILURE;
+                }
+                println!(
+                    "[conductor] game box: repetition {}/{repeat} bit-identical to the first.",
+                    rep + 1
+                );
+            }
+        }
+    }
+    let outcome = first.expect("repeat >= 1 always produces a first outcome");
+    // The determinism GATE is 25/25 (task 86 gate 2) — never print PASS below
+    // the floor (round-8 P1): a smaller --repeat is a smoke, said so loudly.
+    if repeat >= DETERMINISM_BAR {
+        println!(
+            "[conductor] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
+             state_hash sequences (gate floor {DETERMINISM_BAR})."
+        );
+    } else if repeat > 1 {
+        println!(
+            "[conductor] game box determinism smoke: {repeat}/{repeat} identical — BELOW the \
+             {DETERMINISM_BAR}-run gate floor, NOT the task-86 determinism gate."
+        );
+    }
+    print_game_artifacts(&outcome);
+    let manifest = benchmark::GameManifest::smb(
+        args.game.rom_sha256.clone(),
+        args.game.max_branches,
+        Some(args.deadline_delta),
+    );
+    finish_game(&outcome.log, args.game.logs_out.as_ref(), &manifest)
+}
+
+/// The task-86 gate-2 determinism floor: 25 bit-identical repetitions.
+const DETERMINISM_BAR: usize = 25;
+
+pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
+    let (mut server, boot_us, _serial) =
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
 
     let gpa_candidates: Vec<u64> = (0..args.gpa_count)
         .map(|i| {
@@ -484,11 +657,11 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     //    cost. The campaign run + the zero-cell hard-fail below are NOT inside a
     //    timed phase (no PhaseStats report is built on this measurement path), so
     //    there is nothing further to time; the boot phase is the only timed segment.
-    let (mut server, boot_us) = match boot_server(&args.kernel, &args.initramfs, &args.ready_marker)
-    {
-        Ok(t) => t,
-        Err(code) => return code,
-    };
+    let (mut server, boot_us, _serial) =
+        match boot_server(&args.kernel, &args.initramfs, &args.ready_marker) {
+            Ok(t) => t,
+            Err(code) => return code,
+        };
     println!(
         "[conductor] benchcampaign box: boot-to-ready {} ms (hash-neutral).",
         boot_us / 1_000

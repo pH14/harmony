@@ -45,6 +45,7 @@ use vmm_core::control::{ControlServer, ServeError};
 
 pub mod benchcampaign;
 pub mod campaign;
+pub mod gamecampaign;
 pub mod materialize;
 pub mod mock;
 pub mod planted;

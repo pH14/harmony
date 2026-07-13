@@ -57,7 +57,7 @@ assert_off() {
 # Functional must-haves for the boot-to-/init image (provided by Kata and/or overlay).
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS SYSFS DEVTMPFS ACPI PCI \
-    HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP
+    HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
 # Determinism overlay: every symbol below is set ON by the Kata base and must be

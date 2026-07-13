@@ -108,6 +108,20 @@ jobs:
           # which the macOS dev host and codex both skip).
           rustup target add x86_64-unknown-linux-musl
           cargo build --manifest-path guest/flow-agent/Cargo.toml --bin flow-agent --target x86_64-unknown-linux-musl
+      # guest/play-agent (task 86) is out-of-workspace (its own manifest), like
+      # flow-agent — gate it explicitly or it rots green. The portable brain
+      # (chord decode, RAM map, billboard, mock-core agent loop) tests everywhere;
+      # the native bin build compiles the cfg(linux) libretro-FFI + hugetlb +
+      # doorbell glue, which the macOS dev host skips. Dynamic glibc build (it
+      # dlopens the pinned core at runtime), so the native build IS the ship
+      # target here — no musl step.
+      - name: guest/play-agent gates (out-of-workspace manifest)
+        run: |
+          cargo fmt --manifest-path guest/play-agent/Cargo.toml --all -- --check
+          cargo clippy --manifest-path guest/play-agent/Cargo.toml --all-features --all-targets -- -D warnings
+          cargo test --manifest-path guest/play-agent/Cargo.toml --all-features
+          cargo deny --manifest-path guest/play-agent/Cargo.toml check --config deny.toml licenses
+          cargo build --manifest-path guest/play-agent/Cargo.toml --bin play-agent
 
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`

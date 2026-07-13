@@ -1,0 +1,9 @@
+{
+  "workload": "smb",
+  "rom_sha256": "0b3d9e1f01ed1668205bab34d6c82b0e281456e137352e4f36a9b2cfa3b66dea",
+  "chord_alphabet": "RIGHT:56,RIGHT+B:56,RIGHT+A:48,RIGHT+A+B:48,A:16,LEFT:12,DOWN:12,NEUTRAL:8",
+  "window": 12,
+  "x_bucket_px": 128,
+  "branch_budget": 32,
+  "deadline_delta": 2000000000
+}

@@ -73,3 +73,18 @@ jobs:
       # vmcall-transport. `--lib --test decider`.
       - name: miri — guest/flow-agent (lib + decider, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/flow-agent/Cargo.toml --lib --test decider
+      # guest/play-agent (task 86) is out-of-workspace, the flow-agent shape: its
+      # ONLY unsafe is the binary's cfg(linux) libretro dlopen FFI + the hugetlb/
+      # pagemap/mlock billboard pinning + the /dev/mem doorbell — real syscalls
+      # Miri cannot execute, cfg-gated off non-Linux hosts. This run is the UB
+      # safety net over the unsafe-free brain (lib.rs: chord decode, RAM map,
+      # billboard writer, the mock-core agent loop) PLUS the hoisted FFI-edge
+      # logic (lib.rs glue: callback responses, joypad-bit mapping, work-RAM
+      # copy bounds, hugetlb length bound, pagemap decode) + the agent
+      # integration suite. `--bins` (round-9 P1) additionally builds the binary
+      # itself on this job's Linux host — where the cfg(linux) modules COMPILE
+      # under Miri — and executes the bin's own unit tests, which drive the one
+      # residual value-carrying unsafe (env_cb's bool store) through a real
+      # pointer with no FFI. Proptest cases are cut under cfg(miri).
+      - name: miri — guest/play-agent (lib + agent + bin unit tests, out-of-workspace manifest)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/play-agent/Cargo.toml --lib --test agent --bins

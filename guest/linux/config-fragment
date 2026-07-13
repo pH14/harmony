@@ -139,3 +139,21 @@ CONFIG_POSIX_TIMERS=y
 # entire container capability. None of block/ext4/overlayfs is a determinism risk
 # (no wall-clock, no host RNG — backed by RAM in 37/38), so the overlay leaves
 # them on. See the capability audit in guest/linux/IMPLEMENTATION.md.
+# Userspace port-I/O privilege syscalls (iopl/ioperm) for the in-guest workload
+# agents' hypercall doorbell (task 86 first box smoke, 2026-07-09: the
+# allnoconfig seed leaves iopl(3) ENOSYS, so play-agent — and flow-agent, whose
+# doorbell has the identical latent dependency — cannot ring OUT 0x0CA1 from
+# userspace). Interim capability until R-L3's /dev/harmony driver retires
+# userspace port I/O for applications (docs/LAYERS.md). Determinism-neutral:
+# syscall availability changes nothing unless called, and the doorbell OUT is
+# the same deterministic port exit the VMM already services; the task-86
+# campaign 25/25 replay gate re-validates the rebuilt kernel. Asserted in
+# build-kernel.sh so a Kata-side regression cannot silently drop it.
+CONFIG_X86_IOPL_IOPERM=y
+# /dev/mem itself (same smoke, next layer down): the doorbell transport maps
+# the two fixed hypercall pages (REQ 0xE000 / RESP 0xF000 — reserved out of
+# the guest's e820, deliberately) out of /dev/mem, and the allnoconfig seed
+# ships no CONFIG_DEVMEM at all ("/dev/mem: No such file or directory").
+# Same interim status and determinism argument as IOPL above; STRICT_DEVMEM
+# stays off (the mapped pages are reserved, not kernel RAM). Asserted.
+CONFIG_DEVMEM=y

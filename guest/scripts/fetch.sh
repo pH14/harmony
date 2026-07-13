@@ -87,6 +87,14 @@ fetch_postgres_image() {
 }
 fetch_postgres_image
 
+# --- task 86: the commit-pinned libretro NES core (SMB game workload) --------
+# The SMB ROM itself is NEVER fetched by any script in this repo (task 86's
+# hard requirement) — only the open-source emulator core (FCEUmm,
+# GPL-2.0-or-later — see versions.lock for the per-file audit) is pinned
+# here; the ROM enters the image build via the user-supplied HARMONY_SMB_ROM
+# path.
+fetch_one "$FCEUMM_URL" "$FCEUMM_SHA256"
+
 # --- task 49: k3s (lightweight Kubernetes) -----------------------------------
 # The k3s binary + the air-gap images tarball, both URL+sha256-pinned in
 # versions.lock (verified against the release's own sha256sum-amd64.txt).
