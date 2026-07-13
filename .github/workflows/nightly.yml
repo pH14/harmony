@@ -70,11 +70,17 @@ jobs:
     # vm-state 2.4 + vmm-backend 15.9 + film 16.0 + snapshot-store 0.8 +
     # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job, plus the
     # play-agent step (task 86, landed on main under this measurement — the
-    # flow-agent shape, minutes not tens) and the ~1.3 s conductor slice.
-    # 120 = ~2.5x the measured wall, absorbing the ~2x step slowdown a
-    # contended box showed on the midday dispatch 29251169490 (see the
-    # vmm-core job comment).
-    timeout-minutes: 120
+    # flow-agent shape, minutes not tens).
+    # RE-DERIVED (task 104, hm-d4y): the conductor step is no longer a ~1.3 s
+    # slice — it is the full lib suite, measured at 11 min 46 s real on the Mac
+    # ⇒ ~13 min on the box (the ~1.12x Mac→box factor from PR #99's
+    # vmcall-transport comparison). New quiet-hour sum ≈ 48 + 13 ≈ 61 min, and
+    # 155 = ~2.5x that, on the same derivation as before: it absorbs the ~2x
+    # step slowdown a contended box showed on the midday dispatch 29251169490
+    # (see the vmm-core job comment) without going red. Do NOT cut this back to
+    # 120 without re-measuring — 120 was 2.5x the OLD 48-minute sum, and the
+    # conductor step did not exist in it.
+    timeout-minutes: 155
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
@@ -136,29 +142,66 @@ jobs:
       # pointer with no FFI. Proptest cases are cut under cfg(miri).
       - name: miri — guest/play-agent (lib + agent + bin unit tests, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/play-agent/Cargo.toml --lib --test agent --bins
-      # conductor, the UNSAFE-ONLY slice (task 98 round 3): the crate's one
-      # `unsafe` block is the task-78 CountingBackend `map_memory` forward
-      # (src/mock.rs), exercised by exactly this test — which interprets in
-      # ~1.3 s (foreman-verified), so the unsafe⇒Miri rule holds at zero budget
-      # risk. The guard below makes filter rot LOUD: `--exact` matching nothing
-      # (e.g. the test gets renamed) exits 0 with "0 passed", which would be a
-      # silently vacuous gate — the grep fails the step instead.
-      - name: miri — conductor (UNSAFE-ONLY slice)
+      # conductor — the FULL lib suite, restored (task 104, hm-d4y). It replaces
+      # the UNSAFE-ONLY slice PR #99 left here as an interim: the slice watched
+      # the crate's one `unsafe` block (the task-78 CountingBackend `map_memory`
+      # forward, src/mock.rs) at ~1.3 s, but the rest of the suite had NEVER
+      # completed in CI (2026-07-13: run 29226001494 killed at 57+ min; run
+      # 29236400380 still interpreting after 3 h 11 min — 1 h 50 min real even on
+      # an idle Mac, unbounded under box contention).
+      #
+      # Why it fits now. A per-test profile showed the tail is NOT the sha256/RAM
+      # shape vmm-core had (conductor's lib composes exactly one 16-KiB mock VM):
+      # it is the CAMPAIGN SEARCH LOOPS — the toy-machine benchmark/game campaigns
+      # run 2048- and 64-branch budgets, and the interpreter charges ~0.4–4 s of
+      # real time per branch. So the hm-d8o treatment lands on the budgets, all
+      # `cfg(miri)`-keyed inside the test modules (native runs are byte-for-byte
+      # unchanged, 146 tests, and no public API moved):
+      #   - the game campaigns drop 64 → 8 branches (their claims — a rerun is
+      #     bit-identical, seeds diverge, the selector diverges, cells/depth flow —
+      #     are budget-independent and verified to hold at 8);
+      #   - the planted-bug campaigns narrow their (gpa × mask × Moment) search
+      #     space 256 → 16 schedules that still bracket the trigger, so the same
+      #     campaign finds the bug at branch 9 instead of 868, all gates passing;
+      #   - the benchmark campaigns keep budgets sized against the find index each
+      #     one actually needs (bug 3 first fires at branch 19/33, bug 1 at
+      #     202/255).
+      # ONE test is `#[cfg_attr(miri, ignore)]`d — `dual_config_runs_and_is_
+      # deterministic_twice`, four full 2048-branch campaigns (~27 min interpreted,
+      # 80% of the pre-shrink run) whose find assertion is budget-coupled in BOTH
+      # configurations, so it cannot be cut without turning vacuous. Its rationale
+      # string names the cheaper Miri-run siblings that keep its family covered.
+      # (The other 2 ignored are the pre-existing tempdir/TraceStore tests Miri's
+      # filesystem isolation forbids.)
+      #
+      # Budget (task 104, measured): the exact command below runs in 11 min 46 s
+      # REAL wall on an uncontended M-class Mac — 84 passed, 0 failed, 3 ignored —
+      # against ~2 h 25 min for the same suite pre-shrink. NOTE when re-measuring:
+      # libtest printed "finished in 1312.67s" for that 706-second run — under Miri
+      # WITHOUT -Zmiri-disable-isolation that line is the interpreter's VIRTUAL
+      # clock (~1.9x real here), so time the command externally, as the vmm-core
+      # job's comment also records. The box is ~1.12x the Mac (PR #99's
+      # vmcall-transport comparison), i.e. ~13 min quiet-hour, which is what this
+      # job's ceiling below is re-derived from. conductor stays the LAST step (PR
+      # #99): it is still this job's longest pole, and a blowout here must not skip
+      # the small crates above it.
+      #
+      # The guard is the slice's filter-rot guard, generalized to the whole suite.
+      # A green suite must not be reachable by quietly un-running what the gate
+      # exists for, and there are exactly two ways to do that: rename/ignore the
+      # one test that drives the `unsafe` forward, or re-gate the tail this task
+      # just un-gated. Both would be silently vacuous passes; both fail the step.
+      - name: miri — conductor (lib)
         run: |
-          out=$(cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib -- --exact mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit 2>&1); rc=$?
+          out=$(cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib 2>&1); rc=$?
           echo "$out"
           [ $rc -eq 0 ] || exit $rc
-          echo "$out" | grep -q "test result: ok. 1 passed" || { echo "FILTER ROT: the unsafe-slice test did not run — renamed? Fix the --exact filter above."; exit 1; }
-      # ── the REST of conductor's lib suite is DELIBERATELY ABSENT (hm-d4y) ───
-      # The full `cargo miri test -p conductor --lib` step had NEVER completed in
-      # CI: every pre-task-98 nightly died at the vmm-core step before reaching
-      # it, and both post-fix box attempts timed out on it (2026-07-13: run
-      # 29226001494 killed at 57+ min; run 29236400380 killed after 3 h 11 min,
-      # still interpreting — 1 h 50 min real on an idle M-class Mac, unbounded
-      # under real box contention). A step that reds out the job after hours
-      # watches nothing and burns a runner slot nightly, so the full suite stays
-      # out — not hidden behind continue-on-error — until hm-d4y lands the
-      # hm-d8o-style shrink of its sha256-dominated VM tests and restores it
-      # under a box-measured budget. The unsafe block itself is watched by the
-      # slice above; what the full suite adds under Miri is safe-code logic
-      # coverage, all of which runs natively.
+          echo "$out" | grep -q "test mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit \.\.\. ok" || {
+            echo "UNSAFE UNWATCHED: the map_memory-forward test did not run under Miri — renamed, or newly cfg_attr(miri, ignore)d. The crate's only unsafe block is now unwatched; fix the test, do not delete this guard."
+            exit 1
+          }
+          ign=$(echo "$out" | sed -n 's/^test result: ok\. [0-9][0-9]* passed; [0-9][0-9]* failed; \([0-9][0-9]*\) ignored.*/\1/p')
+          [ "${ign:-999}" -le 3 ] || {
+            echo "MIRI TAIL RE-GATED: $ign tests are ignored under Miri, expected at most 3 (task 104: dual_config_runs_and_is_deterministic_twice + the 2 filesystem tests). Raising this bound means a new rationale string per test AND a re-measured budget above — not a bigger number here."
+            exit 1
+          }
