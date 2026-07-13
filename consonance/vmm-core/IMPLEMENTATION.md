@@ -4358,10 +4358,15 @@ across `vmm-core` + `snapshot-store`, native tallies unchanged by the shrink) /
 Miri command passes end-to-end on `nightly-2026-06-16`, exit 0, **33 min 48 s real
 wall** (uncontended M-class Mac; pre-shrink baseline ~92 min real — the round-2
 budget bug; the CI box is ~1.12× slower per the vmcall-transport comparison, 13 min
-box vs 11.6 min Mac). **Box-confirmed** (2026-07-13 dispatch on the task branch,
-run 29226001494): the `miri-vmm-core` job succeeded in **49 min 38 s while
-co-running with the sibling `miri` job** on the box's second runner slot — ~1.8×
-margin against the 90-minute budget under co-tenancy, more when idle. The lib binary runs **308 passed, 0 failed, 85 ignored** (the
+box vs 11.6 min Mac). **Box-confirmed twice** (2026-07-13 dispatches on the task branch): the
+`miri-vmm-core` job succeeded in **49 min 38 s** (run 29226001494) and **47 min
+46 s** (run 29236400380), both while co-running with the sibling `miri` job on the
+box's second runner slot — ~1.8× margin against the 90-minute budget under
+co-tenancy, more when idle. Those same runs revealed the sibling job's `conductor
+(lib)` step as the *next* never-completed gate (unreachable before this fix; both
+attempts timed out on it, 1 h 50 min real on an idle Mac and unbounded under box
+contention) — removed from the workflow with a loud comment and tracked as
+**hm-d4y** (P1), which owns the resulting conductor-unsafe-unwatched debt. The lib binary runs **308 passed, 0 failed, 85 ignored** (the
 37 restore tests + `arbitrary_schedule` + `serve_speaks_frames` + the 3 pre-existing
 mmap gates + the 21 hm-d8o tail gates above; `snapshot_mints…`,
 `branch_validates…`, and the retained-pointer
