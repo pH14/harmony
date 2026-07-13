@@ -1442,3 +1442,31 @@ exercised against the guard as it is written in the workflow.
 passes end-to-end on `nightly-2026-06-16`, exit 0, **11 min 46 s real**: 84 passed, 0 failed,
 3 ignored. `mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit` — the unsafe
 forward — is among the passing, and the step's guard fails if it ever stops being.
+
+---
+
+## Task 107 — the film gate loses its private adapter (`hm-7j0`)
+
+`tests/live_film.rs` carried a **test-local** `resolution::Server` speaking the control-proto wire,
+because the production adapter the task-58 client/server split promised was never built. It is built
+now (`resolution::SocketServer`), so:
+
+- **the test-local copy is deleted** — the gate must not keep a private one, which is the whole
+  finding — and the gate is re-pointed at the production adapter. Its `pin_genesis` hack (a
+  `snapshot()` that returned a pre-taken handle without snapshotting) is replaced by
+  `Session::connect_rooted(&mut adapter, base)`, which roots the session at that base honestly. The
+  gate's behaviour is unchanged; it is box-only and rides the box's normal schedule.
+- **`tests/resolution_loopback.rs`** is new: the production adapter against vmm-core's **real**
+  `ControlServer` over a socketpair, with the scripted `MockBackend` guest — portable, no `/dev/kvm`.
+  It is the regression net that catches a wire break on a laptop instead of on the box. It covers
+  every verb the film gate uses, determinism through the adapter, the `Session`-agrees-with-the-raw-
+  adapter claim `film()` rests on, the trust boundary, the taint guard end-to-end, and
+  **hash-neutrality against the real substrate `state_hash`** (two timelines, identical navigation,
+  one peppered with observations, same terminal hash).
+
+Design notes — the placement judgment, the two liberties deliberately not promoted, and the paging
+bug the test-local `sdk_events()` carried — are in `dissonance/resolution/IMPLEMENTATION.md` §Task 107.
+
+Gates: `nextest -p resolution -p campaign-runner --all-features` 217 passed / 1 skipped (the box-only
+film gate); clippy `-D warnings` host **and** `x86_64-unknown-linux-gnu` (which is what compiles the
+`cfg(linux)` film gate against the new adapter); fmt; deny; `public-api` unchanged.

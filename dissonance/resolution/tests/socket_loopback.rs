@@ -866,7 +866,17 @@ fn a_recorded_env_in_an_unknown_blob_schema_is_refused() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 16 } else { 256 }))]
+    // `failure_persistence: None` so this runs **under Miri**: proptest's default
+    // regression file is resolved against the cwd, and `getcwd` is unavailable
+    // under Miri's isolation (the nightly job runs `-Zmiri-permissive-provenance`
+    // only — no `-Zmiri-disable-isolation`). Losing the regression file costs a
+    // dev convenience; running a totality fuzz under the interpreter — which
+    // catches an out-of-bounds read that returns *plausible* bytes, as a value
+    // assertion cannot — is worth more. Cases are cut under Miri (10–100× slower).
+    #![proptest_config(ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::with_cases(if cfg!(miri) { 16 } else { 256 })
+    })]
 
     /// **Totality against a hostile peer** (conventions rule 4): whatever bytes
     /// come back — truncated frames, over-long length fields, junk — the verb

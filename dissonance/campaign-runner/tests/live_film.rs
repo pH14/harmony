@@ -21,27 +21,23 @@
 //!   (observation verbs leave the one timeline untouched: proven, not
 //!   asserted).
 //!
-//! ## The capture path (a judgment call on the record)
+//! ## The capture path
 //!
-//! `film::film()` wants a [`resolution::Server`]; the only implementor on
-//! `main` is resolution's in-crate mock — the "real socket adapter" its docs
-//! hand to the foreman does not exist yet. This test carries a **test-local**
-//! thin adapter ([`SocketServer`]) speaking the real `control-proto` wire
-//! (the verbs vmm-core's `ControlServer` already serves: `Hello`/`Snapshot`/
-//! `Branch`/`Replay`/`Run`/`Hash`/`Read`/`Regs`/`Exec`/`RecordedEnv`), so the
-//! gate exercises the true wire contract end-to-end. Promoting the adapter
-//! into `resolution` proper is follow-up work for the foreman — test code
-//! here, deliberately outside every crate's public surface.
+//! `film::film()` wants a [`resolution::Server`], and it gets the **production**
+//! one: [`resolution::SocketServer`] (task 107), speaking the real
+//! `control-proto` wire to vmm-core's `ControlServer` — the same verb socket the
+//! explorer drives. This gate carried a test-local copy of that adapter until
+//! the seam it was standing in for was built; it does not any more, and must not
+//! grow one again.
 //!
-//! Two adapter liberties, both required by the gate's geometry and
-//! documented here rather than hidden: `hello` is **client-side idempotent**
-//! (first call negotiates, later calls return the cached caps) so the raw
-//! scrape pass and `Session::connect` share one wire session; and the
-//! Session's genesis snapshot can be **pinned** to a pre-taken handle
-//! ([`SocketServer::pin_genesis`]) so `film()`'s materialize roots at the
-//! same base the frame-clock ticks were scraped from (absolute `Moment`s are
-//! only reachable from that root — resolution's own docs call this the
-//! "Archive-era snapshot hint" seam).
+//! Two properties of that adapter this gate leans on, both part of its contract
+//! rather than local liberties: `hello` is **negotiated once per stream** (later
+//! calls answer from the cached caps), so the raw scrape pass below and the
+//! `Session` layered over the same adapter share one wire session; and the
+//! session is rooted with [`Session::connect_rooted`] at the base snapshot the
+//! frame-clock ticks were scraped from — absolute `Moment`s are only reachable
+//! from that root, so `film()`'s materialize must branch off it and not off a
+//! fresh snapshot taken wherever the server happens to sit.
 //!
 //! Run (per `docs/BOX-PINNING.md`; needs `HARMONY_SMB_CORE` +
 //! `HARMONY_SMB_ROM` for the render half):
@@ -67,15 +63,13 @@
 
 use std::io::{Read, Write};
 
-use control_proto::{
-    Caps, HashScope, Moment, Reproducer, SnapId, StopConditions, StopMask, StopReason,
-};
+use control_proto::{HashScope, Moment, Reproducer, StopConditions, StopMask, StopReason};
 use environment::{EnvSpec, FaultPolicy};
 use film::{
     BillboardWindow, CaptureBundle, ClipSelect, CoreReplay, FilmPlan, FrameRenderer, FrameTick,
     Server, Session, blake3_hex, contact_sheet, film, write_ppm,
 };
-use resolution::{ExecResult, RegsView, SessionError, Snapshot};
+use resolution::{SessionError, SocketServer};
 use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
@@ -100,252 +94,6 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|v| v.replace('_', "").parse().ok())
         .unwrap_or(default)
-}
-
-// ---------------------------------------------------------------------------
-// The thin wire adapter: resolution::Server over a control-proto stream.
-// ---------------------------------------------------------------------------
-
-struct SocketServer<S: Read + Write> {
-    stream: S,
-    seq: u32,
-    inbuf: Vec<u8>,
-    outbuf: Vec<u8>,
-    cached_caps: Option<Caps>,
-    pinned_genesis: Option<SnapId>,
-}
-
-impl<S: Read + Write> SocketServer<S> {
-    fn new(stream: S) -> Self {
-        SocketServer {
-            stream,
-            seq: 0,
-            inbuf: Vec::new(),
-            outbuf: Vec::new(),
-            cached_caps: None,
-            pinned_genesis: None,
-        }
-    }
-
-    /// Pin the handle [`Server::snapshot`] returns on its next call — the
-    /// test-local "genesis hint" that roots `Session::connect` at the base
-    /// the frame ticks were scraped from (see the module doc).
-    fn pin_genesis(&mut self, snap: SnapId) {
-        self.pinned_genesis = Some(snap);
-    }
-
-    /// One request/reply over the wire (the `SocketMachine::call` shape).
-    fn call(&mut self, req: &control_proto::Request) -> Result<control_proto::Reply, SessionError> {
-        self.seq = self.seq.wrapping_add(1);
-        self.outbuf.clear();
-        control_proto::encode_request(self.seq, req, &mut self.outbuf)
-            .map_err(|e| SessionError::Transport(format!("request encode failed: {e}")))?;
-        self.stream
-            .write_all(&self.outbuf)
-            .and_then(|()| self.stream.flush())
-            .map_err(|e| SessionError::Transport(format!("socket write failed: {e}")))?;
-        let mut chunk = [0u8; 4096];
-        loop {
-            match control_proto::decode_reply(&self.inbuf)
-                .map_err(|e| SessionError::Transport(format!("reply framing error: {e}")))?
-            {
-                Some((seq, reply, consumed)) => {
-                    self.inbuf.drain(..consumed);
-                    if seq != self.seq {
-                        return Err(SessionError::Transport(format!(
-                            "reply seq {seq} does not echo request seq {}",
-                            self.seq
-                        )));
-                    }
-                    return reply.map_err(SessionError::Control);
-                }
-                None => {
-                    let n = self
-                        .stream
-                        .read(&mut chunk)
-                        .map_err(|e| SessionError::Transport(format!("socket read failed: {e}")))?;
-                    if n == 0 {
-                        return Err(SessionError::Transport(
-                            "server closed the stream mid-reply".to_string(),
-                        ));
-                    }
-                    self.inbuf.extend_from_slice(&chunk[..n]);
-                }
-            }
-        }
-    }
-
-    fn unexpected(what: &str, got: control_proto::Reply) -> SessionError {
-        SessionError::Transport(format!("{what} answered with an unexpected reply: {got:?}"))
-    }
-
-    /// Drain the SDK event capture (raw wire — not a [`Server`] verb; the
-    /// scrape pass uses it to harvest the frame clock + billboard registers).
-    fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, SessionError> {
-        match self.call(&control_proto::Request::SdkEvents { offset: 0 })? {
-            control_proto::Reply::SdkEvents(events) => Ok(events),
-            other => Err(Self::unexpected("sdk_events", other)),
-        }
-    }
-}
-
-impl<S: Read + Write> Server for SocketServer<S> {
-    fn hello(&mut self, caps: Caps) -> Result<Caps, SessionError> {
-        if let Some(cached) = &self.cached_caps {
-            return Ok(*cached);
-        }
-        match self.call(&control_proto::Request::Hello(caps))? {
-            control_proto::Reply::Hello(server_caps) => {
-                self.cached_caps = Some(server_caps);
-                Ok(server_caps)
-            }
-            other => Err(Self::unexpected("hello", other)),
-        }
-    }
-
-    fn snapshot(&mut self) -> Result<Snapshot, SessionError> {
-        if let Some(pinned) = self.pinned_genesis.take() {
-            return Ok(Snapshot {
-                id: pinned,
-                tainted: false,
-            });
-        }
-        match self.call(&control_proto::Request::Snapshot)? {
-            control_proto::Reply::SnapId(id) => Ok(Snapshot { id, tainted: false }),
-            control_proto::Reply::Snapshot { id, tainted } => Ok(Snapshot { id, tainted }),
-            other => Err(Self::unexpected("snapshot", other)),
-        }
-    }
-
-    fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
-        match self.call(&control_proto::Request::Drop(snap))? {
-            control_proto::Reply::Unit => Ok(()),
-            other => Err(Self::unexpected("drop", other)),
-        }
-    }
-
-    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
-        match self.call(&control_proto::Request::Branch {
-            snap,
-            env: env.clone(),
-        })? {
-            control_proto::Reply::Unit => Ok(()),
-            other => Err(Self::unexpected("branch", other)),
-        }
-    }
-
-    fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
-        match self.call(&control_proto::Request::Replay(snap))? {
-            control_proto::Reply::Unit => Ok(()),
-            other => Err(Self::unexpected("replay", other)),
-        }
-    }
-
-    fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
-        match self.call(&control_proto::Request::Run {
-            until,
-            resolve: None,
-        })? {
-            control_proto::Reply::Stop(stop) => Ok(stop),
-            other => Err(Self::unexpected("run", other)),
-        }
-    }
-
-    fn hash(&mut self, scope: HashScope) -> Result<[u8; 32], SessionError> {
-        match self.call(&control_proto::Request::Hash { scope })? {
-            control_proto::Reply::Hash(h) => Ok(h),
-            other => Err(Self::unexpected("hash", other)),
-        }
-    }
-
-    fn read(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, SessionError> {
-        match self.call(&control_proto::Request::Read { gpa, len })? {
-            control_proto::Reply::Bytes(b) => Ok(b),
-            other => Err(Self::unexpected("read", other)),
-        }
-    }
-
-    fn regs(&mut self) -> Result<RegsView, SessionError> {
-        match self.call(&control_proto::Request::Regs)? {
-            control_proto::Reply::Regs(r) => Ok(RegsView {
-                version: r.version,
-                gpr: r.gpr,
-                rip: r.rip,
-                rflags: r.rflags,
-                seg: r.seg,
-                cr0: r.cr0,
-                cr3: r.cr3,
-                cr4: r.cr4,
-                moment: r.moment.0,
-                vtime: r.vtime,
-            }),
-            other => Err(Self::unexpected("regs", other)),
-        }
-    }
-
-    fn exec(&mut self, cmd: &str, deadline: Moment) -> Result<ExecResult, SessionError> {
-        match self.call(&control_proto::Request::Exec {
-            cmd: cmd.to_string(),
-            deadline,
-        })? {
-            control_proto::Reply::ExecResult { output, ok } => Ok(ExecResult {
-                output,
-                ok,
-                // Exec taints the timeline by ruling; the wire carries taint on
-                // the *snapshot* reply, not here.
-                tainted: true,
-            }),
-            other => Err(Self::unexpected("exec", other)),
-        }
-    }
-
-    fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
-        match self.call(&control_proto::Request::RecordedEnv)? {
-            control_proto::Reply::Recorded(env) => EnvSpec::decode(&env.bytes).map_err(|e| {
-                SessionError::Transport(format!("recorded env failed to decode: {e}"))
-            }),
-            other => Err(Self::unexpected("recorded_env", other)),
-        }
-    }
-}
-
-/// `Session` takes its server by value; the gate needs the adapter back after
-/// the filmed passes (the raw run-on + terminal hash), so it hands the
-/// session a `&mut` — this delegation makes that a `Server` too.
-impl<S: Read + Write> Server for &mut SocketServer<S> {
-    fn hello(&mut self, caps: Caps) -> Result<Caps, SessionError> {
-        (**self).hello(caps)
-    }
-    fn snapshot(&mut self) -> Result<Snapshot, SessionError> {
-        (**self).snapshot()
-    }
-    fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
-        (**self).drop_snap(snap)
-    }
-    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
-        (**self).branch(snap, env)
-    }
-    fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
-        (**self).replay(snap)
-    }
-    fn run(&mut self, until: StopConditions) -> Result<StopReason, SessionError> {
-        (**self).run(until)
-    }
-    fn hash(&mut self, scope: HashScope) -> Result<[u8; 32], SessionError> {
-        (**self).hash(scope)
-    }
-    fn read(&mut self, gpa: u64, len: u32) -> Result<Vec<u8>, SessionError> {
-        (**self).read(gpa, len)
-    }
-    fn regs(&mut self) -> Result<RegsView, SessionError> {
-        (**self).regs()
-    }
-    fn exec(&mut self, cmd: &str, deadline: Moment) -> Result<ExecResult, SessionError> {
-        (**self).exec(cmd, deadline)
-    }
-    fn recorded_env(&mut self) -> Result<EnvSpec, SessionError> {
-        (**self).recorded_env()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -705,8 +453,16 @@ fn run_gate<S: Read + Write>(
 
     // --- Filmed passes: capture, then run on to the same terminal — the
     // hash must equal the unfilmed one (observation is not an event), REPS/REPS.
-    adapter.pin_genesis(base);
-    let mut session = Session::connect(&mut adapter).map_err(|e| format!("connect: {e}"))?;
+    //
+    // The session is ROOTED AT `base`: the plan's frame moments are absolute
+    // V-times harvested from runs branched off that snapshot, so `film()`'s
+    // materialize must branch off it too. (`connect` would take a fresh snapshot
+    // of wherever the server sits now — a different root, and every absolute
+    // Moment in the plan would name a different instant.) The `hello` the session
+    // sends is answered from the adapter's cached negotiation, so this shares the
+    // one wire session the scrape pass above ran on.
+    let mut session =
+        Session::connect_rooted(&mut adapter, base).map_err(|e| format!("connect: {e}"))?;
     let mut first_bundle: Option<CaptureBundle> = None;
     for i in 0..reps {
         let bundle = film(&mut session, &spec, &plan).map_err(|e| format!("film pass {i}: {e}"))?;

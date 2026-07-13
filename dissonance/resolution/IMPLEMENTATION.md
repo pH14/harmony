@@ -258,6 +258,16 @@ rule 2 (define interfaces locally)**:
 method to one `encode_request`/`decode_reply` exchange — the shape `explorer::SocketMachine`
 already uses). The client's observable behaviour does not change.
 
+> **Discharged by task 107** — with one half deliberately declined. The real-socket `Server` impl
+> exists (`SocketServer`, below). The local views were **kept**, not collapsed, and that is now a
+> considered decision rather than a stopgap: `RegsView` carries `Serialize`/`Deserialize` (the
+> transcript records a register view losslessly) and `control_proto::RegsView` does not; `ExecResult`
+> carries the `tainted` bit and the wire's `Reply::ExecResult` does not (taint rides the `Snapshot`
+> reply); and `SessionError::Tainted` is raised by the **client's own conservative guard** — set the
+> instant an `exec` is issued, before any reply — so it can fire where no wire `ControlError::Tainted`
+> ever arrives. Collapsing them would lose all three. The adapter converts between the two shapes in
+> exactly one place (`socket.rs`), which is where a mirrored contract belongs.
+
 ## Deviations considered
 
 - **`MomentRef.env: EnvSpec`, not `Environment`.** The doc writes the field as `env: Environment`,
@@ -371,12 +381,159 @@ The laptop gate already exercises the identical client/REPL/transcript logic aga
 
 ### Box transcript
 
-_To be recorded by the foreman on the box (pending merged 80/81 + a live-socket `Server` adapter)._
+_To be recorded by the foreman on the box. No longer blocked on the adapter (task 107 shipped it);
+it rides the box's normal schedule._
 
 ## Known limitations
 
-- The live backend is the box gate's; v1 laptop code ships only the mock (by ruling).
 - `run`'s `StopMask` is carried but selects nothing on the mock (no decision-surfacing guest, as on
   the task-58 seed-driven server); the mask becomes live when a reactive guest exists.
 - The mock's guest is scripted, not a real OS: `read`/`regs` bytes are deterministic noise, not a
   real memory image. It exists to prove the *client/transcript* semantics, which are substrate-agnostic.
+  The **real** substrate is now reachable through `SocketServer` (task 107) — see below.
+
+---
+
+# Task 107 — the production socket `Server` (`hm-7j0`)
+
+The seam above promised "a real box connection is a second `Server` implementor handed to the
+foreman". It was never built, so the task-86 M0 film live gate had to embed a **test-local** copy of
+it (`dissonance/campaign-runner/tests/live_film.rs`), which is the spine finding this task closes.
+`SocketServer` is that implementor, in the production surface; the test-local copy is **deleted**.
+
+| Added | What |
+|---|---|
+| `socket` (module) | `SocketServer<S: Read + Write>` — every `Server` verb as one `control-proto` request/reply on a real stream; plus the paged `sdk_events()` scrape channel |
+| `server` | a blanket `impl<S: Server + ?Sized> Server for &mut S` |
+| `session` | `Session::connect_rooted(server, genesis)` — connect and root at an **already-captured** snapshot |
+| `tests/socket_loopback.rs` | the adapter against a frame-speaking server: the whole verb surface, hash-neutrality, and every trust-boundary path |
+
+## Placement: `dissonance/resolution`, unconditional, no feature gate
+
+The spec floated "likely `dissonance/resolution` behind a feature, or a thin adapter crate". It is
+`resolution`, and **not** behind a feature: the adapter needs nothing but `std::io::{Read, Write}`
+plus `control-proto` and `environment` — both already dependencies of this crate — so there is no
+dependency cost to gate away, no platform fork (it is generic over the stream; the only unix-socket
+code in the change is in *tests*), and no third crate to justify. A feature that gates nothing but
+pure-std code would only add a build configuration for the gates to have to cross. A separate
+adapter crate would have been strictly worse: it would need `resolution` (for the trait) *and* both
+wire crates, and would exist to hold one file that has no reason to live outside the crate whose
+seam it implements. `film` and `campaign-runner` both already depend on `resolution` with
+`default-features = false`, and pick the adapter up for free.
+
+## Two liberties in the test-local adapter that were NOT promoted
+
+Both were documented in the film gate as "required by the gate's geometry". Promoting them as-is
+would have baked a lie into a production seam, so each was replaced by an honest construct.
+
+1. **`pin_genesis` → `Session::connect_rooted`.** The test-local adapter let the caller pin a
+   pre-taken handle that the *next* `snapshot()` would return instead of capturing anything. But the
+   `Server` contract says `snapshot()` **captures state at the current quiescent point**; an impl
+   that sometimes hands back a stale handle is a landmine for every consumer that isn't the film
+   gate. And the requirement is not really a server requirement at all — it is that a *session* must
+   branch from the root its absolute `Moment`s were harvested against (the film gate's frame clock
+   is scraped from runs rooted at a specific base). Rooting is a `Session` concern, and this crate's
+   own docs already anticipated the seam ("the Archive-era snapshot hint" — `materialize_from`
+   always took the root as a parameter). `connect_rooted` is that seam reached from the connect
+   side: additive, honest, and it leaves `snapshot()` meaning what it says.
+2. **"client-side idempotent `hello`" → `hello` is negotiated once per stream, as a contract.** Same
+   observable behaviour, but stated as a rule with a defined failure mode instead of a convenience:
+   the wire makes `hello` the first frame of a session (a conforming server may refuse a second),
+   so the adapter negotiates once and answers later calls from the cached caps — and offering
+   *different* caps after negotiation is a loud `SessionError::Negotiation`, not a silently stale
+   answer. This is what lets a raw scrape pass and a `Session` layered over the same adapter share
+   one wire session, which is exactly what the film gate needs.
+
+## A bug in the test-local adapter, fixed on promotion
+
+Its `sdk_events()` made a single `Request::SdkEvents { offset: 0 }` call and treated the reply as
+the whole capture. The server **bounds each page to the control frame limit** (`page_sdk_events`),
+so any capture longer than one page was silently truncated — on the film gate, the frame clock
+would simply have stopped early, and the gate would have reported "only N calibrated frames" rather
+than a truncation. The production `sdk_events()` pages until an empty page, like
+`explorer::SocketMachine` does; `sdk_events_pages_until_the_capture_is_drained` pins it against a
+server with a deliberately tiny page size.
+
+## The trust boundary (conventions rule 4)
+
+Every length and index off the wire is checked before it is believed, and every hostile or broken
+peer is a **typed `SessionError`** — never a panic, never a silent truncation:
+
+| Wire condition | Result |
+|---|---|
+| `read(len > READ_CAP)` | `ReadTooLarge`, refused **before any traffic** (the untrusted length never reaches the far end) |
+| `Bytes` reply ≠ exactly `len` bytes | loud `Transport` — the contract is "never a truncated success", so a short reply is a broken server, not a partial read |
+| reproducer blob in an unknown `blob_version` | `Transport` — refused, not decoded on a guess |
+| reply seq ≠ request seq | `Transport` — never paired with the wrong verb |
+| reply of the wrong kind | `Transport` |
+| torn frame / garbage / EOF mid-verb | `Transport` (the film projector's *recoverable* dropped-session class) |
+| over-`MAX_FRAME_LEN` header | the codec rejects it before buffering the body |
+
+`no_reply_bytes_can_panic_the_client` is a 256-case proptest over arbitrary reply bytes: every verb
+returns, none panics.
+
+**Error mapping.** The wire's `ReadOutOfRange` / `ReadTooLarge` / `Tainted` are mapped onto the
+client's *own* typed variants — the same ones `MockServer` raises for those conditions — so a
+consumer's match arms do not depend on which `Server` it holds. Everything else rides through
+verbatim as `SessionError::Control` (still visibly server-originated).
+
+## Hash-neutrality (deliverable 4)
+
+Observation must stay observation. The server-side proof (a `state_hash` identical across
+interleaved `Read`/`Regs`) is vmm-core's, from PR #51/task 80; this task extends the line to the
+*client*, proving it adds no contact of its own:
+
+- `observation_verbs_over_the_wire_are_hash_neutral` — a burst of `read`/`regs`/`hash` moves neither
+  the hash, the position, nor the recorded reproducer.
+- `an_observation_emits_only_its_own_request_frame` — asserted **at the wire**: the server's request
+  log with observations filtered out is exactly the navigation stream. No hidden `run`, no
+  re-`branch` — nothing that could touch a draw stream.
+- `campaign-runner`'s `resolution_loopback` runs it against the **real substrate hash**: two
+  timelines with byte-identical navigation, one peppered with observations at every step, reach the
+  same terminal `state_hash`.
+
+## Gates
+
+- `cargo nextest run -p resolution -p campaign-runner --all-features` — **217 passed**, 1 skipped
+  (the box-only film gate). 19 new in `resolution`, 1 new in `campaign-runner`.
+- `clippy -D warnings` (host **and** `--target x86_64-unknown-linux-gnu`), `fmt --check`,
+  `cargo deny check` — all clean.
+- **public-api**: `campaign-runner`'s snapshot is unchanged and green (only its tests were touched).
+  `resolution` carries no `public-api.txt` — it never has, and it is not in `quality.yml`'s
+  public-api `-p` list. Its surface *did* grow here (`SocketServer`, `connect_rooted`, the `&mut`
+  blanket impl), so **the integrator may want to add one** — that is a workflow/root-file change I
+  left alone (rule 1).
+- **Miri**: no `unsafe` was added (the adapter is pure socket/protocol code), so the unsafe⇒Miri
+  bar does not bind. The new tests are Miri-viable anyway and were run:
+  `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p resolution
+  --test socket_loopback` → **18 passed, 1 ignored**, and `--lib` → 18 passed.
+  - **What runs under Miri**: the entire verb surface, the trust boundary, hash-neutrality, and the
+    totality proptest — all of it, because the far end is an in-memory `Pipe` that services each
+    request inline (no socket, no thread, no syscall).
+  - **What does not**: exactly one test,
+    `socket_server_speaks_the_wire_over_a_real_unix_socketpair`, `#[cfg_attr(miri, ignore)]`d
+    because Miri cannot execute socket syscalls — vmm-core's `serve_speaks_frames` precedent. Its
+    ignore message names its Miri-run sibling
+    (`every_verb_over_the_wire_matches_the_in_process_server`: the same verbs, the same codec).
+  - The proptest sets `failure_persistence: None`, without which proptest's regression-file lookup
+    calls `getcwd` and aborts under Miri's isolation (the nightly job runs
+    `-Zmiri-permissive-provenance` only). Cases drop to 16 under the interpreter.
+- **The film live gate is box-only and the box is under the re-cert window, so it was not run.** The
+  portable proof the spec asked for is in place: the gate **compiles** against the production
+  adapter for `x86_64-unknown-linux-gnu` (clippy `-D warnings`, 0 errors — the only failure when
+  *linking* for that target is the absent cross-linker on this Mac), and its loopback shape is
+  covered by `campaign-runner`'s `resolution_loopback` against the real `ControlServer`.
+
+## What the integrator must know
+
+- **The film gate's next live run rides the box's normal schedule.** Its logic is unchanged apart
+  from the adapter swap and `connect_rooted`; `pin_genesis`'s behaviour is preserved exactly (root
+  the session at the pre-taken base), so the gate should behave identically. It is the only
+  un-run gate in this change.
+- **`campaign-runner`'s `resolution_loopback` is the portable regression net** for the adapter
+  against the real server. If a future change to `ControlServer`'s wire breaks resolution, that test
+  fails on a laptop rather than on the box.
+- The `HOP` in that test is deliberately **off** the mock's 100-ns intercept grid, so a run lands
+  *past* its deadline. That overshoot is not a bug — it is the same lower-bound-stamp behaviour the
+  film gate calibrates around, and the test asserts the `Session` and the raw adapter agree on the
+  landing.
