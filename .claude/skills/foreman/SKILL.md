@@ -176,7 +176,13 @@ Do all cheap actions; do at most ONE of the starred heavy ones per iteration.
    sessions don't count).
    Priority: **`bd ready` order (P0 first)** — the tracker encodes the standing directives
    (workloads-first, frontier-over-backlog) as priorities and dependency edges; numeric
-   task order is dead as a scheduling signal:
+   task order is dead as a scheduling signal.
+
+   **Decision guard:** before auto-spawning a ready bead, use `bd show` to inspect any closed
+   decision blocker and dispatch only a recorded GO. Never auto-spawn in the same iteration that
+   closes that decision. On NO-GO, block or supersede downstream work and repair every dependency
+   edge before recomputing `bd ready`.
+
    `~/workspace/harmony/scripts/agent-spawn.sh <slug>` (defaults to Opus 4.8; add
    `--model claude-fable-5` when the spec is high-complexity — deep architectural
    reasoning, cross-crate refactors, gnarly determinism bugs, or heavy spec ambiguity

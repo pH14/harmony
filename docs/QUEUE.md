@@ -10,6 +10,10 @@ _Dissonance strategy/dependency section reconciled with Beads: 2026-07-12. Forem
 reconciled 2026-07-12 (loop iteration under the reach-matrix ruling); the tracker remains
 authoritative._
 
+Decision-gate safety: before dispatching ready work, the foreman inspects any closed decision
+blocker and requires a recorded GO; it never dispatches in the same iteration that closes that
+decision. NO-GO repairs or supersedes downstream edges before `bd ready` is used for dispatch.
+
 ## The Consonance north star (ruled by Paul, 2026-07-12)
 
 **Consonance running in as many places as possible**: the reach matrix of vendors
@@ -92,24 +96,30 @@ spawn these until that lane re-opens):
   `hm-u7q` ← game-workload merge `hm-ahb` (the shared post-merge-window slot).
 - **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
   cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
-  spike and blocks deterministic Revision coordination `hm-bbx.3`; generic Explorer/archive
-  integration `hm-bbx.4` follows schema, spike, and coordinator. A NO-GO must block/supersede
-  production children before the decision closes.
+  spike and blocks deterministic Revision coordination `hm-bbx.3` plus atomic seal-cut capture
+  `hm-bbx.6`; generic Explorer/evidence-ledger/archive integration `hm-bbx.4` follows schema, spike,
+  coordinator, and seal-cut capture. A NO-GO blocks or supersedes DD-specific children, but retargets
+  backend-independent `hm-bbx.6` under the selected alternative unless actual-seal admission itself
+  is explicitly abandoned; no production child may become dispatchable while edges are repaired.
 - **Frankenstein reachability inventory** `hm-dgi` ← `hm-7zx`; obsolete PCT and triage bundles
   remain blocked on this disposition rather than silently reviving after selector work.
 - **Vocabulary rename sweep** (conductor→campaign-runner, Environment→Reproducer,
   VTime→Moment/Span, Machine→Subject) ← the game-workload merge (open branches would
   conflict with a crate rename) · `hm-u7q`
 - **LAYERS spec reconcile** ← rename sweep · `hm-4o4`
-- **First cooperative Differential exploration gate** `hm-cs5` ← `hm-bbx.4` and the umbrella
-  epic. It uses the simple selector and precedes any selector experiment.
-- **Software-system transfer gate** `hm-ebe` ← `hm-cs5`; proves the same cooperative mechanism on a
-  planted database/distributed-system bug; decision `hm-zlx` must explicitly ratify GO.
-- **Count-based Entry-selector experiment** `hm-bfr` ← `hm-cs5` + software-transfer GO `hm-zlx`.
+- **First cooperative Differential exploration gate** `hm-cs5` ← `hm-bbx.4`, retention `hm-5sv`,
+  and the umbrella epic. The direct retention edge prevents a plain epic close from bypassing the
+  full-retention profile; the bead also builds the currently nonexistent deterministic maze guest
+  and wire-v2 X/Y instrumentation. It uses the simple selector; decision `hm-yjf` must explicitly
+  ratify mechanism GO before any transfer work.
+- **Software-system transfer gate** `hm-ebe` ← mechanism GO `hm-yjf`; proves the same cooperative
+  mechanism on a planted database/distributed-system bug; decision `hm-zlx` must then ratify
+  software-transfer GO.
+- **Count-based Entry-selector experiment** `hm-bfr` ← software-transfer GO `hm-zlx`.
   The old task-70 bandit/STADS/Portfolio bundle is gone. `hm-6rv` and `hm-4xe` remain blocked on
   `hm-dgi`, which must rewrite or supersede them before it closes.
 - **Held-out SMB cooperative evaluation** `hm-2su` ← M0 `hm-ahb`, Differential substrate
-  `hm-bbx`, and the development vertical `hm-cs5`; advanced selector policy is optional.
+  `hm-bbx`, and mechanism GO `hm-yjf`; advanced selector policy is optional.
 - **Retention policy, finalized findings diff, and OTel evidence** — `hm-5sv` is now an epic child
   after `hm-bbx.4`; `hm-m78` follows `.4`; `hm-qdn` follows SDK normalization, the prefix spike,
   and `.4` before claiming Explorer integration.

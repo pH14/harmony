@@ -19,8 +19,10 @@ jargon, and plain-descriptive — plus a set of genuine collisions:
   escalated per task 65 (`docs/EXPLORATION.md`) and is settled here.
 - Six words for "a state you can get back to": `SnapId`, `Exemplar`, `VirtualExemplar`,
   `ExemplarRef`, `FrontierEntry`, seal.
-- Three sibling "kind" enums: `DecisionClass` (environment), `Role` (matcher), `PointKind`
-  (link) — the latter two classify the same thing.
+- Three sibling "kind" enums: `DecisionClass` (environment), `Role` (matcher), and `PointKind`
+  on the current binary guest wire and its SDK-event reader mirror. The proposed merge of the
+  latter two is legacy; `PointKind` itself remains current binary-wire vocabulary until that
+  versioned format is replaced.
 - The `runtrace` crate shadowing the `RunTrace` struct (different things).
 - Cross-paper collisions in the borrowed jargon itself: *cell* means
   observation-discretization in Go-Explore but model-state in ModelFuzz; exact PCT needs
@@ -31,7 +33,7 @@ jargon, and plain-descriptive — plus a set of genuine collisions:
 ## The three governing rules
 
 1. **One register per layer.** The family register is **harmony theory** — pitch
-   relationships: *harmony, consonance, dissonance, unison, counterpoint, resolution*.
+   relationships: *harmony, consonance, dissonance, unison, counterpoint (reserved), resolution*.
    Orchestra-role terms (conductor, ensemble, maestro) fail the register test. Harmony
    names live at the family/product layer only (top-level crate families, the future
    product surface). The **mechanism layer** (types, traits, modules) uses
@@ -54,10 +56,10 @@ jargon, and plain-descriptive — plus a set of genuine collisions:
 
 *harmony* (the whole) · *consonance* (the deterministic engine — things agreeing) ·
 *dissonance* (the adversary — the bug finder) · *unison* (the determinism checker — two
-runs identical) · *counterpoint* (the composition root — the discipline of setting the
-voices against each other under consonance/dissonance rules) · *resolution* (the judgment
-layer — dissonance resolving). Counterpoint → resolution completes the theory: in
-counterpoint, dissonance must resolve.
+runs identical) · *resolution* (the judgment layer inside dissonance — dissonance resolving).
+**Counterpoint is reserved and names no system today.** It may be assigned only if a genuine
+family/product-level role emerges; importing both consonance and dissonance does not entitle a
+mechanism crate to a musical name.
 
 ## Kills
 
@@ -65,7 +67,7 @@ counterpoint, dissonance must resolve.
 |---|---|---|
 | `Modulation` | **rollout** | Decorative music word at the mechanism layer; "rollout" is RL-standard for exactly this (branch → run → terminal) |
 | `Progression` / `progression_step` | the **search loop** / **`step`** | Carries zero information; the method name does the work |
-| `conductor` (crate) | **`counterpoint`** | Orchestra-role term — register violation. Counterpoint names the crate's structural essence: it is the only crate importing both `consonance` and `dissonance`, and counterpoint is the discipline of combining those voices. (Runner-up `cadence` rejected: in engineering vocabulary it primes "release/meeting rhythm" — misleading.) |
+| `conductor` (crate) | **`campaign-runner`** | Orchestra-role term — register violation. The crate composes, executes, records, and reports campaigns; use the boring role name. `counterpoint` is reserved at the family/product layer |
 | `CampaignOracle` | delete, or **`CrashOracle`** | Its `judge` delegates verbatim to `TerminalOracle` — it is named for its call site, not its verdict rule. Oracles are named by what they judge, never where they are used |
 
 ## Renames — types and terms
@@ -80,19 +82,32 @@ counterpoint, dissonance must resolve.
 
 | Legacy | New | Why |
 |---|---|---|
-| `dissonance/conductor` | **`counterpoint`** | See Kills. No reverse dependencies — the cheapest rename on the slate |
+| `dissonance/conductor` | **`campaign-runner`** | See Kills. Describes the composition root without spending a family-level music term |
 | `dissonance/runtrace` | **`journal`** | It is journal/store/scrape; unshadows the `RunTrace` struct |
-| `dissonance/link` | **`sdk-link`** | Ungreppable, collides with linkers. The tier vocabulary (scrape / link / instrument) stays in the docs |
+| `dissonance/link` | **`sdk-events`** | The host-side SDK evidence reader: Antithesis JSON or the internal binary wire → validated normalized `SdkSchema` + typed, timestamped `SdkEvent`s. `link` is opaque and `sdk-link` preserves the opacity. Temporal reduction, cells, and archive policy do not live here |
 | `dissonance/logtmpl` | **`log-templates`** | Double-clipped abbreviation; spell it out |
 | `dissonance/matcher` | **`signals`** | The product concept is *declared signals* (`SignalSet`/`SignalDecl`/`Role`); matching is the mechanism inside |
 | `dissonance/tactics-regime` | **`tactics`** | Named for one implementation strategy, not the role; future portfolio arms land in this crate |
 | `dissonance/flow` | **keep** | The deliberate exception: it anchors an already-consistent cluster (`DecisionClass::NetFlow`, `FlowPolicy`, `FlowEvent`, `guest/flow-agent`) |
 
-## Merges
+## Required separations
 
-- `PointKind` (link) + `Role` (matcher) → one spine **`Role`**. Explicitly do **not**
-  fold in `DecisionClass`: it is wire-versioned catalog vocabulary with stable
-  discriminants; coupling the wire format to the config DSL is worse than a second enum.
+- SDK schema declarations and matcher/campaign `Role` do **not** merge. Normalized `SdkSchema`
+  describes stable raw evidence identity, value shape, and base update semantics; a campaign role
+  or Differential derivation describes how evidence is used after that base temporal meaning is
+  reconstructed. The former is data, the latter is a query/projection. `DecisionClass` also remains
+  separate wire-versioned control vocabulary.
+- Base update semantics belong to the versioned source declaration or ingress normalization:
+  `SdkSchema` for SDK evidence and the corresponding source schema for scrape/instrument evidence.
+  A campaign role never changes `set` into `max`/`min`, or vice versa. Matcher `Role::StateMax` is
+  legacy conflation to split during the observation-plane migration, not the owner of SDK update
+  behavior.
+- A legacy declaration may preserve identity while leaving state semantics unresolved. It remains
+  valid for schema coverage and explicit expectations but cannot enter temporal state reduction
+  until a versioned source or workload instrumentation declaration supplies the missing contract.
+- Assertion **site identity** and **property identity** remain separate. On the adopted Antithesis
+  surface the message identifies the aggregated property; multiple sites may contribute events and
+  coverage without creating separate property verdicts.
 
 ## Adopted vocabulary
 
@@ -103,13 +118,18 @@ counterpoint, dissonance must resolve.
 | **`step`** | one search-loop iteration | pick base → mint reproducer → rollout → admit → judge |
 | **timeline** | one execution history — the data-noun the codebase lacked | Composes with the axis: a timeline is a sequence of `Moment`s; a reproducer replays a timeline; a bug's address is `(timeline, Moment)`. The user-facing word for the resolution layer. **`multiverse` is rejected** — Antithesis branding. NB: pre-task-94 explorer code used "Timeline" for the *inner loop* (`timeline()`/`multiverse_step()`); that sense is dead — any surviving loop-sense use is legacy (see `docs/LAYERS.md`) |
 | **`Span`** | a duration on the `Moment` axis | |
+| **`SdkEvent`** | one immutable, typed, timestamped record emitted by a cooperating guest | Data plane only: an `SdkEvent` reports what happened and never asks the guest or VMM to do anything. A round-trip operation such as `buggify` uses the control plane for its request/answer and records the outcome separately as an `SdkEvent` |
+| **`SdkSchema`** | the versioned, normalized SDK declarations persisted with its events | Stable site/property identity, occurrence/state classification, value shape, and—when declared—base update semantics. Ordinary Antithesis assertions are occurrence/property evidence; numeric guidance may declare `max`/`min` but is report-only until represented and ordered exactly; binary v1 may leave never-fired state semantics unresolved. Replaces the overnamed SDK “catalog”; it is data, does not declare what a campaign should find interesting, and need not be a new app-facing SDK object |
 | **film** | the visible replay of a reproducer clip — `(reproducer, Moment) → what the screen showed` | A pure **observation** query over the one timeline (never an in-guest re-render, which the one-reproducer rule forbids — `docs/LAYERS.md`): read task 86's billboard at each frame `Moment`, then re-render host-side by loading the savestate into the same commit-pinned core (**1:1 by construction**). The resolution layer's showpiece (task 87, `dissonance/film`). Verb: "film the clip"; the intermediate artifact is a *capture bundle*, rendered to a PPM sequence / contact sheet |
 
 ## Keeps (the defense, one line each)
 
-- **The spine six** — `Tactic`, `Selector`, `Archive`, `Sensor`, `CellFn`, `Oracle` (with
-  `Frontier` as the Archive's exposed data; `Machine`/`EnvCodec` sit below the spine):
-  each names one seam with one stated invariant and one traceable citation.
+- **The surviving Explorer vocabulary** — `Tactic`, `Selector`, `Oracle`, and `CellFn` keep their
+  single-pass, entry-choice, completed-trace, and pure-projection meanings. **Archive** remains the
+  one retained-corpus concept and selector-facing read model, but the mutable `Archive::admit`
+  interface is not the Differential target. `Sensor`, `Feature`, `FeatureSet`, and `ChannelId` are
+  compatibility vocabulary scheduled to leave the production path. `Machine`/`EnvCodec` remain
+  below the search loop on the control plane. See `docs/DISSONANCE-STRATEGY.md`.
 - **`environment`** (crate and trait): the DST term of art — the environment answers
   everything the guest cannot answer for itself. Its second job (naming the artifact)
   retires to `Reproducer`. Resulting rule: *environment = the live answering surface;
@@ -138,32 +158,33 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 ## Reserved — named now so future tasks do not mint collisions
 
-- **`Portfolio`** — the Coyote-style arm-chooser (tasks 70/72). It must **not** be called
-  a Selector; `Selector` already means "which frontier entry to branch from."
-- **The PCT two-pass host** (task 72) — deliberately unnamed here, but ruled: it is *not*
-  a `Tactic` (single-pass, online, structurally cannot count `k` scheduling points ahead).
-  Name it when built; add it here in the same PR.
+- **`Portfolio`** — the future Coyote-style tactic/mutation-arm chooser. It must **not** be called
+   a Selector; `Selector` already means "which frontier entry to branch from."
+- **The PCT two-pass host**, if a scheduler-control feasibility proof earns it — deliberately
+  unnamed here, but ruled: it is *not*
+   a `Tactic` (single-pass, online, structurally cannot count `k` scheduling points ahead).
+   Name it when built; add it here in the same PR.
 - **The level above campaign** — continuous, CI-driven testing (campaigns repeated over
   time against a workload). Reserved, deliberately unnamed until it exists.
 
 ## Logged follow-ons (naming-adjacent, not renames)
 
-- `CellFnV1` is multi-channel but lives in `logtmpl` (→ `log-templates`) — packaging
-  smell; the cell abstraction ("the whole game") may deserve its own crate.
+- `CellFn` survives as the pure projection over a complete observation map. `CellFnV1`'s
+  feature/channel algorithm is compatibility code, not a packaging candidate or ratified target.
 - `tactics-regime` (→ `tactics`) mixes both proposal axes (regime tactic = entropy axis;
   `SeqMutators` = mutation axis) in one crate.
-- The task-70 two-loops merge: whichever of `Explorer::explore` / `run_campaign` survives
-  carries the campaign vocabulary (`Campaign`, `CampaignConfig`, `campaign_seed`) — no
-  third word. `benchcampaign` becomes an internal `bench` module, not vocabulary.
+- The generic `Explorer` is the production search loop and carries campaign vocabulary through its
+  composition root (`CampaignConfig`, campaign seed, and report). Bespoke benchmark loops are
+  compatibility code or internal `bench` modules, not a second campaign engine.
 
 ## Sequencing
 
 1. **This document is binding on new code immediately** (it costs nothing).
 2. **Eager, standalone**: `explorer::Environment` → `Reproducer` — the collision every
    future cross-crate reader pays for.
-3. **`conductor` → `counterpoint`** anytime — zero reverse dependencies.
-4. **Everything else rides its natural work**: task 70 rewrites the loop seam (kills
-   `Modulation`/`Progression`, merges the loops under campaign vocabulary); crate renames
+3. **`conductor` → `campaign-runner`** in its next substantive composition-root change.
+4. **Everything else rides its natural work**: the Differential integration rewrites the
+   observation/archive seam and establishes the generic Explorer campaign path; crate renames
    batch with each crate's next substantive PR; `VTime` audits ride each crate's next
    touch. No big-bang rename PR — merged, box-gated, golden-pinned code is not churned
    for vocabulary alone.
@@ -184,7 +205,7 @@ campaign  — a seeded, budgeted sequence of steps against one workload
 
 **The directory provides the family grouping** (`consonance/` is the namespace; a blanket
 `vm-` prefix would restate the path). **A name-prefix is reserved for crates that are two
-halves of one seam or one artifact** — the `sdk-link` precedent, generalized. Consonance
+halves of one seam or one artifact** — the guest SDK / `sdk-events` pair, generalized. Consonance
 previously carried three accidental prefix families (`vmm-`, `vm-`, `v`) that encoded
 nothing. After this slate, every prefix names a real pair, and the crate list teaches the
 architecture:
@@ -276,20 +297,20 @@ prefix.
 
 # Scoring addendum
 
-> **Status: RULED (Paul, 2026-07-07).** The Scoring-seam ruling (`docs/SCORING.md`) mints
-> three terms and reserves one name; per the naming authority rule they land here in the
-> same PR. Binding on new code immediately, like the addenda above.
+> **Status: AMENDED (2026-07-12).** The Differential strategy keeps the plain operation
+> **recompute cells**, retains the research term **energy** only if that exact mechanism is built,
+> and uses **quality** as archive-domination data. The earlier `re-key`/`re-key epoch` and exact
+> two-channel `Reward` rulings are superseded.
 
 ## Adopted vocabulary — scoring
 
 | Word | Names | Notes |
 |---|---|---|
-| **re-key** | recomputing every retained timeline's cells under a changed `CellFn`, then rebuilding the archive by re-running admission | The AURORA container-rebuild / Go-Explore archive-conversion mechanism; harmony's form is exact and offline (replay retained `RunTrace`s through the pure fold). Verb: "re-key the traces" |
-| **re-key epoch** | the interval between re-keys — the cadence of the `SCORING.md` R2 granularity controller | Epoch-wise, never online: `CellFn` knobs are discrete, so the controller adjusts between re-keys, not continuously |
-| **energy** | how many rollouts a chosen entry receives before the `Selector` chooses again | AFLFast's power-schedule term of art, used for AFLFast's mechanism (citation discipline holds). Cost-aware; *choice* stays cost-blind (`SCORING.md` R5) |
+| **energy** | how many rollouts a chosen entry receives before the `Selector` chooses again | AFLFast's power-schedule term of art. Use it only if Harmony actually implements that repeated-rollout allocation mechanism; it is not a generic budget synonym |
+| **recompute cells** | derive cells again from retained/replayed evidence under a different versioned `CellFn` | Plain descriptive operation, not a new API noun and not EnvCodec key shifting. It can create a diagnostic archive view but cannot manufacture a seal |
 
 ## Reserved — scoring
 
-- **`quality`** — the second `Reward` channel (`SCORING.md` R4): the per-cell domination
-  preference magnitude (R3). Named now so task 70+ does not mint a collision; `Reward`
-  channels are meaning-blind integers, and there are exactly two.
+- **`quality`** — deterministic per-Entry data used by Differential best-per-cell domination.
+  Whether it is scalar, lexicographic, or later exposed through `Reward` remains an implementation
+  contract to earn; it is not ruled to be exactly a second `Reward` channel.
