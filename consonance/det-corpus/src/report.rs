@@ -7,7 +7,7 @@ use crate::oracle::{
     Oracle, OracleResult, check_conformance, check_determinism, check_seed_sensitivity,
 };
 use serde::Serialize;
-use unison::{MachineError, MachineFactory};
+use unison::{SubjectError, SubjectFactory};
 
 /// Per-item outcome: the result of every oracle the item declared.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -53,9 +53,9 @@ pub fn run_item<F, G>(
     factory: &F,
     cfg: &RunConfig,
     read_golden: G,
-) -> Result<ItemReport, MachineError>
+) -> Result<ItemReport, SubjectError>
 where
-    F: MachineFactory,
+    F: SubjectFactory,
     G: Fn(&str) -> Option<String>,
 {
     let mut results = Vec::with_capacity(item.oracles.len());
@@ -89,7 +89,7 @@ where
 mod tests {
     use super::*;
     use crate::manifest::CorpusKind;
-    use unison::Machine;
+    use unison::Subject;
     use unison::toy::{ToyFactory, asm, generate_program};
 
     fn cfg() -> RunConfig {

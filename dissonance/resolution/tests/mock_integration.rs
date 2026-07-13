@@ -6,7 +6,7 @@
 //! Two layers: the client (`Session`/`MaterializedSession`) directly, and the
 //! REPL (`Shell`) over the same mock — the surface an agent actually drives.
 
-use control_proto::{Caps, Environment, StopConditions, StopMask, VTime};
+use control_proto::{Caps, Moment, Reproducer, StopConditions, StopMask};
 use environment::{EnvCodec, FaultPolicy};
 use resolution::{
     Action, Command, DispatchOutput, EnvSpec, ExecResult, HashScope, HostFault, MRefParseError,
@@ -524,7 +524,7 @@ fn replay_restores_the_whole_world_verbatim_after_a_branch() {
 
     // Advance under world A and snapshot there.
     srv.run(StopConditions {
-        deadline: Some(VTime(500)),
+        deadline: Some(Moment(500)),
         on: StopMask::NONE,
     })
     .unwrap();
@@ -535,7 +535,7 @@ fn replay_restores_the_whole_world_verbatim_after_a_branch() {
 
     // Branch a different world (env B) off the same snapshot, same position.
     let env_b = EnvCodec::seeded(2, FaultPolicy::none());
-    let wire_b = Environment {
+    let wire_b = Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: env_b.encode(),
     };
@@ -666,7 +666,7 @@ impl Server for FaultyServer {
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError> {
         self.inner.drop_snap(snap)
     }
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
         self.inner.branch(snap, env)
     }
     fn replay(&mut self, snap: SnapId) -> Result<(), SessionError> {
@@ -691,7 +691,7 @@ impl Server for FaultyServer {
         }
         self.inner.regs()
     }
-    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+    fn exec(&mut self, cmd: &str, deadline: Moment) -> Result<ExecResult, SessionError> {
         if self.exec_send_fails {
             // The request never reached the server — inner stays CLEAN.
             return Err(SessionError::Transport("exec send failed".to_string()));

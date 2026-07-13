@@ -33,8 +33,8 @@ use sha2::{Digest, Sha256};
 
 use explorer::{
     Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, EnvCodecError,
-    Environment, ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError,
-    MachineFactory, Prng, SnapId, StopConditions, StopReason, Tactic, TerminalOracle, VTime,
+    ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError, MachineFactory,
+    Moment, Prng, Reproducer, SnapId, StopConditions, StopReason, Tactic, TerminalOracle,
 };
 
 // ---- the toy's fixed shape ----
@@ -67,7 +67,7 @@ pub const SNAP_BIT: u32 = 1 << 31;
 
 /// The toy blob's container magic, `"TOY1"` little-endian.
 const MAGIC: u32 = u32::from_le_bytes(*b"TOY1");
-/// The toy blob format version (mirrored into [`Environment::blob_version`]).
+/// The toy blob format version (mirrored into [`Reproducer::blob_version`]).
 pub const TOY_BLOB_VERSION: u16 = 1;
 
 // ---- the env blob codec ----
@@ -88,7 +88,7 @@ pub struct ToyEnv {
 
 /// Encode a toy env to a canonical, byte-deterministic blob (overrides in sorted
 /// id order — no map iteration order reaches a byte).
-pub fn encode(e: &ToyEnv) -> Environment {
+pub fn encode(e: &ToyEnv) -> Reproducer {
     let mut w = Vec::new();
     w.extend_from_slice(&MAGIC.to_le_bytes());
     w.extend_from_slice(&TOY_BLOB_VERSION.to_le_bytes());
@@ -100,14 +100,14 @@ pub fn encode(e: &ToyEnv) -> Environment {
         w.extend_from_slice(&id.to_le_bytes());
         w.push(*b);
     }
-    Environment {
+    Reproducer {
         blob_version: TOY_BLOB_VERSION,
         bytes: w,
     }
 }
 
 /// Decode a toy blob, bounds-checked and total (no panic on arbitrary bytes).
-pub fn decode(env: &Environment) -> Result<ToyEnv, MachineError> {
+pub fn decode(env: &Reproducer) -> Result<ToyEnv, MachineError> {
     let b = &env.bytes;
     let bad = || MachineError::BadEnvironment(env.blob_version);
     let u32at = |o: usize, b: &[u8]| -> Result<u32, MachineError> {
@@ -162,7 +162,7 @@ pub fn decode(env: &Environment) -> Result<ToyEnv, MachineError> {
 pub struct ToyCodec;
 
 impl EnvCodec for ToyCodec {
-    fn seeded(&self, seed: u64) -> Environment {
+    fn seeded(&self, seed: u64) -> Reproducer {
         encode(&ToyEnv {
             base_offset: 0,
             pos: 0,
@@ -171,7 +171,7 @@ impl EnvCodec for ToyCodec {
         })
     }
 
-    fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError> {
+    fn mutate(&self, base: &Reproducer, salt: u64) -> Result<Reproducer, EnvCodecError> {
         // Produce a branch-local delta keyed from the base snapshot's capture
         // point, slicing at the **relative** cut `pos − base_offset` (task 68:
         // a base's overrides are keyed relative to its own root; a
@@ -208,9 +208,9 @@ impl EnvCodec for ToyCodec {
 
     fn compose(
         &self,
-        base: &Environment,
-        branch_local: &Environment,
-    ) -> Result<Environment, EnvCodecError> {
+        base: &Reproducer,
+        branch_local: &Reproducer,
+    ) -> Result<Reproducer, EnvCodecError> {
         let b = decode(base).unwrap_or(ToyEnv {
             base_offset: 0,
             pos: 0,
@@ -277,7 +277,7 @@ pub struct ToyMachine {
     snaps: BTreeMap<u64, Snap>,
     next_snap: u64,
     dropped: BTreeSet<u64>,
-    // Current Modulation state.
+    // Current rollout state.
     branch_start: u64,
     seed: u64,
     overrides_abs: BTreeMap<u64, u8>,
@@ -373,7 +373,7 @@ impl ToyMachine {
     /// assertions are reachable by the search so the bug-reporting gates have real
     /// bugs to find — including one in the *deep suffix* (`a[7]`) so a bug can be
     /// found below a nested (`SNAP_AT2`) snapshot, whose prefix is already frozen.
-    fn terminal_stop(&self, vtime: VTime) -> StopReason {
+    fn terminal_stop(&self, vtime: Moment) -> StopReason {
         let a = &self.answers;
         if a.get(2) == Some(&2) && a.get(4) == Some(&2) {
             return StopReason::Crash {
@@ -421,7 +421,7 @@ impl ToyMachine {
 }
 
 impl Machine for ToyMachine {
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
         let s = self.live(snap)?.clone();
         let decoded = decode(env)?;
         self.branch_start = s.frozen_pos;
@@ -478,7 +478,7 @@ impl Machine for ToyMachine {
 
         loop {
             let abs = self.answers.len() as u64;
-            let vt = VTime(abs.saturating_mul(VTIME_STEP));
+            let vt = Moment(abs.saturating_mul(VTIME_STEP));
 
             if let Some(d) = until.deadline
                 && vt.0 >= d.0
@@ -564,7 +564,7 @@ impl Machine for ToyMachine {
         &self.coverage
     }
 
-    fn recorded_env(&self) -> Result<Environment, MachineError> {
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
         if self.fail_recorded_env {
             return Err(MachineError::Transport(
                 "injected recorded_env fault".into(),
@@ -640,7 +640,7 @@ pub fn drive_to_terminal(
 /// the snapshot handle plus its branch-local prefix env. Used by the nested-snapshot
 /// replay gate to fork a snapshot *below* a non-genesis base. Panics if the run
 /// reaches a terminal stop before forking.
-pub fn drive_to_snapshot(m: &mut ToyMachine, until: &StopConditions) -> (SnapId, Environment) {
+pub fn drive_to_snapshot(m: &mut ToyMachine, until: &StopConditions) -> (SnapId, Reproducer) {
     loop {
         match m.run(until, None).expect("toy run") {
             StopReason::Decision { .. } => continue, // seed-answered on the next run(None)

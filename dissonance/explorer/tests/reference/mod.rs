@@ -4,7 +4,7 @@
 //!
 //! This module is the `Explorer`/`Strategy`/`Corpus` implementation exactly as
 //! it stood before the spine refactor (commit `d7c230a`), re-rooted onto the
-//! crate's public seam types (`Machine`, `EnvCodec`, `Environment`, …), which
+//! crate's public seam types (`Machine`, `EnvCodec`, `Reproducer`, …), which
 //! the refactor leaves untouched. The equivalence gate
 //! (`tests/behavior_equiv.rs`) drives this reference and the refactored engine
 //! over the same toy machines and asserts **byte-identical bug fingerprints and
@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use explorer::{
-    Answer, EnvCodec, Environment, Machine, MachineError, SnapId, StopConditions, StopMask,
+    Answer, EnvCodec, Machine, MachineError, Reproducer, SnapId, StopConditions, StopMask,
     StopReason,
 };
 
@@ -63,7 +63,7 @@ pub struct CovScore(pub u64);
 #[derive(Clone, Debug)]
 struct Entry {
     snap: SnapId,
-    env: Environment,
+    env: Reproducer,
     score: CovScore,
 }
 
@@ -99,7 +99,7 @@ impl Corpus {
         }
     }
 
-    pub fn admit(&mut self, snap: SnapId, env: Environment, coverage: &[u8]) -> bool {
+    pub fn admit(&mut self, snap: SnapId, env: Reproducer, coverage: &[u8]) -> bool {
         let mut fresh: Vec<(usize, u8)> = Vec::new();
         for (i, &count) in coverage.iter().enumerate() {
             let b = bucket(count);
@@ -138,7 +138,7 @@ impl Corpus {
         self.entries.is_empty()
     }
 
-    pub fn select(&self, salt: u64) -> Option<(SnapId, &Environment)> {
+    pub fn select(&self, salt: u64) -> Option<(SnapId, &Reproducer)> {
         if self.entries.is_empty() {
             return None;
         }
@@ -147,11 +147,11 @@ impl Corpus {
         Some((e.snap, &e.env))
     }
 
-    pub fn entry(&self, i: usize) -> Option<(SnapId, &Environment, CovScore)> {
+    pub fn entry(&self, i: usize) -> Option<(SnapId, &Reproducer, CovScore)> {
         self.entries.get(i).map(|e| (e.snap, &e.env, e.score))
     }
 
-    pub fn base_env(&self, snap: SnapId) -> Option<&Environment> {
+    pub fn base_env(&self, snap: SnapId) -> Option<&Reproducer> {
         self.entries.iter().find(|e| e.snap == snap).map(|e| &e.env)
     }
 
@@ -201,7 +201,7 @@ pub trait Strategy {
         corpus: &Corpus,
         genesis: SnapId,
         env: &dyn EnvCodec,
-    ) -> (SnapId, Environment);
+    ) -> (SnapId, Reproducer);
 }
 
 /// Pure seed-driven exploration (pre-refactor `SeedStrategy`).
@@ -228,7 +228,7 @@ impl Strategy for SeedStrategy {
         _corpus: &Corpus,
         genesis: SnapId,
         env: &dyn EnvCodec,
-    ) -> (SnapId, Environment) {
+    ) -> (SnapId, Reproducer) {
         (genesis, env.seeded(self.seeds.next_u64()))
     }
 }
@@ -274,7 +274,7 @@ impl Strategy for CoverageStrategy {
         corpus: &Corpus,
         genesis: SnapId,
         env: &dyn EnvCodec,
-    ) -> (SnapId, Environment) {
+    ) -> (SnapId, Reproducer) {
         self.step = self.step.wrapping_add(1);
         let explore = corpus.is_empty() || self.step.is_multiple_of(self.explore_period);
         if explore {
@@ -308,13 +308,13 @@ fn checksum(bytes: &[u8]) -> u64 {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunOutcome {
     pub stop: StopReason,
-    pub env: Environment,
+    pub env: Reproducer,
     pub coverage_novelty: CovScore,
 }
 
 struct PendingSnapshot {
     snap: SnapId,
-    env: Environment,
+    env: Reproducer,
     coverage: Vec<u8>,
 }
 
@@ -322,7 +322,7 @@ struct PendingSnapshot {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Bug {
     pub fingerprint: [u8; 32],
-    pub env: Environment,
+    pub env: Reproducer,
     pub stop: StopReason,
 }
 
@@ -389,7 +389,7 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
     pub fn timeline(
         &mut self,
         base: SnapId,
-        env: &Environment,
+        env: &Reproducer,
         until: &StopConditions,
     ) -> Result<RunOutcome, MachineError> {
         for pending in std::mem::take(&mut self.pending_snapshots) {
@@ -448,7 +448,7 @@ impl<M: Machine, S: Strategy> Explorer<M, S> {
             None
         };
 
-        let base_genesis: Option<Environment> = if base_snap == self.genesis {
+        let base_genesis: Option<Reproducer> = if base_snap == self.genesis {
             None
         } else {
             self.corpus.base_env(base_snap).cloned()

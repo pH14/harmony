@@ -36,7 +36,7 @@ pub fn runtrace::ChunkDecoder::push(&mut self, explorer::spine::Moment, &[u8]) -
 pub struct runtrace::TraceId(pub [u8; 32])
 impl runtrace::TraceId
 pub fn runtrace::TraceId::from_hex(&str) -> core::option::Option<runtrace::TraceId>
-pub fn runtrace::TraceId::of(&explorer::Environment) -> runtrace::TraceId
+pub fn runtrace::TraceId::of(&explorer::Reproducer) -> runtrace::TraceId
 pub fn runtrace::TraceId::to_hex(&self) -> alloc::string::String
 impl core::fmt::Debug for runtrace::TraceId
 pub fn runtrace::TraceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -45,7 +45,7 @@ pub fn runtrace::TraceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt
 pub struct runtrace::TraceStore
 impl runtrace::TraceStore
 pub fn runtrace::TraceStore::dir(&self) -> &std::path::Path
-pub fn runtrace::TraceStore::env(&self, runtrace::TraceId) -> core::result::Result<explorer::Environment, runtrace::TraceError>
+pub fn runtrace::TraceStore::env(&self, runtrace::TraceId) -> core::result::Result<explorer::Reproducer, runtrace::TraceError>
 pub fn runtrace::TraceStore::has_journal(&self, runtrace::TraceId) -> bool
 pub fn runtrace::TraceStore::ids(&self) -> core::result::Result<alloc::vec::Vec<runtrace::TraceId>, runtrace::TraceError>
 pub fn runtrace::TraceStore::load(&self, runtrace::TraceId) -> core::result::Result<explorer::spine::RunTrace, runtrace::TraceError>
@@ -55,6 +55,6 @@ pub const runtrace::TRACE_FORMAT_VERSION: u16
 pub fn runtrace::decode(&[u8]) -> core::result::Result<explorer::spine::RunTrace, runtrace::TraceError>
 pub fn runtrace::decode_chunks(explorer::spine::StreamId, &[(explorer::spine::Moment, alloc::vec::Vec<u8>)]) -> alloc::vec::Vec<(explorer::spine::Moment, explorer::spine::Record)>
 pub fn runtrace::encode(&explorer::spine::RunTrace) -> core::result::Result<alloc::vec::Vec<u8>, runtrace::TraceError>
-pub fn runtrace::encode_env(&explorer::Environment) -> alloc::vec::Vec<u8>
+pub fn runtrace::encode_env(&explorer::Reproducer) -> alloc::vec::Vec<u8>
 pub fn runtrace::ingest_ndjson(&str) -> core::result::Result<alloc::vec::Vec<(explorer::spine::Moment, alloc::vec::Vec<u8>)>, runtrace::TraceError>
 pub fn runtrace::retain_for(runtrace::RetentionPolicy, &explorer::StopReason, bool) -> runtrace::Retain

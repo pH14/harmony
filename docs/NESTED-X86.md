@@ -161,7 +161,7 @@ Three parts, all under `spikes/nested-x86/`:
 2. **L1 appliance image** (`appliance/`) — content-pinned build recipe producing a bootable
    image containing: the box's determinism-host kernel lineage (6.12.90-proxy with patches
    0001–0005 in its KVM), the harmony binaries needed for the gates (vmm-core control server /
-   conductor and the live gate harnesses), the L2 guest images, and the evidence tooling. One
+   campaign-runner and the live gate harnesses), the L2 guest images, and the evidence tooling. One
    build command, deterministic where practical, every component sha256-pinned in a manifest.
 3. **Harness + evidence** (`harness/`, `schemas/`, `results/<stage>/<run-set>/`) — run
    orchestration from the workstation, canonical machine-readable results (stable JSON, sorted

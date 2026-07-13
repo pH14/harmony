@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use det_corpus::check_determinism;
 use proptest::prelude::*;
-use unison::MachineFactory;
+use unison::SubjectFactory;
 use unison::flaky::{FlakyFactory, FlakyMachine, Perturbation};
 use unison::toy::{ToyFactory, ToyMachine, generate_program};
 
@@ -40,7 +40,7 @@ struct AlternatingFlakyFactory {
     spawns: AtomicU64,
 }
 
-impl MachineFactory for AlternatingFlakyFactory {
+impl SubjectFactory for AlternatingFlakyFactory {
     type M = FlakyMachine<ToyMachine>;
 
     fn spawn(&self, seed: u64) -> Self::M {

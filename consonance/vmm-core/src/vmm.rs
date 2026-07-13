@@ -15,7 +15,7 @@ use hypercall_proto::{
     encode_response,
 };
 use sha2::{Digest, Sha256};
-use vmm_backend::{Backend, Exit, Gpa, VcpuState, Vtime};
+use vmm_backend::{Backend, Exit, Gpa, Moment, VcpuState};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
 use crate::contract::{self, MsrDisposition};
@@ -733,7 +733,7 @@ pub struct Vmm<B: Backend> {
     /// unchanged. Like the preemption deadline it is a pure function of the
     /// (seed-deterministic) work axis, so arrival lands at the same instruction
     /// across same-seed runs.
-    arrival_deadline: Option<Vtime>,
+    arrival_deadline: Option<Moment>,
     /// The task-73 SDK channel, wired per run by [`Vmm::enable_sdk`]. `None` for
     /// every non-SDK path (M1/M2/corpus/Linux-boot) — the doorbell then stays the
     /// default-deny contract violation and this field never touches the hash.
@@ -2138,7 +2138,7 @@ impl<B: Backend> Vmm<B> {
     /// `sha256` of the **guest-observable conformance output** — the ordered
     /// report stream ‖ the serial banner — the O2/O3 digest the corpus pins to a
     /// golden. Deliberately **distinct** from [`Vmm::state_hash`] (the unison
-    /// `Machine::state_hash`, which folds in latent RAM / V-time / seeded-entropy
+    /// `Subject::state_hash`, which folds in latent RAM / V-time / seeded-entropy
     /// state): the report stream is what the guest *deliberately emits*, so it is
     /// the right conformance signal — a constant payload that happens to be
     /// perfectly deterministic still produces a meaningful (and seed-sensitive,
@@ -2910,13 +2910,13 @@ impl<B: Backend> Vmm<B> {
     /// V-time reaches the deadline, so the post-preemption anchor does fire the timer).
     ///
     /// [`Capabilities::deterministic_tsc`]: vmm_backend::Capabilities
-    fn preemption_deadline(&self) -> Option<Vtime> {
+    fn preemption_deadline(&self) -> Option<Moment> {
         let deadline_vns = self.armed_timer_deadline_vns()?;
         let vt = self
             .vtime
             .as_ref()
             .expect("armed_timer_deadline_vns implies V-time wired");
-        Some(Vtime(vt.clock.work_for_vns(deadline_vns)))
+        Some(Moment(vt.clock.work_for_vns(deadline_vns)))
     }
 
     /// The `run_until` work-count deadline for the next [`step`](Vmm::step): the
@@ -2927,9 +2927,9 @@ impl<B: Backend> Vmm<B> {
     /// the min is what lets a timer preemption and a fault arrival coexist: the
     /// guest is forced out at whichever seed-deterministic work count comes first,
     /// and the loser stays armed for the following step.
-    fn run_until_deadline(&self) -> Option<Vtime> {
+    fn run_until_deadline(&self) -> Option<Moment> {
         match (self.preemption_deadline(), self.arrival_deadline) {
-            (Some(p), Some(a)) => Some(Vtime(p.0.min(a.0))),
+            (Some(p), Some(a)) => Some(Moment(p.0.min(a.0))),
             (only, None) | (None, only) => only,
         }
     }
@@ -2957,7 +2957,7 @@ impl<B: Backend> Vmm<B> {
             .vtime
             .as_ref()
             .expect("can_arm_arrival implies V-time wired");
-        self.arrival_deadline = Some(Vtime(vt.clock.work_for_vns(moment)));
+        self.arrival_deadline = Some(Moment(vt.clock.work_for_vns(moment)));
         true
     }
 
@@ -3183,7 +3183,7 @@ impl<B: Backend> Vmm<B> {
     /// [`Self::service_pending_irqs`] sees [`Self::lapic_now_vns`] at the timer
     /// deadline, fires the timer into the LAPIC IRR, and injects it at the first
     /// injectable entry. No completion (the backend left nothing pending).
-    fn on_deadline(&mut self, reached: Vtime) -> Result<Step, VmmError> {
+    fn on_deadline(&mut self, reached: Moment) -> Result<Step, VmmError> {
         // Trace the MEASURED landing work (diagnostic, not hashed) for the seed-dependence
         // gate — capped so a constantly-preempting guest can't grow it unbounded.
         if self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
@@ -5326,7 +5326,7 @@ mod tests {
     /// with the stream position (else divergence could not be witnessed).
     #[test]
     fn net_continuation_resumes_via_the_shared_sdk_stream() {
-        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy, VTime};
+        use environment::{DecisionClass, EnvSpec, Fault, FaultPolicy, Span};
         let mut policy = FaultPolicy::none();
         policy
             .set_class(
@@ -5335,7 +5335,7 @@ mod tests {
                 1,
                 &[
                     Fault::NetReset,
-                    Fault::NetLatency(VTime(10)),
+                    Fault::NetLatency(Span(10)),
                     Fault::NetThrottle { bps: 5 },
                 ],
             )
@@ -7048,7 +7048,7 @@ mod tests {
         let mut exits = arm_timer_exits(1000);
         // The mock rewrites `reached` to the deadline the VMM passed `run_until`
         // (= work_for_vns(timer deadline)); the literal here is a placeholder.
-        exits.push(Exit::Deadline { reached: Vtime(0) });
+        exits.push(Exit::Deadline { reached: Moment(0) });
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: vector 0x40 in service
         exits.push(Exit::Hlt);
         // Default (deterministic) caps so `preemption_deadline` engages; the
@@ -7130,7 +7130,7 @@ mod tests {
         let work = Box::new(SharedWork(cell.clone()));
         let mut exits = arm_timer_exits(1000);
         exits.push(Exit::Rdrand { width: 8 }); // stages a completion (RNG: both guards)
-        exits.push(Exit::Deadline { reached: Vtime(0) }); // mock rewrites reached := deadline
+        exits.push(Exit::Deadline { reached: Moment(0) }); // mock rewrites reached := deadline
         exits.push(Exit::Hlt); // a real entry that commits the staged completion
         let mut v = lapic_vmm(configured_mock(exits), work);
 
@@ -8524,10 +8524,10 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             self.0.run()
         }
-        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             self.0.run_until(d)
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {

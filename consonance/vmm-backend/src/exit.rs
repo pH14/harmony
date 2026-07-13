@@ -8,7 +8,7 @@
 //! violation that fails closed as a [`crate::BackendError`]. Nothing else is
 //! reachable through the trait.
 
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// Every way the guest can become observable to the VMM.
 ///
@@ -97,7 +97,7 @@ pub enum Exit {
     Deadline {
         /// The V-time actually reached (≥ the requested deadline by the skid
         /// margin task 07 bounds).
-        reached: Vtime,
+        reached: Moment,
     },
 }
 
@@ -126,7 +126,7 @@ impl Exit {
 /// under `KVM_IRQCHIP_NONE` maskable IRQs come only from the `KVM_INTERRUPT`
 /// queue and NMIs via `KVM_NMI` — no other producer exists.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Event {
+pub enum Injection {
     /// A maskable interrupt vector (`KVM_INTERRUPT`).
     Interrupt {
         /// The 8-bit interrupt vector.

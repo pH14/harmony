@@ -9,9 +9,9 @@
 
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
 use crate::state::VcpuState;
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// The trap apparatus, decoupled from the deterministic VMM above it.
 ///
@@ -103,7 +103,7 @@ pub trait Backend {
     /// the live PMU/single-step path is Phase 2 (needs task 07 + the lapic
     /// injection seam); the trait declares it now so task 15 can compile against
     /// it.
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit>;
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit>;
 
     /// Inject an **NMI** (`KVM_NMI`) immediately, or set the pending maskable-IRQ
     /// vector (equivalent to [`set_pending_irq`](Backend::set_pending_irq)`(Some(v))`).
@@ -111,7 +111,7 @@ pub trait Backend {
     /// drives the maskable path through [`set_pending_irq`](Backend::set_pending_irq)
     /// directly (re-arbitrated each entry); `inject` exists for the NMI path and as
     /// a one-shot maskable convenience.
-    fn inject(&mut self, event: Event) -> Result<()>;
+    fn inject(&mut self, event: Injection) -> Result<()>;
 
     /// Set (overwrite) the single pending **maskable** IRQ vector to inject at the
     /// next injectable VM-entry — `None` clears it (and disarms the interrupt
@@ -241,11 +241,11 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).run()
     }
 
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit> {
         (**self).run_until(deadline)
     }
 
-    fn inject(&mut self, event: Event) -> Result<()> {
+    fn inject(&mut self, event: Injection) -> Result<()> {
         (**self).inject(event)
     }
 

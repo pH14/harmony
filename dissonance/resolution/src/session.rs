@@ -14,7 +14,7 @@
 //! control failure; the two are never conflated, and a
 //! [`Tainted`](SessionError::Tainted) guard surfaces verbatim.
 
-use control_proto::{Environment, HashScope, SnapId, StopConditions, StopMask, StopReason, VTime};
+use control_proto::{HashScope, Reproducer, SnapId, StopConditions, StopMask, StopReason};
 use environment::{EnvSpec, Moment};
 
 use crate::server::{ExecResult, RegsView, Server};
@@ -121,13 +121,13 @@ impl<S: Server> Session<S> {
     fn materialize_from(&mut self, mref: &MomentRef, root: SnapId) -> Result<(), SessionError> {
         // Invalidate first: any failure below leaves nothing open.
         self.current = None;
-        let wire_env = Environment {
+        let wire_env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: mref.env.encode(),
         };
         self.server.branch(root, &wire_env)?;
         let stop = self.server.run(StopConditions {
-            deadline: Some(VTime(mref.moment)),
+            deadline: Some(control_proto::Moment(mref.moment)),
             on: StopMask::NONE,
         })?;
         // Install only now that both verbs have succeeded.
@@ -257,7 +257,7 @@ impl<S: Server> MaterializedSession<'_, S> {
     /// current position to the stop.
     pub fn run(&mut self, until: Moment) -> Result<StopReason, SessionError> {
         let stop = self.session.server.run(StopConditions {
-            deadline: Some(VTime(until)),
+            deadline: Some(control_proto::Moment(until)),
             on: StopMask::NONE,
         })?;
         let cur = self.cur_mut();
@@ -285,7 +285,7 @@ impl<S: Server> MaterializedSession<'_, S> {
     /// would drift the mirrored task-80/81 wire contract). A failed refresh
     /// keeps the stale moment on the already-tainted timeline.
     pub fn exec(&mut self, cmd: &str) -> Result<ExecResult, SessionError> {
-        let deadline = VTime(self.cur().moment.saturating_add(EXEC_BUDGET));
+        let deadline = control_proto::Moment(self.cur().moment.saturating_add(EXEC_BUDGET));
         // Conservative taint: mark BEFORE the round-trip, so no failure mode can
         // leave a server-side-improvised timeline looking clean.
         self.cur_mut().tainted = true;

@@ -19,8 +19,8 @@
 use std::collections::BTreeMap;
 
 use control_proto::{
-    CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, Environment, HashScope,
-    SnapId, StopConditions, StopReason, VTime,
+    CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, HashScope, Reproducer,
+    SnapId, StopConditions, StopReason,
 };
 use environment::{EnvSpec, Moment};
 use resolution::{ExecResult, READ_CAP, RegsView, Server, SessionError, Snapshot};
@@ -242,7 +242,7 @@ impl Server for MockBillboardServer {
         Ok(())
     }
 
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
         let Some(&moment) = self.snaps.get(&snap.0) else {
             return Err(SessionError::Control(ControlError::UnknownSnapshot(snap)));
         };
@@ -278,7 +278,7 @@ impl Server for MockBillboardServer {
         {
             self.cur_moment = s;
             return Ok(StopReason::Crash {
-                vtime: VTime(s),
+                vtime: control_proto::Moment(s),
                 info: CrashInfo {
                     kind: CrashKind::Panic,
                     detail: b"mock: scripted stop-short".to_vec(),
@@ -288,12 +288,12 @@ impl Server for MockBillboardServer {
         // V-time is monotonic — never rewind.
         if target <= self.cur_moment {
             return Ok(StopReason::Deadline {
-                vtime: VTime(self.cur_moment),
+                vtime: control_proto::Moment(self.cur_moment),
             });
         }
         self.cur_moment = target;
         Ok(StopReason::Deadline {
-            vtime: VTime(self.cur_moment),
+            vtime: control_proto::Moment(self.cur_moment),
         })
     }
 
@@ -366,7 +366,11 @@ impl Server for MockBillboardServer {
         })
     }
 
-    fn exec(&mut self, _cmd: &str, _deadline: VTime) -> Result<ExecResult, SessionError> {
+    fn exec(
+        &mut self,
+        _cmd: &str,
+        _deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError> {
         // Film is observation-only; it never improvises. Refuse loudly so a
         // stray exec would fail a test rather than pass silently.
         Err(SessionError::Control(ControlError::Unsupported))

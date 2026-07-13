@@ -12,7 +12,7 @@
 # Launch: setsid nohup bash run-bug3-ablation.sh >~/t69m2-results/bug3-abl-orch.out 2>&1 </dev/null &
 set -uo pipefail
 cd ~/harmony-t69m2 && source ~/.cargo/env
-BIN=./target/release/conductor
+BIN=./target/release/campaign-runner
 CAL=dissonance/benchmark/campaign-data/bug1/calibration.json
 IMG=initramfs-uuid.cpio.gz; RMARK=UUID_READY
 OUT=~/t69m2-results/bug3-ablation
@@ -31,7 +31,7 @@ run_one() {  # core name seed
     --out "$OUT/$name.json" --record "$OUT/traces/$name.traces.json" \
     </dev/null >"$OUT/$name.log" 2>&1
   local rc=$?
-  grep '^\[conductor\] FIND' "$OUT/$name.log" | sed "s|^|$name |" >> "$OUT/finds.log"
+  grep '^\[campaign-runner\] FIND' "$OUT/$name.log" | sed "s|^|$name |" >> "$OUT/finds.log"
   echo "$(date +%T) DONE $name rc=$rc $(grep -o '[0-9]* certified find(s)' "$OUT/$name.log"|tail -1) $(grep -o '[0-9]* distinct signal cells' "$OUT/$name.log"|tail -1)" >> "$PROG"
   if [ "$rc" -ne 0 ]; then echo "$name rc=$rc" >> "$OUT/failures.log"; echo "$(date +%T) FAILED $name rc=$rc" >> "$PROG"; fi
   return $rc

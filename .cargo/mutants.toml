@@ -50,7 +50,7 @@ timeout_multiplier = 3.0
 # (`region`/`run_buf`, the value types, the `MockBackend` run-loop contract).
 exclude_globs = [
     "**/main.rs",
-    # `dissonance/conductor`'s box composition root (issue #69 coverage
+    # `dissonance/campaign-runner`'s box composition root (issue #69 coverage
     # recovery): split out of `main.rs` into its own file so the portable CLI
     # dispatch logic around it stays mutation-gated. Same rationale as the
     # `kvm`/`patched_kvm.rs`/`boot_linux_selected` entries below: every
@@ -58,7 +58,7 @@ exclude_globs = [
     # needs a real `/dev/kvm` + patched KVM + a built guest image, so the
     # no-`--ignored` mutation oracle can never run it — every mutant here is
     # structurally unkillable ("missed"), not a real gap. Verified instead by
-    # the box gates recorded in `dissonance/conductor/IMPLEMENTATION.md`;
+    # the box gates recorded in `dissonance/campaign-runner/IMPLEMENTATION.md`;
     # mirrors the coverage job's `--ignore-filename-regex` exclusion of the
     # same file.
     "**/boxrun.rs",

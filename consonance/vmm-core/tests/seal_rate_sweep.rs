@@ -76,9 +76,9 @@ use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::seal_rate::{
-    BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Overshoot,
+    BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Moment, Overshoot,
     PredicateQuality, Ruling, RulingInputs, RulingThresholds, SampleKind, SamplingSchedule,
-    SealAttempt, SealResult, SealStats, VTime, ppm_percent, rate_ppm, sealable,
+    SealAttempt, SealResult, SealStats, Span, ppm_percent, rate_ppm, sealable,
 };
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vmm::{Step, TerminalReason, Vmm, VmmError};
@@ -227,7 +227,7 @@ fn watchdog_start() -> Instant {
 /// What advancing the guest observed.
 struct Advance {
     /// The effective V-time reached (`0` if V-time never advanced / unwired).
-    landed_vtime: VTime,
+    landed_vtime: Moment,
     /// The terminal reason, if the guest ended.
     terminal: Option<TerminalReason>,
     /// A step error, if the run faulted.
@@ -253,7 +253,7 @@ fn drain_serial(vmm: &DynVmm, printed: &mut usize) {
 /// budget is hit. Lands at the first V-time-synchronized boundary at/after `target` (the
 /// only points where `effective_vns` advances), which is exactly where `save_vm_state`
 /// can succeed. `printed` tracks streamed serial across calls.
-fn run_to_vtime(vmm: &mut DynVmm, target: VTime, printed: &mut usize, start: Instant) -> Advance {
+fn run_to_vtime(vmm: &mut DynVmm, target: Moment, printed: &mut usize, start: Instant) -> Advance {
     let mut steps = 0u64;
     loop {
         if vmm.effective_vns().unwrap_or(0) >= target {
@@ -446,7 +446,7 @@ struct BranchOutcome {
     /// (the workload ended) before the requested horizon. A same-terminal-hash pair whose
     /// `reached_vtime` fell short was verified over a **truncated** horizon (weaker evidence),
     /// so §2 records it rather than silently counting it as full-horizon.
-    reached_vtime: VTime,
+    reached_vtime: Moment,
     /// Hit terminal before the requested horizon.
     early_terminal: bool,
 }
@@ -460,7 +460,7 @@ fn branch_and_run(
     kernel: &[u8],
     initramfs: &[u8],
     seed: u64,
-    horizon_vns: VTime,
+    horizon_vns: Span,
 ) -> BranchOutcome {
     let mut vmm = boot_pg(kernel, initramfs, seed);
     let mapping = engine
@@ -497,7 +497,7 @@ fn branch_and_run(
 /// assigned to task 68): a wall/step-budget stop, a step error, or an early terminal
 /// leaves the guest **short of** the target, and hashing there would compare the two §4
 /// legs at different V-times — a silently-vacuous premise check, not a measurement.
-fn assert_reached(leg: &str, adv: &Advance, to_vtime: VTime) {
+fn assert_reached(leg: &str, adv: &Advance, to_vtime: Moment) {
     if let Some(e) = &adv.step_error {
         panic!("§4 {leg} leg errored before reaching V-time {to_vtime}: {e}");
     }
@@ -523,7 +523,7 @@ fn replay_to(
     snap: SnapshotId,
     kernel: &[u8],
     initramfs: &[u8],
-    to_vtime: VTime,
+    to_vtime: Moment,
 ) -> [u8; 32] {
     let mut vmm = boot_pg(kernel, initramfs, BASE_SEED);
     let mapping = engine.materialize(snap).expect("materialize");
@@ -539,7 +539,7 @@ fn replay_to(
 /// Boot a fresh VM at `BASE_SEED` and run to `to_vtime` from genesis, returning the reached
 /// `state_hash` — the from-genesis leg of §4. Panics unless the run really reached
 /// `to_vtime` (same discipline as [`replay_to`]).
-fn boot_and_run_to(kernel: &[u8], initramfs: &[u8], to_vtime: VTime) -> [u8; 32] {
+fn boot_and_run_to(kernel: &[u8], initramfs: &[u8], to_vtime: Moment) -> [u8; 32] {
     let mut vmm = boot_pg(kernel, initramfs, BASE_SEED);
     let mut printed = 0usize;
     let adv = run_to_vtime(&mut vmm, to_vtime, &mut printed, watchdog_start());
@@ -553,8 +553,8 @@ fn boot_and_run_to(kernel: &[u8], initramfs: &[u8], to_vtime: VTime) -> [u8; 32]
 
 /// The V-time span to sample + the busy windows to aim a handful of targets at.
 struct Profile {
-    span_start: VTime,
-    span_end: VTime,
+    span_start: Moment,
+    span_end: Moment,
     busy: Vec<BusyWindow>,
 }
 
@@ -569,14 +569,14 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
     let busy_target_cap = env_usize("BUSY_TARGETS", 6);
     // Allow skipping the (expensive) profiling run by pinning the span + busy centers.
     if let (Ok(s), Ok(e)) = (std::env::var("SPAN_START"), std::env::var("SPAN_END")) {
-        let span_start: VTime = s.parse().expect("SPAN_START is a u64");
-        let span_end: VTime = e.parse().expect("SPAN_END is a u64");
+        let span_start: Moment = s.parse().expect("SPAN_START is a u64");
+        let span_end: Moment = e.parse().expect("SPAN_END is a u64");
         assert!(span_start < span_end, "SPAN_START must be < SPAN_END");
         let busy: Vec<BusyWindow> = std::env::var("BUSY_CENTERS")
             .ok()
             .map(|v| {
                 v.split(',')
-                    .filter_map(|t| t.trim().parse::<VTime>().ok())
+                    .filter_map(|t| t.trim().parse::<Moment>().ok())
                     .map(|c| BusyWindow {
                         start: c.saturating_sub(500),
                         end: c + 500,
@@ -601,7 +601,7 @@ fn profile(kernel: &[u8], initramfs: &[u8]) -> Profile {
     let mut printed = 0usize;
     let mut span_start = 0u64;
     let mut ready = false;
-    let mut busy_centers: Vec<VTime> = Vec::new();
+    let mut busy_centers: Vec<Moment> = Vec::new();
     let mut steps = 0u64;
     let terminal_vtime;
     loop {
@@ -707,7 +707,7 @@ struct Sealed {
     /// Index of this seal's target in the schedule (its position in the live leg sequence).
     attempt_idx: usize,
     snap: SnapshotId,
-    seal_vtime: VTime,
+    seal_vtime: Moment,
     /// `state_hash` at the landing **before** `probe_seal` (a clean replay reproduces this).
     live_hash_clean: [u8; 32],
     /// `state_hash` at the landing **after** `probe_seal` (the probe-laden live trajectory —
@@ -896,14 +896,14 @@ fn seal_rate_sweep() {
 
     // --- 2. Prove each successful seal is a real branch point --------------
     eprintln!("\n[sweep] === branch-determinism check: 2 same-seed branches per sealed point ===");
-    let mut nondeterministic: Vec<(VTime, String)> = Vec::new();
+    let mut nondeterministic: Vec<(Moment, String)> = Vec::new();
     // Per-pair ACTUAL verified horizon (min of the two branches' reached V-time, minus the seal)
     // + whether either branch hit terminal early + whether the pair was bit-identical. A
     // same-hash pair verified over a truncated horizon is weaker evidence — recorded, and (below
     // the floor) excluded from `det_verified` as `horizon_insufficient` rather than counted.
-    let mut verified_horizons: Vec<(VTime, VTime, bool, bool)> = Vec::new();
+    let mut verified_horizons: Vec<(Moment, Span, bool, bool)> = Vec::new();
     // Bit-identical but verified over less than the floor horizon: (seal_vtime, horizon).
-    let mut horizon_insufficient: Vec<(VTime, VTime)> = Vec::new();
+    let mut horizon_insufficient: Vec<(Moment, Span)> = Vec::new();
     for (vi, s) in sealed.iter().enumerate() {
         eprintln!(
             "[sweep] branch-verify {}/{} at V-time {} …",
@@ -969,7 +969,7 @@ fn seal_rate_sweep() {
     // bit-identical AND verified over ≥ the horizon floor. `det_sealed_total` = valid-evidence
     // pairs (verified + diverged); `horizon_insufficient` pairs give no evidence and are set
     // aside. `rule()` requires all-valid-checked-passed AND at least one.
-    let counted: Vec<&(VTime, VTime, bool, bool)> = verified_horizons
+    let counted: Vec<&(Moment, Span, bool, bool)> = verified_horizons
         .iter()
         .filter(|(_, h, _, bit)| *bit && *h >= min_verified_horizon)
         .collect();
@@ -1350,7 +1350,7 @@ fn emit_report(
     predicate: &PredicateQuality,
     depth: Option<MaterializationDepth>,
     schedule_faithful: Option<bool>,
-    nondeterministic: &[(VTime, String)],
+    nondeterministic: &[(Moment, String)],
     det_summary: &str,
     horizon_insufficient: usize,
     ruling: Ruling,

@@ -509,7 +509,7 @@ fn stats(sealed: usize, n: usize) -> SealStats {
     }
 }
 
-fn overshoot_with_p90(p90: VTime) -> Overshoot {
+fn overshoot_with_p90(p90: Span) -> Overshoot {
     Overshoot {
         min: 0,
         max: p90,

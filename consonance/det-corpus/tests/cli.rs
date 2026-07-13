@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
-use unison::{Machine, MachineFactory};
+use unison::{Subject, SubjectFactory};
 
 const BIN: &str = env!("CARGO_BIN_EXE_det-corpus");
 

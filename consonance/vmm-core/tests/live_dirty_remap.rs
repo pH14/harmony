@@ -2,7 +2,7 @@
 //! **Task-95 M2 box gates (a0)/(a)/(b) + the (d) numbers** — `#![cfg(target_os =
 //! "linux")]` **and `#[ignore]`**: needs real + LOADED patched KVM, the
 //! det-cfl-v1 host, and the built Postgres image. Gate (c) — nothing regresses —
-//! is the existing `seal_rate_sweep.rs` and conductor `live_materialization.rs`
+//! is the existing `seal_rate_sweep.rs` and campaign-runner `live_materialization.rs`
 //! suites, run unchanged alongside this file.
 //!
 //! - **(a0) tracking is inert** — same seed, dirty logging enabled (the new
@@ -56,7 +56,7 @@
 use std::time::Duration;
 
 use control_proto::{
-    Environment, HashScope, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+    HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;
@@ -225,7 +225,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
         s,
         &Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -248,8 +248,8 @@ fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
     }
 }
 
-fn seeded_env(seed: u64) -> Environment {
-    Environment {
+fn seeded_env(seed: u64) -> Reproducer {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: EnvSpec::Seeded {
             seed,

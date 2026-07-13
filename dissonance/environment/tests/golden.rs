@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use environment::{
     Action, Answer, BitMask, BlockOp, ConnId, DecisionClass, DecisionPoint as P, EnvSpec,
-    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, Ratio, SeededEnv, VTime,
+    Environment, Fault, FaultPolicy, HostFault, NodeId, Outcome, Ratio, SeededEnv, Span,
 };
 
 const SEED: u64 = 0x0123_4567_89AB_CDEF;
@@ -22,7 +22,7 @@ fn policy() -> FaultPolicy {
         3,
         4,
         &[
-            Fault::NetLatency(VTime(100)),
+            Fault::NetLatency(Span(100)),
             Fault::NetLoss { num: 1, den: 2 },
             Fault::NetThrottle { bps: 1_000_000 },
             Fault::NetReset,
@@ -35,7 +35,7 @@ fn policy() -> FaultPolicy {
         2,
         &[
             Fault::BlockEio,
-            Fault::BlockLatency(VTime(50)),
+            Fault::BlockLatency(Span(50)),
             Fault::BlockTorn(8),
             Fault::BlockNospc,
         ],
@@ -46,7 +46,7 @@ fn policy() -> FaultPolicy {
         2,
         3,
         &[
-            Fault::ProcPause(VTime(10)),
+            Fault::ProcPause(Span(10)),
             Fault::ProcKill,
             Fault::ProcRestart,
         ],
@@ -191,9 +191,9 @@ fn golden_covers_every_class_with_faults() {
 /// (and the `perturb` transport) depends on. Regenerate with `GOLDEN_CAPTURE=1`.
 fn host_faults() -> Vec<(HostFault, &'static str)> {
     vec![
-        // tag 00 + VTime u64 (0x0102030405060708, little-endian).
+        // tag 00 + Span u64 (0x0102030405060708, little-endian).
         (
-            HostFault::SkewTime(VTime(0x0102_0304_0506_0708)),
+            HostFault::SkewTime(Span(0x0102_0304_0506_0708)),
             "000807060504030201",
         ),
         // tag 01 + num u64 (3) + den u64 (2).

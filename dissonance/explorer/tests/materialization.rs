@@ -28,10 +28,9 @@ use std::rc::Rc;
 
 use common::{ToyCodec, ToyMachine, config, pin_composition};
 use explorer::{
-    Answer, Composition, CoverageArchive, EnvCodec, Environment, ExemplarRef, Explorer, Frontier,
-    FrontierEntry, IdentityCells, Machine, MachineError, Materializer, Moment, Prng, Reward,
-    SealBudget, SnapId, StopConditions, StopMask, StopReason, TerminalOracle, VTime,
-    VirtualExemplar,
+    Answer, Composition, CoverageArchive, EnvCodec, ExemplarRef, Explorer, Frontier, FrontierEntry,
+    IdentityCells, Machine, MachineError, Materializer, Moment, Prng, Reproducer, Reward,
+    SealBudget, SnapId, StopConditions, StopMask, StopReason, TerminalOracle, VirtualExemplar,
 };
 use proptest::prelude::*;
 
@@ -74,7 +73,7 @@ impl MeterMachine {
 }
 
 impl Machine for MeterMachine {
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
         self.inner.branch(snap, env)?;
         let mut m = self.meter.borrow_mut();
         let at = m.snap_at.get(&snap.0).copied().unwrap_or(0);
@@ -123,7 +122,7 @@ impl Machine for MeterMachine {
         self.inner.coverage()
     }
 
-    fn recorded_env(&self) -> Result<Environment, MachineError> {
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
         self.inner.recorded_env()
     }
 }
@@ -147,12 +146,12 @@ fn build_chain(
     let codec = ToyCodec;
     let mut refs = Vec::with_capacity(hops);
     let mut cur = mat.genesis();
-    let mut entry_env: Option<Environment> = None;
+    let mut entry_env: Option<Reproducer> = None;
     for i in 0..hops {
         let at = (i as u64 + 1) * 10;
         machine.branch(cur, &codec.seeded(seed)).expect("branch");
         let until = StopConditions {
-            deadline: Some(VTime(at)),
+            deadline: Some(Moment(at)),
             on: StopMask::NONE,
         };
         loop {
@@ -328,7 +327,7 @@ proptest! {
         let mut chaos = Prng::new(knob);
 
         for _ in 0..steps {
-            ex.progression_step().unwrap();
+            ex.step().unwrap();
             // Adopt every observable seal into the mirror (eager fork seals
             // and any re-materialization the exploit path minted).
             let live: Vec<ExemplarRef> = ex.frontier().iter().map(|(r, _)| r).collect();
@@ -402,7 +401,7 @@ fn campaign(seed: u64, steps: u64, aggressive: bool) -> Outcome {
     let mut bugs = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..steps {
-        if let Some(bug) = ex.progression_step().unwrap()
+        if let Some(bug) = ex.step().unwrap()
             && seen.insert(bug.fingerprint)
         {
             bugs.push((bug.fingerprint, bug.env.bytes));
@@ -468,7 +467,7 @@ proptest! {
         .unwrap();
         ex.set_seal_budget(budget);
         for _ in 0..steps {
-            ex.progression_step().unwrap();
+            ex.step().unwrap();
             prop_assert!(
                 ex.sealed_count() <= budget.of(ex.frontier().len()),
                 "retained {} > budget {} of frontier {}",

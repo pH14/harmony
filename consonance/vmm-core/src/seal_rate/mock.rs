@@ -17,8 +17,8 @@
 //! [`MockConfig`] to the box's measured numbers to produce the report's simulation row.
 
 use super::{
-    BusyWindow, CpuSnapshot, FailureReason, SampleKind, SamplingSchedule, SealAttempt, SealResult,
-    Target, VTime, splitmix64,
+    BusyWindow, CpuSnapshot, FailureReason, Moment, SampleKind, SamplingSchedule, SealAttempt,
+    SealResult, Span, Target, splitmix64,
 };
 
 /// Knobs describing the modeled substrate. All rates are integer parts-per-million.
@@ -26,7 +26,7 @@ use super::{
 pub struct MockConfig {
     /// Spacing of synchronized V-time boundaries (a target lands at the next multiple of
     /// this at/after it). Smaller ⇒ a denser, more-addressable grid.
-    pub sync_stride: VTime,
+    pub sync_stride: Span,
     /// Chance a synchronized landing has a staged RNG completion (mid-exit fail-closed).
     pub rng_mid_exit_ppm: u32,
     /// Chance a landing carries unrepresentable CPU state (≈ 0 for the real 64-bit guest).
@@ -80,19 +80,19 @@ impl MockOracle {
     }
 
     /// The next synchronized boundary at/after `target` (the modeled `run` landing).
-    fn next_boundary(&self, target: VTime) -> VTime {
+    fn next_boundary(&self, target: Moment) -> Moment {
         let stride = self.cfg.sync_stride.max(1);
         // ceil(target / stride) * stride
         target.div_ceil(stride).saturating_mul(stride)
     }
 
     /// A `[0, PPM)` draw keyed on `(target, salt)` — deterministic, RNG-free.
-    fn draw(&self, target: VTime, salt: u64) -> u32 {
+    fn draw(&self, target: Moment, salt: u64) -> u32 {
         (splitmix64(target ^ self.cfg.seed ^ salt.wrapping_mul(0x100_0001B3)) % super::PPM as u64)
             as u32
     }
 
-    fn in_a_window(&self, vtime: VTime) -> bool {
+    fn in_a_window(&self, vtime: Moment) -> bool {
         self.windows
             .iter()
             .any(|w| vtime >= w.start && vtime < w.end)

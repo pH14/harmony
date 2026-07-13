@@ -68,7 +68,7 @@ fn seal_lifecycle_never_leaks_a_handle() {
 fn each_admitted_entry_keeps_its_own_fork_seal() {
     let mut ex =
         Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 7).unwrap();
-    ex.progression_step().unwrap();
+    ex.step().unwrap();
     assert_eq!(ex.frontier().len(), 2, "one genesis run admits both forks");
 
     let s0 = ex
@@ -101,7 +101,7 @@ fn each_admitted_entry_keeps_its_own_fork_seal() {
 fn failed_seal_eviction_forgets_no_handle() {
     let mut ex =
         Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 7).unwrap();
-    ex.progression_step().unwrap();
+    ex.step().unwrap();
     assert_eq!(ex.sealed_count(), 2, "both fork seals are cached");
 
     // Sabotage: release the first seal behind the engine's back, so the
@@ -129,7 +129,7 @@ fn failed_seal_eviction_forgets_no_handle() {
 }
 
 /// A `recorded_env` failure *after* the `SnapshotPoint` seal already succeeded
-/// must release that handle, not leak it. The modulation aborts with the original
+/// must release that handle, not leak it. The rollout aborts with the original
 /// error and the freshly-minted seal is dropped (only genesis remains).
 #[test]
 fn fork_seal_is_dropped_if_prefix_capture_fails() {
@@ -139,12 +139,12 @@ fn fork_seal_is_dropped_if_prefix_capture_fails() {
     let env0 = explorer::EnvCodec::seeded(&ToyCodec, 7);
 
     // A genesis run forks a SnapshotPoint; `snapshot()` succeeds but the prefix-env
-    // capture fails, so the modulation aborts with that transport error.
+    // capture fails, so the rollout aborts with that transport error.
     let until = StopConditions {
         deadline: None,
         on: StopMask::ALL,
     };
-    let result = ex.modulation(genesis, &env0, &until);
+    let result = ex.rollout(genesis, &env0, &until);
     assert!(matches!(result, Err(MachineError::Transport(_))));
 
     // The seal minted at the fork was dropped — no leaked handle.
@@ -157,7 +157,7 @@ fn fork_seal_is_dropped_if_prefix_capture_fails() {
     assert!(m.dropped_count() >= 1, "the fork seal was drop_snap'd");
 }
 
-/// A direct `modulation` call leaves its forks pending; the next call must
+/// A direct `rollout` call leaves its forks pending; the next call must
 /// `drop_snap` them (never silently forget), so repeated direct runs cannot
 /// leak backend handles.
 #[test]
@@ -171,7 +171,7 @@ fn leftover_pending_forks_are_dropped_not_forgotten() {
     };
 
     let env0 = explorer::EnvCodec::seeded(&ToyCodec, 1);
-    ex.modulation(genesis, &env0, &until).unwrap();
+    ex.rollout(genesis, &env0, &until).unwrap();
     let live_after_first = ex.machine_mut().live_snaps();
     assert!(
         live_after_first > 1,
@@ -180,7 +180,7 @@ fn leftover_pending_forks_are_dropped_not_forgotten() {
 
     // The second direct run drops the leftovers before running.
     let env1 = explorer::EnvCodec::seeded(&ToyCodec, 2);
-    ex.modulation(genesis, &env1, &until).unwrap();
+    ex.rollout(genesis, &env1, &until).unwrap();
     let dropped = ex.machine_mut().dropped_count();
     assert!(
         dropped >= live_after_first - 1,

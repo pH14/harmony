@@ -226,9 +226,9 @@ mod tests {
     fn trace_of(lines: &str) -> RunTrace {
         RunTrace {
             terminal: StopReason::Quiescent {
-                vtime: explorer::VTime(0),
+                vtime: explorer::Moment(0),
             },
-            env: explorer::Environment {
+            env: explorer::Reproducer {
                 blob_version: 1,
                 bytes: vec![],
             },
@@ -445,9 +445,9 @@ mod tests {
         use explorer::{Record as R, StreamId};
         let t = RunTrace {
             terminal: StopReason::Quiescent {
-                vtime: explorer::VTime(0),
+                vtime: explorer::Moment(0),
             },
-            env: explorer::Environment {
+            env: explorer::Reproducer {
                 blob_version: 1,
                 bytes: vec![],
             },

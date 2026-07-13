@@ -9,7 +9,7 @@
 //! the same record — agent-first. The eight commands are exactly the spec's:
 //! `open` · `regs` · `read` · `hash` · `run` · `exec` · `vary` · `transcript`.
 
-use environment::{Action, Answer, BitMask, HostFault, Moment, Ratio, VTime};
+use environment::{Action, Answer, BitMask, HostFault, Moment, Ratio, Span};
 use thiserror::Error;
 
 use crate::server::Server;
@@ -414,7 +414,7 @@ fn parse_edit(tokens: &[&str]) -> Result<OverrideEdit, CommandParseError> {
         ["remove", at] => Ok(OverrideEdit::Remove { at: parse_num(at)? }),
         ["set", at, "skew", v] => Ok(set(
             parse_num(at)?,
-            Action::Host(HostFault::SkewTime(VTime(parse_num(v)?))),
+            Action::Host(HostFault::SkewTime(Span(parse_num(v)?))),
         )),
         ["set", at, "irq", vector] => Ok(set(
             parse_num(at)?,

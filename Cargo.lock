@@ -133,6 +133,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "campaign-runner"
+version = "0.1.0"
+dependencies = [
+ "benchmark",
+ "blake3",
+ "clap",
+ "control-proto",
+ "environment",
+ "explorer",
+ "film",
+ "hypercall-proto",
+ "logtmpl",
+ "proptest",
+ "resolution",
+ "runtrace",
+ "sdk-events",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "vmm-backend",
+ "vmm-core",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -193,32 +219,6 @@ name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
-
-[[package]]
-name = "conductor"
-version = "0.1.0"
-dependencies = [
- "benchmark",
- "blake3",
- "clap",
- "control-proto",
- "environment",
- "explorer",
- "film",
- "hypercall-proto",
- "link",
- "logtmpl",
- "proptest",
- "resolution",
- "runtrace",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "vmm-backend",
- "vmm-core",
-]
 
 [[package]]
 name = "constant_time_eq"
@@ -479,18 +479,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
-name = "link"
-version = "0.1.0"
-dependencies = [
- "explorer",
- "proptest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -722,6 +710,18 @@ dependencies = [
  "quick-error",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "sdk-events"
+version = "0.1.0"
+dependencies = [
+ "explorer",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use vmm_backend::{
-    Backend, BackendError, Capabilities, Completion, CpuidModel, Event, Exit, ExitReason, Gpa,
-    HypercallRegs, MockBackend, MsrFilter, VcpuState, Vtime,
+    Backend, BackendError, Capabilities, Completion, CpuidModel, Exit, ExitReason, Gpa,
+    HypercallRegs, Injection, MockBackend, Moment, MsrFilter, VcpuState,
 };
 
 /// Proptest case count: full per the convention natively, cut to 16 under Miri
@@ -276,12 +276,12 @@ fn counters_increment_per_reason_and_reset() {
 #[test]
 fn run_until_returns_deadline_with_requested_value() {
     let mut m = configured();
-    m.extend_exits([Exit::Deadline { reached: Vtime(0) }]);
-    let e = m.run_until(Vtime(4096)).unwrap();
+    m.extend_exits([Exit::Deadline { reached: Moment(0) }]);
+    let e = m.run_until(Moment(4096)).unwrap();
     assert_eq!(
         e,
         Exit::Deadline {
-            reached: Vtime(4096)
+            reached: Moment(4096)
         }
     );
     assert_eq!(m.exit_counts().deadline, 1);
@@ -291,11 +291,11 @@ fn run_until_returns_deadline_with_requested_value() {
 #[test]
 fn inject_records_events() {
     let mut m = configured();
-    m.inject(Event::Interrupt { vector: 0x20 }).unwrap();
-    m.inject(Event::Nmi).unwrap();
+    m.inject(Injection::Interrupt { vector: 0x20 }).unwrap();
+    m.inject(Injection::Nmi).unwrap();
     assert_eq!(
         m.injected(),
-        &[Event::Interrupt { vector: 0x20 }, Event::Nmi]
+        &[Injection::Interrupt { vector: 0x20 }, Injection::Nmi]
     );
 }
 
@@ -459,7 +459,7 @@ fn arb_exit() -> impl Strategy<Value = Exit> {
         (2u8..=8).prop_map(|width| Exit::Rdseed { width }),
         Just(Exit::Hlt),
         Just(Exit::Shutdown),
-        any::<u64>().prop_map(|v| Exit::Deadline { reached: Vtime(v) }),
+        any::<u64>().prop_map(|v| Exit::Deadline { reached: Moment(v) }),
     ]
 }
 

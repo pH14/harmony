@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Committed-fixture gates (the task's Environment section): decode the
+//! Committed-fixture gates (the task's Reproducer section): decode the
 //! real recordings and re-derive over them offline — the replay-plane path,
 //! exercised on artifacts produced *outside* this crate.
 //!
-//! - `mock_recording.trace` — a real mock-mode `conductor` recording, committed
+//! - `mock_recording.trace` — a real mock-mode `campaign-runner` recording, committed
 //!   here (regenerate with
-//!   `UPDATE_FIXTURES=1 cargo test -p conductor --test recording`).
+//!   `UPDATE_FIXTURES=1 cargo test -p campaign-runner --test recording`).
 //! - `real_guest_slice.trace` — a trimmed real-guest journal committed by the
 //!   **box gate** (task 65 gate 6). Absent until the box run lands; the test
 //!   skips loudly rather than failing so the portable suite stays green.
@@ -28,7 +28,7 @@ const REAL: &str = concat!(
 #[test]
 fn mock_recording_decodes_reencodes_and_rederives() {
     let bytes = std::fs::read(MOCK).expect(
-        "mock recording fixture — regenerate with `UPDATE_FIXTURES=1 cargo test -p conductor --test recording`",
+        "mock recording fixture — regenerate with `UPDATE_FIXTURES=1 cargo test -p campaign-runner --test recording`",
     );
     let trace = decode(&bytes).expect("mock recording decodes");
 

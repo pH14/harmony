@@ -4,7 +4,7 @@
 //! pluggable enforcer-brain — the contract `ToxiproxyEngine`/`PassthroughEngine`
 //! implement).
 
-use crate::{ConnId, FlowAction, FlowEvent, FlowPolicy, NodeId, VTime};
+use crate::{ConnId, FlowAction, FlowEvent, FlowPolicy, Moment, NodeId};
 
 /// The decision seam: "what should I do with this flow?". The frontier binds it
 /// to the `net_decide` hypercall (→ `environment::decide`, which records the
@@ -30,7 +30,7 @@ pub trait FlowDecider {
 ///   identical inputs produce an identical [`FlowAction`] sequence — byte-for-byte,
 ///   including order.
 /// - **V-time-drained**: actions surface only through [`due`](FlowEngine::due), at
-///   or before `now`, in `(VTime, seq)` order — ties broken by a deterministic
+///   or before `now`, in `(Moment, seq)` order — ties broken by a deterministic
 ///   monotonic sequence number, never by map-iteration order.
 /// - **Total on guest input**: any `Chunk.bytes`, or an event for an
 ///   unknown/closed [`ConnId`], is handled deterministically — a stray event is
@@ -46,7 +46,7 @@ pub trait FlowEngine {
     /// deterministically ignored.
     fn on_event(&mut self, ev: FlowEvent, decider: &mut dyn FlowDecider);
 
-    /// Pop every action due at or before `now`, in deterministic `(VTime, seq)`
+    /// Pop every action due at or before `now`, in deterministic `(Moment, seq)`
     /// order. Actions scheduled after `now` stay queued for a later call.
-    fn due(&mut self, now: VTime) -> Vec<FlowAction>;
+    fn due(&mut self, now: Moment) -> Vec<FlowAction>;
 }

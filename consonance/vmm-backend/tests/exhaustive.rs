@@ -4,7 +4,7 @@
 //! `ExitCounts::entries()` covers every `ExitReason` exactly once. Portable; no
 //! mock needed.
 
-use vmm_backend::{Exit, ExitCounts, ExitReason, Gpa, HypercallRegs, Vtime};
+use vmm_backend::{Exit, ExitCounts, ExitReason, Gpa, HypercallRegs, Moment};
 
 /// Classify every `Exit` with a wildcard-free `match`. If a variant is ever added
 /// without updating this arm, the crate stops compiling — that is the gate.
@@ -55,7 +55,7 @@ fn one_of_each() -> [Exit; 13] {
         Exit::Rdseed { width: 8 },
         Exit::Hlt,
         Exit::Shutdown,
-        Exit::Deadline { reached: Vtime(0) },
+        Exit::Deadline { reached: Moment(0) },
     ]
 }
 

@@ -13,7 +13,7 @@
 //!
 //! ## Verb semantics (seed-driven scope, task 58)
 //!
-//! - **`hello(caps)`** → the server's [`Caps`]: protocol 1, `Environment` blob
+//! - **`hello(caps)`** → the server's [`Caps`]: protocol 1, `Reproducer` blob
 //!   version exactly [`EnvSpec::BLOB_VERSION`], **empty/zero-width coverage
 //!   geometry** (no coverage producer exists yet) and — task 73 —
 //!   `GUEST_HAS_SDK` (the doorbell is serviced). Any other verb before `hello`
@@ -24,7 +24,7 @@
 //!   boundaries (an RNG mid-exit completion, a non-V-time-synchronized point)
 //!   answer [`ControlError::NotQuiescent`] — the caller runs a little further
 //!   and retries.
-//! - **`drop(snap)`** → release + GC via the store (corpus GC).
+//! - **`drop(snap)`** → release + GC via the store (pool GC).
 //! - **`branch(snap, env)`** → restore `snap` into a **fresh, equivalently
 //!   composed VM** (from the [`VmmFactory`]) and **reseed the entropy stream
 //!   from the env's seed** ([`Vmm::reseed_entropy`]) so the branched future
@@ -104,8 +104,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
 use control_proto::{
-    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, Environment, EventRef, HashScope,
-    Moment, READ_CAP, RegsView, Reply, Request, SnapId, StopReason, VTime, decode_request,
+    Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, EventRef, HashScope, Moment,
+    READ_CAP, RegsView, Reply, Reproducer, Request, SnapId, StopReason, decode_request,
     encode_reply,
 };
 use environment::{EnvError, EnvSpec, FaultPolicy};
@@ -189,7 +189,7 @@ pub enum ServeError {
 }
 
 /// The [`Caps`] this server negotiates: the current negotiated application
-/// protocol ([`control_proto::APP_PROTOCOL_VERSION`]), `Environment` blobs exactly
+/// protocol ([`control_proto::APP_PROTOCOL_VERSION`]), `Reproducer` blobs exactly
 /// at [`EnvSpec::BLOB_VERSION`], **zero-width coverage geometry** (no coverage
 /// producer exists — task 58 is seed-driven), and — task 73 — the
 /// `GUEST_HAS_SDK` flag (the server services the hypercall doorbell for a
@@ -588,7 +588,7 @@ impl<B: Backend> ControlServer<B> {
             // moving it. Both borrow `self.vmm` immutably and touch nothing else —
             // not the schedule, not `recorded`, not V-time — so `hash(Whole)` before
             // and after any sequence of them is bit-identical, and neither is ever
-            // recorded into an `Environment` (the RESOLUTION.md search-surface
+            // recorded into an `Reproducer` (the RESOLUTION.md search-surface
             // criterion: observation, not a move). Serviceable at any point (no
             // synchronization gate): a `regs` view is honest even at a terminal.
             Request::Read { gpa, len } => self.read(*gpa, *len),
@@ -980,7 +980,7 @@ impl<B: Backend> ControlServer<B> {
     fn restore(
         &mut self,
         snap: SnapId,
-        env: Option<&control_proto::Environment>,
+        env: Option<&control_proto::Reproducer>,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         // 1. Validate everything non-destructively first: the env blob …
         //    `seed` is the branch seed (`None` for a verbatim replay); `host` is
@@ -1493,7 +1493,7 @@ impl<B: Backend> ControlServer<B> {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     vmm.clear_arrival();
                     return Ok(Ok(Reply::Stop(StopReason::SnapshotPoint {
-                        vtime: VTime(vns),
+                        vtime: Moment(vns),
                     })));
                 }
             }
@@ -1509,7 +1509,7 @@ impl<B: Backend> ControlServer<B> {
                 && vns >= deadline.0
             {
                 vmm.clear_arrival();
-                return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: VTime(vns) })));
+                return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(vns) })));
             }
 
             // 3. Arm exact-count arrival at the next staged `Moment` that is at-or-
@@ -1584,7 +1584,7 @@ impl<B: Backend> ControlServer<B> {
                         // `SdkStop` is armed (an assertion) before the step returns
                         // `SdkStop`, so this is statically unreachable; be total
                         // anyway with a benign quiescent stop.
-                        None => StopReason::Quiescent { vtime: VTime(vns) },
+                        None => StopReason::Quiescent { vtime: Moment(vns) },
                     };
                     return Ok(Ok(Reply::Stop(reason)));
                 }
@@ -1647,7 +1647,7 @@ impl<B: Backend> ControlServer<B> {
     fn exec(
         &mut self,
         cmd: &str,
-        deadline: VTime,
+        deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         // 1. Conservative taint: set BEFORE touching the guest, covering every
         //    failure point below.
@@ -1708,16 +1708,16 @@ impl<B: Backend> ControlServer<B> {
 
     /// The reply to [`Request::RecordedEnv`] (task 81) — the taint guard's
     /// **fail-loud site**. Mint the recorded reproducer (the [`recorded`](Self::recorded)
-    /// [`EnvSpec`] as a wire [`Environment`]) **only** on an untainted timeline; a
+    /// [`EnvSpec`] as a wire [`Reproducer`]) **only** on an untainted timeline; a
     /// timeline an `exec` improvisation has tainted returns [`ControlError::Tainted`]
     /// instead — an improvised timeline is off the record and has no honest
-    /// reproducer, so the server refuses rather than hand back an `Environment` that
+    /// reproducer, so the server refuses rather than hand back an `Reproducer` that
     /// does not reproduce. Pure (no VM mutation), so it is answerable at any point.
     fn recorded_env_reply(&self) -> Result<Reply, ControlError> {
         if self.timeline_tainted {
             return Err(ControlError::Tainted);
         }
-        Ok(Reply::Recorded(Environment {
+        Ok(Reply::Recorded(Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: self.recorded.encode(),
         }))
@@ -1815,7 +1815,7 @@ fn regs_view<B: Backend>(vmm: &Vmm<B>) -> RegsView {
 }
 
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
-    let vtime = VTime(vns);
+    let vtime = Moment(vns);
     match stop {
         // `setup_complete`'s snapshot point is deferred to a synchronized boundary
         // (surfaced directly in the run loop), so the only immediate SDK stop is an
@@ -1828,7 +1828,7 @@ fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
 }
 
 fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
-    let vtime = VTime(vns);
+    let vtime = Moment(vns);
     match reason {
         TerminalReason::Hlt | TerminalReason::DebugExit { code: 0 } => {
             StopReason::Quiescent { vtime }
@@ -1864,15 +1864,15 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 mod tests {
     //! Direct-dispatch unit tests over a scripted `MockBackend` — no socket.
     //! The socket loopback + adapter integration lives in
-    //! `dissonance/conductor` (which composes this server with the explorer's
+    //! `dissonance/campaign-runner` (which composes this server with the explorer's
     //! socket `Machine`).
 
     use control_proto::{
-        Answer, CapFlags, ControlError, CrashKind, Environment, HashScope, HostFault, Moment,
-        READ_CAP, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+        Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
+        Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
     };
     use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
-    use vmm_backend::{Backend, Exit, MockBackend, Vtime};
+    use vmm_backend::{Backend, Exit, MockBackend};
 
     use proptest::prelude::*;
 
@@ -2050,12 +2050,12 @@ mod tests {
         }
     }
 
-    fn seeded_env(seed: u64) -> Environment {
+    fn seeded_env(seed: u64) -> Reproducer {
         let spec = EnvSpec::Seeded {
             seed,
             policy: FaultPolicy::none(),
         };
-        Environment {
+        Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
         }
@@ -2755,7 +2755,7 @@ mod tests {
         // Branch with a buggify-only policy (point 1 always fires).
         let mut policy = FaultPolicy::none();
         policy.set_buggify_point(1, 1, 1).unwrap();
-        let env = Environment {
+        let env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: EnvSpec::Seeded {
                 seed: 5,
@@ -2800,7 +2800,7 @@ mod tests {
             Err(ControlError::BadEnvVersion(99))
         );
         // Malformed bytes.
-        let env = Environment {
+        let env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: vec![0xFF; 8],
         };
@@ -2842,7 +2842,7 @@ mod tests {
             1234,
             environment::Action::Host(environment::HostFault::InjectInterrupt { vector: 32 }),
         );
-        let env = Environment {
+        let env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
         };
@@ -2858,7 +2858,7 @@ mod tests {
             policy: FaultPolicy::none(),
         };
         guest_spec.record(99, environment::Action::Guest(environment::Answer::Nominal));
-        let guest_env = Environment {
+        let guest_env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: guest_spec.encode(),
         };
@@ -2883,7 +2883,7 @@ mod tests {
                 &[environment::Fault::BlockEio],
             )
             .unwrap();
-        let faulting = Environment {
+        let faulting = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: EnvSpec::Seeded { seed: 7, policy }.encode(),
         };
@@ -3015,7 +3015,7 @@ mod tests {
         // The out-of-scope clock faults are Unsupported (a follow-on lights them up).
         assert_eq!(
             s.handle(&perturb(
-                environment::HostFault::SkewTime(environment::VTime(5)),
+                environment::HostFault::SkewTime(environment::Span(5)),
                 4000
             ))
             .unwrap(),
@@ -3103,13 +3103,13 @@ mod tests {
         hello(&mut s);
         let req = Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(500)),
+                deadline: Some(Moment(500)),
                 on: StopMask::NONE,
             },
             resolve: None,
         };
         match s.handle(&req).unwrap() {
-            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, VTime(500)),
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, Moment(500)),
             other => panic!("expected Deadline{{500}}, got {other:?}"),
         }
         // And the pending scripted exit was NOT consumed: a deadline-free run
@@ -3331,10 +3331,10 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             self.0.run()
         }
-        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             self.0.run_until(d)
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -3441,7 +3441,7 @@ mod tests {
         // its work source is a thread-affine counter on the box); the client
         // runs on a spawned thread, exactly the composition the demo bin uses.
         // The full loopback (socket Machine end-to-end) lives in
-        // dissonance/conductor.
+        // dissonance/campaign-runner.
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
         let (mut client, server_end) = UnixStream::pair().unwrap();
@@ -3509,7 +3509,12 @@ mod tests {
     /// so every armed arrival (`work_for_vns(moment) = moment ≥ 1`) is a real
     /// forward entry.
     fn enforce_vmm(deadlines: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
-        let mut exits = vec![Exit::Deadline { reached: Vtime(0) }; deadlines];
+        let mut exits = vec![
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0)
+            };
+            deadlines
+        ];
         exits.push(Exit::Hlt);
         let mut m = MockBackend::with_exits(exits);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3676,7 +3681,9 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             },
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3763,7 +3770,9 @@ mod tests {
                 write: Some(n as u32),
             },
             Exit::Rdtsc,
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3844,7 +3853,9 @@ mod tests {
                 write: Some(n as u32),
             },
             Exit::Rdtsc,
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -4307,7 +4318,7 @@ mod tests {
     ) -> Result<Reply, ControlError> {
         s.handle(&Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -4324,7 +4335,7 @@ mod tests {
         hello(&mut s);
         stage_corrupt(&mut s, 1500);
         match run_with_deadline(&mut s, 1000) {
-            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, VTime(1000)),
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, Moment(1000)),
             other => panic!("expected Deadline, got {other:?}"),
         }
         assert_eq!(
@@ -4451,7 +4462,7 @@ mod tests {
                 policy: FaultPolicy::none(),
             };
             spec.record(m, environment::Action::Host(fault));
-            Environment {
+            Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: spec.encode(),
             }
@@ -4501,7 +4512,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: host_env(1000, EnvHostFault::SkewTime(environment::VTime(5))),
+                env: host_env(1000, EnvHostFault::SkewTime(environment::Span(5))),
             })
             .unwrap(),
             Err(ControlError::Unsupported)
@@ -4520,13 +4531,13 @@ mod tests {
     }
 
     /// Build a branch env carrying a single host fault at `m`.
-    fn host_env(m: u64, fault: EnvHostFault) -> Environment {
+    fn host_env(m: u64, fault: EnvHostFault) -> Reproducer {
         let mut spec = EnvSpec::Seeded {
             seed: 7,
             policy: FaultPolicy::none(),
         };
         spec.record(m, environment::Action::Host(fault));
-        Environment {
+        Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
         }
@@ -4667,7 +4678,7 @@ mod tests {
         let run_to = |s: &mut ControlServer<ArrivalBackend>, d: u64| {
             s.handle(&Request::Run {
                 until: StopConditions {
-                    deadline: Some(VTime(d)),
+                    deadline: Some(Moment(d)),
                     on: StopMask::NONE,
                 },
                 resolve: None,
@@ -4713,7 +4724,7 @@ mod tests {
         let base_r = arr_snap(&mut r);
         r.handle(&Request::Branch {
             snap: base_r,
-            env: Environment {
+            env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: recorded.encode(),
             },
@@ -4739,7 +4750,7 @@ mod tests {
         hello(&mut s);
         stage_corrupt(&mut s, 500);
         match run_with_deadline(&mut s, 300) {
-            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, VTime(500)),
+            Ok(Reply::Stop(StopReason::Deadline { vtime })) => assert_eq!(vtime, Moment(500)),
             other => panic!("expected Deadline{{500}}, got {other:?}"),
         }
         // The exact-arrival fault APPLIED (recorded), and the schedule is NOT poisoned
@@ -4861,10 +4872,10 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             Ok(Exit::Hlt)
         }
-        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             Ok(Exit::Deadline { reached: d })
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -5022,7 +5033,7 @@ mod tests {
             let stop = match s
                 .handle(&Request::Run {
                     until: StopConditions {
-                        deadline: Some(VTime(moment)),
+                        deadline: Some(Moment(moment)),
                         on: StopMask::NONE,
                     },
                     resolve: None,
@@ -5035,7 +5046,7 @@ mod tests {
             assert_eq!(
                 stop,
                 StopReason::Deadline {
-                    vtime: VTime(moment)
+                    vtime: Moment(moment)
                 },
                 "materialization lands exactly at the addressed Moment"
             );
@@ -5106,7 +5117,7 @@ mod tests {
             assert!(matches!(
                 s.handle(&Request::Run {
                     until: StopConditions {
-                        deadline: Some(VTime(mid)),
+                        deadline: Some(Moment(mid)),
                         on: StopMask::NONE
                     },
                     resolve: None,
@@ -5131,7 +5142,7 @@ mod tests {
             assert!(matches!(
                 s.handle(&Request::Run {
                     until: StopConditions {
-                        deadline: Some(VTime(late)),
+                        deadline: Some(Moment(late)),
                         on: StopMask::NONE
                     },
                     resolve: None,
@@ -5170,7 +5181,7 @@ mod tests {
         let stop = s
             .handle(&Request::Run {
                 until: StopConditions {
-                    deadline: Some(VTime(100)),
+                    deadline: Some(Moment(100)),
                     on: StopMask::NONE,
                 },
                 resolve: None,
@@ -5321,7 +5332,7 @@ mod tests {
         assert_eq!(
             s.handle(&Request::Branch {
                 snap: base,
-                env: Environment {
+                env: Reproducer {
                     blob_version: EnvSpec::BLOB_VERSION,
                     bytes: EnvSpec::Seeded {
                         seed: 7,
@@ -5360,7 +5371,7 @@ mod tests {
         // becomes that stream). If replay carried this forward, reproduction breaks.
         s.handle(&Request::Branch {
             snap: base,
-            env: Environment {
+            env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: EnvSpec::Seeded {
                     seed: 0xDEAD,
@@ -5396,7 +5407,7 @@ mod tests {
         let base_r = arr_snap(&mut r);
         r.handle(&Request::Branch {
             snap: base_r,
-            env: Environment {
+            env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: e.encode(),
             },
@@ -5484,7 +5495,7 @@ mod tests {
                                 let base_r = arr_snap(&mut r);
                                 r.handle(&Request::Branch {
                                     snap: base_r,
-                                    env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
+                                    env: Reproducer { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
                                 }).unwrap().unwrap();
                                 prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
                                 prop_assert_eq!(h_live, arr_hash(&r), "recorded_env() must reproduce the live hash");
@@ -5511,8 +5522,8 @@ mod tests {
         }
     }
 
-    fn seeded_env_arr(seed: u64) -> Environment {
-        Environment {
+    fn seeded_env_arr(seed: u64) -> Reproducer {
+        Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: EnvSpec::Seeded {
                 seed,
@@ -5553,12 +5564,12 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             Ok(Exit::Hlt)
         }
-        fn run_until(&mut self, _d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, _d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             // The guest idles (a natural HLT) before any deadline — the arrival is
             // reached through the idle jump, not a run_until Deadline.
             Ok(Exit::Hlt)
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -5637,8 +5648,8 @@ mod tests {
         ControlServer::new(idle_vmm(0x1D1E), Box::new(|| Ok(idle_vmm(0x1D1E))))
     }
 
-    fn idle_seeded_env(seed: u64) -> Environment {
-        Environment {
+    fn idle_seeded_env(seed: u64) -> Reproducer {
+        Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: EnvSpec::Seeded {
                 seed,
@@ -5699,7 +5710,7 @@ mod tests {
                                 let base_r = arr_snap(&mut r);
                                 r.handle(&Request::Branch {
                                     snap: base_r,
-                                    env: Environment { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
+                                    env: Reproducer { blob_version: EnvSpec::BLOB_VERSION, bytes: e.encode() },
                                 }).unwrap().unwrap();
                                 prop_assert!(matches!(arr_run(&mut r), Ok(Reply::Stop(_))));
                                 prop_assert_eq!(h_live, arr_hash(&r), "idle-path recorded_env() must reproduce the live hash");
@@ -5723,12 +5734,12 @@ mod tests {
     // Task 78 — reseed-aware branch: a marker-carrying env re-executes each
     // collapsed hop's entropy reseed at its recorded Moment (exact-arrival
     // discipline), instead of reseeding once at the fold's root. The fold ==
-    // hop-by-hop equality (the flipped task-68 pin) is the conductor's socket
+    // hop-by-hop equality (the flipped task-68 pin) is the campaign runner's socket
     // gate; here we pin the server-side mechanics.
     // -----------------------------------------------------------------------
 
     /// A branch env carrying only reseed markers (no overrides/standing).
-    fn marker_env(seed: u64, markers: &[(u64, u64)]) -> Environment {
+    fn marker_env(seed: u64, markers: &[(u64, u64)]) -> Reproducer {
         let mut spec = EnvSpec::Seeded {
             seed,
             policy: FaultPolicy::none(),
@@ -5736,7 +5747,7 @@ mod tests {
         for &(m, s) in markers {
             spec.record_reseed(m, s);
         }
-        Environment {
+        Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: spec.encode(),
         }
@@ -5753,7 +5764,7 @@ mod tests {
         let mut s = arrival_server();
         arr_hello(&mut s);
         let base = arr_snap(&mut s);
-        let mut branch_hash = |env: Environment| -> [u8; 32] {
+        let mut branch_hash = |env: Reproducer| -> [u8; 32] {
             s.handle(&Request::Branch { snap: base, env })
                 .unwrap()
                 .unwrap();
@@ -5808,7 +5819,7 @@ mod tests {
         let base_r = arr_snap(&mut r);
         r.handle(&Request::Branch {
             snap: base_r,
-            env: Environment {
+            env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: rec1.encode(),
             },
@@ -5873,7 +5884,9 @@ mod tests {
         // buggify doorbell (decides AFTER the reseed) → HLT.
         let fork_exits = vec![
             Exit::Rdtsc,
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Io {
                 port: 0x0CA1,
                 size: 4,
@@ -5883,7 +5896,7 @@ mod tests {
         ];
 
         // The env: seed + an always-firing buggify policy + a mid-run reseed marker.
-        let env_with = |mid_seed: u64| -> Environment {
+        let env_with = |mid_seed: u64| -> Reproducer {
             let mut policy = FaultPolicy::none();
             policy.set_buggify_point(point, 1, 1).unwrap();
             let mut spec = EnvSpec::Seeded {
@@ -5891,7 +5904,7 @@ mod tests {
                 policy,
             };
             spec.record_reseed(m, mid_seed);
-            Environment {
+            Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: spec.encode(),
             }
@@ -5946,7 +5959,7 @@ mod tests {
         let base_r = snap(&mut r);
         r.handle(&Request::Branch {
             snap: base_r,
-            env: Environment {
+            env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: rec.encode(),
             },
@@ -6030,7 +6043,7 @@ mod tests {
 
         // The branch env: a seed + a policy that faults every NetFlow with a
         // `NetReset` (1/1). Non-buggify — the OLD gate would reject this `Unsupported`.
-        let net_env = || -> Environment {
+        let net_env = || -> Reproducer {
             let mut policy = FaultPolicy::none();
             policy
                 .set_class(
@@ -6044,7 +6057,7 @@ mod tests {
                 seed: 0x51EED,
                 policy,
             };
-            Environment {
+            Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: spec.encode(),
             }
@@ -6107,7 +6120,7 @@ mod tests {
         let base_r = snap(&mut r);
         r.handle(&Request::Branch {
             snap: base_r,
-            env: Environment {
+            env: Reproducer {
                 blob_version: EnvSpec::BLOB_VERSION,
                 bytes: rec.encode(),
             },
@@ -6155,7 +6168,7 @@ mod tests {
         let stop = s
             .handle(&Request::Run {
                 until: StopConditions {
-                    deadline: Some(VTime(100)),
+                    deadline: Some(Moment(100)),
                     on: StopMask::NONE,
                 },
                 resolve: None,
@@ -6330,13 +6343,13 @@ mod tests {
         }
     }
 
-    /// Improvise: `exec` with an already-expired deadline (`VTime(0)`), so it taints
+    /// Improvise: `exec` with an already-expired deadline (`Moment(0)`), so it taints
     /// the timeline and returns immediately without stepping the mock guest.
     fn exec(server: &mut ControlServer<MockBackend>, cmd: &str) -> (Vec<u8>, bool) {
         match server
             .handle(&Request::Exec {
                 cmd: cmd.to_string(),
-                deadline: VTime(0),
+                deadline: Moment(0),
             })
             .unwrap()
         {
@@ -6345,7 +6358,7 @@ mod tests {
         }
     }
 
-    /// The reproducer mint result: `Ok(Environment)` or the loud `Tainted`.
+    /// The reproducer mint result: `Ok(Reproducer)` or the loud `Tainted`.
     fn recorded_env_res(server: &mut ControlServer<MockBackend>) -> Result<Reply, ControlError> {
         server.handle(&Request::RecordedEnv).unwrap()
     }

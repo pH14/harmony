@@ -23,7 +23,7 @@
 //! against `SimCpu` in `src/run_until.rs`).
 #![cfg(target_os = "linux")]
 
-use vmm_backend::{Backend, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange, Vtime};
+use vmm_backend::{Backend, CpuidModel, Exit, Gpa, KvmBackend, Moment, MsrFilter, MsrRange};
 
 /// Page-aligned guest RAM (the `map_memory` host-alignment invariant), reached by
 /// the backend through a raw pointer.
@@ -140,7 +140,7 @@ fn boot_with(code: &[u8]) -> (KvmBackend, GuestMem) {
 /// `deadline` and return the reached work for the determinism check.
 fn spin_until(deadline: u64) -> u64 {
     let (mut backend, _mem) = boot_with(SPIN_CODE);
-    match backend.run_until(Vtime(deadline)).expect("run_until") {
+    match backend.run_until(Moment(deadline)).expect("run_until") {
         Exit::Deadline { reached } => {
             assert_eq!(
                 reached.0, deadline,
@@ -189,7 +189,7 @@ fn run_until_advances_monotonically_within_a_run() {
     // each exact deadline (the spin never exits, so each lands on Deadline).
     let (mut backend, _mem) = boot_with(SPIN_CODE);
     for &d in &[20_000u64, 60_000, 130_000] {
-        match backend.run_until(Vtime(d)).expect("run_until") {
+        match backend.run_until(Moment(d)).expect("run_until") {
             Exit::Deadline { reached } => assert_eq!(reached.0, d, "exact landing at {d}"),
             other => panic!("expected Deadline at {d}, got {other:?}"),
         }
@@ -203,7 +203,7 @@ fn guest_exit_before_deadline_returns_that_exit() {
     // The guest takes a natural VM-exit (OUT) after 3 branches; a far deadline must
     // therefore yield THAT exit, short of the deadline — never Exit::Deadline.
     let (mut backend, _mem) = boot_with(EXIT_EARLY_CODE);
-    match backend.run_until(Vtime(1_000_000)).expect("run_until") {
+    match backend.run_until(Moment(1_000_000)).expect("run_until") {
         Exit::Io {
             port: EXIT_EARLY_PORT,
             size: 1,
@@ -232,7 +232,7 @@ fn save_restore_roundtrip_re_zeroes_the_run_until_counter() {
     // mechanism `restore_vtime` uses for B; the counter-A re-arm is portable-tested in
     // vmm-core's `restore_vtime_rearms_counter_a_first_entry_baseline`.)
     let (mut b, _m) = boot_with(SPIN_CODE);
-    match b.run_until(Vtime(30_000)).expect("advance B to 30000") {
+    match b.run_until(Moment(30_000)).expect("advance B to 30000") {
         Exit::Deadline { reached } => assert_eq!(reached.0, 30_000),
         other => panic!("expected Deadline at 30000, got {other:?}"),
     }
@@ -244,7 +244,7 @@ fn save_restore_roundtrip_re_zeroes_the_run_until_counter() {
     // re-arm, B would still read ~30_000 and `run_until(5_000)` would fail closed
     // (deadline < current — round-8) instead of preempting at 5_000.
     match b
-        .run_until(Vtime(5_000))
+        .run_until(Moment(5_000))
         .expect("run_until after the save+restore re-arm lands exactly")
     {
         Exit::Deadline { reached } => assert_eq!(
@@ -266,7 +266,7 @@ fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
     //
     // B1: a busy-spin VM, run a bit, snapshot, restore.
     let (mut b1, _m1) = boot_with(SPIN_CODE);
-    match b1.run_until(Vtime(20_000)).expect("b1 run_until") {
+    match b1.run_until(Moment(20_000)).expect("b1 run_until") {
         Exit::Deadline { reached } => assert_eq!(reached.0, 20_000),
         other => panic!("expected Deadline at 20000, got {other:?}"),
     }
@@ -277,7 +277,7 @@ fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
     // which land in B1's shared, exclude_host PMU counter too.
     {
         let (mut b2, _m2) = boot_with(SPIN_CODE);
-        match b2.run_until(Vtime(100_000)).expect("b2 run_until") {
+        match b2.run_until(Moment(100_000)).expect("b2 run_until") {
             Exit::Deadline { reached } => assert_eq!(reached.0, 100_000),
             other => panic!("expected Deadline at 100000, got {other:?}"),
         }
@@ -288,7 +288,7 @@ fn restore_re_arms_pmu_reset_excluding_foreign_branches() {
     // B2's ~100_000. Without the P1(b) re-arm, B1's counter would already read
     // ~100_000 here and run_until(50_000) would report a past-deadline (≈100_000).
     match b1
-        .run_until(Vtime(50_000))
+        .run_until(Moment(50_000))
         .expect("b1 run_until after foreign VM")
     {
         Exit::Deadline { reached } => assert_eq!(
@@ -312,7 +312,7 @@ const IN_THEN_SPIN_CODE: &[u8] = &[0xE4, 0xF8, 0x31, 0xC0, 0x85, 0xC0, 0x74, 0xF
 
 /// P1 round-8 — the complete `run_until` contract, case `deadline == current`: deliver
 /// `Exit::Deadline` with ZERO guest steps toward the deadline (never overstep). On a
-/// fresh VM `run_until(Vtime(0))` lands at EXACTLY 0 (round-7's single-step would have
+/// fresh VM `run_until(Moment(0))` lands at EXACTLY 0 (round-7's single-step would have
 /// landed at 0 or 1 — an overstep); a subsequent `run_until` off that sane baseline
 /// lands exactly. Bit-identical across two VMs.
 #[test]
@@ -321,14 +321,14 @@ fn run_until_at_current_deadline_takes_zero_steps() {
     let land = || -> (u64, u64) {
         let (mut b, _m) = boot_with(SPIN_CODE);
         let z = match b
-            .run_until(Vtime(0))
+            .run_until(Moment(0))
             .expect("run_until(0) at current deadline")
         {
             Exit::Deadline { reached } => reached.0,
             other => panic!("expected Deadline from run_until(0), got {other:?}"),
         };
         let d = match b
-            .run_until(Vtime(50_000))
+            .run_until(Moment(50_000))
             .expect("run_until after the zero-step")
         {
             Exit::Deadline { reached } => reached.0,
@@ -348,7 +348,7 @@ fn run_until_at_current_deadline_takes_zero_steps() {
         d1, 50_000,
         "the run_until after the zero-step lands at EXACTLY 50000"
     );
-    eprintln!("[p1-r8] run_until(Vtime(0)) took zero steps (reached {z1}); next landed at {d1}");
+    eprintln!("[p1-r8] run_until(Moment(0)) took zero steps (reached {z1}); next landed at {d1}");
 }
 
 /// P1 round-11 — the first-entry-reset INVARIANT: a zero-step `run_until` (the
@@ -364,7 +364,7 @@ fn zero_step_run_until_keeps_first_entry_reset_pending() {
     // B1 fresh: a zero-step run_until(0) — AtOrPastDeadline, no KVM_RUN. Per the
     // invariant this must leave the first-entry reset PENDING (not consume it).
     let (mut b1, _m1) = boot_with(SPIN_CODE);
-    match b1.run_until(Vtime(0)).expect("b1 zero-step run_until(0)") {
+    match b1.run_until(Moment(0)).expect("b1 zero-step run_until(0)") {
         Exit::Deadline { reached } => assert_eq!(reached.0, 0, "zero-step lands at 0"),
         other => panic!("expected Deadline at 0, got {other:?}"),
     }
@@ -373,7 +373,7 @@ fn zero_step_run_until_keeps_first_entry_reset_pending() {
     // shared exclude_host PMU counter.
     {
         let (mut b2, _m2) = boot_with(SPIN_CODE);
-        match b2.run_until(Vtime(100_000)).expect("b2 run_until") {
+        match b2.run_until(Moment(100_000)).expect("b2 run_until") {
             Exit::Deadline { reached } => assert_eq!(reached.0, 100_000),
             other => panic!("expected Deadline at 100000, got {other:?}"),
         }
@@ -384,7 +384,7 @@ fn zero_step_run_until_keeps_first_entry_reset_pending() {
     // zero-step consumed the reset), B1's counter would already read ~100_000 here and
     // run_until(50_000) would fail closed as a past deadline.
     match b1
-        .run_until(Vtime(50_000))
+        .run_until(Moment(50_000))
         .expect("b1 first real entry after the zero-step + foreign VM")
     {
         Exit::Deadline { reached } => assert_eq!(
@@ -410,7 +410,7 @@ fn zero_step_run_until_keeps_first_entry_reset_pending() {
 #[ignore = "live KVM + perf; run on the box with --ignored"]
 fn run_until_past_deadline_fires_immediately() {
     let (mut b, _m) = boot_with(SPIN_CODE);
-    match b.run_until(Vtime(10_000)).expect("advance to 10000") {
+    match b.run_until(Moment(10_000)).expect("advance to 10000") {
         Exit::Deadline { reached } => assert_eq!(reached.0, 10_000),
         other => panic!("expected Deadline at 10000, got {other:?}"),
     }
@@ -418,7 +418,7 @@ fn run_until_past_deadline_fires_immediately() {
     // must fire the timer NOW — an immediate Exit::Deadline at the current count — never
     // an error (which would abort a Postgres/Linux guest re-arming one-shots).
     match b
-        .run_until(Vtime(5_000))
+        .run_until(Moment(5_000))
         .expect("an overdue deadline must fire immediately, NOT error/abort")
     {
         Exit::Deadline { reached } => {
@@ -454,7 +454,7 @@ fn run_until_at_current_deadline_preserves_owed_completion() {
         .expect("complete the IN (stages AL=0x42)"); // owed completion
     // deadline == current (0): ZERO steps, no overstep, owed completion preserved.
     match b
-        .run_until(Vtime(0))
+        .run_until(Moment(0))
         .expect("run_until(0) with an owed completion")
     {
         Exit::Deadline { reached } => assert_eq!(
@@ -467,7 +467,7 @@ fn run_until_at_current_deadline_preserves_owed_completion() {
     // The NEXT entry commits the owed IN completion (RIP past it) + spins to 5_000. If the
     // completion had been lost/overstepped, the IN would re-trap (an Io exit) instead.
     match b
-        .run_until(Vtime(5_000))
+        .run_until(Moment(5_000))
         .expect("run_until after committing the owed read")
     {
         Exit::Deadline { reached } => assert_eq!(

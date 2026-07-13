@@ -18,7 +18,7 @@
 //! * [`trigger`] — the **toy trigger predicates**: a pure model of each bug's
 //!   fire condition over an opaque `(seed, fault schedule)` scenario. This is the
 //!   portable stand-in for the guest payloads (mirrors
-//!   `dissonance/conductor`'s `ToyPlantedMachine` for bug 1); the gate is that
+//!   `dissonance/campaign-runner`'s `ToyPlantedMachine` for bug 1); the gate is that
 //!   the right schedule fires 100% and a nominal scenario never fires.
 //! * [`stats`] and [`report`] — the correlation instrument: hand-rolled rank
 //!   (Spearman) correlation over integers, median/IQR, the STADS species curves

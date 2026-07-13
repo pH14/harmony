@@ -24,7 +24,7 @@
 
 use crate::codec::{self, Reader};
 use crate::error::EnvError;
-use crate::{ConnId, NodeId, VTime};
+use crate::{ConnId, NodeId, Span};
 
 /// The class of a **guest** decision: which guest-requested service surfaced it
 /// and, therefore, which answers are admissible. `#[repr(u16)]` with stable
@@ -274,7 +274,7 @@ impl DecisionPoint {
 }
 
 /// The fault catalog, grouped by the class it applies to. The vocabulary is
-/// convergent across FoundationDB / Antithesis; delays are in [`VTime`]
+/// convergent across FoundationDB / Antithesis; delays are in [`Span`]
 /// branch-count units. The byte form (see [`Answer::encode`]) uses stable
 /// discriminants that a recorded [`EnvSpec`](crate::EnvSpec) replay depends on.
 ///
@@ -304,8 +304,8 @@ impl DecisionPoint {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Fault {
     /// Add `d` of guest-time delay to the flow (Linux `netem`); `d` is in
-    /// [`VTime`] units so the delay is measured in determinized guest time.
-    NetLatency(VTime),
+    /// [`Span`] units so the delay is measured in determinized guest time.
+    NetLatency(Span),
     /// Drop a `num/den` fraction of the flow's packets, sampled from a seeded
     /// PRNG (never a host RNG). `1/1` is a full drop; `den` is the denominator of
     /// the fraction and the seeded enforcer treats `den == 0` as a deterministic
@@ -328,13 +328,13 @@ pub enum Fault {
     /// Fail a block I/O with `EIO`.
     BlockEio,
     /// Complete a block I/O after the given V-time latency.
-    BlockLatency(VTime),
+    BlockLatency(Span),
     /// Tear a block write/read at `n` bytes (the rest is not transferred).
     BlockTorn(u32),
     /// Fail a block write with `ENOSPC`.
     BlockNospc,
     /// Pause a node for the given V-time.
-    ProcPause(VTime),
+    ProcPause(Span),
     /// Kill a node.
     ProcKill,
     /// Restart a node.

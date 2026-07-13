@@ -12,7 +12,7 @@
 use crate::catalog::{Answer, Fault};
 use crate::error::EnvError;
 use crate::host::{Action, BitMask, HostFault, Ratio};
-use crate::{MAX_SUPPLY_LEN, VTime};
+use crate::{MAX_SUPPLY_LEN, Span};
 
 // Answer tags.
 const ANS_NOMINAL: u8 = 0;
@@ -90,7 +90,7 @@ pub(crate) fn put_bytes(w: &mut Vec<u8>, b: &[u8]) {
 /// Serialize one [`Fault`].
 pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
     match f {
-        Fault::NetLatency(VTime(d)) => {
+        Fault::NetLatency(Span(d)) => {
             w.push(F_NET_LATENCY);
             put_u64(w, *d);
         }
@@ -105,7 +105,7 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
         }
         Fault::NetReset => w.push(F_NET_RESET),
         Fault::BlockEio => w.push(F_BLOCK_EIO),
-        Fault::BlockLatency(VTime(d)) => {
+        Fault::BlockLatency(Span(d)) => {
             w.push(F_BLOCK_LATENCY);
             put_u64(w, *d);
         }
@@ -114,7 +114,7 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
             put_u32(w, *n);
         }
         Fault::BlockNospc => w.push(F_BLOCK_NOSPC),
-        Fault::ProcPause(VTime(d)) => {
+        Fault::ProcPause(Span(d)) => {
             w.push(F_PROC_PAUSE);
             put_u64(w, *d);
         }
@@ -127,7 +127,7 @@ pub(crate) fn write_fault(w: &mut Vec<u8>, f: &Fault) {
 /// Deserialize one [`Fault`].
 pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
     let f = match r.u8()? {
-        F_NET_LATENCY => Fault::NetLatency(VTime(r.u64()?)),
+        F_NET_LATENCY => Fault::NetLatency(Span(r.u64()?)),
         F_NET_LOSS => Fault::NetLoss {
             num: r.u16()?,
             den: r.u16()?,
@@ -135,10 +135,10 @@ pub(crate) fn read_fault(r: &mut Reader) -> Result<Fault, EnvError> {
         F_NET_THROTTLE => Fault::NetThrottle { bps: r.u32()? },
         F_NET_RESET => Fault::NetReset,
         F_BLOCK_EIO => Fault::BlockEio,
-        F_BLOCK_LATENCY => Fault::BlockLatency(VTime(r.u64()?)),
+        F_BLOCK_LATENCY => Fault::BlockLatency(Span(r.u64()?)),
         F_BLOCK_TORN => Fault::BlockTorn(r.u32()?),
         F_BLOCK_NOSPC => Fault::BlockNospc,
-        F_PROC_PAUSE => Fault::ProcPause(VTime(r.u64()?)),
+        F_PROC_PAUSE => Fault::ProcPause(Span(r.u64()?)),
         F_PROC_KILL => Fault::ProcKill,
         F_PROC_RESTART => Fault::ProcRestart,
         F_BUGGIFY_FIRE => Fault::BuggifyFire,
@@ -183,7 +183,7 @@ pub(crate) fn read_answer(r: &mut Reader) -> Result<Answer, EnvError> {
 /// Serialize one [`HostFault`].
 pub(crate) fn write_host_fault(w: &mut Vec<u8>, f: &HostFault) {
     match f {
-        HostFault::SkewTime(VTime(d)) => {
+        HostFault::SkewTime(Span(d)) => {
             w.push(HF_SKEW_TIME);
             put_u64(w, *d);
         }
@@ -212,7 +212,7 @@ pub(crate) fn write_host_fault(w: &mut Vec<u8>, f: &HostFault) {
 /// divide-by-zero.
 pub(crate) fn read_host_fault(r: &mut Reader) -> Result<HostFault, EnvError> {
     let f = match r.u8()? {
-        HF_SKEW_TIME => HostFault::SkewTime(VTime(r.u64()?)),
+        HF_SKEW_TIME => HostFault::SkewTime(Span(r.u64()?)),
         HF_SET_CLOCK_RATE => {
             let num = r.u64()?;
             let den = r.u64()?;

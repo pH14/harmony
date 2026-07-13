@@ -598,8 +598,8 @@ search architecture.
 ## `CampaignConfig` is the integration primitive
 
 The repository already has concrete
-[`CampaignConfig`](../dissonance/conductor/src/campaign.rs#L132) and
-[`CampaignReport`](../dissonance/conductor/src/campaign.rs#L268) types. They currently describe a
+[`CampaignConfig`](../dissonance/campaign-runner/src/campaign.rs#L132) and
+[`CampaignReport`](../dissonance/campaign-runner/src/campaign.rs#L268) types. They currently describe a
 narrow planted-bug campaign, not the full target search composition. The target should generalize
 those campaign artifacts rather than introduce a new `SearchProposal` or `CampaignPlan`.
 

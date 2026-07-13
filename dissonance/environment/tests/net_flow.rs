@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use common::{config, run_guest_schedule};
 use environment::{
     Action, Answer, ConnId, DecisionClass, DecisionPoint as P, EnvSpec, Fault, FaultPolicy,
-    FlowEvent, Moment, NodeId, Outcome, VTime,
+    FlowEvent, Moment, NodeId, Outcome, Span,
 };
 use proptest::prelude::*;
 
@@ -36,7 +36,7 @@ fn flow(c: u64) -> P {
 /// The four flow-level policies, in catalog order.
 fn net_faults() -> Vec<Fault> {
     vec![
-        Fault::NetLatency(VTime(100)),
+        Fault::NetLatency(Span(100)),
         Fault::NetLoss { num: 1, den: 3 },
         Fault::NetThrottle { bps: 1_000_000 },
         Fault::NetReset,
@@ -111,8 +111,8 @@ fn net_fault_wire_bytes_are_pinned() {
     // tags are FRESH (12..=15), disjoint from the retired per-frame net tags 0..=4
     // (now undefined), so a stale net byte rejects on every decode path.
     let cases: &[(Fault, &str)] = &[
-        // ANS_FAULT(02) + F_NET_LATENCY(0c=12) + VTime u64 (100 = 0x64, LE).
-        (Fault::NetLatency(VTime(100)), "020c6400000000000000"),
+        // ANS_FAULT(02) + F_NET_LATENCY(0c=12) + Span u64 (100 = 0x64, LE).
+        (Fault::NetLatency(Span(100)), "020c6400000000000000"),
         // ANS_FAULT(02) + F_NET_LOSS(0d=13) + num u16 (1) + den u16 (3).
         (Fault::NetLoss { num: 1, den: 3 }, "020d01000300"),
         // ANS_FAULT(02) + F_NET_THROTTLE(0e=14) + bps u32 (1_000_000 = 0x0F4240, LE).

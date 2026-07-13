@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! STADS — *Software Testing As Discovery of Species* (Böhme, TOSEM 2018).
 //!
-//! A **progression-blind** fold over an opaque stream of [`CellKey`] discovery
+//! A **search-loop-blind** fold over an opaque stream of [`CellKey`] discovery
 //! events. It answers two questions a search must not answer for itself: *is the
 //! signal still discovering?* (Good–Turing discovery probability) and *how much
 //! is estimated left?* (Chao1 richness). Species are cells; samples are branches.

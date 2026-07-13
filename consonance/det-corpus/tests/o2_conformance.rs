@@ -5,7 +5,7 @@
 use det_corpus::check_conformance;
 use proptest::prelude::*;
 use unison::toy::{ToyFactory, asm, generate_program};
-use unison::{Machine, MachineFactory};
+use unison::{Subject, SubjectFactory};
 
 /// Lowercase 64-char hex of the terminal observable_digest at `seed` (the O2
 /// conformance signal — see `check_conformance`).

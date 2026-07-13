@@ -53,7 +53,7 @@ use std::collections::BTreeMap;
 use crate::error::MachineError;
 use crate::seam::{EnvCodec, Machine};
 use crate::spine::{ExemplarRef, Frontier, Moment, VirtualExemplar};
-use crate::{Environment, SnapId, StopConditions, StopMask, VTime};
+use crate::{Reproducer, SnapId, StopConditions, StopMask};
 
 /// One lineage record: how a sealed snapshot was produced — its parent seal
 /// (or genesis), the branch-local suffix that took the parent to `at`, and the
@@ -66,7 +66,7 @@ pub struct Lineage {
     pub parent: SnapId,
     /// The branch-local delta replayed from `parent` to reach `at`
     /// (tail-complete, the task-93 compose contract).
-    pub suffix: Environment,
+    pub suffix: Reproducer,
     /// The moment the seal was taken at.
     pub at: Moment,
 }
@@ -148,8 +148,8 @@ struct Walk {
 
 /// The materialization engine + spanning-ancestor retention pool (module doc).
 ///
-/// Deliberately **Progression-blind**: it sees opaque [`SnapId`]s, [`Moment`]s,
-/// opaque [`Environment`] blobs, and integer costs — no fault types, no signal
+/// Deliberately **search loop-blind**: it sees opaque [`SnapId`]s, [`Moment`]s,
+/// opaque [`Reproducer`] blobs, and integer costs — no fault types, no signal
 /// channels, no cell meaning. [`Explorer`](crate::Explorer) embeds one; a
 /// driver that builds its own chains (the conductor's live harness) drives one
 /// directly over any [`Machine`] + [`EnvCodec`].
@@ -256,7 +256,7 @@ impl Materializer {
         r: ExemplarRef,
         seal: SnapId,
         parent: SnapId,
-        suffix: Environment,
+        suffix: Reproducer,
         at: Moment,
     ) -> Option<SnapId> {
         let displaced = self.seals.insert(r.0, seal);
@@ -420,7 +420,7 @@ impl Materializer {
 
         machine.branch(walk.base, &env)?;
         let until = StopConditions {
-            deadline: Some(VTime(at.0)),
+            deadline: Some(Moment(at.0)),
             on: StopMask::NONE,
         };
         // Nothing can surface under StopMask::NONE; loop defensively until the
@@ -562,8 +562,8 @@ mod tests {
     use crate::spine::FrontierEntry;
     use crate::spine::Reward;
 
-    fn env(bytes: Vec<u8>) -> Environment {
-        Environment {
+    fn env(bytes: Vec<u8>) -> Reproducer {
+        Reproducer {
             blob_version: 1,
             bytes,
         }

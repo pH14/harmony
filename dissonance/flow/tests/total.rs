@@ -10,8 +10,8 @@ mod common;
 
 use common::{ScriptedDecider, arb_events, run_all, run_incremental};
 use flow::{
-    ConnId, Dir, FlowEngine, FlowEvent, FlowPolicy, NodeId, PassthroughEngine, ToxiproxyEngine,
-    VTime,
+    ConnId, Dir, FlowEngine, FlowEvent, FlowPolicy, Moment, NodeId, PassthroughEngine, Span,
+    ToxiproxyEngine,
 };
 use proptest::prelude::*;
 
@@ -21,7 +21,7 @@ use proptest::prelude::*;
 fn arb_edge_script() -> impl Strategy<Value = Vec<FlowPolicy>> {
     let edge = prop_oneof![
         Just(FlowPolicy::Nominal),
-        Just(FlowPolicy::Latency(VTime(u64::MAX))),
+        Just(FlowPolicy::Latency(Span(u64::MAX))),
         (any::<u64>()).prop_map(|seed| FlowPolicy::Loss {
             seed,
             num: 1,
@@ -60,12 +60,12 @@ fn arb_extreme_event() -> impl Strategy<Value = FlowEvent> {
             .prop_map(|(conn, dir, at, bytes)| FlowEvent::Chunk {
                 conn,
                 dir,
-                at: VTime(at),
+                at: Moment(at),
                 bytes,
             }),
         (conn, at).prop_map(|(conn, at)| FlowEvent::Close {
             conn,
-            at: VTime(at),
+            at: Moment(at),
         }),
     ]
 }
@@ -118,7 +118,7 @@ fn stray_events_are_ignored() {
         FlowEvent::Chunk {
             conn: ConnId(1),
             dir: Dir::ClientToServer,
-            at: VTime(5),
+            at: Moment(5),
             bytes: vec![1, 2, 3],
         },
         &mut d,
@@ -126,12 +126,12 @@ fn stray_events_are_ignored() {
     e.on_event(
         FlowEvent::Close {
             conn: ConnId(2),
-            at: VTime(9),
+            at: Moment(9),
         },
         &mut d,
     );
     assert!(
-        e.due(VTime(u64::MAX)).is_empty(),
+        e.due(Moment(u64::MAX)).is_empty(),
         "stray events for unknown flows schedule nothing"
     );
 }
@@ -153,7 +153,7 @@ fn events_after_close_are_dropped() {
     e.on_event(
         FlowEvent::Close {
             conn: ConnId(1),
-            at: VTime(3),
+            at: Moment(3),
         },
         &mut d,
     );
@@ -162,7 +162,7 @@ fn events_after_close_are_dropped() {
         FlowEvent::Chunk {
             conn: ConnId(1),
             dir: Dir::ClientToServer,
-            at: VTime(4),
+            at: Moment(4),
             bytes: vec![9],
         },
         &mut d,
@@ -170,11 +170,11 @@ fn events_after_close_are_dropped() {
     e.on_event(
         FlowEvent::Close {
             conn: ConnId(1),
-            at: VTime(5),
+            at: Moment(5),
         },
         &mut d,
     );
-    let got = e.due(VTime(u64::MAX));
+    let got = e.due(Moment(u64::MAX));
     assert_eq!(
         got.len(),
         1,

@@ -67,8 +67,8 @@
 #![cfg(target_os = "linux")]
 
 use control_proto::{
-    ControlError, Environment, HashScope, Reply, Request, SnapId, StopConditions, StopMask,
-    StopReason, VTime,
+    ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
+    StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;
@@ -173,7 +173,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
         s,
         &Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -196,8 +196,8 @@ fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
     }
 }
 
-fn seeded_env(seed: u64) -> Environment {
-    Environment {
+fn seeded_env(seed: u64) -> Reproducer {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: EnvSpec::Seeded {
             seed,
@@ -341,7 +341,7 @@ fn exec_improvisation_is_off_the_record_and_costs_the_search_nothing() {
         &mut s,
         &Request::Exec {
             cmd: cmd.clone(),
-            deadline: VTime(mid_vt.saturating_add(budget)),
+            deadline: Moment(mid_vt.saturating_add(budget)),
         },
     ) {
         Reply::ExecResult { output, ok } => (output, ok),
@@ -543,7 +543,7 @@ fn smoke_exec_channel_boots_injects_and_scrapes_a_sentinel() {
         &mut s,
         &Request::Exec {
             cmd: cmd.clone(),
-            deadline: VTime(mid_vt.saturating_add(budget)),
+            deadline: Moment(mid_vt.saturating_add(budget)),
         },
     ) {
         Reply::ExecResult { output, ok } => (output, ok),

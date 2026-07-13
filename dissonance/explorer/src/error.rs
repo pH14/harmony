@@ -99,7 +99,7 @@ pub enum EnvCodecError {
 /// of dissonance's two result categories (`docs/DISSONANCE.md`). A VM or
 /// transport failure is a `MachineError`; a guest-observable outcome is a
 /// [`StopReason`](crate::StopReason). The two are never confused: a
-/// `MachineError` aborts the Progression step **loudly** and is never recorded as
+/// `MachineError` aborts the search-loop step **loudly** and is never recorded as
 /// a [`Bug`](crate::Bug) (only [`StopReason::Crash`](crate::StopReason::Crash)
 /// and [`StopReason::Assertion`](crate::StopReason::Assertion) are).
 ///
@@ -136,7 +136,7 @@ pub enum MachineError {
     /// offending raw handle.
     #[error("unknown or dropped snapshot handle {0}")]
     UnknownSnapshot(u64),
-    /// The backend rejected an [`Environment`](crate::Environment) blob it could
+    /// The backend rejected an [`Reproducer`](crate::Reproducer) blob it could
     /// not parse (bad version or malformed). Carries the declared blob version.
     #[error("backend rejected environment blob (version {0})")]
     BadEnvironment(u16),
@@ -144,7 +144,7 @@ pub enum MachineError {
     /// 99): the artifact minted/mutated/composed off untrusted bytes was
     /// malformed, mis-ordered, or an unsupported/overflowing composition. A
     /// **control-plane** failure like the others here — it aborts the
-    /// Progression step loudly and is **never** recorded as a guest
+    /// search-loop step loudly and is **never** recorded as a guest
     /// [`Bug`](crate::Bug) — carried as a distinct variant (with `#[from]`) so a
     /// caller can tell a bad reproducer artifact apart from a transport death.
     #[error("environment codec rejected a reproducer blob: {0}")]

@@ -2,7 +2,7 @@
 //! # runtrace — the RunTrace journal, store, and scrape decoder (task 65)
 //!
 //! `runtrace` is the **replay-plane infrastructure** that makes a finished run
-//! *recordable*. After task 58's control loop stops, the conductor assembles a
+//! *recordable*. After task 58's control loop stops, the campaign runner assembles a
 //! [`RunTrace`](explorer::RunTrace) — the versioned, serialized bundle the whole
 //! replay plane (Sensors, Oracles, re-derivation) works over offline — and this
 //! crate is where that bundle is turned into bytes and back:
@@ -29,7 +29,7 @@
 //! ([`RunTrace`](explorer::RunTrace), [`Record`](explorer::Record),
 //! [`StreamId`](explorer::StreamId), [`Moment`](explorer::Moment)); it is a
 //! **pure sink** — nothing here reads back into the live plane, and no search
-//! policy learns the store exists (Progression blindness). It is the Wave-5
+//! policy learns the store exists (search-loop blindness). It is the Wave-5
 //! plugin direction later signal/matcher/search tasks (66/67/70+) reuse. The
 //! concrete `Record` shape (and [`StreamId`](explorer::StreamId)) it produces
 //! was pinned by this task, additively, next to `RunTrace` in the spine.

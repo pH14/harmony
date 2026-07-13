@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The deterministic action queue shared by every engine.
 //!
-//! Actions are keyed by `(VTime, seq)`: `VTime` is the due time, `seq` is a
+//! Actions are keyed by `(Moment, seq)`: `Moment` is the due time, `seq` is a
 //! per-engine monotonic counter assigned at schedule time. The `BTreeMap` keeps
-//! the queue in `(VTime, seq)` order, so [`due`](Scheduler::due) drains strictly
+//! the queue in `(Moment, seq)` order, so [`due`](Scheduler::due) drains strictly
 //! by due time with insertion order breaking ties — never by map-iteration or
 //! hash order (conventions rule 4). This single queue is the only place ordering
 //! is decided, so every [`FlowEngine`](crate::FlowEngine) inherits the same
@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{FlowAction, VTime};
+use crate::{FlowAction, Moment};
 
 /// A V-time-ordered queue of pending [`FlowAction`]s.
 #[derive(Clone, Debug, Default)]
@@ -38,16 +38,16 @@ impl Scheduler {
         self.actions.insert(key, action);
     }
 
-    /// Pop every action due at or before `now`, ascending by `(VTime, seq)`.
+    /// Pop every action due at or before `now`, ascending by `(Moment, seq)`.
     /// Actions due after `now` stay queued.
-    pub(crate) fn due(&mut self, now: VTime) -> Vec<FlowAction> {
+    pub(crate) fn due(&mut self, now: Moment) -> Vec<FlowAction> {
         let mut out = Vec::new();
         while let Some((&(vt, _seq), _)) = self.actions.iter().next() {
             if vt > now.0 {
                 break;
             }
             // `pop_first` removes the smallest key — i.e. the entry we just peeked
-            // — so the loop drains in `(VTime, seq)` order and always terminates.
+            // — so the loop drains in `(Moment, seq)` order and always terminates.
             if let Some((_, action)) = self.actions.pop_first() {
                 out.push(action);
             }

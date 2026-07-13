@@ -32,8 +32,8 @@
 use std::collections::BTreeMap;
 
 use control_proto::{
-    CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, Environment, HashScope, SnapId,
-    StopConditions, StopReason, VTime,
+    CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, HashScope, Reproducer, SnapId,
+    StopConditions, StopReason,
 };
 use environment::{Action, EnvSpec, HostFault, Moment};
 
@@ -242,7 +242,7 @@ impl Server for MockServer {
         Ok(())
     }
 
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), SessionError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), SessionError> {
         let Some(meta) = self.snaps.get(&snap.0).cloned() else {
             return Err(SessionError::Control(
                 control_proto::ControlError::UnknownSnapshot(snap),
@@ -283,7 +283,7 @@ impl Server for MockServer {
         // re-materializes. `branch`/`replay` install a fresh/restored timeline.
         if let Some(info) = &self.cur.crashed {
             return Ok(StopReason::Crash {
-                vtime: VTime(self.cur.moment),
+                vtime: control_proto::Moment(self.cur.moment),
                 info: info.clone(),
             });
         }
@@ -305,11 +305,11 @@ impl Server for MockServer {
         if raw <= self.cur.moment {
             return Ok(if self.cur.moment >= quiescent {
                 StopReason::Quiescent {
-                    vtime: VTime(self.cur.moment),
+                    vtime: control_proto::Moment(self.cur.moment),
                 }
             } else {
                 StopReason::Deadline {
-                    vtime: VTime(self.cur.moment),
+                    vtime: control_proto::Moment(self.cur.moment),
                 }
             });
         }
@@ -324,18 +324,18 @@ impl Server for MockServer {
             self.cur.moment = crash_at;
             self.cur.crashed = Some(info.clone());
             return Ok(StopReason::Crash {
-                vtime: VTime(crash_at),
+                vtime: control_proto::Moment(crash_at),
                 info,
             });
         }
         self.cur.moment = target;
         if target >= quiescent {
             Ok(StopReason::Quiescent {
-                vtime: VTime(quiescent),
+                vtime: control_proto::Moment(quiescent),
             })
         } else {
             Ok(StopReason::Deadline {
-                vtime: VTime(target),
+                vtime: control_proto::Moment(target),
             })
         }
     }
@@ -369,7 +369,11 @@ impl Server for MockServer {
         Ok(self.cur.regs())
     }
 
-    fn exec(&mut self, cmd: &str, deadline: VTime) -> Result<ExecResult, SessionError> {
+    fn exec(
+        &mut self,
+        cmd: &str,
+        deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError> {
         // A crashed timeline is terminal: the guest cannot run a command. Do not
         // advance, do not fabricate output, do not report success. But an exec
         // *attempt* is still an improvisation — so mark **and report** taint on

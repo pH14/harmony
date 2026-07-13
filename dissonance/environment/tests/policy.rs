@@ -6,7 +6,7 @@
 mod common;
 
 use common::{arb_policy, config};
-use environment::{DecisionClass, EnvError, Fault, FaultPolicy, VTime};
+use environment::{DecisionClass, EnvError, Fault, FaultPolicy, Span};
 use proptest::prelude::*;
 
 proptest! {
@@ -39,7 +39,7 @@ fn equal_policies_built_differently_encode_identically() {
         4,
         &[
             Fault::NetReset,
-            Fault::NetLatency(VTime(5)),
+            Fault::NetLatency(Span(5)),
             Fault::NetThrottle { bps: 1000 },
         ],
     )
@@ -52,7 +52,7 @@ fn equal_policies_built_differently_encode_identically() {
         4,
         &[
             Fault::NetThrottle { bps: 1000 },
-            Fault::NetLatency(VTime(5)),
+            Fault::NetLatency(Span(5)),
             Fault::NetReset,
         ],
     )
@@ -127,7 +127,7 @@ fn is_enforceable_only_admits_buggify_and_net_but_not_block_or_process() {
     // Buggify + net together: still enforceable (both seams live).
     let mut both = FaultPolicy::none();
     both.set_buggify_point(7, 1, 1).unwrap();
-    both.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetLatency(VTime(5))])
+    both.set_class(DecisionClass::NetFlow, 1, 2, &[Fault::NetLatency(Span(5))])
         .unwrap();
     assert!(both.is_enforceable_only());
     assert!(!both.is_buggify_only());
@@ -204,7 +204,7 @@ fn is_enforceable_only_rejects_fractional_netloss_but_keeps_binary() {
             3,
             &[
                 Fault::NetReset,
-                Fault::NetLatency(VTime(5)),
+                Fault::NetLatency(Span(5)),
                 Fault::NetThrottle { bps: 1000 },
             ],
         )

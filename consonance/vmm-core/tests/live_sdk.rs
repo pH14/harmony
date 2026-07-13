@@ -29,7 +29,7 @@
 use std::path::PathBuf;
 
 use control_proto::{
-    Environment, HashScope, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
+    HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;
@@ -141,7 +141,7 @@ fn snapshot(s: &mut DynServer) -> SnapId {
     }
 }
 
-fn branch(s: &mut DynServer, snap: SnapId, env: Environment) {
+fn branch(s: &mut DynServer, snap: SnapId, env: Reproducer) {
     assert_eq!(drive(s, &Request::Branch { snap, env }), Reply::Unit);
 }
 
@@ -149,7 +149,7 @@ fn run_once(s: &mut DynServer) -> StopReason {
     // Arm every class (moot for the seed-driven substrate — the SDK stops always
     // surface — but harmless); the deadline bounds a runaway run.
     let until = StopConditions {
-        deadline: Some(VTime(DEADLINE)),
+        deadline: Some(Moment(DEADLINE)),
         on: StopMask(u32::MAX),
     };
     match drive(
@@ -191,7 +191,7 @@ fn state_hash(s: &mut DynServer) -> [u8; 32] {
 
 /// The demo's branch env: a pure seed, plus a buggify-only policy that either
 /// leaves `slow_disk` cold (a clean full run) or makes it always fire (the bug).
-fn branch_env(seed: u64, buggify_fires: bool) -> Environment {
+fn branch_env(seed: u64, buggify_fires: bool) -> Reproducer {
     let mut policy = FaultPolicy::none();
     if buggify_fires {
         policy
@@ -199,7 +199,7 @@ fn branch_env(seed: u64, buggify_fires: bool) -> Environment {
             .expect("den >= 1");
     }
     let spec = EnvSpec::Seeded { seed, policy };
-    Environment {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: spec.encode(),
     }
@@ -283,7 +283,7 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
     eprintln!("[gate B] assertion fired: point {}", ev.id);
 
     // The genesis-complete reproducer.
-    let bug_env = Environment {
+    let bug_env = Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: s.recorded_env().encode(),
     };
@@ -311,7 +311,7 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
 // but this bare demo never does (so it simply never surfaces one). The fix is
 // exercised by `vmm::tests::sdk_snapshot_restore_resumes_the_seeded_streams` (the
 // stream continuation), `environment`'s `stream_state_resumes_both_streams_exactly`,
-// the conductor `setup_complete_yields_a_usable_seal_...` loopback gate (the
+// the campaign runner `setup_complete_yields_a_usable_seal_...` loopback gate (the
 // deferred point surfaces sealably over the wire), and every mock control test
 // that snapshots/branches/replays/drops with the SDK channel wired.
 

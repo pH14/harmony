@@ -2,12 +2,12 @@
 //! The determinism oracles (O1–O3) and their per-oracle results.
 //!
 //! Each oracle is a thin domain wrapper over `unison`'s generic primitives,
-//! written against `unison::MachineFactory` so it is fully testable now with the
+//! written against `unison::SubjectFactory` so it is fully testable now with the
 //! toy machine and pointed at the real `Vmm` at integration with no API change.
 
 use serde::{Serialize, Serializer};
 use unison::{
-    DivergencePoint, Machine, MachineError, MachineFactory, RunOutcome, Verdict, bisect_divergence,
+    DivergencePoint, RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence,
     compare_runs,
 };
 
@@ -87,12 +87,12 @@ pub struct OracleResult {
 /// false`; if the bisector cannot localize it (e.g. the divergence is not
 /// reproducible across re-execution) the result still fails, with the reason in
 /// `detail` and `divergence: None`.
-pub fn check_determinism<F: MachineFactory>(
+pub fn check_determinism<F: SubjectFactory>(
     f: &F,
     seed: u64,
     checkpoint_every: u64,
     limit: u64,
-) -> Result<OracleResult, MachineError> {
+) -> Result<OracleResult, SubjectError> {
     let report = compare_runs(f, f, seed, checkpoint_every, limit)?;
     let oracle = Oracle::Determinism;
     // No checkpoint was ever compared (e.g. `limit == 0`): the runs were never
@@ -178,16 +178,16 @@ pub fn check_determinism<F: MachineFactory>(
 /// deliberately emits — exactly as O3 does (`docs/DETERMINISM-CORPUS.md`), not the
 /// full `state_hash` (which also folds latent, seed-derived state that is brittle to
 /// pin as a golden). For a machine that does not override
-/// [`Machine::observable_digest`] it equals `state_hash` (the trait default), so the
+/// [`Subject::observable_digest`] it equals `state_hash` (the trait default), so the
 /// toy goldens are unaffected; for the VMM corpus bridge it is the report-stream
 /// digest, which is what the committed `guest/golden/*.digest` O2 goldens carry — so
 /// the generic runner and the box `box_corpus` gate compare the **same** quantity.
-pub fn check_conformance<F: MachineFactory>(
+pub fn check_conformance<F: SubjectFactory>(
     f: &F,
     seed: u64,
     limit: u64,
     golden_hex: &str,
-) -> Result<OracleResult, MachineError> {
+) -> Result<OracleResult, SubjectError> {
     let mut m = f.spawn(seed);
     m.run_to(limit)?;
     let actual = m.observable_digest();
@@ -240,13 +240,13 @@ pub fn check_conformance<F: MachineFactory>(
 /// detail), never an error or panic. (The caller is responsible for passing
 /// seeds whose *effective* machine state differs — e.g. the toy registry's seed
 /// 0 normalizes to `ZERO_SEED_STATE`; the binary accounts for that.)
-pub fn check_seed_sensitivity<F: MachineFactory>(
+pub fn check_seed_sensitivity<F: SubjectFactory>(
     f: &F,
     seed_a: u64,
     seed_b: u64,
     limit: u64,
     rng_consuming: bool,
-) -> Result<OracleResult, MachineError> {
+) -> Result<OracleResult, SubjectError> {
     let oracle = Oracle::SeedSensitivity { rng_consuming };
     if seed_a == seed_b {
         return Ok(OracleResult {
@@ -398,10 +398,10 @@ mod tests {
         work: u64,
         out: [u8; 32],
     }
-    impl Machine for OneHalt {
-        fn run_to(&mut self, target: u64) -> Result<RunOutcome, MachineError> {
+    impl Subject for OneHalt {
+        fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
             if target < self.work {
-                return Err(MachineError::TargetBehind {
+                return Err(SubjectError::TargetBehind {
                     target,
                     current: self.work,
                 });
@@ -426,7 +426,7 @@ mod tests {
     struct OneHaltFactory {
         halt_seed: u64,
     }
-    impl MachineFactory for OneHaltFactory {
+    impl SubjectFactory for OneHaltFactory {
         type M = OneHalt;
         fn spawn(&self, seed: u64) -> OneHalt {
             OneHalt {

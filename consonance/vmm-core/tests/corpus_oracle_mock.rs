@@ -7,13 +7,13 @@
 //! wires the **same** `det-corpus` oracle runner (`check_determinism`,
 //! `check_conformance`) to the **same** `CorpusMachine` bridge, just over a
 //! scripted backend instead of the live patched KVM. So the cross-crate
-//! integration — that the bridge satisfies the `unison::Machine`/`MachineFactory`
+//! integration — that the bridge satisfies the `unison::Subject`/`SubjectFactory`
 //! contracts the `det-corpus` generics demand, and that O1 (state_hash) and the
 //! O2 observable digest behave as the corpus expects — is type-checked and gated
 //! on every platform; only the live-KVM values are box-only.
 
 use det_corpus::{check_conformance, check_determinism};
-use unison::MachineFactory;
+use unison::SubjectFactory;
 use vmm_backend::{Backend, CpuidModel, Exit, MockBackend, MsrFilter};
 use vmm_core::corpus::{CorpusMachine, observable_digest_of};
 use vmm_core::devices::{ISA_DEBUG_EXIT_PORT, REPORT_PORT, UART_PORT_BASE};
@@ -50,14 +50,14 @@ fn script(name: &str, values: &[u64]) -> Vec<Exit> {
     exits
 }
 
-/// A `unison::MachineFactory` over a scripted `MockBackend` `CorpusMachine` — the
+/// A `unison::SubjectFactory` over a scripted `MockBackend` `CorpusMachine` — the
 /// no-`/dev/kvm` stand-in for `box_corpus`'s patched-backend factory.
 struct MockCorpusFactory {
     name: String,
     values: Vec<u64>,
 }
 
-impl MachineFactory for MockCorpusFactory {
+impl SubjectFactory for MockCorpusFactory {
     type M = CorpusMachine<MockBackend>;
     fn spawn(&self, _seed: u64) -> Self::M {
         let mut backend = MockBackend::with_exits(script(&self.name, &self.values));
@@ -80,7 +80,7 @@ struct BoxedMockFactory {
     values: Vec<u64>,
 }
 
-impl MachineFactory for BoxedMockFactory {
+impl SubjectFactory for BoxedMockFactory {
     type M = CorpusMachine<Box<dyn Backend>>;
     fn spawn(&self, _seed: u64) -> Self::M {
         let mut backend = MockBackend::with_exits(script(&self.name, &self.values));
@@ -127,7 +127,7 @@ fn det_corpus_o2_digest_matches_the_observable_golden() {
     // observable_digest (report stream + serial) is the golden. Recompute the
     // expected digest independently from the known stream + banner and confirm
     // the bridge's observable_digest agrees — the box runner pins exactly this.
-    use unison::Machine;
+    use unison::Subject;
     let name = "insn-rng";
     let values = vec![0x1111_2222_3333_4444u64, 5];
     let mut m = MockCorpusFactory {

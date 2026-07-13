@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Box-only **moment-address** gate (task 80): prove that a
-//! `(genesis-complete Environment, Moment)` pair materializes to a live session
+//! `(genesis-complete Reproducer, Moment)` pair materializes to a live session
 //! at exactly that instruction, twice, byte-identically — the substrate for
 //! everything in `docs/RESOLUTION.md`. Driven directly against the
 //! [`ControlServer`] verbs (`hello`/`snapshot`/`branch`/`run`/`read`/`regs`/`hash`)
@@ -46,8 +46,8 @@
 #![cfg(target_os = "linux")]
 
 use control_proto::{
-    Environment, HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Request, SnapId,
-    StopConditions, StopMask, StopReason, VTime,
+    HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId,
+    StopConditions, StopMask, StopReason,
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
 use vmm_backend::Backend;
@@ -166,7 +166,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
         s,
         &Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -203,8 +203,8 @@ fn read<B: Backend>(s: &mut ControlServer<B>, gpa: u64, len: u32) -> Vec<u8> {
     }
 }
 
-fn seeded_env(seed: u64) -> Environment {
-    Environment {
+fn seeded_env(seed: u64) -> Reproducer {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: EnvSpec::Seeded {
             seed,

@@ -25,8 +25,8 @@
 #![cfg(target_os = "linux")]
 
 use control_proto::{
-    Environment, HashScope, HostFault as WireHostFault, Moment, Reply, Request, SnapId,
-    StopConditions, StopMask, StopReason, VTime,
+    HashScope, HostFault as WireHostFault, Moment, Reply, Reproducer, Request, SnapId,
+    StopConditions, StopMask, StopReason,
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use vmm_backend::Backend;
@@ -138,7 +138,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
         s,
         &Request::Run {
             until: StopConditions {
-                deadline: Some(VTime(deadline)),
+                deadline: Some(Moment(deadline)),
                 on: StopMask::NONE,
             },
             resolve: None,
@@ -161,8 +161,8 @@ fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
     }
 }
 
-fn seeded_env(seed: u64) -> Environment {
-    Environment {
+fn seeded_env(seed: u64) -> Reproducer {
+    Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: EnvSpec::Seeded {
             seed,
@@ -297,7 +297,7 @@ fn host_plane_record_replay_closure() {
     let (stop_a2, h_a2, _) = schedule_run(&mut s, true);
 
     // (b) replay the emitted Recorded env ⇒ same hash again.
-    let rec_env = Environment {
+    let rec_env = Reproducer {
         blob_version: EnvSpec::BLOB_VERSION,
         bytes: recorded.clone(),
     };
@@ -370,7 +370,7 @@ fn host_plane_record_replay_closure() {
     );
 }
 
-/// Compact stop rendering (local — `conductor::fmt_stop` is not a dep here).
+/// Compact stop rendering (local — `campaign_runner::fmt_stop` is not a dep here).
 fn vmm_core_fmt_stop(stop: &StopReason) -> String {
     match stop {
         StopReason::Deadline { vtime } => format!("Deadline@{}", vtime.0),

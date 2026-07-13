@@ -25,17 +25,17 @@
 //!
 //! ## Invariants (each is gated)
 //!
-//! - **(a) Open-loop Modulation.** [`RegimeTactic::decide`] is a function of
+//! - **(a) Open-loop rollout.** [`RegimeTactic::decide`] is a function of
 //!   `(own regime state, point, rng)` and nothing else — no `Sensor`/`Archive`/
 //!   `RunTrace` type appears anywhere in this crate's dependency graph, so a
 //!   decision *structurally cannot* read mid-run feedback. Identical
 //!   `(state, point, rng)` ⇒ identical answer; all adaptation happens between
-//!   runs, in the Progression.
+//!   runs, in the search loop.
 //! - **(b) Determinism discipline.** Seeded [`Prng`](explorer::Prng) only, and
 //!   **no floats anywhere** — regime/transition probabilities, the stationary
 //!   rate, and every statistical gate are integer/fixed-point rationals compared
 //!   by cross-multiplication.
-//! - **(c) Progression untouched.** These tactics/mutators grow the Proposal
+//! - **(c) search loop untouched.** These tactics/mutators grow the Proposal
 //!   seam only; no explorer-engine change is needed or made (the `DISSONANCE.md`
 //!   D-invariant).
 //!

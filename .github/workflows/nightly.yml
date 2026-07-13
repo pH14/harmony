@@ -71,7 +71,7 @@ jobs:
     # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job, plus the
     # play-agent step (task 86, landed on main under this measurement — the
     # flow-agent shape, minutes not tens).
-    # RE-DERIVED (task 104, hm-d4y): the conductor step is no longer a ~1.3 s
+    # RE-DERIVED (task 104, hm-d4y): the campaign-runner step is no longer a ~1.3 s
     # slice — it is the full lib suite, measured at 11 min 46 s real on the Mac
     # ⇒ ~13 min on the box (the ~1.12x Mac→box factor from PR #99's
     # vmcall-transport comparison). New quiet-hour sum ≈ 48 + 13 ≈ 61 min, and
@@ -79,7 +79,7 @@ jobs:
     # step slowdown a contended box showed on the midday dispatch 29251169490
     # (see the vmm-core job comment) without going red. Do NOT cut this back to
     # 120 without re-measuring — 120 was 2.5x the OLD 48-minute sum, and the
-    # conductor step did not exist in it.
+    # campaign-runner step did not exist in it.
     timeout-minutes: 155
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
@@ -142,7 +142,7 @@ jobs:
       # pointer with no FFI. Proptest cases are cut under cfg(miri).
       - name: miri — guest/play-agent (lib + agent + bin unit tests, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/play-agent/Cargo.toml --lib --test agent --bins
-      # conductor — the FULL lib suite, restored (task 104, hm-d4y). It replaces
+      # campaign-runner — the FULL lib suite, restored (task 104, hm-d4y). It replaces
       # the UNSAFE-ONLY slice PR #99 left here as an interim: the slice watched
       # the crate's one `unsafe` block (the task-78 CountingBackend `map_memory`
       # forward, src/mock.rs) at ~1.3 s, but the rest of the suite had NEVER
@@ -151,7 +151,7 @@ jobs:
       # an idle Mac, unbounded under box contention).
       #
       # Why it fits now. A per-test profile showed the tail is NOT the sha256/RAM
-      # shape vmm-core had (conductor's lib composes exactly one 16-KiB mock VM):
+      # shape vmm-core had (campaign-runner's lib composes exactly one 16-KiB mock VM):
       # it is the CAMPAIGN SEARCH LOOPS — the toy-machine benchmark/game campaigns
       # run 2048- and 64-branch budgets, and the interpreter charges ~0.4–4 s of
       # real time per branch. So the hm-d8o treatment lands on the budgets, all
@@ -182,7 +182,7 @@ jobs:
       # clock (~1.9x real here), so time the command externally, as the vmm-core
       # job's comment also records. The box is ~1.12x the Mac (PR #99's
       # vmcall-transport comparison), i.e. ~13 min quiet-hour, which is what this
-      # job's ceiling below is re-derived from. conductor stays the LAST step (PR
+      # job's ceiling below is re-derived from. campaign-runner stays the LAST step (PR
       # #99): it is still this job's longest pole, and a blowout here must not skip
       # the small crates above it.
       #
@@ -191,9 +191,9 @@ jobs:
       # exists for, and there are exactly two ways to do that: rename/ignore the
       # one test that drives the `unsafe` forward, or re-gate the tail this task
       # just un-gated. Both would be silently vacuous passes; both fail the step.
-      - name: miri — conductor (lib)
+      - name: miri — campaign-runner (lib)
         run: |
-          out=$(cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib 2>&1); rc=$?
+          out=$(cargo "+${PINNED_NIGHTLY}" miri test -p campaign-runner --lib 2>&1); rc=$?
           echo "$out"
           [ $rc -eq 0 ] || exit $rc
           echo "$out" | grep -q "test mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit \.\.\. ok" || {

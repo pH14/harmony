@@ -22,9 +22,9 @@ use std::collections::VecDeque;
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
 use crate::state::VcpuState;
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// A completion the VMM applied to a pending exit, recorded for test assertions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,7 +112,7 @@ pub struct MockBackend {
     counts: ExitCounts,
     state: VcpuState,
     regions: Vec<(Gpa, usize)>,
-    injected: Vec<Event>,
+    injected: Vec<Injection>,
     /// The single pending maskable-IRQ vector ([`Backend::set_pending_irq`]),
     /// overwritten each entry by the VMM's re-arbitration — mirroring the live
     /// backend's one-slot `pending_irq`.
@@ -218,7 +218,7 @@ impl MockBackend {
     }
 
     /// The events passed to `inject`, in order.
-    pub fn injected(&self) -> &[Event] {
+    pub fn injected(&self) -> &[Injection] {
         &self.injected
     }
 
@@ -381,7 +381,7 @@ impl Backend for MockBackend {
         Ok(self.deliver(exit))
     }
 
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit> {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = match self.next_scripted()? {
@@ -391,11 +391,11 @@ impl Backend for MockBackend {
         Ok(self.deliver(exit))
     }
 
-    fn inject(&mut self, event: Event) -> Result<()> {
+    fn inject(&mut self, event: Injection) -> Result<()> {
         self.injected.push(event);
         // Set the pending maskable vector (overwrite) for acceptance at the next
         // entry, mirroring the live backend. NMIs do not flow through this path.
-        if let Event::Interrupt { vector } = event {
+        if let Injection::Interrupt { vector } = event {
             self.pending_irq = Some(vector);
         }
         Ok(())
