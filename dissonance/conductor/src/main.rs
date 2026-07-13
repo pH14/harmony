@@ -95,8 +95,9 @@ struct BenchBoxArgs {
     #[arg(long)]
     seed: u64,
     /// Branch budget: the campaign logs to this many branches even after a find, so
-    /// measure 1 (discovery at equal budget) is comparable.
-    #[arg(long, default_value_t = 4096)]
+    /// measure 1 (discovery at equal budget) is comparable. Must be > 0 — a
+    /// zero-branch campaign is a measurement of nothing.
+    #[arg(long, default_value_t = 4096, value_parser = parse_positive_u64)]
     max_branches: u64,
     /// Replays to certify a find (bit-identical crash). Floored at the spec
     /// [`REPLAY_BAR`] (25) — the flag may raise it, never lower it.
@@ -105,8 +106,8 @@ struct BenchBoxArgs {
     /// V-time each branch runs past the sealed base before its deadline — far
     /// enough for the fault to land and the guest to react, but bounded so a
     /// non-triggering / hung branch cannot wedge the campaign. Scope it to the
-    /// workload's fault-sensitive loop, well under any real hang.
-    #[arg(long, default_value_t = 5_000_000_000)]
+    /// workload's fault-sensitive loop, well under any real hang. Must be > 0.
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
     /// Optional **box-calibrated** manifest JSON (a serialized `Benchmark` whose
     /// per-bug trigger params are the pinned real gpa / window-offset / prefix).
@@ -137,8 +138,8 @@ struct BenchBoxArgs {
     /// Signal-config explore period (every Nth step explores; the rest exploit). The
     /// PR#90 ablation sets `1` (explore-only). An **explicit, recorded** knob (lands
     /// in the CampaignLog) — no ambient env, so a same-seed result is self-describing
-    /// (PR#90 round-2 replaced the old `BENCH_EXPLORE_PERIOD` env read).
-    #[arg(long, default_value_t = 4)]
+    /// (PR#90 round-2 replaced the old `BENCH_EXPLORE_PERIOD` env read). Must be > 0.
+    #[arg(long, default_value_t = 4, value_parser = parse_positive_u64)]
     explore_period: u64,
     /// Bug-2 (`OrderingInterrupt`) mint fault-offset search width. Same recorded,
     /// no-env rule as `--explore-period` (replaced `BENCH_ORDER_RANGE`). Irrelevant
@@ -170,13 +171,15 @@ struct GameArgs {
     #[arg(long, default_value = "pure-random")]
     config: String,
     /// Branch budget (identical across configurations — task 84's ruling).
-    #[arg(long, default_value_t = 64)]
+    /// Must be > 0: a zero-branch campaign logs nothing, and the determinism
+    /// gate would find two empty logs identical (task 103 finding 1).
+    #[arg(long, default_value_t = 64, value_parser = parse_positive_u64)]
     max_branches: u64,
     /// The campaign stream seed; the whole campaign is a pure function of it.
     #[arg(long, default_value_t = 0x0086_5F5C_0770_0001)]
     campaign_seed: u64,
     /// SelectorV1 only: every Nth step explores fresh from the base.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 4, value_parser = parse_positive_u64)]
     explore_period: u64,
     /// Append the campaign's ExplorationLog (JSON array) here — the input
     /// `exploration-report` renders (task 86 gate 3).
@@ -201,17 +204,21 @@ struct GameBoxArgs {
     #[command(flatten)]
     game: GameArgs,
     /// V-time (ns) each rollout runs past the sealed base before its deadline
-    /// (the play-agent never exits on its own).
-    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_u64_flexible)]
+    /// (the play-agent never exits on its own). Must be > 0: a zero deadline is
+    /// already met at the base, so every rollout would hash the sealed base
+    /// itself and the determinism gate would compare it to itself (task 103
+    /// finding 1).
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
     /// V-time (ns) allowed for the agent to reach its `setup_complete`
-    /// snapshot point past the GAME_READY marker.
-    #[arg(long, default_value_t = 30_000_000_000, value_parser = parse_u64_flexible)]
+    /// snapshot point past the GAME_READY marker. Must be > 0 (a zero
+    /// allowance can never reach the snapshot point).
+    #[arg(long, default_value_t = 30_000_000_000, value_parser = parse_positive_u64)]
     setup_deadline_delta: u64,
     /// Rerun the identical campaign this many times (fresh boot each) and
     /// require bit-identical logs — the per-branch state_hash sequence gate is
     /// `--repeat 25`.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
     repeat: usize,
     /// Kernel bzImage filename under guest/build (or guest/linux).
     #[arg(long, default_value = "bzImage")]
@@ -264,7 +271,8 @@ const REPLAY_BAR: usize = 25;
 struct CampaignArgs {
     /// Branch budget: give up **loudly** if the planted bug is not found within
     /// this many branches (a no-find is a gate failure, never a silent pass).
-    #[arg(long, default_value_t = 4096)]
+    /// Must be > 0 — a campaign with no branches searches nothing.
+    #[arg(long, default_value_t = 4096, value_parser = parse_positive_u64)]
     max_branches: u64,
     /// Replays of the emitted reproducer to prove bit-identical reproduction.
     /// Floored at the spec's [`REPLAY_BAR`] (25) — the flag may raise the bar,
@@ -303,7 +311,8 @@ struct BoxArgs {
     #[command(flatten)]
     sweep: SweepArgs,
     /// V-time (ns) each branch runs past the snapshot before its deadline.
-    #[arg(long, default_value_t = 5_000_000_000)]
+    /// Must be > 0: a zero-V-time branch runs no workload past the base.
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
     /// Kernel bzImage filename under guest/build (or guest/linux).
     #[arg(long, default_value = "bzImage")]
@@ -334,8 +343,8 @@ struct CampaignBoxArgs {
     #[command(flatten)]
     campaign: CampaignArgs,
     /// V-time (ns) each branch runs past the base snapshot before its deadline —
-    /// far enough for the fault to land and the supervisor to react.
-    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_u64_flexible)]
+    /// far enough for the fault to land and the supervisor to react. Must be > 0.
+    #[arg(long, default_value_t = 5_000_000_000, value_parser = parse_positive_u64)]
     deadline_delta: u64,
     /// Lowest candidate guest-physical fault address (page-aligned). Accepts
     /// decimal or `0x`-hex (a gpa is naturally written in hex).
@@ -389,6 +398,35 @@ fn parse_u64_flexible(s: &str) -> Result<u64, String> {
         None => t.parse::<u64>(),
     };
     parsed.map_err(|e| format!("expected a u64 (decimal or 0x-hex), got {s:?}: {e}"))
+}
+
+/// The message every zero-budget rejection carries: what a gate over a
+/// no-work run would actually be worth.
+const ZERO_BUDGET: &str = "must be greater than 0 — a zero budget runs no workload, and a gate \
+                           over a run that did nothing can only pass vacuously";
+
+/// Parse a **budget** flag (task 103 finding 1a): a [`parse_u64_flexible`]
+/// value that must be positive. Zero is refused with a loud clap usage error,
+/// at parse time — before a box lease is spent, and long before a determinism
+/// gate can compare two runs that each did nothing (`--max-branches 0` compares
+/// empty state_hash sequences; `--deadline-delta 0` hashes the sealed base
+/// itself, twice).
+///
+/// This is the first of the two ends the finding asks for; the second is
+/// [`conductor::gamecampaign::determinism_verdict`]'s vacuity guard, which
+/// catches a hollow run that reaches the gate by some route this parser never
+/// saw.
+fn parse_positive_u64(s: &str) -> Result<u64, String> {
+    match parse_u64_flexible(s)? {
+        0 => Err(format!("{s:?} {ZERO_BUDGET}")),
+        n => Ok(n),
+    }
+}
+
+/// [`parse_positive_u64`] for the `usize`-typed budgets (`--repeat`).
+fn parse_positive_usize(s: &str) -> Result<usize, String> {
+    let n = parse_positive_u64(s)?;
+    usize::try_from(n).map_err(|_| format!("{s:?} does not fit in a usize on this host"))
 }
 
 /// Distinct, non-boot branch seeds (a multiplicative hash folded into a base) —
@@ -594,6 +632,18 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
     let mut machine = GameToyMachine::new();
     match run_game_campaign(&mut machine, &SpecEnvCodec, &cfg, config) {
         Ok(outcome) => {
+            // The same vacuity guard the box gate applies (task 103 finding
+            // 1b): a campaign that did no work must not be appended to a logs
+            // artifact either — the offline report would score a run that never
+            // happened.
+            if let Some(vacuity) = outcome.vacuity() {
+                eprintln!(
+                    "[conductor] game mock VACUOUS RUN — refusing to report it: {vacuity}\n\
+                     [conductor] evidence: {:?}",
+                    outcome.work
+                );
+                return ExitCode::FAILURE;
+            }
             print_game_artifacts(&outcome);
             finish_game(&outcome.log, args.logs_out.as_ref(), &manifest)
         }
@@ -1038,6 +1088,98 @@ mod tests {
             2 * benchmark::report::MIN_SEEDS as usize,
             "a drifting run must not contaminate the log array"
         );
+    }
+
+    // --- degenerate budgets (task 103 finding 1a) ---------------------------
+
+    /// The vacuous-pass fixtures from PR #93's round-9 pass, driven through the
+    /// REAL CLI grammar: each is an invocation the box driver would have
+    /// accepted and reported `DETERMINISM PASS` for, having done nothing. Every
+    /// one must now die at parse time — before a box lease is spent — with a
+    /// usage error, not an exit-0 gate.
+    #[test]
+    fn degenerate_budgets_are_refused_by_the_cli() {
+        let refused = |args: &[&str]| {
+            let err = Cli::try_parse_from(args)
+                .err()
+                .unwrap_or_else(|| panic!("{args:?} must be REFUSED, not accepted"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{args:?} must fail as a bad VALUE (a usage error), got {:?}",
+                err.kind()
+            );
+            assert!(
+                err.to_string().contains("greater than 0"),
+                "the error must say why: {err}"
+            );
+        };
+
+        // The two the finding names, on the path it names (the box game gate).
+        refused(&["conductor", "game", "box", "--max-branches", "0"]);
+        refused(&["conductor", "game", "box", "--deadline-delta", "0"]);
+        // …and the rest of that path's budget knobs, whose zero is just as hollow.
+        refused(&["conductor", "game", "box", "--setup-deadline-delta", "0"]);
+        refused(&["conductor", "game", "box", "--repeat", "0"]);
+        refused(&["conductor", "game", "box", "--explore-period", "0"]);
+        // The same budgets on every other campaign path (a zero budget is never
+        // a valid campaign, whichever gate is downstream of it).
+        refused(&["conductor", "game", "mock", "--max-branches", "0"]);
+        refused(&["conductor", "box", "--deadline-delta", "0"]);
+        refused(&["conductor", "campaign", "box", "--max-branches", "0"]);
+        refused(&["conductor", "campaign", "box", "--deadline-delta", "0"]);
+        refused(&["conductor", "campaign", "mock", "--max-branches", "0"]);
+        refused(&[
+            "conductor",
+            "bench-campaign",
+            "--bug",
+            "1",
+            "--config",
+            "signal",
+            "--seed",
+            "1",
+            "--out",
+            "/dev/null",
+            "--max-branches",
+            "0",
+        ]);
+        // Hex is a budget too: `0x0` is the same zero.
+        refused(&["conductor", "game", "box", "--deadline-delta", "0x0"]);
+
+        // The positive values these flags actually take still parse, in both
+        // radixes — the guard rejects zero, not the flag.
+        let cli = Cli::try_parse_from([
+            "conductor",
+            "game",
+            "box",
+            "--max-branches",
+            "32",
+            "--deadline-delta",
+            "0x77359400",
+            "--repeat",
+            "25",
+        ])
+        .expect("a real box gate invocation still parses");
+        match cli.mode {
+            Mode::Game(GameMode::Box(args)) => {
+                assert_eq!(args.game.max_branches, 32);
+                assert_eq!(args.deadline_delta, 2_000_000_000);
+                assert_eq!(args.repeat, 25);
+            }
+            _ => panic!("expected the game box mode"),
+        }
+    }
+
+    #[test]
+    fn parse_positive_u64_rejects_zero_in_either_radix() {
+        assert_eq!(parse_positive_u64("1"), Ok(1));
+        assert_eq!(parse_positive_u64("0x10"), Ok(16));
+        assert!(parse_positive_u64("0").is_err());
+        assert!(parse_positive_u64("0x0").is_err());
+        assert!(parse_positive_u64("0_0").is_err());
+        assert!(parse_positive_u64("garbage").is_err());
+        assert_eq!(parse_positive_usize("25"), Ok(25));
+        assert!(parse_positive_usize("0").is_err());
     }
 
     // --- parse_u64_flexible -------------------------------------------------

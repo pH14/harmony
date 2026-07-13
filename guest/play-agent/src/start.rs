@@ -33,9 +33,13 @@ pub struct StartScript {
     /// Frames released between presses (so repeated presses stay edges).
     pub release_frames: u32,
     /// Neutral frames run after gameplay is first observed (level load
-    /// settles; the state is re-verified after).
+    /// settles; the state is re-verified after). Spent from the **same**
+    /// [`max_frames`](Self::max_frames) budget as the press cadence.
     pub settle_frames: u32,
-    /// The loud-failure bound on the whole script.
+    /// The loud-failure bound on the whole script — presses **and** settle.
+    /// The script never runs a frame past it (task 103 finding 3): a settle
+    /// that cannot fit under the bound is a loud error, never a silent
+    /// overrun.
     pub max_frames: u32,
 }
 
@@ -68,8 +72,10 @@ pub struct StartReport {
 /// title screen would make the whole campaign vacuous.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StartError {
-    /// The cadence is unusable: zero press frames can never produce an edge,
-    /// and an overflowing `press + release` cycle would wrap.
+    /// The script is unusable as configured: zero press frames can never
+    /// produce an edge, an overflowing `press + release` cycle would wrap, and
+    /// a `max_frames` that cannot hold one observation frame plus the settle
+    /// can never succeed within its own bound.
     BadScript,
     /// The core could not expose its work RAM.
     WorkRamFailed,
@@ -79,6 +85,18 @@ pub enum StartError {
     NeverReachedGameplay {
         /// Frames run before giving up.
         frames: u32,
+    },
+    /// Gameplay was observed so late that settling it would run past
+    /// `max_frames` (task 103 finding 3). The bound covers the whole script,
+    /// so an overrun is a loud failure, not a few extra frames taken quietly:
+    /// the frames a rollout spends are the budget the box gate paid for.
+    SettleExceedsBudget {
+        /// The frame gameplay was first observed at.
+        observed_at: u32,
+        /// The settle the script still owed.
+        settle_frames: u32,
+        /// The bound it would have crossed.
+        max_frames: u32,
     },
     /// Gameplay was observed but did not survive the settle frames (a demo /
     /// transient state, not a real game start).
@@ -93,7 +111,18 @@ impl fmt::Display for StartError {
         match self {
             StartError::BadScript => write!(
                 f,
-                "start script needs press_frames >= 1 and a non-overflowing press+release cycle"
+                "start script needs press_frames >= 1, a non-overflowing press+release cycle, and \
+                 max_frames > settle_frames (the settle is spent from the same budget)"
+            ),
+            StartError::SettleExceedsBudget {
+                observed_at,
+                settle_frames,
+                max_frames,
+            } => write!(
+                f,
+                "gameplay reached at frame {observed_at}, but its {settle_frames}-frame settle \
+                 would run past the {max_frames}-frame bound — refusing to overrun the start \
+                 budget (raise max_frames, or fix whatever made the start this slow)"
             ),
             StartError::WorkRamFailed => write!(f, "core work RAM unavailable during start"),
             StartError::Ram(e) => write!(f, "work RAM decode failed during start: {e}"),
@@ -116,6 +145,12 @@ impl std::error::Error for StartError {}
 /// cadence, checking the console RAM every frame; on the first gameplay
 /// observation run the settle frames (neutral input) and re-verify. Draws no
 /// entropy — a pure function of the core's power-on state.
+///
+/// `max_frames` bounds the **whole** script, settle included (task 103
+/// finding 3): a script whose settle cannot fit under the bound is rejected
+/// before the first frame, and gameplay observed too late to settle inside it
+/// fails with [`StartError::SettleExceedsBudget`]. `frames` therefore never
+/// exceeds `max_frames` — it cannot overrun the bound and cannot overflow.
 pub fn run_start_script<C: Core>(
     core: &mut C,
     script: &StartScript,
@@ -129,6 +164,16 @@ pub fn run_start_script<C: Core>(
         .press_frames
         .checked_add(script.release_frames)
         .ok_or(StartError::BadScript)?;
+    // The cheapest possible success is one observation frame plus the settle;
+    // a budget that cannot hold even that can never succeed, so say so before
+    // burning a single frame rather than running to an overrun.
+    let least = script
+        .settle_frames
+        .checked_add(1)
+        .ok_or(StartError::BadScript)?;
+    if least > script.max_frames {
+        return Err(StartError::BadScript);
+    }
     let mut ram = [0u8; WORK_RAM_LEN];
     let mut frames = 0u32;
     while frames < script.max_frames {
@@ -141,6 +186,17 @@ pub fn run_start_script<C: Core>(
         frames += 1;
         let state = observe(core, &mut ram)?;
         if state.in_gameplay() {
+            // The settle is spent from the same budget. `frames <= max_frames`
+            // holds here (the loop only entered below the bound and added one),
+            // so this subtraction cannot wrap — and refusing when the settle
+            // does not fit keeps the whole script inside `max_frames`.
+            if script.settle_frames > script.max_frames - frames {
+                return Err(StartError::SettleExceedsBudget {
+                    observed_at: frames,
+                    settle_frames: script.settle_frames,
+                    max_frames: script.max_frames,
+                });
+            }
             for _ in 0..script.settle_frames {
                 core.run_frame(0);
                 frames += 1;
@@ -202,6 +258,10 @@ mod tests {
         let mut core = MockCore::new();
         let script = StartScript {
             max_frames: 2, // less than the mock's press+load latency
+            // The settle is spent from `max_frames` too, so a 2-frame budget
+            // only admits a 1-frame settle; the bound under test is the one
+            // gameplay is never reached within.
+            settle_frames: 1,
             ..StartScript::default()
         };
         assert!(matches!(
@@ -226,6 +286,74 @@ mod tests {
         let overflowing = StartScript {
             press_frames: 1,
             release_frames: u32::MAX,
+            ..StartScript::default()
+        };
+        assert!(matches!(
+            run_start_script(&mut core, &overflowing),
+            Err(StartError::BadScript)
+        ));
+    }
+
+    /// Task 103 finding 3: gameplay observed too late to settle inside
+    /// `max_frames` is a loud refusal — the settle must never run the script
+    /// past its own bound. Fixture: a budget that fits the presses and one
+    /// observation frame, but not the settle behind it.
+    #[test]
+    fn a_settle_that_would_overrun_the_budget_is_loud() {
+        let mut core = MockCore::new();
+        let script = StartScript {
+            settle_frames: 16,
+            // The mock reaches gameplay at frame 4; 4 + 16 = 20 > 17, so the
+            // settle cannot fit — but the script still passes the up-front
+            // "could this ever succeed?" check (17 >= 16 + 1).
+            max_frames: 17,
+            ..StartScript::default()
+        };
+        assert!(matches!(
+            run_start_script(&mut core, &script),
+            Err(StartError::SettleExceedsBudget {
+                observed_at: 4,
+                settle_frames: 16,
+                max_frames: 17,
+            })
+        ));
+        assert!(
+            core.frames_run() <= 17,
+            "the refused script must not have run a frame past its bound, ran {}",
+            core.frames_run()
+        );
+
+        // Widen the budget by the three frames the settle was short and the
+        // identical script succeeds — the bound is what refused it, nothing else.
+        let mut core = MockCore::new();
+        let ok = StartScript {
+            max_frames: 20,
+            ..script
+        };
+        let report = run_start_script(&mut core, &ok).expect("4 press frames + a 16-frame settle");
+        assert_eq!(report.frames_run, 20);
+    }
+
+    /// A budget that cannot hold one observation frame plus the settle can
+    /// never succeed: refuse it before running any frame at all, rather than
+    /// discovering it mid-settle.
+    #[test]
+    fn a_budget_that_cannot_hold_the_settle_is_rejected_up_front() {
+        let mut core = MockCore::new();
+        let script = StartScript {
+            settle_frames: 16,
+            max_frames: 16, // needs 17: the observation frame + the settle
+            ..StartScript::default()
+        };
+        assert!(matches!(
+            run_start_script(&mut core, &script),
+            Err(StartError::BadScript)
+        ));
+        assert_eq!(core.frames_run(), 0, "rejected before the first frame");
+
+        // The overflow edge of the same check: settle_frames + 1 wraps.
+        let overflowing = StartScript {
+            settle_frames: u32::MAX,
             ..StartScript::default()
         };
         assert!(matches!(

@@ -371,6 +371,9 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // play-agent ⇒ loud failure, never a sealed dead base.
         require_snapshot_point: true,
         trace_dir: args.game.trace_out.clone(),
+        // The billboard-range bound (task 103 finding 2), from the RAM this
+        // composition root actually boots the guest with.
+        guest_ram_len: GUEST_RAM_LEN as u64,
     };
     let repeat = args.repeat.max(1);
     let mut first: Option<conductor::gamecampaign::GameCampaignOutcome> = None;
@@ -478,18 +481,29 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         }
     }
     let outcome = first.expect("repeat >= 1 always produces a first outcome");
-    // The determinism GATE is 25/25 (task 86 gate 2) — never print PASS below
-    // the floor (round-8 P1): a smaller --repeat is a smoke, said so loudly.
-    if repeat >= DETERMINISM_BAR {
-        println!(
-            "[conductor] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
-             state_hash sequences (gate floor {DETERMINISM_BAR})."
-        );
-    } else if repeat > 1 {
-        println!(
-            "[conductor] game box determinism smoke: {repeat}/{repeat} identical — BELOW the \
-             {DETERMINISM_BAR}-run gate floor, NOT the task-86 determinism gate."
-        );
+    // The gate's verdict — the 25/25 floor (round-8 P1) AND the vacuity guard
+    // (task 103 finding 1b): bit-identical repetitions of a campaign that did
+    // no work are still bit-identical, so identity is never enough. A run with
+    // no branches / no V-time / no frames fails here, before any banner, no
+    // matter which flags produced it.
+    let verdict = match conductor::gamecampaign::determinism_verdict(&outcome, repeat) {
+        Ok(v) => v,
+        Err(vacuity) => {
+            eprintln!(
+                "[conductor] game box VACUOUS RUN — refusing the determinism gate: {vacuity}\n\
+                 [conductor] evidence: {:?}",
+                outcome.work
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "[conductor] game box work evidence: {} branches, weakest rollout {} ns of V-time / {} \
+         frames.",
+        outcome.work.branches, outcome.work.min_vtime_span, outcome.work.min_frames
+    );
+    if let Some(banner) = verdict.banner() {
+        println!("{banner}");
     }
     print_game_artifacts(&outcome);
     let manifest = benchmark::GameManifest::smb(
@@ -499,9 +513,6 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
     );
     finish_game(&outcome.log, args.game.logs_out.as_ref(), &manifest)
 }
-
-/// The task-86 gate-2 determinism floor: 25 bit-identical repetitions.
-const DETERMINISM_BAR: usize = 25;
 
 pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let (mut server, boot_us, _serial) =
