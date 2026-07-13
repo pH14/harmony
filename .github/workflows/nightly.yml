@@ -12,11 +12,52 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # vmm-core is the long pole (Miri interprets serially, so its wall time is the
+  # SUM of its per-test costs — a full run is tens of minutes even after the
+  # task-98/hm-d8o tail shrink), so it gets its OWN job and its own measured
+  # budget instead of sharing the other crates' ceiling. With a second runner
+  # slot the two jobs run in parallel; on a single-slot runner they serialize —
+  # either way each command must fit ITS OWN checked-in timeout.
+  #
+  # vmm-core's UB surface is the two `Backend::map_memory` pointer seams in
+  # `bringup`, and BOTH are exercised by a running Miri test:
+  #   - boot path: `compose`/`compose_linux` over owned `GuestRam` —
+  #     `bringup::tests::compose_drives_guestram_and_unsafe_map_memory` (and every
+  #     mock boot).
+  #   - restore path (task 95 M2.2): `compose_restore_target` maps a
+  #     `snapshot_store::Mapping` moved into the returned `Vmm` — a different
+  #     ownership/lifetime obligation, covered by
+  #     `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping`,
+  #     which drives the same seam over the 4-KiB-aligned `Mapping::anonymous`
+  #     buffer through a pointer-retaining backend double (the retained raw
+  #     pointer is read AFTER the move, so Miri checks the liveness obligation).
+  # Task 98: the `ControlServer` restore-driving tests (`Branch`/`Replay`/
+  # `engine.materialize()`) are `#[cfg_attr(miri, ignore)]`d — they hit
+  # `snapshot-store`'s tempfile+mmap, which Miri can't execute; their rationale
+  # strings cite the dedicated restore-target test above. Job-level
+  # `-Zmiri-permissive-provenance` only — no disable-isolation.
+  # See consonance/vmm-core/IMPLEMENTATION.md (task 98).
+  miri-vmm-core:
+    name: miri — vmm-core (UB safety net, own job)
+    runs-on: self-hosted
+    timeout-minutes: 75
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+      MIRIFLAGS: -Zmiri-permissive-provenance
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned nightly + miri
+        run: |
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - name: miri — vmm-core
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
+
   miri:
     name: miri (unsafe crates, UB safety net)
     runs-on: self-hosted
-    # Generous ceiling: Miri interprets everything, and vmm-core has grown — the
-    # per-PR job was getting SIGKILLed (137) mid-run. Nightly has no PR contention.
+    # Generous ceiling: Miri interprets everything. vmm-core — the crate that
+    # outgrew this ceiling — runs in its own job above; the remaining steps'
+    # longest measured pole is vmcall-transport (~13 min on the box).
     timeout-minutes: 90
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
@@ -32,19 +73,6 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmcall-transport
       - name: miri — vm-state
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
-      # vmm-core's UB is the `Backend::map_memory` pointer seam through
-      # `bringup::compose*`, exercised under Miri on every VM boot (e.g.
-      # `compose_drives_guestram_and_unsafe_map_memory`, the `hello`/`server` boot
-      # tests). Task 98: the `ControlServer` restore-driving tests (`Branch`/`Replay`/
-      # `engine.materialize()`) are `#[cfg_attr(miri, ignore)]`d — they hit
-      # `snapshot-store`'s tempfile+mmap, which Miri can't execute, and a restore
-      # interprets 50–120× slower than a boot (measured), so running ~37 of them would
-      # blow this job's shared ceiling. A restore composes the fresh VM through the
-      # SAME `compose*` map_memory seam a boot does, so gating drops no unique UB
-      # surface. Job-level `-Zmiri-permissive-provenance` only — no disable-isolation.
-      # See consonance/vmm-core/IMPLEMENTATION.md (task 98).
-      - name: miri — vmm-core
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-core
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
       # conductor's unsafe is the mock composition's `map_memory` forward

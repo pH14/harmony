@@ -17,8 +17,8 @@ use memmap2::{MmapMut, MmapOptions};
 /// is reclaimed by the OS when the `Mapping` drops.
 ///
 /// [`Store::materialize`](crate::Store::materialize) always produces the mmap backing.
-/// The [`Mapping::anonymous`] seam produces the same *interface* over a plain heap
-/// buffer, so code that takes a `Mapping` — including `unsafe` code that maps its
+/// The [`Mapping::anonymous`] seam produces the same *interface* over a 4-KiB-aligned
+/// heap buffer, so code that takes a `Mapping` — including `unsafe` code that maps its
 /// [`as_mut_slice`](Mapping::as_mut_slice) as memory — stays exercisable under the Miri
 /// interpreter, which cannot execute `mmap`.
 pub struct Mapping {
@@ -36,14 +36,23 @@ enum Backing {
         /// explicit and the SAFETY argument below local.
         _file: File,
     },
-    /// A test/Miri seam: a plain heap buffer — no `mmap`, no tempfile. Same observable
-    /// bytes and interface as `Mapped`; built only by [`Mapping::anonymous`]. Its base
-    /// is heap- (not page-) aligned, which is fine for its only use: driving a
-    /// **mock** backend that records the region rather than a real
-    /// `KVM_SET_USER_MEMORY_REGION` (that page-alignment requirement lives on the
-    /// `mmap` path).
-    Anonymous(Vec<u8>),
+    /// A test/Miri seam: a heap buffer of 4-KiB-aligned pages — no `mmap`, no
+    /// tempfile. Same observable bytes and interface as `Mapped`; built only by
+    /// [`Mapping::anonymous`]. The base address is 4-KiB-aligned like the `mmap`
+    /// backing, because consumers hand the buffer to `Backend::map_memory`, whose
+    /// contract requires a page-aligned host address — the seam must satisfy the
+    /// same contract it exists to let Miri check. `len` is the exposed byte length
+    /// (the allocation is whole pages, rounded up).
+    Anonymous { pages: Vec<AlignedPage>, len: usize },
 }
+
+/// One 4-KiB-aligned, 4-KiB-sized page of [`Backing::Anonymous`] storage. A
+/// `Vec<AlignedPage>`'s buffer starts at a 4-KiB-aligned address (`Vec` allocates at
+/// the element's alignment) and is one contiguous run of initialized bytes with no
+/// padding (`size == align == 4096`), so it can be viewed as `&[u8]`.
+#[repr(C, align(4096))]
+#[derive(Clone)]
+struct AlignedPage([u8; crate::PAGE_SIZE]);
 
 impl Mapping {
     /// Write `pages` (`(gfn, PAGE_SIZE bytes)`) into `file` through a single write
@@ -114,19 +123,23 @@ impl Mapping {
         })
     }
 
-    /// A `len`-byte, zero-filled mapping backed by a **plain heap buffer** instead of a
-    /// tempfile `mmap` — the Miri-executable seam behind `Store::materialize`'s
-    /// interface.
+    /// A `len`-byte, zero-filled mapping backed by a **4-KiB-aligned heap buffer**
+    /// instead of a tempfile `mmap` — the Miri-executable seam behind
+    /// `Store::materialize`'s interface.
     ///
     /// Byte-observably identical to a freshly materialized all-zero image, but with no
     /// `mmap`/tempfile, so a consumer that takes a `Mapping` (and the `unsafe` pointer
     /// handling it performs on [`as_mut_slice`](Mapping::as_mut_slice) — e.g. mapping the
-    /// buffer as a mock backend's guest RAM) can be driven under the Miri interpreter,
-    /// which cannot execute `mmap`. Intended for tests / the UB safety net; production
+    /// buffer as guest RAM via `Backend::map_memory`) can be driven under the Miri
+    /// interpreter, which cannot execute `mmap`. The base address is 4-KiB-aligned —
+    /// `map_memory`'s contract requires a page-aligned host address, and this seam
+    /// must satisfy the same contract the production `mmap` backing does (a plain
+    /// `Vec<u8>` would not). Intended for tests / the UB safety net; production
     /// restores always go through `Store::materialize`. Fill via `as_mut_slice`.
     pub fn anonymous(len: usize) -> Mapping {
+        let pages = vec![AlignedPage([0u8; crate::PAGE_SIZE]); len.div_ceil(crate::PAGE_SIZE)];
         Mapping {
-            backing: Backing::Anonymous(vec![0u8; len]),
+            backing: Backing::Anonymous { pages, len },
         }
     }
 
@@ -134,7 +147,14 @@ impl Mapping {
     pub fn as_slice(&self) -> &[u8] {
         match &self.backing {
             Backing::Mapped { map, .. } => map.as_deref().unwrap_or(&[]),
-            Backing::Anonymous(buf) => buf,
+            // SAFETY: `pages` is one contiguous Vec allocation of
+            // `pages.len() * PAGE_SIZE` initialized bytes (`AlignedPage` is a
+            // `repr(C)` byte array with `size == align`, so no padding), and
+            // `len <= pages.len() * PAGE_SIZE` by construction in `anonymous`.
+            // The borrow is tied to `&self`, matching the Vec's own.
+            Backing::Anonymous { pages, len } => unsafe {
+                std::slice::from_raw_parts(pages.as_ptr().cast::<u8>(), *len)
+            },
         }
     }
 
@@ -142,7 +162,11 @@ impl Mapping {
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         match &mut self.backing {
             Backing::Mapped { map, .. } => map.as_deref_mut().unwrap_or(&mut []),
-            Backing::Anonymous(buf) => buf,
+            // SAFETY: as in `as_slice`, plus uniqueness: the borrow derives from
+            // `&mut self`, so no other reference into `pages` is live.
+            Backing::Anonymous { pages, len } => unsafe {
+                std::slice::from_raw_parts_mut(pages.as_mut_ptr().cast::<u8>(), *len)
+            },
         }
     }
 
@@ -150,7 +174,7 @@ impl Mapping {
     pub fn len(&self) -> usize {
         match &self.backing {
             Backing::Mapped { map, .. } => map.as_ref().map_or(0, |m| m.len()),
-            Backing::Anonymous(buf) => buf.len(),
+            Backing::Anonymous { len, .. } => *len,
         }
     }
 
@@ -183,6 +207,29 @@ mod anon_tests {
         let m = Mapping::anonymous(0);
         assert!(m.is_empty());
         assert_eq!(m.as_slice(), &[] as &[u8]);
+    }
+
+    /// `Backend::map_memory` requires a **4-KiB-aligned host base address** (KVM
+    /// rejects an unaligned userspace address with `EINVAL`). The anonymous seam
+    /// exists to stand in for the (page-aligned) `mmap` backing under Miri, so it
+    /// must honor the same contract — a plain `Vec<u8>` would not (PR #99 round 2).
+    #[test]
+    fn anonymous_base_is_4kib_aligned() {
+        let m = Mapping::anonymous(3 * PAGE_SIZE);
+        assert_eq!(
+            m.as_slice().as_ptr() as usize % PAGE_SIZE,
+            0,
+            "anonymous backing must start at a page-aligned address"
+        );
+    }
+
+    /// The exposed length is exactly what was asked for, even when the page-granular
+    /// allocation rounds up internally.
+    #[test]
+    fn anonymous_len_is_exact_not_page_rounded() {
+        let m = Mapping::anonymous(PAGE_SIZE + 10);
+        assert_eq!(m.len(), PAGE_SIZE + 10);
+        assert_eq!(m.as_slice().len(), PAGE_SIZE + 10);
     }
 }
 

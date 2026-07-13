@@ -4127,6 +4127,15 @@ fn encode_events(v: &mut Vec<u8>, raw: &vmm_backend::VcpuEvents) {
 mod tests {
     use super::*;
 
+    /// Guest RAM for the snapshot/save/restore-shaped tests: 128 KiB natively,
+    /// 64 KiB under Miri — the smallest size covering the doorbell protocol pages
+    /// (`REQ_GPA` `0xE000` / reply `0xF000`, production constants). These tests'
+    /// dominant interpreted cost is the sha256 `state_hash` over the `MEM` chunk
+    /// (plus full-image copies), which scales with this size, so halving it under
+    /// `cfg(miri)` halves the vmm-core Miri job's long tail (task 98 / hm-d8o).
+    /// Native runs are byte-for-byte unchanged.
+    const TEST_RAM: usize = if cfg!(miri) { 0x1_0000 } else { 0x2_0000 };
+
     #[test]
     fn msr_dir_renders_direction_and_exit_reason() {
         assert_eq!(MsrDir::Read.dir(), "RDMSR");
@@ -4188,7 +4197,7 @@ mod tests {
     fn harvest_unions_backend_log_with_host_writes_and_drains() {
         let mut m = configured_mock(vec![]);
         m.push_dirty_gfns(vec![5, 3, 5]); // scripted guest writes, unsorted + dup
-        let mut vmm = Vmm::new(m, GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         // An 8-byte upset straddling the page-6/page-7 boundary: both gfns count.
         vmm.apply_host_fault(&environment::HostFault::CorruptMemory {
             gpa: 7 * 4096 - 4,
@@ -4207,7 +4216,7 @@ mod tests {
     fn doorbell_response_write_is_harvested_as_host_dirty() {
         let mut m = configured_mock(vec![]);
         m.enable_dirty_tracking();
-        let mut vmm = Vmm::new(m, GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
         vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
         // RESP_GPA = 0xF000 → gfn 15.
         assert_eq!(
@@ -4222,8 +4231,8 @@ mod tests {
     fn wholesale_host_write_poisons_the_harvest_until_reset() {
         let mut m = configured_mock(vec![]);
         m.enable_dirty_tracking();
-        let mut vmm = Vmm::new(m, GuestRam::new(0x2_0000).unwrap());
-        vmm.restore_guest_memory(&vec![7u8; 0x2_0000]).unwrap();
+        let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
+        vmm.restore_guest_memory(&vec![7u8; TEST_RAM]).unwrap();
         assert_eq!(vmm.harvest_dirty_gfns(), None, "untrackable ⇒ no dirty set");
         assert!(vmm.reset_dirty_tracking(), "re-arm at the new baseline");
         assert_eq!(vmm.harvest_dirty_gfns(), Some(vec![]));
@@ -4233,7 +4242,7 @@ mod tests {
     /// the window never arms — the caller full-scans forever, never corrupts.
     #[test]
     fn harvest_declines_without_backend_tracking() {
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.write_doorbell_response(&[1]).unwrap();
         assert_eq!(vmm.harvest_dirty_gfns(), None);
         assert!(!vmm.reset_dirty_tracking());
@@ -4275,7 +4284,7 @@ mod tests {
     fn doorbell_services_events_buggify_and_surfaces_stops() {
         use environment::{Answer, EnvSpec, Fault, FaultPolicy};
 
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         // Point 50 always fires; the seeded base answers everything else.
         let mut policy = FaultPolicy::none();
         policy.set_buggify_point(50, 1, 1).unwrap();
@@ -4384,7 +4393,7 @@ mod tests {
         // First run: the doorbell answers the flow and records it at Moment 0. The
         // net decision draws from the SHARED SDK stream (the single-stream ruling),
         // so the SDK channel is wired with the same reproducer + policy.
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(spec.materialize(), spec.policy());
         vmm.enable_net();
         let (status, ans) = ask_flow(&mut vmm, 1, 2, 42);
@@ -4398,7 +4407,7 @@ mod tests {
 
         // Replay: a fresh VM materialized from the SAME reproducer reproduces the
         // identical answer at the identical Moment — bit-identical decision.
-        let mut replay = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut replay = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         replay.enable_sdk(spec.materialize(), spec.policy());
         replay.enable_net();
         let (rstatus, rans) = ask_flow(&mut replay, 1, 2, 42);
@@ -4411,7 +4420,7 @@ mod tests {
     /// closed with a clean status — never a hang or a phantom decision.
     #[test]
     fn net_doorbell_rejects_malformed_requests() {
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         // A malformed request is rejected before any decide, so no shared stream is
         // needed — enable Net alone (the doorbell is serviced when net is wired).
         vmm.enable_net();
@@ -4453,7 +4462,7 @@ mod tests {
         let spec = EnvSpec::Seeded { seed: 9, policy };
 
         // SDK wired, Net NOT wired.
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(spec.materialize(), spec.policy());
 
         // Ring net_decide → UnknownService (the doorbell is serviced because SDK is
@@ -4475,7 +4484,7 @@ mod tests {
         // The rejected net_decide left the shared stream untouched: buggify draws the
         // stream's FIRST word, exactly as on a VM that never rang net_decide.
         let fired = vmm.decide_buggify(1, 1);
-        let mut fresh = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut fresh = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         fresh.enable_sdk(spec.materialize(), spec.policy());
         assert_eq!(
             fired,
@@ -4558,7 +4567,7 @@ mod tests {
             (hdr.status, step == Step::SdkStop, vmm.sdk_events().len())
         }
         let mk = || {
-            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             v.enable_sdk(
                 EnvSpec::Seeded {
                     seed: 1,
@@ -4599,7 +4608,7 @@ mod tests {
     /// default-deny contract violation (every non-SDK path is unchanged).
     #[test]
     fn doorbell_without_sdk_is_a_contract_violation() {
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         assert!(matches!(
             vmm.dispatch_out(DOORBELL_PORT, 4, 24),
             Err(VmmError::ContractViolation(_))
@@ -4614,7 +4623,7 @@ mod tests {
     #[test]
     fn doorbell_unknown_service_returns_an_unknown_service_frame() {
         use environment::{EnvSpec, FaultPolicy};
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(
             EnvSpec::Seeded {
                 seed: 1,
@@ -4657,7 +4666,7 @@ mod tests {
     #[test]
     fn doorbell_rejects_a_non_request_frame() {
         use environment::{EnvSpec, FaultPolicy};
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(
             EnvSpec::Seeded {
                 seed: 1,
@@ -4704,7 +4713,7 @@ mod tests {
     #[test]
     fn doorbell_bad_entropy_opcode_is_unknown_opcode() {
         use environment::{EnvSpec, FaultPolicy};
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(
             EnvSpec::Seeded {
                 seed: 1,
@@ -4748,7 +4757,7 @@ mod tests {
         // Dispatch a base valid Event(op1) request after `mutate`, returning the
         // decoded response header. Fresh VM per case (dispatch mutates state).
         fn dispatch_header(mutate: impl FnOnce(&mut [u8])) -> hypercall_proto::FrameHeader {
-            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             vmm.enable_sdk(
                 EnvSpec::Seeded {
                     seed: 1,
@@ -4846,7 +4855,7 @@ mod tests {
             policy: FaultPolicy::none(),
         };
         let mk = || {
-            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             v.enable_sdk(spec.materialize(), spec.policy());
             v
         };
@@ -4908,7 +4917,7 @@ mod tests {
                 },
                 Exit::Hlt,
             ]),
-            GuestRam::new(0x2_0000).unwrap(),
+            GuestRam::new(TEST_RAM).unwrap(),
         );
         vmm.enable_sdk(
             EnvSpec::Seeded {
@@ -4964,7 +4973,7 @@ mod tests {
             write: Some(n as u32),
         }]);
         mock.set_state(stop_state.clone());
-        let mut vmm = Vmm::new(mock, GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(mock, GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(
             EnvSpec::Seeded {
                 seed: 1,
@@ -5008,7 +5017,7 @@ mod tests {
         let spec = EnvSpec::Seeded { seed: 7, policy };
 
         let build = || {
-            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             v.wire_vtime(
                 VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(0)), 9)
                     .unwrap(),
@@ -5055,7 +5064,7 @@ mod tests {
     #[test]
     fn doorbell_is_total_on_edge_requests() {
         use environment::{EnvSpec, FaultPolicy};
-        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(
             EnvSpec::Seeded {
                 seed: 1,
@@ -5126,7 +5135,7 @@ mod tests {
         use environment::{EnvSpec, FaultPolicy};
         // A V-time-wired VM with RAM large enough for the doorbell pages (0xE000).
         let mk = |script: Vec<Exit>| {
-            let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(0x2_0000).unwrap());
+            let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(TEST_RAM).unwrap());
             vmm.wire_vtime(
                 VtimeWiring::new(
                     contract_vclock_config(),
@@ -5211,7 +5220,7 @@ mod tests {
         let mk = || {
             let mut vmm = Vmm::new(
                 configured_mock(vec![Exit::Hlt]),
-                GuestRam::new(0x2_0000).unwrap(),
+                GuestRam::new(TEST_RAM).unwrap(),
             );
             vmm.wire_vtime(
                 VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(1)), 99)
@@ -5268,7 +5277,7 @@ mod tests {
         policy.set_buggify_point(1, 1, 2).unwrap();
         let spec = EnvSpec::Seeded { seed: 7, policy };
 
-        let mut base = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut base = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         base.enable_sdk(spec.materialize(), spec.policy());
         for i in 0..5 {
             let _ = base.decide_buggify(i, 1);
@@ -5282,7 +5291,7 @@ mod tests {
         let expected = cont(&mut base);
 
         // A fresh channel RESTORED to the snapshot reproduces the continuation.
-        let mut fork = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut fork = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         fork.enable_sdk(spec.materialize(), spec.policy());
         fork.sdk_restore(&snap);
         assert_eq!(
@@ -5292,7 +5301,7 @@ mod tests {
         );
 
         // A fresh channel WITHOUT restore (the old bug) diverges.
-        let mut broken = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut broken = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         broken.enable_sdk(spec.materialize(), spec.policy());
         assert_ne!(
             cont(&mut broken),
@@ -5327,7 +5336,7 @@ mod tests {
 
         // Wire BOTH channels — a net decision draws from the shared SDK stream.
         let wire = |spec: &EnvSpec| -> Vmm<MockBackend> {
-            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             v.enable_sdk(spec.materialize(), spec.policy());
             v.enable_net();
             v
@@ -5429,7 +5438,7 @@ mod tests {
         // The VMM: net_decide then decide_buggify share ONE stream, so the buggify
         // answer matches the canonical net-then-buggify reference (the net draw
         // shifted the stream) and NOT the buggify-first reference.
-        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         v.enable_sdk(spec.materialize(), spec.policy());
         v.enable_net();
         let net_bytes = v.decide_net(0, 1, 2, 7, 0);
@@ -5461,7 +5470,7 @@ mod tests {
         let mut policy = FaultPolicy::none();
         policy.set_buggify_point(1, 1, 2).unwrap();
         let spec = EnvSpec::Seeded { seed: 7, policy };
-        let mk = || Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+        let mk = || Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
 
         // Same seed + same stream position ⇒ equal hash; a diverged buggify draw
         // sequence ⇒ DIFFERENT hash (the SDK divergence is IN the determinism hash).
@@ -5505,7 +5514,7 @@ mod tests {
     fn state_hash_folds_the_active_buggify_policy() {
         use environment::{EnvSpec, FaultPolicy};
         let mk = |policy: FaultPolicy| {
-            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2_0000).unwrap());
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
             let spec = EnvSpec::Seeded { seed: 7, policy };
             vmm.enable_sdk(spec.materialize(), spec.policy());
             vmm

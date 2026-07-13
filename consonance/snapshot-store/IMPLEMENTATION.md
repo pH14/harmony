@@ -323,3 +323,36 @@ unchanged. Re-verified on the current tree across the **whole** file:
 `+=`→`*=` — the inherent self-parented-layer infinite loop, bounded to
 cargo-mutants' ≈20 s scoped minimum (never the full-tree 372 s), as documented
 above. No production logic changed.
+
+## Task 98 — `Mapping::anonymous`, the Miri-executable backing seam (PR #99)
+
+`Store::materialize` always produces the production backing: a copy-on-write
+`mmap` over a sparse tempfile — real syscalls Miri cannot execute. vmm-core's
+remap-restore path (`bringup::compose_restore_target`, task 95 M2.2) performs its
+own `unsafe` `Backend::map_memory` over a `Mapping`'s buffer, and that seam must
+stay Miri-exercisable (the vmm-core nightly Miri gate, bead `hm-4yj`).
+`Mapping::anonymous(len)` provides the same `Mapping` interface over an anonymous
+heap buffer:
+
+- **4-KiB-aligned base** (PR #99 round 2): the backing is a `Vec<AlignedPage>`
+  (`#[repr(C, align(4096))]` 4-KiB pages), because `map_memory`'s contract (c)
+  requires a page-aligned host address — the seam must satisfy the same contract
+  the `mmap` backing does, and a plain `Vec<u8>` gives no such guarantee.
+  `as_slice`/`as_mut_slice` view the page vec as bytes (this module's granted
+  `unsafe`; sound because `AlignedPage` is a `repr(C)` byte array with
+  `size == align == 4096`, so the Vec is one contiguous padding-free run of
+  initialized bytes).
+- The exposed `len` is exact; the allocation rounds up to whole pages.
+- Zero-filled — byte-observably identical to a freshly materialized all-zero
+  image. Fill via `as_mut_slice`.
+- Production restores always go through `Store::materialize`; `anonymous` is for
+  tests / the UB safety net. Its consumer is vmm-core's
+  `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping`,
+  which reads the mapped buffer back through a retained raw pointer after the
+  `Mapping` moves into the `Vmm`.
+
+Tests (`mapping::anon_tests`, all Miri-run): zero-fill + write visibility,
+zero-length, **base alignment** (pins the contract the round-2 review caught),
+exact-length. Public API: `Mapping::anonymous` added to `tests/public-api.txt`
+(intentional, regenerated with `UPDATE_PUBLIC_API=1 cargo test -p snapshot-store
+--test public_api`).

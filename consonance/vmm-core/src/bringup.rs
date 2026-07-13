@@ -472,10 +472,116 @@ mod tests {
     //! like `vmm-backend`'s region seam) and on the Linux box. [`boot`]'s host-gate
     //! wiring is covered separately.
 
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use vmm_backend::{Exit, MockBackend};
 
     use super::*;
     use crate::vmm::TerminalReason;
+
+    /// A `Backend` double that **retains the raw `map_memory` pointer** — as the
+    /// real KVM backend does (`KVM_SET_USER_MEMORY_REGION` keeps the userspace
+    /// address and the guest writes through it on every later `run`) — where
+    /// `MockBackend` only records `(gpa, len)` and drops the pointer. The retained
+    /// pointer is shared out through an `Rc` so the test can dereference it *after*
+    /// the mapping has moved into the returned [`Vmm`]: under Miri that read fails
+    /// if the backing died or moved, instead of the test asserting liveness through
+    /// the `Vmm`'s own (safe, trivially valid) view. Everything else delegates to
+    /// the inner `MockBackend`.
+    struct PtrRetainingBackend {
+        inner: MockBackend,
+        /// `(base, len)` of the region handed to `map_memory`, once mapped.
+        mapped: RetainedRegion,
+    }
+
+    /// The `(base, len)` a [`PtrRetainingBackend`] retains from `map_memory`,
+    /// shared with the test that dereferences it after the mapping's move.
+    type RetainedRegion = Rc<Cell<Option<(*mut u8, usize)>>>;
+
+    impl PtrRetainingBackend {
+        fn new() -> (Self, RetainedRegion) {
+            let mapped = Rc::new(Cell::new(None));
+            (
+                Self {
+                    inner: MockBackend::new(),
+                    mapped: Rc::clone(&mapped),
+                },
+                mapped,
+            )
+        }
+    }
+
+    impl Backend for PtrRetainingBackend {
+        fn set_cpuid(&mut self, model: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
+            self.inner.set_cpuid(model)
+        }
+        fn set_msr_filter(&mut self, filter: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
+            self.inner.set_msr_filter(filter)
+        }
+        unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
+            // SAFETY: forwarded under the caller's own `map_memory` contract.
+            let res = unsafe { self.inner.map_memory(gpa, host) };
+            // Retain the pointer AFTER the delegate call: the reborrow of `host`
+            // into `inner.map_memory` would invalidate (Stacked Borrows) a raw
+            // pointer taken before it — Miri caught exactly that in an earlier
+            // version of this double. Deriving it here, the raw stays a live child
+            // of the caller's borrow, which is what a real backend retains.
+            self.mapped.set(Some((host.as_mut_ptr(), host.len())));
+            res
+        }
+        fn run(&mut self) -> vmm_backend::Result<Exit> {
+            self.inner.run()
+        }
+        fn run_until(&mut self, deadline: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+            self.inner.run_until(deadline)
+        }
+        fn inject(&mut self, event: vmm_backend::Event) -> vmm_backend::Result<()> {
+            self.inner.inject(event)
+        }
+        fn set_pending_irq(&mut self, vector: Option<u8>) -> vmm_backend::Result<()> {
+            self.inner.set_pending_irq(vector)
+        }
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.inner.take_accepted_interrupt()
+        }
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_read(value)
+        }
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_fault()
+        }
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.inner.complete_ok()
+        }
+        fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
+            self.inner.complete_hypercall(rax)
+        }
+        fn complete_cpuid(
+            &mut self,
+            eax: u32,
+            ebx: u32,
+            ecx: u32,
+            edx: u32,
+        ) -> vmm_backend::Result<()> {
+            self.inner.complete_cpuid(eax, ebx, ecx, edx)
+        }
+        fn save(&self) -> vmm_backend::Result<VcpuState> {
+            self.inner.save()
+        }
+        fn restore(&mut self, state: &VcpuState) -> vmm_backend::Result<()> {
+            self.inner.restore(state)
+        }
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.inner.exit_counts()
+        }
+        fn reset_exit_counts(&mut self) {
+            self.inner.reset_exit_counts()
+        }
+        fn capabilities(&self) -> vmm_backend::Capabilities {
+            self.inner.capabilities()
+        }
+    }
 
     /// Task 95 M2.2: [`compose_restore_target`] maps the materialized snapshot
     /// AS the guest RAM — the marker page reads through, no loader ran (the
@@ -505,26 +611,61 @@ mod tests {
         assert!(mem[..4096].iter().all(|&b| b == 0), "no loader ever ran");
     }
 
-    /// The **Miri arm** of the test above (round-1 review, blocking item 1).
-    /// `compose_restore_target` has its OWN `unsafe` `map_memory` — mapping a
-    /// [`snapshot_store::Mapping`]'s buffer as guest RAM, a different backing
-    /// *lifetime* than `compose()`'s owned [`GuestRam`] (the mapping is moved into the
-    /// returned `Vmm` and must stay valid there). `Store::materialize`'s real `mmap`
-    /// can't run under Miri, so drive the identical seam over the mmap-free
-    /// [`snapshot_store::Mapping::anonymous`] buffer: Miri checks the `&mut [u8]`
-    /// handed to `map_memory`, and — because the mapping is then moved into the `Vmm`
-    /// and read back through [`Vmm::guest_memory`] — that the buffer stays valid across
-    /// the move. This keeps the restore-side `map_memory` site UB-watched even though
-    /// every `Store::materialize`-driven test is Miri-ignored.
+    /// The **Miri arm** of the test above (round-1 review, blocking item 1; sharpened
+    /// in round 2). `compose_restore_target` has its OWN `unsafe` `map_memory` —
+    /// mapping a [`snapshot_store::Mapping`]'s buffer as guest RAM, a different
+    /// backing *lifetime* than `compose()`'s owned [`GuestRam`] (the mapping is moved
+    /// into the returned `Vmm` and must stay valid there). `Store::materialize`'s
+    /// real `mmap` can't run under Miri, so drive the identical seam over the
+    /// mmap-free, 4-KiB-aligned [`snapshot_store::Mapping::anonymous`] buffer.
+    ///
+    /// The backend is [`PtrRetainingBackend`], which — like real KVM, and unlike
+    /// `MockBackend` — **retains the raw pointer** `map_memory` receives; the test
+    /// dereferences that retained pointer *after* the mapping has moved into the
+    /// `Vmm`. That read is the point: under Miri it fails on a dangling or moved
+    /// backing (the bug class this site's SAFETY comment claims away), rather than
+    /// asserting liveness through the `Vmm`'s own safe view of the buffer it owns.
+    /// The base-alignment assertion pins contract (c) — `map_memory` requires a
+    /// 4-KiB-aligned host address, which the anonymous backing must honor exactly
+    /// like the production `mmap` backing does.
     #[test]
     fn compose_restore_target_map_memory_over_an_anonymous_mapping() {
         const PAGES: usize = 4;
         let mut mapping = snapshot_store::Mapping::anonymous(PAGES * 4096);
-        // A sentinel at page 2 (mirrors the `SNAP` marker above) so the assertion
-        // proves the mapped buffer IS the guest RAM after the unsafe map.
+        // A sentinel at page 2 (mirrors the `SNAP` marker above) so the
+        // through-the-retained-pointer read proves the mapped buffer IS the guest RAM.
         mapping.as_mut_slice()[2 * 4096..2 * 4096 + 4].copy_from_slice(b"SNAP");
 
-        let vmm = compose_restore_target(MockBackend::new(), mapping, true).unwrap();
+        let (backend, mapped) = PtrRetainingBackend::new();
+        let vmm = compose_restore_target(backend, mapping, true).unwrap();
+
+        // Read through the pointer the backend retained, AFTER the mapping's move
+        // into `vmm` — before any new safe reference to the buffer is created, per
+        // the `map_memory` contract's aliasing clause (no run is in flight).
+        let (base, len) = mapped.get().expect("map_memory was called");
+        assert_eq!(len, PAGES * 4096);
+        assert_eq!(
+            base as usize % 4096,
+            0,
+            "map_memory contract (c): the host base address must be 4 KiB-aligned"
+        );
+        // SAFETY: contract (a) — the `Vmm` owns the mapping and keeps its heap
+        // buffer live at a fixed address; nothing has re-borrowed the buffer since
+        // `map_memory`, and no run is in flight, so the retained pointer is valid
+        // for this read. Under Miri this is the checked obligation, not an
+        // assumption.
+        let through_backend = unsafe { std::slice::from_raw_parts(base, len) };
+        assert_eq!(
+            &through_backend[2 * 4096..2 * 4096 + 4],
+            b"SNAP",
+            "the retained backend pointer reads the moved mapping's bytes"
+        );
+        assert!(
+            through_backend[..4096].iter().all(|&b| b == 0),
+            "no loader ever ran"
+        );
+
+        // Then the safe-view half (same shape as the materialize-driven test).
         assert!(
             vmm.ram_backing_is_snapshot(),
             "the mapping itself is the guest RAM backing"
@@ -537,7 +678,6 @@ mod tests {
             b"SNAP",
             "the mapped buffer reads through as guest RAM"
         );
-        assert!(mem[..4096].iter().all(|&b| b == 0), "no loader ever ran");
     }
 
     /// 40 KiB — the minimum 4 KiB-multiple covering the boot-info struct at

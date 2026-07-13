@@ -4245,13 +4245,23 @@ both stay Miri-exercised:
   **different backing lifetime** (the mapping is moved into the returned `Vmm` and must
   stay valid there). This is *not* the same reasoning as `compose()`, so the boot tests
   do not cover it. Round-1 review (blocking) caught that gating every restore test left
-  it unwatched. Fixed by a Miri-executable seam: `snapshot_store::Mapping::anonymous(len)`
-  builds the same `Mapping` interface over a plain heap buffer (no `mmap`/tempfile), and
-  the dedicated **non-ignored** test
+  it unwatched; round 2 caught that the first seam attempt didn't discharge the
+  obligation. Fixed by a Miri-executable seam, twice sharpened:
+  `snapshot_store::Mapping::anonymous(len)` builds the same `Mapping` interface over a
+  **4-KiB-aligned** heap buffer (`Vec` of `repr(C, align(4096))` pages — round 2: a
+  plain `Vec<u8>` violated `map_memory`'s contract (c), the page-aligned host base the
+  seam exists to honor; no `mmap`/tempfile), and the dedicated **non-ignored** test
   `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping` drives
-  `compose_restore_target` over it under Miri — checking the `&mut [u8]` handed to
-  `map_memory` and that the buffer survives the move into the `Vmm` and the later
-  `guest_memory()` read.
+  `compose_restore_target` over it under Miri through a **pointer-retaining backend
+  double** (`PtrRetainingBackend` — round 2: `MockBackend` drops the pointer, so
+  nothing checked the retention obligation). The double retains the raw host pointer
+  exactly as real KVM does, and the test dereferences it **after** the mapping's move
+  into the `Vmm` — so Miri fails the test on a dangling or moved backing instead of
+  the assertion reading the buffer through the `Vmm`'s own trivially-valid view. It
+  also pins the base-alignment contract. (Building the double surfaced a real Stacked
+  Borrows subtlety Miri caught live: a raw pointer taken *before* forwarding
+  `host: &mut [u8]` to an inner delegate is invalidated by that call's reborrow — the
+  double must retain the pointer *after* delegating.)
 
 So the ignored restore tests drop **zero** unique UB surface (both `map_memory` sites
 are covered by a running Miri test); their *behavioural* assertions (schedule replay,
@@ -4298,19 +4308,26 @@ inline `asm!` (`rdtsc`/`hlt`/`sti`), which Miri cannot interpret at all (same cl
 the `vmcall-transport` asm doorbell and the flow-agent FFI the workflow already
 excludes). No genuine gap; no bead filed.
 
-**Follow-up filed — `hm-d8o` (P2).** Closing the abort means the vmm-core Miri step now
-*runs to completion for the first time*, which exposes a slow tail the early abort hid:
-the `vmm::tests` `restore_vm_state`/save-restore tests and the `BIG_RAM` (128 KiB)
-control tests each boot+run+`state_hash` (sha256) a VM under the interpreter (~1–3 min
-apiece), and the non-`materialize` `enforce_run`-based tests (`same_schedule_run_twice…`)
-are the same shape. None abort; none are in the materialize scope of this task; but
-their aggregate runtime against the shared 90-min ceiling should be measured on the
-uncontended CI box — a full local run (aarch64 Mac, uncontended) took **~92 min wall**
-for the vmm-core step alone, so this is likely to bite on CI and wants attention before
-the nightly job is relied on. The clean reduction, if needed, is the `image_bytes` seam *plus*
-`cfg(miri)`-shrinking the guest images (the tests hard-code `RAM`/`BIG_RAM`) and skipping
-`wire_snapshot_hashing` (the `state_blob`-not-`state_hash` precedent), so a restore/enforce
-interprets in seconds — a larger change than this P1 gate-correctness fix warranted.
+**The slow tail (`hm-d8o`) — landed in round 2.** Closing the abort meant the vmm-core
+Miri step *ran to completion for the first time* and exposed a slow tail the early abort
+had hidden: a full local run (aarch64 Mac, uncontended) took **~92 min wall** against
+the then-shared **90-min** job ceiling — the original bug in a new costume (round-2
+review, blocking). Fixed on both sides, deliberately:
+
+- **Own job.** `nightly.yml` now runs the vmm-core command in its own `miri-vmm-core`
+  job with its own measured budget, parallel to the remaining crates' `miri` job
+  (which keeps the 90-min ceiling and loses its longest pole; its worst remaining
+  step is vmcall-transport, ~13 min on the box per run history).
+- **Tail shrink**, `cfg(miri)`-keyed, native runs byte-for-byte unchanged. A per-test
+  profile of the full lib run (`--report-time`) showed the tail is sha256-dominated
+  (the `MEM`-chunk/state-hash and per-page store hashing scale with test RAM):
+  `vmm::tests::TEST_RAM` and `control::tests::BIG_RAM` drop 128 KiB → 64 KiB under
+  Miri — the smallest size covering the doorbell protocol pages (`REQ_GPA 0xE000` /
+  reply `0xF000` are production constants) — and
+  `contract_hash_matches_committed_registry` (~97 s of interpreted sha256 over the
+  48 KiB §6 canonical form, pure unsafe-free code) is Miri-ignored with the same
+  rationale as its five §6 serialization siblings. No test's *native* behavior or
+  assertions changed.
 
 **Gates.** `build` / `nextest` (429 tests, all still run natively) / `clippy -D
 warnings` / `fmt` / `deny` green on Mac, for both `vmm-core` and `snapshot-store`. The
