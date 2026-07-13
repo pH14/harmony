@@ -39,9 +39,10 @@ jobs:
   # See consonance/vmm-core/IMPLEMENTATION.md (task 98).
   # Budget (task 98, measured): the exact command below runs in ~34 min real on
   # an M-class Mac after the hm-d8o tail shrink (pre-shrink: ~92 min, the round-2
-  # bug), and the box is ~1.12x slower per the vmcall-transport step (13 min box
-  # vs 11.6 min Mac) — so ~38 min expected here; 90 gives ~2.4x margin. NOTE when
-  # re-measuring: under Miri WITHOUT -Zmiri-disable-isolation, libtest's
+  # bug). First box run (2026-07-13, dispatch on the task branch): 49 min 38 s
+  # while CO-RUNNING with the sibling miri job on the second runner slot — so 90
+  # holds ~1.8x margin even under co-tenancy, more when the box is idle. NOTE
+  # when re-measuring: under Miri WITHOUT -Zmiri-disable-isolation, libtest's
   # "finished in" prints the interpreter's deterministic VIRTUAL clock (~2x real
   # on the Mac) — time the command externally.
   miri-vmm-core:
