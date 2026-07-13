@@ -105,14 +105,11 @@ against it.
   bursty/regime-based entropy — see the 2026-07 fuzzer research) — strictly after the
   seed-driven loop works. The explorer's current AFL-shaped corpus gets no further investment
   before that redesign.
-- **Apple-silicon ARM backend** — the primary post-x86 hardware research direction. The
-  target is Hypervisor.framework L0 → Harmony virtual-EL2 monitor → ARM64 Linux EL1/EL0.
-  `docs/APPLE-SILICON.md` owns the Goal Mode-ready, risk-ordered program; nested-PMU count
-  determinism, overflow/skid, and exact landing are the existential gates. The **ISA seam
-  design is recorded** (`docs/ARCH-BOUNDARY.md`, 2026-07-03), but the Apple implementation
-  proceeds in parallel and may become a complete standalone hypervisor. Consolidation is a
-  later human ruling based on working code. QEMU TCG is an expected slow oracle/fallback, not
-  the primary research investment.
+- **ARM port** — deferred until the branch-count spike re-runs on candidate silicon
+  (`docs/ARM-PORT.md`); not a code refactor, a viability gate. The **ISA seam design is
+  ruled** (`docs/ARCH-BOUNDARY.md`, 2026-07-03): the boundary restructure (arch-generic
+  `Backend`, `vmm-core` engine/personality split) is x86-hygiene work that may be queued
+  post-merge-window; the trait freeze and all ARM-side building stay spike-gated.
 - **Task 92 — multi-CPU/backend characterization registry** (probe → select → validate),
   fixing the one-box bus factor on the single destructive `det-cfl-v1` baseline. Deferred behind
   Wave 4.
@@ -141,10 +138,9 @@ themselves are untouched by this task.
 
 ## Cross-cutting references
 
-- **Apple silicon / ARM:** `docs/APPLE-SILICON.md` selects the primary substrate and owns the
-  de-risk sequence; `docs/ARM-PORT.md` owns the cross-ARM mechanism analysis;
-  `docs/ARCH-BOUNDARY.md` rules the production ISA seam and supersedes ARM-PORT.md's
-  pre-Wave-4 codebase survey.
+- **ARM/AArch64 port (post-v1):** `docs/ARM-PORT.md` — the viability gate is a branch-count
+  spike on real silicon, not a trait refactor. `docs/ARCH-BOUNDARY.md` (2026-07-03) rules the
+  ISA seam design and supersedes ARM-PORT.md's pre-Wave-4 codebase survey.
 - **Determinism & conformance corpus:** `docs/DETERMINISM-CORPUS.md` — the plan for verifying
   the engine is itself correct (four oracles: determinism, conformance, seed-sensitivity,
   backend-equivalence). Tasks 22/23 (host `BLOCK_WRITE` + crash-consistency) are struck; the

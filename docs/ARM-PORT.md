@@ -1,21 +1,13 @@
 # ARM/AArch64 port — feasibility notes
 
-Status: **research note, not a commitment; partially superseded (2026-07-03), refined for
-Apple silicon (2026-07-09).** The hardware facts, three-mechanism analysis, rr evidence base,
-and hardware-first gating principle stand; the concrete gate is now substrate-specific.
+Status: **research note, not a commitment; partially superseded (2026-07-03).** The hardware
+facts, the three-mechanism analysis, the rr evidence base, and the spike gate below all stand.
 The **codebase survey** ("What a port costs, by component") and its premises — "no arch seam
 exists", "`vmm-core` unwritten" — predate Wave 4/5 and are **superseded by
 `docs/ARCH-BOUNDARY.md`**, which rules the ISA seam design from a fresh file-level audit.
 Captures what's known about porting this hypervisor to AArch64 (the question keeps recurring),
 so the conclusions and the one load-bearing fact-correction aren't re-derived each time. Per
 PLAN.md Decision 0, ARM is **post-v1 future work**: x86-64/KVM/VMX is the only designed target.
-
-**Apple-silicon refinement (2026-07-09):** `docs/APPLE-SILICON.md` is now the primary
-hardware-accelerated ARM research program. It targets macOS + Hypervisor.framework with a
-Harmony monitor at virtual EL2 and ARM64 Linux at EL1/EL0. This document still owns the
-cross-ARM mechanism analysis; the Apple document owns that substrate's evidence sequence and
-GO/NO-GO gates. The old conclusion that Apple silicon was rejected is withdrawn: macOS 15's
-nested-EL2 support creates a credible route that did not exist in the premises of this note.
 
 The bottom line up front: **nothing fundamental precludes ARM** — Neoverse/Cortex have
 EL2 and the Arm Virtualization Extensions are a fine substrate. What precludes it *for this
@@ -94,36 +86,6 @@ commit b3ffa764):
   break precise injection (missed overflow → never breaks out of `KVM_RUN`). Mitigated by
   core-pinning (which we do anyway), but unresolved in general.
 
-## Apple silicon: a distinct nested-EL2 route
-
-Apple silicon is not just another KVM/arm64 host candidate. Hypervisor.framework is the L0,
-and the credible design puts a small Harmony monitor at the virtual EL2 that Apple exposes on
-supported hardware, with the deterministic Linux subject below it at EL1/EL0. That monitor
-would own nested stage-2 translation, counter/time traps, PMU and debug controls, and exact L2
-interrupt scheduling. The macOS launcher remains a thin outer run loop.
-
-This route matters for four reasons:
-
-1. rr already supports Apple M-series branch counting when the same silicon runs Linux, so
-   the physical PMU is not disqualified in principle.
-2. macOS 15 added public nested-virtualization support, including virtual EL2 and GIC
-   hypervisor-control state.
-3. Apple's SDK documents framework-emulated PMU register behavior for an EL2-enabled guest,
-   making a nested PMU experiment possible without a private macOS PMU API.
-4. Owning EL2 lets the monitor trap the L2 counter/time surface that a direct EL1
-   Hypervisor.framework backend cannot close.
-
-The open bet is narrower and harder than “does ARM virtualization work?”: does Apple's nested
-virtual PMU expose a deterministic L2-only work event, deliver overflow reliably with bounded
-skid, and support exact ARM debug-step landing through L2 exceptions? None of those properties
-is promised by the public API. `docs/APPLE-SILICON.md` orders the experiments so this bet is
-measured before Linux, snapshot optimization, or the production architecture refactor.
-
-Apple silicon also sharpens the heterogeneous-core risk. macOS exposes no supported analogue
-of Linux's hard `taskset` core pinning. A selected event must therefore retain identical
-semantics across performance/efficiency-core migration, or the backend must find a real hard
-mechanism that prevents migration. A QoS hint is not an enforcement mechanism.
-
 ## DGX Spark as a host: access is GREEN, determinism is the open risk
 
 The "is it a vendor-locked appliance?" worry **does not materialize** (vendor-documented
@@ -140,22 +102,15 @@ unless noted):
 So spike #1 (below) is *runnable* on a Spark — the access half is solved. The remaining risk
 is entirely PMU determinism on uncharacterized, heterogeneous client cores.
 
-## The gates: one mechanism, substrate-specific experiments
+## The gate: ARM viability = Phase 0.5 spike #1, re-run on real ARM hardware
 
-For a bare-metal Linux/KVM ARM host, before any line of ARM `vmm-core`, run PLAN.md's PMU
-precise-count spike on the actual box:
+Before any line of ARM `vmm-core`, run PLAN.md's PMU precise-count spike on the actual box:
 measure whether `BR_RETIRED` (taken-branch) counting is **bit-deterministic** on one pinned
 X925 (Spark) or V2 (Grace), whether overflow interrupts fire reliably out of `KVM_RUN`, and
 the **skid bound** (→ a port-specific `PlannerConfig::skid_margin`). Pin to one core type
 (heterogeneous PMUs on Spark; rr's big.LITTLE caveat applies). Confirm `ID_AA64MMFR0_EL1.ECV`
 on real silicon. If this spike fails, no arch abstraction saves the port — which is the
 strongest reason not to invest in abstraction first.
-
-For Apple silicon, the equivalent gate necessarily includes a minimal launcher, virtual-EL2
-monitor, and L2 assembly payload because the property under test belongs to the *nested*
-virtual PMU, not a macOS userspace counter API. This bounded code is experiment apparatus, not
-premature production backend work. `docs/APPLE-SILICON.md` AS-0 through AS-4 are the gate;
-AS-2 (count determinism), AS-3 (overflow/skid), and AS-4 (exact landing) are existential.
 
 ## What a port costs, by component (SUPERSEDED — see `docs/ARCH-BOUNDARY.md`)
 
@@ -183,10 +138,9 @@ AS-2 (count determinism), AS-3 (overflow/skid), and AS-4 (exact landing) are exi
 
 ## One-line recommendation
 
-Set the ARM research priority to the novel Apple-silicon nested-EL2 backend in
-`docs/APPLE-SILICON.md`. Spark/Grace remain useful comparative KVM hosts, but they are not the
-primary target. Start with only enough parallel monitor/launcher apparatus to answer the
-nested-PMU and exact-landing questions. If those gates return GO, continue that same isolated
-codebase through deterministic Linux and snapshot/branching; do not pause for a consonance
-trait refactor. Let measurements — not TCG confidence or abstraction work — decide whether
-the hardware-accelerated Apple backend proceeds.
+Spark is a legitimately good de-risking box for ARM (open, KVM-capable, perf-documented, and
+it has the ECV the design needs — better than both the rejected Apple-Silicon path and the
+actual Neoverse V2/Grace). But ARM stays post-v1: ship the x86 backend through its determinism
+gates first (where rr proves the path), keep the `CpuBackend`/adapter-map discipline so the
+ARM backend is additive, and let **spike #1 on real hardware** — not a refactor — decide
+whether ARM happens.

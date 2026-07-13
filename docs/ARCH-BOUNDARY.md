@@ -3,17 +3,11 @@
 Status: **design ruling (2026-07-03).** Supersedes the codebase survey in `docs/ARM-PORT.md`
 ("What a port costs, by component" and its "no arch seam exists yet" premise), which predates
 Wave 4/5 and undercounts the tree by most of `vmm-core`, `vmm-backend`, `lapic`, `vm-state`,
-and all seven dissonance crates. ARM-PORT.md's **hardware facts and viability principle
-stand**: no production ARM backend gets built before the applicable substrate's PMU/exact-
-landing spike returns GO on real silicon. What this document rules is the *boundary* — where
-the ISA seam goes, what shape it takes, and which parts are justified now on x86-hygiene
-grounds versus frozen until spike data exists.
-
-**Apple-silicon refinement (2026-07-09):** `docs/APPLE-SILICON.md` is the primary ARM
-hardware target and de-risk plan. Its launcher, EL2 monitor, Linux subject, device models, and
-snapshot path may be built as a complete parallel implementation without first applying this
-boundary. This ruling becomes an integration input only after that standalone hypervisor is
-working and a separate human decision chooses consolidation.
+and all seven dissonance crates. ARM-PORT.md's **hardware facts and its viability gate stand
+unchanged**: no ARM backend gets built before the PMU spike (ARM-PORT.md §gate) returns GO on
+real silicon. What this document rules is the *boundary* — where the ISA seam goes, what shape
+it takes, and which parts are justified now on x86-hygiene grounds versus frozen until spike
+data exists.
 
 Bottom line up front: a fresh file-level audit (2026-07-02, five-zone sweep of consonance +
 dissonance + guest) shows **~85% of the tree is already arch-blind** — including the vtime
@@ -103,9 +97,6 @@ seam may branch on which ISA is in use.
    arm64 KVM already exposes hardware single-step via `KVM_GUESTDBG_SINGLESTEP`
    (`MDSCR_EL1.SS`), so the 0005 analogue may be nearly free; the 0004 analogue
    (deterministic in-kernel force-exit at PMI) is real kernel work.
-   On Apple silicon there is no KVM analogue: the virtual-EL2 Harmony monitor must own PMU
-   overflow routing and L2 debug stepping, while Hypervisor.framework remains L0. Whether
-   that is sufficient is exactly `APPLE-SILICON.md` AS-2 through AS-4.
 
 ## The seam design
 
@@ -199,24 +190,15 @@ not content); `Image`/DTB loader; arm64 payload runtime (boot shim, exception ve
 GIC init) + new contract payloads + regenerated goldens; the 0004-analogue kernel patch;
 re-measured `skid_margin` / `SimCpu` parameters; arm64 kernel-config audit + `kata/arm64`.
 
-For the Apple target, substitute a Hypervisor.framework launcher/backend plus the
-virtual-EL2 monitor for “KVM/arm64 backend” and “0004-analogue kernel patch.” The GIC,
-generic-timer, ARM contract, Image/DTB, payload, state-record, and Linux work remain shared ARM
-personality work. Do not force the monitor below `Backend`: contract dispositions remain above
-the substrate seam even if the low-level trap is first caught at EL2.
-
 ## Sequencing, cost, risks
 
-**Order.** For the Apple program, complete `APPLE-SILICON.md` AS-0 through AS-9 in its
-parallel workspace; none of those stages requires this refactor. If a later human ruling
-chooses consolidation: (1) the C-list + `HypercallFrame`/`Idle` neutralizations — small, land
-any time.
+**Order.** (1) The C-list + `HypercallFrame`/`Idle` neutralizations — small, land any time.
 (2) Mechanical extraction of x86 value types into an arch module inside `vmm-backend`, no
 semantics change, all gates green. (3) **The keystone**: `Arch` trait + generic `Backend` +
 engine/personality module split in `vmm-core`, x86 as the sole implementation, every existing
 portable + box gate passing unchanged through it. (4) `vm-state` arch-tagged records + version
-bump. Then the D-list becomes an additive backend wave. For Apple silicon this sequence is
-optional and post-success; do not interrupt the standalone implementation to prepare it.
+bump. Then — only after ARM-PORT.md's spike #1 returns GO on real silicon — the D-list as an
+additive backend wave.
 
 **Cost.** Steps 1–4 ≈ four tasks, mostly mechanical. The creative parts: the `Arch` trait
 shape (ruled above; freeze per the spike caveat below) and keeping the state-hash canonical
@@ -243,25 +225,12 @@ that slip.
 
 Still true and still binding: the hardware table (Spark vs Grace, ECV), the three
 load-bearing-mechanism analysis, the rr evidence base, the LL/SC vs LSE hazard, and the gate —
-**the applicable substrate spike on real silicon decides whether ARM happens; no D-list work
-before GO.** For Apple silicon, that is the AS-2 through AS-7 sequence, not the Linux/KVM
-Spark/Grace spike.
+**spike #1 on real silicon decides whether ARM happens; no D-list work before GO.**
 
 Superseded by this document: the "What a port costs, by component" survey and its premises
 ("no arch seam exists", "`vmm-core` unwritten", the ~60/40 split) — the audit above replaces
 them; and the blanket "do not build the arch abstraction pre-emptively" is **refined**, not
 reversed: the A–C restructure is justified on x86-hygiene grounds alone (it makes the
 R-Backend boundary compiler-enforced and the product thesis explicit — a deterministic-execution
-engine with an x86 backend, not an x86 hypervisor with a bug-finder attached). For a future
-Linux/KVM ARM personality, trait freeze remains spike-gated. The standalone Apple program is
-the explicit exception: it may build independently without adopting A–C, and this document
-does not become binding on it unless a later consolidation ruling says so.
-
-## Relationship to APPLE-SILICON.md
-
-`docs/APPLE-SILICON.md` selects the first ARM substrate and owns a complete parallel
-implementation through deterministic Linux, snapshot/branching, and performance
-characterization. This document does not constrain that code's internal abstractions. It
-becomes relevant only if a later human ruling chooses to consolidate the standalone Apple
-implementation with consonance. A general `Arch` refactor in consonance before then is
-premature unless independently justified and separately ruled.
+engine with an x86 backend, not an x86 hypervisor with a bug-finder attached), while the trait
+*freeze* and all ARM-side building remain spike-gated exactly as ARM-PORT.md demands.
