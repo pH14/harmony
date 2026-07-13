@@ -169,7 +169,7 @@ pub fn conductor::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::r
 pub fn conductor::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
 pub struct conductor::gamecampaign::WorkEvidence
 pub conductor::gamecampaign::WorkEvidence::branches: u64
-pub conductor::gamecampaign::WorkEvidence::min_frames: u64
+pub conductor::gamecampaign::WorkEvidence::min_completed_frames: u64
 pub conductor::gamecampaign::WorkEvidence::min_vtime_span: u64
 pub const conductor::gamecampaign::DEFAULT_GUEST_RAM_LEN: u64
 pub const conductor::gamecampaign::DETERMINISM_BAR: usize
@@ -179,7 +179,7 @@ pub fn conductor::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&m
 pub fn conductor::gamecampaign::serial_rom_sha256(&[u8]) -> core::option::Option<alloc::string::String>
 pub fn conductor::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
 pub fn conductor::gamecampaign::smb_cells(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> (alloc::vec::Vec<u64>, u64)
-pub fn conductor::gamecampaign::smb_frames(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> u64
+pub fn conductor::gamecampaign::smb_completed_frames(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> u64
 pub mod conductor::materialize
 pub struct conductor::materialize::HopRow
 pub conductor::materialize::HopRow::at: u64

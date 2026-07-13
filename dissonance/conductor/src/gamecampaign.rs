@@ -1470,7 +1470,7 @@ mod tests {
                 id: FeatureId((reg::X_BUCKET << 48) | 3),
             },
         );
-        assert_eq!(smb_completed_frames(&[other.clone(), other]), 0);
+        assert_eq!(smb_completed_frames(&[other, other]), 0);
     }
 
     /// Task 103 finding 2 — **a malformed billboard must not slip past the

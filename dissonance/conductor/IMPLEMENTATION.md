@@ -1056,9 +1056,21 @@ hashed the base itself, twice. Both ends are fixed, as the spec asked:
   whichever flag combination produced it.
 
 Minima, not totals, deliberately: one hollow rollout in an otherwise busy campaign is still
-a hollow rollout, and a total would hide it. `min_frames` is the check that catches the
-degenerate budget a *positivity* test cannot — `--deadline-delta 1` is positive, advances
-V-time, and renders no frame.
+a hollow rollout, and a total would hide it. `min_completed_frames` is the check that catches
+the degenerate budget a *positivity* test cannot — `--deadline-delta 1` is positive, advances
+V-time, and completes no frame.
+
+**Round 2 — what "a frame" had to mean.** The first cut of this counted `REG_FRAME`
+*observations*, and the cross-model pass found the hole: the play-agent writes that register
+**before** running the frame it announces (`agent.rs`: `state_set(REG_FRAME, frame)` then
+`core.run_frame`), because film addresses that frame's billboard by that Moment. So a deadline
+expiring between the marker and the frame body leaves exactly one observation and **zero
+executed frames** — reported as one frame, sailing straight through the guard built to reject
+that very budget. [`smb_completed_frames`] now counts frame-clock **transitions**: a second,
+different value is what proves the first frame's body completed and the loop came back around.
+The emission order is film's contract and was *not* touched — the fix is conductor-side, where
+the evidence is read. (Any *change* counts, not an increase: the frame clock is a `u32` the
+agent wraps, so demanding monotonicity would eventually call a real frame no frame.)
 
 The round-8 25/25 floor is preserved exactly (`GateVerdict::{Pass, BelowFloor, Single}`);
 it now lives beside the vacuity guard instead of inside the box driver.
@@ -1075,6 +1087,27 @@ same loud class as missing, on **both** paths, never a silent fall back to no-bi
 
 A half-publish is treated as malformed, not absent: the two registers are written together
 in the setup prefix, so one without the other is a broken agent.
+
+### 1c. The materialize chain had the same hole (round-2 finding)
+
+The sweep in finding 1a missed `conductor materialize`, and the cross-model pass caught it:
+`--tail-delta 0` stops the reproducer leg at the V-time it started from, so gate (c)'s
+`replay == leg` compares a snapshot to itself; `--hop-delta 0` requests each hop's deadline at
+the point it already sits on, so the whole chain seals at one moment and every span below it is
+empty. Both printed `materialize GATES PASS`. **Every gate in `verify_materialize` is an
+equality, and equalities hold trivially over zero-length work** — which is the same sentence as
+the determinism gate's, in a different costume.
+
+Fixed at both ends, like finding 1: the positive parser on both flags, and a vacuity guard in
+`verify_materialize` (the chain must descend hop-by-hop; the leg must stop *below* the deepest
+seal) for a hollow report that reaches the gate from a library caller or a future flag.
+
+Fixing it surfaced a fixture bug worth naming: the synthetic `valid_report()` had the bug leg
+stopping at V-time 100 while its base seal sat at 100,000,000 — a leg finishing 99,999,900 ns
+*above* the seal it started from, which no machine can produce. It was harmless to the
+equalities the fixture was written to exercise, and that is exactly why the vacuity gate is
+worth having: it is the first check that ever asked whether the run in the report was possible.
+The fixture now describes a real run.
 
 ### 3. The start script could exceed `max_frames` while settling
 
@@ -1104,15 +1137,27 @@ now an invariant, so the overflow is gone by construction rather than by checked
 - **Validating `--gpa-count` / `--gpa-stride` / `--order-range` as budgets too.** They shape a
   search *space*, not a work budget, and their zero already fails loudly downstream (an empty
   candidate set finds no bug ⇒ the campaign gate fails; `order_range` is `.max(1)`-coerced).
-  `--window-lo 0` is legitimate. Left alone rather than widening the diff.
+  `--window-lo 0` is legitimate. Left alone rather than widening the diff. **Round 2 corrected
+  the boundary this reasoning drew**: `materialize`'s `--hop-delta` / `--tail-delta` *are* work
+  budgets and were missed by the same sweep — the rule is "does a zero make the gate's equalities
+  hold over nothing?", not "is the flag on the campaign path?".
+- **Reordering the play-agent's `REG_FRAME` emission to sit after the frame body** (round 2).
+  That would make an observation mean an executed frame, and the naive count would have been
+  right. Rejected: the pre-run order is film's addressing contract (the Moment must see the
+  frame's billboard bytes), and changing it would change the recorded stream — a guest-side
+  change to fix a host-side reading error. The evidence is read conductor-side; that is where
+  it was fixed.
 
 ## Known limitations / integrator notes
 
-- **`min_frames` assumes the workload emits `REG_FRAME`.** The play-agent does (it is film's
-  shot list), and the M0 evidence confirms it live — the recorded campaign discovered cells,
-  which ride the same per-window state emission. A future non-SMB game workload that does not
-  emit `REG_FRAME` would trip `Vacuity::NoFrames`; the fix then is to key the evidence on that
-  workload's own liveness register, not to drop the check.
+- **`min_completed_frames` assumes the workload emits `REG_FRAME`, and that its value advances
+  per frame.** The play-agent does both (it is film's shot list), and the M0 evidence confirms
+  it live. Two consequences a future workload inherits: one that does not emit `REG_FRAME` at
+  all would trip `Vacuity::NoFrames` (key the evidence on that workload's own liveness register
+  rather than dropping the check), and one that emits the register *after* its frame body would
+  be undercounted by exactly one frame — harmless (the guard only asks for ≥ 1), but the reason
+  the doc comment on `smb_completed_frames` states the agent's emission order explicitly rather
+  than leaving it to be rediscovered.
 - **`WorkEvidence` is inside `GameCampaignOutcome`'s `PartialEq`**, so the determinism gate now
   compares it across repetitions too. That is deliberate (it strengthens the comparison) and
   safe: V-time spans and frame counts are deterministic functions of a deterministic run — if
@@ -1126,7 +1171,7 @@ now an invariant, so the overflow is gone by construction rather than by checked
 ## Gates
 
 `cargo build -p conductor --all-features`, `cargo nextest run -p conductor --all-features`
-(**143 tests green**, up from 137: 4 new lib + 2 new bin), `cargo clippy -p conductor
+(**145 tests green**, up from 137 on main: 6 new lib + 2 new bin), `cargo clippy -p conductor
 --all-features --all-targets -D warnings` on the host **and** on
 `x86_64-unknown-linux-gnu` (the `cfg(linux)` `boxrun.rs` path — the ci-cfg-linux review gap),
 `cargo fmt --check`, `cargo deny check`, and `cargo check --workspace --all-targets --target
@@ -1145,16 +1190,18 @@ tests whose fixtures this task's changes flow through:
 ```
 cargo +nightly-2026-06-16 miri test -p conductor --lib -- --exact \
   gamecampaign::tests::{the_determinism_gate_refuses_a_run_that_did_no_work,
-    a_real_campaign_carries_its_work_evidence, a_malformed_billboard_refuses_the_campaign,
-    a_half_published_billboard_is_malformed, box_campaign_without_billboard_refuses,
-    a_dying_rollout_fails_the_box_campaign_loudly}
-⇒ 6 passed, 0 failed (295.66s)
+    a_real_campaign_carries_its_work_evidence, completed_frames_counts_transitions_not_markers,
+    a_malformed_billboard_refuses_the_campaign, a_half_published_billboard_is_malformed,
+    box_campaign_without_billboard_refuses, a_dying_rollout_fails_the_box_campaign_loudly} \
+  materialize::tests::{zero_length_hops_and_legs_fail_the_gate,
+    valid_report_passes_all_gates_and_renders, every_gate_failure_is_reported}
+⇒ 10 passed, 0 failed (309.29s)
 ```
 
-Six tests in five minutes is itself a data point for `hm-d4y`: the per-test interpreted cost
+Ten tests in five minutes is itself a data point for `hm-d4y`: the per-test interpreted cost
 here, not any one pathological test, is what makes the whole-suite line unbudgetable. The
 narrower claim is the honest one — **the code this task changed is Miri-clean; the conductor
-lib as a whole is unverified under Miri and is known debt, not this task's.** The new tests do
+lib as a whole is unverified under Miri and is known debt, not this task's.** The new tests
 touch no filesystem (both pre-existing retention tests stay `cfg_attr(miri, ignore)`), so they
 add no new obstacle to whatever `hm-d4y` lands.
 
@@ -1169,3 +1216,11 @@ play-agent is a different story and needs no caveat: its full `--lib` Miri suite
 | 1b | `the_determinism_gate_refuses_a_run_that_did_no_work` | FAILED — a zero-branch campaign reports `vacuity() == None` (⇒ `Ok(Pass{25})`: the vacuous PASS itself) |
 | 2 | `a_malformed_billboard_refuses_the_campaign`, `a_half_published_billboard_is_malformed` | FAILED — `gpa.zip(len)` accepts `len = 0` |
 | 3 | `a_settle_that_would_overrun_the_budget_is_loud`, `a_budget_that_cannot_hold_the_settle_is_rejected_up_front` | FAILED — the settle runs past `max_frames` silently |
+| round-2 frame evidence | `completed_frames_counts_transitions_not_markers`, `the_determinism_gate_refuses_a_run_that_did_no_work` | FAILED — counting observations reports 1 frame where 0 ran (`left: 1, right: 0`) |
+| round-2 materialize CLI | `degenerate_budgets_are_refused_by_the_cli` | FAILED — `["conductor","materialize","--tail-delta","0"]` must be REFUSED, not accepted |
+| round-2 materialize gate | `zero_length_hops_and_legs_fail_the_gate` | FAILED — a zero-length reproducer leg produces **no** failures (`[]`): `GATES PASS` |
+
+(Process note for the next worker: run revert-based red-checks only against **committed** work.
+Mine ran on an uncommitted tree and the restoring `git checkout` ate the round-2 source edits —
+caught immediately by the Linux-target clippy, since `boxrun.rs` was the one file the script
+never touched and it still referenced the renamed field. Cheap to redo, but avoidable.)
