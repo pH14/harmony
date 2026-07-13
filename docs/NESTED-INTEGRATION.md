@@ -4,7 +4,7 @@ Status: **PARKED PRODUCT SKETCH — NOT RATIFIED** (Paul, 2026-07-12). Paul revi
 ruled it product strategy ahead of a product decision: the ratified goal is instead the
 **reach matrix** (vendors Intel/AMD/ARM × forms bare-metal/virtualized — see
 `docs/ROADMAP.md`). The portability-infrastructure items were extracted to beads (appliance
-build `hm-tn9`, host-qualification preflight CLI `hm-69y` — renamed from "doctor"; harmonyd
+build `hm-tn9`, host-qualification preflight CLI `hm-69y`; harmonyd
 `hm-9od` DEFERRED until a live consumer exists). The runner (R-track), event index
 (O-track), plugin architecture, and cloud qualification sweep are retained here as design
 record only — resurrect if/when a product is chosen. Terminology note: "personality" was

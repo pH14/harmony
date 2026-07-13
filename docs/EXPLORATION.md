@@ -14,10 +14,9 @@ coverage vector + oracle events."
 > task here forces a change to Progression select/score/GC policy, the abstraction has leaked and the task
 > is wrong.
 
-> **Naming (task 94 rename).** This doc uses the post-rename loop names: **Progression** (the outer
-> loop, formerly *Theme*) and **Modulation** (the inner loop, formerly *Variation*).
-> `docs/DISSONANCE.md` still uses the old names until task 94 lands — the mapping is
-> Theme → Progression, Variation → Modulation.
+> **Naming.** This doc uses the ruled loop names: **Progression** (the outer loop) and
+> **Modulation** (the inner loop). `docs/DISSONANCE.md` predates the ruling and still says
+> *Theme*/*Variation* — read those as Progression/Modulation.
 
 ## Where this sits
 

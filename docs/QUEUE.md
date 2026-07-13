@@ -86,7 +86,7 @@ spawn these until that lane re-opens):
 ## Blocked (dependency edges enforce these — they surface via `bd ready` when cleared)
 
 - **Appliance as first-class repo build** `hm-tn9` ← spike-branch merge `hm-l2g`;
-  **host-qualification preflight CLI** (`hm-69y`, renamed from "doctor") ← same.
+  **host-qualification preflight CLI** (`hm-69y`) ← same.
   **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
   consumer exists; appliance ships gate mode only — do not auto-spawn).
 - **ARCH-BOUNDARY restructure → engine/vendor split** `hm-b5n` ← vocabulary rename sweep
