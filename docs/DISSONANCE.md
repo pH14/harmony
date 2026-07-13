@@ -73,7 +73,7 @@ applies them from outside, between instructions, at a chosen `Moment`.
 
 ```rust
 enum HostFault {
-    SkewTime(VTime),                       // jitter virtual time
+    SkewTime(Span),                        // jitter virtual time by a duration
     SetClockRate(Ratio),                   // CPU modulation: retired-branches → V-time slope
     CorruptMemory { gpa: u64, mask: BitMask }, // single-event-upset
     InjectInterrupt { vector: u8 },        // delivery-timing perturbation
@@ -202,7 +202,7 @@ splice-invariant by re-keying; **seed-serviced decisions are not**, because `See
 *sequential* PRNG streams — a splice would desync the stream state. The production
 `EnvCodec::compose` therefore **fails closed** (`UnsupportedComposition`) on pure-`Seeded` inputs,
 seed/policy mismatches, and `StandingFault`s (whose window is on the *V-time* axis, needing a
-runtime `Moment → VTime` map to re-key). This scope is now **the contract**, not a stopgap, and it binds
+runtime branch↔instruction re-key map (the former `Moment → VTime` map) to re-key). This scope is now **the contract**, not a stopgap, and it binds
 the frontier adapter (the R2 `Machine` implementation) on four points:
 
 - **Tail-completeness.** `Machine::recorded_env` must emit a **tail-complete** delta — every
@@ -241,7 +241,7 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   and base genesis-completeness is deliberately *not* required (the adapter generalizes `compose`
   to parent-rooted bases for the task-68 lineage fold).
 - **Standing-fault confinement (v1).** Standing faults stay non-composable until a
-  `Moment → VTime` map exists, so until then they are **confined to genesis-based runs**: no
+  runtime branch↔instruction re-key map exists, so until then they are **confined to genesis-based runs**: no
   `StandingFault` in a branch-local delta, and a corpus entry whose env carries standing faults is
   never branched below. Under that rule every standing-fault bug is found in a genesis-rooted run,
   whose `recorded_env` is already genesis-complete and carries the standing set verbatim — no
@@ -255,7 +255,7 @@ the frontier adapter (the R2 `Machine` implementation) on four points:
   one. The fail-closed production `compose` is the backstop: any violation that slips through
   becomes the loud abort of the fallibility bullet above, never a mis-keyed reproducer.
   **Sequencing guard:** standing faults must not enter the frontier fault vocabulary *before*
-  either the `Moment → VTime` map exists (making them composable — the confinement rule
+  either the runtime branch↔instruction re-key map exists (making them composable — the confinement rule
   dissolves) or a schema-visible corpus-base eligibility hook is added to the Progression's selection
   path. On the codec seam alone, "never branched below" is enforceable only as the loud abort —
   by the time `mutate` sees the blob the strategy has already selected the `SnapId`, and `mutate`

@@ -56,7 +56,7 @@
 //!   partitions ARE enforced (a standing `nft drop`).
 
 use environment::{Answer, Fault};
-use flow::{ConnId, FlowDecider, FlowPolicy, Moment, NodeId, Span};
+use flow::{ConnId, FlowDecider, FlowPolicy, NodeId, Span};
 use hypercall_proto::{Client, ClientError, Status, Transport};
 
 /// The fixed `nftables` table + chain the agent installs its verdict rules into.

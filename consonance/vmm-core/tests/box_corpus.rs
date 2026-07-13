@@ -67,7 +67,7 @@ use std::path::PathBuf;
 
 use det_corpus::{CorpusItem, Oracle, check_determinism, load_manifest};
 use sha2::{Digest, Sha256};
-use unison::{Subject, SubjectFactory, RunOutcome};
+use unison::{RunOutcome, Subject, SubjectFactory};
 use vmm_core::corpus::{CorpusMachine, boot_patched_payload};
 use vmm_core::vmm::TerminalReason;
 

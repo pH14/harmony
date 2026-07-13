@@ -46,8 +46,8 @@
 #![cfg(target_os = "linux")]
 
 use control_proto::{
-    HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Reproducer, Request,
-    SnapId, StopConditions, StopMask, StopReason,
+    HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId,
+    StopConditions, StopMask, StopReason,
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
 use vmm_backend::Backend;

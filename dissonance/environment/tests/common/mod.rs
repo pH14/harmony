@@ -13,7 +13,7 @@ use proptest::prelude::*;
 
 use environment::{
     Action, Answer, BlockOp, ConnId, DecisionClass, DecisionPoint, EnvSpec, Environment, Fault,
-    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, StandingFault, Span,
+    FaultPolicy, FlowEvent, HostFault, Moment, NodeId, Outcome, Ratio, Span, StandingFault,
 };
 
 /// Proptest config: spec case count, cut hard under Miri (kept for portability
@@ -269,12 +269,7 @@ pub fn canon(spec: EnvSpec) -> EnvSpec {
 }
 
 fn standing_key(s: &StandingFault) -> (u16, &[u8], u64, u64) {
-    (
-        s.class as u16,
-        s.target.as_slice(),
-        s.window.0,
-        s.window.1,
-    )
+    (s.class as u16, s.target.as_slice(), s.window.0, s.window.1)
 }
 
 // ---- a frontier-simulating runner -----------------------------------------

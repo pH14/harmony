@@ -203,7 +203,7 @@ which vmm-core serializes and must contain at least:
 | Hypercalls | `hypercall-proto::{Client, Transport}` (guest), `Dispatcher`/`Service` (host) | port-I/O **doorbell** handler implementing §1 (`Exit::Io` on `DOORBELL_PORT`, stock-KVM `KVM_EXIT_IO`); guest shim `consonance/vmcall-transport`. Patched-backend `VMCALL` variant via `Exit::Hypercall` (task 21) |
 | Time | `vtime::{VClock, TimerQueue, InjectionPlanner, CpuBackend}` | perf_event retired-branch counter (guest-only), PMI → exit; `KVM_GUESTDBG_SINGLESTEP`; §2 inversion |
 | Memory/snapshots | `snapshot-store::{Store, builders, Mapping}` | KVM dirty-log harvest → `DeltaBuilder`; `materialize()` → memslot swap; `vm_state` blob per §4 |
-| Determinism testing | `unison::{Machine, MachineFactory}` | adapter: `spawn(seed)` = restore base snapshot + seed services; `run_to` = planner stop; `state_hash` = canonical hash of materialized memory + `vm_state` |
+| Determinism testing | `unison::{Subject, SubjectFactory}` | adapter: `spawn(seed)` = restore base snapshot + seed services; `run_to` = planner stop; `state_hash` = canonical hash of materialized memory + `vm_state` |
 | Guests | task 04 Multiboot payload contract & Linux image | Multiboot loader (replicating QEMU `-kernel` entry state) and bzImage loader; PIT/PIC device emulation backed by `TimerQueue` |
 
 ## 6. Open questions (decide during vmm-core bring-up)

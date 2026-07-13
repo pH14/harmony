@@ -8,7 +8,7 @@
 //! module doc.)
 
 use campaign_runner::campaign::CrashOracle;
-use explorer::{Reproducer, Oracle, RunTrace, StopReason, TerminalOracle, Moment};
+use explorer::{Moment, Oracle, Reproducer, RunTrace, StopReason, TerminalOracle};
 use proptest::prelude::*;
 
 /// A trace with the given terminal and an arbitrary (oracle-irrelevant) env.

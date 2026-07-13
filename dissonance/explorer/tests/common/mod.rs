@@ -33,8 +33,8 @@ use sha2::{Digest, Sha256};
 
 use explorer::{
     Answer, Composition, CoverageArchive, DecisionPoint, DeclineTactic, EnvCodec, EnvCodecError,
-    Reproducer, ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError,
-    MachineFactory, Prng, SnapId, StopConditions, StopReason, Tactic, TerminalOracle, Moment,
+    ExploreExploitSelector, GenesisSelector, IdentityCells, Machine, MachineError, MachineFactory,
+    Moment, Prng, Reproducer, SnapId, StopConditions, StopReason, Tactic, TerminalOracle,
 };
 
 // ---- the toy's fixed shape ----

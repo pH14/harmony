@@ -3,7 +3,7 @@
 //! the campaign-level "no reads / same verbs" half lives in the campaign runner's
 //! recording gate). Plus the telemetry NDJSON `Console` ingest path.
 
-use explorer::{Reproducer, Moment, Record, RunTrace, StopReason, StreamId};
+use explorer::{Moment, Record, Reproducer, RunTrace, StopReason, StreamId};
 use runtrace::{
     Retain, RetentionPolicy, TraceId, TraceStore, decode_chunks, ingest_ndjson, retain_for,
 };

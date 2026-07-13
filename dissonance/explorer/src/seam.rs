@@ -46,7 +46,7 @@ pub trait Machine {
     /// point.
     fn snapshot(&mut self) -> Result<SnapId, MachineError>;
 
-    /// Release `snap` (corpus GC). Using a dropped handle afterward is a
+    /// Release `snap` (pool GC). Using a dropped handle afterward is a
     /// [`MachineError::UnknownSnapshot`].
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), MachineError>;
 

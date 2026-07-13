@@ -76,9 +76,9 @@ use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::seal_rate::{
-    BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Overshoot,
+    BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Moment, Overshoot,
     PredicateQuality, Ruling, RulingInputs, RulingThresholds, SampleKind, SamplingSchedule,
-    Moment, SealAttempt, SealResult, SealStats, Span, ppm_percent, rate_ppm, sealable,
+    SealAttempt, SealResult, SealStats, Span, ppm_percent, rate_ppm, sealable,
 };
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vmm::{Step, TerminalReason, Vmm, VmmError};

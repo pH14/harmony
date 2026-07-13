@@ -54,7 +54,7 @@ seam may branch on which ISA is in use.
   **`vmm-core/src/control.rs`** (task-58 server), `corpus.rs`, `work.rs` (the `WorkSource`
   trait seam), and `vm-state`'s TLV container codec (records are x86; machinery is not).
 - **All of dissonance.** `explorer`, `flow`, `matcher`, `runtrace` (scrape decodes the serial
-  console byte stream, never guest state), `conductor` lib/record, and `control-proto`'s wire
+  console byte stream, never guest state), `campaign-runner` lib/record, and `control-proto`'s wire
   (registers ride as opaque `CrashInfo.detail`; host faults as opaque blobs; state addressed by
   `SnapId`/`Moment`/`VTime`/GPA ranges). Total in-layer arch surface: one field —
   `HostFault::InjectInterrupt { vector: u8 }` (`environment/src/host.rs`) — and one name,
@@ -179,7 +179,7 @@ is named) extends naturally: main names the `(Backend impl, Arch personality)` p
    wire is otherwise clean).
 3. `vtime`: rename `VClockConfig::{tsc_hz, tsc_base}` → guest-clock naming, whenever vtime is
    next touched (naming-only; the arithmetic is arch-free).
-4. `conductor/main.rs` box-mode defaults (`bzImage`, x86 cmdline, `BackendKind`) become
+4. `campaign-runner/main.rs` box-mode defaults (`bzImage`, x86 cmdline, `BackendKind`) become
    per-arch config data.
 
 ### D. Explicitly NOT restructuring — the ARM new-build (post-spike only)

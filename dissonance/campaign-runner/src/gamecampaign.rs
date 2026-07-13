@@ -33,7 +33,7 @@ use std::collections::BTreeSet;
 
 use benchmark::exploration::{DiscoveryEvent, ExplorationConfig, ExplorationLog};
 use explorer::{
-    EnvCodec, Reproducer, Feature, Machine, MachineError, Moment, Prng, RunTrace, Sensor,
+    EnvCodec, Feature, Machine, MachineError, Moment, Prng, Reproducer, RunTrace, Sensor,
     StopConditions, StopMask, StopReason,
 };
 use sdk_events::{LINK_STATE_CHANNEL, LinkSensor};

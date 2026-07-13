@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use common::{arb_action, arb_policy, arb_spec, config, run_guest_schedule};
 use environment::{
     Action, Answer, ConnId, DecisionClass, DecisionPoint as P, EnvCodec, EnvError, EnvSpec,
-    Environment, FaultPolicy, Moment, NodeId, Outcome, StandingFault, Span,
+    Environment, FaultPolicy, Moment, NodeId, Outcome, Span, StandingFault,
 };
 use proptest::prelude::*;
 

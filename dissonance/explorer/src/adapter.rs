@@ -130,7 +130,7 @@ use std::io::{Read, Write};
 use environment::{Action, EnvSpec, FaultPolicy};
 
 use crate::error::{EnvCodecError, MachineError};
-use crate::{Answer, Reproducer, Machine, SnapId, StopConditions, StopReason, Moment};
+use crate::{Answer, Machine, Moment, Reproducer, SnapId, StopConditions, StopReason};
 
 /// The adapter blob format version, mirrored into [`Reproducer::blob_version`]
 /// for every explorer-side blob this adapter mints. Distinct from the inner
@@ -1097,8 +1097,8 @@ mod tests {
         ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
     };
     use crate::{
-        Answer, EnvCodec, EnvCodecError, Reproducer, Machine, MachineError, StopConditions,
-        StopMask, Moment,
+        Answer, EnvCodec, EnvCodecError, Machine, MachineError, Moment, Reproducer, StopConditions,
+        StopMask,
     };
 
     fn spec_with_overrides(seed: u64, keys: &[u64]) -> EnvSpec {
@@ -1532,7 +1532,7 @@ mod tests {
 
     #[test]
     fn crash_info_keeps_kinds_distinguishable() {
-        use control_proto::{CrashInfo, CrashKind, StopReason as Ws, Moment as WsVTime};
+        use control_proto::{CrashInfo, CrashKind, Moment as WsVTime, StopReason as Ws};
         let stop = |kind| {
             super::stop_from_wire(Ws::Crash {
                 vtime: WsVTime(5),
@@ -1675,7 +1675,7 @@ mod tests {
     /// be mis-keyed once decisions exist (dormant in v1).
     #[test]
     fn replay_restores_the_branch_origin_at_capture_not_the_snapshot_vtime() {
-        use control_proto::{Reply, SnapId as WsSnapId, StopReason as Ws, Moment as WsVTime};
+        use control_proto::{Moment as WsVTime, Reply, SnapId as WsSnapId, StopReason as Ws};
         let stream = scripted(&[
             server_caps_reply(),        // hello
             probe_reply(50),            // connect probe → origin 50
@@ -1900,7 +1900,7 @@ mod tests {
     /// reactive path this recording machinery exists for.)
     #[test]
     fn a_none_resolve_between_a_decision_and_its_answer_keeps_the_pending_decision() {
-        use control_proto::{DecisionId, Reply, StopReason as Ws, Moment as WsVTime};
+        use control_proto::{DecisionId, Moment as WsVTime, Reply, StopReason as Ws};
         let stream = scripted(&[
             server_caps_reply(), // hello
             probe_reply(0),      // connect's V-time probe (origin 0)

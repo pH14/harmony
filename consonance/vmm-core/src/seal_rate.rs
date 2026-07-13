@@ -625,7 +625,11 @@ impl MaterializationDepth {
     ///
     /// # Errors
     /// [`DepthError::NonMonotonic`] if the points are not strictly increasing.
-    pub fn new(genesis: Moment, parent_seal: Moment, deep_seal: Moment) -> Result<Self, DepthError> {
+    pub fn new(
+        genesis: Moment,
+        parent_seal: Moment,
+        deep_seal: Moment,
+    ) -> Result<Self, DepthError> {
         if !(genesis < parent_seal && parent_seal < deep_seal) {
             return Err(DepthError::NonMonotonic);
         }

@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use explorer::{
-    ChannelId, CoverageView, Reproducer, Feature, FeatureId, GuestEvent, Moment, Record,
-    RunTrace, Sensor, StopReason, StreamId, Value,
+    ChannelId, CoverageView, Feature, FeatureId, GuestEvent, Moment, Record, Reproducer, RunTrace,
+    Sensor, StopReason, StreamId, Value,
 };
 use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;

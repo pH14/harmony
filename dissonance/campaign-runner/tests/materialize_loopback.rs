@@ -24,13 +24,15 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
-use campaign_runner::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
+use campaign_runner::materialize::{
+    MaterializeConfig, render_materialize_table, verify_materialize,
+};
 use campaign_runner::mock::{self, chain_fork_script};
 use campaign_runner::{materialize_client, probe_vtime, run_session};
 use environment::{Action, BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::adapter::SocketMachine;
 use explorer::{
-    AdapterEnv, EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment,
+    AdapterEnv, EnvCodec, Machine, Moment, SpecEnvCodec, StopConditions, StopMask, StopReason,
 };
 
 /// The env the mock live VM boots under.

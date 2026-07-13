@@ -19,8 +19,8 @@
 
 use crate::error::ProtocolError;
 use crate::types::{
-    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Reproducer,
-    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
+    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
+    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId, StopConditions,
     StopMask, StopReason,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};

@@ -11,7 +11,9 @@
 //! replays the identical crash (same terminal `StopReason`, same `state_hash`)
 //! 25/25; a nominal-seed control run does not crash.
 
-use campaign_runner::campaign::{CampaignConfig, render_campaign_table, run_campaign, verify_campaign};
+use campaign_runner::campaign::{
+    CampaignConfig, render_campaign_table, run_campaign, verify_campaign,
+};
 use campaign_runner::planted::{ToyPlantedMachine, Trigger};
 use explorer::{SpecEnvCodec, StopReason};
 

@@ -12,8 +12,8 @@ mod common;
 
 use common::config;
 use explorer::{
-    Archive, CoverageArchive, CoverageView, Reproducer, Fork, IdentityCells, Moment,
-    RunTrace, SnapId, StopReason, VirtualExemplar,
+    Archive, CoverageArchive, CoverageView, Fork, IdentityCells, Moment, Reproducer, RunTrace,
+    SnapId, StopReason, VirtualExemplar,
 };
 use proptest::prelude::*;
 

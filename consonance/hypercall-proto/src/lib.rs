@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #![no_std]
-#![doc = "Deterministic guest/host hypercall wire protocol framing, guest client helpers, and host dispatch support for the Hypervizor VMM."]
+#![doc = "Deterministic guest/host hypercall wire protocol framing, guest client helpers, and host dispatch support for the deterministic VMM."]
 //!
 //! # Services and opcodes (the wire ABI)
 //!

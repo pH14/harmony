@@ -4,7 +4,7 @@
 //! boundary. This simulates "run B has a nondeterminism bug at tick T" with T
 //! known, so the bisector can be tested against ground truth.
 
-use crate::{Subject, SubjectError, SubjectFactory, RunOutcome};
+use crate::{RunOutcome, Subject, SubjectError, SubjectFactory};
 use serde::{Deserialize, Serialize};
 
 /// A single one-shot state perturbation.

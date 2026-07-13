@@ -427,7 +427,7 @@ pub(crate) fn fingerprint(stop: &StopReason) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Reproducer, SnapId, Moment, VirtualExemplar};
+    use crate::{Moment, Reproducer, SnapId, VirtualExemplar};
 
     fn env() -> Reproducer {
         Reproducer {

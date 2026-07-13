@@ -32,10 +32,7 @@ fn backend_fault_is_never_a_bug() {
     let mut ex = Explorer::new(machine, Box::new(ToyCodec), pin_composition(), 2).unwrap();
 
     // The very first run fails; the step returns Err, not a bug.
-    assert!(matches!(
-        ex.step(),
-        Err(MachineError::Transport(_))
-    ));
+    assert!(matches!(ex.step(), Err(MachineError::Transport(_))));
 }
 
 /// A clean, bug-free campaign (no class surfaces, the seed never trips a crash

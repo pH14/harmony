@@ -129,7 +129,7 @@ impl ContextSource for FaultMoments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{Reproducer, Record, StopReason, StreamId, Moment};
+    use explorer::{Moment, Record, Reproducer, StopReason, StreamId};
 
     #[test]
     fn trace_records_adapts_the_scrape_stream() {

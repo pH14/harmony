@@ -16,7 +16,7 @@ use common::{
     SNAP_AT, SNAP_AT2, TOTAL_DECISIONS, ToyCodec, ToyEnv, ToyMachine, VTIME_STEP, config, decode,
     drive_to_terminal, encode, pin_composition,
 };
-use explorer::{EnvCodec, ExemplarRef, Explorer, Machine, StopConditions, StopMask, Moment};
+use explorer::{EnvCodec, ExemplarRef, Explorer, Machine, Moment, StopConditions, StopMask};
 use proptest::prelude::*;
 
 fn all() -> StopConditions {

@@ -8,11 +8,13 @@
 //!   fingerprint (cross-checked against `TerminalOracle`), so the two dedup.
 
 use explorer::{
-    Archive, ChannelId, CoverageArchive, Reproducer, Feature, FeatureId, Fork, GuestEvent,
-    IdentityCells, Moment, Oracle, RunTrace, Sensor, SnapId, StopReason, TerminalOracle,
+    Archive, ChannelId, CoverageArchive, Feature, FeatureId, Fork, GuestEvent, IdentityCells,
+    Moment, Oracle, Reproducer, RunTrace, Sensor, SnapId, StopReason, TerminalOracle,
     VirtualExemplar,
 };
-use sdk_events::{AlwaysViolation, LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor, decode_event};
+use sdk_events::{
+    AlwaysViolation, LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor, decode_event,
+};
 
 const NS_SHIFT: u32 = 24;
 const NS_ASSERT: u32 = 1;

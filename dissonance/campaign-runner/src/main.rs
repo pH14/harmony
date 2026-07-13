@@ -28,7 +28,6 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
 use campaign_runner::campaign::{
     CampaignConfig, CampaignReport, render_campaign_table, run_campaign, verify_campaign,
 };
@@ -39,6 +38,7 @@ use campaign_runner::record::{
     verify_store_reload,
 };
 use campaign_runner::{SweepConfig, render_table, run_session, sweep_client, verify};
+use clap::{Parser, Subcommand};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::{RetentionPolicy, TraceStore};
@@ -578,7 +578,10 @@ fn finish_game(
                     eprintln!("[campaign-runner] cannot write {}: {e}", mpath.display());
                     return ExitCode::FAILURE;
                 }
-                println!("[campaign-runner] wrote the manifest to {}", mpath.display());
+                println!(
+                    "[campaign-runner] wrote the manifest to {}",
+                    mpath.display()
+                );
             }
         }
 
@@ -764,7 +767,9 @@ fn finish_campaign(mode: &str, report: &CampaignReport, n: usize) -> ExitCode {
 /// the three materialization gates) against the scripted mock guest, over the
 /// real wire path.
 fn run_mock_materialize(args: MatArgs) -> ExitCode {
-    use campaign_runner::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
+    use campaign_runner::materialize::{
+        MaterializeConfig, render_materialize_table, verify_materialize,
+    };
     if args.hops < 3 {
         eprintln!("[campaign-runner] --hops must be >= 3 (gate (b) needs a retained grandparent)");
         return ExitCode::FAILURE;
@@ -879,17 +884,21 @@ fn run_mock_recording(args: &SweepArgs, dir: PathBuf, retain: RetentionPolicy) -
     let store = match TraceStore::open(&dir) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[campaign-runner] cannot open trace store {}: {e}", dir.display());
+            eprintln!(
+                "[campaign-runner] cannot open trace store {}: {e}",
+                dir.display()
+            );
             return ExitCode::FAILURE;
         }
     };
-    let mut server = match campaign_runner::mock::server(campaign_runner::mock::recording_fork_script()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[campaign-runner] failed to compose the mock recording server: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let mut server =
+        match campaign_runner::mock::server(campaign_runner::mock::recording_fork_script()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[campaign-runner] failed to compose the mock recording server: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
     let cfg = RecordConfig {
         sweep: SweepConfig {
             seeds: seeds(args.seeds),
@@ -933,13 +942,14 @@ fn run_mock(args: SweepArgs) -> ExitCode {
         deadline_delta: None, // run each fork to its clean Hlt terminal
         ..SweepConfig::default()
     };
-    let mut server = match campaign_runner::mock::server(campaign_runner::mock::default_fork_script()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[campaign-runner] failed to compose the mock server: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let mut server =
+        match campaign_runner::mock::server(campaign_runner::mock::default_fork_script()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[campaign-runner] failed to compose the mock server: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
     // The mock live VM boots under BOOT_SEED with the never-fault policy.
     let initial = EnvSpec::Seeded {
         seed: campaign_runner::mock::BOOT_SEED,
@@ -1125,7 +1135,13 @@ mod tests {
         refused(&["campaign-runner", "game", "box", "--max-branches", "0"]);
         refused(&["campaign-runner", "game", "box", "--deadline-delta", "0"]);
         // …and the rest of that path's budget knobs, whose zero is just as hollow.
-        refused(&["campaign-runner", "game", "box", "--setup-deadline-delta", "0"]);
+        refused(&[
+            "campaign-runner",
+            "game",
+            "box",
+            "--setup-deadline-delta",
+            "0",
+        ]);
         refused(&["campaign-runner", "game", "box", "--repeat", "0"]);
         refused(&["campaign-runner", "game", "box", "--explore-period", "0"]);
         // The same budgets on every other campaign path (a zero budget is never
@@ -1133,7 +1149,13 @@ mod tests {
         refused(&["campaign-runner", "game", "mock", "--max-branches", "0"]);
         refused(&["campaign-runner", "box", "--deadline-delta", "0"]);
         refused(&["campaign-runner", "campaign", "box", "--max-branches", "0"]);
-        refused(&["campaign-runner", "campaign", "box", "--deadline-delta", "0"]);
+        refused(&[
+            "campaign-runner",
+            "campaign",
+            "box",
+            "--deadline-delta",
+            "0",
+        ]);
         refused(&["campaign-runner", "campaign", "mock", "--max-branches", "0"]);
         refused(&[
             "campaign-runner",
@@ -1460,8 +1482,9 @@ mod tests {
         use campaign_runner::record::run_recording;
         let dir = tempfile::tempdir().unwrap();
         let store = TraceStore::open(dir.path()).unwrap();
-        let mut server = campaign_runner::mock::server(campaign_runner::mock::recording_fork_script())
-            .expect("compose mock recording server");
+        let mut server =
+            campaign_runner::mock::server(campaign_runner::mock::recording_fork_script())
+                .expect("compose mock recording server");
         let cfg = RecordConfig {
             sweep: SweepConfig {
                 seeds: seeds(4),

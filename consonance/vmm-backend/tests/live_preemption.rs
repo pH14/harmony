@@ -23,7 +23,7 @@
 //! against `SimCpu` in `src/run_until.rs`).
 #![cfg(target_os = "linux")]
 
-use vmm_backend::{Backend, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange, Moment};
+use vmm_backend::{Backend, CpuidModel, Exit, Gpa, KvmBackend, Moment, MsrFilter, MsrRange};
 
 /// Page-aligned guest RAM (the `map_memory` host-alignment invariant), reached by
 /// the backend through a raw pointer.

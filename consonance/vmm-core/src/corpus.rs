@@ -43,7 +43,7 @@
 //! rather than mistake a deterministic *failure* for a deterministic *pass*.
 
 use sha2::Digest as _;
-use unison::{Subject, SubjectError, RunOutcome};
+use unison::{RunOutcome, Subject, SubjectError};
 use vmm_backend::Backend;
 
 use crate::vmm::Vmm;

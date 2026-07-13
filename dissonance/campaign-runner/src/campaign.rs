@@ -65,8 +65,8 @@ use std::collections::BTreeMap;
 
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, Bug, EnvCodec, Reproducer, GuestEvent, Machine, MachineError, Moment,
-    Oracle, Prng, RunTrace, StopConditions, StopMask, StopReason, TerminalOracle,
+    AdapterEnv, Bug, EnvCodec, GuestEvent, Machine, MachineError, Moment, Oracle, Prng, Reproducer,
+    RunTrace, StopConditions, StopMask, StopReason, TerminalOracle,
 };
 
 use crate::stopwatch::{Phase, PhaseStats, Stopwatch};
@@ -422,7 +422,7 @@ pub fn run_campaign<M: Machine>(
         is_bug: oracle.judge(&nominal_trace).is_some(),
     };
 
-    // 5. Release the base handle (corpus GC — exercises `drop`).
+    // 5. Release the base handle (pool GC — exercises `drop`).
     machine.drop_snap(base)?;
 
     let wall_secs = sw.elapsed_secs();
@@ -664,7 +664,7 @@ pub fn render_campaign_table(report: &CampaignReport, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{SpecEnvCodec, Moment};
+    use explorer::{Moment, SpecEnvCodec};
 
     /// [`CampaignConfig::toy`] with its **search space narrowed under Miri**
     /// (task 104, `hm-d4y`). The full toy space is 4 gpas × 4 mask bits × an
@@ -900,11 +900,7 @@ mod tests {
     }
 
     impl Machine for AssertMachine {
-        fn branch(
-            &mut self,
-            snap: explorer::SnapId,
-            env: &Reproducer,
-        ) -> Result<(), MachineError> {
+        fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
             let (vt, _) = self
                 .snaps
                 .get(&snap.0)

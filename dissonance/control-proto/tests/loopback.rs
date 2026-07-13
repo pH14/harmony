@@ -9,8 +9,8 @@
 //! `resolve`-without-`Decision` path real (`environment::Answer` is opaque here).
 
 use control_proto::{
-    Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, Reproducer, HashScope,
-    HostFault, Moment, PROTO_VERSION, RegsView, Reply, Request, SnapId, StopConditions, StopMask,
+    Answer, CapFlags, Caps, ControlError, CoverageGeometry, DecisionId, HashScope, HostFault,
+    Moment, PROTO_VERSION, RegsView, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
     StopReason, class_bit, decode_reply, decode_request, encode_reply, encode_request,
 };
 

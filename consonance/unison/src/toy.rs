@@ -9,7 +9,7 @@
 //! every instruction costs exactly 1 work unit.
 
 use crate::flaky::{Perturbable, Perturbation};
-use crate::{Subject, SubjectError, SubjectFactory, RunOutcome};
+use crate::{RunOutcome, Subject, SubjectError, SubjectFactory};
 use sha2::{Digest, Sha256};
 
 /// Bytes of toy-machine memory.

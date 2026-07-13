@@ -282,7 +282,10 @@ pub fn run(args: BoxArgs) -> ExitCode {
         let store = match TraceStore::open(&dir) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[campaign-runner] cannot open trace store {}: {e}", dir.display());
+                eprintln!(
+                    "[campaign-runner] cannot open trace store {}: {e}",
+                    dir.display()
+                );
                 return ExitCode::FAILURE;
             }
         };
@@ -567,7 +570,9 @@ pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let mut report = match client {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[campaign-runner] campaign box: the campaign failed (transport/backend): {e}");
+            eprintln!(
+                "[campaign-runner] campaign box: the campaign failed (transport/backend): {e}"
+            );
             if let Err(se) = served {
                 eprintln!("[campaign-runner] campaign box: server session ended with: {se}");
             }
@@ -715,7 +720,9 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     let outcome = match outcome {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[campaign-runner] benchcampaign box: campaign failed (transport/backend): {e}");
+            eprintln!(
+                "[campaign-runner] benchcampaign box: campaign failed (transport/backend): {e}"
+            );
             if let Err(se) = served {
                 eprintln!("[campaign-runner] benchcampaign box: server session ended with: {se}");
             }

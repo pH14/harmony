@@ -5,7 +5,7 @@
 //! purity/coverage. This is the `vmcall-transport` loopback pattern applied to the
 //! backend seam (tasks/15 §"Mock-backend testing").
 
-use vmm_backend::{Backend, Exit, Gpa, MockBackend, MpState, VcpuState, Moment};
+use vmm_backend::{Backend, Exit, Gpa, MockBackend, Moment, MpState, VcpuState};
 use vmm_core::contract::{cpuid_model, msr_filter_allow};
 use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
 

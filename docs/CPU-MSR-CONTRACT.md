@@ -2053,7 +2053,7 @@ is what is enforced, with no second hand-maintained copy.
 
 **What is hashed (normative).** `contract_hash` = SHA-256 over the full canonical form,
 including the header records — 32 bytes, rendered as lowercase hex. SHA-256 keeps the
-32-byte width of `unison::Machine::state_hash` and stays inside the dependency
+32-byte width of `unison::Subject::state_hash` and stays inside the dependency
 whitelist (`sha2`). The hash binds in three places:
 
 - **Startup**: vmm-core computes `contract_hash` from the artifact it actually parsed

@@ -10,7 +10,8 @@
 #![cfg(feature = "mock")]
 
 use vmm_backend::{
-    Backend, CpuidModel, Injection, Exit, Gpa, HypercallRegs, MockBackend, MsrFilter, VcpuState, Moment,
+    Backend, CpuidModel, Exit, Gpa, HypercallRegs, Injection, MockBackend, Moment, MsrFilter,
+    VcpuState,
 };
 
 /// Compiles only while `Backend` is dyn-compatible (no generic methods, no

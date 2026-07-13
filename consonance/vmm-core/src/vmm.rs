@@ -15,7 +15,7 @@ use hypercall_proto::{
     encode_response,
 };
 use sha2::{Digest, Sha256};
-use vmm_backend::{Backend, Exit, Gpa, VcpuState, Moment};
+use vmm_backend::{Backend, Exit, Gpa, Moment, VcpuState};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
 use crate::contract::{self, MsrDisposition};

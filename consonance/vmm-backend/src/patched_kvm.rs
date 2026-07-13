@@ -35,7 +35,7 @@
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Injection, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
 use crate::kvm::patched_capabilities;
 use crate::kvm_sys::KvmBackend;
 use crate::state::VcpuState;

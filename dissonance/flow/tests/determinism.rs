@@ -11,8 +11,8 @@ mod common;
 
 use common::{ScriptedDecider, arb_events, run_all, run_incremental};
 use flow::{
-    ConnId, Dir, FlowAction, FlowEngine, FlowEvent, FlowPolicy, Moment, NodeId,
-    PassthroughEngine, Span, ToxiproxyEngine,
+    ConnId, Dir, FlowAction, FlowEngine, FlowEvent, FlowPolicy, Moment, NodeId, PassthroughEngine,
+    Span, ToxiproxyEngine,
 };
 use proptest::prelude::*;
 

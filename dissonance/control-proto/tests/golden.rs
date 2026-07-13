@@ -11,9 +11,9 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Reproducer, EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply,
-    Request, SnapId, StopConditions, StopMask, StopReason, class_bit, decode_reply,
-    decode_request, encode_reply, encode_request,
+    EventRef, HashScope, HostFault, Moment, PROTO_VERSION, ProtocolError, Reply, Reproducer,
+    Request, SnapId, StopConditions, StopMask, StopReason, class_bit, decode_reply, decode_request,
+    encode_reply, encode_request,
 };
 
 const MAGIC: [u8; 4] = *b"CTL1";
@@ -360,7 +360,9 @@ fn reply_regs() {
 fn reply_stop_deadline() {
     check_reply(
         20,
-        Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(0x2A) })),
+        Ok(Reply::Stop(StopReason::Deadline {
+            vtime: Moment(0x2A),
+        })),
         &[
             0x00, 0x04, // RESULT_OK, REPLY_STOP
             0x01, // SR_DEADLINE
@@ -373,7 +375,9 @@ fn reply_stop_deadline() {
 fn reply_stop_quiescent() {
     check_reply(
         21,
-        Ok(Reply::Stop(StopReason::Quiescent { vtime: Moment(0x2A) })),
+        Ok(Reply::Stop(StopReason::Quiescent {
+            vtime: Moment(0x2A),
+        })),
         &[
             0x00, 0x04, 0x02, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ],

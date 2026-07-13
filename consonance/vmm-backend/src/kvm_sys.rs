@@ -39,7 +39,7 @@ use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Injection, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
 use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::{MemRegions, split_around_hole};

@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use sha2::{Digest, Sha256};
 
 use explorer::{
-    Answer, EnvCodec, Reproducer, Machine, MachineError, SnapId, StopConditions, StopMask,
+    Answer, EnvCodec, Machine, MachineError, Reproducer, SnapId, StopConditions, StopMask,
     StopReason,
 };
 

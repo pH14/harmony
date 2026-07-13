@@ -19,8 +19,7 @@
 //! format bump when it lights up.
 
 use explorer::{
-    CoverageView, Reproducer, GuestEvent, Moment, Record, RunTrace, StopReason, StreamId,
-    Value,
+    CoverageView, GuestEvent, Moment, Record, Reproducer, RunTrace, StopReason, StreamId, Value,
 };
 
 use crate::error::TraceError;

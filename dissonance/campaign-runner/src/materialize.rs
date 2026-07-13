@@ -40,9 +40,9 @@
 //! whether a live window actually drew.
 
 use explorer::{
-    EnvCodec, Reproducer, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError,
-    Materialization, Materializer, Moment, Reward, SnapId, StopConditions, StopMask,
-    StopReason, VirtualExemplar,
+    EnvCodec, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError, Materialization,
+    Materializer, Moment, Reproducer, Reward, SnapId, StopConditions, StopMask, StopReason,
+    VirtualExemplar,
 };
 
 use crate::{fmt_stop, hex, probe_vtime};
@@ -394,7 +394,7 @@ pub fn run_materialize<M: Machine>(
         false
     };
 
-    // 7. Cleanup: release every seal and the base (corpus GC over the wire).
+    // 7. Cleanup: release every seal and the base (pool GC over the wire).
     mat.evict_all(machine)?;
     machine.drop_snap(genesis)?;
 
@@ -744,7 +744,7 @@ pub fn render_materialize_table(r: &MaterializeReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use explorer::{Reproducer, Materialization, Moment, SnapId, StopReason};
+    use explorer::{Materialization, Moment, Reproducer, SnapId, StopReason};
 
     use super::*;
 

@@ -9,7 +9,7 @@
 
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Injection, Exit, ExitCounts};
+use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
 use crate::state::VcpuState;
 use crate::types::{Gpa, Moment};
 

@@ -67,8 +67,8 @@
 #![cfg(target_os = "linux")]
 
 use control_proto::{
-    ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions,
-    StopMask, StopReason,
+    ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
+    StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;

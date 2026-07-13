@@ -3,7 +3,7 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use explorer::{CellFn, Feature, FeatureId, FeatureSet, RunTrace, Sensor, StopReason, Moment};
+use explorer::{CellFn, Feature, FeatureId, FeatureSet, Moment, RunTrace, Sensor, StopReason};
 use logtmpl::{CellFnV1, LogSensor, load_console_log};
 
 /// The committed k3s console capture (≥ 5,000 lines — the cardinality gate).

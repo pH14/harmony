@@ -65,7 +65,7 @@ Reading notes:
 The spike drove gates via kernel cmdline + serial because it was forbidden production
 changes. Integration inverts that: **the appliance boots `ControlServer` and the VM
 boundary becomes one more byte stream under the existing control protocol.** Everything
-above `unison::Machine` — explorer, counterpoint, film, resolution, runtrace, snapshots,
+above `unison::Subject` — explorer, campaign-runner, film, resolution, runtrace, snapshots,
 host-fault scheduling — works against a nested machine unchanged. That is the dividend
 of the task-58 seam and the reason this program is mostly packaging, not core work.
 
@@ -73,11 +73,11 @@ Work items (I-stages), each with a gate:
 
 | # | Item | Content | Gate |
 |---|------|---------|------|
-| I1 | `harmonyd` composition root | A real binary (vmm-core) that reads an appliance manifest (subject image + pins, RAM, factory config), builds `VmmFactory`/`SnapshotEngine`, serves control-proto. Today that composition exists only inside test binaries and conductor `boxrun`. | boots in the appliance; serves `hello` |
+| I1 | `harmonyd` composition root | A real binary (vmm-core) that reads an appliance manifest (subject image + pins, RAM, factory config), builds `VmmFactory`/`SnapshotEngine`, serves control-proto. Today that composition exists only inside test binaries and campaign-runner `boxrun`. | boots in the appliance; serves `hello` |
 | I2 | vsock transport binding | control-proto listener on `AF_VSOCK` in harmonyd; vsock dialer in the explorer adapter (QEMU `-device vhost-vsock-pci`). Serial remains for boot logs + gate verdicts. Protocol unchanged (caps flag at most). | existing socket-Machine test suite green over vsock into a live appliance |
 | I3 | appliance as first-class build | Promote `spikes/nested-x86/appliance/{build,init,run}` into `guest/appliance/` Makefile targets: pinned kernel, patched kvm/kvm-intel modules, harmonyd, subject images, init. Keep the spike init discipline verbatim (patched-module load check, in-L1 content-hash verification of L2 images before any boot). | one-command build reproduces the N-5 demo from the repo |
 | I4 | launcher + `doctor` | Host-side CLI owns the pinned QEMU invocation (the spike's run-appliance.sh becomes code): vCPU pinning policy (mandatory core-type pin on hybrid CPUs, §4.2), vsock wiring, lifecycle. `doctor` = N-0 truth table productized + in-guest self-check, machine-readable report incl. CPU-class identification. | doctor GO on the box + on one qualified cloud class; refusal with a machine-readable report on an unqualified host |
-| I5 | conductor `ApplianceRun` | Peer to `boxrun`: acquire machine by booting the appliance instead of composing in-process. Campaign/film/resolution code unchanged. | one existing campaign runs end-to-end nested via I1–I4 |
+| I5 | campaign-runner `ApplianceRun` | Peer to `boxrun`: acquire machine by booting the appliance instead of composing in-process. Campaign/film/resolution code unchanged. | one existing campaign runs end-to-end nested via I1–I4 |
 | I6 | gate mode kept | The spike's cmdline+serial gate path (`harmony.gates=… → GATE_RC`) survives as the dumb, robust CI path beside the interactive vsock path. | CI job template using gate mode |
 
 Explicitly unchanged: patches 0001–0005, `Backend`/`Vmm`/`Machine`, control-proto framing,

@@ -72,7 +72,7 @@ mod patched_kvm;
 pub use backend::Backend;
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 pub use error::{BackendError, Result};
-pub use exit::{Capabilities, Injection, Exit, ExitCounts, ExitReason, HypercallRegs};
+pub use exit::{Capabilities, Exit, ExitCounts, ExitReason, HypercallRegs, Injection};
 pub use state::{
     DebugRegs, DescriptorTable, MpState, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
 };

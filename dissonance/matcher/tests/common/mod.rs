@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use explorer::{Reproducer, Moment, RunTrace, StopReason, Value};
+use explorer::{Moment, Reproducer, RunTrace, StopReason, Value};
 use matcher::stub::RecordRec;
 use matcher::{During, MatchExpr, Role, SignalDecl, SignalId, SignalSet};
 use proptest::prelude::*;

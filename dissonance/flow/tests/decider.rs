@@ -9,7 +9,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::{RecordingDecider, arb_events};
-use flow::{ConnId, Dir, FlowEngine, FlowEvent, NodeId, ToxiproxyEngine, Moment};
+use flow::{ConnId, Dir, FlowEngine, FlowEvent, Moment, NodeId, ToxiproxyEngine};
 use proptest::prelude::*;
 
 fn open(conn: u64, src: u32, dst: u32) -> FlowEvent {

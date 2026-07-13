@@ -61,8 +61,8 @@ use std::collections::BTreeMap;
 
 use environment::HostFault;
 use explorer::{
-    AdapterEnv, Answer, Reproducer, Machine, MachineError, SnapId, StopConditions, StopReason,
-    Moment,
+    AdapterEnv, Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions,
+    StopReason,
 };
 use sha2::{Digest, Sha256};
 
@@ -251,7 +251,9 @@ impl Machine for ToyPlantedMachine {
         if let Some(d) = until.deadline
             && d.0 <= base
         {
-            return Ok(StopReason::Deadline { vtime: Moment(base) });
+            return Ok(StopReason::Deadline {
+                vtime: Moment(base),
+            });
         }
         let terminal_vtime = base.saturating_add(self.terminal_offset());
         // Where this run actually stops: its natural terminal, unless a nearer

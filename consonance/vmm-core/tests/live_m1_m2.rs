@@ -37,7 +37,7 @@
 
 use std::path::PathBuf;
 
-use unison::{Subject, SubjectFactory, RunOutcome};
+use unison::{RunOutcome, Subject, SubjectFactory};
 use vmm_backend::KvmBackend;
 use vmm_core::bringup::boot;
 use vmm_core::vmm::{TerminalReason, Vmm};

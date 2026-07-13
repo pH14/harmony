@@ -24,7 +24,7 @@
 //!   boundaries (an RNG mid-exit completion, a non-V-time-synchronized point)
 //!   answer [`ControlError::NotQuiescent`] — the caller runs a little further
 //!   and retries.
-//! - **`drop(snap)`** → release + GC via the store (corpus GC).
+//! - **`drop(snap)`** → release + GC via the store (pool GC).
 //! - **`branch(snap, env)`** → restore `snap` into a **fresh, equivalently
 //!   composed VM** (from the [`VmmFactory`]) and **reseed the entropy stream
 //!   from the env's seed** ([`Vmm::reseed_entropy`]) so the branched future
@@ -1868,8 +1868,8 @@ mod tests {
     //! socket `Machine`).
 
     use control_proto::{
-        Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP,
-        Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
+        Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
+        Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
     };
     use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
     use vmm_backend::{Backend, Exit, MockBackend};
@@ -3509,7 +3509,12 @@ mod tests {
     /// so every armed arrival (`work_for_vns(moment) = moment ≥ 1`) is a real
     /// forward entry.
     fn enforce_vmm(deadlines: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
-        let mut exits = vec![Exit::Deadline { reached: vmm_backend::Moment(0) }; deadlines];
+        let mut exits = vec![
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0)
+            };
+            deadlines
+        ];
         exits.push(Exit::Hlt);
         let mut m = MockBackend::with_exits(exits);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3676,7 +3681,9 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             },
-            Exit::Deadline { reached: vmm_backend::Moment(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3763,7 +3770,9 @@ mod tests {
                 write: Some(n as u32),
             },
             Exit::Rdtsc,
-            Exit::Deadline { reached: vmm_backend::Moment(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3844,7 +3853,9 @@ mod tests {
                 write: Some(n as u32),
             },
             Exit::Rdtsc,
-            Exit::Deadline { reached: vmm_backend::Moment(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -5873,7 +5884,9 @@ mod tests {
         // buggify doorbell (decides AFTER the reseed) → HLT.
         let fork_exits = vec![
             Exit::Rdtsc,
-            Exit::Deadline { reached: vmm_backend::Moment(0) },
+            Exit::Deadline {
+                reached: vmm_backend::Moment(0),
+            },
             Exit::Io {
                 port: 0x0CA1,
                 size: 4,

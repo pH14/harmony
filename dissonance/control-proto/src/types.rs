@@ -172,7 +172,7 @@ pub enum Request {
     Hello(Caps),
     /// Capture state at a quiescent point → [`SnapId`](Reply::SnapId).
     Snapshot,
-    /// Release a snapshot (corpus GC) → [`Unit`](Reply::Unit).
+    /// Release a snapshot (pool GC) → [`Unit`](Reply::Unit).
     Drop(SnapId),
     /// Restore + reseed from `env` — the explore path → [`Unit`](Reply::Unit).
     Branch {

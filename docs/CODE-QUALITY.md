@@ -213,10 +213,10 @@ of scope for this gating task.
 ### Ratchet: 93% → 94.5% (2026-07-05, issue #69)
 
 A CI compile break (`Step::SdkStop`, #63→#68) had failed the coverage job *before it could
-measure* for several merges, letting `dissonance/conductor`'s `record.rs`/`campaign.rs`/
+measure* for several merges, letting `dissonance/campaign-runner`'s `record.rs`/`campaign.rs`/
 `lib.rs`/`main.rs` accumulate thin coverage undetected (68–83% region, `main.rs` 0%). #71
 added targeted gate-branch and CLI-dispatch tests to those four files (see
-`dissonance/conductor/IMPLEMENTATION.md`'s "Coverage recovery" section for what was added),
+`dissonance/campaign-runner/IMPLEMENTATION.md`'s "Coverage recovery" section for what was added),
 and split `main.rs`'s Linux-only `mod boxrun` (needs real `/dev/kvm` + patched KVM + a built
 guest image — uncoverable by this job, same reasoning as the `kvm.rs`/`patched_kvm.rs`/
 `pmu_sys.rs`/`work_perf.rs` exclusions above) into its own `src/boxrun.rs`, added to

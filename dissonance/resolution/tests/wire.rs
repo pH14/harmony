@@ -12,8 +12,8 @@
 //! join this same codec.
 
 use control_proto::{
-    ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions,
-    StopMask, StopReason, decode_reply, decode_request, encode_reply, encode_request,
+    ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
+    StopReason, decode_reply, decode_request, encode_reply, encode_request,
 };
 use environment::{EnvCodec, EnvSpec, FaultPolicy};
 use resolution::{MomentRef, client_caps};

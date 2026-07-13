@@ -35,7 +35,7 @@ integration); `det-corpus` is where that knowledge lives.
 |----|----------|-----------|---------|
 | **O1** | **Determinism** (replay-equivalence) | `compare_runs(F, F, seed, …)` must be `Identical`; on `Diverged`, `bisect_divergence` localizes to the exact work count | the core bug: any nondeterminism that leaks into observable state |
 | **O2** | **Conformance** (matches spec, not just itself) | observed serial/state digest == committed golden; trapped-instruction results == frozen `docs/cpu-msr-contract.toml` (CPUID = frozen model, MSR default-deny + allowed set, RDTSC = f(V-time), RNG = contract PRNG stream) | "deterministic but **wrong**" — a constant is perfectly deterministic and perfectly useless |
-| **O3** | **Seed-sensitivity** (non-triviality / anti-cheat) | compares a guest-**observable output** digest (`out_*`), **not** `state_hash` (which includes the seed-derived latent entropy state — see task 17 note): RNG-consuming + control-flow-stable payload under two *different* seeds → assert `work_a == work_b` **and** `out_a != out_b`; pure payload → assert `out_a == out_b` | the two failure modes O1 alone can't see: **faked** determinism (RNG wired to a constant → passes O1 trivially) and **seed-leaked** nondeterminism (seed reaching state it shouldn't). Needs a `unison::Machine` observable-output accessor (additive; [question]) |
+| **O3** | **Seed-sensitivity** (non-triviality / anti-cheat) | compares a guest-**observable output** digest (`out_*`), **not** `state_hash` (which includes the seed-derived latent entropy state — see task 17 note): RNG-consuming + control-flow-stable payload under two *different* seeds → assert `work_a == work_b` **and** `out_a != out_b`; pure payload → assert `out_a == out_b` | the two failure modes O1 alone can't see: **faked** determinism (RNG wired to a constant → passes O1 trivially) and **seed-leaked** nondeterminism (seed reaching state it shouldn't). Needs a `unison::Subject` observable-output accessor (additive; [question]) |
 | **O4** | **Backend-equivalence** (later) | on a TSC/RNG-free payload, `compare_runs(F_kvm, F_patched, …)` must be `Identical` — different backends, same architectural result | the patched-KVM trap apparatus silently changing baseline semantics. `unison` already takes two distinct factories for exactly this |
 
 O1 is necessary but not sufficient — O2 and O3 are what stop "made it deterministic by making
@@ -220,8 +220,8 @@ guest; external/fault-injected networking is deliberately deferred.
 
 ## Deliverable structure
 
-- **`consonance/det-corpus/`** *(task 17)* — host-side oracle runner. Generic over `unison::Machine`/
-  `MachineFactory`; defines the corpus manifest, the O1–O3 oracle runners, the conformance
+- **`consonance/det-corpus/`** *(task 17)* — host-side oracle runner. Generic over `unison::Subject`/
+  `SubjectFactory`; defines the corpus manifest, the O1–O3 oracle runners, the conformance
   differ, and the JSON report. Pure-logic, Mac-testable with `ToyMachine`; pointed at
   `vmm-core::Vmm<B>` at integration. Composes `unison` (this is integration-class, so the
   "no sibling deps" rule of wave-1 parallel crates doesn't apply — it's the layer that *binds*).

@@ -4,7 +4,7 @@
 //! pluggable enforcer-brain — the contract `ToxiproxyEngine`/`PassthroughEngine`
 //! implement).
 
-use crate::{ConnId, FlowAction, FlowEvent, FlowPolicy, NodeId, Moment};
+use crate::{ConnId, FlowAction, FlowEvent, FlowPolicy, Moment, NodeId};
 
 /// The decision seam: "what should I do with this flow?". The frontier binds it
 /// to the `net_decide` hypercall (→ `environment::decide`, which records the

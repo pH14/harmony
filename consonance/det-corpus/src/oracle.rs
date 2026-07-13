@@ -7,7 +7,7 @@
 
 use serde::{Serialize, Serializer};
 use unison::{
-    DivergencePoint, Subject, SubjectError, SubjectFactory, RunOutcome, Verdict, bisect_divergence,
+    DivergencePoint, RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence,
     compare_runs,
 };
 

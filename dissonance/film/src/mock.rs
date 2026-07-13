@@ -366,7 +366,11 @@ impl Server for MockBillboardServer {
         })
     }
 
-    fn exec(&mut self, _cmd: &str, _deadline: control_proto::Moment) -> Result<ExecResult, SessionError> {
+    fn exec(
+        &mut self,
+        _cmd: &str,
+        _deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError> {
         // Film is observation-only; it never improvises. Refuse loudly so a
         // stray exec would fail a test rather than pass silently.
         Err(SessionError::Control(ControlError::Unsupported))

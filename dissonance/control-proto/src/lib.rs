@@ -44,8 +44,8 @@ mod types;
 pub use codec::{decode_reply, decode_request, encode_reply, encode_request};
 pub use error::{ControlError, ProtocolError};
 pub use types::{
-    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, Reproducer,
-    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Request, SnapId, StopConditions,
+    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
+    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId, StopConditions,
     StopMask, StopReason, class_bit,
 };
 

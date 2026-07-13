@@ -21,11 +21,13 @@ use std::io::{Read, Write};
 
 use campaign_runner::mock::{self, default_fork_script};
 use campaign_runner::{SweepConfig, run_session, run_sweep, sweep_client, verify};
-use control_proto::{ControlError, HashScope, HostFault, Moment as WireMoment, Reply, Request, SnapId};
+use control_proto::{
+    ControlError, HashScope, HostFault, Moment as WireMoment, Reply, Request, SnapId,
+};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{
-    EnvCodec, Machine, RunTrace, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment,
+    EnvCodec, Machine, Moment, RunTrace, SpecEnvCodec, StopConditions, StopMask, StopReason,
 };
 
 /// A raw-frame control-proto call over a stream — the test harness for

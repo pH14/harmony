@@ -8,7 +8,7 @@
 
 use control_proto::{
     Answer, CapFlags, Caps, ControlError, CoverageGeometry, CrashInfo, CrashKind, DecisionId,
-    Reproducer, EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Request,
+    EventRef, HashScope, HostFault, Moment, ProtocolError, RegsView, Reply, Reproducer, Request,
     SnapId, StopConditions, StopMask, StopReason,
 };
 use proptest::prelude::*;

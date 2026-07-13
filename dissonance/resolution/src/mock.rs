@@ -369,7 +369,11 @@ impl Server for MockServer {
         Ok(self.cur.regs())
     }
 
-    fn exec(&mut self, cmd: &str, deadline: control_proto::Moment) -> Result<ExecResult, SessionError> {
+    fn exec(
+        &mut self,
+        cmd: &str,
+        deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError> {
         // A crashed timeline is terminal: the guest cannot run a command. Do not
         // advance, do not fabricate output, do not report success. But an exec
         // *attempt* is still an improvisation — so mark **and report** taint on

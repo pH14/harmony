@@ -17,8 +17,8 @@
 //! [`MockConfig`] to the box's measured numbers to produce the report's simulation row.
 
 use super::{
-    BusyWindow, CpuSnapshot, FailureReason, SampleKind, SamplingSchedule, SealAttempt, SealResult,
-    Moment, Span, Target, splitmix64,
+    BusyWindow, CpuSnapshot, FailureReason, Moment, SampleKind, SamplingSchedule, SealAttempt,
+    SealResult, Span, Target, splitmix64,
 };
 
 /// Knobs describing the modeled substrate. All rates are integer parts-per-million.

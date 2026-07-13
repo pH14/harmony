@@ -28,10 +28,9 @@ use std::rc::Rc;
 
 use common::{ToyCodec, ToyMachine, config, pin_composition};
 use explorer::{
-    Answer, Composition, CoverageArchive, EnvCodec, Reproducer, ExemplarRef, Explorer,
-    Frontier, FrontierEntry, IdentityCells, Machine, MachineError, Materializer, Moment,
-    Prng, Reward, SealBudget, SnapId, StopConditions, StopMask, StopReason, TerminalOracle,
-    VirtualExemplar,
+    Answer, Composition, CoverageArchive, EnvCodec, ExemplarRef, Explorer, Frontier, FrontierEntry,
+    IdentityCells, Machine, MachineError, Materializer, Moment, Prng, Reproducer, Reward,
+    SealBudget, SnapId, StopConditions, StopMask, StopReason, TerminalOracle, VirtualExemplar,
 };
 use proptest::prelude::*;
 

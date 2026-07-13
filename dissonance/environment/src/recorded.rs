@@ -20,7 +20,7 @@ use crate::error::EnvError;
 use crate::host::{Action, HostFault, Moment};
 use crate::policy::FaultPolicy;
 use crate::seeded::SeededEnv;
-use crate::{Environment, Outcome, Span};
+use crate::{Environment, Outcome};
 
 /// Container magic, `"DEV2"` read little-endian. Bumped from `DEV1` (task 24)
 /// because the recorded value type widened from a guest `Answer` to an

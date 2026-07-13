@@ -36,7 +36,7 @@ use campaign_runner::mock;
 use campaign_runner::{probe_vtime, run_session};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
-use explorer::{EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment};
+use explorer::{EnvCodec, Machine, Moment, SpecEnvCodec, StopConditions, StopMask, StopReason};
 use proptest::prelude::*;
 
 /// The env the mock live VM boots under.

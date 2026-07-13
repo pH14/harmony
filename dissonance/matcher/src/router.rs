@@ -493,7 +493,7 @@ impl<S: ChannelSource, C: ContextSource> Oracle for MatchOracle<S, C> {
 mod tests {
     use super::*;
     use crate::stub::{FaultMoments, OwnedRecords, RecordRec};
-    use explorer::{COVERAGE_CHANNEL, Reproducer, StopReason, Moment, Value};
+    use explorer::{COVERAGE_CHANNEL, Moment, Reproducer, StopReason, Value};
 
     /// A minimal valid channel base for tests (channel 0 is coverage's).
     const BASE: ChannelId = ChannelId(1);

@@ -135,8 +135,9 @@ fn a_recording_campaign_is_deterministic_per_seed_and_divergent_across_seeds() {
     let b = run_recording(&mut s2, &store_b, &cfg(RetentionPolicy::All)).unwrap();
 
     // Two whole campaigns produce identical TraceIds in identical order.
-    let ids =
-        |r: &campaign_runner::record::RecordReport| r.rows.iter().map(|x| x.trace_id).collect::<Vec<_>>();
+    let ids = |r: &campaign_runner::record::RecordReport| {
+        r.rows.iter().map(|x| x.trace_id).collect::<Vec<_>>()
+    };
     assert_eq!(ids(&a), ids(&b), "the campaign is bit-reproducible");
 
     // Gate checks pass: per-seed identical, >=2 distinct, records non-empty & monotone.
@@ -189,7 +190,7 @@ fn verify_record_flags_non_diverging_guest_state() {
     // state despite distinct seeds/journals) must FAIL divergence, even though
     // per-seed determinism holds.
     use campaign_runner::record::{RecordReport, RecordedRun};
-    use explorer::{StopReason, Moment};
+    use explorer::{Moment, StopReason};
     let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
         seed,
         run,
@@ -230,7 +231,7 @@ fn verify_record_flags_folded_reproducers() {
     // losing env-only replay. Must FAIL the TraceId check even though the
     // state_hash divergence passes.
     use campaign_runner::record::{RecordReport, RecordedRun};
-    use explorer::{StopReason, Moment};
+    use explorer::{Moment, StopReason};
     let row = |seed: u64, run: usize, hash_byte: u8| RecordedRun {
         seed,
         run,
@@ -276,7 +277,7 @@ fn verify_record_flags_folded_reproducers() {
 #[test]
 fn verify_record_flags_each_per_run_gate_independently() {
     use campaign_runner::record::{RecordReport, RecordedRun};
-    use explorer::{StopReason, Moment};
+    use explorer::{Moment, StopReason};
     let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
         seed,
         run,

@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use vmm_backend::{
-    Backend, BackendError, Capabilities, Completion, CpuidModel, Injection, Exit, ExitReason, Gpa,
-    HypercallRegs, MockBackend, MsrFilter, VcpuState, Moment,
+    Backend, BackendError, Capabilities, Completion, CpuidModel, Exit, ExitReason, Gpa,
+    HypercallRegs, Injection, MockBackend, Moment, MsrFilter, VcpuState,
 };
 
 /// Proptest case count: full per the convention natively, cut to 16 under Miri

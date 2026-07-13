@@ -98,7 +98,7 @@ use serde::{Deserialize, Serialize};
 /// is a transient resource handle — **never** part of a portable reproducer
 /// artifact (that is the [`Reproducer`]); the only stable, always-reproducible
 /// base is the genesis snapshot from [`Explorer::new`]. The control plane mints
-/// these on `snapshot` and frees them on `drop` (corpus GC).
+/// these on `snapshot` and frees them on `drop` (pool GC).
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]
@@ -268,7 +268,10 @@ mod tests {
     /// `vtime()` returns the embedded V-time for every variant (not a default).
     #[test]
     fn vtime_is_pinned_per_variant() {
-        assert_eq!(StopReason::Deadline { vtime: Moment(11) }.vtime(), Moment(11));
+        assert_eq!(
+            StopReason::Deadline { vtime: Moment(11) }.vtime(),
+            Moment(11)
+        );
         assert_eq!(
             StopReason::Quiescent { vtime: Moment(12) }.vtime(),
             Moment(12)

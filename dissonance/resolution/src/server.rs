@@ -56,7 +56,7 @@ pub trait Server {
     /// Capture state at the current quiescent point → a [`Snapshot`] handle.
     fn snapshot(&mut self) -> Result<Snapshot, SessionError>;
 
-    /// Release a snapshot handle (corpus GC).
+    /// Release a snapshot handle (pool GC).
     fn drop_snap(&mut self, snap: SnapId) -> Result<(), SessionError>;
 
     /// Restore `snap` and reseed from `env` — the explore/materialize path. The
@@ -87,7 +87,11 @@ pub trait Server {
     /// timeline's taint bit. The server refuses nothing (a caller may
     /// deliberately sacrifice a timeline); the taint bit makes the consequence
     /// structural.
-    fn exec(&mut self, cmd: &str, deadline: control_proto::Moment) -> Result<ExecResult, SessionError>;
+    fn exec(
+        &mut self,
+        cmd: &str,
+        deadline: control_proto::Moment,
+    ) -> Result<ExecResult, SessionError>;
 
     /// Mint the genesis-complete reproducer ([`EnvSpec`]) for the current point
     /// — the task-81 taint guard's fail-loud site: a tainted timeline returns

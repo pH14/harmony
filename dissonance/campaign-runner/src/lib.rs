@@ -39,7 +39,7 @@ use std::os::unix::net::UnixStream;
 
 use environment::EnvSpec;
 use explorer::adapter::SocketMachine;
-use explorer::{Machine, MachineError, StopConditions, StopMask, StopReason, Moment};
+use explorer::{Machine, MachineError, Moment, StopConditions, StopMask, StopReason};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError};
 
@@ -237,7 +237,7 @@ pub fn run_sweep<M: Machine>(
     }
 
     // 4. Replay the base verbatim: the restored state must hash exactly like
-    //    the capture. Then release the handle (corpus GC — exercises `drop`).
+    //    the capture. Then release the handle (pool GC — exercises `drop`).
     machine.replay(base)?;
     let replay_hash = machine.hash()?;
     machine.drop_snap(base)?;

@@ -15,8 +15,7 @@
 use std::collections::BTreeMap;
 
 use explorer::{
-    CoverageView, Reproducer, GuestEvent, Moment, Record, RunTrace, StopReason, StreamId,
-    Value,
+    CoverageView, GuestEvent, Moment, Record, Reproducer, RunTrace, StopReason, StreamId, Value,
 };
 use runtrace::{TRACE_FORMAT_VERSION, TraceError, decode, encode};
 
