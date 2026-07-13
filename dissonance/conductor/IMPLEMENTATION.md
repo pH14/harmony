@@ -1088,6 +1088,22 @@ same loud class as missing, on **both** paths, never a silent fall back to no-bi
 A half-publish is treated as malformed, not absent: the two registers are written together
 in the setup prefix, so one without the other is a broken agent.
 
+**Round 3 — "nonzero and in-RAM" is not "usable".** The cross-model pass found the next
+gap in the same wall: a window of `(gpa, len = 1)` passed every check above, but
+`FilmPlan::derive` refuses any window shorter than film's 32-byte header
+(`PlanError::BillboardTooSmall`) — and on the box film is M0's **mandatory** artifact. So that
+window was a green `DETERMINISM PASS` over a clip that cannot be produced: the same class as
+the half-publish, one layer further in. `billboard_window_of` now refuses `len <
+BILLBOARD_MIN_LEN`.
+
+The bound is **mirrored, not imported**: `film` is a *dev*-dependency of this crate (its box
+gate lives in `tests/live_film.rs`), and the campaign driver has no business taking a library
+dependency on the renderer just to validate a window. A dev-dep drift test
+(`billboard_min_len_tracks_films_header`) pins the const to `film::HEADER_LEN`, so film growing
+its header breaks a test here instead of silently re-opening the hole — the same single-source
+discipline as `guest_ram_len ← boxrun::GUEST_RAM_LEN`. The boundary is tested from both sides:
+31 bytes refuses, exactly 32 is accepted.
+
 ### 1c. The materialize chain had the same hole (round-2 finding)
 
 The sweep in finding 1a missed `conductor materialize`, and the cross-model pass caught it:
@@ -1162,6 +1178,13 @@ now an invariant, so the overflow is gone by construction rather than by checked
   compares it across repetitions too. That is deliberate (it strengthens the comparison) and
   safe: V-time spans and frame counts are deterministic functions of a deterministic run — if
   they differed across repetitions, the `state_hash` sequences would already have differed.
+- **`BILLBOARD_MIN_LEN` is a floor, not a full film precondition.** It rejects windows film
+  provably cannot use (shorter than its header). A window ≥ 32 bytes can still be too small for
+  the *regions* its own header declares — but that is a property of bytes the guest has not
+  written yet at validation time (the header is decoded later, by film, from the live window),
+  so checking it here would be checking a value that does not exist. `FilmPlan::derive` remains
+  the authority on the rest; this guard exists to stop the window that is unusable *by its
+  dimensions alone* from greening a gate.
 - **`DEFAULT_GUEST_RAM_LEN` (2 GiB) mirrors `boxrun::GUEST_RAM_LEN`.** The box path sets
   `guest_ram_len` explicitly from its own constant, so the two cannot drift silently; the
   default only serves the portable toy, which publishes no billboard at all.
@@ -1171,7 +1194,7 @@ now an invariant, so the overflow is gone by construction rather than by checked
 ## Gates
 
 `cargo build -p conductor --all-features`, `cargo nextest run -p conductor --all-features`
-(**145 tests green**, up from 137 on main: 6 new lib + 2 new bin), `cargo clippy -p conductor
+(**146 tests green**, up from 137 on main: 7 new lib + 2 new bin), `cargo clippy -p conductor
 --all-features --all-targets -D warnings` on the host **and** on
 `x86_64-unknown-linux-gnu` (the `cfg(linux)` `boxrun.rs` path — the ci-cfg-linux review gap),
 `cargo fmt --check`, `cargo deny check`, and `cargo check --workspace --all-targets --target
@@ -1192,13 +1215,14 @@ cargo +nightly-2026-06-16 miri test -p conductor --lib -- --exact \
   gamecampaign::tests::{the_determinism_gate_refuses_a_run_that_did_no_work,
     a_real_campaign_carries_its_work_evidence, completed_frames_counts_transitions_not_markers,
     a_malformed_billboard_refuses_the_campaign, a_half_published_billboard_is_malformed,
-    box_campaign_without_billboard_refuses, a_dying_rollout_fails_the_box_campaign_loudly} \
+    billboard_min_len_tracks_films_header, box_campaign_without_billboard_refuses,
+    a_dying_rollout_fails_the_box_campaign_loudly} \
   materialize::tests::{zero_length_hops_and_legs_fail_the_gate,
     valid_report_passes_all_gates_and_renders, every_gate_failure_is_reported}
-⇒ 10 passed, 0 failed (309.29s)
+⇒ 11 passed, 0 failed (336.13s)
 ```
 
-Ten tests in five minutes is itself a data point for `hm-d4y`: the per-test interpreted cost
+Eleven tests in under six minutes is itself a data point for `hm-d4y`: the per-test interpreted cost
 here, not any one pathological test, is what makes the whole-suite line unbudgetable. The
 narrower claim is the honest one — **the code this task changed is Miri-clean; the conductor
 lib as a whole is unverified under Miri and is known debt, not this task's.** The new tests
@@ -1219,6 +1243,8 @@ play-agent is a different story and needs no caveat: its full `--lib` Miri suite
 | round-2 frame evidence | `completed_frames_counts_transitions_not_markers`, `the_determinism_gate_refuses_a_run_that_did_no_work` | FAILED — counting observations reports 1 frame where 0 ran (`left: 1, right: 0`) |
 | round-2 materialize CLI | `degenerate_budgets_are_refused_by_the_cli` | FAILED — `["conductor","materialize","--tail-delta","0"]` must be REFUSED, not accepted |
 | round-2 materialize gate | `zero_length_hops_and_legs_fail_the_gate` | FAILED — a zero-length reproducer leg produces **no** failures (`[]`): `GATES PASS` |
+| round-3 billboard length | `a_malformed_billboard_refuses_the_campaign` | FAILED — a `(gpa=0x1000, len=1)` window campaigns to a **full green outcome** (`billboard: Some((4096, 1))`, 8 branches, healthy work evidence) — the vacuous pass, in one line |
+| round-3 drift pin | `billboard_min_len_tracks_films_header` | FAILED when film's `HEADER_LEN` is simulated at 64 — the mirror cannot drift silently |
 
 (Process note for the next worker: run revert-based red-checks only against **committed** work.
 Mine ran on an uncommitted tree and the restoring `git checkout` ate the round-2 source edits —
