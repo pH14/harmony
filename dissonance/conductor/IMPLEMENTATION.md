@@ -1367,11 +1367,27 @@ PR #99's vmcall-transport comparison), new quiet-hour sum ≈ 48 + 13 ≈ 61 min
 conductor step in it).
 
 The slice's filter-rot guard is **generalized into a vacuity guard**, since with no `--exact`
-filter there is no filter left to rot — but there are still exactly two ways to make this
-step green while watching nothing, and it now fails on both: (a) the `map_memory`-forward
-test stops running (renamed, or newly `cfg_attr(miri, ignore)`d) — the crate's only `unsafe`
-would go unwatched; (b) the ignored count creeps past 3 — the tail this task just un-gated
-gets quietly re-gated. Both branches were exercised against real and doctored step output.
+filter there is no filter left to rot — but there are three ways to make this step green
+while watching nothing, and it fails on all three:
+
+- **(a) the `map_memory`-forward test stops running** (renamed, or newly
+  `cfg_attr(miri, ignore)`d) — the crate's only `unsafe` would go unwatched. Guarded by a
+  grep for its passing line.
+- **(b) the ignored count creeps past 3** — the tail this task just un-gated gets quietly
+  re-gated. Guarded by an upper bound on the summary's `ignored`.
+- **(c) a test is deleted, or moved behind `#[cfg(not(miri))]`.** This is the hole
+  **round-1 review caught** (`hm-d4y`, PR #105), and it is worth stating plainly because
+  (b) looks like it covers it and does not: a `cfg(not(miri))` test is **never compiled into
+  the Miri binary at all**, so it is not "ignored" — it vanishes from the summary entirely.
+  The ignored count still reads 3 and the step goes green with the campaign tail silently
+  un-run. Verified against the real step output with six campaign tests filtered out: the
+  two-guard version **passed** it. Guarded now by a **floor on the `passed` count** (≥ 84 —
+  87 lib tests minus the 3 ignored), the mirror of (b): only a floor on what actually *ran*
+  can see a test that left. The floor **ratchets up** when tests are added, and is never
+  lowered without a rationale on the test that left plus a re-measured budget.
+
+All four branches (the real output plus one doctored fixture per failure mode) were
+exercised against the guard as it is written in the workflow.
 
 ### Deviations considered and rejected
 

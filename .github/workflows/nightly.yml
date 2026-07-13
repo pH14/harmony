@@ -200,8 +200,27 @@ jobs:
             echo "UNSAFE UNWATCHED: the map_memory-forward test did not run under Miri — renamed, or newly cfg_attr(miri, ignore)d. The crate's only unsafe block is now unwatched; fix the test, do not delete this guard."
             exit 1
           }
-          ign=$(echo "$out" | sed -n 's/^test result: ok\. [0-9][0-9]* passed; [0-9][0-9]* failed; \([0-9][0-9]*\) ignored.*/\1/p')
+          res=$(echo "$out" | grep -o "^test result: ok\. [0-9][0-9]* passed; [0-9][0-9]* failed; [0-9][0-9]* ignored")
+          ign=$(echo "$res" | sed -n 's/.*failed; \([0-9][0-9]*\) ignored.*/\1/p')
           [ "${ign:-999}" -le 3 ] || {
             echo "MIRI TAIL RE-GATED: $ign tests are ignored under Miri, expected at most 3 (task 104: dual_config_runs_and_is_deterministic_twice + the 2 filesystem tests). Raising this bound means a new rationale string per test AND a re-measured budget above — not a bigger number here."
+            exit 1
+          }
+          # …and a PASSED FLOOR, because the ignored bound alone does not close the
+          # hole (PR #105 round 1): a test moved behind `#[cfg(not(miri))]` — or
+          # simply deleted — is never COMPILED into the Miri binary, so it does not
+          # count as ignored. It vanishes from the summary entirely, the ignored
+          # bound still reads 3, and the step stays green while the campaign tail
+          # this task restored silently stops running. Only a floor on what actually
+          # RAN can see that.
+          #
+          # 84 is today's count (87 lib tests − the 3 ignored). This floor RATCHETS
+          # UP: when tests are added to the crate, raise it to the new passing count
+          # in the same PR. It is never LOWERED without a rationale string on the
+          # test that left and a re-measured budget above — "the number went down"
+          # is the failure this guard exists to report, not a reason to edit it.
+          pass=$(echo "$res" | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p')
+          [ "${pass:-0}" -ge 84 ] || {
+            echo "MIRI SUITE SHRANK: only $pass tests ran under Miri, floor is 84. A test was deleted or moved behind #[cfg(not(miri))] — which, unlike #[cfg_attr(miri, ignore)], never reaches the summary at all. Restore it, or justify its removal and ratchet the floor in the same PR."
             exit 1
           }
