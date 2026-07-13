@@ -275,7 +275,7 @@ jobs:
       - name: public-api snapshot tests
         run: |
           cargo test \
-            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p link -p flow -p matcher -p runtrace -p conductor -p tactics-regime -p logtmpl \
+            -p hypercall-proto -p snapshot-store -p unison -p vtime -p vm-state -p vmm-backend -p vmm-core -p lapic -p environment -p control-proto -p explorer -p sdk-events -p flow -p matcher -p runtrace -p conductor -p tactics-regime -p logtmpl \
             --test public_api -- --ignored --nocapture
           # guest/sdk is out-of-workspace (its own manifest), so it is not in the
           # `-p` list above — freeze its public surface on its own manifest.

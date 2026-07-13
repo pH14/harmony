@@ -7,7 +7,7 @@
 //! well-formed [`GuestEvent`] over arbitrary event ids and bytes.
 
 use explorer::{GuestEvent, Moment, Value};
-use link::{
+use sdk_events::{
     KIND_ASSERT_HIT, KIND_ASSERT_VIOLATION, KIND_BUGGIFY, KIND_CATALOG, KIND_SETUP_COMPLETE,
     KIND_STATE, KIND_UNKNOWN, decode_event, decode_events,
 };

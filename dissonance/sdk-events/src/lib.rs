@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # link — the link-tier plugin (task 73)
+//! # sdk-events — the link-tier plugin (task 73; the crate formerly named `link`)
 //!
-//! `link` is the **host-side reader of the guest SDK**: it turns the events a
+//! `sdk-events` is the **host-side reader of the guest SDK**: it turns the events a
 //! cooperating in-guest workload emits (via `harmony-sdk`, over the hypercall
 //! Event service) into the search-plane's replay-plane vocabulary. It is Tier 2
 //! of `docs/DISSONANCE.md`'s cooperation gradient — a channel for *code you own*,
@@ -26,7 +26,7 @@
 //!
 //! ## Its place in the plane
 //!
-//! link depends on `explorer` and consumes the task-64 spine vocabulary
+//! `sdk-events` depends on `explorer` and consumes the task-64 spine vocabulary
 //! ([`GuestEvent`](explorer::GuestEvent), [`Feature`](explorer::Feature),
 //! [`Sensor`](explorer::Sensor), [`Oracle`](explorer::Oracle),
 //! [`RunTrace`](explorer::RunTrace), [`Bug`](explorer::Bug)); it is a **pure
@@ -37,7 +37,7 @@
 //! ## The wire convention
 //!
 //! The SDK event byte format is owned by the guest SDK crate
-//! (`guest/sdk/src/wire.rs`, the canonical source). link mirrors those constants
+//! (`guest/sdk/src/wire.rs`, the canonical source). `sdk-events` mirrors those constants
 //! privately (`wire.rs`, conventions rule 2 — the guest/host protocol pattern)
 //! and the decode goldens in `tests/decode.rs` pin byte-for-byte agreement.
 //!

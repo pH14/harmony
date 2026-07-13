@@ -435,7 +435,7 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
         terminal: stop,
         env,
         coverage: None,
-        events: link::decode_events(&remapped),
+        events: sdk_events::decode_events(&remapped),
         records: Vec::new(),
     };
     assert!(

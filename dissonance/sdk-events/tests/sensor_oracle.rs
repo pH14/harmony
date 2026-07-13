@@ -12,7 +12,7 @@ use explorer::{
     IdentityCells, Moment, Oracle, RunTrace, Sensor, SnapId, StopReason, TerminalOracle,
     VirtualExemplar,
 };
-use link::{AlwaysViolation, LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor, decode_event};
+use sdk_events::{AlwaysViolation, LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor, decode_event};
 
 const NS_SHIFT: u32 = 24;
 const NS_ASSERT: u32 = 1;

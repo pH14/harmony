@@ -2,7 +2,7 @@
 //! The catalog fold + never-fired report (task 73 gate 2 + gate 6).
 
 use explorer::{GuestEvent, Moment};
-use link::{Catalog, CatalogReport, PointKind, decode_events};
+use sdk_events::{Catalog, CatalogReport, PointKind, decode_events};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 

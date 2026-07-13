@@ -41,7 +41,7 @@ logtmpl = { path = "../logtmpl", version = "0.1.0" }
 runtrace = { path = "../runtrace", version = "0.1.0" }
 # Task 73: the link tier that decodes the raw SDK event capture into
 # `RunTrace.events` (both the in-process recording path and the socket campaign).
-link = { path = "../link", version = "0.1.0" }
+sdk-events = { path = "../sdk-events", version = "0.1.0" }
 # Typed recording-session errors (rule-5 whitelist).
 thiserror = "2"
 # Per-row journal digest for the divergence + reload gates (rule-5 whitelist;

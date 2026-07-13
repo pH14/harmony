@@ -19,7 +19,7 @@
 //! is task 84's deliverable, reused when it lands (not rebuilt here).
 //!
 //! Cells are keyed **host-side** (R-L2): the guest emits raw state registers;
-//! [`link::LinkSensor`] turns them into `(Moment, Feature)` on
+//! [`sdk_events::LinkSensor`] turns them into `(Moment, Feature)` on
 //! `LINK_STATE_CHANNEL`; [`smb_cells`] folds those features into the
 //! `(game mode, world, level, x-bucket)` tuple key — the analog of
 //! Antithesis's discretized `(x, y)`. Retuning the key needs no guest rebuild
@@ -36,7 +36,7 @@ use explorer::{
     EnvCodec, Reproducer, Feature, Machine, MachineError, Moment, Prng, RunTrace, Sensor,
     StopConditions, StopMask, StopReason,
 };
-use link::{LINK_STATE_CHANNEL, LinkSensor};
+use sdk_events::{LINK_STATE_CHANNEL, LinkSensor};
 
 /// Local mirrors of the play-agent's state-register catalog
 /// (`guest/play-agent/src/regs.rs` — the guest crates sit outside this
@@ -786,7 +786,7 @@ fn drain_events<M: Machine>(
         .into_iter()
         .map(|(m, id, b)| (Moment(m), id, b))
         .collect();
-    Ok(link::decode_events(&raw))
+    Ok(sdk_events::decode_events(&raw))
 }
 
 /// Extract the booted image's ROM sha256 from its boot serial: the last
@@ -847,7 +847,7 @@ fn billboard_window_of(
 ) -> Result<Option<(u64, u64)>, GameCampaignError> {
     let (mut gpa, mut len) = (None, None);
     for (_, ev) in events {
-        if ev.kind != link::KIND_STATE {
+        if ev.kind != sdk_events::KIND_STATE {
             continue;
         }
         let (Some(explorer::Value::UInt(reg)), Some(explorer::Value::UInt(value))) =
@@ -988,7 +988,7 @@ fn hex(h: &[u8; 32]) -> String {
 /// pure function of its branch env's seed. Rightward progress with resets and
 /// occasional level-ups, so campaigns produce varied cells and depths; the
 /// portable tests drive [`run_game_campaign`] against it end-to-end (through
-/// the real wire encode → `link::decode_events` → `LinkSensor` → [`smb_cells`]
+/// the real wire encode → `sdk_events::decode_events` → `LinkSensor` → [`smb_cells`]
 /// path, so a register or layout drift breaks a test, not the box).
 pub struct GameToyMachine {
     current: Reproducer,
@@ -1068,7 +1068,7 @@ impl GameToyMachine {
 
 /// Encode one state event the way the guest SDK wire does (`[op u8][value u64
 /// LE]` in `NS_STATE` = namespace 2) so the toy exercises the REAL
-/// `link::decode_events` path.
+/// `sdk_events::decode_events` path.
 fn state_event(reg: u64, op: u8, value: u64) -> (u32, Vec<u8>) {
     let id = (2u32 << 24) | (reg as u32);
     let mut payload = Vec::with_capacity(9);
@@ -1617,7 +1617,7 @@ mod tests {
                 (Moment(i as u64 + 1), id, payload)
             })
             .collect();
-        link::decode_events(&raw)
+        sdk_events::decode_events(&raw)
     }
 
     /// A half-published window (one register, not both) is a broken agent, not

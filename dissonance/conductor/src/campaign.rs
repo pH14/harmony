@@ -495,7 +495,7 @@ fn machine_events<M: Machine>(machine: &mut M) -> Result<Vec<(Moment, GuestEvent
         .into_iter()
         .map(|(m, id, b)| (Moment(m), id, b))
         .collect();
-    Ok(link::decode_events(&raw))
+    Ok(sdk_events::decode_events(&raw))
 }
 
 /// The task-60 acceptance gates over a [`CampaignReport`]:

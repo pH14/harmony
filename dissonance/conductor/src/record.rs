@@ -329,7 +329,7 @@ pub fn run_recording<B: Backend>(
                 // Task 73: the link tier decodes the raw SDK event capture (the
                 // catalog + assert/state/buggify emissions) into the typed,
                 // Moment-stamped event stream — non-empty for an SDK guest.
-                events: link::decode_events(&sdk_events_raw(server)),
+                events: sdk_events::decode_events(&sdk_events_raw(server)),
                 records,
             };
             // Encode once, up front — the source of the journal length, digest,
@@ -397,7 +397,7 @@ fn drained_serial<B: Backend>(
 }
 
 /// The link-tier SDK event capture of the current run, remapped onto the
-/// [`Moment`] axis for [`link::decode_events`] (task 73). In-process, straight
+/// [`Moment`] axis for [`sdk_events::decode_events`] (task 73). In-process, straight
 /// off the live VM — the SDK-channel mirror of [`drained_serial`]. No cursor is
 /// needed: the per-run `branch` resets the SDK channel, so the capture already
 /// holds exactly this run's events.

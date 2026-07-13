@@ -448,10 +448,10 @@ fn boot_game_server() -> ControlServer<Box<dyn Backend>> {
 
 /// Fold the drained SDK capture into `REG_FRAME` ticks and the billboard
 /// `(gpa, len)` — the play-agent's register catalog, via the same
-/// `link::decode_events` path the campaign uses.
+/// `sdk_events::decode_events` path the campaign uses.
 fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u64, u64)>) {
     use conductor::gamecampaign::reg;
-    let decoded = link::decode_events(
+    let decoded = sdk_events::decode_events(
         &raw.iter()
             .map(|(m, id, b)| (explorer::Moment(*m), *id, b.clone()))
             .collect::<Vec<_>>(),
@@ -459,7 +459,7 @@ fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u
     let mut ticks: Vec<FrameTick> = Vec::new();
     let (mut gpa, mut len) = (None, None);
     for (moment, ev) in &decoded {
-        if ev.kind != link::KIND_STATE {
+        if ev.kind != sdk_events::KIND_STATE {
             continue;
         }
         let (Some(explorer::Value::UInt(reg)), Some(explorer::Value::UInt(value))) =
