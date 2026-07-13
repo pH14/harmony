@@ -29,7 +29,7 @@
 //! ([`RunTrace`](explorer::RunTrace), [`Record`](explorer::Record),
 //! [`StreamId`](explorer::StreamId), [`Moment`](explorer::Moment)); it is a
 //! **pure sink** — nothing here reads back into the live plane, and no search
-//! policy learns the store exists (Progression blindness). It is the Wave-5
+//! policy learns the store exists (search-loop blindness). It is the Wave-5
 //! plugin direction later signal/matcher/search tasks (66/67/70+) reuse. The
 //! concrete `Record` shape (and [`StreamId`](explorer::StreamId)) it produces
 //! was pinned by this task, additively, next to `RunTrace` in the spine.

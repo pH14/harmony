@@ -3,7 +3,7 @@
 //!
 //! This is the milestone the project exists for. With task 58 (the loop) and
 //! task 59 (host faults) in place, the campaign runs the whole
-//! Modulation/Progression mechanism against a workload carrying a **planted,
+//! rollout/search loop mechanism against a workload carrying a **planted,
 //! fault-triggerable bug**:
 //!
 //! 1. **Snapshot once** — seal a base mid-workload (the campaign's
@@ -11,7 +11,7 @@
 //! 2. **Search** — loop a seed-driven schedule: each branch mints a *small,
 //!    seeded host-fault schedule* ([`mint_fault_env`]), `branch`es it off the
 //!    base, `run`s to the deadline / terminal, and judges the terminal with the
-//!    workload-aware **crash oracle** ([`CampaignOracle`]). The campaign is
+//!    workload-aware **crash oracle** ([`CrashOracle`]). The campaign is
 //!    started with **no knowledge of the trigger** — it just explores seeds.
 //! 3. **Emit + verify** — on the first `Crash` the oracle calls a bug, emit the
 //!    [`Bug`] with its genesis-complete reproducer, then **replay that env `N`
@@ -65,8 +65,8 @@ use std::collections::BTreeMap;
 
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, Bug, EnvCodec, Environment, GuestEvent, Machine, MachineError, Moment, Oracle,
-    Prng, RunTrace, StopConditions, StopMask, StopReason, TerminalOracle, VTime,
+    AdapterEnv, Bug, EnvCodec, Reproducer, GuestEvent, Machine, MachineError, Moment,
+    Oracle, Prng, RunTrace, StopConditions, StopMask, StopReason, TerminalOracle,
 };
 
 use crate::stopwatch::{Phase, PhaseStats, Stopwatch};
@@ -98,9 +98,9 @@ pub const CRASH_KIND_SHUTDOWN: u8 = 2;
 /// gpa is pinned to the ledger — see the module doc). The [`Bug`]'s fingerprint is
 /// the explorer's canonical one, so a campaign bug dedups identically to any other.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CampaignOracle;
+pub struct CrashOracle;
 
-impl CampaignOracle {
+impl CrashOracle {
     /// The campaign crash oracle (stateless).
     pub fn new() -> Self {
         Self
@@ -115,7 +115,7 @@ impl CampaignOracle {
     }
 }
 
-impl Oracle for CampaignOracle {
+impl Oracle for CrashOracle {
     /// `Some` exactly on a bug-bearing terminal (`Crash`/`Assertion`), with the
     /// explorer's canonical fingerprint; `None` on the clean `Quiescent` halt (or
     /// any other non-bug stop).
@@ -194,7 +194,7 @@ impl CampaignConfig {
 /// panics on an empty search dimension (it falls back to a fixed value); a
 /// mis-configured empty space simply searches trivially, caught by the
 /// no-bug-found gate rather than a crash.
-pub fn mint_fault_env(base_vtime: u64, seed: u64, cfg: &CampaignConfig) -> Environment {
+pub fn mint_fault_env(base_vtime: u64, seed: u64, cfg: &CampaignConfig) -> Reproducer {
     let mut p = Prng::new(seed);
     let gpa = pick(&cfg.gpa_candidates, &mut p).unwrap_or(0);
     let (lo, hi) = cfg.moment_window;
@@ -243,7 +243,7 @@ pub struct FoundBug {
     pub seed: u64,
     /// The genesis-complete reproducer: `branch(base, env)` + run reproduces the
     /// crash. This is the [`Bug::env`].
-    pub env: Environment,
+    pub env: Reproducer,
     /// The terminal stop the crash produced.
     pub stop: StopReason,
     /// The terminal `state_hash` of the finding run — every replay must match it.
@@ -306,7 +306,7 @@ pub fn run_campaign<M: Machine>(
     codec: &dyn EnvCodec,
     cfg: &CampaignConfig,
 ) -> Result<CampaignReport, MachineError> {
-    let oracle = CampaignOracle::new();
+    let oracle = CrashOracle::new();
     // Observation-only host-side timing (task 96) — see the `stopwatch`
     // module doc. Never read to make a decision; folded into the report at
     // the end.
@@ -328,7 +328,7 @@ pub fn run_campaign<M: Machine>(
                     }
                     let stop = machine.run(
                         &StopConditions {
-                            deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
+                            deadline: Some(Moment(vt.saturating_add(cfg.snapshot_retry_step))),
                             on: StopMask::NONE,
                         },
                         None,
@@ -354,7 +354,7 @@ pub fn run_campaign<M: Machine>(
     let until = StopConditions {
         deadline: cfg
             .deadline_delta
-            .map(|d| VTime(base_vtime.saturating_add(d))),
+            .map(|d| Moment(base_vtime.saturating_add(d))),
         on: StopMask::ASSERTION,
     };
 
@@ -475,7 +475,7 @@ fn print_progress(sw: &Stopwatch, explored: u64, max_branches: u64) {
 /// decoded SDK event stream. The env carried is the (genesis-complete) branch env
 /// — a genesis-rooted run's reproducer already is genesis-complete (the task-93
 /// compose ruling), so [`Bug::env`] is portable and replayable as-is.
-fn trace_of(stop: StopReason, env: Environment, events: Vec<(Moment, GuestEvent)>) -> RunTrace {
+fn trace_of(stop: StopReason, env: Reproducer, events: Vec<(Moment, GuestEvent)>) -> RunTrace {
     RunTrace {
         terminal: stop,
         env,
@@ -664,7 +664,7 @@ pub fn render_campaign_table(report: &CampaignReport, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{SpecEnvCodec, VTime};
+    use explorer::{SpecEnvCodec, Moment};
 
     /// [`CampaignConfig::toy`] with its **search space narrowed under Miri**
     /// (task 104, `hm-d4y`). The full toy space is 4 gpas × 4 mask bits × an
@@ -695,7 +695,7 @@ mod tests {
     fn crash_trace(kind: u8) -> RunTrace {
         RunTrace {
             terminal: StopReason::Crash {
-                vtime: VTime(100),
+                vtime: Moment(100),
                 info: vec![kind, 0x60],
             },
             env: SpecEnvCodec.seeded(1),
@@ -710,7 +710,7 @@ mod tests {
     /// clean `Quiescent` halt and other non-terminal stops are not.
     #[test]
     fn oracle_judges_crash_as_bug_quiescent_as_clean() {
-        let o = CampaignOracle::new();
+        let o = CrashOracle::new();
         assert!(
             o.judge(&crash_trace(CRASH_KIND_SHUTDOWN)).is_some(),
             "reboot crash is the bug"
@@ -719,16 +719,16 @@ mod tests {
         assert!(o.judge(&crash_trace(CRASH_KIND_TRIPLE_FAULT)).is_some());
 
         let mut quiescent = crash_trace(CRASH_KIND_SHUTDOWN);
-        quiescent.terminal = StopReason::Quiescent { vtime: VTime(50) };
+        quiescent.terminal = StopReason::Quiescent { vtime: Moment(50) };
         assert!(o.judge(&quiescent).is_none(), "the clean halt is not a bug");
 
         let mut deadline = crash_trace(CRASH_KIND_SHUTDOWN);
-        deadline.terminal = StopReason::Deadline { vtime: VTime(50) };
+        deadline.terminal = StopReason::Deadline { vtime: Moment(50) };
         assert!(o.judge(&deadline).is_none());
 
         let mut assertion = crash_trace(CRASH_KIND_SHUTDOWN);
         assertion.terminal = StopReason::Assertion {
-            vtime: VTime(50),
+            vtime: Moment(50),
             id: 3,
             data: vec![1],
         };
@@ -739,7 +739,7 @@ mod tests {
     /// canonical fingerprint (so it dedups like any other bug).
     #[test]
     fn oracle_emits_canonical_bug() {
-        let o = CampaignOracle::new();
+        let o = CrashOracle::new();
         let t = crash_trace(CRASH_KIND_SHUTDOWN);
         let bug = o.judge(&t).expect("a crash is a bug");
         assert_eq!(bug.env, t.env);
@@ -790,7 +790,7 @@ mod tests {
             seed: 1,
             env: SpecEnvCodec.seeded(1),
             stop: StopReason::Crash {
-                vtime: VTime(100),
+                vtime: Moment(100),
                 info: vec![CRASH_KIND_SHUTDOWN],
             },
             hash: [0xAB; 32],
@@ -812,7 +812,7 @@ mod tests {
             found: Some(found.clone()),
             replays: ok_replays.clone(),
             nominal: NominalRow {
-                stop: StopReason::Quiescent { vtime: VTime(50) },
+                stop: StopReason::Quiescent { vtime: Moment(50) },
                 hash: [1; 32],
                 is_bug: false,
             },
@@ -868,9 +868,9 @@ mod tests {
     /// `(gpa, mask, window)`, matched by [`CampaignConfig::toy`]'s search space.
     struct AssertMachine {
         trigger: crate::planted::Trigger,
-        current: Environment,
+        current: Reproducer,
         vtime: u64,
-        snaps: std::collections::BTreeMap<u64, (u64, Environment)>,
+        snaps: std::collections::BTreeMap<u64, (u64, Reproducer)>,
         next: u64,
     }
 
@@ -903,7 +903,7 @@ mod tests {
         fn branch(
             &mut self,
             snap: explorer::SnapId,
-            env: &Environment,
+            env: &Reproducer,
         ) -> Result<(), MachineError> {
             let (vt, _) = self
                 .snaps
@@ -933,7 +933,7 @@ mod tests {
                 && d.0 <= self.vtime
             {
                 return Ok(StopReason::Deadline {
-                    vtime: VTime(self.vtime),
+                    vtime: Moment(self.vtime),
                 });
             }
             let vt = self.vtime.saturating_add(10);
@@ -941,14 +941,14 @@ mod tests {
             let armed = until.on.0 & StopMask::ASSERTION.0 != 0;
             if self.fires() && armed {
                 Ok(StopReason::Assertion {
-                    vtime: VTime(vt),
+                    vtime: Moment(vt),
                     id: 7,
                     data: vec![1],
                 })
             } else {
                 // Not triggered, OR the assertion class is unarmed (the guest runs
                 // straight through the violation to its clean terminal).
-                Ok(StopReason::Quiescent { vtime: VTime(vt) })
+                Ok(StopReason::Quiescent { vtime: Moment(vt) })
             }
         }
         fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
@@ -973,7 +973,7 @@ mod tests {
         fn coverage(&self) -> &[u8] {
             &[]
         }
-        fn recorded_env(&self) -> Result<Environment, MachineError> {
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
             Ok(self.current.clone())
         }
     }
@@ -1067,18 +1067,18 @@ mod tests {
     /// `Assertion` are the bug, `Quiescent`/`Deadline` are not.
     #[test]
     fn is_planted_bug_matches_the_oracle_classification() {
-        let o = CampaignOracle::new();
+        let o = CrashOracle::new();
         assert!(o.is_planted_bug(&StopReason::Crash {
-            vtime: VTime(1),
+            vtime: Moment(1),
             info: vec![CRASH_KIND_SHUTDOWN],
         }));
         assert!(o.is_planted_bug(&StopReason::Assertion {
-            vtime: VTime(1),
+            vtime: Moment(1),
             id: 1,
             data: vec![],
         }));
-        assert!(!o.is_planted_bug(&StopReason::Quiescent { vtime: VTime(1) }));
-        assert!(!o.is_planted_bug(&StopReason::Deadline { vtime: VTime(1) }));
+        assert!(!o.is_planted_bug(&StopReason::Quiescent { vtime: Moment(1) }));
+        assert!(!o.is_planted_bug(&StopReason::Deadline { vtime: Moment(1) }));
     }
 
     /// `pick` returns `None` on an empty search dimension (a mis-configured
@@ -1141,7 +1141,7 @@ mod tests {
             seed: 1,
             env: SpecEnvCodec.seeded(1),
             stop: StopReason::Crash {
-                vtime: VTime(100),
+                vtime: Moment(100),
                 info: vec![CRASH_KIND_SHUTDOWN],
             },
             hash: [0xAB; 32],
@@ -1156,7 +1156,7 @@ mod tests {
             })
             .collect();
         // Same hash, but a different terminal StopReason.
-        replays[1].stop = StopReason::Quiescent { vtime: VTime(100) };
+        replays[1].stop = StopReason::Quiescent { vtime: Moment(100) };
         let report = CampaignReport {
             base_vtime: 10,
             snapshot_attempts: 1,
@@ -1165,7 +1165,7 @@ mod tests {
             found: Some(found),
             replays,
             nominal: NominalRow {
-                stop: StopReason::Quiescent { vtime: VTime(50) },
+                stop: StopReason::Quiescent { vtime: Moment(50) },
                 hash: [1; 32],
                 is_bug: false,
             },
@@ -1196,7 +1196,7 @@ mod tests {
             seed: 0xAA,
             env: SpecEnvCodec.seeded(1),
             stop: StopReason::Crash {
-                vtime: VTime(200),
+                vtime: Moment(200),
                 info: vec![CRASH_KIND_SHUTDOWN, 0x60],
             },
             hash: [0x11; 32],
@@ -1219,7 +1219,7 @@ mod tests {
             found: Some(found),
             replays,
             nominal: NominalRow {
-                stop: StopReason::Quiescent { vtime: VTime(50) },
+                stop: StopReason::Quiescent { vtime: Moment(50) },
                 hash: [1; 32],
                 is_bug: false,
             },
@@ -1270,7 +1270,7 @@ mod tests {
             replays: Vec::new(),
             nominal: NominalRow {
                 stop: StopReason::Crash {
-                    vtime: VTime(9),
+                    vtime: Moment(9),
                     info: vec![CRASH_KIND_SHUTDOWN, 0x60],
                 },
                 hash: [2; 32],
@@ -1311,7 +1311,7 @@ mod tests {
         fn branch(
             &mut self,
             _snap: explorer::SnapId,
-            _env: &Environment,
+            _env: &Reproducer,
         ) -> Result<(), MachineError> {
             Ok(())
         }
@@ -1328,18 +1328,18 @@ mod tests {
                     self.vtime = d.0;
                     if self.halts_before_boundary {
                         Ok(StopReason::Quiescent {
-                            vtime: VTime(self.vtime),
+                            vtime: Moment(self.vtime),
                         })
                     } else {
                         Ok(StopReason::Deadline {
-                            vtime: VTime(self.vtime),
+                            vtime: Moment(self.vtime),
                         })
                     }
                 }
                 None => {
                     self.vtime += 1;
                     Ok(StopReason::Quiescent {
-                        vtime: VTime(self.vtime),
+                        vtime: Moment(self.vtime),
                     })
                 }
             }
@@ -1361,7 +1361,7 @@ mod tests {
         fn coverage(&self) -> &[u8] {
             &[]
         }
-        fn recorded_env(&self) -> Result<Environment, MachineError> {
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
             Ok(SpecEnvCodec.seeded(0))
         }
     }

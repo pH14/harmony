@@ -16,7 +16,7 @@
 //!   (verbatim — the determinism-gate / repro path) or [`Branch`](Request::Branch)
 //!   (reseed with a new [`Reproducer`] — the explore path). The choice is
 //!   explicit at every call site.
-//! - **Schema-blind to `Reproducer`.** R2 ferries the modulation unit as an
+//! - **Schema-blind to `Reproducer`.** R2 ferries the rollout unit as an
 //!   opaque, versioned blob ([`Reproducer`]) and a per-decision answer as opaque
 //!   [`Answer`]. It never parses them — their structure is task 24's contract.
 //!   This is what lets R2 be coded ahead of the fault model.

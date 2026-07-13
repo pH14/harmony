@@ -20,7 +20,7 @@
 
 use environment::{Action, DecisionClass, EnvSpec, FaultPolicy, HostFault, StandingFault};
 use explorer::{
-    ADAPTER_BLOB_VERSION, AdapterEnv, EnvCodec, EnvCodecError, Environment, SpecEnvCodec,
+    ADAPTER_BLOB_VERSION, AdapterEnv, EnvCodec, EnvCodecError, Reproducer, SpecEnvCodec,
 };
 use proptest::prelude::*;
 
@@ -52,7 +52,7 @@ fn spec(seed: u64, keys: &[u64]) -> EnvSpec {
 }
 
 /// A well-formed adapter blob (the artifact the seam is supposed to accept).
-fn valid_blob(base_offset: u64, pos: u64, seed: u64, keys: &[u64]) -> Environment {
+fn valid_blob(base_offset: u64, pos: u64, seed: u64, keys: &[u64]) -> Reproducer {
     AdapterEnv {
         base_offset,
         pos,
@@ -65,7 +65,7 @@ fn valid_blob(base_offset: u64, pos: u64, seed: u64, keys: &[u64]) -> Environmen
 /// operand decode is reached: with a valid base, `require(base)?` succeeds and
 /// execution proceeds to decode the (hostile) tail. A round trip proves it is
 /// genuinely well-formed.
-fn good_partner() -> Environment {
+fn good_partner() -> Reproducer {
     let g = valid_blob(0, 100, 7, &[10, 40]);
     assert!(
         AdapterEnv::decode(&g).is_ok(),
@@ -80,7 +80,7 @@ fn good_partner() -> Environment {
 /// hostile blob only as `compose(env, env)` would leave the tail-decode path
 /// with zero coverage (round-1 blocking finding), so this drives it as the base
 /// (`compose(env, good)`) **and** as the tail (`compose(good, env)`) separately.
-fn assert_malformed_everywhere(env: &Environment, version: u16, ctx: &str) {
+fn assert_malformed_everywhere(env: &Reproducer, version: u16, ctx: &str) {
     let want = Err(EnvCodecError::Malformed(version));
     let good = good_partner();
     assert_eq!(SpecEnvCodec.mutate(env, 0xA11CE), want, "mutate: {ctx}");
@@ -118,7 +118,7 @@ fn a_valid_blob_still_decodes_and_composes() {
 fn truncation_at_every_boundary_is_malformed() {
     let full = valid_blob(10, 200, 7, &[40, 150, 220]);
     for cut in 0..full.bytes.len() {
-        let env = Environment {
+        let env = Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: full.bytes[..cut].to_vec(),
         };
@@ -135,7 +135,7 @@ fn magic_bit_flip_is_malformed() {
         for bit in 0..8 {
             let mut bytes = full.bytes.clone();
             bytes[byte] ^= 1 << bit;
-            let env = Environment {
+            let env = Reproducer {
                 blob_version: ADAPTER_BLOB_VERSION,
                 bytes,
             };
@@ -156,7 +156,7 @@ fn wrapper_version_skew_is_malformed() {
     let full = valid_blob(0, 0, 1, &[]);
     // The declared blob_version drives the error's carried version.
     for v in [0u16, 2, 99, u16::MAX] {
-        let env = Environment {
+        let env = Reproducer {
             blob_version: v,
             bytes: full.bytes.clone(),
         };
@@ -166,7 +166,7 @@ fn wrapper_version_skew_is_malformed() {
     // caught by the in-body magic/version check.
     let mut bytes = full.bytes.clone();
     bytes[4] ^= 0x01;
-    let env = Environment {
+    let env = Reproducer {
         blob_version: ADAPTER_BLOB_VERSION,
         bytes,
     };
@@ -181,7 +181,7 @@ fn inner_spec_version_skew_is_malformed() {
     let full = valid_blob(0, 0, 1, &[]);
     let mut bytes = full.bytes.clone();
     bytes[INNER_VERSION_OFF] ^= 0xFF;
-    let env = Environment {
+    let env = Reproducer {
         blob_version: ADAPTER_BLOB_VERSION,
         bytes,
     };
@@ -197,7 +197,7 @@ fn length_field_overflow_is_malformed() {
     assert!(full.bytes.len() >= INNER_POLICY_LEN_OFF + 4);
     let mut bytes = full.bytes.clone();
     bytes[INNER_POLICY_LEN_OFF..INNER_POLICY_LEN_OFF + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    let env = Environment {
+    let env = Reproducer {
         blob_version: ADAPTER_BLOB_VERSION,
         bytes,
     };
@@ -212,7 +212,7 @@ fn unknown_variant_tag_is_malformed() {
     for tag in [2u8, 7, 255] {
         let mut bytes = full.bytes.clone();
         bytes[INNER_VARIANT_OFF] = tag;
-        let env = Environment {
+        let env = Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes,
         };
@@ -356,7 +356,7 @@ fn operand_capture_before_its_own_root_is_typed() {
         "the blob is byte-valid; only its internal invariant is violated"
     );
     let is_misordered =
-        |r: Result<Environment, EnvCodecError>| matches!(r, Err(EnvCodecError::MisorderedChain(_)));
+        |r: Result<Reproducer, EnvCodecError>| matches!(r, Err(EnvCodecError::MisorderedChain(_)));
     assert!(
         is_misordered(SpecEnvCodec.mutate(&inconsistent, 1)),
         "mutate"
@@ -388,7 +388,7 @@ fn compose_rejects_a_malformed_tail_behind_a_valid_base() {
 
     // Truncation of the tail at every boundary.
     for cut in 0..full.bytes.len() {
-        let tail = Environment {
+        let tail = Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: full.bytes[..cut].to_vec(),
         };
@@ -419,7 +419,7 @@ fn compose_rejects_a_malformed_tail_behind_a_valid_base() {
     for &(off, xor, ver, ctx) in corruptions {
         let mut bytes = full.bytes.clone();
         bytes[off] ^= xor;
-        let tail = Environment {
+        let tail = Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes,
         };
@@ -431,7 +431,7 @@ fn compose_rejects_a_malformed_tail_behind_a_valid_base() {
     }
 
     // A skewed declared tail version (payload intact).
-    let tail = Environment {
+    let tail = Reproducer {
         blob_version: 99,
         bytes: full.bytes.clone(),
     };
@@ -560,7 +560,7 @@ proptest! {
         let cut = HEADER_LEN + keep % (full.len() - HEADER_LEN + 1);
         let mut bytes = full[..cut].to_vec();
         bytes.extend_from_slice(&tail);
-        let env = Environment { blob_version: ADAPTER_BLOB_VERSION, bytes };
+        let env = Reproducer { blob_version: ADAPTER_BLOB_VERSION, bytes };
         let good = good_partner();
         // A panic in any call fails the test; assert totality explicitly. The
         // hostile blob is driven as mutate's operand, as compose's base, AND as
@@ -581,7 +581,7 @@ proptest! {
         a in prop::collection::vec(any::<u8>(), 0..300),
         salt in any::<u64>(),
     ) {
-        let env = Environment { blob_version: ADAPTER_BLOB_VERSION, bytes: a };
+        let env = Reproducer { blob_version: ADAPTER_BLOB_VERSION, bytes: a };
         let good = good_partner();
         prop_assert!(matches!(SpecEnvCodec.mutate(&env, salt), Ok(_) | Err(_)));
         prop_assert!(matches!(SpecEnvCodec.compose(&env, &good), Ok(_) | Err(_)));
@@ -595,7 +595,7 @@ proptest! {
         v in any::<u16>().prop_filter("off-version", |v| *v != ADAPTER_BLOB_VERSION),
         bytes in prop::collection::vec(any::<u8>(), 0..300),
     ) {
-        let env = Environment { blob_version: v, bytes };
+        let env = Reproducer { blob_version: v, bytes };
         assert_malformed_everywhere(&env, v, "arbitrary off-version blob");
     }
 
@@ -612,7 +612,7 @@ proptest! {
         let bad = valid_blob(base_offset, pos, 7, &[]);
         let good = good_partner();
         let is_misordered =
-            |r: Result<Environment, EnvCodecError>| matches!(r, Err(EnvCodecError::MisorderedChain(_)));
+            |r: Result<Reproducer, EnvCodecError>| matches!(r, Err(EnvCodecError::MisorderedChain(_)));
         prop_assert!(is_misordered(SpecEnvCodec.mutate(&bad, 0)), "mutate");
         prop_assert!(is_misordered(SpecEnvCodec.compose(&bad, &good)), "base");
         prop_assert!(
@@ -627,7 +627,7 @@ proptest! {
     fn arbitrary_truncation_is_malformed(cut in 0usize..300) {
         let full = valid_blob(3, 210, 5, &[7, 90, 140]);
         prop_assume!(cut < full.bytes.len());
-        let env = Environment {
+        let env = Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: full.bytes[..cut].to_vec(),
         };
@@ -650,7 +650,7 @@ proptest! {
         let good = good_partner();
         let mut bytes = full.bytes.clone();
         bytes[byte] ^= 1 << bit;
-        let env = Environment { blob_version: ADAPTER_BLOB_VERSION, bytes };
+        let env = Reproducer { blob_version: ADAPTER_BLOB_VERSION, bytes };
         let m = SpecEnvCodec.mutate(&env, 0);
         let as_base = SpecEnvCodec.compose(&env, &good);
         let as_tail = SpecEnvCodec.compose(&good, &env);

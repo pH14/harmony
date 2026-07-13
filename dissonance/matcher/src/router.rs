@@ -66,7 +66,7 @@ pub trait ChannelSource {
 }
 
 /// The fault-`Moment` index seam for the `during:` predicate. The
-/// [`Environment`](explorer::Environment) is an opaque blob, so the production
+/// [`Reproducer`](explorer::Reproducer) is an opaque blob, so the production
 /// impl (schema-aware, via the `environment` codec) is campaign assembly (task
 /// 69); this crate ships a test stub ([`crate::stub`]).
 pub trait ContextSource {
@@ -493,15 +493,15 @@ impl<S: ChannelSource, C: ContextSource> Oracle for MatchOracle<S, C> {
 mod tests {
     use super::*;
     use crate::stub::{FaultMoments, OwnedRecords, RecordRec};
-    use explorer::{COVERAGE_CHANNEL, Environment, StopReason, VTime, Value};
+    use explorer::{COVERAGE_CHANNEL, Reproducer, StopReason, Moment, Value};
 
     /// A minimal valid channel base for tests (channel 0 is coverage's).
     const BASE: ChannelId = ChannelId(1);
 
     fn trace() -> RunTrace {
         RunTrace {
-            terminal: StopReason::Quiescent { vtime: VTime(9) },
-            env: Environment {
+            terminal: StopReason::Quiescent { vtime: Moment(9) },
+            env: Reproducer {
                 blob_version: 1,
                 bytes: vec![1, 2, 3],
             },

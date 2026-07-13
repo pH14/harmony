@@ -12,8 +12,8 @@
 //!
 //! The recorder is a **pure sink** (task 65 invariant): it only ever *writes* to
 //! the [`TraceStore`] — no live-plane / `Tactic` code reads sensor or store
-//! output mid-run (open-loop Modulation), and the search policy never learns the
-//! store exists (Progression blindness). The retention knob gates journal bytes
+//! output mid-run (open-loop rollout), and the search policy never learns the
+//! store exists (search-loop blindness). The retention knob gates journal bytes
 //! only; it never changes which verbs the loop issues or the report it produces.
 //!
 //! ## The one stamp axis
@@ -21,7 +21,7 @@
 //! Console bytes are mapped onto the spine's [`Moment`] axis in exactly one
 //! place — [`stamp`] — never a second time axis. In v1 a run's whole console is
 //! drained under a single stop `Moment` (stop-granular; per-exit stamps wait on
-//! the `telemetry::Observer` wiring, task 65 non-goal). The `Moment`-vs-`VTime`
+//! the `telemetry::Observer` wiring, task 65 non-goal). The `Moment`-vs-`Moment`
 //! unit choice (`Moment(vtime)` one-for-one, retired-branch V-time) is the unit
 //! ruling escalated to the foreman per task 65 — nothing here bakes in more than
 //! the one-for-one identity the spine already documents.
@@ -29,7 +29,7 @@
 use std::collections::BTreeMap;
 
 use environment::EnvSpec;
-use explorer::{AdapterEnv, EnvCodec, Moment, RunTrace, SpecEnvCodec, StopReason, StreamId, VTime};
+use explorer::{AdapterEnv, EnvCodec, Moment, RunTrace, SpecEnvCodec, StopReason, StreamId};
 use runtrace::{Retain, RetentionPolicy, TraceId, TraceStore, retain_for};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError, server_caps};
@@ -43,7 +43,7 @@ use control_proto::{
 /// documented `stamp()` function"). One-for-one, mirroring the spine's toy
 /// machine and `control-proto`'s axis; the unit ruling is escalated to the
 /// foreman.
-pub fn stamp(vtime: VTime) -> Moment {
+pub fn stamp(vtime: Moment) -> Moment {
     Moment(vtime.0)
 }
 
@@ -424,10 +424,10 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
     use control_proto::StopReason as Ws;
     match stop {
         Ws::Deadline { vtime } => StopReason::Deadline {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
         },
         Ws::Quiescent { vtime } => StopReason::Quiescent {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
         },
         Ws::Crash { vtime, info } => {
             let kind = match info.kind {
@@ -439,20 +439,20 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
             bytes.push(kind);
             bytes.extend_from_slice(&info.detail);
             StopReason::Crash {
-                vtime: VTime(vtime.0),
+                vtime: Moment(vtime.0),
                 info: bytes,
             }
         }
         Ws::Decision { vtime, id, ctx } => StopReason::Decision {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
             id: id.0,
             ctx,
         },
         Ws::SnapshotPoint { vtime } => StopReason::SnapshotPoint {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
         },
         Ws::Assertion { vtime, ev } => StopReason::Assertion {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
             id: ev.id,
             data: ev.data,
         },
@@ -730,19 +730,19 @@ mod tests {
             stop_from_wire(Ws::Deadline {
                 vtime: WireVTime(10)
             }),
-            StopReason::Deadline { vtime: VTime(10) }
+            StopReason::Deadline { vtime: Moment(10) }
         );
         assert_eq!(
             stop_from_wire(Ws::Quiescent {
                 vtime: WireVTime(11)
             }),
-            StopReason::Quiescent { vtime: VTime(11) }
+            StopReason::Quiescent { vtime: Moment(11) }
         );
         assert_eq!(
             stop_from_wire(Ws::SnapshotPoint {
                 vtime: WireVTime(12)
             }),
-            StopReason::SnapshotPoint { vtime: VTime(12) }
+            StopReason::SnapshotPoint { vtime: Moment(12) }
         );
         assert_eq!(
             stop_from_wire(Ws::Decision {
@@ -751,7 +751,7 @@ mod tests {
                 ctx: vec![9, 9]
             }),
             StopReason::Decision {
-                vtime: VTime(13),
+                vtime: Moment(13),
                 id: 7,
                 ctx: vec![9, 9]
             }
@@ -765,7 +765,7 @@ mod tests {
                 }
             }),
             StopReason::Assertion {
-                vtime: VTime(14),
+                vtime: Moment(14),
                 id: 3,
                 data: vec![1, 2]
             }
@@ -785,7 +785,7 @@ mod tests {
             assert_eq!(
                 got,
                 StopReason::Crash {
-                    vtime: VTime(15),
+                    vtime: Moment(15),
                     info: [&[byte][..], &[0xAA, 0xBB]].concat(),
                 },
                 "the kind byte is prepended to the detail bytes"
@@ -803,7 +803,7 @@ mod tests {
                 seed: 0x1111,
                 run: 0,
                 trace_id: runtrace::TraceId([0x11; 32]),
-                stop: StopReason::Quiescent { vtime: VTime(50) },
+                stop: StopReason::Quiescent { vtime: Moment(50) },
                 state_hash: [0x22; 32],
                 records_len: 3,
                 journal_len: 40,

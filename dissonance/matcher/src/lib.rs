@@ -17,8 +17,8 @@
 //!
 //! This crate is **replay-plane and pure**: a `MatchSensor`/`MatchOracle` is a
 //! function of a finished [`RunTrace`](explorer::RunTrace), never consulted
-//! mid-run — the open-loop Modulation is untouched. Its load-bearing invariant
-//! is **Progression blindness**: adding, editing, or deleting a signal is a
+//! mid-run — the open-loop rollout is untouched. Its load-bearing invariant
+//! is **search-loop blindness**: adding, editing, or deleting a signal is a
 //! config change that never edits the explorer loop. Accordingly the only
 //! sibling dependency is `explorer` (the spine traits live there, so
 //! conventions rule 2 — interfaces in the consumer — holds by construction);
@@ -34,7 +34,7 @@
 //! 3. **Purity + determinism** — pure per `RunTrace`; output is a deterministic
 //!    function of record order via canonical `(Moment, index)` processing and a
 //!    sorted stream; no floats, no `HashMap` iteration, seedless.
-//! 4. **Progression blindness** — imports spine items only; a config change
+//! 4. **search-loop blindness** — imports spine items only; a config change
 //!    adds signals with zero explorer edits.
 //!
 //! ## Config

@@ -29,7 +29,7 @@
 //! [`campaign`] extends this bin into the milestone: [`run_campaign`](campaign::run_campaign)
 //! seals a base, searches seed-driven **host-fault schedules** ([`mint_fault_env`](campaign::mint_fault_env),
 //! riding the branch env task-59's server enforces), judges each terminal with the workload-aware
-//! [`CampaignOracle`](campaign::CampaignOracle), and on the first crash emits the [`Bug`](explorer::Bug)
+//! [`CrashOracle`](campaign::CrashOracle), and on the first crash emits the [`Bug`](explorer::Bug)
 //! and replays it N/N ([`verify_campaign`](campaign::verify_campaign)). The identical loop drives the
 //! box's real Postgres-campaign guest and, portably, the [`planted`] module's
 //! [`ToyPlantedMachine`](planted::ToyPlantedMachine) — a controllable guest with a planted,
@@ -39,7 +39,7 @@ use std::os::unix::net::UnixStream;
 
 use environment::EnvSpec;
 use explorer::adapter::SocketMachine;
-use explorer::{Machine, MachineError, StopConditions, StopMask, StopReason, VTime};
+use explorer::{Machine, MachineError, StopConditions, StopMask, StopReason, Moment};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, ServeError};
 
@@ -161,7 +161,7 @@ pub fn fmt_stop(stop: &StopReason) -> String {
 pub fn probe_vtime<M: Machine>(machine: &mut M) -> Result<u64, MachineError> {
     let stop = machine.run(
         &StopConditions {
-            deadline: Some(VTime(0)),
+            deadline: Some(Moment(0)),
             on: StopMask::NONE,
         },
         None,
@@ -199,7 +199,7 @@ pub fn run_sweep<M: Machine>(
                         // Saturating: a deadline that would overflow the axis
                         // just means "run to the end", never a wrapped-small
                         // deadline that would stop immediately.
-                        deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
+                        deadline: Some(Moment(vt.saturating_add(cfg.snapshot_retry_step))),
                         on: StopMask::NONE,
                     },
                     None,
@@ -216,12 +216,12 @@ pub fn run_sweep<M: Machine>(
     let snapshot_vtime = vt;
     let base_hash = machine.hash()?;
 
-    // 3. The progression: per seed, branch → run → hash, repeated.
+    // 3. The search loop: per seed, branch → run → hash, repeated.
     let until = StopConditions {
         // Saturating (as above): an overflowing deadline means "to the end".
         deadline: cfg
             .deadline_delta
-            .map(|d| VTime(snapshot_vtime.saturating_add(d))),
+            .map(|d| Moment(snapshot_vtime.saturating_add(d))),
         on: StopMask::NONE,
     };
     let mut rows = Vec::with_capacity(cfg.seeds.len());
@@ -425,7 +425,7 @@ mod tests {
                 seed: s as u64,
                 runs: (0..n)
                     .map(|_| RunRow {
-                        stop: StopReason::Quiescent { vtime: VTime(100) },
+                        stop: StopReason::Quiescent { vtime: Moment(100) },
                         hash: [s as u8; 32],
                     })
                     .collect(),
@@ -476,35 +476,35 @@ mod tests {
     #[test]
     fn fmt_stop_renders_every_stop_reason_variant() {
         assert_eq!(
-            fmt_stop(&StopReason::Deadline { vtime: VTime(7) }),
+            fmt_stop(&StopReason::Deadline { vtime: Moment(7) }),
             "Deadline@7"
         );
         assert_eq!(
-            fmt_stop(&StopReason::Quiescent { vtime: VTime(7) }),
+            fmt_stop(&StopReason::Quiescent { vtime: Moment(7) }),
             "Quiescent@7"
         );
         assert_eq!(
             fmt_stop(&StopReason::Crash {
-                vtime: VTime(7),
+                vtime: Moment(7),
                 info: vec![1, 2, 3]
             }),
             "Crash@7[3B]"
         );
         assert_eq!(
             fmt_stop(&StopReason::Decision {
-                vtime: VTime(7),
+                vtime: Moment(7),
                 id: 9,
                 ctx: vec![]
             }),
             "Decision#9@7"
         );
         assert_eq!(
-            fmt_stop(&StopReason::SnapshotPoint { vtime: VTime(7) }),
+            fmt_stop(&StopReason::SnapshotPoint { vtime: Moment(7) }),
             "SnapshotPoint@7"
         );
         assert_eq!(
             fmt_stop(&StopReason::Assertion {
-                vtime: VTime(7),
+                vtime: Moment(7),
                 id: 4,
                 data: vec![]
             }),
@@ -535,11 +535,11 @@ mod tests {
                 seed: 0x1111,
                 runs: vec![
                     RunRow {
-                        stop: StopReason::Quiescent { vtime: VTime(50) },
+                        stop: StopReason::Quiescent { vtime: Moment(50) },
                         hash: [0x22; 32],
                     },
                     RunRow {
-                        stop: StopReason::Quiescent { vtime: VTime(50) },
+                        stop: StopReason::Quiescent { vtime: Moment(50) },
                         hash: [0x22; 32],
                     },
                 ],
@@ -570,7 +570,7 @@ replay(base): state_hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         fn branch(
             &mut self,
             _snap: explorer::SnapId,
-            _env: &explorer::Environment,
+            _env: &explorer::Reproducer,
         ) -> Result<(), MachineError> {
             Ok(())
         }
@@ -593,18 +593,18 @@ replay(base): state_hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
                     self.vtime = d.0;
                     if self.halts_before_boundary {
                         Ok(StopReason::Quiescent {
-                            vtime: VTime(self.vtime),
+                            vtime: Moment(self.vtime),
                         })
                     } else {
                         Ok(StopReason::Deadline {
-                            vtime: VTime(self.vtime),
+                            vtime: Moment(self.vtime),
                         })
                     }
                 }
                 None => {
                     self.vtime += 1;
                     Ok(StopReason::Quiescent {
-                        vtime: VTime(self.vtime),
+                        vtime: Moment(self.vtime),
                     })
                 }
             }
@@ -626,7 +626,7 @@ replay(base): state_hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         fn coverage(&self) -> &[u8] {
             &[]
         }
-        fn recorded_env(&self) -> Result<explorer::Environment, MachineError> {
+        fn recorded_env(&self) -> Result<explorer::Reproducer, MachineError> {
             Ok(explorer::SpecEnvCodec.seeded(0))
         }
     }

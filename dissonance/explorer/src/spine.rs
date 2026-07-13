@@ -37,7 +37,7 @@
 //! 4. **Eviction is reproducibility-safe.** Dropping any seal/snapshot never
 //!    changes what a later run reproduces (an evicted state re-materializes from
 //!    genesis, identically); retention is a pure performance knob.
-//! 5. **Progression blindness.** [`Selector`] and [`Archive`] see opaque
+//! 5. **Search-loop blindness.** [`Selector`] and [`Archive`] see opaque
 //!    [`CellKey`]s and [`Reward`]s — no fault types, no signal channels, no
 //!    `CellFn` meaning. Later faults and signals grow the seams and never touch
 //!    the search policy.
@@ -47,20 +47,20 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::prng::Prng;
-use crate::{Answer, Environment, SnapId, StopReason};
+use crate::{Answer, Reproducer, SnapId, StopReason};
 
 // ---------------------------------------------------------------------------
 // Vocabulary (serializable, `serde`)
 // ---------------------------------------------------------------------------
 
-/// A moment on the single monotonic deterministic axis, mirroring
+/// A point on the single monotonic deterministic axis, mirroring
 /// `environment::Moment`/`control-proto::Moment` (conventions rule 2 — defined
 /// locally, not imported). The spine keys the replay-plane vocabulary on
-/// `Moment`; which physical counter backs the axis at integration (the
-/// retired-instruction count vs. the retired-branch V-time it is derived from)
-/// is the unit ruling escalated to the foreman per task 65 — nothing in this
-/// crate depends on the choice. The in-crate toy machine stamps its stop
-/// V-times onto this axis one-for-one.
+/// `Moment`, and (the GLOSSARY's one-axis ruling, settling the task-65
+/// escalation) the engine's deadlines and stop stamps are the same type —
+/// the former `VTime` mirror merged into this one; "V-time" survives as the
+/// name of the work-derived clock itself. The in-crate toy machine stamps its
+/// stop V-times onto this axis one-for-one.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]
@@ -68,7 +68,7 @@ pub struct Moment(pub u64);
 
 /// The shape-and-content view of a coverage map (instrument tier): AFL-style
 /// edge counts, snapshotted from the backend's map. Only a view — the explorer
-/// never interprets its layout beyond generic novelty (Progression blindness);
+/// never interprets its layout beyond generic novelty (search-loop blindness);
 /// in production the bytes come from the negotiated shmem geometry
 /// (`control-proto::CoverageGeometry`), in tests from the toy machine.
 #[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
@@ -95,7 +95,7 @@ pub struct ChannelId(pub u16);
 pub struct FeatureId(pub u64);
 
 /// One observed signal: a stable `(channel, id)` pair. What a feature *means*
-/// is defined by the plugin that emitted it; the Progression never learns.
+/// is defined by the plugin that emitted it; the search loop never learns.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]
@@ -161,7 +161,7 @@ impl FromIterator<Feature> for FeatureSet {
     }
 }
 
-/// A cell key: opaque bytes to the Progression, `Ord` for BTree keying. What a
+/// A cell key: opaque bytes to the search loop, `Ord` for BTree keying. What a
 /// cell *means* is the [`CellFn`]'s business alone (invariant 5).
 pub type CellKey = Vec<u8>;
 
@@ -237,7 +237,7 @@ pub struct RunTrace {
     /// exemplar is rebased through the exemplar's suffix chain
     /// ([`EnvCodec::compose`](crate::EnvCodec::compose), the task-93 ruling)
     /// before it is recorded here.
-    pub env: Environment,
+    pub env: Reproducer,
     /// The instrument-tier coverage map, snapshotted at run end. Coverage is an
     /// accumulated bitmap available (in production) only at run end, so it is a
     /// **terminal** signal — never blended into along-timeline cell keys.
@@ -267,7 +267,7 @@ pub struct VirtualExemplar {
     pub seed: u64,
     /// The tail-complete delta since `parent` (the compose contract,
     /// `docs/DISSONANCE.md` task 93): replaying it from `parent` reaches `at`.
-    pub suffix: Environment,
+    pub suffix: Reproducer,
     /// Where to seal within the branch (the sealable point this exemplar
     /// addresses).
     pub at: Moment,
@@ -279,7 +279,7 @@ pub struct VirtualExemplar {
 pub struct Bug {
     /// The genesis-complete reproducer: `branch(genesis, env)` + re-run
     /// reproduces `stop` bit-for-bit.
-    pub env: Environment,
+    pub env: Reproducer,
     /// The bug's stop reason (a `Crash` or `Assertion`).
     pub stop: StopReason,
     /// A stable digest of the stop reason, for dedup across the many
@@ -301,7 +301,7 @@ pub struct Fork {
     /// chain already folded via `compose`). Opaque to the archive; stored so a
     /// later mutation or bug rebase keys from the right origin, and so an
     /// evicted seal re-materializes from genesis.
-    pub env: Environment,
+    pub env: Reproducer,
     /// The coverage view as of this point, when the backing exposes one (the
     /// toy machine does; a shmem-backed production map may only be terminal).
     pub coverage: Option<CoverageView>,
@@ -355,7 +355,7 @@ pub struct FrontierEntry {
     pub exemplar: VirtualExemplar,
     /// The genesis-complete environment reaching `exemplar.at` (opaque bytes;
     /// the compose base for children and the re-materialization reproducer).
-    pub env: Environment,
+    pub env: Reproducer,
     /// The admission reward (how many cells this entry claimed when admitted).
     pub reward: Reward,
 }
@@ -539,7 +539,7 @@ pub trait Oracle {
 
 /// The Go-Explore/MAP-Elites frontier fold: cells, best-per-cell exemplars,
 /// reproducibility-safe eviction. Generic — sees opaque [`CellKey`]s and
-/// [`Environment`]s, never fault types or signal meaning (invariant 5).
+/// [`Reproducer`]s, never fault types or signal meaning (invariant 5).
 pub trait Archive {
     /// Admit along the **whole timeline**: walk the run's sealable points and
     /// admit a [`VirtualExemplar`] at every novel `(cell, Moment)` — one run
@@ -628,10 +628,10 @@ pub trait Matchable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VTime;
+    use crate::Moment;
 
-    fn env(bytes: Vec<u8>) -> Environment {
-        Environment {
+    fn env(bytes: Vec<u8>) -> Reproducer {
+        Reproducer {
             blob_version: 1,
             bytes,
         }
@@ -643,7 +643,7 @@ mod tests {
     fn vocabulary_round_trips_through_serde() {
         let trace = RunTrace {
             terminal: StopReason::Crash {
-                vtime: VTime(80),
+                vtime: Moment(80),
                 info: vec![2, 4],
             },
             env: env(vec![1, 2, 3]),
@@ -680,7 +680,7 @@ mod tests {
         let bug = Bug {
             env: env(vec![5]),
             stop: StopReason::Assertion {
-                vtime: VTime(50),
+                vtime: Moment(50),
                 id: 5,
                 data: vec![3],
             },

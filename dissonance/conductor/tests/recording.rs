@@ -189,12 +189,12 @@ fn verify_record_flags_non_diverging_guest_state() {
     // state despite distinct seeds/journals) must FAIL divergence, even though
     // per-seed determinism holds.
     use conductor::record::{RecordReport, RecordedRun};
-    use explorer::{StopReason, VTime};
+    use explorer::{StopReason, Moment};
     let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
         seed,
         run,
         trace_id: runtrace::TraceId([id_byte; 32]),
-        stop: StopReason::Quiescent { vtime: VTime(1) },
+        stop: StopReason::Quiescent { vtime: Moment(1) },
         state_hash: [0xEE; 32], // SAME across every seed — no guest divergence
         records_len: 1,
         journal_len: 10,
@@ -230,12 +230,12 @@ fn verify_record_flags_folded_reproducers() {
     // losing env-only replay. Must FAIL the TraceId check even though the
     // state_hash divergence passes.
     use conductor::record::{RecordReport, RecordedRun};
-    use explorer::{StopReason, VTime};
+    use explorer::{StopReason, Moment};
     let row = |seed: u64, run: usize, hash_byte: u8| RecordedRun {
         seed,
         run,
         trace_id: runtrace::TraceId([0x11; 32]), // SAME across every seed — envs folded
-        stop: StopReason::Quiescent { vtime: VTime(1) },
+        stop: StopReason::Quiescent { vtime: Moment(1) },
         state_hash: [hash_byte; 32], // distinct per seed — guest states DO diverge
         records_len: 1,
         journal_len: 10,
@@ -276,12 +276,12 @@ fn verify_record_flags_folded_reproducers() {
 #[test]
 fn verify_record_flags_each_per_run_gate_independently() {
     use conductor::record::{RecordReport, RecordedRun};
-    use explorer::{StopReason, VTime};
+    use explorer::{StopReason, Moment};
     let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
         seed,
         run,
         trace_id: runtrace::TraceId([id_byte; 32]),
-        stop: StopReason::Quiescent { vtime: VTime(1) },
+        stop: StopReason::Quiescent { vtime: Moment(1) },
         state_hash: [id_byte; 32],
         records_len: 1,
         journal_len: 10,
@@ -404,7 +404,7 @@ fn verify_store_reload_catches_a_report_row_that_drifted_from_the_stored_trace()
 
     let mut terminal_mismatch = report.clone();
     terminal_mismatch.rows[0].stop = explorer::StopReason::Deadline {
-        vtime: explorer::VTime(u64::MAX),
+        vtime: explorer::Moment(u64::MAX),
     };
     let failures = verify_store_reload(&store, &terminal_mismatch);
     assert!(
@@ -472,7 +472,7 @@ fn verify_store_reload_catches_an_id_the_store_never_recorded() {
             run: 0,
             trace_id: runtrace::TraceId([0xAB; 32]),
             stop: explorer::StopReason::Quiescent {
-                vtime: explorer::VTime(1),
+                vtime: explorer::Moment(1),
             },
             state_hash: [1; 32],
             records_len: 1,

@@ -7,10 +7,10 @@
 //! production a thin R2-socket adapter over `control-proto` implements it; in
 //! tests an in-crate toy machine does, so the engine and the determinism gate run
 //! both sides unchanged. [`EnvCodec`] is how the schema-blind explorer mints and
-//! mutates *valid* [`Environment`] blobs without ever parsing task 24's structure.
+//! mutates *valid* [`Reproducer`] blobs without ever parsing task 24's structure.
 
 use crate::error::{EnvCodecError, MachineError};
-use crate::{Answer, Environment, SnapId, StopConditions, StopReason};
+use crate::{Answer, Reproducer, SnapId, StopConditions, StopReason};
 
 /// The control-plane driver the explorer treats as a black box. Every method is
 /// fallible with a [`MachineError`] (a transport/backend failure), kept strictly
@@ -18,14 +18,14 @@ use crate::{Answer, Environment, SnapId, StopConditions, StopReason};
 ///
 /// The two restore verbs are deliberately split so the reproduce-vs-diverge
 /// choice is explicit at every call site (`docs/DISSONANCE.md`, "no bare
-/// restore"): [`branch`](Machine::branch) reseeds from an [`Environment`] to
+/// restore"): [`branch`](Machine::branch) reseeds from an [`Reproducer`] to
 /// explore a new future; [`replay`](Machine::replay) restores verbatim to
 /// reproduce.
 pub trait Machine {
     /// Restore `snap` and reseed the environment from `env` — explore a new
     /// future. `env`'s overrides are keyed by decision index *since this
     /// branch*.
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError>;
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError>;
 
     /// Restore `snap` verbatim — reproduce the exact run that was snapshotted
     /// (the determinism / repro path).
@@ -59,14 +59,14 @@ pub trait Machine {
     /// explorer reads it for novelty scoring but never interprets its layout.
     fn coverage(&self) -> &[u8];
 
-    /// The reproducer [`Environment`] accumulated over the current Modulation: the
+    /// The reproducer [`Reproducer`] accumulated over the current rollout: the
     /// base seed/policy plus the answers resolved since the last
     /// `branch`/`replay`, keyed by decision index since that branch. The machine
     /// owns the blob backing (it mediates every `run(resolve)`), so it — not the
     /// schema-blind explorer — emits the recorded blob; the explorer ferries it
     /// into a [`RunOutcome`](crate::RunOutcome)/[`Frontier`](crate::Frontier)
     /// without parsing it.
-    fn recorded_env(&self) -> Result<Environment, MachineError>;
+    fn recorded_env(&self) -> Result<Reproducer, MachineError>;
 
     /// The link-tier SDK event capture of the current run (task 73): the
     /// `Moment`-stamped `(moment, event_id, bytes)` stream a cooperating guest
@@ -105,7 +105,7 @@ pub trait MachineFactory {
     fn spawn(&self) -> Self::M;
 }
 
-/// Mints and mutates **valid** [`Environment`] blobs so the explorer stays
+/// Mints and mutates **valid** [`Reproducer`] blobs so the explorer stays
 /// schema-blind (dissonance task 24 owns the structure). Bound at integration to
 /// `EnvSpec`'s codec; the toy machine provides a trivial impl. Without it a
 /// production strategy could only emit raw bytes the backend rejects as
@@ -117,7 +117,7 @@ pub trait EnvCodec {
     /// draw and the empty-frontier / genesis base. Genesis-complete (decision
     /// index zero). **Infallible**: it mints from a caller-supplied seed and
     /// decodes no untrusted bytes, so it has no failure mode.
-    fn seeded(&self, seed: u64) -> Environment;
+    fn seeded(&self, seed: u64) -> Reproducer;
 
     /// A coverage-guided mutation of `base`: decode, tweak the seed or one
     /// override, re-encode — always a *valid* blob the backend accepts, never a
@@ -128,11 +128,11 @@ pub trait EnvCodec {
     /// artifact a user may have loaded from disk or hand-edited — so a malformed
     /// or mis-ordered blob returns a typed [`EnvCodecError`], never a panic. A
     /// valid blob decodes to the identical mutation it always did.
-    fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError>;
+    fn mutate(&self, base: &Reproducer, salt: u64) -> Result<Reproducer, EnvCodecError>;
 
     /// Compose a `base` with a **branch-local** delta (a
     /// [`Machine::recorded_env`] from a run branched off `base`'s snapshot) into
-    /// one [`Environment`] rooted at `base`'s own root, by re-indexing the
+    /// one [`Reproducer`] rooted at `base`'s own root, by re-indexing the
     /// delta's decision IDs onto the base at its capture point. This is how a
     /// [`Bug`](crate::Bug) found below a non-genesis corpus snapshot still yields
     /// a portable reproducer; with a genesis-complete `base` the result is
@@ -151,7 +151,7 @@ pub trait EnvCodec {
     /// the pre-task-99 contract.
     fn compose(
         &self,
-        base: &Environment,
-        branch_local: &Environment,
-    ) -> Result<Environment, EnvCodecError>;
+        base: &Reproducer,
+        branch_local: &Reproducer,
+    ) -> Result<Reproducer, EnvCodecError>;
 }

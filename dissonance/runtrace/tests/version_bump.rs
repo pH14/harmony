@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use explorer::{
-    CoverageView, Environment, GuestEvent, Moment, Record, RunTrace, StopReason, StreamId, VTime,
+    CoverageView, Reproducer, GuestEvent, Moment, Record, RunTrace, StopReason, StreamId,
     Value,
 };
 use runtrace::{TRACE_FORMAT_VERSION, TraceError, decode, encode};
@@ -35,10 +35,10 @@ fn golden_trace() -> RunTrace {
     attrs.insert("ok".to_string(), Value::Bool(true));
     RunTrace {
         terminal: StopReason::Crash {
-            vtime: VTime(5_000_000),
+            vtime: Moment(5_000_000),
             info: vec![0xDE, 0xAD],
         },
-        env: Environment {
+        env: Reproducer {
             blob_version: 3,
             bytes: vec![1, 2, 3, 4, 5],
         },

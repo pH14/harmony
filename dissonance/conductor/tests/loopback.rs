@@ -21,11 +21,11 @@ use std::io::{Read, Write};
 
 use conductor::mock::{self, default_fork_script};
 use conductor::{SweepConfig, run_session, run_sweep, sweep_client, verify};
-use control_proto::{ControlError, HashScope, HostFault, Moment, Reply, Request, SnapId};
+use control_proto::{ControlError, HashScope, HostFault, Moment as WireMoment, Reply, Request, SnapId};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{
-    EnvCodec, Machine, RunTrace, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime,
+    EnvCodec, Machine, RunTrace, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment,
 };
 
 /// A raw-frame control-proto call over a stream — the test harness for
@@ -191,7 +191,7 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
                 3,
                 &Request::Perturb {
                     fault: HostFault(vec![0xAA]),
-                    at: Moment(1000),
+                    at: WireMoment(1000),
                 }
             ),
             Err(ControlError::MalformedEnvironment)
@@ -315,7 +315,7 @@ fn replay_reproduces_the_pre_snapshot_hash_after_interleaved_verbs() {
         m.branch(base, &SpecEnvCodec.seeded(0x44)).unwrap();
         m.run(
             &StopConditions {
-                deadline: Some(VTime(u64::MAX)),
+                deadline: Some(Moment(u64::MAX)),
                 on: StopMask::NONE,
             },
             None,
@@ -405,7 +405,7 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
     let (served, (stop, env, raw)) = run_session(&mut server, move |stream| {
         let mut m = SocketMachine::connect(stream, boot_env).unwrap();
         let until = StopConditions {
-            deadline: Some(VTime(10_000_000)),
+            deadline: Some(Moment(10_000_000)),
             on: StopMask(u32::MAX),
         };
         let stop = m.run(&until, None).unwrap();
@@ -516,7 +516,7 @@ fn setup_complete_yields_a_usable_seal_at_the_next_synchronized_boundary() {
     let (served, (stop, seal)) = run_session(&mut server, move |stream| {
         let mut m = SocketMachine::connect(stream, boot_env).unwrap();
         let until = StopConditions {
-            deadline: Some(VTime(10_000_000)),
+            deadline: Some(Moment(10_000_000)),
             on: StopMask(u32::MAX),
         };
         // The run surfaces the deferred snapshot point at the post-setup RDTSC...

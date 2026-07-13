@@ -46,8 +46,8 @@ use benchmark::report::{BranchEvent, CampaignLog, Configuration, FindRecord};
 use benchmark::trigger::{self, FaultKind, Perturbation, Scenario};
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::{
-    AdapterEnv, CellFn, Environment, FeatureSet, Machine, MachineError, Moment, Prng, Record,
-    RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId, VTime,
+    AdapterEnv, CellFn, Reproducer, FeatureSet, Machine, MachineError, Moment, Prng,
+    Record, RunTrace, Sensor, SnapId, StopConditions, StopMask, StopReason, StreamId,
 };
 use logtmpl::{CellFnV1, LogSensor};
 
@@ -170,7 +170,7 @@ impl BenchConfig {
 /// `order_range` is the bug-2 (`OrderingInterrupt`) fault-offset search width — an
 /// EXPLICIT argument (from [`BenchConfig::order_range`], recorded in the log), never
 /// an ambient env read (PR#90 round-2). Ignored by the other trigger classes.
-pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64, order_range: u64) -> Environment {
+pub fn mint_scenario_env(seed: u64, spec: &BugSpec, rebase: u64, order_range: u64) -> Reproducer {
     let mut p = Prng::new(seed);
     let mut env_spec = EnvSpec::Seeded {
         seed,
@@ -234,7 +234,7 @@ fn one_of(xs: &[u64], p: &mut Prng) -> u64 {
 /// Decode a branch env back into the toy trigger's [`Scenario`] vocabulary: the
 /// seed plus the host-fault schedule, mapped to `benchmark`'s fault kinds. A
 /// malformed blob decodes to an empty (never-firing) scenario — the fail-safe.
-fn scenario_of(env: &Environment) -> Scenario {
+fn scenario_of(env: &Reproducer) -> Scenario {
     let Ok(decoded) = AdapterEnv::decode(env) else {
         return Scenario::default();
     };
@@ -280,7 +280,7 @@ fn scenario_of(env: &Environment) -> Scenario {
 /// out-of-range gpa or an out-of-scope `SkewTime`/`SetClockRate` the backend
 /// rejects — so "exploitation" was a wasted (and, pre-fix-A, campaign-aborting)
 /// branch rather than a local search (round-8 P0).
-fn exploit_env(parent: &Environment, prng: &mut Prng) -> Environment {
+fn exploit_env(parent: &Reproducer, prng: &mut Prng) -> Reproducer {
     let sc = scenario_of(parent);
     if sc.faults.is_empty() {
         // A fault-less parent (a rare-entropy bug fires on the seed alone): the
@@ -410,9 +410,9 @@ fn perturb_fault(at: u64, kind: FaultKind, prng: &mut Prng) -> (u64, FaultKind) 
 /// cells.
 pub struct BenchToyMachine {
     spec: BugSpec,
-    current: Environment,
+    current: Reproducer,
     vtime: u64,
-    snaps: std::collections::BTreeMap<u64, (u64, Environment)>,
+    snaps: std::collections::BTreeMap<u64, (u64, Reproducer)>,
     next_snap: u64,
     last_console: Vec<(u64, Vec<u8>)>,
 }
@@ -503,7 +503,7 @@ fn spec_placeholder() -> BugSpec {
 }
 
 impl Machine for BenchToyMachine {
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
         let Some((vt, _)) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
@@ -542,12 +542,12 @@ impl Machine for BenchToyMachine {
             self.last_console
                 .push((terminal_vtime, self.spec.serial_marker.as_bytes().to_vec()));
             Ok(StopReason::Crash {
-                vtime: VTime(terminal_vtime),
+                vtime: Moment(terminal_vtime),
                 info: vec![self.spec.crash_kind as u8, self.spec.id.0 as u8],
             })
         } else {
             Ok(StopReason::Quiescent {
-                vtime: VTime(terminal_vtime),
+                vtime: Moment(terminal_vtime),
             })
         }
     }
@@ -579,7 +579,7 @@ impl Machine for BenchToyMachine {
         &[]
     }
 
-    fn recorded_env(&self) -> Result<Environment, MachineError> {
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
         Ok(self.current.clone())
     }
 
@@ -597,7 +597,7 @@ impl Machine for BenchToyMachine {
 /// novel-cell admissions), so a find that exploits this exemplar attributes the
 /// whole chain's novelty to measure 2 — not just the finding branch's.
 struct Exemplar {
-    env: Environment,
+    env: Reproducer,
     path_len: u64,
     novel_on_path: u64,
 }
@@ -652,7 +652,7 @@ impl SignalCells {
 fn trace_of<M: Machine>(
     machine: &mut M,
     stop: StopReason,
-    env: Environment,
+    env: Reproducer,
 ) -> Result<RunTrace, MachineError> {
     let records = machine
         .console()?
@@ -731,7 +731,7 @@ pub struct FindCert {
     /// The branch it fired at (time-to-bug).
     pub branch: u64,
     /// The genesis-replayable reproducer env.
-    pub env: Environment,
+    pub env: Reproducer,
     /// The finding run's canonical 32-byte `state_hash`.
     pub state_hash: [u8; 32],
 }
@@ -783,7 +783,7 @@ fn seal_base<M: Machine>(
                 }
                 let stop = machine.run(
                     &StopConditions {
-                        deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
+                        deadline: Some(Moment(vt.saturating_add(cfg.snapshot_retry_step))),
                         on: StopMask::NONE,
                     },
                     None,
@@ -827,7 +827,7 @@ pub fn run_bench_campaign<M: Machine>(
     let until = StopConditions {
         deadline: cfg
             .deadline_delta
-            .map(|d| VTime(base_vtime.saturating_add(d))),
+            .map(|d| Moment(base_vtime.saturating_add(d))),
         on: StopMask::NONE,
     };
 
@@ -1073,7 +1073,7 @@ fn marker_attributed(trace: &RunTrace, spec: &BugSpec) -> bool {
 fn certify_replays<M: Machine>(
     machine: &mut M,
     base: SnapId,
-    env: &Environment,
+    env: &Reproducer,
     marker: &[u8],
     until: &StopConditions,
     found_stop: &StopReason,
@@ -1191,7 +1191,7 @@ mod tests {
     }
 
     /// Build an env directly from a benchmark Scenario (test helper).
-    fn env_of_scenario(sc: &Scenario, _spec: &BugSpec) -> Environment {
+    fn env_of_scenario(sc: &Scenario, _spec: &BugSpec) -> Reproducer {
         let mut es = EnvSpec::Seeded {
             seed: sc.seed,
             policy: FaultPolicy::none(),
@@ -1303,12 +1303,12 @@ mod tests {
     fn unmarked_crash_is_not_a_find() {
         // A machine that always crashes but emits an EMPTY console (no marker).
         struct SilentCrashMachine {
-            current: Environment,
-            snaps: std::collections::BTreeMap<u64, Environment>,
+            current: Reproducer,
+            snaps: std::collections::BTreeMap<u64, Reproducer>,
             next: u64,
         }
         impl Machine for SilentCrashMachine {
-            fn branch(&mut self, s: SnapId, e: &Environment) -> Result<(), MachineError> {
+            fn branch(&mut self, s: SnapId, e: &Reproducer) -> Result<(), MachineError> {
                 if !self.snaps.contains_key(&s.0) {
                     return Err(MachineError::UnknownSnapshot(s.0));
                 }
@@ -1326,7 +1326,7 @@ mod tests {
             ) -> Result<StopReason, MachineError> {
                 // Always a crash — but no console line is emitted, so no marker.
                 Ok(StopReason::Crash {
-                    vtime: VTime(BASE_VTIME + 1),
+                    vtime: Moment(BASE_VTIME + 1),
                     info: vec![0, 0],
                 })
             }
@@ -1346,7 +1346,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[]
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(self.current.clone())
             }
             fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
@@ -1384,13 +1384,13 @@ mod tests {
     fn inadmissible_proposal_is_skipped_but_transport_still_aborts() {
         /// Seals fine (snapshot works), but every `branch` returns `err`.
         struct RejectBranchMachine {
-            current: Environment,
-            snaps: std::collections::BTreeMap<u64, Environment>,
+            current: Reproducer,
+            snaps: std::collections::BTreeMap<u64, Reproducer>,
             next: u64,
             err: MachineError,
         }
         impl Machine for RejectBranchMachine {
-            fn branch(&mut self, _s: SnapId, _e: &Environment) -> Result<(), MachineError> {
+            fn branch(&mut self, _s: SnapId, _e: &Reproducer) -> Result<(), MachineError> {
                 Err(self.err.clone())
             }
             fn replay(&mut self, s: SnapId) -> Result<(), MachineError> {
@@ -1404,7 +1404,7 @@ mod tests {
             ) -> Result<StopReason, MachineError> {
                 // Never reached — branch fails first.
                 Ok(StopReason::Quiescent {
-                    vtime: VTime(BASE_VTIME + 1),
+                    vtime: Moment(BASE_VTIME + 1),
                 })
             }
             fn snapshot(&mut self) -> Result<SnapId, MachineError> {
@@ -1423,7 +1423,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[]
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(self.current.clone())
             }
         }
@@ -1478,12 +1478,12 @@ mod tests {
     fn marker_bearing_deadline_stop_is_a_find() {
         struct DeadlineMarkerMachine {
             marker: Vec<u8>,
-            current: Environment,
-            snaps: std::collections::BTreeMap<u64, Environment>,
+            current: Reproducer,
+            snaps: std::collections::BTreeMap<u64, Reproducer>,
             next: u64,
         }
         impl Machine for DeadlineMarkerMachine {
-            fn branch(&mut self, s: SnapId, e: &Environment) -> Result<(), MachineError> {
+            fn branch(&mut self, s: SnapId, e: &Reproducer) -> Result<(), MachineError> {
                 if !self.snaps.contains_key(&s.0) {
                     return Err(MachineError::UnknownSnapshot(s.0));
                 }
@@ -1503,7 +1503,7 @@ mod tests {
                 // is cut off at the deadline before the slow reboot->Crash — a
                 // Deadline stop, NOT a bug terminal.
                 Ok(StopReason::Deadline {
-                    vtime: VTime(BASE_VTIME + 100),
+                    vtime: Moment(BASE_VTIME + 100),
                 })
             }
             fn snapshot(&mut self) -> Result<SnapId, MachineError> {
@@ -1522,7 +1522,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[]
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(self.current.clone())
             }
             fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
@@ -1564,12 +1564,12 @@ mod tests {
         struct DriftingHashMachine {
             marker: Vec<u8>,
             runs: u64,
-            current: Environment,
-            snaps: std::collections::BTreeMap<u64, Environment>,
+            current: Reproducer,
+            snaps: std::collections::BTreeMap<u64, Reproducer>,
             next: u64,
         }
         impl Machine for DriftingHashMachine {
-            fn branch(&mut self, s: SnapId, e: &Environment) -> Result<(), MachineError> {
+            fn branch(&mut self, s: SnapId, e: &Reproducer) -> Result<(), MachineError> {
                 if !self.snaps.contains_key(&s.0) {
                     return Err(MachineError::UnknownSnapshot(s.0));
                 }
@@ -1587,7 +1587,7 @@ mod tests {
             ) -> Result<StopReason, MachineError> {
                 self.runs += 1;
                 Ok(StopReason::Crash {
-                    vtime: VTime(BASE_VTIME + 1),
+                    vtime: Moment(BASE_VTIME + 1),
                     info: vec![0, 1],
                 })
             }
@@ -1609,7 +1609,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[]
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(self.current.clone())
             }
             fn console(&mut self) -> Result<Vec<(u64, Vec<u8>)>, MachineError> {
@@ -1648,7 +1648,7 @@ mod tests {
         let spec = bench.get(BugId(3)).unwrap().clone();
         let mk = |lines: &[&str]| RunTrace {
             terminal: StopReason::Quiescent {
-                vtime: VTime(BASE_VTIME),
+                vtime: Moment(BASE_VTIME),
             },
             env: mint_scenario_env(0, &spec, 0, 64),
             coverage: None,
@@ -1700,7 +1700,7 @@ mod tests {
         let run = |lines: &[&str]| -> Vec<u64> {
             let t = RunTrace {
                 terminal: StopReason::Quiescent {
-                    vtime: VTime(BASE_VTIME),
+                    vtime: Moment(BASE_VTIME),
                 },
                 env: mint_scenario_env(0, &spec, 0, 64),
                 coverage: None,

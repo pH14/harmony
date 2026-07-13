@@ -126,7 +126,7 @@ proptest! {
             Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), noise_seed)
                 .unwrap();
         for (pt, stream_before, answer) in log.iter() {
-            noise.progression_step().unwrap();
+            noise.step().unwrap();
             let mut rng = stream_before.clone();
             prop_assert_eq!(
                 &fresh.decide(pt, &mut rng),
@@ -180,12 +180,12 @@ proptest! {
 
 /// One run contributes many exemplars (timeline admission): the very first
 /// genesis run forks at both toy snapshot points, and both prefixes carry
-/// fresh coverage, so a single Progression step admits two entries.
+/// fresh coverage, so a single search-loop step admits two entries.
 #[test]
 fn one_run_seeds_many_exemplars() {
     let mut ex =
         Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 7).unwrap();
-    ex.progression_step().unwrap();
+    ex.step().unwrap();
     assert_eq!(
         ex.frontier().len(),
         2,
@@ -217,7 +217,7 @@ fn campaign(seed: u64, steps: u64, evict_every_step: bool) -> (Bugs, Admitted) {
     let mut bugs = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..steps {
-        if let Some(bug) = ex.progression_step().unwrap()
+        if let Some(bug) = ex.step().unwrap()
             && seen.insert(bug.fingerprint)
         {
             bugs.push((bug.fingerprint, bug.env.bytes));
@@ -257,7 +257,7 @@ proptest! {
 fn rematerialized_state_hashes_identically_to_its_seal() {
     let mut ex =
         Explorer::new(ToyMachine::new(), Box::new(ToyCodec), pin_composition(), 11).unwrap();
-    ex.progression_step().unwrap();
+    ex.step().unwrap();
     assert!(!ex.frontier().is_empty(), "the first step admitted entries");
 
     let r = ExemplarRef(0);
@@ -381,7 +381,7 @@ fn compacting_eviction_never_desyncs_the_seal_cache() {
     // Step 1: the genesis run admits two entries (ids 0, 1); the compacting
     // evict then trims to the most recent (id 1) and the engine sweeps id 0's
     // orphaned seal.
-    ex.progression_step().unwrap();
+    ex.step().unwrap();
     assert_eq!(ex.frontier().len(), 1, "compaction trimmed to one entry");
     let survivor = ex.frontier().iter().next().expect("one live entry").0;
     assert_eq!(
@@ -412,7 +412,7 @@ fn compacting_eviction_never_desyncs_the_seal_cache() {
     ex.machine_mut().replay(seal).unwrap();
     let sealed_hash = ex.machine_mut().hash().unwrap();
     let until = StopConditions {
-        deadline: Some(explorer::VTime(at)),
+        deadline: Some(explorer::Moment(at)),
         on: StopMask::NONE,
     };
     ex.machine_mut().branch(genesis, &env).unwrap();
@@ -427,7 +427,7 @@ fn compacting_eviction_never_desyncs_the_seal_cache() {
     // exploits keep working (a reused dropped handle would abort explore with
     // UnknownSnapshot in the toy).
     for _ in 0..12 {
-        ex.progression_step().unwrap();
+        ex.step().unwrap();
         let sealed = ex.sealed_count();
         assert_eq!(
             ex.machine_mut().live_snaps(),

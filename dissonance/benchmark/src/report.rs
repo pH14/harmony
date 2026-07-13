@@ -71,7 +71,7 @@ pub enum Configuration {
 /// index and the **opaque** cell ids its run touched. Cumulative distinct cells
 /// (the species-accumulation curve) is derived; the estimators fold the id
 /// stream. Cell ids are opaque `u64`s — the report never interprets them
-/// (progression-blind, invariant 5).
+/// (search-loop-blind, invariant 5).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct BranchEvent {
     /// The branch index within the campaign (0-based, monotone).

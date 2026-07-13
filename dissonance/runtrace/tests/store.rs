@@ -3,7 +3,7 @@
 //! the campaign-level "no reads / same verbs" half lives in the conductor's
 //! recording gate). Plus the telemetry NDJSON `Console` ingest path.
 
-use explorer::{Environment, Moment, Record, RunTrace, StopReason, StreamId, VTime};
+use explorer::{Reproducer, Moment, Record, RunTrace, StopReason, StreamId};
 use runtrace::{
     Retain, RetentionPolicy, TraceId, TraceStore, decode_chunks, ingest_ndjson, retain_for,
 };
@@ -13,7 +13,7 @@ use runtrace::{
 fn trace(tag: &[u8], terminal: StopReason) -> RunTrace {
     RunTrace {
         terminal,
-        env: Environment {
+        env: Reproducer {
             blob_version: 3,
             bytes: tag.to_vec(),
         },
@@ -30,11 +30,11 @@ fn trace(tag: &[u8], terminal: StopReason) -> RunTrace {
 }
 
 fn quiescent() -> StopReason {
-    StopReason::Quiescent { vtime: VTime(10) }
+    StopReason::Quiescent { vtime: Moment(10) }
 }
 fn crash() -> StopReason {
     StopReason::Crash {
-        vtime: VTime(10),
+        vtime: Moment(10),
         info: vec![1],
     }
 }

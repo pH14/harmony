@@ -24,7 +24,7 @@ fn backend_fault_aborts_explore_loudly() {
     }
 }
 
-/// The same fault inside `progression_step` surfaces as `Err`, never `Ok(Some(bug))`
+/// The same fault inside `step` surfaces as `Err`, never `Ok(Some(bug))`
 /// — a transport failure is categorically not a bug.
 #[test]
 fn backend_fault_is_never_a_bug() {
@@ -33,7 +33,7 @@ fn backend_fault_is_never_a_bug() {
 
     // The very first run fails; the step returns Err, not a bug.
     assert!(matches!(
-        ex.progression_step(),
+        ex.step(),
         Err(MachineError::Transport(_))
     ));
 }
@@ -46,7 +46,7 @@ fn quiescent_campaign_reports_no_bugs() {
         Explorer::new(ToyMachine::new(), Box::new(ToyCodec), seed_composition(), 0).unwrap();
     // No classes surface and no snapshot fork — pure quiescent seed runs.
     ex.set_stop_conditions(StopConditions {
-        deadline: Some(explorer::VTime(30)), // stop before any crash/assert index
+        deadline: Some(explorer::Moment(30)), // stop before any crash/assert index
         on: StopMask::NONE,
     });
 

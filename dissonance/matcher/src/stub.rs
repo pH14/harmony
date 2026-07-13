@@ -129,13 +129,13 @@ impl ContextSource for FaultMoments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use explorer::{Environment, Record, StopReason, StreamId, VTime};
+    use explorer::{Reproducer, Record, StopReason, StreamId, Moment};
 
     #[test]
     fn trace_records_adapts_the_scrape_stream() {
         let t = RunTrace {
-            terminal: StopReason::Quiescent { vtime: VTime(1) },
-            env: Environment {
+            terminal: StopReason::Quiescent { vtime: Moment(1) },
+            env: Reproducer {
                 blob_version: 1,
                 bytes: vec![],
             },
@@ -168,8 +168,8 @@ mod tests {
         )]);
         // Even an empty trace yields the owned record (reassembled-verbatim).
         let t = RunTrace {
-            terminal: StopReason::Quiescent { vtime: VTime(0) },
-            env: Environment {
+            terminal: StopReason::Quiescent { vtime: Moment(0) },
+            env: Reproducer {
                 blob_version: 1,
                 bytes: vec![],
             },

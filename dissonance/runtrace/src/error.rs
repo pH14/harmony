@@ -3,11 +3,11 @@
 
 use std::fmt;
 
-use explorer::Environment;
+use explorer::Reproducer;
 
 /// A **content address** for a run: `blake3` of the run's canonical environment
 /// bytes ([`crate::codec::encode_env`]). Because a run is a pure function of its
-/// `Environment` and the encoding is canonical, byte-stability of the reproducer
+/// `Reproducer` and the encoding is canonical, byte-stability of the reproducer
 /// *is* id-stability — two determinism-identical runs share a `TraceId` for
 /// free, and two divergent runs never collide (task 65 §1).
 ///
@@ -19,7 +19,7 @@ pub struct TraceId(pub [u8; 32]);
 
 impl TraceId {
     /// The content address of `env`: `blake3` over its canonical bytes.
-    pub fn of(env: &Environment) -> TraceId {
+    pub fn of(env: &Reproducer) -> TraceId {
         TraceId(*blake3::hash(&crate::codec::encode_env(env)).as_bytes())
     }
 

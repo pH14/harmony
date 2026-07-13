@@ -34,7 +34,7 @@
 //! exactly that: a triggered run yields a [`Crash`](StopReason::Crash) (leading
 //! info byte [`CRASH_KIND_SHUTDOWN`], the reboot), and a clean run yields
 //! [`Quiescent`](StopReason::Quiescent). The campaign's
-//! [`CampaignOracle`](crate::campaign::CampaignOracle) keys on the terminal
+//! [`CrashOracle`](crate::campaign::CrashOracle) keys on the terminal
 //! **class** (any `Crash` is the bug), so the *identical* oracle runs against the
 //! toy and the real guest.
 //!
@@ -61,8 +61,8 @@ use std::collections::BTreeMap;
 
 use environment::HostFault;
 use explorer::{
-    AdapterEnv, Answer, Environment, Machine, MachineError, SnapId, StopConditions, StopReason,
-    VTime,
+    AdapterEnv, Answer, Reproducer, Machine, MachineError, SnapId, StopConditions, StopReason,
+    Moment,
 };
 use sha2::{Digest, Sha256};
 
@@ -127,7 +127,7 @@ impl Trigger {
 #[derive(Clone, Debug)]
 struct Snap {
     vtime: u64,
-    env: Environment,
+    env: Reproducer,
 }
 
 /// A deterministic in-process [`Machine`] with a planted, fault-triggerable bug
@@ -139,7 +139,7 @@ pub struct ToyPlantedMachine {
     trigger: Trigger,
     /// The environment active in the (virtual) guest right now — set by
     /// `branch`/`replay`, read by `run`/`hash`/`recorded_env`.
-    current: Environment,
+    current: Reproducer,
     /// The current quiescent V-time (advances on `run`, restored on
     /// `branch`/`replay`).
     vtime: u64,
@@ -194,7 +194,7 @@ const WINDOW_COVER: u64 = 64;
 
 /// The canonical "boot" environment: a genesis-complete, fault-free seeded blob
 /// keyed at offset zero (the toy's pre-branch state).
-fn boot_env() -> Environment {
+fn boot_env() -> Reproducer {
     AdapterEnv {
         base_offset: 0,
         pos: 0,
@@ -219,7 +219,7 @@ fn fold64(bytes: &[u8]) -> u64 {
 }
 
 impl Machine for ToyPlantedMachine {
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
         let Some(base) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
@@ -251,7 +251,7 @@ impl Machine for ToyPlantedMachine {
         if let Some(d) = until.deadline
             && d.0 <= base
         {
-            return Ok(StopReason::Deadline { vtime: VTime(base) });
+            return Ok(StopReason::Deadline { vtime: Moment(base) });
         }
         let terminal_vtime = base.saturating_add(self.terminal_offset());
         // Where this run actually stops: its natural terminal, unless a nearer
@@ -303,7 +303,7 @@ impl Machine for ToyPlantedMachine {
         self.vtime = stop_at;
         if hits_deadline {
             return Ok(StopReason::Deadline {
-                vtime: VTime(stop_at),
+                vtime: Moment(stop_at),
             });
         }
         // The natural terminal is within the bound: a triggered reboot → Crash,
@@ -311,12 +311,12 @@ impl Machine for ToyPlantedMachine {
         if triggered {
             Ok(StopReason::Crash {
                 // The `0x60` byte after the kind tags the task-60 planted crash.
-                vtime: VTime(stop_at),
+                vtime: Moment(stop_at),
                 info: vec![CRASH_KIND_SHUTDOWN, 0x60],
             })
         } else {
             Ok(StopReason::Quiescent {
-                vtime: VTime(stop_at),
+                vtime: Moment(stop_at),
             })
         }
     }
@@ -358,7 +358,7 @@ impl Machine for ToyPlantedMachine {
         &[]
     }
 
-    fn recorded_env(&self) -> Result<Environment, MachineError> {
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
         // A genesis-rooted run's reproducer already is genesis-complete: return
         // the exact branch env, so `recorded_env` and the branched env agree and
         // either replays identically.
@@ -385,7 +385,7 @@ mod tests {
     }
 
     /// Build a one-fault branch env directly (bypassing the campaign minter).
-    fn fault_env(gpa: u64, mask: u64, at: u64) -> Environment {
+    fn fault_env(gpa: u64, mask: u64, at: u64) -> Reproducer {
         let mut spec = EnvSpec::Seeded {
             seed: 7,
             policy: FaultPolicy::none(),
@@ -440,7 +440,7 @@ mod tests {
         let mut m = ToyPlantedMachine::new(trigger());
         let b = base(&mut m);
         let until = StopConditions::default();
-        let crashes = |m: &mut ToyPlantedMachine, env: &Environment| {
+        let crashes = |m: &mut ToyPlantedMachine, env: &Reproducer| {
             m.branch(b, env).unwrap();
             matches!(m.run(&until, None).unwrap(), StopReason::Crash { .. })
         };
@@ -506,14 +506,14 @@ mod tests {
         // A deadline strictly inside (base, terminal): stop AT the deadline.
         let deadline = terminal - 1;
         let until = StopConditions {
-            deadline: Some(VTime(deadline)),
+            deadline: Some(Moment(deadline)),
             ..StopConditions::default()
         };
         m.branch(b, &env).unwrap();
         assert_eq!(
             m.run(&until, None).unwrap(),
             StopReason::Deadline {
-                vtime: VTime(deadline)
+                vtime: Moment(deadline)
             },
             "a future deadline before the terminal must stop at the deadline, not overshoot"
         );
@@ -521,7 +521,7 @@ mod tests {
         // A deadline at/after the terminal still reaches the terminal (a clean
         // Quiescent halt — the env is non-triggering).
         let until_far = StopConditions {
-            deadline: Some(VTime(terminal + 100)),
+            deadline: Some(Moment(terminal + 100)),
             ..StopConditions::default()
         };
         m.branch(b, &env).unwrap();
@@ -658,16 +658,16 @@ mod tests {
             m.branch(b, &env).unwrap();
             let stop = m
                 .run(
-                    &StopConditions { deadline: Some(VTime(d)), ..StopConditions::default() },
+                    &StopConditions { deadline: Some(Moment(d)), ..StopConditions::default() },
                     None,
                 )
                 .unwrap();
-            prop_assert_eq!(stop, StopReason::Deadline { vtime: VTime(d) });
+            prop_assert_eq!(stop, StopReason::Deadline { vtime: Moment(d) });
             // A deadline at/after the terminal still observes the crash.
             m.branch(b, &env).unwrap();
             let stop_far = m
                 .run(
-                    &StopConditions { deadline: Some(VTime(terminal + pick)), ..StopConditions::default() },
+                    &StopConditions { deadline: Some(Moment(terminal + pick)), ..StopConditions::default() },
                     None,
                 )
                 .unwrap();

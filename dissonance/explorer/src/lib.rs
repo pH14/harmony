@@ -7,26 +7,27 @@
 //! trait spine** (`spine.rs`) every later signal/search/oracle task
 //! implements, and generalized its AFL-shaped corpus into a cell [`Archive`].
 //! Mutation lives **here**, never in the wire (the AFL lesson): the engine
-//! ferries an opaque, versioned [`Environment`] blob and mutates it only through
+//! ferries an opaque, versioned [`Reproducer`] blob and mutates it only through
 //! the [`EnvCodec`] seam, so the schema (dissonance task 24) stays owned by the
 //! catalog and the wire stays fixed independently of it.
 //!
 //! ## The two loops
 //!
-//! - **Modulation (inner, [`Explorer::modulation`]):** drive ONE run forward —
+//! - **Rollout (inner, [`Explorer::rollout`]):** drive ONE run forward —
 //!   `run` ⇄ `run(resolve)` — answering each surfaced [`StopReason::Decision`]
 //!   via the **open-loop [`Tactic`]** and capturing every sealable
 //!   [`StopReason::SnapshotPoint`] as parent-rooted [`VirtualExemplar`]
 //!   material. Ends at a terminal [`StopReason`].
-//! - **Progression (outer, [`Explorer::progression_step`]):** across runs — the
+//! - **Search loop (outer, [`Explorer::step`]):** across runs — the
 //!   [`Selector`] picks a frontier exemplar (or genesis), the engine
-//!   materializes it and mints the next [`Environment`] through the codec, runs
-//!   one Modulation, folds the run into the [`Archive`] (timeline admission),
-//!   and judges it with the [`Oracle`]. One Progression step = one Modulation.
+//!   materializes it and mints the next [`Reproducer`] through the codec, runs
+//!   one rollout, folds the run into the [`Archive`] (timeline admission),
+//!   and judges it with the [`Oracle`]. One search-loop step = one rollout.
 //!
-//! (These are the loop pair `docs/EXPLORATION.md` also names
-//! Modulation/Progression; task 94 unified the naming across docs, specs, and
-//! code — the temporal-axis term of art "timeline admission" is a distinct
+//! (These are the loop pair `docs/EXPLORATION.md` also describes. Task 94
+//! unified the naming across docs, specs, and code as Modulation/Progression;
+//! the GLOSSARY ruling retires those words for **rollout** and **the search
+//! loop** — the temporal-axis term of art "timeline admission" is a distinct
 //! concept and stays.)
 //!
 //! ## The seams (defined locally, conventions rule 2)
@@ -95,7 +96,7 @@ use serde::{Deserialize, Serialize};
 
 /// An ephemeral, pool-wide handle to a captured machine state (a snapshot). It
 /// is a transient resource handle — **never** part of a portable reproducer
-/// artifact (that is the [`Environment`]); the only stable, always-reproducible
+/// artifact (that is the [`Reproducer`]); the only stable, always-reproducible
 /// base is the genesis snapshot from [`Explorer::new`]. The control plane mints
 /// these on `snapshot` and frees them on `drop` (corpus GC).
 #[derive(
@@ -103,25 +104,13 @@ use serde::{Deserialize, Serialize};
 )]
 pub struct SnapId(pub u64);
 
-/// V-time: a count of retired conditional branches — the project's only
-/// deterministic clock. Mirrors the integration type (conventions rule 2); the
-/// integrator unifies it with `vtime`'s clock. Deadlines and the V-time carried
-/// in every [`StopReason`] are in these units. The spine keys its vocabulary on
-/// [`Moment`] (the single monotonic axis V-time is a derived view of); the
-/// engine stamps machine V-times onto that axis one-for-one, and the
-/// `Moment`-vs-`VTime` unit ruling is escalated per task 65.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
-)]
-pub struct VTime(pub u64);
-
 /// The reproducer the explorer ferries: an **opaque, versioned blob**. The
 /// explorer never parses `bytes` — dissonance task 24 owns the structure — it
 /// only moves the blob between [`Machine`], [`EnvCodec`], and the
 /// [`Frontier`]. The `blob_version` lets a backend reject a blob it does not
 /// understand (`BadEnvVersion`) without the explorer decoding anything.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct Environment {
+pub struct Reproducer {
     /// The blob format version (task 24's `EnvSpec::BLOB_VERSION`), checked by
     /// the backend, opaque to the explorer.
     pub blob_version: u16,
@@ -143,7 +132,7 @@ pub struct Answer(pub Vec<u8>);
 
 /// Which decision *classes* a `run` surfaces, mirroring the control-proto /
 /// `DecisionClass` bits. Everything not selected the environment answers
-/// locally (the seed), so a campaign tunes how reactive a Modulation is by which
+/// locally (the seed), so a campaign tunes how reactive a rollout is by which
 /// bits it sets. Interpreted by the [`Machine`]; the explorer carries it through
 /// unparsed.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
@@ -151,8 +140,8 @@ pub struct StopMask(pub u32);
 
 impl StopMask {
     /// Surface nothing — the environment's seed answers every decision locally,
-    /// so a Modulation driven with this mask has zero stops (pure seed-driven
-    /// exploration, the Progression alone). The seed-campaign mask, and the mask
+    /// so a rollout driven with this mask has zero stops (pure seed-driven
+    /// exploration, the search loop alone). The seed-campaign mask, and the mask
     /// the engine re-materializes evicted exemplars under (a re-materialization
     /// is a pinned replay, never a fresh exploration).
     pub const NONE: StopMask = StopMask(0);
@@ -174,7 +163,7 @@ impl StopMask {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct StopConditions {
     /// Stop with [`StopReason::Deadline`] once V-time reaches this, if set.
-    pub deadline: Option<VTime>,
+    pub deadline: Option<Moment>,
     /// Which decision classes surface as a [`StopReason::Decision`].
     pub on: StopMask,
 }
@@ -194,26 +183,26 @@ pub enum StopReason {
     /// The V-time deadline was reached.
     Deadline {
         /// The V-time at the stop.
-        vtime: VTime,
+        vtime: Moment,
     },
     /// The guest went idle with no decision outstanding (a clean terminal stop;
     /// snapshots are taken only here).
     Quiescent {
         /// The V-time at the stop.
-        vtime: VTime,
+        vtime: Moment,
     },
     /// The guest crashed. Becomes a [`Bug`].
     Crash {
         /// The V-time at the stop.
-        vtime: VTime,
+        vtime: Moment,
         /// Opaque crash detail (e.g. a panic message / register dump).
         info: Vec<u8>,
     },
-    /// A decision surfaced for the explorer to answer (the Modulation's inner
+    /// A decision surfaced for the explorer to answer (the rollout's inner
     /// step); resolved by `run(resolve)`. Not terminal.
     Decision {
         /// The V-time at the stop.
-        vtime: VTime,
+        vtime: Moment,
         /// The decision identity (opaque; the toy uses the absolute index).
         id: u64,
         /// Opaque service↔policy context bytes handed to [`Tactic::decide`]
@@ -223,23 +212,23 @@ pub enum StopReason {
     /// A guest SDK assertion was violated. Becomes a [`Bug`].
     Assertion {
         /// The V-time at the stop.
-        vtime: VTime,
+        vtime: Moment,
         /// The assertion identity.
         id: u32,
         /// Opaque assertion detail.
         data: Vec<u8>,
     },
-    /// A quiescent point the explorer may snapshot to fork the Progression. Not
+    /// A quiescent point the explorer may snapshot to fork the search loop. Not
     /// terminal.
     SnapshotPoint {
         /// The V-time at the stop.
-        vtime: VTime,
+        vtime: Moment,
     },
 }
 
 impl StopReason {
     /// The V-time at which the run stopped, for every variant.
-    pub fn vtime(&self) -> VTime {
+    pub fn vtime(&self) -> Moment {
         match self {
             StopReason::Deadline { vtime }
             | StopReason::Quiescent { vtime }
@@ -250,7 +239,7 @@ impl StopReason {
         }
     }
 
-    /// Whether this is a **terminal** stop that ends a Modulation. Everything but
+    /// Whether this is a **terminal** stop that ends a rollout. Everything but
     /// [`Decision`](StopReason::Decision) and
     /// [`SnapshotPoint`](StopReason::SnapshotPoint) — the two the driver acts on
     /// and continues past — ends the run.
@@ -279,40 +268,40 @@ mod tests {
     /// `vtime()` returns the embedded V-time for every variant (not a default).
     #[test]
     fn vtime_is_pinned_per_variant() {
-        assert_eq!(StopReason::Deadline { vtime: VTime(11) }.vtime(), VTime(11));
+        assert_eq!(StopReason::Deadline { vtime: Moment(11) }.vtime(), Moment(11));
         assert_eq!(
-            StopReason::Quiescent { vtime: VTime(12) }.vtime(),
-            VTime(12)
+            StopReason::Quiescent { vtime: Moment(12) }.vtime(),
+            Moment(12)
         );
         assert_eq!(
             StopReason::Crash {
-                vtime: VTime(13),
+                vtime: Moment(13),
                 info: vec![]
             }
             .vtime(),
-            VTime(13)
+            Moment(13)
         );
         assert_eq!(
             StopReason::Decision {
-                vtime: VTime(14),
+                vtime: Moment(14),
                 id: 0,
                 ctx: vec![]
             }
             .vtime(),
-            VTime(14)
+            Moment(14)
         );
         assert_eq!(
             StopReason::Assertion {
-                vtime: VTime(15),
+                vtime: Moment(15),
                 id: 0,
                 data: vec![]
             }
             .vtime(),
-            VTime(15)
+            Moment(15)
         );
         assert_eq!(
-            StopReason::SnapshotPoint { vtime: VTime(16) }.vtime(),
-            VTime(16)
+            StopReason::SnapshotPoint { vtime: Moment(16) }.vtime(),
+            Moment(16)
         );
     }
 
@@ -320,7 +309,7 @@ mod tests {
     /// for the four terminal variants.
     #[test]
     fn is_terminal_is_pinned_per_variant() {
-        let z = VTime(0);
+        let z = Moment(0);
         assert!(StopReason::Deadline { vtime: z }.is_terminal());
         assert!(StopReason::Quiescent { vtime: z }.is_terminal());
         assert!(
@@ -352,7 +341,7 @@ mod tests {
     /// `is_bug()` is `true` for exactly `Crash`/`Assertion`.
     #[test]
     fn is_bug_is_pinned_per_variant() {
-        let z = VTime(0);
+        let z = Moment(0);
         assert!(
             StopReason::Crash {
                 vtime: z,

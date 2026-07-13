@@ -7,7 +7,7 @@
 //!
 //! ## The adapter blob (`R2A1`)
 //!
-//! The explorer ferries [`Environment`] values it never parses; this adapter
+//! The explorer ferries [`Reproducer`] values it never parses; this adapter
 //! owns their structure. An adapter blob wraps a task-24 [`EnvSpec`] with the
 //! two positions the task-93 ruling requires ([`AdapterEnv`]):
 //!
@@ -65,7 +65,7 @@
 //! to [`SocketMachine::connect`] must be override-free (v1 boots are — a
 //! boot-time override's frame would be ambiguous), and standing faults ride
 //! the wire unconverted (v1 rejects them server-side as `Unsupported`; their
-//! window axis is unsettled until a `Moment → VTime` map exists, per the
+//! window axis is unsettled until a `Moment → Moment` map exists, per the
 //! task-93 ruling).
 //!
 //! ## The task-93 adapter contract, implemented here
@@ -130,9 +130,9 @@ use std::io::{Read, Write};
 use environment::{Action, EnvSpec, FaultPolicy};
 
 use crate::error::{EnvCodecError, MachineError};
-use crate::{Answer, Environment, Machine, SnapId, StopConditions, StopReason, VTime};
+use crate::{Answer, Reproducer, Machine, SnapId, StopConditions, StopReason, Moment};
 
-/// The adapter blob format version, mirrored into [`Environment::blob_version`]
+/// The adapter blob format version, mirrored into [`Reproducer::blob_version`]
 /// for every explorer-side blob this adapter mints. Distinct from the inner
 /// [`EnvSpec::BLOB_VERSION`] (which is what travels on the wire).
 pub const ADAPTER_BLOB_VERSION: u16 = 1;
@@ -158,9 +158,9 @@ pub struct AdapterEnv {
 }
 
 impl AdapterEnv {
-    /// Encode to an explorer-side [`Environment`] (canonical bytes; the inner
+    /// Encode to an explorer-side [`Reproducer`] (canonical bytes; the inner
     /// spec's encoding is already byte-deterministic).
-    pub fn encode(&self) -> Environment {
+    pub fn encode(&self) -> Reproducer {
         let spec = self.spec.encode();
         let mut bytes = Vec::with_capacity(HEADER_LEN + spec.len());
         bytes.extend_from_slice(&MAGIC.to_le_bytes());
@@ -168,16 +168,16 @@ impl AdapterEnv {
         bytes.extend_from_slice(&self.base_offset.to_le_bytes());
         bytes.extend_from_slice(&self.pos.to_le_bytes());
         bytes.extend_from_slice(&spec);
-        Environment {
+        Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes,
         }
     }
 
-    /// Decode an explorer-side [`Environment`] minted by this adapter. Strict
+    /// Decode an explorer-side [`Reproducer`] minted by this adapter. Strict
     /// and total: arbitrary bytes yield [`MachineError::BadEnvironment`]
     /// (carrying the blob's declared version), never a panic.
-    pub fn decode(env: &Environment) -> Result<AdapterEnv, MachineError> {
+    pub fn decode(env: &Reproducer) -> Result<AdapterEnv, MachineError> {
         let bad = || MachineError::BadEnvironment(env.blob_version);
         if env.blob_version != ADAPTER_BLOB_VERSION {
             return Err(bad());
@@ -303,7 +303,7 @@ impl SpecEnvCodec {
     /// codec-seam decode point — means `mutate` and **both** `compose` operands
     /// are guarded uniformly, so neither can splice an operand whose capture
     /// precedes its splice into an inconsistent artifact (round-3 finding).
-    fn require(env: &Environment) -> Result<AdapterEnv, EnvCodecError> {
+    fn require(env: &Reproducer) -> Result<AdapterEnv, EnvCodecError> {
         let decoded =
             AdapterEnv::decode(env).map_err(|_| EnvCodecError::Malformed(env.blob_version))?;
         if decoded.pos < decoded.base_offset {
@@ -316,7 +316,7 @@ impl SpecEnvCodec {
 }
 
 impl crate::EnvCodec for SpecEnvCodec {
-    fn seeded(&self, seed: u64) -> Environment {
+    fn seeded(&self, seed: u64) -> Reproducer {
         // Genesis-complete, no overrides, the v1 default (never-fault) policy.
         // Minted as `Recorded` so even a bug found on a genesis-rooted first
         // run yields an artifact the production `compose` accepts as a base.
@@ -328,7 +328,7 @@ impl crate::EnvCodec for SpecEnvCodec {
         .encode()
     }
 
-    fn mutate(&self, base: &Environment, salt: u64) -> Result<Environment, EnvCodecError> {
+    fn mutate(&self, base: &Reproducer, salt: u64) -> Result<Reproducer, EnvCodecError> {
         let b = Self::require(base)?;
         // Coordinate system (task 68): the base's override keys are relative
         // to its own `base_offset`, so the slice point is the **relative**
@@ -404,9 +404,9 @@ impl crate::EnvCodec for SpecEnvCodec {
 
     fn compose(
         &self,
-        base: &Environment,
-        branch_local: &Environment,
-    ) -> Result<Environment, EnvCodecError> {
+        base: &Reproducer,
+        branch_local: &Reproducer,
+    ) -> Result<Reproducer, EnvCodecError> {
         let b = Self::require(base)?;
         let d = Self::require(branch_local)?;
         // The complete operand-pair contract (see the `EnvCodecError` doc for the
@@ -503,7 +503,7 @@ struct SnapMeta {
 /// and the error mapping.
 ///
 /// The adapter owns the recording side of the task-93 contract: it tracks the
-/// env each Modulation was branched with, stamps every resolved decision at its
+/// env each rollout was branched with, stamps every resolved decision at its
 /// stop `Moment`, and emits the tail-complete branch-local delta from
 /// [`recorded_env`](Machine::recorded_env).
 pub struct SocketMachine<S: Read + Write> {
@@ -518,7 +518,7 @@ pub struct SocketMachine<S: Read + Write> {
     /// zero-width (no producer exists), so this is empty and never updated.
     coverage: Vec<u8>,
     snaps: BTreeMap<u64, SnapMeta>,
-    /// The (branch-local) spec the current Modulation runs under, plus every
+    /// The (branch-local) spec the current rollout runs under, plus every
     /// decision answered since the branch (stamped by `run(resolve)`).
     current: EnvSpec,
     /// The absolute `Moment` of the current branch origin.
@@ -528,7 +528,7 @@ pub struct SocketMachine<S: Read + Write> {
     /// The stop `Moment` of the surfaced-but-unanswered decision, if any —
     /// where the next `run(resolve)`'s answer is stamped (tail-completeness).
     pending_decision: Option<u64>,
-    /// The serial-capture byte offset the current Modulation started at — set at
+    /// The serial-capture byte offset the current rollout started at — set at
     /// `branch`/`replay` to the snapshot's [`SnapMeta::serial_len`], so
     /// [`console`](Machine::console) reads only the current run's new bytes.
     console_cursor: u32,
@@ -619,7 +619,7 @@ impl<S: Read + Write> SocketMachine<S> {
         let origin = machine
             .run(
                 &StopConditions {
-                    deadline: Some(VTime(0)),
+                    deadline: Some(Moment(0)),
                     on: crate::StopMask::NONE,
                 },
                 None,
@@ -722,7 +722,7 @@ fn control_error_to_machine(err: control_proto::ControlError) -> MachineError {
         // backend does not service (`Unsupported`). Mapping these to the DISTINCT
         // `Inadmissible` variant lets a proposing loop discard the proposal and
         // continue — which the benchmark campaign loop (`conductor::benchcampaign`)
-        // does. The generic `Explorer::modulation` does NOT yet handle this variant:
+        // does. The generic `Explorer::rollout` does NOT yet handle this variant:
         // it propagates `Inadmissible` as an error and aborts (skip/retry for the
         // generic explorer is tracked in bead hm-f30). Either way, the genuine
         // failures below fall through to `Transport` and abort — so this remap NEVER
@@ -742,10 +742,10 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
     use control_proto::StopReason as Ws;
     match stop {
         Ws::Deadline { vtime } => StopReason::Deadline {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
         },
         Ws::Quiescent { vtime } => StopReason::Quiescent {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
         },
         Ws::Crash { vtime, info } => {
             let kind = match info.kind {
@@ -757,20 +757,20 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
             bytes.push(kind);
             bytes.extend_from_slice(&info.detail);
             StopReason::Crash {
-                vtime: VTime(vtime.0),
+                vtime: Moment(vtime.0),
                 info: bytes,
             }
         }
         Ws::Decision { vtime, id, ctx } => StopReason::Decision {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
             id: id.0,
             ctx,
         },
         Ws::SnapshotPoint { vtime } => StopReason::SnapshotPoint {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
         },
         Ws::Assertion { vtime, ev } => StopReason::Assertion {
-            vtime: VTime(vtime.0),
+            vtime: Moment(vtime.0),
             id: ev.id,
             data: ev.data,
         },
@@ -778,7 +778,7 @@ fn stop_from_wire(stop: control_proto::StopReason) -> StopReason {
 }
 
 impl<S: Read + Write> Machine for SocketMachine<S> {
-    fn branch(&mut self, snap: SnapId, env: &Environment) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
         // Decode the adapter blob and resolve the branch origin first (a
         // caller error must not touch the session).
         let decoded = AdapterEnv::decode(env)?;
@@ -804,7 +804,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
             env: wire_env,
         })? {
             control_proto::Reply::Unit => {
-                // The new Modulation: its overrides are keyed from the snapshot's
+                // The new rollout: its overrides are keyed from the snapshot's
                 // capture Moment (the blob's own base_offset is advisory — the
                 // authoritative origin is where the branch actually restored to).
                 self.current = recorded(&decoded.spec);
@@ -836,7 +836,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         let Some(meta) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
-        // Verbatim restore of the SAME Modulation: the recording reverts to what
+        // Verbatim restore of the SAME rollout: the recording reverts to what
         // was active at capture, keyed relative to the **branch origin at
         // capture** (`meta.branch_offset`) — NOT the snapshot's V-time. A
         // snapshot taken mid-timeline has `branch_offset < vtime`; restoring the
@@ -899,7 +899,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
             )));
         };
         // Tail-completeness (task-93): the server accepted the resolve, so the
-        // answered decision is stamped into the current Modulation's recording
+        // answered decision is stamped into the current rollout's recording
         // at the Moment it surfaced (branch-local key). An answer that is not
         // a valid catalog Answer cannot be recorded faithfully — loud abort.
         // `pending_decision` is consumed **only** when a resolve is actually
@@ -986,7 +986,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
         &self.coverage
     }
 
-    fn recorded_env(&self) -> Result<Environment, MachineError> {
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
         // The tail-complete branch-local delta: the branched spec (normalized
         // to `Recorded`) plus every decision stamped since the branch, keyed
         // from the branch origin, with the capture position for later slicing.
@@ -1025,7 +1025,7 @@ impl<S: Read + Write> Machine for SocketMachine<S> {
 
     /// The guest console (serial) capture of the current run (task 69): the
     /// server-side serial bytes emitted since the branch/replay that started this
-    /// Modulation, split into `Moment`-stamped lines. Like [`sdk_events`] the
+    /// rollout, split into `Moment`-stamped lines. Like [`sdk_events`] the
     /// capture lives only server-side, so this pages the wire `Console` verb from
     /// the branch-baselined [`console_cursor`](SocketMachine::console_cursor) until
     /// the capture is drained. Lines are split exactly as the in-process recorder's
@@ -1097,8 +1097,8 @@ mod tests {
         ADAPTER_BLOB_VERSION, AdapterEnv, SocketMachine, SpecEnvCodec, control_error_to_machine,
     };
     use crate::{
-        Answer, EnvCodec, EnvCodecError, Environment, Machine, MachineError, StopConditions,
-        StopMask, VTime,
+        Answer, EnvCodec, EnvCodecError, Reproducer, Machine, MachineError, StopConditions,
+        StopMask, Moment,
     };
 
     fn spec_with_overrides(seed: u64, keys: &[u64]) -> EnvSpec {
@@ -1136,7 +1136,7 @@ mod tests {
             vec![0xFF; 64],
             b"R2A1".to_vec(),
         ] {
-            let env = Environment {
+            let env = Reproducer {
                 blob_version: ADAPTER_BLOB_VERSION,
                 bytes,
             };
@@ -1152,7 +1152,7 @@ mod tests {
             spec: spec_with_overrides(1, &[]),
         }
         .encode();
-        let wrong_version = Environment {
+        let wrong_version = Reproducer {
             blob_version: 99,
             bytes: good.bytes,
         };
@@ -1247,7 +1247,7 @@ mod tests {
 
     #[test]
     fn codec_seams_error_on_a_non_adapter_blob() {
-        let junk = Environment {
+        let junk = Reproducer {
             blob_version: ADAPTER_BLOB_VERSION,
             bytes: vec![1, 2, 3],
         };
@@ -1695,7 +1695,7 @@ mod tests {
         let _ = m
             .run(
                 &StopConditions {
-                    deadline: Some(VTime(200)),
+                    deadline: Some(Moment(200)),
                     on: StopMask::NONE,
                 },
                 None,

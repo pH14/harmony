@@ -36,7 +36,7 @@ use conductor::mock;
 use conductor::{probe_vtime, run_session};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
-use explorer::{EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime};
+use explorer::{EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment};
 use proptest::prelude::*;
 
 /// The env the mock live VM boots under.
@@ -93,7 +93,7 @@ proptest! {
                 let stop = m
                     .run(
                         &StopConditions {
-                            deadline: Some(VTime(deadline)),
+                            deadline: Some(Moment(deadline)),
                             on: StopMask::NONE,
                         },
                         None,
@@ -112,7 +112,7 @@ proptest! {
             // (retrying past staged-RNG boundaries), hash at the final stop.
             let mut cur = g;
             let mut cur_at = v0;
-            let mut fold: Option<explorer::Environment> = None;
+            let mut fold: Option<explorer::Reproducer> = None;
             let mut h_chain = [0u8; 32];
             for (i, delta) in deltas.iter().take(hops).enumerate() {
                 m.branch(cur, &seed_env).expect("branch hop");

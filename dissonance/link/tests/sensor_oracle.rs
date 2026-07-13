@@ -8,8 +8,8 @@
 //!   fingerprint (cross-checked against `TerminalOracle`), so the two dedup.
 
 use explorer::{
-    Archive, ChannelId, CoverageArchive, Environment, Feature, FeatureId, Fork, GuestEvent,
-    IdentityCells, Moment, Oracle, RunTrace, Sensor, SnapId, StopReason, TerminalOracle, VTime,
+    Archive, ChannelId, CoverageArchive, Reproducer, Feature, FeatureId, Fork, GuestEvent,
+    IdentityCells, Moment, Oracle, RunTrace, Sensor, SnapId, StopReason, TerminalOracle,
     VirtualExemplar,
 };
 use link::{AlwaysViolation, LINK_ASSERT_CHANNEL, LINK_STATE_CHANNEL, LinkSensor, decode_event};
@@ -22,8 +22,8 @@ fn eid(ns: u32, local: u32) -> u32 {
     (ns << NS_SHIFT) | local
 }
 
-fn env(bytes: Vec<u8>) -> Environment {
-    Environment {
+fn env(bytes: Vec<u8>) -> Reproducer {
+    Reproducer {
         blob_version: 4,
         bytes,
     }
@@ -32,7 +32,7 @@ fn env(bytes: Vec<u8>) -> Environment {
 /// A run whose event stream is `events`, ending quiescent.
 fn trace(events: Vec<(Moment, GuestEvent)>) -> RunTrace {
     RunTrace {
-        terminal: StopReason::Quiescent { vtime: VTime(80) },
+        terminal: StopReason::Quiescent { vtime: Moment(80) },
         env: env(vec![1, 2, 3]),
         coverage: None,
         events,
@@ -185,7 +185,7 @@ fn sometimes_hit_is_admitted_as_a_checkpoint_candidate() {
 fn always_violation_mints_a_bug_with_a_stable_fingerprint() {
     let mut t = trace(vec![]);
     t.terminal = StopReason::Assertion {
-        vtime: VTime(80),
+        vtime: Moment(80),
         id: 20,
         data: vec![7, 7],
     };
@@ -223,7 +223,7 @@ fn always_violation_is_assertion_specific() {
     );
 
     t.terminal = StopReason::Crash {
-        vtime: VTime(80),
+        vtime: Moment(80),
         info: vec![1],
     };
     assert!(
@@ -238,7 +238,7 @@ fn distinct_assertions_fingerprint_distinctly() {
     let base = |id: u32, data: Vec<u8>| {
         let mut t = trace(vec![]);
         t.terminal = StopReason::Assertion {
-            vtime: VTime(80),
+            vtime: Moment(80),
             id,
             data,
         };

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Committed-fixture gates (the task's Environment section): decode the
+//! Committed-fixture gates (the task's Reproducer section): decode the
 //! real recordings and re-derive over them offline — the replay-plane path,
 //! exercised on artifacts produced *outside* this crate.
 //!

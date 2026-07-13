@@ -33,8 +33,8 @@ use std::collections::BTreeSet;
 
 use benchmark::exploration::{DiscoveryEvent, ExplorationConfig, ExplorationLog};
 use explorer::{
-    EnvCodec, Environment, Feature, Machine, MachineError, Moment, Prng, RunTrace, Sensor,
-    StopConditions, StopMask, StopReason, VTime,
+    EnvCodec, Reproducer, Feature, Machine, MachineError, Moment, Prng, RunTrace, Sensor,
+    StopConditions, StopMask, StopReason,
 };
 use link::{LINK_STATE_CHANNEL, LinkSensor};
 
@@ -390,10 +390,10 @@ impl GameCampaignOutcome {
 /// if seen) is refused loudly, so fault vocabulary can never propagate
 /// through the frontier.
 pub fn quiet_mutate(
-    env: &Environment,
+    env: &Reproducer,
     salt: u64,
     window: u64,
-) -> Result<Environment, GameCampaignError> {
+) -> Result<Reproducer, GameCampaignError> {
     let decoded = explorer::AdapterEnv::decode(env)
         .map_err(|e| GameCampaignError::MalformedExemplar(e.to_string()))?;
     if decoded.spec.host_faults().next().is_some() {
@@ -518,7 +518,7 @@ pub fn smb_completed_frames(features: &[(Moment, Feature)]) -> u64 {
 
 /// A novelty-frontier entry for the SelectorV1 configuration.
 struct Exemplar {
-    env: Environment,
+    env: Reproducer,
 }
 
 /// Drive one game campaign against `machine` under `config`. Seals the base
@@ -562,7 +562,7 @@ pub fn run_game_campaign<M: Machine>(
     let until = StopConditions {
         deadline: cfg
             .deadline_delta
-            .map(|d| VTime(base_vtime.saturating_add(d))),
+            .map(|d| Moment(base_vtime.saturating_add(d))),
         // Quiet arm: no decisions surface, no assertion is a bug here (the
         // agent's markers are reachable HITS, which never stop a run); the
         // deadline (or the guest's own terminal) bounds the rollout.
@@ -921,7 +921,7 @@ fn seal_base<M: Machine>(
     let snapshot_point = StopMask(1u32 << control_proto::class_bit::SNAPSHOT_POINT as u32);
     let stop = machine.run(
         &StopConditions {
-            deadline: Some(VTime(vt.saturating_add(cfg.setup_deadline_delta))),
+            deadline: Some(Moment(vt.saturating_add(cfg.setup_deadline_delta))),
             on: snapshot_point,
         },
         None,
@@ -956,7 +956,7 @@ fn seal_base<M: Machine>(
                 }
                 let stop = machine.run(
                     &StopConditions {
-                        deadline: Some(VTime(vt.saturating_add(cfg.snapshot_retry_step))),
+                        deadline: Some(Moment(vt.saturating_add(cfg.snapshot_retry_step))),
                         on: StopMask::NONE,
                     },
                     None,
@@ -991,9 +991,9 @@ fn hex(h: &[u8; 32]) -> String {
 /// the real wire encode → `link::decode_events` → `LinkSensor` → [`smb_cells`]
 /// path, so a register or layout drift breaks a test, not the box).
 pub struct GameToyMachine {
-    current: Environment,
+    current: Reproducer,
     vtime: u64,
-    snaps: std::collections::BTreeMap<u64, (u64, Environment)>,
+    snaps: std::collections::BTreeMap<u64, (u64, Reproducer)>,
     next_snap: u64,
 }
 
@@ -1078,7 +1078,7 @@ fn state_event(reg: u64, op: u8, value: u64) -> (u32, Vec<u8>) {
 }
 
 impl Machine for GameToyMachine {
-    fn branch(&mut self, snap: explorer::SnapId, env: &Environment) -> Result<(), MachineError> {
+    fn branch(&mut self, snap: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
         let Some((vt, _)) = self.snaps.get(&snap.0) else {
             return Err(MachineError::UnknownSnapshot(snap.0));
         };
@@ -1105,7 +1105,7 @@ impl Machine for GameToyMachine {
         let terminal = self.vtime.saturating_add(16 * 12);
         self.vtime = terminal;
         Ok(StopReason::Quiescent {
-            vtime: explorer::VTime(terminal),
+            vtime: explorer::Moment(terminal),
         })
     }
 
@@ -1136,7 +1136,7 @@ impl Machine for GameToyMachine {
         &[]
     }
 
-    fn recorded_env(&self) -> Result<Environment, MachineError> {
+    fn recorded_env(&self) -> Result<Reproducer, MachineError> {
         Ok(self.current.clone())
     }
 
@@ -1199,7 +1199,7 @@ mod tests {
         vtime: u64,
         base_vtime: u64,
         next_snap: u64,
-        env: Environment,
+        env: Reproducer,
         /// What the setup prefix publishes (`None` = nothing at all).
         billboard: Option<(u64, u64)>,
         /// V-time each rollout advances past the base.
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     impl Machine for BoxGuest {
-        fn branch(&mut self, _s: explorer::SnapId, env: &Environment) -> Result<(), MachineError> {
+        fn branch(&mut self, _s: explorer::SnapId, env: &Reproducer) -> Result<(), MachineError> {
             self.env = env.clone();
             self.vtime = self.base_vtime;
             Ok(())
@@ -1242,22 +1242,22 @@ mod tests {
             _resolve: Option<&explorer::Answer>,
         ) -> Result<StopReason, MachineError> {
             // probe_vtime's already-met deadline: report position, run nothing.
-            if until.deadline == Some(VTime(0)) {
+            if until.deadline == Some(Moment(0)) {
                 return Ok(StopReason::Deadline {
-                    vtime: VTime(self.vtime),
+                    vtime: Moment(self.vtime),
                 });
             }
             if !self.sealed {
                 self.sealed = true;
                 self.base_vtime = self.vtime;
                 return Ok(StopReason::SnapshotPoint {
-                    vtime: VTime(self.vtime),
+                    vtime: Moment(self.vtime),
                 });
             }
             // A rollout: advance its span (possibly zero) and stop at the deadline.
             self.vtime = self.base_vtime + self.rollout_span;
             Ok(StopReason::Deadline {
-                vtime: VTime(self.vtime),
+                vtime: Moment(self.vtime),
             })
         }
         fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
@@ -1274,7 +1274,7 @@ mod tests {
         fn coverage(&self) -> &[u8] {
             &[]
         }
-        fn recorded_env(&self) -> Result<Environment, MachineError> {
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
             Ok(self.env.clone())
         }
         fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
@@ -1742,14 +1742,14 @@ mod tests {
             sealed: bool,
             vtime: u64,
             next_snap: u64,
-            env: Environment,
+            env: Reproducer,
             billboard_drained: bool,
         }
         impl Machine for SealsThenCrashes {
             fn branch(
                 &mut self,
                 _s: explorer::SnapId,
-                env: &Environment,
+                env: &Reproducer,
             ) -> Result<(), MachineError> {
                 self.env = env.clone();
                 Ok(())
@@ -1764,19 +1764,19 @@ mod tests {
             ) -> Result<StopReason, MachineError> {
                 self.vtime += 100;
                 // probe_vtime's already-met deadline (0): report position.
-                if until.deadline == Some(explorer::VTime(0)) {
+                if until.deadline == Some(explorer::Moment(0)) {
                     return Ok(StopReason::Deadline {
-                        vtime: explorer::VTime(self.vtime),
+                        vtime: explorer::Moment(self.vtime),
                     });
                 }
                 if !self.sealed {
                     self.sealed = true;
                     return Ok(StopReason::SnapshotPoint {
-                        vtime: explorer::VTime(self.vtime),
+                        vtime: explorer::Moment(self.vtime),
                     });
                 }
                 Ok(StopReason::Crash {
-                    vtime: explorer::VTime(self.vtime),
+                    vtime: explorer::Moment(self.vtime),
                     info: vec![1],
                 })
             }
@@ -1794,7 +1794,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[]
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(self.env.clone())
             }
             fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
@@ -1848,7 +1848,7 @@ mod tests {
             fn branch(
                 &mut self,
                 _s: explorer::SnapId,
-                _env: &Environment,
+                _env: &Reproducer,
             ) -> Result<(), MachineError> {
                 Ok(())
             }
@@ -1861,19 +1861,19 @@ mod tests {
                 _resolve: Option<&explorer::Answer>,
             ) -> Result<StopReason, MachineError> {
                 self.vtime += 100;
-                if until.deadline == Some(explorer::VTime(0)) {
+                if until.deadline == Some(explorer::Moment(0)) {
                     return Ok(StopReason::Deadline {
-                        vtime: explorer::VTime(self.vtime),
+                        vtime: explorer::Moment(self.vtime),
                     });
                 }
                 if !self.sealed {
                     self.sealed = true;
                     return Ok(StopReason::SnapshotPoint {
-                        vtime: explorer::VTime(self.vtime),
+                        vtime: explorer::Moment(self.vtime),
                     });
                 }
                 Ok(StopReason::Deadline {
-                    vtime: explorer::VTime(self.vtime),
+                    vtime: explorer::Moment(self.vtime),
                 })
             }
             fn snapshot(&mut self) -> Result<explorer::SnapId, MachineError> {
@@ -1890,7 +1890,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 &[]
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(SpecEnvCodec.seeded(0))
             }
         }
@@ -1931,7 +1931,7 @@ mod tests {
             fn branch(
                 &mut self,
                 s: explorer::SnapId,
-                env: &Environment,
+                env: &Reproducer,
             ) -> Result<(), MachineError> {
                 self.inner.branch(s, env)
             }
@@ -1957,7 +1957,7 @@ mod tests {
             fn coverage(&self) -> &[u8] {
                 self.inner.coverage()
             }
-            fn recorded_env(&self) -> Result<Environment, MachineError> {
+            fn recorded_env(&self) -> Result<Reproducer, MachineError> {
                 Ok(SpecEnvCodec.seeded(self.salt))
             }
             fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, MachineError> {
@@ -2066,7 +2066,7 @@ mod tests {
     struct CrashedAgentMachine {
         vtime: u64,
         next_snap: u64,
-        env: Environment,
+        env: Reproducer,
     }
 
     impl CrashedAgentMachine {
@@ -2083,7 +2083,7 @@ mod tests {
         fn branch(
             &mut self,
             _snap: explorer::SnapId,
-            env: &Environment,
+            env: &Reproducer,
         ) -> Result<(), MachineError> {
             self.env = env.clone();
             Ok(())
@@ -2098,7 +2098,7 @@ mod tests {
         ) -> Result<StopReason, MachineError> {
             self.vtime += 100;
             Ok(StopReason::Crash {
-                vtime: explorer::VTime(self.vtime),
+                vtime: explorer::Moment(self.vtime),
                 info: vec![0xDE, 0xAD],
             })
         }
@@ -2116,7 +2116,7 @@ mod tests {
         fn coverage(&self) -> &[u8] {
             &[]
         }
-        fn recorded_env(&self) -> Result<Environment, MachineError> {
+        fn recorded_env(&self) -> Result<Reproducer, MachineError> {
             Ok(self.env.clone())
         }
     }

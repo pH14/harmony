@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The engine: [`Explorer`] and the two loops, composed over the spine.
 //!
-//! [`Explorer::modulation`] drives one run to a terminal stop, answering each
+//! [`Explorer::rollout`] drives one run to a terminal stop, answering each
 //! surfaced decision through the open-loop [`Tactic`] and capturing every
 //! sealable point as parent-rooted exemplar material.
-//! [`Explorer::progression_step`] asks the [`Selector`] for the next branch
-//! base, materializes it, mints the next [`Environment`] through the
-//! [`EnvCodec`], runs one Modulation, folds the run into the [`Archive`]
+//! [`Explorer::step`] asks the [`Selector`] for the next branch
+//! base, materializes it, mints the next [`Reproducer`] through the
+//! [`EnvCodec`], runs one rollout, folds the run into the [`Archive`]
 //! (timeline admission), rewards the selector, and judges the run with the
-//! [`Oracle`]. [`Explorer::explore`] runs the Progression for a bounded number
+//! [`Oracle`]. [`Explorer::explore`] runs the search loop for a bounded number
 //! of steps.
 //!
 //! ## Seals: the engine-side materialization cache (task 68)
@@ -39,30 +39,30 @@ use crate::spine::{
     Archive, Bug, CellFn, CoverageView, DecisionPoint, ExemplarRef, Fork, Frontier, Moment, Oracle,
     Record, RunTrace, Selector, Sensor, StreamId, Tactic, VirtualExemplar,
 };
-use crate::{Answer, Environment, SnapId, StopConditions, StopMask, StopReason};
+use crate::{Answer, Reproducer, SnapId, StopConditions, StopMask, StopReason};
 
-/// The result of one Modulation: where it stopped and the **branch-local**
-/// reproducer [`Environment`] accumulated over it
-/// ([`Machine::recorded_env`], keyed since the Modulation's branch origin). The
-/// enclosing Progression step rebases it to genesis-complete (via
+/// The result of one rollout: where it stopped and the **branch-local**
+/// reproducer [`Reproducer`] accumulated over it
+/// ([`Machine::recorded_env`], keyed since the rollout's branch origin). The
+/// enclosing search-loop step rebases it to genesis-complete (via
 /// [`EnvCodec::compose`]) before it reaches a [`RunTrace`] or a [`Bug`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RunOutcome {
-    /// The terminal [`StopReason`] the Modulation ended at.
+    /// The terminal [`StopReason`] the rollout ended at.
     pub stop: StopReason,
     /// The reproducer accumulated over the run, keyed since the branch origin.
-    pub env: Environment,
+    pub env: Reproducer,
 }
 
 /// A sealable point captured mid-run, awaiting admission by the enclosing
-/// Progression step: the eagerly-minted seal, the fork moment, the **prefix**
+/// search-loop step: the eagerly-minted seal, the fork moment, the **prefix**
 /// reproducer as of that point (not the whole run — a later branch's overrides
 /// would mis-key against the fork's decision-index origin), and the coverage
 /// view as of that point.
 struct PendingFork {
     seal: SnapId,
     at: Moment,
-    suffix: Environment,
+    suffix: Reproducer,
     coverage: Vec<u8>,
 }
 
@@ -107,7 +107,7 @@ impl Composition {
 
 /// The exploration engine: a [`Machine`] driven by a spine [`Composition`],
 /// minting environments through an [`EnvCodec`] from a single caller-seeded
-/// campaign stream. Owns the genesis snapshot every first-generation Modulation
+/// campaign stream. Owns the genesis snapshot every first-generation rollout
 /// branches from, and the seal cache materialized exemplars branch from.
 pub struct Explorer<M: Machine> {
     machine: M,
@@ -123,9 +123,9 @@ pub struct Explorer<M: Machine> {
     rng: Prng,
     genesis: SnapId,
     until: StopConditions,
-    /// Sealable points captured this Modulation, awaiting admission by the
-    /// enclosing [`progression_step`](Explorer::progression_step). A `Vec` (not a
-    /// single slot) so a Modulation that forks more than once admits/drops
+    /// Sealable points captured this rollout, awaiting admission by the
+    /// enclosing [`step`](Explorer::step). A `Vec` (not a
+    /// single slot) so a rollout that forks more than once admits/drops
     /// *every* fork and never leaks a backend handle.
     pending_forks: Vec<PendingFork>,
     /// The task-68 materialization engine: the seal cache (**stable** frontier
@@ -138,7 +138,7 @@ pub struct Explorer<M: Machine> {
 
 impl<M: Machine> Explorer<M> {
     /// Snapshot the freshly-spawned machine at its quiescent boot point → the
-    /// **genesis [`SnapId`]**, the base every first-generation Modulation branches
+    /// **genesis [`SnapId`]**, the base every first-generation rollout branches
     /// from (the frontier starts empty, so step 1 has no admitted exemplar to
     /// branch from). Returns [`Err`] if that initial snapshot fails (e.g. not
     /// quiescent) — never panics or fabricates a base. `seed` starts the
@@ -179,7 +179,7 @@ impl<M: Machine> Explorer<M> {
         })
     }
 
-    /// The genesis snapshot every first-generation Modulation branches from.
+    /// The genesis snapshot every first-generation rollout branches from.
     pub fn genesis(&self) -> SnapId {
         self.genesis
     }
@@ -220,7 +220,7 @@ impl<M: Machine> Explorer<M> {
 
     /// Inject the task-63 `sealable(Moment)` predicate (default always-true —
     /// the GO arm). Gates every seal the engine takes: the eager fork seals in
-    /// [`modulation`](Explorer::modulation) (an inadmissible [`StopReason::SnapshotPoint`]
+    /// [`rollout`](Explorer::rollout) (an inadmissible [`StopReason::SnapshotPoint`]
     /// is stepped past, never sealed) and every
     /// [`materialize`](Explorer::materialize) target (refused loudly with
     /// [`MachineError::NotSealable`]). Compose with
@@ -232,7 +232,7 @@ impl<M: Machine> Explorer<M> {
 
     /// Set the retention pool's budget (default [`SealBudget::Unbounded`],
     /// preserving the eager seal-per-admission behavior).
-    /// [`progression_step`](Explorer::progression_step) enforces it after every
+    /// [`step`](Explorer::step) enforces it after every
     /// admission; [`enforce_seal_budget`](Explorer::enforce_seal_budget) runs it
     /// on demand.
     pub fn set_seal_budget(&mut self, budget: SealBudget) {
@@ -255,26 +255,26 @@ impl<M: Machine> Explorer<M> {
     /// Enforce the retention budget now: evict minimum-benefit seals until the
     /// pool fits [`SealBudget::of`] the live frontier (deterministic tie-break
     /// by [`SnapId`]). Returns the evicted handles. Called automatically at
-    /// the end of every [`progression_step`](Explorer::progression_step).
+    /// the end of every [`step`](Explorer::step).
     pub fn enforce_seal_budget(&mut self) -> Result<Vec<SnapId>, MachineError> {
         self.mat
             .enforce_budget(&mut self.machine, self.archive.frontier())
     }
 
-    /// The [`StopConditions`] used by [`progression_step`](Explorer::progression_step)
+    /// The [`StopConditions`] used by [`step`](Explorer::step)
     /// and [`explore`](Explorer::explore).
     pub fn stop_conditions(&self) -> &StopConditions {
         &self.until
     }
 
-    /// Set the [`StopConditions`] the Progression drives each Modulation with — e.g.
+    /// Set the [`StopConditions`] the search loop drives each rollout with — e.g.
     /// [`StopMask::NONE`] for a pure seed-driven campaign, or a deadline.
     pub fn set_stop_conditions(&mut self, until: StopConditions) {
         self.until = until;
     }
 
     /// Direct access to the driven machine, for tests that branch/replay/hash it
-    /// outside the loop (e.g. the Modulation-replay gate).
+    /// outside the loop (e.g. the rollout-replay gate).
     pub fn machine_mut(&mut self) -> &mut M {
         &mut self.machine
     }
@@ -298,17 +298,17 @@ impl<M: Machine> Explorer<M> {
     /// **Inner loop.** Drive one run from `base` to a terminal stop, answering
     /// each surfaced [`StopReason::Decision`] via the open-loop [`Tactic`] and
     /// sealing at any [`StopReason::SnapshotPoint`] (stored, with the prefix
-    /// env/coverage as of the fork, for the enclosing Progression step to
+    /// env/coverage as of the fork, for the enclosing search-loop step to
     /// admit). Returns the terminal stop and the accumulated branch-local
     /// reproducer.
-    pub fn modulation(
+    pub fn rollout(
         &mut self,
         base: SnapId,
-        env: &Environment,
+        env: &Reproducer,
         until: &StopConditions,
     ) -> Result<RunOutcome, MachineError> {
-        // Drop any forks left pending by a prior *direct* `modulation` call or an
-        // aborted Progression step (only `progression_step` admits/drains them)
+        // Drop any forks left pending by a prior *direct* `rollout` call or an
+        // aborted search-loop step (only `step` admits/drains them)
         // so no backend handle is ever leaked — and error-safely: a pending is
         // removed only AFTER its `drop_snap` succeeds, so a mid-way backend
         // failure forgets nothing and the next call retries the leftovers.
@@ -381,14 +381,14 @@ impl<M: Machine> Explorer<M> {
         }
     }
 
-    /// **Outer loop.** One Progression step: the [`Selector`] picks the branch
+    /// **Outer loop.** One search-loop step: the [`Selector`] picks the branch
     /// base (a frontier exemplar, or genesis to explore), the engine
     /// materializes it and mints the next environment through the codec, runs
-    /// one Modulation, admits the run's sealable forks into the [`Archive`]
+    /// one rollout, admits the run's sealable forks into the [`Archive`]
     /// (dropping the seals of everything not admitted), rewards the selector,
     /// and returns the [`Oracle`]'s verdict. A [`MachineError`] aborts the step
     /// loudly and is never reported as a bug.
-    pub fn progression_step(&mut self) -> Result<Option<Bug>, MachineError> {
+    pub fn step(&mut self) -> Result<Option<Bug>, MachineError> {
         let until = self.until.clone();
 
         // 1. Pick the branch base and mint the environment. Draw order (seed on
@@ -417,8 +417,8 @@ impl<M: Machine> Explorer<M> {
             }
         };
 
-        // 2. One Modulation.
-        let outcome = self.modulation(base_snap, &branch_env, &until)?;
+        // 2. One rollout.
+        let outcome = self.rollout(base_snap, &branch_env, &until)?;
 
         // 3. Rebase the run to genesis-complete (the task-93 compose ruling):
         //    a genesis-rooted run's reproducer already is; a run branched below
@@ -489,7 +489,7 @@ impl<M: Machine> Explorer<M> {
         //    gets no seal and re-materializes on first exploit — robust, never
         //    a mis-assignment. Error-safe: a pending leaves the queue only once
         //    its seal is cached or dropped, so a mid-way `drop_snap` failure
-        //    forgets nothing (the next `modulation` retries the leftovers).
+        //    forgets nothing (the next `rollout` retries the leftovers).
         let before = self.archive.frontier().len();
         let reward = self
             .archive
@@ -509,7 +509,7 @@ impl<M: Machine> Explorer<M> {
             if admitted {
                 let p = self.pending_forks.remove(0);
                 // Cache the eager seal under the entry's stable id AND record
-                // its lineage (task 68): parent = this Modulation's branch
+                // its lineage (task 68): parent = this rollout's branch
                 // base, suffix = the branch-local prefix env as of the fork.
                 // The chain is what a later materialization walks once seals
                 // start being evicted. A displaced seal is impossible under
@@ -546,7 +546,7 @@ impl<M: Machine> Explorer<M> {
         Ok(self.oracle.judge(&trace))
     }
 
-    /// Run the Progression for `steps` steps; return the distinct bugs found
+    /// Run the search loop for `steps` steps; return the distinct bugs found
     /// (deduplicated by fingerprint). Any [`MachineError`] aborts the whole
     /// campaign loudly (propagated), exactly as the two-result-categories rule
     /// requires.
@@ -554,7 +554,7 @@ impl<M: Machine> Explorer<M> {
         let mut bugs = Vec::new();
         let mut seen: BTreeSet<[u8; 32]> = BTreeSet::new();
         for _ in 0..steps {
-            if let Some(bug) = self.progression_step()?
+            if let Some(bug) = self.step()?
                 && seen.insert(bug.fingerprint)
             {
                 bugs.push(bug);

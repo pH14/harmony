@@ -1336,7 +1336,7 @@ mod tests {
         use conductor::{RunRow, SeedRow, SweepReport};
         let run = |hash: [u8; 32]| RunRow {
             stop: explorer::StopReason::Quiescent {
-                vtime: explorer::VTime(10),
+                vtime: explorer::Moment(10),
             },
             hash,
         };
@@ -1389,7 +1389,7 @@ mod tests {
     fn campaign_report_of(found: bool, nominal_is_bug: bool) -> CampaignReport {
         use conductor::campaign::{CRASH_KIND_SHUTDOWN, FoundBug, NominalRow};
         let stop = explorer::StopReason::Crash {
-            vtime: explorer::VTime(5),
+            vtime: explorer::Moment(5),
             info: vec![CRASH_KIND_SHUTDOWN],
         };
         let bug = explorer::TerminalOracle::new()
@@ -1426,7 +1426,7 @@ mod tests {
             },
             nominal: NominalRow {
                 stop: explorer::StopReason::Quiescent {
-                    vtime: explorer::VTime(1),
+                    vtime: explorer::Moment(1),
                 },
                 hash: [0; 32],
                 is_bug: nominal_is_bug,

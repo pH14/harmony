@@ -40,9 +40,9 @@
 //! whether a live window actually drew.
 
 use explorer::{
-    EnvCodec, Environment, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError,
-    Materialization, Materializer, Moment, Reward, SnapId, StopConditions, StopMask, StopReason,
-    VTime, VirtualExemplar,
+    EnvCodec, Reproducer, ExemplarRef, Frontier, FrontierEntry, Machine, MachineError,
+    Materialization, Materializer, Moment, Reward, SnapId, StopConditions, StopMask,
+    StopReason, VirtualExemplar,
 };
 
 use crate::{fmt_stop, hex, probe_vtime};
@@ -126,7 +126,7 @@ pub struct MaterializeReport {
     /// `state_hash` at the bug leg's stop.
     pub leg_hash: [u8; 32],
     /// The compose-folded, genesis-complete reproducer (no `SnapId` in it).
-    pub bug_env: Environment,
+    pub bug_env: Reproducer,
     /// The replay leg's stop (`branch(base, bug_env)` run to the same
     /// absolute deadline).
     pub replay_stop: StopReason,
@@ -170,7 +170,7 @@ fn seal_here<M: Machine>(
             Err(MachineError::NotQuiescent) if attempts < max_attempts => {
                 let stop = machine.run(
                     &StopConditions {
-                        deadline: Some(VTime(vt.saturating_add(retry_step))),
+                        deadline: Some(Moment(vt.saturating_add(retry_step))),
                         on: StopMask::NONE,
                     },
                     None,
@@ -191,7 +191,7 @@ fn seal_here<M: Machine>(
 fn run_to<M: Machine>(machine: &mut M, deadline: u64, what: &str) -> Result<u64, MachineError> {
     let stop = machine.run(
         &StopConditions {
-            deadline: Some(VTime(deadline)),
+            deadline: Some(Moment(deadline)),
             on: StopMask::NONE,
         },
         None,
@@ -242,7 +242,7 @@ pub fn run_materialize<M: Machine>(
     let mut seals: Vec<SnapId> = Vec::with_capacity(cfg.hops);
     let mut cur = genesis;
     let mut cur_at = genesis_at;
-    let mut entry_env: Option<Environment> = None;
+    let mut entry_env: Option<Reproducer> = None;
     for i in 0..cfg.hops {
         machine.branch(cur, &codec.seeded(cfg.seed))?;
         let requested = cur_at.saturating_add(cfg.hop_delta);
@@ -339,7 +339,7 @@ pub fn run_materialize<M: Machine>(
     let tail_deadline = cur_at.saturating_add(cfg.tail_delta);
     let leg_stop = machine.run(
         &StopConditions {
-            deadline: Some(VTime(tail_deadline)),
+            deadline: Some(Moment(tail_deadline)),
             on: StopMask::NONE,
         },
         None,
@@ -352,7 +352,7 @@ pub fn run_materialize<M: Machine>(
     machine.branch(genesis, &bug_env)?;
     let replay_stop = machine.run(
         &StopConditions {
-            deadline: Some(VTime(tail_deadline)),
+            deadline: Some(Moment(tail_deadline)),
             on: StopMask::NONE,
         },
         None,
@@ -379,7 +379,7 @@ pub fn run_materialize<M: Machine>(
         machine.branch(deep_seal, &reseed_probe_env(cfg.seed, deep_at, landing)?)?;
         let probe_stop = machine.run(
             &StopConditions {
-                deadline: Some(VTime(landing)),
+                deadline: Some(Moment(landing)),
                 on: StopMask::NONE,
             },
             None,
@@ -428,7 +428,7 @@ pub fn run_materialize<M: Machine>(
 /// stop vtime below the branch origin is a broken monotonicity invariant —
 /// a loud [`MachineError::Transport`], never a debug panic or a release wrap
 /// that would encode a marker near `u64::MAX`.
-fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Result<Environment, MachineError> {
+fn reseed_probe_env(seed: u64, origin: u64, landed: u64) -> Result<Reproducer, MachineError> {
     let rel = landed.checked_sub(origin).ok_or_else(|| {
         MachineError::Transport(format!(
             "draw probe: landed vtime {landed} is BELOW the branch origin {origin} — the \
@@ -744,7 +744,7 @@ pub fn render_materialize_table(r: &MaterializeReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use explorer::{Environment, Materialization, Moment, SnapId, StopReason, VTime};
+    use explorer::{Reproducer, Materialization, Moment, SnapId, StopReason};
 
     use super::*;
 
@@ -774,13 +774,13 @@ mod tests {
             folded_hash: [0; 32],
             worst: m,
             worst_hash: [0; 32],
-            leg_stop: StopReason::Deadline { vtime: VTime(20) },
+            leg_stop: StopReason::Deadline { vtime: Moment(20) },
             leg_hash: [0; 32],
-            bug_env: Environment {
+            bug_env: Reproducer {
                 blob_version: 1,
                 bytes: Vec::new(),
             },
-            replay_stop: StopReason::Deadline { vtime: VTime(20) },
+            replay_stop: StopReason::Deadline { vtime: Moment(20) },
             replay_hash: [0; 32],
             hop_draws: Vec::new(),
             tail_draws: false,
@@ -868,20 +868,20 @@ mod tests {
             worst_hash: [7; 32],
             // The bug leg runs BELOW the deepest seal (100e6) — as it must: a
             // leg that stopped above (or at) its own base could not have run.
-            // (Before task 103's vacuity gate this fixture said `VTime(100)`,
+            // (Before task 103's vacuity gate this fixture said `Moment(100)`,
             // i.e. a leg stopping 99,999,900 ns *above* the seal it started
             // from — harmless to the equalities it was written to exercise, but
             // not a run any machine could produce.)
             leg_stop: StopReason::Deadline {
-                vtime: VTime(100_000_250),
+                vtime: Moment(100_000_250),
             },
             leg_hash: [9; 32],
-            bug_env: Environment {
+            bug_env: Reproducer {
                 blob_version: 1,
                 bytes: vec![1, 2, 3],
             },
             replay_stop: StopReason::Deadline {
-                vtime: VTime(100_000_250),
+                vtime: Moment(100_000_250),
             },
             replay_hash: [9; 32],
             hop_draws: vec![true],
@@ -922,7 +922,7 @@ mod tests {
         let mut r = valid_report();
         let deep_at = r.hops[2].at;
         r.leg_stop = StopReason::Deadline {
-            vtime: VTime(deep_at),
+            vtime: Moment(deep_at),
         };
         r.replay_stop = r.leg_stop.clone();
         let f = verify_materialize(&r, Some(TASK63_BASELINE_PPM));
@@ -978,7 +978,7 @@ mod tests {
         // degradation no longer monotone (hot depth now 50e6 == folded 100e6? make
         // hot deeper than folded to break the chain).
         // gate (c): reproducer disagrees on stop and hash.
-        r.replay_stop = StopReason::Deadline { vtime: VTime(999) };
+        r.replay_stop = StopReason::Deadline { vtime: Moment(999) };
         r.replay_hash = [3; 32];
 
         let f = verify_materialize(&r, Some(TASK63_BASELINE_PPM));

@@ -25,7 +25,7 @@
 // not order-observable: every `Instant::now` read in this file lands only in
 // `CampaignReport.timing`/`wall_secs` (via `Stopwatch::stats`/`elapsed_secs`,
 // or `boxrun.rs`'s single boot-to-ready `Mark`) and printed log lines — never
-// in `state_hash`, an `Environment`/reproducer, or the runtrace journal — and
+// in `state_hash`, an `Reproducer`/reproducer, or the runtrace journal — and
 // nothing in the search loop branches on a duration (task 96,
 // `tasks/96-campaign-stopwatch.md`).
 

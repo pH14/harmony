@@ -21,22 +21,22 @@ pub struct conductor::benchcampaign::BenchToyMachine
 impl conductor::benchcampaign::BenchToyMachine
 pub fn conductor::benchcampaign::BenchToyMachine::new(benchmark::manifest::BugSpec) -> Self
 impl explorer::seam::Machine for conductor::benchcampaign::BenchToyMachine
-pub fn conductor::benchcampaign::BenchToyMachine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::coverage(&self) -> &[u8]
 pub fn conductor::benchcampaign::BenchToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
-pub fn conductor::benchcampaign::BenchToyMachine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::error::MachineError>
+pub fn conductor::benchcampaign::BenchToyMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn conductor::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
 pub struct conductor::benchcampaign::FindCert
 pub conductor::benchcampaign::FindCert::branch: u64
 pub conductor::benchcampaign::FindCert::bug: benchmark::manifest::BugId
-pub conductor::benchcampaign::FindCert::env: explorer::Environment
+pub conductor::benchcampaign::FindCert::env: explorer::Reproducer
 pub conductor::benchcampaign::FindCert::state_hash: [u8; 32]
 pub const conductor::benchcampaign::BASE_VTIME: u64
-pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec, u64, u64) -> explorer::Environment
+pub fn conductor::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec, u64, u64) -> explorer::Reproducer
 pub fn conductor::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &benchmark::manifest::BugSpec, &conductor::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<conductor::benchcampaign::BenchOutcome, explorer::error::MachineError>
 pub mod conductor::campaign
 pub struct conductor::campaign::CampaignConfig
@@ -52,12 +52,6 @@ pub conductor::campaign::CampaignConfig::snapshot_max_attempts: usize
 pub conductor::campaign::CampaignConfig::snapshot_retry_step: u64
 impl conductor::campaign::CampaignConfig
 pub fn conductor::campaign::CampaignConfig::toy() -> Self
-pub struct conductor::campaign::CampaignOracle
-impl conductor::campaign::CampaignOracle
-pub fn conductor::campaign::CampaignOracle::is_planted_bug(&self, &explorer::StopReason) -> bool
-pub fn conductor::campaign::CampaignOracle::new() -> Self
-impl explorer::spine::Oracle for conductor::campaign::CampaignOracle
-pub fn conductor::campaign::CampaignOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
 pub struct conductor::campaign::CampaignReport
 pub conductor::campaign::CampaignReport::base_hash: [u8; 32]
 pub conductor::campaign::CampaignReport::base_vtime: u64
@@ -69,10 +63,16 @@ pub conductor::campaign::CampaignReport::replays: alloc::vec::Vec<conductor::Run
 pub conductor::campaign::CampaignReport::snapshot_attempts: usize
 pub conductor::campaign::CampaignReport::timing: alloc::collections::btree::map::BTreeMap<conductor::stopwatch::Phase, conductor::stopwatch::PhaseStats>
 pub conductor::campaign::CampaignReport::wall_secs: u64
+pub struct conductor::campaign::CrashOracle
+impl conductor::campaign::CrashOracle
+pub fn conductor::campaign::CrashOracle::is_planted_bug(&self, &explorer::StopReason) -> bool
+pub fn conductor::campaign::CrashOracle::new() -> Self
+impl explorer::spine::Oracle for conductor::campaign::CrashOracle
+pub fn conductor::campaign::CrashOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
 pub struct conductor::campaign::FoundBug
 pub conductor::campaign::FoundBug::branch_index: u64
 pub conductor::campaign::FoundBug::bug: explorer::spine::Bug
-pub conductor::campaign::FoundBug::env: explorer::Environment
+pub conductor::campaign::FoundBug::env: explorer::Reproducer
 pub conductor::campaign::FoundBug::hash: [u8; 32]
 pub conductor::campaign::FoundBug::seed: u64
 pub conductor::campaign::FoundBug::stop: explorer::StopReason
@@ -84,7 +84,7 @@ pub const conductor::campaign::CRASH_KIND_PANIC: u8
 pub const conductor::campaign::CRASH_KIND_SHUTDOWN: u8
 pub const conductor::campaign::CRASH_KIND_TRIPLE_FAULT: u8
 pub fn conductor::campaign::hex32(&[u8; 32]) -> alloc::string::String
-pub fn conductor::campaign::mint_fault_env(u64, u64, &conductor::campaign::CampaignConfig) -> explorer::Environment
+pub fn conductor::campaign::mint_fault_env(u64, u64, &conductor::campaign::CampaignConfig) -> explorer::Reproducer
 pub fn conductor::campaign::render_campaign_table(&conductor::campaign::CampaignReport, usize) -> alloc::string::String
 pub fn conductor::campaign::run_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::campaign::CampaignConfig) -> core::result::Result<conductor::campaign::CampaignReport, explorer::error::MachineError>
 pub fn conductor::campaign::verify_campaign(&conductor::campaign::CampaignReport, usize) -> alloc::vec::Vec<alloc::string::String>
@@ -158,11 +158,11 @@ pub fn conductor::gamecampaign::GameToyMachine::new() -> Self
 impl core::default::Default for conductor::gamecampaign::GameToyMachine
 pub fn conductor::gamecampaign::GameToyMachine::default() -> Self
 impl explorer::seam::Machine for conductor::gamecampaign::GameToyMachine
-pub fn conductor::gamecampaign::GameToyMachine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::coverage(&self) -> &[u8]
 pub fn conductor::gamecampaign::GameToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
-pub fn conductor::gamecampaign::GameToyMachine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::error::MachineError>
+pub fn conductor::gamecampaign::GameToyMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn conductor::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
@@ -175,7 +175,7 @@ pub const conductor::gamecampaign::BILLBOARD_MIN_LEN: u64
 pub const conductor::gamecampaign::DEFAULT_GUEST_RAM_LEN: u64
 pub const conductor::gamecampaign::DETERMINISM_BAR: usize
 pub fn conductor::gamecampaign::determinism_verdict(&conductor::gamecampaign::GameCampaignOutcome, usize) -> core::result::Result<conductor::gamecampaign::GateVerdict, conductor::gamecampaign::Vacuity>
-pub fn conductor::gamecampaign::quiet_mutate(&explorer::Environment, u64, u64) -> core::result::Result<explorer::Environment, conductor::gamecampaign::GameCampaignError>
+pub fn conductor::gamecampaign::quiet_mutate(&explorer::Reproducer, u64, u64) -> core::result::Result<explorer::Reproducer, conductor::gamecampaign::GameCampaignError>
 pub fn conductor::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &conductor::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<conductor::gamecampaign::GameCampaignOutcome, conductor::gamecampaign::GameCampaignError>
 pub fn conductor::gamecampaign::serial_rom_sha256(&[u8]) -> core::option::Option<alloc::string::String>
 pub fn conductor::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
@@ -196,7 +196,7 @@ pub conductor::materialize::MaterializeConfig::tail_delta: u64
 impl core::default::Default for conductor::materialize::MaterializeConfig
 pub fn conductor::materialize::MaterializeConfig::default() -> Self
 pub struct conductor::materialize::MaterializeReport
-pub conductor::materialize::MaterializeReport::bug_env: explorer::Environment
+pub conductor::materialize::MaterializeReport::bug_env: explorer::Reproducer
 pub conductor::materialize::MaterializeReport::folded: explorer::materialize::Materialization
 pub conductor::materialize::MaterializeReport::folded_hash: [u8; 32]
 pub conductor::materialize::MaterializeReport::genesis_at: u64
@@ -262,11 +262,11 @@ pub struct conductor::planted::ToyPlantedMachine
 impl conductor::planted::ToyPlantedMachine
 pub fn conductor::planted::ToyPlantedMachine::new(conductor::planted::Trigger) -> Self
 impl explorer::seam::Machine for conductor::planted::ToyPlantedMachine
-pub fn conductor::planted::ToyPlantedMachine::branch(&mut self, explorer::SnapId, &explorer::Environment) -> core::result::Result<(), explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::planted::ToyPlantedMachine::coverage(&self) -> &[u8]
 pub fn conductor::planted::ToyPlantedMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::planted::ToyPlantedMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
-pub fn conductor::planted::ToyPlantedMachine::recorded_env(&self) -> core::result::Result<explorer::Environment, explorer::error::MachineError>
+pub fn conductor::planted::ToyPlantedMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
 pub fn conductor::planted::ToyPlantedMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
 pub fn conductor::planted::ToyPlantedMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
 pub fn conductor::planted::ToyPlantedMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
@@ -306,7 +306,7 @@ pub conductor::record::RecordedRun::stop: explorer::StopReason
 pub conductor::record::RecordedRun::trace_id: runtrace::error::TraceId
 pub fn conductor::record::render_record_table(&conductor::record::RecordReport) -> alloc::string::String
 pub fn conductor::record::run_recording<B: vmm_backend::backend::Backend>(&mut vmm_core::control::ControlServer<B>, &runtrace::store::TraceStore, &conductor::record::RecordConfig) -> core::result::Result<conductor::record::RecordReport, conductor::record::RecordError>
-pub fn conductor::record::stamp(explorer::VTime) -> explorer::spine::Moment
+pub fn conductor::record::stamp(explorer::spine::Moment) -> explorer::spine::Moment
 pub fn conductor::record::verify_record(&conductor::record::RecordReport, usize) -> alloc::vec::Vec<alloc::string::String>
 pub fn conductor::record::verify_store_reload(&runtrace::store::TraceStore, &conductor::record::RecordReport) -> alloc::vec::Vec<alloc::string::String>
 pub mod conductor::stopwatch

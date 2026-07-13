@@ -3,7 +3,7 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use explorer::{CellFn, Feature, FeatureId, FeatureSet, RunTrace, Sensor, StopReason, VTime};
+use explorer::{CellFn, Feature, FeatureId, FeatureSet, RunTrace, Sensor, StopReason, Moment};
 use logtmpl::{CellFnV1, LogSensor, load_console_log};
 
 /// The committed k3s console capture (≥ 5,000 lines — the cardinality gate).
@@ -14,8 +14,8 @@ pub const POSTGRES: &str = include_str!("../fixtures/postgres-console.log");
 /// A `RunTrace` whose scrape-tier records are the fixture's lines.
 pub fn trace(fixture: &str) -> RunTrace {
     RunTrace {
-        terminal: StopReason::Quiescent { vtime: VTime(0) },
-        env: explorer::Environment {
+        terminal: StopReason::Quiescent { vtime: Moment(0) },
+        env: explorer::Reproducer {
             blob_version: 1,
             bytes: vec![],
         },

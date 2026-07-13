@@ -31,7 +31,7 @@
 //! [`Sensor`](explorer::Sensor), [`Oracle`](explorer::Oracle),
 //! [`RunTrace`](explorer::RunTrace), [`Bug`](explorer::Bug)); it is a **pure
 //! plugin** — nothing here reads back into the live plane, and no search policy
-//! learns it exists (Progression blindness). It sits beside `runtrace` (task 65)
+//! learns it exists (search-loop blindness). It sits beside `runtrace` (task 65)
 //! as the second replay-plane channel.
 //!
 //! ## The wire convention

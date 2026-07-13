@@ -30,7 +30,7 @@ use conductor::{materialize_client, probe_vtime, run_session};
 use environment::{Action, BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::adapter::SocketMachine;
 use explorer::{
-    AdapterEnv, EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, VTime,
+    AdapterEnv, EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment,
 };
 
 /// The env the mock live VM boots under.
@@ -82,7 +82,7 @@ fn chain_gates_pass_over_the_socket() {
 
     // The reproducer is genesis-complete on the production blob format:
     // rooted at the sealed base's moment, and carrying no snapshot handle
-    // anywhere (an Environment structurally cannot).
+    // anywhere (an Reproducer structurally cannot).
     let decoded = AdapterEnv::decode(&report.bug_env).expect("adapter blob");
     assert_eq!(
         decoded.base_offset, report.genesis_at,
@@ -142,7 +142,7 @@ fn sequential_entropy_fold_is_bit_identical_reseed_markers_flip_the_task68_pin()
             let stop = m
                 .run(
                     &StopConditions {
-                        deadline: Some(VTime(deadline)),
+                        deadline: Some(Moment(deadline)),
                         on: StopMask::NONE,
                     },
                     None,
@@ -347,7 +347,7 @@ fn host_fault_below_a_parent_rooted_fold_applies_at_the_absolute_moment() {
             let stop = m
                 .run(
                     &StopConditions {
-                        deadline: Some(VTime(deadline)),
+                        deadline: Some(Moment(deadline)),
                         on: StopMask::NONE,
                     },
                     None,
