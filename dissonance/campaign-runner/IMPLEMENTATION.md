@@ -1470,3 +1470,12 @@ bug the test-local `sdk_events()` carried — are in `dissonance/resolution/IMPL
 Gates: `nextest -p resolution -p campaign-runner --all-features` 217 passed / 1 skipped (the box-only
 film gate); clippy `-D warnings` host **and** `x86_64-unknown-linux-gnu` (which is what compiles the
 `cfg(linux)` film gate against the new adapter); fmt; deny; `public-api` unchanged.
+
+### Round-1 review fix (taint)
+
+`Session::connect_rooted` now takes the whole `Snapshot` rather than a bare `SnapId`, because it
+carries the task-81 taint bit and every timeline a session materializes is a branch off that root.
+The film gate passes its base `Snapshot` through, and **fails loud if that base is ever tainted**: a
+freshly-booted guest has run no `exec`, so a tainted base means something improvised on the boot —
+and every filmed timeline would inherit the taint (it never clears downstream), making the whole
+capture off the record. Better to stop than to film an unreproducible timeline.

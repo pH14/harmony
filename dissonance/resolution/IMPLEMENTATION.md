@@ -454,6 +454,66 @@ than a truncation. The production `sdk_events()` pages until an empty page, like
 `explorer::SocketMachine` does; `sdk_events_pages_until_the_capture_is_drained` pins it against a
 server with a deliberately tiny page size.
 
+## Review round 1 — two blocking fixes
+
+### 1. The genesis taint bit was being laundered
+
+`Session` stored only `genesis.id`, and `materialize_from` hard-coded `tainted: false` on every new
+timeline. So a session rooted at a snapshot captured from a **tainted** lineage believed its
+timelines were clean.
+
+Why that is not cosmetic: taint never clears downstream (task 81 — "every snapshot and every
+`branch`/`replay` from a tainted point stays tainted; only an untainted ancestor is untainted"), and
+the server enforces it (a branch off a tainted snapshot restores a tainted timeline). But **the
+client's bit is the authoritative one** — it is set conservatively, the instant an `exec` is
+*issued*, so it is true in cases where no wire `ControlError::Tainted` ever arrives. And
+`MaterializedSession::mref()` is a **purely local** mint: it consults `guard_reproducible` and
+nothing else. With the bit dropped, `mref()` would hand out a paste-able coordinate for a timeline
+with no honest reproducer — precisely the class the taint rule exists to forbid. (`recorded_env()`
+would still have been caught server-side, which is what made the hole easy to miss: the guard that
+fails closed is not the one that was broken.)
+
+Fixed by carrying the whole `Snapshot` — bit included — as the session's genesis:
+`connect_rooted(server, genesis: Snapshot)` (not a bare `SnapId`), `connect` keeps what
+`server.snapshot()` returned, and `materialize_from` seeds the new timeline's taint from the root it
+branches off. A re-materialize therefore resets taint to the *lineage's*, not to clean. Added
+`Session::genesis_tainted()` so a caller can ask before materializing; the film gate now fails loud
+if its base snapshot is ever tainted.
+
+Fixtures: `a_session_rooted_at_a_tainted_snapshot_refuses_to_mint` (root at a tainted snapshot →
+`mat.tainted()`, and **both** `mref()` and `recorded_env()` return `SessionError::Tainted`; the
+clean root alongside it still mints, so the taint is a property of the lineage, not the session) and
+`connect_inherits_the_taint_of_the_genesis_it_captures`. Both fail against the pre-fix code.
+
+### 2. The `sdk_events` paging loop was unbounded
+
+The drain trusted the server's "empty page ends the capture" signal with no aggregate bound. A
+server that never sends an empty page — broken, or hostile — grows the accumulator until the OOM
+reaper kills the process. That is not a failure any caller can catch, log, or recover from, and it
+is the one outcome a trust boundary must never permit.
+
+Fixed with an aggregate budget on **both** axes, checked *before* each page is absorbed (so the
+accumulator never exceeds it), busting either being a typed `SessionError::Transport`:
+
+- `SDK_EVENTS_CAP` = 2²⁰ events, `SDK_EVENTS_BYTES_CAP` = 64 MiB of aggregate payload.
+- Both axes, because a peer can stay under the event count while sending unboundedly large payloads:
+  each *page* is frame-limited, but the *number of pages* is not.
+- Defaults clear any real capture by orders of magnitude (the game workload emits a few register
+  writes per frame over a few thousand frames — O(10⁴) events). `set_sdk_event_budget` raises the
+  bound for an unusual session and makes the guard cheap to exercise; **there is deliberately no way
+  to express "unbounded".**
+
+Fixtures: `an_sdk_event_drain_that_never_ends_busts_its_event_budget`,
+`an_sdk_event_drain_of_unbounded_payloads_busts_its_byte_budget` (a `NeverEmptyPage` server — the
+first hangs the process without the guard), and
+`a_capture_within_budget_is_never_truncated_by_the_guard` (at-budget is not over-budget; the guard
+bounds, it does not truncate).
+
+> **Same class of bug, out of scope here:** `explorer::adapter::SocketMachine::sdk_events` and
+> `::console` page the identical wire verbs with the identical unbounded `loop`. They are a
+> different crate and task (rule 1), so I did not touch them — but they are exposed to exactly this
+> failure, and the campaign drives them against the same server. Worth a bead.
+
 ## The trust boundary (conventions rule 4)
 
 Every length and index off the wire is checked before it is believed, and every hostile or broken
@@ -464,6 +524,7 @@ peer is a **typed `SessionError`** — never a panic, never a silent truncation:
 | `read(len > READ_CAP)` | `ReadTooLarge`, refused **before any traffic** (the untrusted length never reaches the far end) |
 | `Bytes` reply ≠ exactly `len` bytes | loud `Transport` — the contract is "never a truncated success", so a short reply is a broken server, not a partial read |
 | reproducer blob in an unknown `blob_version` | `Transport` — refused, not decoded on a guess |
+| `sdk_events` drain the server never ends | `Transport` at the aggregate budget — never an OOM kill |
 | reply seq ≠ request seq | `Transport` — never paired with the wrong verb |
 | reply of the wrong kind | `Transport` |
 | torn frame / garbage / EOF mid-verb | `Transport` (the film projector's *recoverable* dropped-session class) |
@@ -494,8 +555,9 @@ interleaved `Read`/`Regs`) is vmm-core's, from PR #51/task 80; this task extends
 
 ## Gates
 
-- `cargo nextest run -p resolution -p campaign-runner --all-features` — **217 passed**, 1 skipped
-  (the box-only film gate). 19 new in `resolution`, 1 new in `campaign-runner`.
+- `cargo nextest run -p resolution -p campaign-runner --all-features` — **222 passed**, 2 skipped
+  (the box-only film gate + the `#[ignore]`d public-api snapshot). 24 new in `resolution`, 1 new in
+  `campaign-runner`.
 - `clippy -D warnings` (host **and** `--target x86_64-unknown-linux-gnu`), `fmt --check`,
   `cargo deny check` — all clean.
 - **public-api**: `campaign-runner`'s snapshot is unchanged and green (only its tests were touched).
@@ -512,7 +574,7 @@ interleaved `Read`/`Regs`) is vmm-core's, from PR #51/task 80; this task extends
 - **Miri**: no `unsafe` was added (the adapter is pure socket/protocol code), so the unsafe⇒Miri
   bar does not bind. The new tests are Miri-viable anyway and were run:
   `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p resolution
-  --test socket_loopback` → **18 passed, 1 ignored**, and `--lib` → 18 passed.
+  --test socket_loopback` → **23 passed, 1 ignored**, and `--lib` → 18 passed.
   - **What runs under Miri**: the entire verb surface, the trust boundary, hash-neutrality, and the
     totality proptest — all of it, because the far end is an in-memory `Pipe` that services each
     request inline (no socket, no thread, no syscall).

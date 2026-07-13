@@ -22,6 +22,12 @@
 //! [`READ_CAP`] is refused *before any traffic*, and the codec rejects an
 //! over-`MAX_FRAME_LEN` header before buffering its body.
 //!
+//! The same rule governs anything the peer can make us accumulate *across* calls,
+//! not just within one: [`sdk_events`](SocketServer::sdk_events) pages until the
+//! server says the capture is drained, so it carries an aggregate budget
+//! ([`SDK_EVENTS_CAP`] / [`SDK_EVENTS_BYTES_CAP`]) — a server that never signals
+//! the end is a typed error, not an OOM kill.
+//!
 //! ## Error mapping (the seam's two categories, preserved)
 //!
 //! A guest-observable outcome is a [`StopReason`](control_proto::StopReason)
@@ -54,7 +60,7 @@ use control_proto::{
 use environment::EnvSpec;
 
 use crate::server::{ExecResult, RegsView, Server, Snapshot};
-use crate::{READ_CAP, SessionError};
+use crate::{READ_CAP, SDK_EVENTS_BYTES_CAP, SDK_EVENTS_CAP, SessionError};
 
 /// The read buffer's chunk size — one `read(2)` per iteration of the
 /// reply-assembly loop, exactly the explorer socket adapter's shape.
@@ -83,6 +89,10 @@ pub struct SocketServer<S: Read + Write> {
     /// The caps exchanged at negotiation: what we offered and what the server
     /// answered. `None` until the first [`hello`](Server::hello).
     negotiated: Option<(Caps, Caps)>,
+    /// The aggregate ceiling on one [`sdk_events`](Self::sdk_events) drain —
+    /// `(max events, max payload bytes)`. Defaults to
+    /// ([`SDK_EVENTS_CAP`], [`SDK_EVENTS_BYTES_CAP`]).
+    sdk_budget: (u32, usize),
 }
 
 impl<S: Read + Write> SocketServer<S> {
@@ -97,7 +107,22 @@ impl<S: Read + Write> SocketServer<S> {
             inbuf: Vec::new(),
             outbuf: Vec::new(),
             negotiated: None,
+            sdk_budget: (SDK_EVENTS_CAP, SDK_EVENTS_BYTES_CAP),
         }
+    }
+
+    /// Re-set the aggregate ceiling one [`sdk_events`](Self::sdk_events) drain
+    /// may accumulate: at most `max_events` events carrying at most `max_bytes`
+    /// of payload in total. Exceeding either is a typed
+    /// [`SessionError::Transport`], never an unbounded accumulation.
+    ///
+    /// The defaults ([`SDK_EVENTS_CAP`] / [`SDK_EVENTS_BYTES_CAP`]) clear any real
+    /// capture by orders of magnitude; this exists so a session with an unusual
+    /// workload can raise the bound deliberately — and so the guard itself is
+    /// cheap to exercise — **not** so it can be removed. There is no way to
+    /// express "unbounded", by design.
+    pub fn set_sdk_event_budget(&mut self, max_events: u32, max_bytes: usize) {
+        self.sdk_budget = (max_events, max_bytes);
     }
 
     /// The server [`Caps`] negotiated at `hello`, or `None` before the session is
@@ -127,12 +152,26 @@ impl<S: Read + Write> SocketServer<S> {
     /// `offset: 0` call would silently truncate a capture longer than one page.
     /// A pure read: it never advances the VM, so a run's `state_hash` is
     /// identical whether or not it is called.
+    ///
+    /// **Bounded** (conventions rule 4). The empty page that ends the drain is a
+    /// signal from an *untrusted peer*: a server that never sends one — broken, or
+    /// hostile — would grow the accumulator until the OOM reaper kills the
+    /// process, which is not a failure any caller can catch or report. So the
+    /// drain carries an aggregate budget on **both** axes (a peer could stay under
+    /// an event count while sending unboundedly large payloads, since each page is
+    /// frame-limited but the number of pages is not), and busting either is a loud
+    /// [`SessionError::Transport`]. The budget is checked **before** each page is
+    /// absorbed, so the accumulator never exceeds it. Defaults:
+    /// [`SDK_EVENTS_CAP`] / [`SDK_EVENTS_BYTES_CAP`]; see
+    /// [`set_sdk_event_budget`](Self::set_sdk_event_budget).
     pub fn sdk_events(&mut self) -> Result<Vec<(u64, u32, Vec<u8>)>, SessionError> {
+        let (max_events, max_bytes) = self.sdk_budget;
         let mut all: Vec<(u64, u32, Vec<u8>)> = Vec::new();
+        let mut bytes: usize = 0;
         loop {
-            // The offset is an event *index*; the capture is bounded by the
-            // server's frame limit per page, and `all.len()` only grows by what
-            // the server actually sent, so the cast cannot mis-address a page.
+            // The offset is an event *index* on the wire. `all.len()` is held
+            // under `max_events` (a u32) by the budget below, so this cannot
+            // overflow the page index.
             let offset = u32::try_from(all.len()).map_err(|_| {
                 SessionError::Transport(
                     "sdk-event capture exceeds the u32 page index of the wire verb".to_string(),
@@ -142,8 +181,28 @@ impl<S: Read + Write> SocketServer<S> {
                 Reply::SdkEvents(events) => events,
                 other => return Err(unexpected("sdk_events", &other)),
             };
+            // The end of the capture. A well-behaved server always gets here.
             if page.is_empty() {
                 return Ok(all);
+            }
+            // Budget FIRST, absorb second — so a runaway peer can never make this
+            // buffer grow past what the caller sanctioned.
+            let events = all.len().saturating_add(page.len());
+            if events > max_events as usize {
+                return Err(SessionError::Transport(format!(
+                    "sdk-event drain exceeded its budget of {max_events} events (the server never \
+                     sent an empty page); refusing to keep buffering an unbounded capture"
+                )));
+            }
+            let page_bytes = page
+                .iter()
+                .fold(0usize, |acc, (_, _, b)| acc.saturating_add(b.len()));
+            bytes = bytes.saturating_add(page_bytes);
+            if bytes > max_bytes {
+                return Err(SessionError::Transport(format!(
+                    "sdk-event drain exceeded its budget of {max_bytes} payload bytes (the server \
+                     never sent an empty page); refusing to keep buffering an unbounded capture"
+                )));
             }
             all.extend(page);
         }

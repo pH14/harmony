@@ -86,6 +86,32 @@ pub const MAX_HEX_FIELD_BYTES: usize = 16 << 20; // 16 MiB
 /// range-checks against.
 pub const DEFAULT_RAM_BYTES: u64 = 1 << 30; // 1 GiB
 
+/// The default ceiling on how many events one
+/// [`sdk_events`](SocketServer::sdk_events) drain will accumulate.
+///
+/// The drain is a **paging loop over an untrusted peer**: the server signals the
+/// end of the capture with an empty page, so a server that never sends one —
+/// broken, or hostile — would otherwise grow the accumulator until the process is
+/// killed by the OOM reaper. That is not a failure a caller can catch. The budget
+/// turns it into a typed [`SessionError::Transport`], which is (conventions rule
+/// 4) the same discipline [`READ_CAP`] and the codec's frame-length check apply
+/// to every other untrusted length on this wire.
+///
+/// Sized with orders of magnitude of headroom over any real capture: the game
+/// workload the film gate scrapes emits a few register writes per frame over a
+/// few thousand frames, so a real drain is O(10⁴) events. Raise it for a specific
+/// session with
+/// [`set_sdk_event_budget`](SocketServer::set_sdk_event_budget) rather than
+/// removing the bound.
+pub const SDK_EVENTS_CAP: u32 = 1 << 20; // 1,048,576 events
+
+/// The default ceiling on the **aggregate payload bytes** one
+/// [`sdk_events`](SocketServer::sdk_events) drain will accumulate. The companion
+/// of [`SDK_EVENTS_CAP`]: a peer could stay under the event count while sending
+/// unboundedly large payloads (each page is frame-limited, but the *number* of
+/// pages is not), so the drain is bounded on both axes or on neither.
+pub const SDK_EVENTS_BYTES_CAP: usize = 64 << 20; // 64 MiB
+
 /// The default V-time budget an [`exec`](MaterializedSession::exec) adds to the
 /// current moment for its deadline (the improvisation runs until a completion
 /// sentinel or this deadline).

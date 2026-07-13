@@ -39,7 +39,7 @@ use control_proto::{
     HashScope, Moment as WireMoment, Reproducer, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvCodec, EnvSpec, FaultPolicy};
-use resolution::{MomentRef, Server, Session, SessionError, SocketServer, client_caps};
+use resolution::{MomentRef, Server, Session, SessionError, Snapshot, SocketServer, client_caps};
 
 /// How far past the base each branch runs. Deliberately **off** the mock's
 /// 100-ns intercept grid, so a landing proves the deadline is honoured rather
@@ -220,7 +220,7 @@ fn gate(stream: UnixStream) -> Gate {
     // hash for hash — the claim the film gate rests on (its frame clock is a set
     // of absolute Moments harvested from a run rooted at exactly this snapshot,
     // so it must materialize from this snapshot, not a fresh one).
-    let session_hash = session_materialize_hash(&mut adapter, base.id, 0xA11CE, terminal, landed)?;
+    let session_hash = session_materialize_hash(&mut adapter, base, 0xA11CE, terminal, landed)?;
     if session_hash != a {
         return Err(format!(
             "a Session materialized at the same address reached hash {} — the raw branch+run \
@@ -331,7 +331,7 @@ fn stepped_run(
 /// `impl Server for &mut S`), so the caller keeps it afterwards.
 fn session_materialize_hash(
     adapter: &mut SocketServer<UnixStream>,
-    base: SnapId,
+    base: Snapshot,
     seed: u64,
     moment: u64,
     expect_landing: u64,

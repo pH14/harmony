@@ -30,13 +30,14 @@
 use std::io::{Read, Write};
 
 use control_proto::{
-    ControlError, HashScope, Moment as WireMoment, Reply, Reproducer, Request, SnapId,
-    StopConditions, StopMask, StopReason,
+    ControlError, HashScope, Moment as WireMoment, Reply, Reproducer, Request, StopConditions,
+    StopMask, StopReason,
 };
 use environment::{EnvCodec, EnvSpec, FaultPolicy};
 use proptest::prelude::*;
 use resolution::{
-    MockServer, MomentRef, READ_CAP, Server, Session, SessionError, SocketServer, client_caps,
+    MockServer, MomentRef, READ_CAP, SDK_EVENTS_BYTES_CAP, SDK_EVENTS_CAP, Server, Session,
+    SessionError, Snapshot, SocketServer, client_caps,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,11 @@ enum Misbehavior {
     Hangup,
     /// Write the first half of a well-formed reply frame, then hang up.
     TornFrame,
+    /// Never signal the end of the SDK-event capture: answer **every**
+    /// `SdkEvents` page — at any offset — with a full, non-empty one. A client
+    /// that trusts "empty page ends the drain" accumulates until the OOM reaper
+    /// kills it.
+    NeverEmptyPage,
 }
 
 /// A control-transport server that speaks real frames: decode a [`Request`],
@@ -164,6 +170,15 @@ impl FrameServer {
             // Paged, exactly like the real server: a page starts at `offset` and
             // is bounded, so the client must keep asking until an empty page.
             Request::SdkEvents { offset } => {
+                if self.misbehave == Misbehavior::NeverEmptyPage {
+                    // A full page forever, whatever the offset — the drain never ends.
+                    let m = u64::from(*offset);
+                    return Ok(Reply::SdkEvents(
+                        (0..self.page)
+                            .map(|i| (m + i as u64, i as u32, vec![0xAB; 8]))
+                            .collect(),
+                    ));
+                }
                 let start = (*offset as usize).min(self.events.len());
                 let end = start.saturating_add(self.page).min(self.events.len());
                 Ok(Reply::SdkEvents(self.events[start..end].to_vec()))
@@ -337,11 +352,11 @@ fn misbehaving(m: Misbehavior) -> SocketServer<Pipe> {
 
 /// Negotiate + snapshot genesis + branch a timeline onto it — the shape every
 /// verb test starts from.
-fn opened(adapter: &mut SocketServer<Pipe>) -> SnapId {
+fn opened(adapter: &mut SocketServer<Pipe>) -> Snapshot {
     adapter.hello(client_caps()).expect("hello");
-    let genesis = adapter.snapshot().expect("genesis snapshot").id;
+    let genesis = adapter.snapshot().expect("genesis snapshot");
     adapter
-        .branch(genesis, &wire(&branch_env()))
+        .branch(genesis.id, &wire(&branch_env()))
         .expect("branch");
     genesis
 }
@@ -542,7 +557,7 @@ fn an_observation_emits_only_its_own_request_frame() {
             &Request::Hello(client_caps()),
             &Request::Snapshot,
             &Request::Branch {
-                snap: genesis,
+                snap: genesis.id,
                 env: wire(&branch_env()),
             },
             &Request::Run {
@@ -605,9 +620,98 @@ fn connect_rooted_roots_at_the_given_snapshot_and_takes_none_of_its_own() {
     // The materialize branched off the base the caller handed in.
     assert!(
         log.iter()
-            .any(|r| matches!(r, Request::Branch { snap, .. } if *snap == base)),
+            .any(|r| matches!(r, Request::Branch { snap, .. } if *snap == base.id)),
         "the session branched off the given root"
     );
+}
+
+/// **A session rooted at a TAINTED snapshot inherits the taint, and the local
+/// mint guard fires.**
+///
+/// Taint never clears downstream (task 81): a branch off a tainted ancestor is
+/// tainted before it executes an instruction, and the server enforces that on its
+/// side. But the *client's* bit is the authoritative one — it is set
+/// conservatively, the instant an `exec` is issued, so it can be true where no
+/// wire `ControlError::Tainted` ever arrives. A `Session` that took only the
+/// genesis `SnapId` would drop the bit and believe a laundered lineage was clean:
+/// `mref()` is a purely **local** mint (it consults nothing but
+/// `guard_reproducible`), so it would hand out a paste-able coordinate for a
+/// timeline that has no honest reproducer — exactly what the taint rule exists to
+/// prevent. Hence `connect_rooted` takes the whole `Snapshot`.
+#[test]
+fn a_session_rooted_at_a_tainted_snapshot_refuses_to_mint() {
+    let mut adapter = loopback();
+    adapter.hello(client_caps()).expect("hello");
+    let clean = adapter.snapshot().expect("snapshot");
+    assert!(!clean.tainted, "a freshly-booted timeline is clean");
+
+    // Improvise on the live timeline, then capture it: the snapshot is tainted,
+    // and the wire says so on the taint-carrying reply.
+    adapter
+        .exec("rm -rf /", WireMoment(9_999_999))
+        .expect("exec");
+    let dirty = adapter.snapshot().expect("snapshot of a tainted timeline");
+    assert!(dirty.tainted, "the wire carries the taint bit");
+
+    // Root a session at the TAINTED snapshot. Allowed — the server refuses
+    // nothing, by ruling — but the consequence must be structural.
+    let mut session = Session::connect_rooted(&mut adapter, dirty).expect("connect_rooted");
+    assert!(session.genesis_tainted());
+
+    let mut mat = session
+        .materialize(&MomentRef::new(branch_env(), 4_000))
+        .expect("materialize");
+    assert!(
+        mat.tainted(),
+        "a timeline branched off a tainted root is tainted before it runs an instruction"
+    );
+    // The LOCAL guard — the one a bare-SnapId session would have laundered away.
+    assert_eq!(
+        mat.mref().map(|_| ()),
+        Err(SessionError::Tainted),
+        "no paste-able coordinate for a timeline with no honest reproducer"
+    );
+    assert_eq!(
+        mat.recorded_env().map(|_| ()),
+        Err(SessionError::Tainted),
+        "no reproducer mint from a tainted lineage"
+    );
+
+    // …and the clean root is unaffected: the taint is a property of the lineage,
+    // not of the session or the server.
+    let mut clean_session = Session::connect_rooted(&mut adapter, clean).expect("connect_rooted");
+    assert!(!clean_session.genesis_tainted());
+    let mut mat = clean_session
+        .materialize(&MomentRef::new(branch_env(), 4_000))
+        .expect("materialize");
+    assert!(!mat.tainted());
+    mat.mref().expect("a clean lineage mints its coordinate");
+    mat.recorded_env().expect("a clean lineage mints its env");
+}
+
+/// `Session::connect` — which takes its own genesis — carries the taint bit too:
+/// snapshotting a server whose live timeline was already improvised on roots the
+/// session at a tainted genesis, and every timeline off it is tainted.
+#[test]
+fn connect_inherits_the_taint_of_the_genesis_it_captures() {
+    let mut adapter = loopback();
+    adapter.hello(client_caps()).expect("hello");
+    // The live timeline is improvised on BEFORE the session ever connects.
+    adapter
+        .exec("uname -a", WireMoment(9_999_999))
+        .expect("exec");
+
+    let mut session = Session::connect(&mut adapter).expect("connect");
+    assert!(
+        session.genesis_tainted(),
+        "connect's own genesis snapshot came back tainted"
+    );
+    let mut mat = session
+        .materialize(&MomentRef::new(branch_env(), 3_000))
+        .expect("materialize");
+    assert!(mat.tainted());
+    assert_eq!(mat.mref().map(|_| ()), Err(SessionError::Tainted));
+    assert_eq!(mat.recorded_env().map(|_| ()), Err(SessionError::Tainted));
 }
 
 /// `hello` is negotiated **once per stream**: a second call answers from the
@@ -682,6 +786,73 @@ fn sdk_events_on_a_guest_with_no_sdk_is_empty() {
     let mut adapter = loopback();
     adapter.hello(client_caps()).expect("hello");
     assert_eq!(adapter.sdk_events().expect("sdk_events"), vec![]);
+}
+
+/// **A server that never ends the capture is a typed error, not an OOM kill.**
+///
+/// The empty page that terminates the drain is a signal from an untrusted peer.
+/// A broken or hostile server that answers every page — at any offset — with a
+/// full one would make an unbounded loop accumulate until the OOM reaper kills
+/// the process, which no caller can catch, log, or recover from. The aggregate
+/// event budget makes it a `SessionError::Transport` the caller handles like any
+/// other torn session.
+#[test]
+fn an_sdk_event_drain_that_never_ends_busts_its_event_budget() {
+    let mut adapter = misbehaving(Misbehavior::NeverEmptyPage);
+    adapter.hello(client_caps()).expect("hello");
+    // A small budget so the guard is cheap to exercise; the default is orders of
+    // magnitude above any real capture. (Without the budget this call never
+    // returns — it grows until the process dies.)
+    adapter.set_sdk_event_budget(64, SDK_EVENTS_BYTES_CAP);
+
+    let err = adapter
+        .sdk_events()
+        .expect_err("a never-ending drain must be refused, not buffered forever");
+    assert_eq!(err.category(), "transport");
+    assert!(
+        format!("{err}").contains("64 events"),
+        "the error names the budget it busted: {err}"
+    );
+}
+
+/// The byte axis of the same guard. A peer can stay comfortably under the event
+/// count while sending unboundedly large payloads — each *page* is frame-limited,
+/// but the number of pages is not — so the drain is bounded on both axes or on
+/// neither.
+#[test]
+fn an_sdk_event_drain_of_unbounded_payloads_busts_its_byte_budget() {
+    let mut adapter = misbehaving(Misbehavior::NeverEmptyPage);
+    adapter.hello(client_caps()).expect("hello");
+    // Effectively unlimited events; a tiny byte budget. The scripted pages carry
+    // 8 payload bytes per event, so the bytes bust long before the count would.
+    adapter.set_sdk_event_budget(SDK_EVENTS_CAP, 100);
+
+    let err = adapter
+        .sdk_events()
+        .expect_err("an unbounded payload drain must be refused");
+    assert_eq!(err.category(), "transport");
+    assert!(
+        format!("{err}").contains("100 payload bytes"),
+        "the error names the budget it busted: {err}"
+    );
+}
+
+/// The budget bounds the drain but never truncates a legitimate one: a capture
+/// that fits is returned whole, and the default budget clears any real capture by
+/// orders of magnitude.
+#[test]
+fn a_capture_within_budget_is_never_truncated_by_the_guard() {
+    let events: Vec<(u64, u32, Vec<u8>)> = (0..40u64)
+        .map(|i| (i, i as u32, vec![i as u8; 4]))
+        .collect();
+    let mut srv = FrameServer::new(MockServer::boot(boot_env()));
+    srv.events = events.clone();
+    srv.page = 7;
+    let mut adapter = SocketServer::new(Pipe::new(srv));
+    adapter.hello(client_caps()).expect("hello");
+    // Exactly the capture's size on both axes: at-budget is not over-budget.
+    adapter.set_sdk_event_budget(40, 40 * 4);
+    assert_eq!(adapter.sdk_events().expect("sdk_events"), events);
 }
 
 // ---------------------------------------------------------------------------

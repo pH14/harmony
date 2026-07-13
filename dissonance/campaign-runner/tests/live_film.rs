@@ -305,7 +305,7 @@ fn run_gate<S: Read + Write>(
     for _ in 0..SNAPSHOT_MAX_ATTEMPTS {
         match adapter.snapshot() {
             Ok(snap) => {
-                base = Some(snap.id);
+                base = Some(snap);
                 break;
             }
             Err(SessionError::Control(control_proto::ControlError::NotQuiescent)) => {
@@ -324,13 +324,20 @@ fn run_gate<S: Read + Write>(
         }
     }
     let base = base.ok_or("no snapshottable boundary within the retry budget")?;
+    // A freshly-booted guest has run no `exec` improvisation, so its base must be
+    // untainted. If it ever is not, every filmed timeline branched off it inherits
+    // the taint (task 81: it never clears downstream) and the capture would be off
+    // the record — fail loud here rather than film an unreproducible timeline.
+    if base.tainted {
+        return Err("the base snapshot is tainted — the boot improvised?".to_string());
+    }
     let terminal = base_vtime.saturating_add(delta);
     eprintln!("[live_film] base at v-time {base_vtime}; terminal {terminal}");
 
     // --- Scrape pass: one branch to the terminal, harvesting the frame clock
     // + billboard registers and the unfilmed terminal hash.
     let run_to_terminal = |a: &mut SocketServer<S>| -> Result<[u8; 32], String> {
-        a.branch(base, &wire_env)
+        a.branch(base.id, &wire_env)
             .map_err(|e| format!("branch: {e}"))?;
         match a
             .run(StopConditions {
@@ -385,7 +392,7 @@ fn run_gate<S: Read + Write>(
         ));
     }
     adapter
-        .branch(base, &wire_env)
+        .branch(base.id, &wire_env)
         .map_err(|e| format!("calibration branch: {e}"))?;
     let mut ticks: Vec<FrameTick> = Vec::new();
     for stamp in &stamps {

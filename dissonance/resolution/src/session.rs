@@ -14,10 +14,10 @@
 //! control failure; the two are never conflated, and a
 //! [`Tainted`](SessionError::Tainted) guard surfaces verbatim.
 
-use control_proto::{HashScope, Reproducer, SnapId, StopConditions, StopMask, StopReason};
+use control_proto::{HashScope, Reproducer, StopConditions, StopMask, StopReason};
 use environment::{EnvSpec, Moment};
 
-use crate::server::{ExecResult, RegsView, Server};
+use crate::server::{ExecResult, RegsView, Server, Snapshot};
 use crate::{EXEC_BUDGET, MomentRef, SessionError};
 
 /// The client-side current-timeline state a session tracks between commands.
@@ -27,8 +27,12 @@ struct Current {
     env: EnvSpec,
     /// The position the last verb left the timeline at (advances with `run`).
     moment: Moment,
-    /// Whether an [`exec`](MaterializedSession::exec) improvisation has tainted
-    /// this timeline (displayed prominently; reset on re-materialize).
+    /// Whether this timeline is tainted (displayed prominently). Seeded at
+    /// materialize from the **genesis snapshot's** taint — task 81: taint never
+    /// clears downstream, so a branch off a tainted ancestor is tainted before it
+    /// runs an instruction — and set by an
+    /// [`exec`](MaterializedSession::exec) improvisation thereafter. A
+    /// re-materialize therefore resets it to the *lineage's* taint, not to clean.
     tainted: bool,
     /// The [`StopReason`] that last positioned this timeline — the landing of
     /// the materialize `run`, updated by each [`run`](MaterializedSession::run).
@@ -41,9 +45,16 @@ struct Current {
 /// A connected session over a control-transport [`Server`]. Holds the genesis
 /// snapshot every materialization branches off and the current open timeline (if
 /// any).
+///
+/// The genesis is kept as the whole [`Snapshot`], **taint bit included**, not as
+/// a bare [`SnapId`]: taint is a property of a *lineage*, and every timeline this
+/// session materializes is a branch off this one. Dropping the bit here would
+/// leave the client believing a tainted lineage's timelines are clean — and the
+/// local bit is the authoritative one (see
+/// [`guard_reproducible`](Session::guard_reproducible)).
 pub struct Session<S: Server> {
     server: S,
-    genesis: SnapId,
+    genesis: Snapshot,
     current: Option<Current>,
 }
 
@@ -53,12 +64,16 @@ impl<S: Server> Session<S> {
     /// protocol/env-version mismatch or a non-zero coverage geometry is a loud
     /// [`SessionError::Negotiation`] (never a silent downgrade or an allocation
     /// on an untrusted length).
+    /// The captured genesis carries its **taint bit** (task 81), and this session
+    /// keeps it: if the server's live timeline had been improvised on before we
+    /// snapshotted it, every timeline branched off that genesis is tainted, and
+    /// [`materialize`](Session::materialize) says so.
     pub fn connect(mut server: S) -> Result<Self, SessionError> {
         negotiate(&mut server)?;
         let genesis = server.snapshot()?;
         Ok(Self {
             server,
-            genesis: genesis.id,
+            genesis,
             current: None,
         })
     }
@@ -78,16 +93,33 @@ impl<S: Server> Session<S> {
     /// alternative, a [`Server`] whose `snapshot()` hands back a pre-taken handle
     /// without capturing anything, makes the seam lie to every other consumer.
     ///
-    /// `genesis` must be a live handle on the server this session negotiates
-    /// with; an unknown one surfaces at the first `materialize` as the server's
-    /// own loud `UnknownSnapshot`.
-    pub fn connect_rooted(mut server: S, genesis: SnapId) -> Result<Self, SessionError> {
+    /// `genesis` is the whole [`Snapshot`] the caller captured — **not** a bare
+    /// [`SnapId`] — because it carries the task-81 **taint bit**, and taint is a
+    /// property of the lineage every materialization here inherits. Taking only
+    /// the handle would silently launder a tainted root into timelines the client
+    /// believes are clean, and the client's bit is the authoritative one (the
+    /// server's guard is blind to a *conservative* client-side taint). Rooting at
+    /// a tainted snapshot is allowed — the server refuses nothing, by ruling — but
+    /// every timeline off it is then tainted, and the reproducer/coordinate mints
+    /// refuse loudly.
+    ///
+    /// It must be a live handle on the server this session negotiates with; an
+    /// unknown one surfaces at the first `materialize` as the server's own loud
+    /// `UnknownSnapshot`.
+    pub fn connect_rooted(mut server: S, genesis: Snapshot) -> Result<Self, SessionError> {
         negotiate(&mut server)?;
         Ok(Self {
             server,
             genesis,
             current: None,
         })
+    }
+
+    /// Whether the **genesis** this session roots at is tainted — hence whether
+    /// every timeline it materializes is tainted before it runs an instruction
+    /// (task 81: taint never clears downstream).
+    pub fn genesis_tainted(&self) -> bool {
+        self.genesis.tainted
     }
 
     /// Materialize a [`MomentRef`]: `branch(genesis, mref.env)` then
@@ -99,7 +131,7 @@ impl<S: Server> Session<S> {
     /// **v1 roots at genesis.** The nearest-retained-ancestor snapshot (task
     /// 64+) is a pure performance win — genesis is always correct. The private
     /// `materialize_from` already takes the root snapshot, so adding a public
-    /// `materialize_hint(mref, SnapId)` later is additive and non-breaking.
+    /// `materialize_hint(mref, Snapshot)` later is additive and non-breaking.
     pub fn materialize(
         &mut self,
         mref: &MomentRef,
@@ -121,14 +153,22 @@ impl<S: Server> Session<S> {
     /// server already sits on the new branch (stamps would show `-` and
     /// [`materialized`](Session::materialized) errors `NothingOpen`, rather than
     /// lying).
-    fn materialize_from(&mut self, mref: &MomentRef, root: SnapId) -> Result<(), SessionError> {
+    ///
+    /// **The new timeline inherits `root`'s taint** (task 81: taint never clears
+    /// downstream — "every snapshot and every `branch`/`replay` from a tainted
+    /// point stays tainted; only an untainted ancestor is untainted"). The server
+    /// enforces this on its side (a branch off a tainted snapshot restores a
+    /// tainted timeline); seeding the client's bit from the root keeps the *local*
+    /// guard — the authoritative one — from believing a laundered lineage is
+    /// clean and minting a coordinate for it.
+    fn materialize_from(&mut self, mref: &MomentRef, root: Snapshot) -> Result<(), SessionError> {
         // Invalidate first: any failure below leaves nothing open.
         self.current = None;
         let wire_env = Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: mref.env.encode(),
         };
-        self.server.branch(root, &wire_env)?;
+        self.server.branch(root.id, &wire_env)?;
         let stop = self.server.run(StopConditions {
             deadline: Some(control_proto::Moment(mref.moment)),
             on: StopMask::NONE,
@@ -137,7 +177,7 @@ impl<S: Server> Session<S> {
         self.current = Some(Current {
             env: mref.env.clone(),
             moment: stop_vtime(&stop),
-            tainted: false,
+            tainted: root.tainted,
             stop,
         });
         Ok(())

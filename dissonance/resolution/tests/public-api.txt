@@ -162,7 +162,8 @@ pub const resolution::RegsView::VERSION: u16
 pub struct resolution::Session<S: resolution::Server>
 impl<S: resolution::Server> resolution::Session<S>
 pub fn resolution::Session<S>::connect(S) -> core::result::Result<Self, resolution::SessionError>
-pub fn resolution::Session<S>::connect_rooted(S, control_proto::types::SnapId) -> core::result::Result<Self, resolution::SessionError>
+pub fn resolution::Session<S>::connect_rooted(S, resolution::Snapshot) -> core::result::Result<Self, resolution::SessionError>
+pub fn resolution::Session<S>::genesis_tainted(&self) -> bool
 pub fn resolution::Session<S>::materialize(&mut self, &resolution::MomentRef) -> core::result::Result<resolution::MaterializedSession<'_, S>, resolution::SessionError>
 pub fn resolution::Session<S>::materialized(&mut self) -> core::result::Result<resolution::MaterializedSession<'_, S>, resolution::SessionError>
 pub fn resolution::Session<S>::tainted(&self) -> bool
@@ -182,6 +183,7 @@ pub fn resolution::SocketServer<S>::into_inner(self) -> S
 pub fn resolution::SocketServer<S>::new(S) -> Self
 pub fn resolution::SocketServer<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, resolution::SessionError>
 pub fn resolution::SocketServer<S>::server_caps(&self) -> core::option::Option<control_proto::types::Caps>
+pub fn resolution::SocketServer<S>::set_sdk_event_budget(&mut self, u32, usize)
 impl<S: std::io::Read + std::io::Write> resolution::Server for resolution::SocketServer<S>
 pub fn resolution::SocketServer<S>::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
 pub fn resolution::SocketServer<S>::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
@@ -198,6 +200,8 @@ pub const resolution::DEFAULT_RAM_BYTES: u64
 pub const resolution::EXEC_BUDGET: u64
 pub const resolution::MAX_HEX_FIELD_BYTES: usize
 pub const resolution::READ_CAP: u32
+pub const resolution::SDK_EVENTS_BYTES_CAP: usize
+pub const resolution::SDK_EVENTS_CAP: u32
 pub trait resolution::Server
 pub fn resolution::Server::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
 pub fn resolution::Server::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
