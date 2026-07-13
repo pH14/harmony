@@ -467,6 +467,10 @@ mod tests {
     /// Output past `MAX_CAPTURE` is dropped rather than growing unbounded, and the
     /// session still completes if the sentinel arrives within the cap.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "feeds >MAX_CAPTURE (1 MiB): the sentinel rescan over the capped buffer is a byte-wise interpreted scan (~9 min); pure safe code — the cap arithmetic is covered natively and the scan path stays Miri-run via the small-buffer exec tests (task 98 / hm-d8o)"
+    )]
     fn capture_is_bounded() {
         let mut s = ExecSession::new("yes", 8);
         // Feed more than the cap in one shot.

@@ -509,7 +509,11 @@ mod tests {
     /// registry pins in `docs/cpu-msr-contract.toml` `[contract] contract_hash`.
     /// Live as of v3 (det-cfl-v1): the field is committed, so this gate is no
     /// longer `#[ignore]`d — computed-from-the-parsed-artifact must equal committed.
+    /// Miri-ignored on the same grounds as its §6 siblings above (a ~97 s
+    /// interpreted sha256 over the 48 KiB canonical form, pure unsafe-free code;
+    /// task 98 / hm-d8o); the anti-drift gate itself runs on every native suite.
     #[test]
+    #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn contract_hash_matches_committed_registry() {
         let computed: String = contract_hash().iter().map(|b| format!("{b:02x}")).collect();
         let committed = contract().contract_hash.clone();

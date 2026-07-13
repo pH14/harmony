@@ -4180,3 +4180,201 @@ at repo root. Crate-side summary:
 - **Box gates**: `tests/live_dirty_remap.rs` (a0 inertness / a capture A/B /
   b restore A/B + `[GATE-D]` numbers); gate c = `seal_rate_sweep.rs` +
   conductor `live_materialization.rs` unchanged.
+
+## Task 98 — closing the vmm-core Miri gate (nightly.yml)
+
+**Bead `hm-4yj` (P1).** The checked-in nightly Miri step for this crate —
+
+```
+MIRIFLAGS=-Zmiri-permissive-provenance \
+  cargo +nightly-2026-06-16 miri test -p vmm-core
+```
+
+— aborted **before producing a UB verdict**. A `ControlServer` branch/replay test
+(`control::tests::a_branch_env_moment_occupies_the_schedule_for_ruling_b`, plus ~36
+siblings) reaches `restore()` → `SnapshotEngine::materialize` →
+`snapshot_store::Store::materialize`, whose first act is `tempfile::tempfile()`. Under
+Miri's default filesystem isolation that host op is unsupported, so the interpreter
+aborted the whole process — a gate that could never watch the unsafe it exists for.
+(Disabling isolation only moves the abort one step later: `materialize` then `mmap`s
+the tempfile CoW, and `mmap` is a real syscall Miri also cannot execute — the same
+reason `snapshot-store`'s own mapping tests are `cfg(not(miri))`.)
+
+**Fix — `#[cfg_attr(miri, ignore)]` the restore-driving tests (37 of them), plus the
+proptest getcwd fix.** No production code changes. Every `control::tests` test that
+reaches `restore()`/`engine.materialize()` (found mechanically: any test whose body —
+directly or via the `branch`/`replay`/`run_obs_script` helpers — issues
+`Request::Branch`/`Replay` on a *live* snapshot, or calls `engine.materialize()`) is
+ignored under Miri. Detection was exhaustive over those four call paths; `restore()`
+materializes **before** it validates the branch env, so even the "rejected branch"
+tests reach it. Two branch/replay tests are *excluded* because their calls hit an early
+return **before** materialize: `branch_validates_the_env_before_touching_the_vm` (bad
+blob version / malformed env / unknown snapshot) and — caught in round-1 review (P2) —
+`snapshot_mints_fresh_handles_and_drop_releases_them`, whose only `Replay` is on a
+**dropped** handle (an `UnknownSnapshot` early-return). Both were re-audited to run
+under Miri. The other 37 rationale strings were re-checked against the same
+copy-paste-error question: every one reaches materialize (a successful branch, or a
+reject raised *after* materialize — `check_fault_admissible`, `PerturbPastMoment`,
+`RestoreFailed`); `snapshot_mints` was the only false one.
+
+**Why gate rather than a Miri-safe `image_bytes` seam (the spec's preferred shape).**
+A seam was built and verified first: route the memcpy restore's image bytes through an
+mmap-free `Store::read_page` reconstruction under `cfg(miri)` (the previously-aborting
+test *passed* through it). It was **rejected on measurement**. Under the pinned
+nightly on this host: a plain VM boot (`hello_negotiates_the_pinned_caps`) interprets
+in **2.7 s**, but a single *light* (16 KiB) restore
+(`a_branch_env_moment_occupies_the_schedule_for_ruling_b`) takes **~150 s**, and a
+`BIG_RAM` (128 KiB) + snapshot-hashing + fold restore
+(`a_buggify_decision_after_a_mid_run_reseed_folds_to_the_sequential_branch`) burns
+**>7 min of CPU**. The restore path (materialize → memcpy → `restore_vm_state` under
+Miri's provenance/aliasing bookkeeping) is 50–120× a boot. Running ~37 of them would
+add tens of minutes to a job whose whole reason for living on `nightly` (see the
+header comment in `nightly.yml` and `quality.yml`) is that Miri was **OOM/timeout-flaky
+under the shared ceiling** (SIGKILL 137). A seam that trades an abort for a timeout is
+not a fix. Gating keeps the Miri run to the fast boot/logic tests, well inside budget.
+
+**Why coverage is preserved (shown, not asserted).** The unsafe this gate guards is
+the `Backend::map_memory` pointer seam. There are **two** call sites in `bringup`, and
+both stay Miri-exercised:
+
+- `compose` / `compose_linux` map an **owned `GuestRam`** (a `Vec` under Miri) — the
+  cold-boot path, fired on every `server()`/`hello()` boot and pinned by
+  `bringup::compose_drives_guestram_and_unsafe_map_memory`.
+- `compose_restore_target` (the task-95 M2.2 restore path) has its **own**
+  `unsafe map_memory`, over a `snapshot_store::Mapping` rather than owned RAM — a
+  **different backing lifetime** (the mapping is moved into the returned `Vmm` and must
+  stay valid there). This is *not* the same reasoning as `compose()`, so the boot tests
+  do not cover it. Round-1 review (blocking) caught that gating every restore test left
+  it unwatched; round 2 caught that the first seam attempt didn't discharge the
+  obligation. Fixed by a Miri-executable seam, twice sharpened:
+  `snapshot_store::Mapping::anonymous(len)` builds the same `Mapping` interface over a
+  **4-KiB-aligned** heap buffer (`Vec` of `repr(C, align(4096))` pages — round 2: a
+  plain `Vec<u8>` violated `map_memory`'s contract (c), the page-aligned host base the
+  seam exists to honor; no `mmap`/tempfile), and the dedicated **non-ignored** test
+  `bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping` drives
+  `compose_restore_target` over it under Miri through a **pointer-retaining backend
+  double** (`PtrRetainingBackend` — round 2: `MockBackend` drops the pointer, so
+  nothing checked the retention obligation). The double retains the raw host pointer
+  exactly as real KVM does, and the test dereferences it **after** the mapping's move
+  into the `Vmm` — so Miri fails the test on a dangling or moved backing instead of
+  the assertion reading the buffer through the `Vmm`'s own trivially-valid view. It
+  also pins the base-alignment contract. (Building the double surfaced a real Stacked
+  Borrows subtlety Miri caught live: a raw pointer taken *before* forwarding
+  `host: &mut [u8]` to an inner delegate is invalidated by that call's reborrow — the
+  double must retain the pointer *after* delegating.)
+
+So the ignored restore tests drop **zero** unique UB surface (both `map_memory` sites
+are covered by a running Miri test); their *behavioural* assertions (schedule replay,
+taint propagation, reseed folds) are pure-logic and fully covered by the native
+`nextest` run. The three tests already `#[cfg_attr(miri, ignore)]`d (two remap-path A/B
++ one direct `engine.materialize()`) are a subset of this same class; the
+`compose_restore_target_maps_the_snapshot_without_loading` gate's rationale was updated
+to point at the new anonymous test rather than the (wrong) `compose_drives_guestram` one.
+
+**Proptest `getcwd` fix.** Once the materialize abort is gone, the crate's property
+tests that *don't* touch restore surface a second Miri-isolation abort: proptest
+resolves its regression-file path via `getcwd`, blocked under isolation (the
+`loader_proptest.rs` precedent). A `pcfg(native)` helper in `seal_rate::tests` sets
+`failure_persistence = None` and cuts cases to 8 under `cfg!(miri)` for the fast pure
+(`MockOracle`, no VM) seal-rate gates that keep running. Every `control::tests`
+proptest is ignored under Miri instead: the four restore-driving ones (`verb_sequence…`,
+`idle_hlt…`, `taint…`, `observations_never_change…`) with the restore class, and
+`arbitrary_schedule_applied_twice_is_identical` on the same runtime grounds as the
+restore tests — each case boots + runs + `state_hash`es (sha256) a VM twice via
+`enforce_run` (~40 s/`enforce_run` under Miri), and it adds no unique UB (map_memory
+via boots) over what the native 384-case run already covers. `linux_loader.rs` /
+`contract/*.rs` proptests already had the reduce-cases-under-miri guard and still run.
+
+One more test the abort had masked surfaced only once the run reached its end:
+`serve_speaks_frames_over_an_in_memory_stream` drives a real `UnixStream::pair()`
+socketpair across a spawned thread, and Miri cannot execute the socket syscalls
+(`ENOTSOCK` on the first `write_all`). It is `#[cfg_attr(miri, ignore)]`d too — a
+transport test, no unsafe; the socket `Machine` loopback is covered end-to-end in
+`dissonance/conductor`.
+
+Integration tests are otherwise unaffected: `tests/snapshot_branch.rs` is already
+`#![cfg(not(miri))]`, `tests/seal_rate_sweep.rs` is `#![cfg(target_os="linux")]`,
+`tests/public_api.rs` is `#[ignore]`d (spawns `cargo public-api` + reads a file — both
+Miri-blocked), and every `live_*` harness is `#[ignore]`d (box-only). The remaining
+in-workspace integration binaries (`event_loop`, `corpus_oracle_mock`,
+`loader_proptest`, `linux_loader_proptest`) run clean under Miri.
+
+**Cross-crate gap audit (spec note).** The task-95 M1 finding — snapshot-store absent
+from the Miri job — is already closed (nightly.yml has a `snapshot-store --lib` step
+with `-Zmiri-disable-isolation`). Sweeping the workspace for real `unsafe` *code* (not
+doc/string mentions): the only crate with genuine `unsafe` not in the Miri job is
+`guest/payloads/*` — freestanding `#![no_std]` bare-metal binaries whose `unsafe` is
+inline `asm!` (`rdtsc`/`hlt`/`sti`), which Miri cannot interpret at all (same class as
+the `vmcall-transport` asm doorbell and the flow-agent FFI the workflow already
+excludes). No genuine gap; no bead filed.
+
+**The slow tail (`hm-d8o`) — landed in round 2.** Closing the abort meant the vmm-core
+Miri step *ran to completion for the first time* and exposed a slow tail the early abort
+had hidden: a full local run (aarch64 Mac, uncontended) took **~92 min wall** against
+the then-shared **90-min** job ceiling — the original bug in a new costume (round-2
+review, blocking). Fixed on both sides, deliberately:
+
+- **Own job.** `nightly.yml` now runs the vmm-core command in its own `miri-vmm-core`
+  job with its own measured budget, parallel to the remaining crates' `miri` job
+  (which keeps the 90-min ceiling and loses its longest pole; its worst remaining
+  step is vmcall-transport, ~13 min on the box per run history).
+- **Tail shrink**, `cfg(miri)`-keyed, native runs byte-for-byte unchanged. A per-test
+  profile of the full lib run (`--report-time`) showed the tail is sha256-dominated
+  (the `MEM`-chunk/state-hash and per-page store hashing scale with test RAM):
+  `vmm::tests::TEST_RAM` and `control::tests::BIG_RAM` drop 128 KiB → 64 KiB under
+  Miri — the smallest size covering the doorbell protocol pages (`REQ_GPA 0xE000` /
+  reply `0xF000` are production constants) — and
+  `contract_hash_matches_committed_registry` (~97 s of interpreted sha256 over the
+  48 KiB §6 canonical form, pure unsafe-free code) is Miri-ignored with the same
+  rationale as its five §6 serialization siblings. No test's *native* behavior or
+  assertions changed.
+- **The extreme unsafe-free tail is gated** (20 tests, each with its own rationale
+  string). The per-test profile showed 38 tests ≥100 s totalling 90% of the run;
+  the worst are multi-hash tests at 200–680 s apiece (sha256 ~2 s/KiB interpreted,
+  several hashes per test). Every gated test is pure safe code over the mock
+  backend — `Vmm::new` directly, **no `map_memory` on the path** (both unsafe
+  seams stay Miri-run in `bringup`) — and each family keeps cheaper Miri-run
+  siblings: the save/restore codec via `save_vm_state_round_trips_through_the_codec`
+  + `report_stream_round_trips_through_save_restore` + three `restore_vm_state_rejects_*`
+  validators; hash-folding via `vtime_state_is_hashed_and_distinguishes_seed_and_vns_base`;
+  the seal/hash family via the four deferred-snapshot-boundary tests; the exec
+  sentinel scan via the small-buffer exec tests. The two tests round 1 committed to
+  keep running (`branch_validates_the_env_before_touching_the_vm`,
+  `snapshot_mints_fresh_handles_and_drop_releases_them`) **stay running** despite
+  being among the heaviest remaining (~319 s + ~202 s pre-shrink) — review
+  commitments outrank runtime.
+
+**A measurement gotcha recorded for posterity.** Under Miri **without**
+`-Zmiri-disable-isolation` (this job), libtest's `finished in …s` line reports the
+interpreter's **deterministic virtual clock**, not wall time — about 2× real on the
+Mac (the exact command printed `finished in 4175.78s` for a run that `time` measured
+at 33:48). Per-test `--report-time` figures are virtual too: valid for *ranking*
+(they track interpreted work), wrong for budgets. Every wall figure in this section
+was measured externally with `time`.
+
+**Gates (round 2, re-verified).** `build` / `nextest` (**460 passed / 10 skipped**
+across `vmm-core` + `snapshot-store`, native tallies unchanged by the shrink) /
+`clippy -D warnings` / `fmt` / `deny` green on Mac. The exact nightly.yml vmm-core
+Miri command passes end-to-end on `nightly-2026-06-16`, exit 0, **33 min 48 s real
+wall** (uncontended M-class Mac; pre-shrink baseline ~92 min real — the round-2
+budget bug; the CI box is ~1.12× slower per the vmcall-transport comparison, 13 min
+box vs 11.6 min Mac). **Box-confirmed twice** (2026-07-13 dispatches on the task branch): the
+`miri-vmm-core` job succeeded in **49 min 38 s** (run 29226001494) and **47 min
+46 s** (run 29236400380), both while co-running with the sibling `miri` job on the
+box's second runner slot — ~1.8× margin against the 90-minute budget under
+co-tenancy, more when idle. Those same runs revealed the sibling job's `conductor
+(lib)` step as the *next* never-completed gate (unreachable before this fix; both
+attempts timed out on it, 1 h 50 min real on an idle Mac and unbounded under box
+contention) — removed from the workflow with a loud comment and tracked as
+**hm-d4y** (P1), which owns the resulting conductor-unsafe-unwatched debt. The lib binary runs **308 passed, 0 failed, 85 ignored** (the
+37 restore tests + `arbitrary_schedule` + `serve_speaks_frames` + the 3 pre-existing
+mmap gates + the 21 hm-d8o tail gates above; `snapshot_mints…`,
+`branch_validates…`, and the retained-pointer
+`compose_restore_target_map_memory_over_an_anonymous_mapping` are among the
+passing), and every integration binary is `ok` (`event_loop` 19,
+`corpus_oracle_mock` 3, `loader_proptest` 3, `linux_loader_proptest` 4; the
+`live_*` / `seal_rate_sweep` / `snapshot_branch` / `public_api` binaries are
+`#[ignore]`d or cfg-excluded). Both `map_memory` sites (owned `GuestRam` and the
+restore `Mapping`) are exercised by a running Miri test, the restore side through a
+retained raw pointer read after the mapping's move. `snapshot-store`'s own nightly
+step (`--lib` + disable-isolation) passes with the new alignment tests (14 passed).

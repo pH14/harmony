@@ -18,6 +18,7 @@ pub fn snapshot_store::DeltaBuilder<'_>::seal(self, alloc::vec::Vec<u8>) -> snap
 pub fn snapshot_store::DeltaBuilder<'_>::write_page(&mut self, u64, &[u8]) -> core::result::Result<(), snapshot_store::StoreError>
 pub struct snapshot_store::Mapping
 impl snapshot_store::Mapping
+pub fn snapshot_store::Mapping::anonymous(usize) -> snapshot_store::Mapping
 pub fn snapshot_store::Mapping::as_mut_slice(&mut self) -> &mut [u8]
 pub fn snapshot_store::Mapping::as_slice(&self) -> &[u8]
 pub fn snapshot_store::Mapping::is_empty(&self) -> bool
