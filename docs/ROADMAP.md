@@ -105,11 +105,16 @@ against it.
   bursty/regime-based entropy — see the 2026-07 fuzzer research) — strictly after the
   seed-driven loop works. The explorer's current AFL-shaped corpus gets no further investment
   before that redesign.
-- **ARM port** — deferred until the branch-count spike re-runs on candidate silicon
-  (`docs/ARM-PORT.md`); not a code refactor, a viability gate. The **ISA seam design is
-  ruled** (`docs/ARCH-BOUNDARY.md`, 2026-07-03): the boundary restructure (arch-generic
-  `Backend`, `vmm-core` engine/personality split) is x86-hygiene work that may be queued
-  post-merge-window; the trait freeze and all ARM-side building stay spike-gated.
+- **ARM vendor: Linux/KVM on Ampere Altra** (`docs/ARM-ALTRA.md`, ruled 2026-07-12) — a
+  reach-matrix cell (see the vendor × form matrix below), gated on the Altra box arriving
+  (bead `hm-7pb` → execution `hm-idb`). Altra has no FEAT_ECV, so the clock question runs
+  through the paravirt work-derived clock design (`docs/PARAVIRT-CLOCK.md`). The
+  Apple-silicon route is DEAD (`docs/APPLE-SILICON.md`, archaeology only). The **ISA seam
+  design is ruled** (`docs/ARCH-BOUNDARY.md`): the engine/vendor split's reserved names
+  wait for the ARM window; all ARM-side building stays spike-gated per `docs/ARM-ALTRA.md`.
+- **AMD vendor: SVM on Epyc** (`docs/AMD-EPYC.md`, ruled 2026-07-13) — the second
+  reach-matrix vendor cell, gated on the Epyc box (bead `hm-9wt` → execution `hm-u1n`).
+  ARM > AMD if bandwidth forces a choice; parallelize when both boxes are up.
 - **Task 92 — multi-CPU/backend characterization registry** (probe → select → validate),
   fixing the one-box bus factor on the single destructive `det-cfl-v1` baseline. Deferred behind
   Wave 4.
@@ -138,9 +143,11 @@ themselves are untouched by this task.
 
 ## Cross-cutting references
 
-- **ARM/AArch64 port (post-v1):** `docs/ARM-PORT.md` — the viability gate is a branch-count
-  spike on real silicon, not a trait refactor. `docs/ARCH-BOUNDARY.md` (2026-07-03) rules the
-  ISA seam design and supersedes ARM-PORT.md's pre-Wave-4 codebase survey.
+- **ARM / AMD vendors:** `docs/ARM-ALTRA.md` (Linux/KVM on Ampere Altra, the ruled ARM
+  program) and `docs/AMD-EPYC.md` (SVM on Epyc) own the vendor spike sequences;
+  `docs/ARM-PORT.md` keeps the cross-ARM mechanism analysis; `docs/ARCH-BOUNDARY.md` rules
+  the ISA seam and supersedes ARM-PORT.md's pre-Wave-4 codebase survey;
+  `docs/APPLE-SILICON.md` is a dead route retained as archaeology.
 - **Determinism & conformance corpus:** `docs/DETERMINISM-CORPUS.md` — the plan for verifying
   the engine is itself correct (four oracles: determinism, conformance, seed-sensitivity,
   backend-equivalence). Tasks 22/23 (host `BLOCK_WRITE` + crash-consistency) are struck; the

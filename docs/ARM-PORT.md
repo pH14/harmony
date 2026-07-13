@@ -1,6 +1,9 @@
 # ARM/AArch64 port — feasibility notes
 
-Status: **research note, not a commitment; partially superseded (2026-07-03).** The hardware
+Status: **cross-ARM mechanism analysis; partially superseded.** The ruled ARM vendor
+program is **Linux/KVM on Ampere Altra** (`docs/ARM-ALTRA.md`, 2026-07-12); this doc's
+substrate survey is historical context for it, and the Apple-silicon route is dead
+(`docs/APPLE-SILICON.md`). The hardware
 facts, the three-mechanism analysis, the rr evidence base, and the spike gate below all stand.
 The **codebase survey** ("What a port costs, by component") and its premises — "no arch seam
 exists", "`vmm-core` unwritten" — predate Wave 4/5 and are **superseded by

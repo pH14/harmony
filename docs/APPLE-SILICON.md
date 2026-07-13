@@ -2,8 +2,7 @@
 
 Status: **ROUTE DEAD — retained as archaeology** (Paul, 2026-07-12). The Apple Silicon
 route failed for Apple hardware reasons; the primary ARM direction is now **Linux/KVM on an
-Ampere Altra** (Neoverse N1 — see `tasks/100-arm-vendor-spike-doc.md` / `docs/ARM-ALTRA.md`
-when it lands, and `docs/ARM-PORT.md` for the mechanism analysis, which stands). This
+Ampere Altra** (Neoverse N1 — see `docs/ARM-ALTRA.md`, and `docs/ARM-PORT.md` for the mechanism analysis, which stands). This
 document's experiment designs, PMU/debug-step analysis, and evidence discipline remain
 reference material; its program is not scheduled and its Goal Mode packets must not be run.
 Historical status line (2026-07-09): primary post-x86 hardware research direction. This
