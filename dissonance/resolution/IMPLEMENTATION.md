@@ -499,10 +499,16 @@ interleaved `Read`/`Regs`) is vmm-core's, from PR #51/task 80; this task extends
 - `clippy -D warnings` (host **and** `--target x86_64-unknown-linux-gnu`), `fmt --check`,
   `cargo deny check` — all clean.
 - **public-api**: `campaign-runner`'s snapshot is unchanged and green (only its tests were touched).
-  `resolution` carries no `public-api.txt` — it never has, and it is not in `quality.yml`'s
-  public-api `-p` list. Its surface *did* grow here (`SocketServer`, `connect_rooted`, the `&mut`
-  blanket impl), so **the integrator may want to add one** — that is a workflow/root-file change I
-  left alone (rule 1).
+  `resolution` **had no snapshot at all** — it never has, and it is absent from `quality.yml`'s
+  public-api `-p` list, so this crate's public contract has been unfrozen since task 82. That gap
+  bites exactly here, where the surface grows (`SocketServer`, `connect_rooted`, the `&mut` blanket
+  impl). Closed on the crate side: `tests/public_api.rs` + `tests/public-api.txt` (253 lines),
+  following the sibling crates' pattern verbatim — the same pinned nightly, the same
+  skip-loudly-if-tooling-absent behaviour, the same `UPDATE_PUBLIC_API=1` refresh path.
+  **One line is still open, and it is a root file (rule 1), so the integrator owns it:** add
+  `-p resolution` to the `public-api` job's `cargo test` invocation in
+  `.github/workflows/quality.yml`. Until that lands, the gate exists and passes locally
+  (`cargo test -p resolution --test public_api -- --ignored`) but **CI does not run it**.
 - **Miri**: no `unsafe` was added (the adapter is pure socket/protocol code), so the unsafe⇒Miri
   bar does not bind. The new tests are Miri-viable anyway and were run:
   `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p resolution

@@ -1,0 +1,253 @@
+pub mod resolution
+pub use resolution::Action
+pub use resolution::EnvSpec
+pub use resolution::HashScope
+pub use resolution::HostFault
+pub use resolution::Moment
+pub use resolution::SnapId
+pub use resolution::StopReason
+pub enum resolution::Command
+pub resolution::Command::Exec(alloc::string::String)
+pub resolution::Command::Hash
+pub resolution::Command::Open(resolution::MomentRef)
+pub resolution::Command::Read
+pub resolution::Command::Read::gpa: u64
+pub resolution::Command::Read::len: u32
+pub resolution::Command::Regs
+pub resolution::Command::Run
+pub resolution::Command::Run::until: environment::host::Moment
+pub resolution::Command::Transcript
+pub resolution::Command::Vary(resolution::OverrideEdit)
+impl resolution::Command
+pub fn resolution::Command::canonical(&self) -> alloc::string::String
+pub fn resolution::Command::parse(&str) -> core::result::Result<resolution::Command, resolution::CommandParseError>
+pub enum resolution::CommandParseError
+pub resolution::CommandParseError::BadHex
+pub resolution::CommandParseError::BadMomentRef(resolution::MRefParseError)
+pub resolution::CommandParseError::BadNumber(alloc::string::String)
+pub resolution::CommandParseError::BadRatio
+pub resolution::CommandParseError::BadRawAction
+pub resolution::CommandParseError::Empty
+pub resolution::CommandParseError::MissingArg(&'static str)
+pub resolution::CommandParseError::UnexpectedArgs
+pub resolution::CommandParseError::UnknownEdit
+pub resolution::CommandParseError::UnknownVerb(alloc::string::String)
+pub enum resolution::DispatchOutput
+pub resolution::DispatchOutput::Recorded(resolution::Record)
+pub resolution::DispatchOutput::View(alloc::string::String)
+pub enum resolution::MRefParseError
+pub resolution::MRefParseError::BadEnv
+pub resolution::MRefParseError::BadEnvHex
+pub resolution::MRefParseError::BadMoment
+pub resolution::MRefParseError::BadPrefix
+pub resolution::MRefParseError::Empty
+pub resolution::MRefParseError::Tainted
+pub resolution::MRefParseError::Trailing
+pub resolution::MRefParseError::Truncated
+pub enum resolution::Outcome
+pub resolution::Outcome::Bytes
+pub resolution::Outcome::Bytes::hex: alloc::string::String
+pub resolution::Outcome::Error
+pub resolution::Outcome::Error::category: alloc::string::String
+pub resolution::Outcome::Error::message: alloc::string::String
+pub resolution::Outcome::Exec
+pub resolution::Outcome::Exec::ok: bool
+pub resolution::Outcome::Exec::output_hex: alloc::string::String
+pub resolution::Outcome::Exec::tainted: bool
+pub resolution::Outcome::Hash
+pub resolution::Outcome::Hash::hex: alloc::string::String
+pub resolution::Outcome::Opened
+pub resolution::Outcome::Opened::detail: core::option::Option<alloc::string::String>
+pub resolution::Outcome::Opened::hash: alloc::string::String
+pub resolution::Outcome::Opened::moment: u64
+pub resolution::Outcome::Opened::stop: alloc::string::String
+pub resolution::Outcome::Opened::tainted: bool
+pub resolution::Outcome::Regs
+pub resolution::Outcome::Regs::view: alloc::boxed::Box<resolution::RegsView>
+pub resolution::Outcome::Stop
+pub resolution::Outcome::Stop::detail: core::option::Option<alloc::string::String>
+pub resolution::Outcome::Stop::stop: alloc::string::String
+pub resolution::Outcome::Stop::vtime: u64
+pub resolution::Outcome::Transcript
+pub resolution::Outcome::Transcript::count: u64
+pub resolution::Outcome::Transcript::digest: alloc::string::String
+pub resolution::Outcome::Varied
+pub resolution::Outcome::Varied::mref: alloc::string::String
+pub enum resolution::OverrideEdit
+pub resolution::OverrideEdit::Remove
+pub resolution::OverrideEdit::Remove::at: environment::host::Moment
+pub resolution::OverrideEdit::Set
+pub resolution::OverrideEdit::Set::action: environment::host::Action
+pub resolution::OverrideEdit::Set::at: environment::host::Moment
+pub enum resolution::SessionError
+pub resolution::SessionError::Control(control_proto::error::ControlError)
+pub resolution::SessionError::Negotiation(alloc::string::String)
+pub resolution::SessionError::NothingOpen
+pub resolution::SessionError::ReadOutOfRange
+pub resolution::SessionError::ReadOutOfRange::gpa: u64
+pub resolution::SessionError::ReadOutOfRange::len: u32
+pub resolution::SessionError::ReadOutOfRange::ram_len: u64
+pub resolution::SessionError::ReadTooLarge
+pub resolution::SessionError::ReadTooLarge::cap: u32
+pub resolution::SessionError::ReadTooLarge::len: u32
+pub resolution::SessionError::Tainted
+pub resolution::SessionError::Transport(alloc::string::String)
+impl resolution::SessionError
+pub fn resolution::SessionError::category(&self) -> &'static str
+pub struct resolution::ExecResult
+pub resolution::ExecResult::ok: bool
+pub resolution::ExecResult::output: alloc::vec::Vec<u8>
+pub resolution::ExecResult::tainted: bool
+pub struct resolution::MaterializedSession<'a, S: resolution::Server>
+impl<S: resolution::Server> resolution::MaterializedSession<'_, S>
+pub fn resolution::MaterializedSession<'_, S>::exec(&mut self, &str) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::hash(&mut self) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::hash_scope(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::moment(&self) -> environment::host::Moment
+pub fn resolution::MaterializedSession<'_, S>::mref(&self) -> core::result::Result<resolution::MomentRef, resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::run(&mut self, environment::host::Moment) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn resolution::MaterializedSession<'_, S>::stop(&self) -> &control_proto::types::StopReason
+pub fn resolution::MaterializedSession<'_, S>::tainted(&self) -> bool
+pub struct resolution::MockServer
+impl resolution::MockServer
+pub fn resolution::MockServer::boot(environment::recorded::EnvSpec) -> Self
+pub fn resolution::MockServer::boot_with_ram(environment::recorded::EnvSpec, u64) -> Self
+impl resolution::Server for resolution::MockServer
+pub fn resolution::MockServer::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::MockServer::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::MockServer::exec(&mut self, &str, control_proto::types::Moment) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn resolution::MockServer::hash(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::MockServer::hello(&mut self, control_proto::types::Caps) -> core::result::Result<control_proto::types::Caps, resolution::SessionError>
+pub fn resolution::MockServer::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn resolution::MockServer::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn resolution::MockServer::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn resolution::MockServer::replay(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::MockServer::run(&mut self, control_proto::types::StopConditions) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn resolution::MockServer::snapshot(&mut self) -> core::result::Result<resolution::Snapshot, resolution::SessionError>
+pub struct resolution::MomentRef
+pub resolution::MomentRef::env: environment::recorded::EnvSpec
+pub resolution::MomentRef::moment: environment::host::Moment
+impl resolution::MomentRef
+pub const resolution::MomentRef::TAINTED_STAMP_PREFIX: &'static str
+pub const resolution::MomentRef::TEXT_VERSION: u16
+pub fn resolution::MomentRef::new(environment::recorded::EnvSpec, environment::host::Moment) -> Self
+pub fn resolution::MomentRef::parse(&str) -> core::result::Result<resolution::MomentRef, resolution::MRefParseError>
+pub fn resolution::MomentRef::vary(&self, &resolution::OverrideEdit) -> resolution::MomentRef
+impl core::fmt::Display for resolution::MomentRef
+pub fn resolution::MomentRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::str::traits::FromStr for resolution::MomentRef
+pub type resolution::MomentRef::Err = resolution::MRefParseError
+pub fn resolution::MomentRef::from_str(&str) -> core::result::Result<Self, Self::Err>
+pub struct resolution::Record
+pub resolution::Record::cmd: alloc::string::String
+pub resolution::Record::mref: alloc::string::String
+pub resolution::Record::outcome: resolution::Outcome
+pub resolution::Record::seq: u64
+pub struct resolution::RegsView
+pub resolution::RegsView::cr0: u64
+pub resolution::RegsView::cr3: u64
+pub resolution::RegsView::cr4: u64
+pub resolution::RegsView::gpr: [u64; 16]
+pub resolution::RegsView::moment: environment::host::Moment
+pub resolution::RegsView::rflags: u64
+pub resolution::RegsView::rip: u64
+pub resolution::RegsView::seg: [u16; 6]
+pub resolution::RegsView::version: u16
+pub resolution::RegsView::vtime: u64
+impl resolution::RegsView
+pub const resolution::RegsView::VERSION: u16
+pub struct resolution::Session<S: resolution::Server>
+impl<S: resolution::Server> resolution::Session<S>
+pub fn resolution::Session<S>::connect(S) -> core::result::Result<Self, resolution::SessionError>
+pub fn resolution::Session<S>::connect_rooted(S, control_proto::types::SnapId) -> core::result::Result<Self, resolution::SessionError>
+pub fn resolution::Session<S>::materialize(&mut self, &resolution::MomentRef) -> core::result::Result<resolution::MaterializedSession<'_, S>, resolution::SessionError>
+pub fn resolution::Session<S>::materialized(&mut self) -> core::result::Result<resolution::MaterializedSession<'_, S>, resolution::SessionError>
+pub fn resolution::Session<S>::tainted(&self) -> bool
+pub struct resolution::Shell<S: resolution::Server>
+impl<S: resolution::Server> resolution::Shell<S>
+pub fn resolution::Shell<S>::dispatch(&mut self, resolution::Command) -> resolution::DispatchOutput
+pub fn resolution::Shell<S>::execute_line(&mut self, &str) -> resolution::DispatchOutput
+pub fn resolution::Shell<S>::new(resolution::Session<S>) -> Self
+pub fn resolution::Shell<S>::records(&self) -> &[resolution::Record]
+pub fn resolution::Shell<S>::session(&self) -> &resolution::Session<S>
+pub struct resolution::Snapshot
+pub resolution::Snapshot::id: control_proto::types::SnapId
+pub resolution::Snapshot::tainted: bool
+pub struct resolution::SocketServer<S: std::io::Read + std::io::Write>
+impl<S: std::io::Read + std::io::Write> resolution::SocketServer<S>
+pub fn resolution::SocketServer<S>::into_inner(self) -> S
+pub fn resolution::SocketServer<S>::new(S) -> Self
+pub fn resolution::SocketServer<S>::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, resolution::SessionError>
+pub fn resolution::SocketServer<S>::server_caps(&self) -> core::option::Option<control_proto::types::Caps>
+impl<S: std::io::Read + std::io::Write> resolution::Server for resolution::SocketServer<S>
+pub fn resolution::SocketServer<S>::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::SocketServer<S>::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::SocketServer<S>::exec(&mut self, &str, control_proto::types::Moment) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn resolution::SocketServer<S>::hash(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::SocketServer<S>::hello(&mut self, control_proto::types::Caps) -> core::result::Result<control_proto::types::Caps, resolution::SessionError>
+pub fn resolution::SocketServer<S>::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn resolution::SocketServer<S>::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn resolution::SocketServer<S>::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn resolution::SocketServer<S>::replay(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::SocketServer<S>::run(&mut self, control_proto::types::StopConditions) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn resolution::SocketServer<S>::snapshot(&mut self) -> core::result::Result<resolution::Snapshot, resolution::SessionError>
+pub const resolution::DEFAULT_RAM_BYTES: u64
+pub const resolution::EXEC_BUDGET: u64
+pub const resolution::MAX_HEX_FIELD_BYTES: usize
+pub const resolution::READ_CAP: u32
+pub trait resolution::Server
+pub fn resolution::Server::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::Server::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::Server::exec(&mut self, &str, control_proto::types::Moment) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn resolution::Server::hash(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::Server::hello(&mut self, control_proto::types::Caps) -> core::result::Result<control_proto::types::Caps, resolution::SessionError>
+pub fn resolution::Server::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn resolution::Server::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn resolution::Server::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn resolution::Server::replay(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::Server::run(&mut self, control_proto::types::StopConditions) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn resolution::Server::snapshot(&mut self) -> core::result::Result<resolution::Snapshot, resolution::SessionError>
+impl resolution::Server for resolution::MockServer
+pub fn resolution::MockServer::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::MockServer::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::MockServer::exec(&mut self, &str, control_proto::types::Moment) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn resolution::MockServer::hash(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::MockServer::hello(&mut self, control_proto::types::Caps) -> core::result::Result<control_proto::types::Caps, resolution::SessionError>
+pub fn resolution::MockServer::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn resolution::MockServer::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn resolution::MockServer::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn resolution::MockServer::replay(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::MockServer::run(&mut self, control_proto::types::StopConditions) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn resolution::MockServer::snapshot(&mut self) -> core::result::Result<resolution::Snapshot, resolution::SessionError>
+impl<S: resolution::Server + ?core::marker::Sized> resolution::Server for &mut S
+pub fn &mut S::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
+pub fn &mut S::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn &mut S::exec(&mut self, &str, control_proto::types::Moment) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn &mut S::hash(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn &mut S::hello(&mut self, control_proto::types::Caps) -> core::result::Result<control_proto::types::Caps, resolution::SessionError>
+pub fn &mut S::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn &mut S::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn &mut S::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn &mut S::replay(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn &mut S::run(&mut self, control_proto::types::StopConditions) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn &mut S::snapshot(&mut self) -> core::result::Result<resolution::Snapshot, resolution::SessionError>
+impl<S: std::io::Read + std::io::Write> resolution::Server for resolution::SocketServer<S>
+pub fn resolution::SocketServer<S>::branch(&mut self, control_proto::types::SnapId, &control_proto::types::Reproducer) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::SocketServer<S>::drop_snap(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::SocketServer<S>::exec(&mut self, &str, control_proto::types::Moment) -> core::result::Result<resolution::ExecResult, resolution::SessionError>
+pub fn resolution::SocketServer<S>::hash(&mut self, control_proto::types::HashScope) -> core::result::Result<[u8; 32], resolution::SessionError>
+pub fn resolution::SocketServer<S>::hello(&mut self, control_proto::types::Caps) -> core::result::Result<control_proto::types::Caps, resolution::SessionError>
+pub fn resolution::SocketServer<S>::read(&mut self, u64, u32) -> core::result::Result<alloc::vec::Vec<u8>, resolution::SessionError>
+pub fn resolution::SocketServer<S>::recorded_env(&mut self) -> core::result::Result<environment::recorded::EnvSpec, resolution::SessionError>
+pub fn resolution::SocketServer<S>::regs(&mut self) -> core::result::Result<resolution::RegsView, resolution::SessionError>
+pub fn resolution::SocketServer<S>::replay(&mut self, control_proto::types::SnapId) -> core::result::Result<(), resolution::SessionError>
+pub fn resolution::SocketServer<S>::run(&mut self, control_proto::types::StopConditions) -> core::result::Result<control_proto::types::StopReason, resolution::SessionError>
+pub fn resolution::SocketServer<S>::snapshot(&mut self) -> core::result::Result<resolution::Snapshot, resolution::SessionError>
+pub fn resolution::client_caps() -> control_proto::types::Caps
+pub fn resolution::from_jsonl(&str) -> core::result::Result<alloc::vec::Vec<resolution::Record>, serde_json::error::Error>
+pub fn resolution::render_line(&resolution::Record) -> alloc::string::String
+pub fn resolution::render_transcript(&[resolution::Record]) -> alloc::string::String
+pub fn resolution::to_jsonl(&[resolution::Record]) -> core::result::Result<alloc::string::String, serde_json::error::Error>
