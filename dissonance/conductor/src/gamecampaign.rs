@@ -291,9 +291,11 @@ pub struct WorkEvidence {
     /// The least V-time any rollout advanced past the sealed base — the
     /// guest's own clock moved, so instructions retired.
     pub min_vtime_span: u64,
-    /// The least number of `REG_FRAME` observations any rollout produced — the
-    /// game's frame clock ticked, so the *workload* ran (not merely the guest).
-    pub min_frames: u64,
+    /// The least number of frame bodies any rollout **executed**
+    /// ([`smb_completed_frames`] — `REG_FRAME` *transitions*, since the agent
+    /// writes that register before running the frame): the game's frame clock
+    /// advanced, so the *workload* ran, not merely the guest.
+    pub min_completed_frames: u64,
 }
 
 /// Why a campaign's evidence does not support any gate verdict — each variant
@@ -314,11 +316,14 @@ pub enum Vacuity {
          the base, so the campaign hashed the base instead of a rollout"
     )]
     NoVTime,
-    /// A rollout rendered no game frames: V-time moved, but not far enough for
-    /// the workload to do anything observable (a deadline below one frame).
+    /// A rollout executed no game frame: V-time moved, but not far enough for
+    /// the workload to complete a single frame body (a deadline below one
+    /// frame — including one that expired after the agent wrote its pre-run
+    /// `REG_FRAME` marker but before the frame it announced actually ran).
     #[error(
-        "a rollout produced ZERO game frames (no REG_FRAME observations) — the guest ran, but \
-         the workload never advanced, so the campaign measured no gameplay"
+        "a rollout COMPLETED zero game frames (no REG_FRAME transition — a lone frame marker is \
+         written BEFORE its frame runs, so it proves nothing) — the guest ran, but the workload \
+         never advanced a frame, so the campaign measured no gameplay"
     )]
     NoFrames,
 }
@@ -338,7 +343,7 @@ impl GameCampaignOutcome {
         if self.work.min_vtime_span == 0 {
             return Some(Vacuity::NoVTime);
         }
-        if self.work.min_frames == 0 {
+        if self.work.min_completed_frames == 0 {
             return Some(Vacuity::NoFrames);
         }
         None
@@ -452,19 +457,44 @@ pub fn smb_cells(features: &[(Moment, Feature)]) -> (Vec<u64>, u64) {
     (cells.into_iter().collect(), depth)
 }
 
-/// Count a rollout's `REG_FRAME` observations — the game's frame clock ticking
-/// is the workload's own proof of life, and the film's shot list is built from
-/// exactly these moments. Zero of them means the rollout rendered nothing,
-/// however much V-time it burned (task 103 finding 1b).
+/// Count the frame bodies a rollout actually **executed** — the workload's own
+/// proof of life, and the evidence the vacuity guard rests on (task 103
+/// finding 1b).
 ///
-/// The *count* of observations, not the register's value: the frame clock is
-/// legitimately 0 at the first frame of a run, so a value-based check would
-/// call a real frame no frame at all.
-pub fn smb_frames(features: &[(Moment, Feature)]) -> u64 {
-    features
-        .iter()
-        .filter(|(_, f)| f.channel == LINK_STATE_CHANNEL && f.id.0 >> 48 == reg::FRAME)
-        .count() as u64
+/// **Transitions of `REG_FRAME`, not observations of it.** The play-agent
+/// writes the frame register *before* running the frame body
+/// (`guest/play-agent/src/agent.rs`: `state_set(REG_FRAME, frame)` then
+/// `core.run_frame`), because film addresses that frame's billboard by that
+/// Moment and must see the frame's bytes at it. So a lone `REG_FRAME`
+/// observation proves only that the guest wrote a marker and then the deadline
+/// expired — **zero frames ran**. It takes a *second*, different value to prove
+/// the first frame's body completed and the loop came back around.
+///
+/// Counting observations instead would let a deadline that expires between the
+/// first marker and the first frame body report one frame and sail through the
+/// guard — precisely the positive-but-too-small budget the guard exists to
+/// reject. The emission order is not the bug and must not be "fixed" in the
+/// agent: it is film's addressing contract, and reordering it would change the
+/// recorded stream.
+///
+/// Any change in value counts, not just an increase: a changed value means the
+/// agent went round the loop again, which is what "a frame ran" means. (The
+/// frame clock is a `u32` the agent wraps, so demanding monotonicity would
+/// eventually call a real frame no frame.)
+pub fn smb_completed_frames(features: &[(Moment, Feature)]) -> u64 {
+    let mut completed = 0u64;
+    let mut last: Option<u64> = None;
+    for (_, f) in features {
+        if f.channel != LINK_STATE_CHANNEL || f.id.0 >> 48 != reg::FRAME {
+            continue;
+        }
+        let value = f.id.0 & 0x0000_FFFF_FFFF_FFFF;
+        if last.is_some_and(|prev| prev != value) {
+            completed += 1;
+        }
+        last = Some(value);
+    }
+    completed
 }
 
 /// A novelty-frontier entry for the SelectorV1 configuration.
@@ -534,7 +564,7 @@ pub fn run_game_campaign<M: Machine>(
     let mut work = WorkEvidence {
         branches: 0,
         min_vtime_span: u64::MAX,
-        min_frames: u64::MAX,
+        min_completed_frames: u64::MAX,
     };
 
     for branch in 0..cfg.max_branches {
@@ -592,7 +622,9 @@ pub fn run_game_campaign<M: Machine>(
         let (touched, depth) = smb_cells(&features);
         work.branches += 1;
         work.min_vtime_span = work.min_vtime_span.min(vtime_span);
-        work.min_frames = work.min_frames.min(smb_frames(&features));
+        work.min_completed_frames = work
+            .min_completed_frames
+            .min(smb_completed_frames(&features));
 
         // SelectorV1's thin novelty archive: admit an exemplar iff the branch
         // claimed a fresh cell.
@@ -1112,11 +1144,16 @@ mod tests {
 
     /// A **box-shaped** guest: seals at its `setup_complete` snapshot point,
     /// publishes a billboard in the setup prefix, and runs every rollout to its
-    /// deadline. The knobs are exactly the two ways the real box driver can be
+    /// deadline. The knobs are exactly the ways the real box driver can be
     /// handed a degenerate budget — a rollout that advances no V-time
-    /// (`--deadline-delta 0`) and a rollout that renders no frames (a deadline
-    /// under one frame) — so the vacuity guard can be driven against the same
-    /// shape the gate sees.
+    /// (`--deadline-delta 0`) and a rollout whose deadline expires before a
+    /// frame body completes — so the vacuity guard can be driven against the
+    /// same shape the gate sees.
+    ///
+    /// It emits `REG_FRAME` the way the real agent does: **one marker written
+    /// before each frame body runs**. A rollout that emits `n` markers therefore
+    /// completed `n - 1` frames — and `n = 1` (the marker, then the deadline)
+    /// completed **none**, which is exactly the round-2 finding.
     struct BoxGuest {
         sealed: bool,
         published: bool,
@@ -1128,8 +1165,9 @@ mod tests {
         billboard: Option<(u64, u64)>,
         /// V-time each rollout advances past the base.
         rollout_span: u64,
-        /// `REG_FRAME` observations each rollout emits.
-        rollout_frames: u64,
+        /// Pre-run `REG_FRAME` markers each rollout emits (⇒ `n - 1` frames
+        /// actually executed).
+        frame_markers: u64,
     }
 
     impl BoxGuest {
@@ -1144,7 +1182,7 @@ mod tests {
                 env: SpecEnvCodec.seeded(0),
                 billboard: Some((0x04e0_0000, 15_838)),
                 rollout_span: 2_000_000_000,
-                rollout_frames: 120,
+                frame_markers: 120,
             }
         }
     }
@@ -1213,9 +1251,11 @@ mod tests {
                 }
                 return Ok(out);
             }
-            // A rollout's drain: gameplay, and one state tuple per rendered frame.
+            // A rollout's drain: one state tuple per frame the agent announced,
+            // with REG_FRAME written BEFORE that frame's body ran (the agent's
+            // real order — film addresses the billboard by that Moment).
             let mut out = Vec::new();
-            for f in 0..self.rollout_frames {
+            for f in 0..self.frame_markers {
                 let at = self.base_vtime + f + 1;
                 let (id, p) = state_event(reg::GAME_MODE, 0, 1);
                 out.push((at, id, p));
@@ -1281,9 +1321,9 @@ mod tests {
         );
 
         // (c) The budget that sneaks past a positivity check: V-time advances,
-        //     but not far enough for the game to render a single frame.
+        //     but the guest emits nothing at all — not one frame.
         let mut guest = BoxGuest {
-            rollout_frames: 0,
+            frame_markers: 0,
             rollout_span: 1,
             ..BoxGuest::healthy()
         };
@@ -1298,6 +1338,43 @@ mod tests {
             Err(Vacuity::NoFrames)
         );
 
+        // (c2) **The round-2 finding.** The agent writes REG_FRAME *before*
+        //      running the frame it announces (film's addressing contract), so
+        //      a deadline expiring between the marker and the frame body leaves
+        //      exactly ONE observation — and zero frames executed. Counting
+        //      observations would have called that one frame and let 25
+        //      identical repetitions of it print DETERMINISM PASS.
+        let mut guest = BoxGuest {
+            frame_markers: 1,
+            rollout_span: 1_000,
+            ..BoxGuest::healthy()
+        };
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        assert_eq!(
+            outcome.work.min_completed_frames, 0,
+            "one pre-run marker announces a frame; it does not run one"
+        );
+        assert_eq!(
+            outcome.vacuity(),
+            Some(Vacuity::NoFrames),
+            "a lone frame marker is not a frame"
+        );
+        assert_eq!(
+            determinism_verdict(&outcome, DETERMINISM_BAR),
+            Err(Vacuity::NoFrames)
+        );
+
+        // …and TWO markers prove the first frame's body completed (the loop came
+        // back around to announce the next) — the boundary the guard turns on.
+        let mut guest = BoxGuest {
+            frame_markers: 2,
+            rollout_span: 1_000,
+            ..BoxGuest::healthy()
+        };
+        let outcome = run_box(&mut guest, &box_cfg(8, Some(1_000)));
+        assert_eq!(outcome.work.min_completed_frames, 1);
+        assert_eq!(outcome.vacuity(), None, "one completed frame is real work");
+
         // (d) One hollow rollout among busy ones still sinks the gate: the
         //     evidence is the WEAKEST rollout, never the total.
         let mut guest = BoxGuest::healthy();
@@ -1305,7 +1382,7 @@ mod tests {
         assert_eq!(outcome.vacuity(), None);
         let hollowed = GameCampaignOutcome {
             work: WorkEvidence {
-                min_frames: 0,
+                min_completed_frames: 0,
                 ..outcome.work
             },
             ..outcome.clone()
@@ -1342,7 +1419,9 @@ mod tests {
     }
 
     /// The healthy box campaign's evidence is the real thing: every branch
-    /// rolled out, advanced the clock, and rendered frames.
+    /// rolled out, advanced the clock, and completed frames — 120 pre-run
+    /// markers ⇒ 119 frame bodies actually executed (the last announced frame
+    /// is cut off by the deadline, exactly as on the box).
     #[test]
     fn a_real_campaign_carries_its_work_evidence() {
         let mut guest = BoxGuest::healthy();
@@ -1352,10 +1431,46 @@ mod tests {
             WorkEvidence {
                 branches: 4,
                 min_vtime_span: 2_000_000_000,
-                min_frames: 120,
+                min_completed_frames: 119,
             }
         );
         assert_eq!(outcome.billboard, Some((0x04e0_0000, 15_838)));
+    }
+
+    /// [`smb_completed_frames`] counts frame-clock TRANSITIONS, not markers:
+    /// the unit-level pin of the round-2 finding.
+    #[test]
+    fn completed_frames_counts_transitions_not_markers() {
+        use explorer::FeatureId;
+        let frame = |value: u64| {
+            (
+                Moment(value + 1),
+                Feature {
+                    channel: LINK_STATE_CHANNEL,
+                    id: FeatureId((reg::FRAME << 48) | value),
+                },
+            )
+        };
+        // No markers at all, and a lone marker, are both zero completed frames.
+        assert_eq!(smb_completed_frames(&[]), 0);
+        assert_eq!(smb_completed_frames(&[frame(0)]), 0);
+        // The second marker proves the first frame's body ran.
+        assert_eq!(smb_completed_frames(&[frame(0), frame(1)]), 1);
+        assert_eq!(smb_completed_frames(&[frame(0), frame(1), frame(2)]), 2);
+        // A repeated value is not a new frame (no transition, no work).
+        assert_eq!(smb_completed_frames(&[frame(7), frame(7), frame(7)]), 0);
+        // The frame clock is a u32 the agent wraps: a wrap is still a frame, so
+        // the count is on CHANGE, not on increase.
+        assert_eq!(smb_completed_frames(&[frame(u32::MAX as u64), frame(0)]), 1);
+        // Non-FRAME registers never count, whatever their values do.
+        let other = (
+            Moment(9),
+            Feature {
+                channel: LINK_STATE_CHANNEL,
+                id: FeatureId((reg::X_BUCKET << 48) | 3),
+            },
+        );
+        assert_eq!(smb_completed_frames(&[other.clone(), other]), 0);
     }
 
     /// Task 103 finding 2 — **a malformed billboard must not slip past the

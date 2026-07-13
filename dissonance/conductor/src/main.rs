@@ -238,11 +238,17 @@ struct MatArgs {
     /// above the evicted parent).
     #[arg(long, default_value_t = 3)]
     hops: usize,
-    /// Requested V-time per hop (the landed boundary keys the exemplar).
-    #[arg(long, default_value_t = 250)]
+    /// Requested V-time per hop (the landed boundary keys the exemplar). Must
+    /// be > 0: a zero-length hop requests the deadline it already sits on, so
+    /// the whole chain seals at one V-time and the chain gates compare a
+    /// snapshot to itself.
+    #[arg(long, default_value_t = 250, value_parser = parse_positive_u64)]
     hop_delta: u64,
-    /// The reproducer leg's requested run past the deepest seal.
-    #[arg(long, default_value_t = 250)]
+    /// The reproducer leg's requested run past the deepest seal. Must be > 0:
+    /// a zero-length leg stops where it started, so leg and replay trivially
+    /// agree and `materialize GATES PASS` prints over a reproducer that
+    /// reproduces nothing (task 103 round-2 finding).
+    #[arg(long, default_value_t = 250, value_parser = parse_positive_u64)]
     tail_delta: u64,
     /// The chain seed (all hops branch with it — chains are same-seed).
     #[arg(long, default_value_t = 0x1234_5678_9ABC_DEF0)]
@@ -1143,6 +1149,12 @@ mod tests {
             "--max-branches",
             "0",
         ]);
+        // The materialize chain's budgets (round-2 finding): a zero-length hop
+        // seals the whole chain at one V-time, and a zero-length reproducer leg
+        // stops where it started — both printed `materialize GATES PASS` over
+        // work that never happened.
+        refused(&["conductor", "materialize", "--tail-delta", "0"]);
+        refused(&["conductor", "materialize", "--hop-delta", "0"]);
         // Hex is a budget too: `0x0` is the same zero.
         refused(&["conductor", "game", "box", "--deadline-delta", "0x0"]);
 

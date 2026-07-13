@@ -499,8 +499,8 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
     };
     println!(
         "[conductor] game box work evidence: {} branches, weakest rollout {} ns of V-time / {} \
-         frames.",
-        outcome.work.branches, outcome.work.min_vtime_span, outcome.work.min_frames
+         COMPLETED frames.",
+        outcome.work.branches, outcome.work.min_vtime_span, outcome.work.min_completed_frames
     );
     if let Some(banner) = verdict.banner() {
         println!("{banner}");
