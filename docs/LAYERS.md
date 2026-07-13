@@ -32,7 +32,7 @@ interface**, and it works faults-off.
 | **L0 machine** | deterministic substrate: branch/run/snapshot/hash, the `Moment` axis, the supply seams, `StopReason` as machine contract | `consonance/` | n/a |
 | **L1 exploration** | the generic Explorer control loop plus Differential-materialized observations, cells, and archive view, over the **supply** vocabulary (Entropy, Payload) | current `dissonance/explorer`; target `explorer` + `sdk-events` + Differential plane (`hm-bbx`, not implemented) | **yes — by construction** (see R-L1 evidence) |
 | **L2 perturbation** | the fault vocabulary + enforcement: fault classes, `HostFault`, flow, tactic arms | `dissonance/environment` (fault tier), `flow`, `tactics-regime` | opt-in per campaign; `FaultPolicy::none()` is the opt-out |
-| **L3 judgment** | properties, oracles, triage, resolution | current `sdk-events` (formerly `link`)/`matcher`; target Explorer oracles + Differential reporting + Resolution | yes (crash/property oracles need no fault) |
+| **L3 judgment** | properties, oracles, triage, resolution | current `sdk-events`/`matcher`; target Explorer oracles + Differential reporting + Resolution | yes (crash/property oracles need no fault) |
 | **cross-cutting** | the app-facing SDK surface (the Antithesis SDK, adopted) over per-guest-world transports | external MIT SDKs and current internal `guest/sdk`; `/dev/harmony` adapter remains target work | yes |
 
 ## Rulings

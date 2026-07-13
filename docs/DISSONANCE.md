@@ -202,7 +202,7 @@ splice-invariant by re-keying; **seed-serviced decisions are not**, because `See
 *sequential* PRNG streams — a splice would desync the stream state. The production
 `EnvCodec::compose` therefore **fails closed** (`UnsupportedComposition`) on pure-`Seeded` inputs,
 seed/policy mismatches, and `StandingFault`s (whose window is on the *V-time* axis, needing a
-runtime branch↔instruction re-key map (the former `Moment → VTime` map) to re-key). This scope is now **the contract**, not a stopgap, and it binds
+runtime branch↔instruction re-key map to re-key). This scope is now **the contract**, not a stopgap, and it binds
 the frontier adapter (the R2 `Machine` implementation) on four points:
 
 - **Tail-completeness.** `Machine::recorded_env` must emit a **tail-complete** delta — every

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # campaign-runner — close the loop (task 58; the crate formerly named `conductor`)
+//! # campaign-runner — close the loop (task 58)
 //!
 //! `campaign-runner` is the composition root where dissonance first drives consonance
 //! for real: the explorer's socket-backed [`SocketMachine`] (the R2 adapter)

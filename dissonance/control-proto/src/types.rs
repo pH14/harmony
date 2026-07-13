@@ -13,9 +13,6 @@
 /// bytes (their structure is `environment::EnvSpec`'s contract). `blob_version`
 /// lets the backend answer [`BadEnvVersion`](crate::ControlError::BadEnvVersion)
 /// without the codec ever validating it (the codec carries any version through).
-/// (The GLOSSARY rename of this crate's former `Environment` struct — the
-/// artifact currency is `Reproducer`; "environment" survives as the live
-/// answering surface the blob reconstitutes.)
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Reproducer {
     /// The `EnvSpec` blob-format version (validated by the backend, not the codec).
@@ -41,10 +38,7 @@ pub struct HostFault(pub Vec<u8>);
 /// (conventions rule 2 — defined locally, not imported). Single-vCPU
 /// determinism makes a bare axis value a unique moment: a host fault is staged
 /// at one via [`Perturb`](Request::Perturb), a run deadline names one, and
-/// every [`StopReason`] is stamped with the one it stopped at. (The GLOSSARY's
-/// one-axis ruling: this type absorbs the former wire `VTime` — same `u64`,
-/// same wire bytes; "V-time" survives as the name of the work-derived clock
-/// mechanism itself.)
+/// every [`StopReason`] is stamped with the one it stopped at.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Moment(pub u64);
 

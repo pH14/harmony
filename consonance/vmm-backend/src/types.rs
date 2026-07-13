@@ -4,8 +4,7 @@
 //! Both are `#[repr(transparent)]` so they carry no representation cost over the
 //! bare `u64` while making a guest-physical address un-confusable with a host
 //! pointer or a length, and a deadline `Moment` on the V-time axis un-confusable
-//! with a nanosecond count (`[refinement]` of R-Backend's bare `Gpa`/`VTime`;
-//! `Moment` is the GLOSSARY rename of this crate's former `Vtime` newtype).
+//! with a nanosecond count (`[refinement]` of R-Backend's bare `Gpa`/`VTime`).
 
 /// Guest-physical address. `[refinement]` of R-Backend's bare `Gpa`: a
 /// transparent newtype so an address can't be confused with a host pointer or a

@@ -24,11 +24,9 @@
 //!   one rollout, folds the run into the [`Archive`] (timeline admission),
 //!   and judges it with the [`Oracle`]. One search-loop step = one rollout.
 //!
-//! (These are the loop pair `docs/EXPLORATION.md` also describes. Task 94
-//! unified the naming across docs, specs, and code as Modulation/Progression;
-//! the GLOSSARY ruling retires those words for **rollout** and **the search
-//! loop** — the temporal-axis term of art "timeline admission" is a distinct
-//! concept and stays.)
+//! (These are the loop pair `docs/EXPLORATION.md` also describes; the
+//! temporal-axis term of art "timeline admission" is a distinct concept and
+//! stays.)
 //!
 //! ## The seams (defined locally, conventions rule 2)
 //!

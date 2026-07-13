@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # sdk-events — the link-tier plugin (task 73; the crate formerly named `link`)
+//! # sdk-events — the link-tier plugin (task 73)
 //!
 //! `sdk-events` is the **host-side reader of the guest SDK**: it turns the events a
 //! cooperating in-guest workload emits (via `harmony-sdk`, over the hypercall

@@ -142,7 +142,7 @@ impl EnvSpec {
     }
 
     /// The `Moment`-keyed overrides (empty for [`Seeded`](EnvSpec::Seeded)). The
-    /// merged host+guest timeline the Progression manipulates uniformly.
+    /// merged host+guest timeline the search loop manipulates uniformly.
     pub fn overrides(&self) -> &BTreeMap<Moment, Action> {
         match self {
             Self::Recorded { overrides, .. } => overrides,

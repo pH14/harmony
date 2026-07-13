@@ -10,9 +10,7 @@
 /// A **point** on the V-time axis — a count of retired conditional branches,
 /// the *only* deterministic clock in the system. Every scheduled time and
 /// event stamp is one of these; there is no wall-clock anywhere in the engine.
-/// Mirrors the integration type (conventions rule 2). (The GLOSSARY rename of
-/// this crate's former `VTime` newtype — points are `Moment`s, durations are
-/// [`Span`]s; "V-time" survives as the clock mechanism's name.)
+/// Mirrors the integration type (conventions rule 2).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Moment(pub u64);
 

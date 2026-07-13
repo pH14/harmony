@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! [`EnvCodec`] — the vocabulary-aware **proposal seam**. The Progression (the outer
+//! [`EnvCodec`] — the vocabulary-aware **proposal seam**. The search loop (the outer
 //! search loop) is structurally blind to fault semantics: it cannot *invent* a
 //! legal [`HostFault`]/[`Answer`], so it asks the codec to `seeded` a fresh
 //! environment, `mutate` an existing one, or `compose` two on the single
@@ -20,13 +20,13 @@ use crate::recorded::{EnvSpec, StandingFault};
 /// happen to coincide do not draw the same stream.
 const MUTATE_DOMAIN: u64 = 0x4D75_7461_7465_2121; // "Mutate!!"
 
-/// The proposal seam the Progression calls. A unit type: every operation is a pure
+/// The proposal seam the search loop calls. A unit type: every operation is a pure
 /// function of its inputs, holding no state of its own.
 ///
-/// This is one of the three opaque seams that make the Progression
+/// This is one of the three opaque seams that make the search loop
 /// *agnostic-by-interface* (navigation, scoring, **proposal**): vocabulary
 /// knowledge lives here, not in the search policy, so adding a fault type grows
-/// the codec and never the Progression (the dissonance D-invariant).
+/// the codec and never the search loop (the dissonance D-invariant).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EnvCodec;
 
@@ -125,8 +125,7 @@ impl EnvCodec {
     ///   parameterized in raw retired-*branch* counts, while the override keys
     ///   `compose` shifts are `Moment` (retired-*instruction*) offsets; a correct
     ///   re-key of the window across the splice needs the runtime branch ↔
-    ///   instruction mapping `compose` lacks. (The GLOSSARY's one-axis ruling
-    ///   renames the types, not this counter-level gap — which stays task 93's.)
+    ///   instruction mapping `compose` lacks (task 93's).
     /// - **Either input is a pure [`Seeded`](EnvSpec::Seeded) environment.** Every
     ///   one of its decisions is seed-serviced, so splicing it at `at > 0` would
     ///   desync the tail's fresh PRNG stream (the composed prefix advances the

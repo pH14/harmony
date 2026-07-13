@@ -18,13 +18,13 @@
 //! Both planes record into one artifact. [`Action`] is the merged vocabulary
 //! ([`Host`](Action::Host) ∪ [`Guest`](Action::Guest)); the reproducer
 //! [`EnvSpec`] keys its overrides by [`Moment`] (a retired-instruction count),
-//! so host and guest overrides share one ordered timeline and the Progression
+//! so host and guest overrides share one ordered timeline and the search loop
 //! manipulates them uniformly — `(Moment, opaque Action)` — without ever
 //! learning an override's plane. This crate provides the versioned **catalog**
 //! ([`DecisionClass`], [`DecisionPoint`], [`Answer`], [`Fault`], [`HostFault`]),
 //! the **seam** ([`Environment::decide`] → [`Outcome`]), the **seeded backings**
 //! ([`SeededEnv`] and [`RecordedEnv`] materialized from [`EnvSpec`]), and the
-//! vocabulary-aware [`EnvCodec`] (`seeded`/`mutate`/`compose`) the Progression calls to
+//! vocabulary-aware [`EnvCodec`] (`seeded`/`mutate`/`compose`) the search loop calls to
 //! propose environments. Determinism is the entire point: the same backing over
 //! the same inputs yields the same answers, bit for bit, so every bug replays
 //! exactly. Nothing here observes wall-clock time, host entropy,
@@ -135,8 +135,6 @@ pub struct ConnId(pub u64);
 /// branch counts. Mirrors the integration type. Fault delays
 /// ([`Fault::NetLatency`], [`Fault::BlockLatency`], [`Fault::ProcPause`]) and
 /// the [`HostFault::SkewTime`] delta are `Span`s; points on the axis are
-/// [`Moment`]s. (The GLOSSARY rename of this crate's former `VTime` newtype —
-/// same `u64`, same encoded bytes; "V-time" survives as the name of the
-/// work-derived clock itself.)
+/// [`Moment`]s.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Span(pub u64);

@@ -9,7 +9,7 @@
 //! It is guest-oblivious, workload-agnostic, and identical for every guest
 //! world. The two planes meet in one reproducer: [`Action`] is the merged
 //! vocabulary ([`Host`](Action::Host) ∪ [`Guest`](Action::Guest)) keyed on the
-//! single [`Moment`] axis, so the Progression orders and manipulates overrides
+//! single [`Moment`] axis, so the search loop orders and manipulates overrides
 //! uniformly without knowing which plane any one belongs to.
 
 use crate::Span;
@@ -22,7 +22,7 @@ use crate::error::EnvError;
 /// addressing, and `state_hash` points. Retired-instruction work counts are the
 /// *derivation* of this axis, not its unit (they coincide only at clock ratio 1);
 /// see the integrator ruling in `docs/INTEGRATION.md` §6b. Every override — host
-/// *and* guest — is keyed by a `Moment`, which is what lets the Progression treat
+/// *and* guest — is keyed by a `Moment`, which is what lets the search loop treat
 /// them as one ordered timeline (`(Moment, opaque Action)`) without learning an
 /// override's plane. Virtual time (whose durations are [`Span`]s) is a *derived view* of this same
 /// axis, not a second clock.
@@ -126,7 +126,7 @@ impl HostFault {
 /// One override on the single [`Moment`] axis, from *either* control plane. This
 /// is the load-bearing unification of the dissonance model: the reproducer's
 /// override map is `BTreeMap<Moment, Action>`, so a host perturbation and a guest
-/// decision sit on one ordered timeline and the Progression manipulates them
+/// decision sit on one ordered timeline and the search loop manipulates them
 /// identically — adding a fault grows this vocabulary and the codec, never the
 /// search.
 #[derive(Clone, PartialEq, Eq, Debug)]

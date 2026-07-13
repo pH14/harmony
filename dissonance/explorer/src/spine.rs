@@ -56,11 +56,9 @@ use crate::{Answer, Reproducer, SnapId, StopReason};
 /// A point on the single monotonic deterministic axis, mirroring
 /// `environment::Moment`/`control-proto::Moment` (conventions rule 2 — defined
 /// locally, not imported). The spine keys the replay-plane vocabulary on
-/// `Moment`, and (the GLOSSARY's one-axis ruling, settling the task-65
-/// escalation) the engine's deadlines and stop stamps are the same type —
-/// the former `VTime` mirror merged into this one; "V-time" survives as the
-/// name of the work-derived clock itself. The in-crate toy machine stamps its
-/// stop V-times onto this axis one-for-one.
+/// `Moment`, and the engine's deadlines and stop stamps are the same type —
+/// one axis (the GLOSSARY ruling that settled the task-65 escalation). The
+/// in-crate toy machine stamps its stop V-times onto this axis one-for-one.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]
