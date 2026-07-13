@@ -1105,6 +1105,35 @@ fn certify_replays<M: Machine>(
 mod tests {
     use super::*;
     use benchmark::manifest::{Benchmark, BugId};
+
+    /// A [`BenchConfig::smoke`] whose branch budget is cut under **Miri** (task
+    /// 104, `hm-d4y`). The smoke budget is 2048 branches and the interpreter
+    /// spends ~0.4 s of real time on each, so every full smoke campaign is ~14
+    /// min of the Miri run.
+    ///
+    /// A cut is only sound where the test's assertion does not depend on the
+    /// budget. It is **not** free for the tests that assert a *find*: the manifest
+    /// bugs are calibrated to a ~1/256 fire rate over a 10²–10³ branch search, and
+    /// the seeded searches here first hit bug 1 at branch **202** (Baseline) /
+    /// **255** (Signal) and bug 3 at branch **19** / **33**. So `budget` is passed
+    /// per test, sized against the find index that test actually needs, and the one
+    /// test whose budget cannot be cut far enough to pay for itself is Miri-ignored
+    /// rather than quietly weakened. If a future change to the mint or the PRNG
+    /// moves those find indices past the budgets below, the Miri run fails loudly
+    /// ("should find bug N") — raise the budget here, do not delete the assertion.
+    /// Native runs always get the full 2048 and are byte-for-byte unchanged.
+    fn smoke_cfg(campaign_seed: u64, miri_budget: u64) -> BenchConfig {
+        let base = BenchConfig::smoke(campaign_seed);
+        BenchConfig {
+            max_branches: if cfg!(miri) {
+                miri_budget
+            } else {
+                base.max_branches
+            },
+            ..base
+        }
+    }
+
     /// Each bug's toy machine crashes on its trigger and halts nominally, and the
     /// crash carries the per-bug id (attribution).
     #[test]
@@ -1189,6 +1218,22 @@ mod tests {
     /// property): the same (seed, config) yields the identical discovery-event
     /// log — for both configurations, for a bug it reliably finds.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "the extreme tail (task 104, hm-d4y): FOUR full 2048-branch smoke campaigns \
+                  (~27 min interpreted, 80% of the pre-shrink Miri run). Pure safe code over \
+                  BenchToyMachine — Vmm is never composed, so `CountingBackend::map_memory` (the \
+                  crate's only unsafe) is not on the path; it stays Miri-run in \
+                  mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit. It is the one \
+                  campaign test whose budget cannot be cut: it needs a find in BOTH \
+                  configurations (bug 1 fires at ~1/256; first find at branch 202/255), so any \
+                  affordable budget would silently turn its `should find bug 1` assertion \
+                  vacuous. Its two claims stay Miri-covered at the shrunk budgets: the campaign \
+                  driver's find/cert path by rare_entropy_bug_is_searchable (the same \
+                  run_bench_campaign over both configurations) and events_run_to_budget_after_find \
+                  (a real bug-1 find), and campaign determinism-twice by \
+                  gamecampaign::tests::campaign_replays_bit_identically."
+    )]
     fn dual_config_runs_and_is_deterministic_twice() {
         let bench = Benchmark::wave5();
         let bug = bench.get(BugId(1)).unwrap().clone();
@@ -1211,7 +1256,9 @@ mod tests {
     fn rare_entropy_bug_is_searchable() {
         let bench = Benchmark::wave5();
         let bug = bench.get(BugId(3)).unwrap().clone();
-        let cfg = BenchConfig::smoke(0x0033_1D69);
+        // Miri: 64 branches — bug 3 is first found at branch 19 (Signal) / 33
+        // (Baseline), so the seed search still finds it with ~2x headroom.
+        let cfg = smoke_cfg(0x0033_1D69, 64);
         for config in [Configuration::Signal, Configuration::Baseline] {
             let mut m = BenchToyMachine::new(bug.clone());
             let log = run_bench_campaign(&mut m, &bug, &cfg, config).unwrap().log;
@@ -1229,7 +1276,11 @@ mod tests {
     fn events_run_to_budget_after_find() {
         let bench = Benchmark::wave5();
         let bug = bench.get(BugId(1)).unwrap().clone();
-        let cfg = BenchConfig::smoke(0xBEEF_0069);
+        // Miri: 384 branches — this Baseline search first finds bug 1 at branch
+        // 202, so the find (and the "events keep running past it" claim the test
+        // exists for) survives with ~1.9x headroom. This is the bug-1 find path's
+        // Miri-run representative now that dual_config… is gated.
+        let cfg = smoke_cfg(0xBEEF_0069, 384);
         let mut m = BenchToyMachine::new(bug.clone());
         let log = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Baseline)
             .unwrap()
@@ -1707,7 +1758,10 @@ mod tests {
     fn signal_accumulates_cells() {
         let bench = Benchmark::wave5();
         let bug = bench.get(BugId(1)).unwrap().clone();
-        let cfg = BenchConfig::smoke(0x1234);
+        // Miri: 32 branches — this test's claim ("the signal config accumulates
+        // more than one distinct cell") is budget-INDEPENDENT: the seed-0x1234
+        // Signal campaign has already touched 5 distinct cells by branch 16.
+        let cfg = smoke_cfg(0x1234, 32);
         let mut m = BenchToyMachine::new(bug.clone());
         let log = run_bench_campaign(&mut m, &bug, &cfg, Configuration::Signal)
             .unwrap()

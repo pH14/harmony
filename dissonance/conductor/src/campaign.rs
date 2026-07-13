@@ -666,6 +666,31 @@ mod tests {
     use super::*;
     use explorer::{SpecEnvCodec, VTime};
 
+    /// [`CampaignConfig::toy`] with its **search space narrowed under Miri**
+    /// (task 104, `hm-d4y`). The full toy space is 4 gpas × 4 mask bits × an
+    /// 8-wide Moment window = 256 schedules, and the seeded search walks **868**
+    /// branches before it hits the planted `(0x3000, bit 31, in-window)` trigger —
+    /// ~6 min of interpreted work per end-to-end campaign test. Under Miri the
+    /// space is narrowed to 2 × 2 × 4 = 16 schedules that still **bracket the
+    /// trigger** (it stays a genuine three-dimensional search, just a coarser
+    /// one), and the same campaign finds the bug at branch 9 with every
+    /// [`verify_campaign`] gate still passing — found, N/N reproduced, nominal
+    /// clean, and a timing sample for every phase. Native runs keep the full
+    /// 256-schedule space and are byte-for-byte unchanged.
+    fn toy_cfg() -> CampaignConfig {
+        let base = CampaignConfig::toy();
+        if cfg!(miri) {
+            CampaignConfig {
+                gpa_candidates: vec![0x2000, 0x3000],
+                mask_bits: vec![15, 31],
+                moment_window: (0, 4),
+                ..base
+            }
+        } else {
+            base
+        }
+    }
+
     /// A crash trace with the given kind byte, for oracle tests.
     fn crash_trace(kind: u8) -> RunTrace {
         RunTrace {
@@ -1019,7 +1044,7 @@ mod tests {
         let mut machine = AssertMachine::new();
         let cfg = CampaignConfig {
             replay_n: 3,
-            ..CampaignConfig::toy()
+            ..toy_cfg()
         };
         let report = run_campaign(&mut machine, &SpecEnvCodec, &cfg).expect("campaign runs");
         let found = report
@@ -1074,7 +1099,7 @@ mod tests {
     #[test]
     fn run_campaign_populates_timing_for_every_exercised_phase() {
         let mut m = crate::planted::ToyPlantedMachine::new(crate::planted::Trigger::toy());
-        let cfg = CampaignConfig::toy();
+        let cfg = toy_cfg();
         let report = run_campaign(&mut m, &SpecEnvCodec, &cfg).expect("campaign runs");
         for phase in [
             Phase::BaseSeal,

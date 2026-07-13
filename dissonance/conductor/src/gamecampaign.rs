@@ -1168,6 +1168,19 @@ mod tests {
     use super::*;
     use explorer::SpecEnvCodec;
 
+    /// The branch budget the in-memory smoke campaigns below drive
+    /// ([`GameCampaignConfig::smoke`]'s `max_branches`), **shrunk to 8 under Miri**
+    /// (task 104, `hm-d4y`). The properties these campaigns pin — a rerun is
+    /// bit-identical, distinct seeds diverge, the selector diverges from blind
+    /// search, cells and depth flow out of the SDK events — are all budget-
+    /// INDEPENDENT: they hold at any positive branch count, so a smaller budget
+    /// costs the assertions nothing (verified: at 8 branches the seed-42 campaign
+    /// still reaches depth ≥ 1 and mints the same 10 cells it does at 64). Under
+    /// the interpreter each branch is ~8 s of interpreted work, so 64 → 8 takes
+    /// this family from ~19 min of the Miri run to ~2.5. Native runs keep the full
+    /// 64 and are byte-for-byte unchanged.
+    const SMOKE_BRANCHES: u64 = if cfg!(miri) { 8 } else { 64 };
+
     /// A **box-shaped** guest: seals at its `setup_complete` snapshot point,
     /// publishes a billboard in the setup prefix, and runs every rollout to its
     /// deadline. The knobs are exactly the ways the real box driver can be
@@ -1653,13 +1666,11 @@ mod tests {
 
     fn run_outcome(config: ExplorationConfig, seed: u64) -> GameCampaignOutcome {
         let mut m = GameToyMachine::new();
-        run_game_campaign(
-            &mut m,
-            &SpecEnvCodec,
-            &GameCampaignConfig::smoke(seed),
-            config,
-        )
-        .unwrap()
+        let cfg = GameCampaignConfig {
+            max_branches: SMOKE_BRANCHES,
+            ..GameCampaignConfig::smoke(seed)
+        };
+        run_game_campaign(&mut m, &SpecEnvCodec, &cfg, config).unwrap()
     }
 
     /// Round-8 P1: the deepest branch is tracked from branch 0 and, with a
@@ -2021,7 +2032,7 @@ mod tests {
             let a = run(config, 7);
             let b = run(config, 7);
             assert_eq!(a, b);
-            assert_eq!(a.events.len(), 64);
+            assert_eq!(a.events.len() as u64, SMOKE_BRANCHES);
         }
     }
 
