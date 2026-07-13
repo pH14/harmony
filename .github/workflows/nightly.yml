@@ -40,15 +40,18 @@ jobs:
   # Budget (task 98, measured): the exact command below runs in ~34 min real on
   # an M-class Mac after the hm-d8o tail shrink (pre-shrink: ~92 min, the round-2
   # bug). First box run (2026-07-13, dispatch on the task branch): 49 min 38 s
-  # while CO-RUNNING with the sibling miri job on the second runner slot — so 90
-  # holds ~1.8x margin even under co-tenancy, more when the box is idle. NOTE
+  # while CO-RUNNING with the sibling miri job on the second runner slot (and
+  # 47:46 on the repeat, run 29236400380). A third, midday dispatch (29251169490)
+  # hit a 3-way-contended box (quality storms; every step ran ~2x its quiet-hour
+  # cost) and timed out at 90 — so the ceiling is 120: ~2.5x the measured
+  # quiet-hour wall, absorbing a 2x-contention morning without going red. NOTE
   # when re-measuring: under Miri WITHOUT -Zmiri-disable-isolation, libtest's
   # "finished in" prints the interpreter's deterministic VIRTUAL clock (~2x real
   # on the Mac) — time the command externally.
   miri-vmm-core:
     name: miri — vmm-core (UB safety net, own job)
     runs-on: self-hosted
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
@@ -65,9 +68,10 @@ jobs:
     runs-on: self-hosted
     # Budget (task 98, measured on the box, run 29236400380): vmcall 13.2 +
     # vm-state 2.4 + vmm-backend 15.9 + film 16.0 + snapshot-store 0.8 +
-    # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job; 90 gives ~1.9x
-    # margin.
-    timeout-minutes: 90
+    # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job. 120 = ~2.5x
+    # that, absorbing the ~2x step slowdown a contended box showed on the
+    # midday dispatch 29251169490 (see the vmm-core job comment).
+    timeout-minutes: 120
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
       MIRIFLAGS: -Zmiri-permissive-provenance
