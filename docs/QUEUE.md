@@ -26,21 +26,18 @@ and passes the same-seed determinism gate. "Vendor" replaces "personality" (GLOS
 ratified via PR #103). ARM = Linux/KVM on an incoming Ampere
 Altra (Apple-silicon route dead); AMD = incoming Epyc; ARM > AMD, parallelize the docs.
 
-## In flight (2 workers, 1 slot open)
+## In flight (1 worker, 2 slots open)
 
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — Paul's 2026-07-12
   ruling executing on `spike/nested-x86`: harness-integrity set DONE (e0a62e2 —
   patched-backend hammer + armed-capability asserts, gate-RC propagation, independent guest
   oracle, per-record PMI accounting, retained-runset audit); N-2 re-run DONE (e492a69 —
   1,052,000/1,052,000 exact on the PATCHED mechanism, ≥1M floor met); N-3 floor matrix
-  RUNNING on the box (1,000 reps/condition; solo condition 800/800 identical at the
-  2026-07-13 06:15 foreman check) · `hm-dbh` evidence committed, `hm-jpu` running →
-  disposition re-record + PR #98 merge = `hm-60k` → unblocks appliance `hm-tn9` +
-  preflight CLI `hm-69y`
-- **vmm-core Miri gate closure** (tasks/98, PR #99, worker agent-miri-gate, Opus 4.8) —
-  fix set + measured-honest budgets on the branch; watching the full-green nightly
-  re-dispatch (run 29236400380, ~3.5 h); foreman substantive review on CI-green ·
-  `hm-4yj` (the real conductor-step shrink is filed as `hm-d4y`)
+  RUNNING on the box (1,000 reps/condition; zero mismatches throughout: smoke ✓,
+  solo ✓ 1,000/1,000, other-core ✓ complete, same-core in progress at the 2026-07-13
+  midday foreman check; then migrate / pause pair / migrate-live / 10k control / metal
+  session) · `hm-dbh` evidence committed, `hm-jpu` running → disposition re-record +
+  PR #98 merge = `hm-60k` → unblocks appliance `hm-tn9` + preflight CLI `hm-69y`
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
@@ -51,11 +48,14 @@ Reach-matrix lane (foreman-owned or spawnable next):
   Apple-promoting drafts were dropped from PR #103), plus the two hm-2uw items the slate
   never contained: APPLE-SILICON.md demotion-status header, NESTED-INTEGRATION
   parked-not-ratified header.
-- **Box-gate CLI vacuous-pass hardening** (`hm-9wa`, P1 bug, PR-93 round-9 findings) —
-  next crate-code spawn; Mac-side gates immediately, box smoke waits for the nested-posture
-  window to close.
-- **Conductor Miri CI budget shrink** (`hm-d4y`, P1 bug) — dispatch only AFTER PR #99
-  merges (same workflow files).
+- **Conductor full-suite Miri restoration** (`hm-d4y`, P1) — UNBLOCKED by the vmm-core
+  Miri gate merge; the unsafe slice is already watched in the nightly, so the remaining
+  debt is the hm-d8o-style shrink of conductor's sha256-dominated VM tests + a
+  box-measured budget. Next crate-code spawn (needs a spec file first).
+- **Vocabulary rename sweep** (`hm-u7q`, P1) — its blocker (open crate branches) cleared:
+  all four task PRs merged 2026-07-13; only the spike branch (PR #98) remains open and it
+  barely touches crates. Needs a spec + a deliberate window (it will conflict with
+  anything spawned after it).
 - **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
   wedge (`hm-440`), both P2 bugs on main.
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
@@ -123,6 +123,17 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **vmm-core Miri gate CLOSED** (tasks/98, PR #99, 2026-07-13, Paul ruled merge-now over
+  a re-litigated codex finding): own nightly job box-demonstrated twice (~48-50 min vs a
+  120-min contention-derived ceiling); both `map_memory` seams Miri-run (the new
+  `Mapping::anonymous` seam + a pointer-retention backend double, foreman-executed);
+  conductor's unsafe slice restored with a filter-rot guard (1.3s); full-suite debt →
+  `hm-d4y` · `hm-4yj` closed
+- **Box-gate CLI vacuous-pass hardening MERGED** (tasks/103, PR #104, 2026-07-13): three
+  review rounds converging 2→1→0 codex P1s (pre-execution frame marker →
+  `smb_completed_frames` transitions; `--tail-delta`/`--hop-delta` zero-budget holes;
+  billboard-below-film's-header → `BILLBOARD_MIN_LEN` drift-pinned to film) · `hm-9wa`
+  closed
 - **AMD vendor spike program doc MERGED** (docs/AMD-EPYC.md, PR #102, 2026-07-13):
   AE-0..AE-6 with the six PR-98 evidence-integrity countermeasures binding per stage;
   no-MTF single-step ranked-ruling deliverable; one-command demo DoD · `hm-wv8` closed
