@@ -24,24 +24,26 @@
 //! apart: a guest outcome is a [`StopReason`] (data), a control failure is a
 //! [`SessionError`].
 //!
-//! ## The mock and the wire
+//! ## The two servers
 //!
-//! The whole laptop gate runs against the in-crate [`MockServer`] — a scripted,
-//! deterministic guest reached over the [`Server`] seam (the task-58 loopback
-//! pattern, owned here). The verbs `control-proto` already carries use its real
-//! wire types; the three tasks 80/81 add — `read` / `regs` / `exec` — are not
-//! merged on this branch, so this crate defines their views ([`RegsView`],
-//! [`ExecResult`]) and the [`Tainted`](SessionError::Tainted) guard locally
-//! (conventions rule 2), matching those specs' wire contract. The live box
-//! connection is a second [`Server`] implementor handed to the foreman.
+//! The [`Server`] seam has two implementors and a [`Session`] cannot tell them
+//! apart. [`SocketServer`] is the **production** one: every verb is a
+//! `control-proto` request/reply on a real stream, so resolution is the second
+//! client of the task-58 control server (the explorer's `SocketMachine` is the
+//! first) rather than a tunnel through explorer code. [`MockServer`] is a
+//! scripted, deterministic guest in-process — the whole laptop gate — so the
+//! client's logic is proven without a VM. The verbs use `control-proto`'s real
+//! wire types throughout; the task-80/81 reply *views* ([`RegsView`],
+//! [`ExecResult`]) are shaped here (conventions rule 2) and mirror the wire's.
 //!
 //! ## Module layout
 //!
 //! `mref` ([`MomentRef`], its textual codec, `vary`) · `server` (the
 //! [`Server`] seam + the task-80/81 views) · `session` ([`Session`] /
-//! [`MaterializedSession`]) · `mock` ([`MockServer`]) · `transcript` (the
-//! JSONL [`Record`] + the one renderer) · `repl` (the line protocol +
-//! [`Shell`]) · `error` ([`SessionError`]).
+//! [`MaterializedSession`]) · `socket` ([`SocketServer`], the production wire
+//! adapter) · `mock` ([`MockServer`]) · `transcript` (the JSONL [`Record`] +
+//! the one renderer) · `repl` (the line protocol + [`Shell`]) · `error`
+//! ([`SessionError`]).
 
 mod error;
 mod mock;
@@ -49,6 +51,7 @@ mod mref;
 mod repl;
 mod server;
 mod session;
+mod socket;
 mod transcript;
 
 pub use error::SessionError;
@@ -57,6 +60,7 @@ pub use mref::{MRefParseError, MomentRef, OverrideEdit};
 pub use repl::{Command, CommandParseError, DispatchOutput, Shell};
 pub use server::{ExecResult, RegsView, Server, Snapshot};
 pub use session::{MaterializedSession, Session, client_caps};
+pub use socket::SocketServer;
 pub use transcript::{Outcome, Record, from_jsonl, render_line, render_transcript, to_jsonl};
 
 // The wire/reproducer types that appear in this crate's public API, re-exported

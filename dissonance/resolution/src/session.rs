@@ -54,35 +54,38 @@ impl<S: Server> Session<S> {
     /// [`SessionError::Negotiation`] (never a silent downgrade or an allocation
     /// on an untrusted length).
     pub fn connect(mut server: S) -> Result<Self, SessionError> {
-        let caps = server.hello(client_caps())?;
-        if caps.protocol_version != control_proto::APP_PROTOCOL_VERSION {
-            return Err(SessionError::Negotiation(format!(
-                "incompatible control protocol version {} (need {})",
-                caps.protocol_version,
-                control_proto::APP_PROTOCOL_VERSION
-            )));
-        }
-        if caps.env_version_min > EnvSpec::BLOB_VERSION
-            || caps.env_version_max < EnvSpec::BLOB_VERSION
-        {
-            return Err(SessionError::Negotiation(format!(
-                "server env-version range {}..={} does not admit EnvSpec v{}",
-                caps.env_version_min,
-                caps.env_version_max,
-                EnvSpec::BLOB_VERSION
-            )));
-        }
-        if caps.coverage.map_bytes != 0 || caps.coverage.producer != 0 {
-            return Err(SessionError::Negotiation(format!(
-                "server advertised a non-zero coverage geometry (map_bytes={}, producer={}); v1 \
-                 has no coverage producer",
-                caps.coverage.map_bytes, caps.coverage.producer
-            )));
-        }
+        negotiate(&mut server)?;
         let genesis = server.snapshot()?;
         Ok(Self {
             server,
             genesis: genesis.id,
+            current: None,
+        })
+    }
+
+    /// Connect and root the session at an **already-captured** snapshot instead
+    /// of taking a fresh one: negotiate (`hello`), then branch every
+    /// [`materialize`](Session::materialize) off `genesis`.
+    ///
+    /// The rooting seam this crate has always documented (the "Archive-era
+    /// snapshot hint" — see [`materialize`](Session::materialize)), reached from
+    /// the *connect* side. It exists because a [`Moment`] is only meaningful
+    /// relative to the root its timeline is branched from: a caller that
+    /// harvested absolute `Moment`s from a run rooted at one snapshot (the film
+    /// box gate scrapes its frame clock this way) must materialize from **that**
+    /// snapshot, not from a fresh one taken wherever the server happens to sit
+    /// now. Handing that snapshot in here is the honest way to say so — the
+    /// alternative, a [`Server`] whose `snapshot()` hands back a pre-taken handle
+    /// without capturing anything, makes the seam lie to every other consumer.
+    ///
+    /// `genesis` must be a live handle on the server this session negotiates
+    /// with; an unknown one surfaces at the first `materialize` as the server's
+    /// own loud `UnknownSnapshot`.
+    pub fn connect_rooted(mut server: S, genesis: SnapId) -> Result<Self, SessionError> {
+        negotiate(&mut server)?;
+        Ok(Self {
+            server,
+            genesis,
             current: None,
         })
     }
@@ -335,6 +338,38 @@ impl<S: Server> MaterializedSession<'_, S> {
             .as_mut()
             .expect("MaterializedSession implies an open timeline")
     }
+}
+
+/// The `hello` handshake both constructors share: offer [`client_caps`] and
+/// check the server's answer. A protocol/env-version mismatch or a non-zero
+/// coverage geometry is a loud [`SessionError::Negotiation`] — never a silent
+/// downgrade, and never an allocation sized from an untrusted geometry.
+fn negotiate<S: Server>(server: &mut S) -> Result<(), SessionError> {
+    let caps = server.hello(client_caps())?;
+    if caps.protocol_version != control_proto::APP_PROTOCOL_VERSION {
+        return Err(SessionError::Negotiation(format!(
+            "incompatible control protocol version {} (need {})",
+            caps.protocol_version,
+            control_proto::APP_PROTOCOL_VERSION
+        )));
+    }
+    if caps.env_version_min > EnvSpec::BLOB_VERSION || caps.env_version_max < EnvSpec::BLOB_VERSION
+    {
+        return Err(SessionError::Negotiation(format!(
+            "server env-version range {}..={} does not admit EnvSpec v{}",
+            caps.env_version_min,
+            caps.env_version_max,
+            EnvSpec::BLOB_VERSION
+        )));
+    }
+    if caps.coverage.map_bytes != 0 || caps.coverage.producer != 0 {
+        return Err(SessionError::Negotiation(format!(
+            "server advertised a non-zero coverage geometry (map_bytes={}, producer={}); v1 has \
+             no coverage producer",
+            caps.coverage.map_bytes, caps.coverage.producer
+        )));
+    }
+    Ok(())
 }
 
 /// The client half of the caps exchange: the negotiated app-protocol version,
