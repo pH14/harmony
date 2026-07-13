@@ -45,12 +45,19 @@ for tok in $(cat /proc/cmdline); do
 done
 [ -n "$GATES" ] || GATES="live_determinism live_preemption live_postgres"
 
+# Gate failures are aggregated and echoed before the done marker so the host
+# harness has a redundant machine-readable failure count; NESTED_X86_L1_DONE
+# means only "the run completed" — the host-side success check requires every
+# NESTED_X86_GATE_RC to be rc=0 (PR #98 review finding 3).
+GATE_FAILS=0
 run_gate() { # run_gate <name> [test-filter]
     name=$1
     filter=${2:-}
     echo "NESTED_X86_GATE_BEGIN $name $filter"
     /gate/$name --ignored --nocapture --test-threads=1 $filter 2>&1
-    echo "NESTED_X86_GATE_RC $name rc=$?"
+    gate_rc=$?
+    echo "NESTED_X86_GATE_RC $name rc=$gate_rc"
+    [ "$gate_rc" -eq 0 ] || GATE_FAILS=$((GATE_FAILS + 1))
     echo "NESTED_X86_GATE_END $name"
 }
 
@@ -62,10 +69,12 @@ for g in $GATES; do
         run_gate "$bin" "$filter"
     else
         echo "NESTED_X86_GATE_MISSING $bin"
+        GATE_FAILS=$((GATE_FAILS + 1))
     fi
 done
 
 echo "--- L1 dmesg tail (kvm/vmx/pmu/perf) ---"
 dmesg | grep -iE "kvm|vmx|pmu|perf" | tail -30
+echo "NESTED_X86_GATES_FAILED $GATE_FAILS"
 echo "NESTED_X86_L1_DONE"
 poweroff -f

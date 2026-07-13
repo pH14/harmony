@@ -1,8 +1,17 @@
 #!/bin/bash
 # nested-x86 N-3 condition 5: cloud-migration rehearsal — QEMU local live
 # migration of the running L1 mid-gate. Pass criterion: the gate completes
-# bit-identically on the destination OR the migration fails closed (refused /
-# aborted, guest continues on source) — never silent divergence.
+# with rc=0 on the DESTINATION after a completed migration, OR the migration
+# fails closed (failed/cancelled) and the gate completes with rc=0 on the
+# SOURCE — never silent divergence, never an unconditional success exit.
+#
+# Re-certification fixes (PR #98 review / bead hm-b5b item 5): the original
+# script exited 0 unconditionally; success now requires L1_DONE + zero failing
+# gate RCs + a machine-readable gate summary in the console the guest actually
+# finished on, consistent with the recorded migration status. Boot artifacts
+# are hash-verified against the appliance build manifest BEFORE boot and the
+# manifest is retained with the runset.
+#
 # Usage: run-n3-migrate-live.sh <runset-name> <reps> [migrate-after-seconds]
 set -euo pipefail
 
@@ -12,9 +21,26 @@ MIG_AFTER="${3:-90}"
 BASE=/root/nested-x86-spike/n3
 RS="$BASE/results/$RS_NAME"
 KVER=6.12.90+deb13.1-amd64
-APPL=/root/nested-x86-spike/n1/appliance.cpio.gz
+APPL_BASE=/root/nested-x86-spike/n1
+APPL=$APPL_BASE/appliance.cpio.gz
 QEMU=/usr/bin/qemu-system-x86_64
 mkdir -p "$RS"
+
+# hash-verify before boot (recording is not verifying) + retain the manifest
+MANIFEST="$APPL_BASE/build-manifest.json"
+[ -f "$MANIFEST" ] || { echo "PIN MANIFEST MISSING: $MANIFEST"; exit 1; }
+pin_get() { grep -o "\"$1\": \"[0-9a-f]*\"" "$MANIFEST" | head -1 | cut -d'"' -f4; }
+pin_verify() { # pin_verify <file> <want-sha256> <label>
+  local got; got=$(sha256sum "$1" | cut -d' ' -f1)
+  [ "$got" = "$2" ] || { echo "PIN MISMATCH $3 ($1): got $got want $2"; exit 1; }
+}
+WANT_APPL=$(pin_get sha256_appliance_cpio)
+WANT_KERN=$(pin_get sha256_l1_kernel)
+[ -n "$WANT_APPL" ] && [ -n "$WANT_KERN" ] || { echo "PIN MANIFEST INCOMPLETE: $MANIFEST"; exit 1; }
+pin_verify "$APPL" "$WANT_APPL" appliance-initrd
+pin_verify "/boot/vmlinuz-$KVER" "$WANT_KERN" l1-kernel
+cp "$MANIFEST" "$RS/build-manifest.json"
+echo "PIN_VERIFIED appliance=$WANT_APPL kernel=$WANT_KERN"
 
 {
   echo "{"
@@ -101,5 +127,45 @@ for P in "$RS/qemu-src.pid" "$RS/qemu-dst.pid"; do
 done
 wait "$SRC" "$DST" 2>/dev/null || true
 
-echo "{\"migration_status\": \"$MIG_STATUS\", \"finished\": \"$(date -u +%FT%TZ)\"}" > "$RS/condition-end.json"
-echo "N3_MIGRATE_LIVE_DONE status=$MIG_STATUS"
+# --- verdict: which console must the gate have finished green on?
+#   completed        -> the DESTINATION carries the guest; it must be green
+#   failed/cancelled -> fail-closed path; the SOURCE must be green
+#   unknown          -> the rehearsal did not produce a status: fail
+gates_green() { # gates_green <console> — L1_DONE + >=1 gate + all RCs 0 + summary line
+  local c=$1
+  grep -q "NESTED_X86_L1_DONE" "$c" 2>/dev/null || return 1
+  local began fails summ
+  began=$(grep -c "NESTED_X86_GATE_BEGIN" "$c" 2>/dev/null || true)
+  fails=$(grep -c "NESTED_X86_GATE_RC .* rc=[1-9]" "$c" 2>/dev/null || true)
+  summ=$(grep -c 'N3JSON {"event":"summary"' "$c" 2>/dev/null || true)
+  [ "$began" -gt 0 ] && [ "$fails" -eq 0 ] && [ "$summ" -gt 0 ]
+}
+
+rc=1
+FINISHED_ON=none
+case "$MIG_STATUS" in
+  completed)
+    if gates_green "$RS/console-dst.log"; then rc=0; FINISHED_ON=destination; fi ;;
+  failed|cancelled)
+    # fail-closed: migration refused/aborted, guest must have continued on source
+    if gates_green "$RS/console-src.log"; then rc=0; FINISHED_ON=source; fi ;;
+  *)
+    rc=1 ;;
+esac
+
+SUMMARY=$(grep -h -o 'N3JSON {"event":"summary".*' "$RS/console-dst.log" "$RS/console-src.log" 2>/dev/null | tail -1 | tr -d '\r' || true)
+{
+  echo "{"
+  echo "  \"migration_status\": \"$MIG_STATUS\","
+  echo "  \"finished_on\": \"$FINISHED_ON\","
+  echo "  \"rc\": $rc,"
+  if [ -n "$SUMMARY" ]; then
+    echo "  \"gate_summary\": ${SUMMARY#N3JSON },"
+  else
+    echo "  \"gate_summary\": null,"
+  fi
+  echo "  \"finished\": \"$(date -u +%FT%TZ)\""
+  echo "}"
+} > "$RS/condition-end.json"
+echo "N3_MIGRATE_LIVE_DONE status=$MIG_STATUS finished_on=$FINISHED_ON rc=$rc"
+exit $rc
