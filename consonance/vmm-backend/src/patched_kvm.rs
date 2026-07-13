@@ -75,6 +75,13 @@ impl PatchedKvmBackend {
     pub fn set_dirty_log_enabled(&mut self, enabled: bool) {
         self.inner.set_dirty_log_enabled(enabled);
     }
+
+    /// Cumulative overflow-ring record counts for the `run_until` branch counter
+    /// — forwarded to [`KvmBackend::pmu_overflow_stats`] (the per-record PMI
+    /// accounting instrument of the nested-x86 re-certification, bead hm-b5b).
+    pub fn pmu_overflow_stats(&self) -> Option<crate::pmu::PmuOverflowStats> {
+        self.inner.pmu_overflow_stats()
+    }
 }
 
 impl Backend for PatchedKvmBackend {

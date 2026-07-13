@@ -73,6 +73,7 @@ pub use backend::Backend;
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 pub use error::{BackendError, Result};
 pub use exit::{Capabilities, Event, Exit, ExitCounts, ExitReason, HypercallRegs};
+pub use pmu::PmuOverflowStats;
 pub use state::{
     DebugRegs, DescriptorTable, MpState, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
 };

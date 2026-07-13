@@ -67,29 +67,110 @@ pub(crate) const DISARM_PERIOD: u64 = 1 << 56;
 pub(crate) const DATA_HEAD_OFF: usize = 1024;
 pub(crate) const DATA_TAIL_OFF: usize = 1032;
 
-/// Drain consumed overflow records from a perf ring-buffer control page at `base`:
-/// copy `data_head` → `data_tail` so the single kernel producer never sees a full
-/// buffer. A plain volatile load/store suffices (single producer = the kernel, single
-/// consumer = the owning thread; we only need the tail to advance).
+// `perf_event_header.type` values (include/uapi/linux/perf_event.h) the overflow
+// ring can carry for this event. Exact-value tested below.
+/// `PERF_RECORD_LOST` — the kernel dropped records (ring full): a lost overflow.
+pub(crate) const PERF_RECORD_LOST: u32 = 2;
+/// `PERF_RECORD_THROTTLE` — the kernel throttled the event (PMIs were suppressed).
+pub(crate) const PERF_RECORD_THROTTLE: u32 = 5;
+/// `PERF_RECORD_UNTHROTTLE` — throttling ended.
+pub(crate) const PERF_RECORD_UNTHROTTLE: u32 = 6;
+/// `PERF_RECORD_SAMPLE` — one delivered overflow PMI (header-only at
+/// `sample_type = 0`).
+pub(crate) const PERF_RECORD_SAMPLE: u32 = 9;
+
+/// Overflow-ring record counts for the `run_until` branch counter — the
+/// **per-record overflow-multiplicity accounting** instrument of the nested-x86
+/// re-certification (PR #98 review / bead hm-b5b): "every armed PMI observed
+/// exactly once" must be *counted from perf records*, not inferred from landings.
+/// Counts are cumulative since the counter was opened; a caller diffs two reads.
+///
+/// A [`samples`](Self::samples) record is one delivered overflow PMI. A nonzero
+/// [`lost`](Self::lost) means the kernel dropped records (a PMI happened whose
+/// record is gone); a nonzero [`throttle`](Self::throttle) means the kernel
+/// suppressed PMIs for a while — both break "observed exactly once" and are loud
+/// findings for the exactness harness.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PmuOverflowStats {
+    /// `PERF_RECORD_SAMPLE` count — delivered overflow PMIs.
+    pub samples: u64,
+    /// `PERF_RECORD_LOST` count — records the kernel dropped (ring full).
+    pub lost: u64,
+    /// `PERF_RECORD_THROTTLE` + `PERF_RECORD_UNTHROTTLE` count.
+    pub throttle: u64,
+    /// Any other record type (unexpected for this event; counted, never dropped).
+    pub other: u64,
+}
+
+impl PmuOverflowStats {
+    /// Field-wise accumulate (the box counter folds each drain into its running
+    /// totals).
+    pub(crate) fn add(&mut self, d: PmuOverflowStats) {
+        self.samples += d.samples;
+        self.lost += d.lost;
+        self.throttle += d.throttle;
+        self.other += d.other;
+    }
+}
+
+/// Drain consumed overflow records from the perf ring mapped at `base` (1 control
+/// page of `page_size` bytes + `data_size` bytes of data pages), **counting record
+/// types while draining**: walk `perf_event_header`s from `data_tail` to
+/// `data_head` (positions are modulo `data_size`; sizes are kernel-guaranteed
+/// multiples of 8, so a header never straddles the wrap), then publish
+/// `data_tail := data_head` so the single kernel producer never sees a full
+/// buffer. A corrupt header size (< 8 or misaligned) stops the walk defensively —
+/// counted under [`PmuOverflowStats::other`] — and the drain still completes.
 ///
 /// Factored HERE — the pure, gate-covered half — rather than inline in the box-only
-/// [`crate::pmu_sys`], so the offset math + volatile pointer provenance is exercised
-/// by `cargo miri test` (and coverage + mutation) over a TEST-OWNED page; `pmu_sys`
-/// only supplies the real `mmap`'d `base`. A bad offset or a swapped head/tail is then
-/// caught by Miri + the unit test, not just on the box (it was previously reachable
-/// only via the `cfg(miri)`-stubbed `PmuBranchCounter::open`, a vacuous unsafe gate).
+/// [`crate::pmu_sys`], so the offset math + pointer provenance is exercised by
+/// `cargo miri test` (and coverage + mutation) over a TEST-OWNED ring; `pmu_sys`
+/// only supplies the real `mmap`'d `base`. A bad offset, a swapped head/tail, or a
+/// wrong record-type constant is then caught by Miri + the unit tests, not just on
+/// the box.
 ///
 /// # Safety
-/// `base` must point to at least `DATA_TAIL_OFF + 8` bytes of a valid, writable,
-/// 8-aligned mapping (the perf control page is page-aligned and ≥ 4 KiB).
-pub(crate) unsafe fn drain_ring_at(base: *mut u8) {
-    // SAFETY: the caller guarantees `base` covers the control page; head/tail are at
-    // the documented uapi offsets, 8-aligned. Volatile to defeat reordering against
-    // the kernel's writes.
+/// `base` must point to a valid, writable, 8-aligned mapping of at least
+/// `page_size + data_size` bytes laid out as a perf mmap ring (control page first);
+/// `page_size` ≥ `DATA_TAIL_OFF + 8`; `data_size` a power-of-two multiple of 8.
+pub(crate) unsafe fn drain_ring_counting_at(
+    base: *mut u8,
+    page_size: usize,
+    data_size: usize,
+) -> PmuOverflowStats {
+    let mut stats = PmuOverflowStats::default();
+    // SAFETY: the caller guarantees `base` covers the control page + data area;
+    // head/tail are at the documented uapi offsets, 8-aligned. Volatile on the
+    // control words to defeat reordering against the kernel's writes; the acquire
+    // fence orders the record reads after the head read (the kernel publishes
+    // records before advancing head).
     unsafe {
         let head = std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>());
+        let mut tail = std::ptr::read_volatile(base.add(DATA_TAIL_OFF).cast::<u64>());
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+        let data = base.add(page_size);
+        while tail.saturating_add(8) <= head {
+            let pos = (tail % data_size as u64) as usize;
+            // perf_event_header: u32 type @ +0, u16 misc @ +4, u16 size @ +6.
+            let ty = std::ptr::read_unaligned(data.add(pos).cast::<u32>());
+            let size = u64::from(std::ptr::read_unaligned(data.add(pos + 6).cast::<u16>()));
+            if size < 8 || size % 8 != 0 {
+                // Corrupt/unparseable header: never spin; count it and stop the
+                // walk (the tail still advances to head below, so the ring drains).
+                stats.other += 1;
+                break;
+            }
+            match ty {
+                PERF_RECORD_SAMPLE => stats.samples += 1,
+                PERF_RECORD_LOST => stats.lost += 1,
+                PERF_RECORD_THROTTLE | PERF_RECORD_UNTHROTTLE => stats.throttle += 1,
+                _ => stats.other += 1,
+            }
+            tail += size;
+        }
         std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), head);
     }
+    stats
 }
 
 /// `perf_event_attr`, version-5 layout (112 bytes); fields beyond what we set are
@@ -173,38 +254,150 @@ mod tests {
         assert_eq!(ATTR_FLAGS, F_DISABLED | F_PINNED | F_EXCLUDE_HOST);
     }
 
-    /// `drain_ring_at` copies `data_head` → `data_tail` over a TEST-OWNED control
-    /// page, so the box-only ring drain's offset math + volatile pointer access runs
+    const PAGE: usize = 4096;
+    const DATA: usize = 4096;
+
+    /// A u64-aligned TEST-OWNED stand-in for the perf mmap ring (1 control page +
+    /// `DATA` data bytes), with a writer for fabricated `perf_event_header`s.
+    struct FakeRing {
+        buf: Vec<u64>,
+    }
+    impl FakeRing {
+        fn new() -> Self {
+            Self {
+                buf: vec![0u64; (PAGE + DATA) / 8],
+            }
+        }
+        fn base(&mut self) -> *mut u8 {
+            self.buf.as_mut_ptr().cast::<u8>()
+        }
+        /// Write a header {type, size} at ring offset `off` (mod DATA) and return
+        /// `off + size` (the next record's offset).
+        fn push(&mut self, off: u64, ty: u32, size: u16) -> u64 {
+            let pos = PAGE + (off % DATA as u64) as usize;
+            let bytes = &mut self.buf;
+            // header word: u32 type | u16 misc | u16 size, little-endian.
+            bytes[pos / 8] = u64::from(ty) | (u64::from(size) << 48);
+            off + u64::from(size)
+        }
+        fn set(&mut self, head: u64, tail: u64) {
+            self.buf[DATA_HEAD_OFF / 8] = head;
+            self.buf[DATA_TAIL_OFF / 8] = tail;
+        }
+        fn head(&self) -> u64 {
+            self.buf[DATA_HEAD_OFF / 8]
+        }
+        fn tail(&self) -> u64 {
+            self.buf[DATA_TAIL_OFF / 8]
+        }
+    }
+
+    /// `drain_ring_counting_at` counts record types while draining, over a
+    /// TEST-OWNED ring, so the box-only drain's offset math + pointer access runs
     /// under `cargo miri test` (real provenance + alignment) and the coverage +
     /// mutation gates — no longer a vacuous unsafe gate reachable only via the
     /// `cfg(miri)`-stubbed `PmuBranchCounter::open`.
     #[test]
-    fn drain_ring_at_copies_head_to_tail() {
-        // A u64-aligned in-process stand-in for the perf control page (≥ DATA_TAIL_OFF
-        // + 8 bytes). All accesses go through `base` (single provenance for Miri).
-        let mut page = vec![0u64; (DATA_TAIL_OFF / 8) + 1];
-        let base = page.as_mut_ptr().cast::<u8>();
-        let head_val = 0xdead_beef_0000_1234u64;
-        // SAFETY: `page` is u64-aligned and covers DATA_TAIL_OFF + 8 bytes; `base` is
-        // its sole live pointer for the duration of this block.
-        unsafe {
-            std::ptr::write_volatile(base.add(DATA_HEAD_OFF).cast::<u64>(), head_val);
-            std::ptr::write_volatile(base.add(DATA_TAIL_OFF).cast::<u64>(), 0);
-            drain_ring_at(base);
-            assert_eq!(
-                std::ptr::read_volatile(base.add(DATA_TAIL_OFF).cast::<u64>()),
-                head_val,
-                "tail advanced to head (records drained)"
-            );
-            assert_eq!(
-                std::ptr::read_volatile(base.add(DATA_HEAD_OFF).cast::<u64>()),
-                head_val,
-                "head is untouched (drain only writes the tail)"
-            );
-        }
-        // The offsets are the documented uapi layout.
+    fn drain_counts_each_record_type_and_advances_tail_to_head() {
+        let mut ring = FakeRing::new();
+        let mut off = 0u64;
+        off = ring.push(off, PERF_RECORD_SAMPLE, 8);
+        off = ring.push(off, PERF_RECORD_THROTTLE, 24);
+        off = ring.push(off, PERF_RECORD_SAMPLE, 8);
+        off = ring.push(off, PERF_RECORD_LOST, 16);
+        off = ring.push(off, 3 /* PERF_RECORD_COMM: "other" */, 8);
+        ring.set(off, 0);
+        // SAFETY: `buf` is u64-aligned and covers PAGE + DATA bytes; `base` is its
+        // sole live pointer for the duration of the call.
+        let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+        assert_eq!(
+            stats,
+            PmuOverflowStats {
+                samples: 2,
+                lost: 1,
+                throttle: 1,
+                other: 1,
+            }
+        );
+        assert_eq!(ring.tail(), off, "tail advanced to head (records drained)");
+        assert_eq!(
+            ring.head(),
+            off,
+            "head is untouched (drain only writes tail)"
+        );
+        // A second drain sees nothing new.
+        let again = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+        assert_eq!(again, PmuOverflowStats::default(), "empty ring counts zero");
+        // The offsets + record types are the documented uapi values.
         assert_eq!(DATA_HEAD_OFF, 1024);
         assert_eq!(DATA_TAIL_OFF, 1032);
+        assert_eq!(PERF_RECORD_LOST, 2);
+        assert_eq!(PERF_RECORD_THROTTLE, 5);
+        assert_eq!(PERF_RECORD_UNTHROTTLE, 6);
+        assert_eq!(PERF_RECORD_SAMPLE, 9);
+    }
+
+    /// The byte offsets wrap modulo the data size (head/tail are monotonic byte
+    /// counters): records around the wrap point are still counted.
+    #[test]
+    fn drain_counts_across_the_ring_wrap() {
+        let mut ring = FakeRing::new();
+        let start = DATA as u64 - 8; // last slot before the wrap
+        let mut off = start;
+        off = ring.push(off, PERF_RECORD_SAMPLE, 8); // at DATA-8
+        off = ring.push(off, PERF_RECORD_SAMPLE, 8); // wraps to pos 0
+        ring.set(off, start);
+        // SAFETY: as above.
+        let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+        assert_eq!(stats.samples, 2, "both sides of the wrap counted");
+        assert_eq!(ring.tail(), off);
+    }
+
+    /// A corrupt header (size < 8) can never spin the walk: it is counted under
+    /// `other`, the walk stops, and the ring still drains (tail := head).
+    #[test]
+    fn drain_stops_defensively_on_a_corrupt_header_but_still_drains() {
+        let mut ring = FakeRing::new();
+        let mut off = 0u64;
+        off = ring.push(off, PERF_RECORD_SAMPLE, 8);
+        ring.push(off, PERF_RECORD_SAMPLE, 0); // corrupt: size 0
+        let head = off + 16;
+        ring.set(head, 0);
+        // SAFETY: as above.
+        let stats = unsafe { drain_ring_counting_at(ring.base(), PAGE, DATA) };
+        assert_eq!(
+            stats.samples, 1,
+            "records before the corruption are counted"
+        );
+        assert_eq!(stats.other, 1, "the corrupt header is counted, not spun on");
+        assert_eq!(ring.tail(), head, "the ring still drains fully");
+    }
+
+    /// `PmuOverflowStats::add` accumulates field-wise (the box counter folds each
+    /// drain into its running totals).
+    #[test]
+    fn overflow_stats_add_is_field_wise() {
+        let mut a = PmuOverflowStats {
+            samples: 1,
+            lost: 2,
+            throttle: 3,
+            other: 4,
+        };
+        a.add(PmuOverflowStats {
+            samples: 10,
+            lost: 20,
+            throttle: 30,
+            other: 40,
+        });
+        assert_eq!(
+            a,
+            PmuOverflowStats {
+                samples: 11,
+                lost: 22,
+                throttle: 33,
+                other: 44,
+            }
+        );
     }
 
     /// The built attr is the exact `BR_INST_RETIRED.CONDITIONAL` sampling config —

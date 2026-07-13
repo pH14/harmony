@@ -27,7 +27,9 @@
 //! stalls — is the foreman's box gate (see IMPLEMENTATION.md).
 
 use crate::error::{BackendError, Result};
-use crate::pmu::{DISARM_PERIOD, PerfEventAttr, branch_counter_attr, drain_ring_at};
+use crate::pmu::{
+    DISARM_PERIOD, PerfEventAttr, PmuOverflowStats, branch_counter_attr, drain_ring_counting_at,
+};
 
 /// `PERF_FLAG_FD_CLOEXEC`.
 const PERF_FLAG_FD_CLOEXEC: libc::c_ulong = 8;
@@ -62,6 +64,12 @@ pub(crate) struct PmuBranchCounter {
     /// The overflow ring-buffer mapping (1 control + `RING_DATA_PAGES` data pages).
     ring: *mut libc::c_void,
     ring_len: usize,
+    /// The mapping's page size (control page length; data area = `ring_len − page`).
+    page: usize,
+    /// Cumulative overflow-ring record counts, folded in at every drain — the
+    /// per-record PMI-multiplicity accounting of the nested-x86 re-certification
+    /// (bead hm-b5b). `Cell` because drains happen through `&self` (disarm).
+    stats: std::cell::Cell<PmuOverflowStats>,
 }
 
 impl PmuBranchCounter {
@@ -94,7 +102,13 @@ impl PmuBranchCounter {
                 return Err(e);
             }
         };
-        let counter = PmuBranchCounter { fd, ring, ring_len };
+        let counter = PmuBranchCounter {
+            fd,
+            ring,
+            ring_len,
+            page,
+            stats: std::cell::Cell::new(PmuOverflowStats::default()),
+        };
         // Route overflow signals to THIS thread; arm async generation.
         counter.wire_overflow_signal()?;
         counter.ioctl_none(IOC_ENABLE)?;
@@ -192,13 +206,28 @@ impl PmuBranchCounter {
     }
 
     /// Drain consumed overflow records (`data_tail := data_head`) so a long run never
-    /// stalls on a full buffer. The pointer arithmetic + volatile access lives in the
-    /// pure, Miri-/coverage-/mutation-gated [`drain_ring_at`]; this only supplies the
-    /// real `mmap`'d control-page base.
+    /// stalls on a full buffer, **counting record types while draining** into the
+    /// cumulative [`PmuOverflowStats`]. The pointer arithmetic + record parsing lives
+    /// in the pure, Miri-/coverage-/mutation-gated [`drain_ring_counting_at`]; this
+    /// only supplies the real `mmap`'d base + geometry and folds the counts.
     fn drain_ring(&self) {
-        // SAFETY: `ring` maps `ring_len` = (1 control + 2^n data) pages ≥ one
-        // page-aligned control page, so it covers `DATA_TAIL_OFF + 8` 8-aligned bytes.
-        unsafe { drain_ring_at(self.ring.cast::<u8>()) }
+        // SAFETY: `ring` maps `ring_len` = (1 control + 2^n data) pages; the control
+        // page covers `DATA_TAIL_OFF + 8` 8-aligned bytes and the data area is
+        // `ring_len − page` bytes (a power-of-two multiple of the page size).
+        let delta = unsafe {
+            drain_ring_counting_at(self.ring.cast::<u8>(), self.page, self.ring_len - self.page)
+        };
+        let mut totals = self.stats.get();
+        totals.add(delta);
+        self.stats.set(totals);
+    }
+
+    /// Cumulative overflow-ring record counts since open. Drains (and counts) any
+    /// pending records first, so the totals are current at the read — the harness's
+    /// per-deadline delta is `stats_after − stats_before`.
+    pub(crate) fn overflow_stats(&self) -> PmuOverflowStats {
+        self.drain_ring();
+        self.stats.get()
     }
 }
 
