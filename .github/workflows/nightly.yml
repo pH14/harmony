@@ -83,13 +83,6 @@ jobs:
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vm-state
       - name: miri — vmm-backend
         run: cargo "+${PINNED_NIGHTLY}" miri test -p vmm-backend --all-features
-      # conductor's unsafe is the mock composition's `map_memory` forward
-      # (task 78's CountingBackend); the lib tests compose the VM so it is
-      # reachable under the interpreter. `--lib` only: the integration suites
-      # drive socket servers with full VMs per proptest case — interpreted,
-      # they blow the job ceiling without touching any additional unsafe.
-      - name: miri — conductor (lib)
-        run: cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib
       # film (task 87): geometry/callback rejection paths + revalidation run
       # interpreted; the libretro FFI itself is cfg'd off under Miri. The
       # feature flag pulls in the CoreReplay seam's testable half. Recorded
@@ -135,3 +128,18 @@ jobs:
       # pointer with no FFI. Proptest cases are cut under cfg(miri).
       - name: miri — guest/play-agent (lib + agent + bin unit tests, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/play-agent/Cargo.toml --lib --test agent --bins
+      # conductor's unsafe is the mock composition's `map_memory` forward
+      # (task 78's CountingBackend); the lib tests compose the VM so it is
+      # reachable under the interpreter. `--lib` only: the integration suites
+      # drive socket servers with full VMs per proptest case — interpreted,
+      # they blow the job ceiling without touching any additional unsafe.
+      #
+      # LAST deliberately (task 98): this step had NEVER completed in CI — every
+      # pre-task-98 nightly died at the vmm-core step before reaching it, and the
+      # first run that did reach it (2026-07-13, run 29226001494) was still
+      # interpreting at 57+ min when the job ceiling killed it, skipping three
+      # small crates queued behind it. Running it last means a conductor blowout
+      # can never mask the other crates' verdicts again. Its own budget/shrink is
+      # bead hm-d4y (same hm-d8o class: sha256-dominated VM tests).
+      - name: miri — conductor (lib)
+        run: cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib
