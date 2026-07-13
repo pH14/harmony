@@ -34,10 +34,17 @@ Altra (Apple-silicon route dead); AMD = incoming Epyc; ARM > AMD, parallelize th
   oracle, per-record PMI accounting, retained-runset audit); N-2 re-run DONE (e492a69 —
   1,052,000/1,052,000 exact on the PATCHED mechanism, ≥1M floor met); N-3 floor matrix
   RUNNING on the box (1,000 reps/condition; zero mismatches throughout: smoke ✓,
-  solo ✓ 1,000/1,000, other-core ✓ complete, same-core in progress at the 2026-07-13
-  midday foreman check; then migrate / pause pair / migrate-live / 10k control / metal
+  solo ✓ 1,000/1,000, other-core ✓ complete, same-core ~900/1,000 at the 2026-07-13
+  evening foreman check; then migrate / pause pair / migrate-live / 10k control / metal
   session) · `hm-dbh` evidence committed, `hm-jpu` running → disposition re-record +
   PR #98 merge = `hm-60k` → unblocks appliance `hm-tn9` + preflight CLI `hm-69y`
+
+Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
+(tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
+`hm-d4y` residue = the box confirmation dispatch) and the **vocabulary rename sweep
+MERGED** (tasks/105, PR #106 — the GLOSSARY slate is code: campaign-runner, sdk-events,
+Reproducer, Moment/Span, Subject; wire bytes golden-proven; zero findings across both
+reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
 
 ## Ready (unblocked, waiting for a worker slot or Paul)
 
@@ -47,15 +54,12 @@ Reach-matrix lane (foreman-owned or spawnable next):
   ARM-PORT / ARCH-BOUNDARY to the ruled reach-matrix state (their 2026-07-09/10
   Apple-promoting drafts were dropped from PR #103), plus the two hm-2uw items the slate
   never contained: APPLE-SILICON.md demotion-status header, NESTED-INTEGRATION
-  parked-not-ratified header.
-- **Conductor full-suite Miri restoration** (`hm-d4y`, P1) — UNBLOCKED by the vmm-core
-  Miri gate merge; the unsafe slice is already watched in the nightly, so the remaining
-  debt is the hm-d8o-style shrink of conductor's sha256-dominated VM tests + a
-  box-measured budget. Next crate-code spawn (needs a spec file first).
-- **Vocabulary rename sweep** (`hm-u7q`, P1) — its blocker (open crate branches) cleared:
-  all four task PRs merged 2026-07-13; only the spike branch (PR #98) remains open and it
-  barely touches crates. Needs a spec + a deliberate window (it will conflict with
-  anything spawned after it).
+  parked-not-ratified header. Next foreman docs slot.
+- **Hardware-arrival lane** — Altra arrival blocker `hm-7pb` (P1) → ARM spike execution
+  `hm-idb`; Epyc arrival blocker `hm-9wt` (P2) → AMD spike execution `hm-u1n`. Paul
+  closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
+- **Campaign-runner Miri box confirmation** (`hm-d4y` residue) — one green box-dispatched
+  nightly once the re-cert window frees the box (~13 min expected vs the 155 ceiling).
 - **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
   wedge (`hm-440`), both P2 bugs on main.
 - **macOS-backend design exploration** (`hm-dj0`, P2, background-session filed).
