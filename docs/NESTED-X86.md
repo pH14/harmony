@@ -1,5 +1,23 @@
 # x86 nested-virtualization backend — feasibility spike
 
+> **⚠ DISPOSITIONS UNDER RE-CERTIFICATION (2026-07-12).** The PR #98
+> evidence-integrity review (foreman round 1 + blind GPT-5.6 Sol pass) found the
+> recorded ALL-GO dispositions **not supported by the retained evidence as
+> written**: the N-2 hammer ran the *stock* backend (`KvmBackend::new()`, not
+> `PatchedKvmBackend` — patches 0004/0005 were not the mechanism hammered), the
+> appliance harness could report green on failed gates, the N-3 rep floors were
+> not met for several conditions, and the tested appliance image has no committed
+> build manifest. Paul ratified a re-certification program 2026-07-12 (beads
+> hm-b5b → hm-dbh ∥ hm-jpu → hm-60k): harness-integrity fixes, then N-2 re-run on
+> the patched mechanism with per-record overflow accounting and an independent
+> guest work oracle, then N-3 at its stated floors. **Until that completes, every
+> stage disposition recorded below is historical and carries no certification
+> weight**; what stands is the *mechanism demonstration* (the appliance boots
+> nested, the determinism ABI round-trips, retained conditions show bit-identical
+> hashes). The runset-validity audit is
+> `spikes/nested-x86/results/AUDIT-2026-07-12.md`. Re-certified dispositions will
+> be re-recorded from new evidence only.
+
 Status: **research spike (2026-07-09).** This document is a de-risking program, not a claim
 that the backend is feasible. It is the x86 sibling of `docs/APPLE-SILICON.md`: the same
 thesis — a deterministic hypervisor running *as a guest* of somebody else's hypervisor — on

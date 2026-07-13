@@ -5,14 +5,22 @@ Evidence formats: `schemas/README.md`. Box side lives under `/root/nested-x86-sp
 
 ## Dispositions (running)
 
-| Stage | Disposition | Evidence |
+> **⚠ UNDER RE-CERTIFICATION (2026-07-12)** — the PR #98 evidence-integrity
+> review invalidated the ALL-GO record as written (stock backend in the N-2
+> hammer, green-on-fail harness, unmet N-3 floors, unpinned appliance
+> provenance). See the header of `docs/NESTED-X86.md` and
+> `results/AUDIT-2026-07-12.md`. The table below is the HISTORICAL record and
+> carries no certification weight until the re-run (beads hm-dbh / hm-jpu)
+> re-records it from new evidence.
+
+| Stage | Historical disposition | Evidence |
 |---|---|---|
-| N-0 capability truth table | **GO** (2026-07-10) | `results/n0/` runsets 001–005 (reboot identity closed) |
-| N-1 appliance runs nested | **GO** (2026-07-10) | `results/n1/` runset-002 |
-| N-2 existential trio | **GO** (2026-07-10) | `results/n2/` — 1,052,000/1,052,000 exact + post-reboot 10k/10k |
-| N-3 full-stack + adversarial L0 | **GO** (2026-07-10) | `results/n3/` — one hash across all conditions, nested==metal |
-| N-4 perf envelope | **GO** (2026-07-10) | workloads 1.01–1.08×; exact-landing ~5.4×/deadline |
-| N-5 packaging rehearsal | **GO** (2026-07-10) | `results/n5/` — one-command fresh-tree demo PASS |
+| N-0 capability truth table | GO (2026-07-10) | `results/n0/` runsets 001–005 (reboot identity closed) |
+| N-1 appliance runs nested | GO (2026-07-10) | `results/n1/` runset-002 |
+| N-2 existential trio | GO (2026-07-10) — **invalidated: stock backend** | `results/n2/` — see audit |
+| N-3 full-stack + adversarial L0 | GO (2026-07-10) — **floors unmet** | `results/n3/` — see audit |
+| N-4 perf envelope | GO (2026-07-10) | workloads 1.01–1.08×; exact-landing ~5.4×/deadline |
+| N-5 packaging rehearsal | GO (2026-07-10) | `results/n5/` — one-command fresh-tree demo PASS |
 
 ## Commands (box)
 
