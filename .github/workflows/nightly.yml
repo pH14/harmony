@@ -176,7 +176,7 @@ jobs:
       #
       # Budget (task 104, measured): the exact command below runs in 11 min 46 s
       # REAL wall on an uncontended M-class Mac — 84 passed, 0 failed, 3 ignored —
-      # against ~2 h 25 min for the same suite pre-shrink. NOTE when re-measuring:
+      # against ~2 h 24 min for the same suite pre-shrink. NOTE when re-measuring:
       # libtest printed "finished in 1312.67s" for that 706-second run — under Miri
       # WITHOUT -Zmiri-disable-isolation that line is the interpreter's VIRTUAL
       # clock (~1.9x real here), so time the command externally, as the vmm-core

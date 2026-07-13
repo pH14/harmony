@@ -1250,3 +1250,179 @@ play-agent is a different story and needs no caveat: its full `--lib` Miri suite
 Mine ran on an uncommitted tree and the restoring `git checkout` ate the round-2 source edits —
 caught immediately by the Linux-target clippy, since `boxrun.rs` was the one file the script
 never touched and it still referenced the renamed field. Cheap to redo, but avoidable.)
+
+## Task 104 — restoring the full lib suite under Miri (`hm-d4y`)
+
+**The debt.** `cargo miri test -p conductor --lib` had **never completed in CI**. PR #99
+left a ~1.3 s UNSAFE-ONLY slice here (the one test that drives the crate's only `unsafe`,
+the task-78 `CountingBackend::map_memory` forward in `src/mock.rs`) and removed the rest
+with a loud comment: both box attempts had timed out on it (run 29226001494 killed at
+57+ min; run 29236400380 still interpreting after 3 h 11 min), and it took 1 h 50 min real
+even on an idle Mac. This task brings the rest back under a measured budget.
+
+### The profile — and where the spec's cost model did not hold
+
+The spec (from the vmm-core `hm-d8o` recipe) predicted a **sha256-dominated, RAM-scaled**
+tail and prescribed shrinking oversized test-RAM constants. **That is not conductor's
+shape**, and the profile is what says so. Per-test `--report-time` over all 87 lib tests:
+
+| virtual | test |
+|--------:|------|
+| 6486.7 | `benchcampaign::…::dual_config_runs_and_is_deterministic_twice` |
+| 2750.4 | `benchcampaign::…::rare_entropy_bug_is_searchable` |
+| 1671.2 | `benchcampaign::…::signal_accumulates_cells` |
+| 1592.0 | `benchcampaign::…::events_run_to_budget_after_find` |
+| 1043.0 | `gamecampaign::…::campaign_replays_bit_identically` |
+| 521.5 | `gamecampaign::…::selector_v1_and_pure_random_diverge` |
+| 517.7 | `gamecampaign::…::distinct_seeds_diverge` |
+| 371.1 | `campaign::…::run_campaign_populates_timing_for_every_exercised_phase` |
+| 347.4 | `campaign::…::a_planted_sdk_assertion_is_reported_by_a_campaign_run` |
+| 260.4 | `gamecampaign::…::cells_and_depth_flow_from_sdk_events` |
+| | *(77 more, 550 s together)* |
+| **16111** | **total (87 tests) ≈ 2 h 24 min real** |
+
+The lib composes exactly **one** mock VM (16 KiB `mock::RAM`, four pages), in exactly one
+test — the unsafe slice. There is no `MEM`-chunk state-hash tail to shrink: `mock::RAM` is
+already at the floor its guest image needs (a byte at `2 * 4096`), and shrinking it would
+have bought ~1 s. **The tail is the campaign search loops** — the toy-machine benchmark and
+game campaigns run 2048- and 64-branch budgets, and the interpreter charges ~0.4–4 s of
+*real* time per branch (env mint/encode, the toy step, the real `logtmpl` clusterer, the
+`BTreeSet`/frontier bookkeeping, the retained `RunTrace`s). So the `hm-d8o` treatment lands
+on the **budgets**, not on RAM.
+
+### What landed (all `cfg(miri)`-keyed, all inside `#[cfg(test)]` modules)
+
+Native runs are **byte-for-byte unchanged** — the shrinks live in test code, not in the
+public constructors (`BenchConfig::smoke`, `GameCampaignConfig::smoke`, `CampaignConfig::toy`
+are untouched, and `cargo public-api` is unchanged). Each shrink was validated *natively*
+first, by running the real campaign at the prospective budget and checking the exact
+assertion still holds.
+
+1. **`gamecampaign::tests::SMOKE_BRANCHES`: 64 → 8 branches under Miri.** Every claim these
+   campaigns pin is **budget-independent** — a rerun is bit-identical, distinct seeds
+   diverge, the selector diverges from blind search, cells and depth flow out of the SDK
+   events. Verified natively at 4/8/16 branches: all four hold, and the seed-42 campaign
+   still reaches depth ≥ 1 and mints the same 10 cells it does at 64. (`campaign_replays_
+   bit_identically`'s `assert_eq!(events.len(), 64)` now reads the budget rather than the
+   literal, so it keeps its full strength on both paths.) 2342 v → 318 v.
+
+2. **`campaign::tests::toy_cfg()`: the planted-bug search space narrows 256 → 16 schedules
+   under Miri.** The full toy space is 4 gpas × 4 mask bits × an 8-wide `Moment` window, and
+   the seeded search walks **868 branches** before it hits the planted
+   `(0x3000, bit 31, in-window)` trigger. Under Miri the space is 2 × 2 × 4 = 16 schedules
+   that still **bracket** the trigger — a genuine three-dimensional search, just a coarser
+   one — and the same campaign finds the bug at **branch 9**, with every `verify_campaign`
+   gate still passing (found, N/N reproduced, nominal clean) and a timing sample for every
+   phase. This is the closest analogue to vmm-core's RAM shrink: the *same* code path, less
+   of it. `mint_is_deterministic_and_in_space` deliberately keeps the **full** 256-schedule
+   space, so the wide mint stays Miri-exercised. 718 v → 18 v.
+
+3. **`benchcampaign::tests::smoke_cfg(seed, miri_budget)`: budgets sized per test.** These
+   assertions *are* budget-coupled — the manifest bugs are calibrated to a ~1/256 fire rate
+   — so the budget is sized against the find index each test actually needs, measured
+   natively: bug 3 first fires at branch **19** (Signal) / **33** (Baseline) ⇒ 64; bug 1's
+   Baseline search at branch **202** ⇒ 384; and `signal_accumulates_cells`, whose ">1
+   distinct cell" claim is budget-independent (5 cells by branch 16) ⇒ 32. 6014 v → 435 v.
+
+4. **One test is gated** — `dual_config_runs_and_is_deterministic_twice`,
+   `#[cfg_attr(miri, ignore = "…")]`. It is four full 2048-branch campaigns: **6487 v, 60 min
+   real, 40% of the whole pre-shrink run.** It needs a find in **both** configurations
+   (bug 1 at branch 202/255), so no affordable budget leaves it non-vacuous — cutting it
+   would keep the test *green* while silently emptying its central assertion, which is worse
+   than skipping it honestly. Its rationale string records (a) that it is pure safe code over
+   `BenchToyMachine` — `Vmm` is never composed, so `map_memory` is not on the path and the
+   unsafe forward stays Miri-run in the slice test — and (b) the cheaper Miri-run siblings
+   that keep its family covered: `rare_entropy_bug_is_searchable` drives the same
+   `run_bench_campaign` find/cert path over **both** configurations,
+   `events_run_to_budget_after_find` keeps a real bug-1 find, and campaign
+   determinism-twice is pinned by `gamecampaign::…::campaign_replays_bit_identically`.
+
+The other two ignored tests are pre-existing (tempdir + `TraceStore`; Miri's filesystem
+isolation forbids them). **No test that reaches the unsafe forward is gated.** The lib's
+only proptest module (`planted`) already cut its cases under `cfg!(miri)` and disabled
+failure-persistence, so spec item 4 needed nothing.
+
+### The budget (externally timed, per the recorded gotcha)
+
+`MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p conductor --lib`
+— the exact nightly command — on an uncontended M-class Mac:
+
+**84 passed, 0 failed, 3 ignored — `real 11m46.349s`** (was ~2 h 24 min: a 12× cut).
+
+libtest printed `finished in 1312.67s` for that 706-second run. As vmm-core's task-98 notes
+record: **without `-Zmiri-disable-isolation` that line is the interpreter's deterministic
+VIRTUAL clock**, ~1.9× real here. Every wall figure above was measured externally with
+`time`; the per-test numbers in the profile table are virtual, which is exactly right for
+*ranking* (and, usefully, contention-insensitive — the 87-test profile was gathered 8-way
+parallel and the virtual clock is bit-identical to a serial run) and wrong for budgets.
+
+### `nightly.yml`
+
+The UNSAFE-ONLY slice is replaced by the full `-p conductor --lib` step, kept **last** in
+the `miri` job (PR #99's ordering: it is still the job's longest pole, and a blowout here
+must not skip the small crates above it). The job ceiling is re-derived on PR #99's own
+pattern rather than left where it was: 11 min 46 s Mac ⇒ ~13 min box (the ~1.12× factor from
+PR #99's vmcall-transport comparison), new quiet-hour sum ≈ 48 + 13 ≈ 61 min, ×2.5 ⇒
+**`timeout-minutes: 155`** (the old 120 was 2.5× the old 48-minute sum, which had no
+conductor step in it).
+
+The slice's filter-rot guard is **generalized into a vacuity guard**, since with no `--exact`
+filter there is no filter left to rot — but there are still exactly two ways to make this
+step green while watching nothing, and it now fails on both: (a) the `map_memory`-forward
+test stops running (renamed, or newly `cfg_attr(miri, ignore)`d) — the crate's only `unsafe`
+would go unwatched; (b) the ignored count creeps past 3 — the tail this task just un-gated
+gets quietly re-gated. Both branches were exercised against real and doctored step output.
+
+### Deviations considered and rejected
+
+- **Shrink `mock::RAM` (the spec's item 2).** Rejected on measurement: the lib composes one
+  16-KiB mock VM in one test that interprets in ~1.3 s. There is nothing there. Recorded
+  rather than silently skipped, because the spec's cost model — inherited from vmm-core —
+  predicted this would be the lever, and the profile says conductor's tail is somewhere else.
+- **Shrink `BenchConfig::smoke` / `GameCampaignConfig::smoke` / `CampaignConfig::toy`
+  themselves under `cfg(miri)`.** Rejected: those are **public** constructors the box driver
+  and `main.rs` call. A `cfg(miri)` fork inside them would put a test-only concern in the
+  library's public surface. The shrinks live in the test modules instead, which also keeps
+  `public-api` unchanged (a task gate).
+- **Gate the whole campaign tail** (the cheapest possible change). Rejected as gate theater:
+  it is what the interim slice already is, and it would leave the crate's headline logic —
+  the campaign drivers — with no Miri coverage at all, which is the debt this task exists to
+  pay, not to re-file.
+- **Shrink `dual_config_runs_and_is_deterministic_twice` to ~384 branches anyway** (≈10 min
+  interpreted, the single largest remaining item). Rejected: at any budget below ~256 its
+  `should find bug 1` assertion goes vacuous in one or both configurations, and at 384 it
+  still costs more than the entire rest of the suite. An honest skip with a rationale beats a
+  green test that asserts nothing.
+- **Reduce `replay_n` (25 → 3) under Miri.** Considered and *not* taken: with the search
+  space narrowed, the 25 replays cost ~10 s of the run. Not worth weakening the N/N
+  reproduction gate for.
+
+### Known limitations / integrator notes
+
+- **The budget shrinks are coupled to the find indices** (`benchcampaign`, item 3). They are
+  deterministic — fixed campaign seeds, fixed PRNG — so this cannot flake; but a future
+  change to `mint_scenario_env` or `Prng` that moves a find past its Miri budget will red the
+  nightly with a legible failure (`should find bug N`). **The fix is to raise the budget in
+  `smoke_cfg`, not to delete the assertion.** The margins are ~1.9× (bug 1) and ~1.9–3.4×
+  (bug 3), and the rationale comment in the test module says all of this.
+- **The box demonstration is NOT done, and deliberately so.** The spec conditions the box
+  dispatch on the box being free of the nested-posture re-cert window; `hm-jpu` (N-3 re-cert,
+  P1) is **IN_PROGRESS**, so I did not touch the box. Handing off
+  **budget-demonstration-ready**, exactly as the spec's step 5 directs: the local figure is
+  11 min 46 s real, the Mac→box factor is ~1.12× (⇒ ~13 min quiet-hour), and the checked-in
+  ceiling (155) already carries the 2.5× contention margin. The foreman schedules the
+  confirming dispatch when the box frees up; nothing else in this task waits on it.
+- **`the_determinism_gate_refuses_a_run_that_did_no_work` (222 v ≈ 1.9 min) was left alone.**
+  Its budgets are already tiny (0/4/8 branches); its cost is the `BoxGuest` fixture's 120
+  frame markers per rollout, and its assertions pin exact frame counts (`min_completed_frames
+  == 119`), so shrinking the fixture would mean rewriting the assertions. It is the largest
+  thing I chose not to touch, and at ~2 minutes it is not worth the blast radius.
+
+### Gates (task 104)
+
+`build` / `nextest` (**146 passed, 1 skipped — identical to the pre-task tally**) /
+`clippy -D warnings` (host **and** `x86_64-unknown-linux-gnu`) / `fmt` / `deny` /
+`public-api` unchanged, all green on the Mac. The exact `nightly.yml` conductor command
+passes end-to-end on `nightly-2026-06-16`, exit 0, **11 min 46 s real**: 84 passed, 0 failed,
+3 ignored. `mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit` — the unsafe
+forward — is among the passing, and the step's guard fails if it ever stops being.
