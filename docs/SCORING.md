@@ -1,16 +1,33 @@
 # SCORING — the Scoring seam's interior
 
-> **Status: RULED (Paul, 2026-07-07).** Companion to
-> `docs/EXPLORATION.md` §"The Scoring seam": that doc rules the seam's *boundaries* (Sensor → Cell →
-> Archive, the three signal tiers, coverage-is-terminal); this one rules its *interior* — what makes
-> a state worth keeping (`CellFn`/`Archive`), what makes a kept state worth returning to
-> (`Selector`/retention), and the playbook for iterating those answers when a gate says FAIL. Both
-> imminent GO/NO-GO gates (task 69 M2, `tasks/69-signal-bug-correlation.md` + issue #66; task 84,
-> `tasks/84-exploration-gate.md`) route FAIL to "fix the cell function, not the search" — this is
-> the missing spec for *how*. Grounded in four primary-source research reports (§Sources); every
-> borrowed term follows GLOSSARY citation discipline. The GLOSSARY scoring addendum rides this PR.
+> **Status: PARTIALLY SUPERSEDED (2026-07-12).** Paul originally ruled this design on 2026-07-07 as
+> the interior of the then-current `Sensor → CellFnV1 → Archive` seam. `docs/DISSONANCE-STRATEGY.md`
+> now governs the production observation and archive path. This document remains the literature and
+> decision record behind genesis-rooted history, explicit retention, deterministic best-per-cell
+> domination, and human-ratified configuration changes. Its mutable `Archive::admit`, `fold_k`/
+> channel menu, selector-bandit coupling, and per-subtree STADS assignment are historical and must
+> not be implemented as target interfaces. “Re-key” in the historical record means **recompute
+> cells** when it refers to changing a cell projection.
 
-## Why this is one ruling, not two
+## Current surviving contract
+
+- A changed `CellFn` means **recompute cells** from the complete genesis-rooted evidence prefix.
+- Raw evidence, bounded working-set membership, retained Entry assignments, and finalized reports
+  have distinct retention semantics; silent garbage collection is forbidden.
+- Quality is deterministic per-Entry domination data and never a cell dimension.
+- Configuration changes occur at a sealed campaign boundary and remain human-ratified until an
+  automated policy earns promotion against controls.
+- The generic Explorer, Differential observation/materialization plane, simple Selector, and
+  campaign-level STADS reporting/stopping are the production direction.
+
+Everything below is retained as the research and design record for the 2026-07-07 ruling. Its
+`CellFnV1`, feature/channel, mutable `Archive::admit`, exact `Reward` widening, task-70 selector,
+per-subtree STADS, and seal-pool policy are **non-normative** unless restated above or in
+`docs/DISSONANCE-STRATEGY.md`.
+
+## Historical design record (non-normative)
+
+### Why this was one ruling, not two
 
 The descriptor question ("which guest states count as the same, and which are worth keeping?") and
 the economics question ("which kept state do we spend the next rollout on, and which seals earn
@@ -30,7 +47,7 @@ and the `Reward` widening (R4) is its load-bearing ruling.
 Throughout, **entry** means a frontier entry (today `FrontierEntry`/`VirtualExemplar`, `Entry` on
 the GLOSSARY rename slate) and **`EntryRef`** its stable id (today `ExemplarRef`).
 
-## What the verified literature settles
+### What the verified literature settles
 
 Six laws, each verified against primary sources (full extracts with per-claim citations and
 UNVERIFIED flags in §Sources):
@@ -78,9 +95,9 @@ UNVERIFIED flags in §Sources):
    10–20% of programs disagree). Any gate that ranks cell functions must report a **bug-based**
    metric.
 
-## The rulings
+### The historical rulings
 
-### R1 — the re-key contract: a `CellFn` change never invalidates a campaign
+#### R1 — the re-key contract: a `CellFn` change never invalidates a campaign
 
 The archive is a **derived structure**. Because `RunTrace`s are retained and `Archive::admit` is a
 pure fold over `(trace, forks, cells, sensors)`, changing the cell function means: re-key every
@@ -104,7 +121,7 @@ Two preconditions are pinned as part of this ruling, not assumed:
   playbook). If trace storage must be bounded, its GC joins the R6 economics explicitly; silent
   trace GC breaks this contract.
 
-### R2 — CellFn v2: keep the composition, make granularity principled
+#### R2 — CellFn v2: keep the composition, make granularity principled
 
 `CellFnV1`'s composition stands: species-progress ⊕ last-new-species ⊕ per-channel reified state,
 coverage excluded by construction (the EXPLORATION ruling — coverage is terminal, never blended
@@ -129,7 +146,7 @@ into along-timeline keys). Three additions:
   additional feedback indiscriminately… limited to low information gain feedback"). A campaign
   wires in the few state channels it means; the default stays empty.
 
-### R3 — quality is a domination preference, never a key dimension
+#### R3 — quality is a domination preference, never a key dimension
 
 The "prefer more missiles" question (logged, not ruled, at R-L2) is ruled: an orthogonal quality
 objective rides as a **secondary integer key carried per entry**, resolved at admission by per-cell
@@ -140,7 +157,7 @@ Metroid discipline; MOME's per-cell Pareto front is the escalation path if two o
 genuinely trade off, not the v2 default). Best-per-cell domination itself stays mandatory from day
 one, per EXPLORATION's standing ruling.
 
-### R4 — the `Reward` widening (the seam itself)
+#### R4 — the `Reward` widening (the seam itself)
 
 `Reward` widens **additively** (task 70's spec anticipates this) to a fixed vector of meaning-blind
 integer channels — exactly two:
@@ -161,7 +178,7 @@ Invariant 5 survives intact: the Selector stays cell-meaning-blind — `Reward` 
 integer magnitudes (conventions rule 4), and the **scalarization policy lives in the Selector**,
 which is where the economics belong.
 
-### R5 — Selector economics (grounds task 70)
+#### R5 — Selector economics (grounds task 70)
 
 - **v2 (count-based):** energy-weighted choice over the frontier — AFLFast-FAST shape
   (`2^{s}/f`: chosen-count in the exponent, visit-frequency in the denominator) with **Entropic's
@@ -182,7 +199,7 @@ which is where the economics belong.
   the cell). The spine half-enforces this: replacement mints a fresh `EntryRef` (never reused), so
   per-entry state resets naturally; this ruling covers any per-*cell* state the bandit keeps.
 
-### R6 — retention economics (the seal pool)
+#### R6 — retention economics (the seal pool)
 
 Retention is a **pure cost knob, never a correctness concern** (EXPLORATION §Navigation: eviction
 is always reproducibility-safe). Ruling: adopt Agamotto's structure over the task-68
@@ -195,14 +212,14 @@ to fuzzing** — flagged as a genuine open opportunity, with its memoryless-fail
 as the port's first checkpoint, not adopted here. Pool GC of traces, if ever needed, joins this
 ruling per R1.
 
-### R7 — the stopping rule
+#### R7 — the stopping rule
 
 STADS Good-Turing (`explorer/src/stads.rs`, already merged): `Û(n) = f₁/n` — singleton cells over
 total rollouts — bounds the probability the next rollout discovers a new cell. Two uses ruled: the
 campaign-level abort trigger, and the per-subtree exhaustion signal feeding the v3 bandit (a mined-
 out subtree's residual discovery probability tells the Selector to stop expanding it).
 
-## The E-fails playbook (what a gate FAIL triggers)
+### The E-fails playbook (what a gate FAIL triggered)
 
 When task 69 M2 or task 84 fails — signal doesn't correlate with bugs, archive explodes or
 collapses — the response is a procedure, not a judgment call:
@@ -229,7 +246,7 @@ collapses — the response is a procedure, not a judgment call:
    existed (the counterfactual cascade, which step 3c inherits). The playbook is a cheap filter
    that kills bad cell functions, not an oracle that crowns the best one.
 
-## Scope fences
+### Scope fences
 
 - **Automatic search over feedback functions** — running the playbook's steps 2–4 under a bandit,
   unattended — is genuinely unclaimed in the fuzzing literature (verified sweep: runtime selection
@@ -241,7 +258,7 @@ collapses — the response is a procedure, not a judgment call:
 - **Oracle economics** (what to judge, Elle wrapping) are task-75-resurrection territory, not
   scoring.
 
-## Vocabulary minted here (mirrored in `docs/GLOSSARY.md`, same PR)
+### Vocabulary minted by the historical ruling
 
 - **re-key** *(verb)* — recompute every retained timeline's cells under a changed `CellFn`, then
   rebuild the archive by re-running admission (AURORA's container rebuild / Go-Explore's archive
@@ -251,7 +268,7 @@ collapses — the response is a procedure, not a judgment call:
   (AFLFast's power-schedule term, used for AFLFast's mechanism).
 - **`quality`** *(reserved)* — the second `Reward` channel (R4): the R3 domination magnitude.
 
-## Sources
+### Sources
 
 Primary-source research reports (per-claim citations, verbatim formulas, UNVERIFIED flags) were
 produced 2026-07-06 and are archived in the session records; the load-bearing primaries: Wang,

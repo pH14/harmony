@@ -1,5 +1,61 @@
 # Task 86 — the real-game workload: Super Mario Bros. under the fault-free exploration gate
 
+> **STRATEGY AMENDMENT (2026-07-12).** M0 remains live and deliberately narrow: guest/core
+> provisioning, billboard, film, boot determinism, and workload evidence. It makes no search-policy
+> or cell-quality claim and must not patch `LinkSensor` to manufacture one. M1's `LinkSensor` /
+> `LINK_STATE_CHANNEL` cell key and task-70 selector referendum are superseded. The held-out SMB
+> evaluation resumes only after `hm-bbx` and rewritten `hm-cs5`, using normalized SDK evidence,
+> Differential-materialized cells at actual seals, and the simple archive-guided configuration
+> versus pure random. Any later selector or Portfolio becomes an additional frozen comparison, not
+> a prerequisite for M0 or the first held-out gate.
+
+## Live contract
+
+M0 is owned by Bead `hm-ahb` and contains only:
+
+- the pinned libretro core and SMB guest-image/workload provisioning;
+- the deterministic play agent, RAM-map decoding, unconditional billboard, and legibility events;
+- boot and same-seed execution determinism on the box;
+- the re-homed film gate: load one real billboard savestate into the same pinned core, run/render a
+  real clip of at least 300 frames, prove same-input render identity, and prove film observation is
+  hash-neutral 25/25;
+- evidence capture under the existing baseline solely to inspect the workload, with no claim about
+  archive cells, selector quality, or search advantage.
+
+M0 retains these hard safety and portability requirements from the original specification:
+
+- The copyrighted ROM is never committed, vendored, or fetched. The image reads the user-supplied
+  `HARMONY_SMB_ROM`; its SHA-256 is recorded. Without it, ROM-independent builds/tests run and every
+  ROM gate reports **SKIP loudly**—skip is not green.
+- The libretro core is fetched from a documented commit-pinned upstream under a compatible license;
+  it is not vendored. Guest and film renderer use the same pinned core commit.
+- `unsafe` is limited to the named libretro C-ABI and billboard `pagemap`/`mlock` seams, each block
+  has a `// SAFETY:` justification, privileged/FFI calls sit behind a safe mock seam, and the crate
+  runs clean under the repository's pinned Miri command while exercising its unsafe-adjacent logic.
+- Portable macOS/Linux tests cover fixed-entropy chord decoding, every RAM-map field on synthetic
+  fixtures, billboard round-trip, and deterministic benchmark bookkeeping without a ROM.
+- With a ROM on the box, same campaign seed reproduces the per-branch `state_hash` sequence 25/25
+  and one recorded deep reproducer's terminal hash 25/25. Solo/co-tenant divergence is a P0 stop.
+- Box work follows `docs/BOX-PINNING.md`. After any patched-KVM run, terminate campaign processes,
+  wait for zero `kvm_intel` users, restore stock `kvm`/`kvm_intel`, and verify fresh-session module
+  size **1396736**. Gates run in the foreground and their results are read before reporting.
+
+The billboard's per-frame libretro savestate is observation data used only for host-side film
+rendering. It is never an Explorer restoration state and never competes with consonance snapshots
+or a `Reproducer` as search currency.
+
+M1 is a separate held-out evaluation owned by `hm-2su`, blocked by `hm-bbx`, M0, and the explicit
+mechanism-GO decision `hm-yjf` after `hm-cs5`. It compares the frozen simple cooperative
+configuration with pure random. SMB does not tune that configuration; a post-inspection retune is
+diagnostic or starts a new evaluation split.
+
+## Historical specification — non-normative
+
+**Everything below this line, through end of file, is the superseded combined M0/M1 task-86
+specification.** It remains as workload and film rationale. Its LinkSensor, task-70, cell,
+measurement, dispatch, acceptance, savestate, and non-goal statements are not implementation
+authority.
+
 > **FRONTIER · the held-out generalization test for the search seam (the Metroid discipline,
 > on a real game).** Task 84 proves signal-beats-random on a maze whose depth, size, and
 > branching are manifest knobs — a workload *designed* to be beatable, and the fixture task
