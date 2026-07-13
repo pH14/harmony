@@ -68,9 +68,12 @@ jobs:
     runs-on: self-hosted
     # Budget (task 98, measured on the box, run 29236400380): vmcall 13.2 +
     # vm-state 2.4 + vmm-backend 15.9 + film 16.0 + snapshot-store 0.8 +
-    # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job. 120 = ~2.5x
-    # that, absorbing the ~2x step slowdown a contended box showed on the
-    # midday dispatch 29251169490 (see the vmm-core job comment).
+    # flow-agent 0.1 = ~48 min co-tenant with the vmm-core job, plus the
+    # play-agent step (task 86, landed on main under this measurement — the
+    # flow-agent shape, minutes not tens) and the ~1.3 s conductor slice.
+    # 120 = ~2.5x the measured wall, absorbing the ~2x step slowdown a
+    # contended box showed on the midday dispatch 29251169490 (see the
+    # vmm-core job comment).
     timeout-minutes: 120
     env:
       PINNED_NIGHTLY: nightly-2026-06-16
