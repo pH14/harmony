@@ -1,0 +1,8 @@
+{
+  "condition": "migrate",
+  "deadlines": 100000,
+  "seed": 2600001012,
+  "stress_pid": "",
+  "cpuset": "0-15",
+  "started": "2026-07-13T06:58:08Z"
+}
