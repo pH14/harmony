@@ -131,10 +131,12 @@ pub struct NodeId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct ConnId(pub u64);
 
-/// V-time: a count of retired conditional branches — a *derived view* of the
-/// [`Moment`] axis, used for fault delays and windows. Mirrors the integration
-/// type. Fault delays ([`Fault::NetLatency`], [`Fault::BlockLatency`],
-/// [`Fault::ProcPause`]) and [`HostFault::SkewTime`] are in these branch-count
-/// units.
+/// A **duration** on the deterministic V-time axis, in retired-conditional-
+/// branch counts. Mirrors the integration type. Fault delays
+/// ([`Fault::NetLatency`], [`Fault::BlockLatency`], [`Fault::ProcPause`]) and
+/// the [`HostFault::SkewTime`] delta are `Span`s; points on the axis are
+/// [`Moment`]s. (The GLOSSARY rename of this crate's former `VTime` newtype —
+/// same `u64`, same encoded bytes; "V-time" survives as the name of the
+/// work-derived clock itself.)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct VTime(pub u64);
+pub struct Span(pub u64);

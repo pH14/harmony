@@ -56,7 +56,7 @@
 //!   partitions ARE enforced (a standing `nft drop`).
 
 use environment::{Answer, Fault};
-use flow::{ConnId, FlowDecider, FlowPolicy, NodeId, VTime};
+use flow::{ConnId, FlowDecider, FlowPolicy, Moment, NodeId, Span};
 use hypercall_proto::{Client, ClientError, Status, Transport};
 
 /// The fixed `nftables` table + chain the agent installs its verdict rules into.
@@ -99,7 +99,7 @@ pub fn policy_from_answer(answer: &Answer, seed: u64) -> Result<FlowPolicy, MapE
         Answer::Nominal => Ok(FlowPolicy::Nominal),
         Answer::Supply(_) => Err(MapError::SupplyForFlow),
         Answer::Fault(fault) => match fault {
-            Fault::NetLatency(d) => Ok(FlowPolicy::Latency(VTime(d.0))),
+            Fault::NetLatency(d) => Ok(FlowPolicy::Latency(Span(d.0))),
             Fault::NetLoss { num, den } => Ok(FlowPolicy::Loss {
                 seed,
                 num: *num,
@@ -187,7 +187,7 @@ impl EnfCommand {
 /// own time is deterministic; the unit scale is a documented knob (identity ×1µs),
 /// not a source of nondeterminism. `saturating` so a hostile `u64::MAX` delay
 /// clamps rather than wraps.
-fn vtime_to_micros(d: VTime) -> u64 {
+fn vtime_to_micros(d: Span) -> u64 {
     d.0
 }
 
@@ -458,7 +458,7 @@ pub fn selfcheck_agree<S: PartialEq>(label: &str, first: &S, second: &S) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use environment::VTime as EnvVTime;
+    use environment::Span as EnvSpan;
 
     fn target() -> FlowTarget {
         FlowTarget {
@@ -478,8 +478,8 @@ mod tests {
     #[test]
     fn net_faults_map_onto_flow_policy() {
         assert_eq!(
-            policy_from_answer(&Answer::Fault(Fault::NetLatency(EnvVTime(500))), 0).unwrap(),
-            FlowPolicy::Latency(VTime(500))
+            policy_from_answer(&Answer::Fault(Fault::NetLatency(EnvSpan(500))), 0).unwrap(),
+            FlowPolicy::Latency(Span(500))
         );
         assert_eq!(
             policy_from_answer(&Answer::Fault(Fault::NetThrottle { bps: 1000 }), 0).unwrap(),
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn latency_plan_is_a_flow_filtered_netem_delay() {
-        let cmds = enforcement_commands(&FlowPolicy::Latency(VTime(2500)), &target()).unwrap();
+        let cmds = enforcement_commands(&FlowPolicy::Latency(Span(2500)), &target()).unwrap();
         // prio root, netem child on band 1:3, and a u32 filter to the flow.
         assert_eq!(cmds.len(), 3);
         assert!(cmds.iter().all(|c| c.program == "tc"));

@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use flow::{
-    ConnId, Dir, FlowAction, FlowDecider, FlowEngine, FlowEvent, FlowPolicy, NodeId, VTime,
+    ConnId, Dir, FlowAction, FlowDecider, FlowEngine, FlowEvent, FlowPolicy, Moment, NodeId, Span,
 };
 use proptest::prelude::*;
 
@@ -80,7 +80,7 @@ pub fn run_all<E: FlowEngine>(
     for ev in events {
         engine.on_event(ev, decider);
     }
-    engine.due(VTime(u64::MAX))
+    engine.due(Moment(u64::MAX))
 }
 
 /// Feed `events`, draining after each event at that event's own V-time, then a
@@ -99,12 +99,12 @@ pub fn run_incremental<E: FlowEngine>(
             out.extend(engine.due(now));
         }
     }
-    out.extend(engine.due(VTime(u64::MAX)));
+    out.extend(engine.due(Moment(u64::MAX)));
     out
 }
 
 /// The V-time an event carries, if any (`Open` carries none).
-fn event_time(ev: &FlowEvent) -> Option<VTime> {
+fn event_time(ev: &FlowEvent) -> Option<Moment> {
     match ev {
         FlowEvent::Open { .. } => None,
         FlowEvent::Chunk { at, .. } | FlowEvent::Close { at, .. } => Some(*at),
@@ -124,7 +124,7 @@ pub fn arb_dir() -> impl Strategy<Value = Dir> {
 pub fn arb_policy() -> impl Strategy<Value = FlowPolicy> {
     prop_oneof![
         Just(FlowPolicy::Nominal),
-        (0u64..1_000).prop_map(|d| FlowPolicy::Latency(VTime(d))),
+        (0u64..1_000).prop_map(|d| FlowPolicy::Latency(Span(d))),
         (any::<u64>(), 0u16..8, 1u16..8).prop_map(|(seed, num, den)| FlowPolicy::Loss {
             seed,
             num,
@@ -157,12 +157,12 @@ pub fn arb_event() -> impl Strategy<Value = FlowEvent> {
             .prop_map(|(conn, dir, at, bytes)| FlowEvent::Chunk {
                 conn,
                 dir,
-                at: VTime(at),
+                at: Moment(at),
                 bytes,
             }),
         (conn, 0u64..10_000).prop_map(|(conn, at)| FlowEvent::Close {
             conn,
-            at: VTime(at),
+            at: Moment(at),
         }),
     ]
 }

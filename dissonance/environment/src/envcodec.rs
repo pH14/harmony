@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::VTime;
+use crate::Span;
 use crate::error::EnvError;
 use crate::host::{Action, BitMask, HostFault, Moment, Ratio};
 use crate::policy::FaultPolicy;
@@ -121,10 +121,12 @@ impl EnvCodec {
     /// outside this one-axis scope, which belong to **task 93** (the compose-model
     /// revisit — "see task 93"):
     ///
-    /// - **Either input carries a [`StandingFault`].** Its window is in [`VTime`]
-    ///   (retired *branches*) — a *different axis* than the `Moment` (retired
-    ///   *instructions*) offset; a correct re-key needs a runtime `Moment → VTime`
-    ///   map `compose` lacks.
+    /// - **Either input carries a [`StandingFault`].** Its window bounds are
+    ///   parameterized in raw retired-*branch* counts, while the override keys
+    ///   `compose` shifts are `Moment` (retired-*instruction*) offsets; a correct
+    ///   re-key of the window across the splice needs the runtime branch ↔
+    ///   instruction mapping `compose` lacks. (The GLOSSARY's one-axis ruling
+    ///   renames the types, not this counter-level gap — which stays task 93's.)
     /// - **Either input is a pure [`Seeded`](EnvSpec::Seeded) environment.** Every
     ///   one of its decisions is seed-serviced, so splicing it at `at > 0` would
     ///   desync the tail's fresh PRNG stream (the composed prefix advances the
@@ -235,7 +237,7 @@ fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment
 /// `SetClockRate`'s denominator is forced `≥ 1` so the `Ratio` always constructs.
 fn host_fault_from(rng: &mut Prng) -> HostFault {
     match rng.next_u64() % 4 {
-        0 => HostFault::SkewTime(VTime(rng.next_u64())),
+        0 => HostFault::SkewTime(Span(rng.next_u64())),
         1 => {
             let num = rng.next_u64();
             // den in 1..=2^32, never zero.
@@ -265,7 +267,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{EnvCodec, MUTATE_DOMAIN, free_non_guest_slot, host_fault_from};
-    use crate::VTime;
+    use crate::Span;
     use crate::catalog::Answer;
     use crate::host::{Action, BitMask, HostFault, Moment, Ratio};
     use crate::policy::FaultPolicy;
@@ -295,10 +297,10 @@ mod tests {
     fn host_fault_from_arm0_is_exact_skewtime() {
         let seed = seed_for_arm(0);
         let got = host_fault_from(&mut Prng::new(seed));
-        // Independent restatement: word0 selects the arm, word1 is the VTime.
+        // Independent restatement: word0 selects the arm, word1 is the Span.
         let mut e = Prng::new(seed);
         let _arm = e.next_u64();
-        let expected = HostFault::SkewTime(VTime(e.next_u64()));
+        let expected = HostFault::SkewTime(Span(e.next_u64()));
         assert_eq!(
             got, expected,
             "arm 0 must map to exactly SkewTime(word1) (deleting it yields InjectInterrupt)"

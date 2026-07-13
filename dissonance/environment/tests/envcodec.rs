@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use common::{arb_action, arb_policy, arb_spec, config, run_guest_schedule};
 use environment::{
     Action, Answer, ConnId, DecisionClass, DecisionPoint as P, EnvCodec, EnvError, EnvSpec,
-    Environment, FaultPolicy, Moment, NodeId, Outcome, StandingFault, VTime,
+    Environment, FaultPolicy, Moment, NodeId, Outcome, StandingFault, Span,
 };
 use proptest::prelude::*;
 
@@ -55,7 +55,7 @@ fn sf(class: DecisionClass) -> StandingFault {
     StandingFault {
         class,
         target: vec![1, 2],
-        window: (VTime(0), VTime(9)),
+        window: (0, 9),
     }
 }
 
@@ -284,11 +284,11 @@ fn compose_tail_rekeys_onto_dropped_base_moment() {
     );
     let base = recorded(BTreeMap::from([(
         850_009,
-        Action::Host(environment::HostFault::SkewTime(VTime(0))),
+        Action::Host(environment::HostFault::SkewTime(Span(0))),
     )]));
     let tail = recorded(BTreeMap::from([(
         677_257,
-        Action::Host(environment::HostFault::SkewTime(VTime(7))),
+        Action::Host(environment::HostFault::SkewTime(Span(7))),
     )]));
     let out = EnvCodec::compose(&base, &tail, at).unwrap();
     let m = out.overrides();
@@ -299,12 +299,12 @@ fn compose_tail_rekeys_onto_dropped_base_moment() {
     );
     assert_eq!(
         m.get(&850_009),
-        Some(&Action::Host(environment::HostFault::SkewTime(VTime(7)))),
+        Some(&Action::Host(environment::HostFault::SkewTime(Span(7)))),
         "the aligned Moment carries the TAIL's re-keyed override, not the base's"
     );
     assert_ne!(
         m.get(&850_009),
-        Some(&Action::Host(environment::HostFault::SkewTime(VTime(0)))),
+        Some(&Action::Host(environment::HostFault::SkewTime(Span(0)))),
         "the base's dropped suffix value must not leak through"
     );
 }

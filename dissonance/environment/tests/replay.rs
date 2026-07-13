@@ -124,7 +124,7 @@ fn seeded_and_seeded_recorded_baseline_agree() {
     // With no overrides, an `EnvSpec::Seeded` materializes to a `RecordedEnv`
     // whose answers match a bare `SeededEnv` decision-for-decision (the override
     // map is empty, so the base answers everything).
-    use environment::{DecisionPoint as P, FaultPolicy, NodeId, VTime};
+    use environment::{DecisionPoint as P, FaultPolicy, NodeId, Span};
     let seed = 0x1234_5678_9abc_def0;
     let mut policy = FaultPolicy::none();
     policy
@@ -134,7 +134,7 @@ fn seeded_and_seeded_recorded_baseline_agree() {
             2,
             &[
                 environment::Fault::NetReset,
-                environment::Fault::NetLatency(VTime(7)),
+                environment::Fault::NetLatency(Span(7)),
             ],
         )
         .unwrap();

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use common::{arb_overrides, arb_point, arb_policy, arb_spec, config, run_guest_schedule};
 use environment::{
     Action, Answer, DecisionClass, EnvSpec, Fault, FaultPolicy, HostFault, Moment, StandingFault,
-    VTime,
+    Span,
 };
 use proptest::prelude::*;
 
@@ -128,7 +128,7 @@ fn standing_vec_permutation_is_byte_identical() {
     let sf = |c: DecisionClass, t: Vec<u8>, lo: u64, hi: u64| StandingFault {
         class: c,
         target: t,
-        window: (VTime(lo), VTime(hi)),
+        window: (lo, hi),
     };
     let mk = |standing: Vec<StandingFault>| EnvSpec::Recorded {
         seed: 7,

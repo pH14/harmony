@@ -1,17 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The shared flow-fault vocabulary every [`FlowEngine`](crate::FlowEngine)
-//! implementation speaks: the value types ([`VTime`], [`ConnId`], [`NodeId`],
-//! [`Dir`]), the connection-stream event ([`FlowEvent`]), the concrete proxy
-//! action ([`FlowAction`]), and the per-flow policy ([`FlowPolicy`]) the decider
-//! returns. These are defined locally (conventions rule 2); the frontier maps
-//! `environment`'s `Answer`/`NetFlow` vocabulary onto them.
+//! implementation speaks: the value types ([`Moment`], [`Span`], [`ConnId`],
+//! [`NodeId`], [`Dir`]), the connection-stream event ([`FlowEvent`]), the
+//! concrete proxy action ([`FlowAction`]), and the per-flow policy
+//! ([`FlowPolicy`]) the decider returns. These are defined locally (conventions
+//! rule 2); the frontier maps `environment`'s `Answer`/`NetFlow` vocabulary
+//! onto them.
 
-/// V-time: a count of retired conditional branches — the *only* deterministic
-/// clock in the system. Every scheduled time and every delay is in these units;
-/// there is no wall-clock anywhere in the engine. Mirrors the integration type
-/// (conventions rule 2).
+/// A **point** on the V-time axis — a count of retired conditional branches,
+/// the *only* deterministic clock in the system. Every scheduled time and
+/// event stamp is one of these; there is no wall-clock anywhere in the engine.
+/// Mirrors the integration type (conventions rule 2). (The GLOSSARY rename of
+/// this crate's former `VTime` newtype — points are `Moment`s, durations are
+/// [`Span`]s; "V-time" survives as the clock mechanism's name.)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct VTime(pub u64);
+pub struct Moment(pub u64);
+
+/// A **duration** on the V-time axis, in the same retired-branch units as
+/// [`Moment`] — the [`Latency`](FlowPolicy::Latency) delay is one of these.
+/// Mirrors the integration type (conventions rule 2).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct Span(pub u64);
 
 /// A connection identity (derived by the frontier from a flow's 5-tuple). The
 /// engine treats it as an opaque key for per-flow state; it never reaches a hash
@@ -72,7 +81,7 @@ pub enum FlowEvent {
         /// Which half-duplex direction the chunk travels.
         dir: Dir,
         /// The V-time the chunk was read off the wire.
-        at: VTime,
+        at: Moment,
         /// The chunk's bytes (guest-controlled, arbitrary length).
         bytes: Vec<u8>,
     },
@@ -82,7 +91,7 @@ pub enum FlowEvent {
         /// Which flow closed.
         conn: ConnId,
         /// The V-time the close was observed.
-        at: VTime,
+        at: Moment,
     },
 }
 
@@ -100,14 +109,14 @@ pub enum FlowAction {
         /// The bytes to write.
         bytes: Vec<u8>,
         /// The V-time the delivery is due.
-        at: VTime,
+        at: Moment,
     },
     /// Tear `conn` down (send a `RST` / drop the proxied sockets) at V-time `at`.
     Reset {
         /// The flow to reset.
         conn: ConnId,
         /// The V-time the reset is due.
-        at: VTime,
+        at: Moment,
     },
 }
 
@@ -115,7 +124,7 @@ impl FlowAction {
     /// The V-time this action is due — the primary key
     /// [`due`](crate::FlowEngine::due) drains on. Every action drained by
     /// `due(now)` satisfies `action.at() <= now`.
-    pub fn at(&self) -> VTime {
+    pub fn at(&self) -> Moment {
         match self {
             FlowAction::Deliver { at, .. } | FlowAction::Reset { at, .. } => *at,
         }
@@ -133,7 +142,7 @@ pub enum FlowPolicy {
     /// Delay each chunk's delivery by `d` V-time (Linux `netem`). The delay
     /// saturates: a hostile `Latency(u64::MAX)` clamps the delivery time to
     /// `u64::MAX`, never wraps into the past.
-    Latency(VTime),
+    Latency(Span),
     /// Drop each chunk with probability `num/den`, sampled from a connection-local
     /// PRNG seeded by `seed` (never the ambient stream, so replay is exact). A
     /// `num >= den` ratio drops everything (`1/1` is a full drop); `den == 0` is

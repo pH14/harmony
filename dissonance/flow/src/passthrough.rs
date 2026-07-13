@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use crate::engine::{FlowDecider, FlowEngine};
 use crate::sched::Scheduler;
-use crate::{FlowAction, FlowEvent, VTime};
+use crate::{FlowAction, FlowEvent, Moment};
 
 /// The minimal per-flow lifecycle passthrough needs: the latest delivery already
 /// scheduled (so the close reset is ordered after pending data) and whether the
@@ -30,7 +30,7 @@ use crate::{FlowAction, FlowEvent, VTime};
 #[derive(Clone, Debug, Default)]
 struct ConnState {
     /// Latest V-time a delivery has been scheduled for on this flow.
-    last_deliver: VTime,
+    last_deliver: Moment,
     /// Once `true`, the flow is closed; every further event on it is ignored.
     torn: bool,
 }
@@ -81,7 +81,7 @@ impl FlowEngine for PassthroughEngine {
                 // Unconditional max (not `if at > … { … }`): the watermark is the
                 // latest delivery time seen; a comparison only invites an
                 // equivalent `>`→`>=` mutant. The close-ordering golden pins this.
-                state.last_deliver = VTime(state.last_deliver.0.max(at.0));
+                state.last_deliver = Moment(state.last_deliver.0.max(at.0));
                 self.sched.schedule(FlowAction::Deliver {
                     conn,
                     dir,
@@ -100,14 +100,14 @@ impl FlowEngine for PassthroughEngine {
                 }
                 // Tear down after any still-pending delivery so the reset never
                 // precedes delivered data for this flow.
-                let when = VTime(at.0.max(state.last_deliver.0));
+                let when = Moment(at.0.max(state.last_deliver.0));
                 self.sched.schedule(FlowAction::Reset { conn, at: when });
                 state.torn = true;
             }
         }
     }
 
-    fn due(&mut self, now: VTime) -> Vec<FlowAction> {
+    fn due(&mut self, now: Moment) -> Vec<FlowAction> {
         self.sched.due(now)
     }
 }

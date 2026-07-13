@@ -4,7 +4,7 @@
 //! `FlowPolicy` matches the encoded `Answer` the host set — proving the agent's
 //! decider seam speaks the real wire protocol, not a stand-in.
 
-use environment::{Answer, Fault, VTime as EnvVTime};
+use environment::{Answer, Fault, Span as EnvSpan};
 use flow::{ConnId, FlowDecider, FlowPolicy, NodeId};
 use harmony_flow_agent::{DecideError, HostFlowDecider};
 use hypercall_proto::{Client, Dispatcher, NetDecider, ServiceId, Transport};
@@ -36,7 +36,7 @@ fn decider_maps_the_hosts_answer_to_a_policy() {
         Answer::Nominal,
         &[
             (7, Answer::Fault(Fault::NetReset)),
-            (9, Answer::Fault(Fault::NetLatency(EnvVTime(1234)))),
+            (9, Answer::Fault(Fault::NetLatency(EnvSpan(1234)))),
         ],
     );
     // Seed each flow by its conn id, so a seeded-loss policy would replay exactly.
@@ -55,7 +55,7 @@ fn decider_maps_the_hosts_answer_to_a_policy() {
     // The latency flow → Latency, in guest V-time.
     assert_eq!(
         decider.decide_flow(ConnId(9), NodeId(10), NodeId(20)),
-        FlowPolicy::Latency(flow::VTime(1234))
+        FlowPolicy::Latency(flow::Span(1234))
     );
     assert!(decider.last_error().is_none());
     assert_eq!(decider.decisions().len(), 3);

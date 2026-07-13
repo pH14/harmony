@@ -12,7 +12,7 @@
 //! single [`Moment`] axis, so the Progression orders and manipulates overrides
 //! uniformly without knowing which plane any one belongs to.
 
-use crate::VTime;
+use crate::Span;
 use crate::catalog::Answer;
 use crate::codec::{self, Reader};
 use crate::error::EnvError;
@@ -24,7 +24,7 @@ use crate::error::EnvError;
 /// see the integrator ruling in `docs/INTEGRATION.md` §6b. Every override — host
 /// *and* guest — is keyed by a `Moment`, which is what lets the Progression treat
 /// them as one ordered timeline (`(Moment, opaque Action)`) without learning an
-/// override's plane. Virtual time ([`VTime`]) is a *derived view* of this same
+/// override's plane. Virtual time (whose durations are [`Span`]s) is a *derived view* of this same
 /// axis, not a second clock.
 ///
 /// A bare `u64` alias, exactly as the dissonance ruling specifies — a `Moment`
@@ -80,8 +80,8 @@ pub struct BitMask(pub u64);
 /// that a recorded reproducer's replay depends on, exactly like [`Fault`](crate::Fault).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum HostFault {
-    /// Jitter virtual time by the given [`VTime`] delta.
-    SkewTime(VTime),
+    /// Jitter virtual time by the given [`Span`] delta.
+    SkewTime(Span),
     /// CPU modulation: reset the retired-branches → V-time slope to `Ratio`.
     SetClockRate(Ratio),
     /// Single-event-upset: XOR the word at guest-physical address `gpa` with
