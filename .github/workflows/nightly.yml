@@ -133,16 +133,29 @@ jobs:
       # pointer with no FFI. Proptest cases are cut under cfg(miri).
       - name: miri — guest/play-agent (lib + agent + bin unit tests, out-of-workspace manifest)
         run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path guest/play-agent/Cargo.toml --lib --test agent --bins
-      # ── conductor is DELIBERATELY ABSENT (task 98, bead hm-d4y, P1) ──────────
-      # The `cargo miri test -p conductor --lib` step had NEVER completed in CI:
-      # every pre-task-98 nightly died at the vmm-core step before reaching it,
-      # and both post-fix box attempts timed out on it (2026-07-13: run
+      # conductor, the UNSAFE-ONLY slice (task 98 round 3): the crate's one
+      # `unsafe` block is the task-78 CountingBackend `map_memory` forward
+      # (src/mock.rs), exercised by exactly this test — which interprets in
+      # ~1.3 s (foreman-verified), so the unsafe⇒Miri rule holds at zero budget
+      # risk. The guard below makes filter rot LOUD: `--exact` matching nothing
+      # (e.g. the test gets renamed) exits 0 with "0 passed", which would be a
+      # silently vacuous gate — the grep fails the step instead.
+      - name: miri — conductor (UNSAFE-ONLY slice)
+        run: |
+          out=$(cargo "+${PINNED_NIGHTLY}" miri test -p conductor --lib -- --exact mock::tests::mock_vmm_composes_maps_memory_and_ticks_per_exit 2>&1); rc=$?
+          echo "$out"
+          [ $rc -eq 0 ] || exit $rc
+          echo "$out" | grep -q "test result: ok. 1 passed" || { echo "FILTER ROT: the unsafe-slice test did not run — renamed? Fix the --exact filter above."; exit 1; }
+      # ── the REST of conductor's lib suite is DELIBERATELY ABSENT (hm-d4y) ───
+      # The full `cargo miri test -p conductor --lib` step had NEVER completed in
+      # CI: every pre-task-98 nightly died at the vmm-core step before reaching
+      # it, and both post-fix box attempts timed out on it (2026-07-13: run
       # 29226001494 killed at 57+ min; run 29236400380 killed after 3 h 11 min,
       # still interpreting — 1 h 50 min real on an idle M-class Mac, unbounded
       # under real box contention). A step that reds out the job after hours
-      # watches nothing and burns a runner slot nightly, so it is REMOVED — not
-      # hidden behind continue-on-error — until hm-d4y lands the hm-d8o-style
-      # shrink of conductor's sha256-dominated VM tests (its unsafe, the task-78
-      # CountingBackend `map_memory` forward, is Miri-unwatched until then; that
-      # debt is the bead's P1 urgency). Re-add the step WITH a box-measured
-      # budget when closing hm-d4y.
+      # watches nothing and burns a runner slot nightly, so the full suite stays
+      # out — not hidden behind continue-on-error — until hm-d4y lands the
+      # hm-d8o-style shrink of its sha256-dominated VM tests and restores it
+      # under a box-measured budget. The unsafe block itself is watched by the
+      # slice above; what the full suite adds under Miri is safe-code logic
+      # coverage, all of which runs natively.
