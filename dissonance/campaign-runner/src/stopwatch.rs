@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! # The campaign stopwatch (task 96): hash-neutral phase timing
 //!
-//! Production box runs are wall-clock-blind: nothing in the conductor emits
+//! Production box runs are wall-clock-blind: nothing in the campaign-runner emits
 //! how long a phase took, so an hours-long campaign's cost decomposition (how
 //! much of it is `branch`, `run`, `hash`, harvesting SDK events, …) could only
 //! be inferred after the fact. This module is the **sanctioned escape hatch**
@@ -115,7 +115,7 @@ impl Phase {
 
 /// A single wall-clock mark, opaque outside this module — confines every
 /// literal `Instant::now()` read in the crate to `stopwatch.rs` (the
-/// hash-neutrality invariant) while still letting other conductor modules
+/// hash-neutrality invariant) while still letting other campaign-runner modules
 /// (`boxrun.rs`'s boot-to-ready timer, which runs before a campaign's
 /// [`Stopwatch`] exists) measure a wall-clock span.
 #[derive(Clone, Copy, Debug)]

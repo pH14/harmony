@@ -43,7 +43,7 @@ pub enum BugClass {
 /// How a triggered bug is observed as a crash. The guest maps the outcome to a
 /// distinct guest terminal (see `guest/linux/campaign-init.sh`); the campaign
 /// oracle keys on the terminal **class**, and the per-bug serial marker plus this
-/// tag attribute the find. Mirrors `conductor::campaign`'s `CRASH_KIND_*`.
+/// tag attribute the find. Mirrors `campaign_runner::campaign`'s `CRASH_KIND_*`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum CrashKind {
@@ -63,7 +63,7 @@ pub enum CrashKind {
 pub enum TriggerParams {
     /// (i) The single-event upset: the exact ledger `gpa`, the guard-bit `mask`,
     /// and the half-open sensitive `window` `[lo, hi)` in Moments. Matches
-    /// `conductor::planted::Trigger`.
+    /// `campaign_runner::planted::Trigger`.
     FaultTiming {
         /// Guest-physical address of the supervisor's ledger word.
         gpa: u64,
@@ -129,11 +129,11 @@ impl Benchmark {
     /// The Wave-5 fixture: the three task-69 bugs of distinct classes. Thresholds
     /// are dialled so each bug's naïve time-to-find sits in ~10²–10³ branches.
     ///
-    /// The `BASE`/window constants mirror `conductor::planted` (bug 1 is task
+    /// The `BASE`/window constants mirror `campaign_runner::planted` (bug 1 is task
     /// 60's, reused verbatim) so the toy path and the box path agree.
     pub fn wave5() -> Self {
         // Base V-time the supervised guest is quiescent at when snapshotted; the
-        // sensitive windows are small offsets past it (see conductor::planted).
+        // sensitive windows are small offsets past it (see campaign_runner::planted).
         const BASE: u64 = 1_000;
         Benchmark {
             bugs: vec![
@@ -144,7 +144,7 @@ impl Benchmark {
                     // Task 60's marker (guest/linux/campaign-super.c).
                     serial_marker: "CAMPAIGN_BUG".to_string(),
                     crash_kind: CrashKind::Shutdown,
-                    // Exactly conductor::planted::Trigger::toy(): gpa 0x3000, bit
+                    // Exactly campaign_runner::planted::Trigger::toy(): gpa 0x3000, bit
                     // 31, one-slot window at offset 3.
                     trigger: TriggerParams::FaultTiming {
                         gpa: 0x3000,

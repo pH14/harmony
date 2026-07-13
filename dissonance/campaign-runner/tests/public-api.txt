@@ -1,0 +1,373 @@
+pub mod campaign_runner
+pub mod campaign_runner::benchcampaign
+pub struct campaign_runner::benchcampaign::BenchConfig
+pub campaign_runner::benchcampaign::BenchConfig::campaign_seed: u64
+pub campaign_runner::benchcampaign::BenchConfig::deadline_delta: core::option::Option<u64>
+pub campaign_runner::benchcampaign::BenchConfig::explore_period: u64
+pub campaign_runner::benchcampaign::BenchConfig::fault_rebase: u64
+pub campaign_runner::benchcampaign::BenchConfig::max_branches: u64
+pub campaign_runner::benchcampaign::BenchConfig::order_range: u64
+pub campaign_runner::benchcampaign::BenchConfig::replay_n: usize
+pub campaign_runner::benchcampaign::BenchConfig::snapshot_max_attempts: usize
+pub campaign_runner::benchcampaign::BenchConfig::snapshot_retry_step: u64
+impl campaign_runner::benchcampaign::BenchConfig
+pub fn campaign_runner::benchcampaign::BenchConfig::box_campaign(u64, u64, usize, u64) -> Self
+pub fn campaign_runner::benchcampaign::BenchConfig::smoke(u64) -> Self
+pub struct campaign_runner::benchcampaign::BenchOutcome
+pub campaign_runner::benchcampaign::BenchOutcome::certs: alloc::vec::Vec<campaign_runner::benchcampaign::FindCert>
+pub campaign_runner::benchcampaign::BenchOutcome::log: benchmark::report::CampaignLog
+pub campaign_runner::benchcampaign::BenchOutcome::traces: alloc::vec::Vec<(u64, explorer::spine::RunTrace)>
+pub struct campaign_runner::benchcampaign::BenchToyMachine
+impl campaign_runner::benchcampaign::BenchToyMachine
+pub fn campaign_runner::benchcampaign::BenchToyMachine::new(benchmark::manifest::BugSpec) -> Self
+impl explorer::seam::Machine for campaign_runner::benchcampaign::BenchToyMachine
+pub fn campaign_runner::benchcampaign::BenchToyMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::console(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::coverage(&self) -> &[u8]
+pub fn campaign_runner::benchcampaign::BenchToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn campaign_runner::benchcampaign::BenchToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub struct campaign_runner::benchcampaign::FindCert
+pub campaign_runner::benchcampaign::FindCert::branch: u64
+pub campaign_runner::benchcampaign::FindCert::bug: benchmark::manifest::BugId
+pub campaign_runner::benchcampaign::FindCert::env: explorer::Reproducer
+pub campaign_runner::benchcampaign::FindCert::state_hash: [u8; 32]
+pub const campaign_runner::benchcampaign::BASE_VTIME: u64
+pub fn campaign_runner::benchcampaign::mint_scenario_env(u64, &benchmark::manifest::BugSpec, u64, u64) -> explorer::Reproducer
+pub fn campaign_runner::benchcampaign::run_bench_campaign<M: explorer::seam::Machine>(&mut M, &benchmark::manifest::BugSpec, &campaign_runner::benchcampaign::BenchConfig, benchmark::report::Configuration) -> core::result::Result<campaign_runner::benchcampaign::BenchOutcome, explorer::error::MachineError>
+pub mod campaign_runner::campaign
+pub struct campaign_runner::campaign::CampaignConfig
+pub campaign_runner::campaign::CampaignConfig::campaign_seed: u64
+pub campaign_runner::campaign::CampaignConfig::deadline_delta: core::option::Option<u64>
+pub campaign_runner::campaign::CampaignConfig::gpa_candidates: alloc::vec::Vec<u64>
+pub campaign_runner::campaign::CampaignConfig::mask_bits: alloc::vec::Vec<u64>
+pub campaign_runner::campaign::CampaignConfig::max_branches: u64
+pub campaign_runner::campaign::CampaignConfig::moment_window: (u64, u64)
+pub campaign_runner::campaign::CampaignConfig::nominal_seed: u64
+pub campaign_runner::campaign::CampaignConfig::replay_n: usize
+pub campaign_runner::campaign::CampaignConfig::snapshot_max_attempts: usize
+pub campaign_runner::campaign::CampaignConfig::snapshot_retry_step: u64
+impl campaign_runner::campaign::CampaignConfig
+pub fn campaign_runner::campaign::CampaignConfig::toy() -> Self
+pub struct campaign_runner::campaign::CampaignReport
+pub campaign_runner::campaign::CampaignReport::base_hash: [u8; 32]
+pub campaign_runner::campaign::CampaignReport::base_vtime: u64
+pub campaign_runner::campaign::CampaignReport::branches_explored: u64
+pub campaign_runner::campaign::CampaignReport::branches_per_hour_x10: u64
+pub campaign_runner::campaign::CampaignReport::found: core::option::Option<campaign_runner::campaign::FoundBug>
+pub campaign_runner::campaign::CampaignReport::nominal: campaign_runner::campaign::NominalRow
+pub campaign_runner::campaign::CampaignReport::replays: alloc::vec::Vec<campaign_runner::RunRow>
+pub campaign_runner::campaign::CampaignReport::snapshot_attempts: usize
+pub campaign_runner::campaign::CampaignReport::timing: alloc::collections::btree::map::BTreeMap<campaign_runner::stopwatch::Phase, campaign_runner::stopwatch::PhaseStats>
+pub campaign_runner::campaign::CampaignReport::wall_secs: u64
+pub struct campaign_runner::campaign::CrashOracle
+impl campaign_runner::campaign::CrashOracle
+pub fn campaign_runner::campaign::CrashOracle::is_planted_bug(&self, &explorer::StopReason) -> bool
+pub fn campaign_runner::campaign::CrashOracle::new() -> Self
+impl explorer::spine::Oracle for campaign_runner::campaign::CrashOracle
+pub fn campaign_runner::campaign::CrashOracle::judge(&self, &explorer::spine::RunTrace) -> core::option::Option<explorer::spine::Bug>
+pub struct campaign_runner::campaign::FoundBug
+pub campaign_runner::campaign::FoundBug::branch_index: u64
+pub campaign_runner::campaign::FoundBug::bug: explorer::spine::Bug
+pub campaign_runner::campaign::FoundBug::env: explorer::Reproducer
+pub campaign_runner::campaign::FoundBug::hash: [u8; 32]
+pub campaign_runner::campaign::FoundBug::seed: u64
+pub campaign_runner::campaign::FoundBug::stop: explorer::StopReason
+pub struct campaign_runner::campaign::NominalRow
+pub campaign_runner::campaign::NominalRow::hash: [u8; 32]
+pub campaign_runner::campaign::NominalRow::is_bug: bool
+pub campaign_runner::campaign::NominalRow::stop: explorer::StopReason
+pub const campaign_runner::campaign::CRASH_KIND_PANIC: u8
+pub const campaign_runner::campaign::CRASH_KIND_SHUTDOWN: u8
+pub const campaign_runner::campaign::CRASH_KIND_TRIPLE_FAULT: u8
+pub fn campaign_runner::campaign::hex32(&[u8; 32]) -> alloc::string::String
+pub fn campaign_runner::campaign::mint_fault_env(u64, u64, &campaign_runner::campaign::CampaignConfig) -> explorer::Reproducer
+pub fn campaign_runner::campaign::render_campaign_table(&campaign_runner::campaign::CampaignReport, usize) -> alloc::string::String
+pub fn campaign_runner::campaign::run_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::campaign::CampaignConfig) -> core::result::Result<campaign_runner::campaign::CampaignReport, explorer::error::MachineError>
+pub fn campaign_runner::campaign::verify_campaign(&campaign_runner::campaign::CampaignReport, usize) -> alloc::vec::Vec<alloc::string::String>
+pub mod campaign_runner::gamecampaign
+pub mod campaign_runner::gamecampaign::reg
+pub const campaign_runner::gamecampaign::reg::BILLBOARD_GPA: u64
+pub const campaign_runner::gamecampaign::reg::BILLBOARD_LEN: u64
+pub const campaign_runner::gamecampaign::reg::DEPTH: u64
+pub const campaign_runner::gamecampaign::reg::FRAME: u64
+pub const campaign_runner::gamecampaign::reg::GAME_MODE: u64
+pub const campaign_runner::gamecampaign::reg::LEVEL: u64
+pub const campaign_runner::gamecampaign::reg::WORLD: u64
+pub const campaign_runner::gamecampaign::reg::X_BUCKET: u64
+pub enum campaign_runner::gamecampaign::GameCampaignError
+pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed
+pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::gpa: u64
+pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::len: u64
+pub campaign_runner::gamecampaign::GameCampaignError::BillboardMalformed::why: &'static str
+pub campaign_runner::gamecampaign::GameCampaignError::BillboardMissing
+pub campaign_runner::gamecampaign::GameCampaignError::Machine(explorer::error::MachineError)
+pub campaign_runner::gamecampaign::GameCampaignError::MalformedExemplar(alloc::string::String)
+pub campaign_runner::gamecampaign::GameCampaignError::QuietEnvCarriesFaults
+pub campaign_runner::gamecampaign::GameCampaignError::QuietEnvCarriesFaults::what: &'static str
+pub campaign_runner::gamecampaign::GameCampaignError::Retention(alloc::string::String)
+pub campaign_runner::gamecampaign::GameCampaignError::RolloutDied
+pub campaign_runner::gamecampaign::GameCampaignError::RolloutDied::branch: u64
+pub campaign_runner::gamecampaign::GameCampaignError::RolloutDied::stop: alloc::string::String
+pub campaign_runner::gamecampaign::GameCampaignError::SetupNotReached
+pub campaign_runner::gamecampaign::GameCampaignError::SetupNotReached::stop: alloc::string::String
+pub campaign_runner::gamecampaign::GameCampaignError::SignalUnavailable
+pub enum campaign_runner::gamecampaign::GateVerdict
+pub campaign_runner::gamecampaign::GateVerdict::BelowFloor
+pub campaign_runner::gamecampaign::GateVerdict::BelowFloor::repeat: usize
+pub campaign_runner::gamecampaign::GateVerdict::Pass
+pub campaign_runner::gamecampaign::GateVerdict::Pass::repeat: usize
+pub campaign_runner::gamecampaign::GateVerdict::Single
+impl campaign_runner::gamecampaign::GateVerdict
+pub fn campaign_runner::gamecampaign::GateVerdict::banner(&self) -> core::option::Option<alloc::string::String>
+pub enum campaign_runner::gamecampaign::Vacuity
+pub campaign_runner::gamecampaign::Vacuity::NoBranches
+pub campaign_runner::gamecampaign::Vacuity::NoFrames
+pub campaign_runner::gamecampaign::Vacuity::NoVTime
+pub struct campaign_runner::gamecampaign::DeepReproducer
+pub campaign_runner::gamecampaign::DeepReproducer::branch: u64
+pub campaign_runner::gamecampaign::DeepReproducer::depth: u64
+pub campaign_runner::gamecampaign::DeepReproducer::trace_id: core::option::Option<alloc::string::String>
+pub struct campaign_runner::gamecampaign::GameCampaignConfig
+pub campaign_runner::gamecampaign::GameCampaignConfig::campaign_seed: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::deadline_delta: core::option::Option<u64>
+pub campaign_runner::gamecampaign::GameCampaignConfig::explore_period: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::guest_ram_len: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::max_branches: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::require_snapshot_point: bool
+pub campaign_runner::gamecampaign::GameCampaignConfig::rom_sha256: core::option::Option<alloc::string::String>
+pub campaign_runner::gamecampaign::GameCampaignConfig::setup_deadline_delta: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::snapshot_max_attempts: usize
+pub campaign_runner::gamecampaign::GameCampaignConfig::snapshot_retry_step: u64
+pub campaign_runner::gamecampaign::GameCampaignConfig::trace_dir: core::option::Option<std::path::PathBuf>
+impl campaign_runner::gamecampaign::GameCampaignConfig
+pub fn campaign_runner::gamecampaign::GameCampaignConfig::smoke(u64) -> Self
+pub struct campaign_runner::gamecampaign::GameCampaignOutcome
+pub campaign_runner::gamecampaign::GameCampaignOutcome::billboard: core::option::Option<(u64, u64)>
+pub campaign_runner::gamecampaign::GameCampaignOutcome::deep: core::option::Option<campaign_runner::gamecampaign::DeepReproducer>
+pub campaign_runner::gamecampaign::GameCampaignOutcome::log: benchmark::exploration::ExplorationLog
+pub campaign_runner::gamecampaign::GameCampaignOutcome::work: campaign_runner::gamecampaign::WorkEvidence
+impl campaign_runner::gamecampaign::GameCampaignOutcome
+pub fn campaign_runner::gamecampaign::GameCampaignOutcome::vacuity(&self) -> core::option::Option<campaign_runner::gamecampaign::Vacuity>
+pub struct campaign_runner::gamecampaign::GameToyMachine
+impl campaign_runner::gamecampaign::GameToyMachine
+pub fn campaign_runner::gamecampaign::GameToyMachine::new() -> Self
+impl core::default::Default for campaign_runner::gamecampaign::GameToyMachine
+pub fn campaign_runner::gamecampaign::GameToyMachine::default() -> Self
+impl explorer::seam::Machine for campaign_runner::gamecampaign::GameToyMachine
+pub fn campaign_runner::gamecampaign::GameToyMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::coverage(&self) -> &[u8]
+pub fn campaign_runner::gamecampaign::GameToyMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::sdk_events(&mut self) -> core::result::Result<alloc::vec::Vec<(u64, u32, alloc::vec::Vec<u8>)>, explorer::error::MachineError>
+pub fn campaign_runner::gamecampaign::GameToyMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub struct campaign_runner::gamecampaign::WorkEvidence
+pub campaign_runner::gamecampaign::WorkEvidence::branches: u64
+pub campaign_runner::gamecampaign::WorkEvidence::min_completed_frames: u64
+pub campaign_runner::gamecampaign::WorkEvidence::min_vtime_span: u64
+pub const campaign_runner::gamecampaign::BILLBOARD_MIN_LEN: u64
+pub const campaign_runner::gamecampaign::DEFAULT_GUEST_RAM_LEN: u64
+pub const campaign_runner::gamecampaign::DETERMINISM_BAR: usize
+pub fn campaign_runner::gamecampaign::determinism_verdict(&campaign_runner::gamecampaign::GameCampaignOutcome, usize) -> core::result::Result<campaign_runner::gamecampaign::GateVerdict, campaign_runner::gamecampaign::Vacuity>
+pub fn campaign_runner::gamecampaign::quiet_mutate(&explorer::Reproducer, u64, u64) -> core::result::Result<explorer::Reproducer, campaign_runner::gamecampaign::GameCampaignError>
+pub fn campaign_runner::gamecampaign::run_game_campaign<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::gamecampaign::GameCampaignConfig, benchmark::exploration::ExplorationConfig) -> core::result::Result<campaign_runner::gamecampaign::GameCampaignOutcome, campaign_runner::gamecampaign::GameCampaignError>
+pub fn campaign_runner::gamecampaign::serial_rom_sha256(&[u8]) -> core::option::Option<alloc::string::String>
+pub fn campaign_runner::gamecampaign::smb_cell_key(u64, u64, u64, u64) -> u64
+pub fn campaign_runner::gamecampaign::smb_cells(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> (alloc::vec::Vec<u64>, u64)
+pub fn campaign_runner::gamecampaign::smb_completed_frames(&[(explorer::spine::Moment, explorer::spine::Feature)]) -> u64
+pub mod campaign_runner::materialize
+pub struct campaign_runner::materialize::HopRow
+pub campaign_runner::materialize::HopRow::at: u64
+pub campaign_runner::materialize::HopRow::attempts: usize
+pub campaign_runner::materialize::HopRow::requested: u64
+pub struct campaign_runner::materialize::MaterializeConfig
+pub campaign_runner::materialize::MaterializeConfig::hop_delta: u64
+pub campaign_runner::materialize::MaterializeConfig::hops: usize
+pub campaign_runner::materialize::MaterializeConfig::seed: u64
+pub campaign_runner::materialize::MaterializeConfig::snapshot_max_attempts: usize
+pub campaign_runner::materialize::MaterializeConfig::snapshot_retry_step: u64
+pub campaign_runner::materialize::MaterializeConfig::tail_delta: u64
+impl core::default::Default for campaign_runner::materialize::MaterializeConfig
+pub fn campaign_runner::materialize::MaterializeConfig::default() -> Self
+pub struct campaign_runner::materialize::MaterializeReport
+pub campaign_runner::materialize::MaterializeReport::bug_env: explorer::Reproducer
+pub campaign_runner::materialize::MaterializeReport::folded: explorer::materialize::Materialization
+pub campaign_runner::materialize::MaterializeReport::folded_hash: [u8; 32]
+pub campaign_runner::materialize::MaterializeReport::genesis_at: u64
+pub campaign_runner::materialize::MaterializeReport::genesis_attempts: usize
+pub campaign_runner::materialize::MaterializeReport::hop_draws: alloc::vec::Vec<bool>
+pub campaign_runner::materialize::MaterializeReport::hops: alloc::vec::Vec<campaign_runner::materialize::HopRow>
+pub campaign_runner::materialize::MaterializeReport::hot: explorer::materialize::Materialization
+pub campaign_runner::materialize::MaterializeReport::hot_hash: [u8; 32]
+pub campaign_runner::materialize::MaterializeReport::leg_hash: [u8; 32]
+pub campaign_runner::materialize::MaterializeReport::leg_stop: explorer::StopReason
+pub campaign_runner::materialize::MaterializeReport::replay_hash: [u8; 32]
+pub campaign_runner::materialize::MaterializeReport::replay_stop: explorer::StopReason
+pub campaign_runner::materialize::MaterializeReport::tail_draws: bool
+pub campaign_runner::materialize::MaterializeReport::worst: explorer::materialize::Materialization
+pub campaign_runner::materialize::MaterializeReport::worst_hash: [u8; 32]
+pub const campaign_runner::materialize::TASK63_BASELINE_PPM: u64
+pub fn campaign_runner::materialize::depth_ratio_ppm(&explorer::materialize::Materialization) -> u64
+pub fn campaign_runner::materialize::render_materialize_table(&campaign_runner::materialize::MaterializeReport) -> alloc::string::String
+pub fn campaign_runner::materialize::run_materialize<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::materialize::MaterializeConfig) -> core::result::Result<campaign_runner::materialize::MaterializeReport, explorer::error::MachineError>
+pub fn campaign_runner::materialize::verify_materialize(&campaign_runner::materialize::MaterializeReport, core::option::Option<u64>) -> alloc::vec::Vec<alloc::string::String>
+pub mod campaign_runner::mock
+pub struct campaign_runner::mock::CountedWork(_)
+impl vmm_core::work::WorkSource for campaign_runner::mock::CountedWork
+pub fn campaign_runner::mock::CountedWork::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn campaign_runner::mock::CountedWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+pub struct campaign_runner::mock::CountingBackend
+impl vmm_backend::backend::Backend for campaign_runner::mock::CountingBackend
+pub fn campaign_runner::mock::CountingBackend::capabilities(&self) -> vmm_backend::exit::Capabilities
+pub fn campaign_runner::mock::CountingBackend::complete_cpuid(&mut self, u32, u32, u32, u32) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::complete_fault(&mut self) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::complete_hypercall(&mut self, u64) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::complete_ok(&mut self) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::complete_read(&mut self, u64) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::exit_counts(&self) -> vmm_backend::exit::ExitCounts
+pub fn campaign_runner::mock::CountingBackend::inject(&mut self, vmm_backend::exit::Injection) -> vmm_backend::error::Result<()>
+pub unsafe fn campaign_runner::mock::CountingBackend::map_memory(&mut self, vmm_backend::types::Gpa, &mut [u8]) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::reset_exit_counts(&mut self)
+pub fn campaign_runner::mock::CountingBackend::restore(&mut self, &vmm_backend::state::VcpuState) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::run(&mut self) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
+pub fn campaign_runner::mock::CountingBackend::run_until(&mut self, vmm_backend::types::Moment) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
+pub fn campaign_runner::mock::CountingBackend::save(&self) -> vmm_backend::error::Result<vmm_backend::state::VcpuState>
+pub fn campaign_runner::mock::CountingBackend::set_cpuid(&mut self, &vmm_backend::config::CpuidModel) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::set_msr_filter(&mut self, &vmm_backend::config::MsrFilter) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::set_pending_irq(&mut self, core::option::Option<u8>) -> vmm_backend::error::Result<()>
+pub fn campaign_runner::mock::CountingBackend::take_accepted_interrupt(&mut self) -> core::option::Option<u8>
+pub struct campaign_runner::mock::SharedWork
+pub struct campaign_runner::mock::TickingWork
+impl campaign_runner::mock::TickingWork
+pub fn campaign_runner::mock::TickingWork::new(u64) -> Self
+impl vmm_core::work::WorkSource for campaign_runner::mock::TickingWork
+pub fn campaign_runner::mock::TickingWork::reset(&mut self) -> core::result::Result<(), vmm_core::work::WorkError>
+pub fn campaign_runner::mock::TickingWork::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
+pub const campaign_runner::mock::BOOT_SEED: u64
+pub const campaign_runner::mock::RAM: usize
+pub const campaign_runner::mock::WORK_STEP: u64
+pub fn campaign_runner::mock::chain_fork_script(usize, bool) -> alloc::vec::Vec<vmm_backend::exit::Exit>
+pub fn campaign_runner::mock::default_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
+pub fn campaign_runner::mock::recording_fork_script() -> alloc::vec::Vec<vmm_backend::exit::Exit>
+pub fn campaign_runner::mock::server(alloc::vec::Vec<vmm_backend::exit::Exit>) -> core::result::Result<vmm_core::control::ControlServer<campaign_runner::mock::CountingBackend>, vmm_core::vmm::VmmError>
+pub fn campaign_runner::mock::vmm(alloc::vec::Vec<vmm_backend::exit::Exit>, u64) -> core::result::Result<vmm_core::vmm::Vmm<campaign_runner::mock::CountingBackend>, vmm_core::vmm::VmmError>
+pub mod campaign_runner::planted
+pub struct campaign_runner::planted::ToyPlantedMachine
+impl campaign_runner::planted::ToyPlantedMachine
+pub fn campaign_runner::planted::ToyPlantedMachine::new(campaign_runner::planted::Trigger) -> Self
+impl explorer::seam::Machine for campaign_runner::planted::ToyPlantedMachine
+pub fn campaign_runner::planted::ToyPlantedMachine::branch(&mut self, explorer::SnapId, &explorer::Reproducer) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::coverage(&self) -> &[u8]
+pub fn campaign_runner::planted::ToyPlantedMachine::drop_snap(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::hash(&mut self) -> core::result::Result<[u8; 32], explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::recorded_env(&self) -> core::result::Result<explorer::Reproducer, explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::replay(&mut self, explorer::SnapId) -> core::result::Result<(), explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::run(&mut self, &explorer::StopConditions, core::option::Option<&explorer::Answer>) -> core::result::Result<explorer::StopReason, explorer::error::MachineError>
+pub fn campaign_runner::planted::ToyPlantedMachine::snapshot(&mut self) -> core::result::Result<explorer::SnapId, explorer::error::MachineError>
+pub struct campaign_runner::planted::Trigger
+pub campaign_runner::planted::Trigger::gpa: u64
+pub campaign_runner::planted::Trigger::mask: u64
+pub campaign_runner::planted::Trigger::window: (u64, u64)
+impl campaign_runner::planted::Trigger
+pub fn campaign_runner::planted::Trigger::toy() -> Self
+pub const campaign_runner::planted::BASE_VTIME: u64
+pub mod campaign_runner::record
+pub enum campaign_runner::record::RecordError
+pub campaign_runner::record::RecordError::Control(control_proto::error::ControlError)
+pub campaign_runner::record::RecordError::Protocol(alloc::string::String)
+pub campaign_runner::record::RecordError::Serve(vmm_core::control::ServeError)
+pub campaign_runner::record::RecordError::Snapshot(alloc::string::String)
+pub campaign_runner::record::RecordError::Trace(runtrace::error::TraceError)
+pub struct campaign_runner::record::RecordConfig
+pub campaign_runner::record::RecordConfig::retain: runtrace::store::RetentionPolicy
+pub campaign_runner::record::RecordConfig::stream: explorer::spine::StreamId
+pub campaign_runner::record::RecordConfig::sweep: campaign_runner::SweepConfig
+pub struct campaign_runner::record::RecordReport
+pub campaign_runner::record::RecordReport::rows: alloc::vec::Vec<campaign_runner::record::RecordedRun>
+pub campaign_runner::record::RecordReport::snapshot_vtime: u64
+pub struct campaign_runner::record::RecordedRun
+pub campaign_runner::record::RecordedRun::console_head: alloc::vec::Vec<u8>
+pub campaign_runner::record::RecordedRun::journal_digest: [u8; 32]
+pub campaign_runner::record::RecordedRun::journal_len: usize
+pub campaign_runner::record::RecordedRun::journal_matches_first_run: bool
+pub campaign_runner::record::RecordedRun::records_len: usize
+pub campaign_runner::record::RecordedRun::retained: bool
+pub campaign_runner::record::RecordedRun::run: usize
+pub campaign_runner::record::RecordedRun::seed: u64
+pub campaign_runner::record::RecordedRun::stamps_monotone: bool
+pub campaign_runner::record::RecordedRun::state_hash: [u8; 32]
+pub campaign_runner::record::RecordedRun::stop: explorer::StopReason
+pub campaign_runner::record::RecordedRun::trace_id: runtrace::error::TraceId
+pub fn campaign_runner::record::render_record_table(&campaign_runner::record::RecordReport) -> alloc::string::String
+pub fn campaign_runner::record::run_recording<B: vmm_backend::backend::Backend>(&mut vmm_core::control::ControlServer<B>, &runtrace::store::TraceStore, &campaign_runner::record::RecordConfig) -> core::result::Result<campaign_runner::record::RecordReport, campaign_runner::record::RecordError>
+pub fn campaign_runner::record::stamp(explorer::spine::Moment) -> explorer::spine::Moment
+pub fn campaign_runner::record::verify_record(&campaign_runner::record::RecordReport, usize) -> alloc::vec::Vec<alloc::string::String>
+pub fn campaign_runner::record::verify_store_reload(&runtrace::store::TraceStore, &campaign_runner::record::RecordReport) -> alloc::vec::Vec<alloc::string::String>
+pub mod campaign_runner::stopwatch
+pub enum campaign_runner::stopwatch::Phase
+pub campaign_runner::stopwatch::Phase::BaseSeal
+pub campaign_runner::stopwatch::Phase::Boot
+pub campaign_runner::stopwatch::Phase::Branch
+pub campaign_runner::stopwatch::Phase::Harvest
+pub campaign_runner::stopwatch::Phase::Hash
+pub campaign_runner::stopwatch::Phase::Judge
+pub campaign_runner::stopwatch::Phase::Nominal
+pub campaign_runner::stopwatch::Phase::Replay
+pub campaign_runner::stopwatch::Phase::Run
+impl campaign_runner::stopwatch::Phase
+pub fn campaign_runner::stopwatch::Phase::as_str(self) -> &'static str
+pub struct campaign_runner::stopwatch::Mark(_)
+impl campaign_runner::stopwatch::Mark
+pub fn campaign_runner::stopwatch::Mark::elapsed_us(&self) -> u64
+pub struct campaign_runner::stopwatch::PhaseStats
+pub campaign_runner::stopwatch::PhaseStats::count: u64
+pub campaign_runner::stopwatch::PhaseStats::max_us: u64
+pub campaign_runner::stopwatch::PhaseStats::p50_us: u64
+pub campaign_runner::stopwatch::PhaseStats::p90_us: u64
+pub campaign_runner::stopwatch::PhaseStats::total_us: u64
+impl campaign_runner::stopwatch::PhaseStats
+pub fn campaign_runner::stopwatch::PhaseStats::single(u64) -> Self
+pub struct campaign_runner::stopwatch::Stopwatch
+impl campaign_runner::stopwatch::Stopwatch
+pub fn campaign_runner::stopwatch::Stopwatch::elapsed_secs(&self) -> u64
+pub fn campaign_runner::stopwatch::Stopwatch::new() -> Self
+pub fn campaign_runner::stopwatch::Stopwatch::stats(&self) -> alloc::collections::btree::map::BTreeMap<campaign_runner::stopwatch::Phase, campaign_runner::stopwatch::PhaseStats>
+pub fn campaign_runner::stopwatch::Stopwatch::time<T>(&mut self, campaign_runner::stopwatch::Phase, impl core::ops::function::FnOnce() -> T) -> T
+impl core::default::Default for campaign_runner::stopwatch::Stopwatch
+pub fn campaign_runner::stopwatch::Stopwatch::default() -> Self
+pub fn campaign_runner::stopwatch::mark() -> campaign_runner::stopwatch::Mark
+pub struct campaign_runner::RunRow
+pub campaign_runner::RunRow::hash: [u8; 32]
+pub campaign_runner::RunRow::stop: explorer::StopReason
+pub struct campaign_runner::SeedRow
+pub campaign_runner::SeedRow::runs: alloc::vec::Vec<campaign_runner::RunRow>
+pub campaign_runner::SeedRow::seed: u64
+pub struct campaign_runner::SweepConfig
+pub campaign_runner::SweepConfig::deadline_delta: core::option::Option<u64>
+pub campaign_runner::SweepConfig::runs_per_seed: usize
+pub campaign_runner::SweepConfig::seeds: alloc::vec::Vec<u64>
+pub campaign_runner::SweepConfig::snapshot_max_attempts: usize
+pub campaign_runner::SweepConfig::snapshot_retry_step: u64
+impl core::default::Default for campaign_runner::SweepConfig
+pub fn campaign_runner::SweepConfig::default() -> Self
+pub struct campaign_runner::SweepReport
+pub campaign_runner::SweepReport::base_hash: [u8; 32]
+pub campaign_runner::SweepReport::replay_hash: [u8; 32]
+pub campaign_runner::SweepReport::rows: alloc::vec::Vec<campaign_runner::SeedRow>
+pub campaign_runner::SweepReport::snapshot_attempts: usize
+pub campaign_runner::SweepReport::snapshot_vtime: u64
+pub fn campaign_runner::fmt_stop(&explorer::StopReason) -> alloc::string::String
+pub fn campaign_runner::hex(&[u8; 32]) -> alloc::string::String
+pub fn campaign_runner::materialize_client(std::os::unix::net::stream::UnixStream, environment::recorded::EnvSpec, campaign_runner::materialize::MaterializeConfig) -> core::result::Result<campaign_runner::materialize::MaterializeReport, explorer::error::MachineError>
+pub fn campaign_runner::probe_vtime<M: explorer::seam::Machine>(&mut M) -> core::result::Result<u64, explorer::error::MachineError>
+pub fn campaign_runner::render_table(&campaign_runner::SweepReport) -> alloc::string::String
+pub fn campaign_runner::run_session<B, T>(&mut vmm_core::control::ControlServer<B>, impl core::ops::function::FnOnce(std::os::unix::net::stream::UnixStream) -> T + core::marker::Send + 'static) -> (core::result::Result<(), vmm_core::control::ServeError>, T) where B: vmm_backend::backend::Backend, T: core::marker::Send + 'static
+pub fn campaign_runner::run_sweep<M: explorer::seam::Machine>(&mut M, &dyn explorer::seam::EnvCodec, &campaign_runner::SweepConfig) -> core::result::Result<campaign_runner::SweepReport, explorer::error::MachineError>
+pub fn campaign_runner::sweep_client(std::os::unix::net::stream::UnixStream, environment::recorded::EnvSpec, campaign_runner::SweepConfig) -> core::result::Result<campaign_runner::SweepReport, explorer::error::MachineError>
+pub fn campaign_runner::verify(&campaign_runner::SweepReport, usize) -> alloc::vec::Vec<alloc::string::String>

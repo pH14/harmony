@@ -311,7 +311,7 @@ fn box_gate_b_buggify_violation_replays_n_of_n() {
 // but this bare demo never does (so it simply never surfaces one). The fix is
 // exercised by `vmm::tests::sdk_snapshot_restore_resumes_the_seeded_streams` (the
 // stream continuation), `environment`'s `stream_state_resumes_both_streams_exactly`,
-// the conductor `setup_complete_yields_a_usable_seal_...` loopback gate (the
+// the campaign runner `setup_complete_yields_a_usable_seal_...` loopback gate (the
 // deferred point surfaces sealably over the wire), and every mock control test
 // that snapshots/branches/replays/drops with the SDK channel wired.
 

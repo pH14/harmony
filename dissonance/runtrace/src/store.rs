@@ -28,7 +28,7 @@ pub enum Retain {
     EnvOnly,
 }
 
-/// The campaign-level retention policy — the conductor's `--retain` flag
+/// The campaign-level retention policy — the campaign runner's `--retain` flag
 /// (`all` | `interesting` | `env-only`, default `interesting`). It maps each run
 /// to a [`Retain`] via [`retain_for`]; it never changes which verbs the loop
 /// issues or the report it prints (the store is write-only to the loop).

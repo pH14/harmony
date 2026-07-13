@@ -365,7 +365,7 @@ mod tests {
     //! Lib-target unit tests so the crate's one `unsafe` block (the
     //! `CountingBackend::map_memory` forward) and the exact-arrival
     //! `run_until` seam are reachable under the nightly Miri job
-    //! (`cargo miri test -p conductor --lib` — the unsafe⇒Miri rule).
+    //! (`cargo miri test -p campaign-runner --lib` — the unsafe⇒Miri rule).
 
     use super::*;
     use vmm_backend::Moment;

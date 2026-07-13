@@ -1864,7 +1864,7 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 mod tests {
     //! Direct-dispatch unit tests over a scripted `MockBackend` — no socket.
     //! The socket loopback + adapter integration lives in
-    //! `dissonance/conductor` (which composes this server with the explorer's
+    //! `dissonance/campaign-runner` (which composes this server with the explorer's
     //! socket `Machine`).
 
     use control_proto::{
@@ -3441,7 +3441,7 @@ mod tests {
         // its work source is a thread-affine counter on the box); the client
         // runs on a spawned thread, exactly the composition the demo bin uses.
         // The full loopback (socket Machine end-to-end) lives in
-        // dissonance/conductor.
+        // dissonance/campaign-runner.
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
         let (mut client, server_end) = UnixStream::pair().unwrap();
@@ -5723,7 +5723,7 @@ mod tests {
     // Task 78 — reseed-aware branch: a marker-carrying env re-executes each
     // collapsed hop's entropy reseed at its recorded Moment (exact-arrival
     // discipline), instead of reseeding once at the fold's root. The fold ==
-    // hop-by-hop equality (the flipped task-68 pin) is the conductor's socket
+    // hop-by-hop equality (the flipped task-68 pin) is the campaign runner's socket
     // gate; here we pin the server-side mechanics.
     // -----------------------------------------------------------------------
 

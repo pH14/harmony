@@ -12,9 +12,9 @@
 //! Set `UPDATE_FIXTURES=1` to (re)write the committed mock-recording fixture the
 //! `runtrace` crate decodes.
 
-use conductor::SweepConfig;
-use conductor::mock;
-use conductor::record::{RecordConfig, run_recording, verify_record, verify_store_reload};
+use campaign_runner::SweepConfig;
+use campaign_runner::mock;
+use campaign_runner::record::{RecordConfig, run_recording, verify_record, verify_store_reload};
 use explorer::StreamId;
 use runtrace::{RetentionPolicy, TraceStore};
 
@@ -33,7 +33,7 @@ fn cfg(retain: RetentionPolicy) -> RecordConfig {
     }
 }
 
-fn server() -> vmm_core::control::ControlServer<conductor::mock::CountingBackend> {
+fn server() -> vmm_core::control::ControlServer<campaign_runner::mock::CountingBackend> {
     mock::server(mock::recording_fork_script()).expect("compose mock recording server")
 }
 
@@ -104,7 +104,7 @@ fn the_retention_knob_never_changes_the_campaigns_report() {
     )
     .unwrap();
 
-    let shape = |r: &conductor::record::RecordReport| -> Vec<(u64, usize, runtrace::TraceId, usize, usize)> {
+    let shape = |r: &campaign_runner::record::RecordReport| -> Vec<(u64, usize, runtrace::TraceId, usize, usize)> {
         r.rows
             .iter()
             .map(|row| (row.seed, row.run, row.trace_id, row.records_len, row.journal_len))
@@ -136,7 +136,7 @@ fn a_recording_campaign_is_deterministic_per_seed_and_divergent_across_seeds() {
 
     // Two whole campaigns produce identical TraceIds in identical order.
     let ids =
-        |r: &conductor::record::RecordReport| r.rows.iter().map(|x| x.trace_id).collect::<Vec<_>>();
+        |r: &campaign_runner::record::RecordReport| r.rows.iter().map(|x| x.trace_id).collect::<Vec<_>>();
     assert_eq!(ids(&a), ids(&b), "the campaign is bit-reproducible");
 
     // Gate checks pass: per-seed identical, >=2 distinct, records non-empty & monotone.
@@ -176,7 +176,7 @@ fn a_recording_campaign_is_deterministic_per_seed_and_divergent_across_seeds() {
         distinct.len()
     );
     // Cross-run state_hash reproducibility holds between whole campaigns too.
-    let hashes = |r: &conductor::record::RecordReport| {
+    let hashes = |r: &campaign_runner::record::RecordReport| {
         r.rows.iter().map(|x| x.state_hash).collect::<Vec<_>>()
     };
     assert_eq!(hashes(&a), hashes(&b), "state hashes are bit-reproducible");
@@ -188,7 +188,7 @@ fn verify_record_flags_non_diverging_guest_state() {
     // seeds share one state_hash (an RDRAND-seeding regression: identical guest
     // state despite distinct seeds/journals) must FAIL divergence, even though
     // per-seed determinism holds.
-    use conductor::record::{RecordReport, RecordedRun};
+    use campaign_runner::record::{RecordReport, RecordedRun};
     use explorer::{StopReason, Moment};
     let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
         seed,
@@ -229,7 +229,7 @@ fn verify_record_flags_folded_reproducers() {
     // to one — the content-addressed store would fold N reproducers into one,
     // losing env-only replay. Must FAIL the TraceId check even though the
     // state_hash divergence passes.
-    use conductor::record::{RecordReport, RecordedRun};
+    use campaign_runner::record::{RecordReport, RecordedRun};
     use explorer::{StopReason, Moment};
     let row = |seed: u64, run: usize, hash_byte: u8| RecordedRun {
         seed,
@@ -275,7 +275,7 @@ fn verify_record_flags_folded_reproducers() {
 /// gate in the report passes.
 #[test]
 fn verify_record_flags_each_per_run_gate_independently() {
-    use conductor::record::{RecordReport, RecordedRun};
+    use campaign_runner::record::{RecordReport, RecordedRun};
     use explorer::{StopReason, Moment};
     let row = |seed: u64, run: usize, id_byte: u8| RecordedRun {
         seed,
@@ -462,7 +462,7 @@ fn verify_store_reload_catches_an_id_the_store_never_recorded() {
     // A report referencing a TraceId the store never saw (a construction bug
     // that mints report rows disconnected from what was actually stored) must
     // fail to reload the env sidecar, rather than silently passing.
-    use conductor::record::{RecordReport, RecordedRun};
+    use campaign_runner::record::{RecordReport, RecordedRun};
     let dir = tempfile::tempdir().unwrap();
     let store = TraceStore::open(dir.path()).unwrap();
     let report = RecordReport {
@@ -503,7 +503,7 @@ fn update_the_committed_mock_recording_fixture() {
     let store = TraceStore::open(dir.path()).unwrap();
     let mut server = server();
     let report = run_recording(&mut server, &store, &cfg(RetentionPolicy::All)).unwrap();
-    // The first run's full journal — a real mock-mode conductor recording.
+    // The first run's full journal — a real mock-mode campaign-runner recording.
     let id = report.rows[0].trace_id;
     let journal = runtrace::encode(&store.load(id).unwrap()).expect("mock trace encodes");
     let path = concat!(

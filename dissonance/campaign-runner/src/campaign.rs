@@ -462,7 +462,7 @@ fn print_progress(sw: &Stopwatch, explored: u64, max_branches: u64) {
             .unwrap_or(0)
     };
     println!(
-        "[conductor] progress: branch {explored}/{max_branches}, elapsed {}s, avg us — branch {} \
+        "[campaign-runner] progress: branch {explored}/{max_branches}, elapsed {}s, avg us — branch {} \
          run {} hash {}",
         sw.elapsed_secs(),
         avg(Phase::Branch),
@@ -966,7 +966,7 @@ mod tests {
         fn hash(&mut self) -> Result<[u8; 32], MachineError> {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
-            h.update(b"conductor.campaign.assertmachine.v1");
+            h.update(b"campaign-runner.campaign.assertmachine.v1");
             h.update(&self.current.bytes);
             Ok(h.finalize().into())
         }

@@ -20,7 +20,7 @@ use std::process::Command;
 /// Pinned nightly — `cargo-public-api` needs rustdoc-JSON, which is
 /// nightly-only. Keep in sync with `docs/CODE-QUALITY.md`.
 const PINNED_NIGHTLY: &str = "nightly-2026-06-16";
-const CRATE: &str = "conductor";
+const CRATE: &str = "campaign-runner";
 
 #[test]
 #[ignore = "needs pinned nightly + cargo-public-api; runs in the public-api CI job via `cargo test -- --ignored`"]

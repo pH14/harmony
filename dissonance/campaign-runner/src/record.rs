@@ -207,7 +207,7 @@ fn seal_base<B: Backend>(
                 | Reply::Regs(_)
                 // Task 81 improvisation replies: never answered to a `snapshot`.
                 // (`Reply::Snapshot` is the taint-carrying snapshot reply, but the
-                // conductor sweep never `exec`s, so its snapshots are untainted and
+                // campaign-runner sweep never `exec`s, so its snapshots are untainted and
                 // come back as `Reply::SnapId` above — a `Reply::Snapshot` here would
                 // be a protocol violation.)
                 | Reply::ExecResult { .. }

@@ -2,7 +2,7 @@
 //! **Task-68 box gates (a)/(b)/(c)** — `#![cfg(target_os = "linux")]` **and
 //! `#[ignore]`**: needs real + LOADED patched KVM, the det-cfl-v1 host, and
 //! the built Postgres image. Runs the same chain protocol the portable
-//! loopback proves (`conductor::materialize::run_materialize`, over the
+//! loopback proves (`campaign_runner::materialize::run_materialize`, over the
 //! task-58 socket against the real guest), then checks the gates as a pure
 //! function of the report:
 //!
@@ -23,7 +23,7 @@
 //! serialize with any other frontier gate):
 //!
 //! ```sh
-//! taskset -c 2 timeout 7200 cargo test -p conductor --test live_materialization \
+//! taskset -c 2 timeout 7200 cargo test -p campaign-runner --test live_materialization \
 //!     -- --ignored --nocapture --test-threads=1 2>&1 | tee /tmp/live_materialization.log
 //! ```
 //!
@@ -58,17 +58,17 @@
 
 use std::io::Write;
 
-use conductor::materialize::{
+use campaign_runner::materialize::{
     MaterializeConfig, TASK63_BASELINE_PPM, render_materialize_table, verify_materialize,
 };
-use conductor::run_session;
+use campaign_runner::run_session;
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::Backend;
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
-/// 2 GiB guest RAM (matches `live_branching_demo.rs` / the conductor box mode).
+/// 2 GiB guest RAM (matches `live_branching_demo.rs` / the campaign-runner box mode).
 const GUEST_RAM_LEN: usize = 2 << 30;
 /// The boot seed the live VM runs under (matches the branching demo).
 const BOOT_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
@@ -109,7 +109,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Drive the live guest until `marker` appears on the serial, streaming new
-/// serial bytes to stderr (mirrors the conductor box mode's drive; scans only
+/// serial bytes to stderr (mirrors the campaign-runner box mode's drive; scans only
 /// the fresh tail with a marker-1 overlap).
 fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
     let stderr = std::io::stderr();
@@ -214,7 +214,7 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
         hop_delta: env_u64("HOP_DELTA_VNS", 2_000_000),
         tail_delta: env_u64("TAIL_DELTA_VNS", 1_000_000),
         // Postgres is interrupt-driven; generous retry past non-sealable
-        // boundaries (mirrors the conductor box mode).
+        // boundaries (mirrors the campaign-runner box mode).
         snapshot_retry_step: 1_000_000,
         snapshot_max_attempts: 100_000,
     };
@@ -223,7 +223,7 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
         policy: FaultPolicy::none(),
     };
     let (served, report) = run_session(&mut server, move |stream| {
-        conductor::materialize_client(stream, initial, cfg)
+        campaign_runner::materialize_client(stream, initial, cfg)
     });
     served.expect("server session");
     let report = report.expect("the chain protocol (a MachineError here is a live finding)");

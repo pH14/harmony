@@ -1,5 +1,5 @@
 [package]
-name = "conductor"
+name = "campaign-runner"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -10,13 +10,13 @@ workspace = true
 
 [features]
 default = ["cli"]
-# The `conductor` binary and its only extra dependency, `clap` (bins-only per
+# The `campaign-runner` binary and its only extra dependency, `clap` (bins-only per
 # the rule-5 whitelist). The library — the sweep driver, run-table rendering,
 # and the mock server composition the loopback gates share — pulls no clap.
 cli = ["dep:clap"]
 
 [[bin]]
-name = "conductor"
+name = "campaign-runner"
 path = "src/main.rs"
 required-features = ["cli"]
 
@@ -52,7 +52,7 @@ vmm-core = { path = "../../consonance/vmm-core", version = "0.1.0" }
 # the loopback gates both compose the server around a scripted `MockBackend`
 # (the box mode uses `boot_linux_selected`, which needs no extra feature).
 vmm-backend = { path = "../../consonance/vmm-backend", version = "0.1.0", features = ["mock"] }
-# CLI for the `conductor` bin only (whitelist: clap is bins-only).
+# CLI for the `campaign-runner` bin only (whitelist: clap is bins-only).
 clap = { version = "4", features = ["derive"], optional = true }
 # The toy planted-bug machine's `state_hash` digest (task 60, portable gate).
 # Whitelisted; the campaign loop + oracle themselves reuse the explorer's

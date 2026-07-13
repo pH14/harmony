@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `conductor` — the task-58 close-the-loop demo binary.
+//! `campaign-runner` — the task-58 close-the-loop demo binary.
 //!
 //! Runs the explorer's socket [`Machine`] against vmm-core's control-transport
 //! server over a socketpair, driving the outer loop N steps: snapshot once,
@@ -20,32 +20,32 @@
 //!
 //! ```sh
 //! # portable:
-//! cargo run -p conductor -- mock --seeds 8 --runs 2
+//! cargo run -p campaign-runner -- mock --seeds 8 --runs 2
 //! # box (per docs/BOX-PINNING.md; use your assigned core):
-//! taskset -c <core> cargo run -p conductor --release -- box --seeds 8 --runs 2
+//! taskset -c <core> cargo run -p campaign-runner --release -- box --seeds 8 --runs 2
 //! ```
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use conductor::campaign::{
+use campaign_runner::campaign::{
     CampaignConfig, CampaignReport, render_campaign_table, run_campaign, verify_campaign,
 };
-use conductor::gamecampaign::{GameCampaignConfig, GameToyMachine, run_game_campaign};
-use conductor::planted::{ToyPlantedMachine, Trigger};
-use conductor::record::{
+use campaign_runner::gamecampaign::{GameCampaignConfig, GameToyMachine, run_game_campaign};
+use campaign_runner::planted::{ToyPlantedMachine, Trigger};
+use campaign_runner::record::{
     RecordConfig, RecordReport, render_record_table, run_recording, verify_record,
     verify_store_reload,
 };
-use conductor::{SweepConfig, render_table, run_session, sweep_client, verify};
+use campaign_runner::{SweepConfig, render_table, run_session, sweep_client, verify};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::{RetentionPolicy, TraceStore};
 
 #[derive(Parser)]
 #[command(
-    name = "conductor",
+    name = "campaign-runner",
     about = "task-58 close-the-loop demo: the explorer's socket Machine vs. vmm-core's control server"
 )]
 struct Cli {
@@ -64,7 +64,7 @@ enum Mode {
     #[command(subcommand)]
     Campaign(CampaignMode),
     /// Task-68 lazy-materialization chain demo over the mock guest (portable;
-    /// the box-side gates run via `cargo test -p conductor --test
+    /// the box-side gates run via `cargo test -p campaign-runner --test
     /// live_materialization -- --ignored` on the determinism box).
     Materialize(MatArgs),
     /// Task 69 M2 (GO/NO-GO #2): ONE benchmark campaign — a `(bug, config, seed)`
@@ -419,7 +419,7 @@ const ZERO_BUDGET: &str = "must be greater than 0 — a zero budget runs no work
 /// itself, twice).
 ///
 /// This is the first of the two ends the finding asks for; the second is
-/// [`conductor::gamecampaign::determinism_verdict`]'s vacuity guard, which
+/// [`campaign_runner::gamecampaign::determinism_verdict`]'s vacuity guard, which
 /// catches a hollow run that reaches the gate by some route this parser never
 /// saw.
 fn parse_positive_u64(s: &str) -> Result<u64, String> {
@@ -453,7 +453,7 @@ fn seeds(n: usize) -> Vec<u64> {
 fn seeds_ok(n: usize, min: usize) -> bool {
     if n < min {
         eprintln!(
-            "[conductor] --seeds must be >= {min} here: got {n}. The divergence gate needs at \
+            "[campaign-runner] --seeds must be >= {min} here: got {n}. The divergence gate needs at \
              least 2 distinct futures, and the box milestone gate is N >= 8."
         );
         return false;
@@ -485,7 +485,7 @@ fn run_benchcampaign_box(args: BenchBoxArgs) -> ExitCode {
 #[cfg(not(target_os = "linux"))]
 fn run_benchcampaign_box(_args: BenchBoxArgs) -> ExitCode {
     eprintln!(
-        "[conductor] benchcampaign box needs Linux + patched KVM + a built planted-bug image + \
+        "[campaign-runner] benchcampaign box needs Linux + patched KVM + a built planted-bug image + \
          the det-cfl-v1 host (docs/BOX-PINNING.md). This is not a Linux host."
     );
     ExitCode::FAILURE
@@ -532,7 +532,7 @@ fn finish_game(
     let distinct = log.distinct_cells_at(budget);
     let depth = log.depth_at(budget);
     println!(
-        "[conductor] game campaign done: config={:?} seed={:#x} branches={} distinct_cells={} \
+        "[campaign-runner] game campaign done: config={:?} seed={:#x} branches={} distinct_cells={} \
          max_depth={}",
         log.config, log.seed, budget, distinct, depth
     );
@@ -545,7 +545,7 @@ fn finish_game(
                 Ok(existing) if existing == *manifest => {}
                 Ok(existing) => {
                     eprintln!(
-                        "[conductor] manifest drift: {} records budget={} deadline={:?} rom={:?}, \
+                        "[campaign-runner] manifest drift: {} records budget={} deadline={:?} rom={:?}, \
                          this run is budget={} deadline={:?} rom={:?} — one logs file measures \
                          ONE manifest",
                         mpath.display(),
@@ -560,7 +560,7 @@ fn finish_game(
                 }
                 Err(e) => {
                     eprintln!(
-                        "[conductor] {} exists but is not a GameManifest: {e}",
+                        "[campaign-runner] {} exists but is not a GameManifest: {e}",
                         mpath.display()
                     );
                     return ExitCode::FAILURE;
@@ -570,15 +570,15 @@ fn finish_game(
                 let json = match serde_json::to_string_pretty(manifest) {
                     Ok(j) => j,
                     Err(e) => {
-                        eprintln!("[conductor] cannot serialize the manifest: {e}");
+                        eprintln!("[campaign-runner] cannot serialize the manifest: {e}");
                         return ExitCode::FAILURE;
                     }
                 };
                 if let Err(e) = std::fs::write(&mpath, json) {
-                    eprintln!("[conductor] cannot write {}: {e}", mpath.display());
+                    eprintln!("[campaign-runner] cannot write {}: {e}", mpath.display());
                     return ExitCode::FAILURE;
                 }
-                println!("[conductor] wrote the manifest to {}", mpath.display());
+                println!("[campaign-runner] wrote the manifest to {}", mpath.display());
             }
         }
 
@@ -587,7 +587,7 @@ fn finish_game(
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!(
-                        "[conductor] {} exists but is not a log array: {e}",
+                        "[campaign-runner] {} exists but is not a log array: {e}",
                         path.display()
                     );
                     return ExitCode::FAILURE;
@@ -599,15 +599,15 @@ fn finish_game(
         let json = match serde_json::to_string_pretty(&logs) {
             Ok(j) => j,
             Err(e) => {
-                eprintln!("[conductor] cannot serialize logs: {e}");
+                eprintln!("[campaign-runner] cannot serialize logs: {e}");
                 return ExitCode::FAILURE;
             }
         };
         if let Err(e) = std::fs::write(path, json) {
-            eprintln!("[conductor] cannot write {}: {e}", path.display());
+            eprintln!("[campaign-runner] cannot write {}: {e}", path.display());
             return ExitCode::FAILURE;
         }
-        println!("[conductor] appended the log to {}", path.display());
+        println!("[campaign-runner] appended the log to {}", path.display());
     }
     ExitCode::SUCCESS
 }
@@ -618,7 +618,7 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
     let config = match parse_game_config(&args.config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[conductor] {e}");
+            eprintln!("[campaign-runner] {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -644,8 +644,8 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
             // happened.
             if let Some(vacuity) = outcome.vacuity() {
                 eprintln!(
-                    "[conductor] game mock VACUOUS RUN — refusing to report it: {vacuity}\n\
-                     [conductor] evidence: {:?}",
+                    "[campaign-runner] game mock VACUOUS RUN — refusing to report it: {vacuity}\n\
+                     [campaign-runner] evidence: {:?}",
                     outcome.work
                 );
                 return ExitCode::FAILURE;
@@ -654,7 +654,7 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
             finish_game(&outcome.log, args.logs_out.as_ref(), &manifest)
         }
         Err(e) => {
-            eprintln!("[conductor] game mock campaign failed: {e}");
+            eprintln!("[campaign-runner] game mock campaign failed: {e}");
             ExitCode::FAILURE
         }
     }
@@ -663,21 +663,21 @@ fn run_game_mock(args: GameArgs) -> ExitCode {
 /// Print the campaign's film/re-key artifacts: the retained deep reproducer
 /// and the billboard window from the setup prefix (round-8 P1 — film's
 /// inputs, from campaign output alone).
-fn print_game_artifacts(outcome: &conductor::gamecampaign::GameCampaignOutcome) {
+fn print_game_artifacts(outcome: &campaign_runner::gamecampaign::GameCampaignOutcome) {
     if let Some(deep) = &outcome.deep {
         match &deep.trace_id {
             Some(id) => println!(
-                "[conductor] deep reproducer: branch {} depth {} -> trace {id}",
+                "[campaign-runner] deep reproducer: branch {} depth {} -> trace {id}",
                 deep.branch, deep.depth
             ),
             None => println!(
-                "[conductor] deep branch: {} depth {} (no --trace-out; NOT retained)",
+                "[campaign-runner] deep branch: {} depth {} (no --trace-out; NOT retained)",
                 deep.branch, deep.depth
             ),
         }
     }
     if let Some((gpa, len)) = outcome.billboard {
-        println!("[conductor] billboard window: gpa={gpa:#x} len={len}");
+        println!("[campaign-runner] billboard window: gpa={gpa:#x} len={len}");
     }
 }
 
@@ -690,7 +690,7 @@ fn run_game_box(args: GameBoxArgs) -> ExitCode {
 #[cfg(not(target_os = "linux"))]
 fn run_game_box(_args: GameBoxArgs) -> ExitCode {
     eprintln!(
-        "[conductor] game box mode needs Linux + patched KVM + the built game image (make -C \
+        "[campaign-runner] game box mode needs Linux + patched KVM + the built game image (make -C \
          guest/linux game-image, HARMONY_SMB_ROM set) — see docs/BOX-PINNING.md. This is not a \
          Linux host."
     );
@@ -712,14 +712,14 @@ fn run_campaign_mock(args: CampaignArgs) -> ExitCode {
     };
     let mut machine = ToyPlantedMachine::new(Trigger::toy());
     println!(
-        "[conductor] campaign mock: seed-driven search over a toy planted bug \
+        "[campaign-runner] campaign mock: seed-driven search over a toy planted bug \
          (budget {} branches, verify {}×)\n",
         cfg.max_branches, cfg.replay_n
     );
     match run_campaign(&mut machine, &SpecEnvCodec, &cfg) {
         Ok(report) => finish_campaign("mock", &report, cfg.replay_n),
         Err(e) => {
-            eprintln!("[conductor] campaign mock failed (backend): {e}");
+            eprintln!("[campaign-runner] campaign mock failed (backend): {e}");
             ExitCode::FAILURE
         }
     }
@@ -735,7 +735,7 @@ fn run_campaign_box(args: CampaignBoxArgs) -> ExitCode {
 #[cfg(not(target_os = "linux"))]
 fn run_campaign_box(_args: CampaignBoxArgs) -> ExitCode {
     eprintln!(
-        "[conductor] campaign box mode needs Linux + patched KVM + the built Postgres-campaign \
+        "[campaign-runner] campaign box mode needs Linux + patched KVM + the built Postgres-campaign \
          image + the det-cfl-v1 host (see docs/BOX-PINNING.md). This is not a Linux host."
     );
     ExitCode::FAILURE
@@ -747,12 +747,12 @@ fn finish_campaign(mode: &str, report: &CampaignReport, n: usize) -> ExitCode {
     let failures = verify_campaign(report, n);
     if failures.is_empty() {
         println!(
-            "\n[conductor] campaign {mode} GATES PASS: planted bug found, reproduced {n}/{n}, \
+            "\n[campaign-runner] campaign {mode} GATES PASS: planted bug found, reproduced {n}/{n}, \
              nominal control clean."
         );
         ExitCode::SUCCESS
     } else {
-        eprintln!("\n[conductor] campaign {mode} GATES FAILED:");
+        eprintln!("\n[campaign-runner] campaign {mode} GATES FAILED:");
         for f in &failures {
             eprintln!("  - {f}");
         }
@@ -764,21 +764,21 @@ fn finish_campaign(mode: &str, report: &CampaignReport, n: usize) -> ExitCode {
 /// the three materialization gates) against the scripted mock guest, over the
 /// real wire path.
 fn run_mock_materialize(args: MatArgs) -> ExitCode {
-    use conductor::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
+    use campaign_runner::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
     if args.hops < 3 {
-        eprintln!("[conductor] --hops must be >= 3 (gate (b) needs a retained grandparent)");
+        eprintln!("[campaign-runner] --hops must be >= 3 (gate (b) needs a retained grandparent)");
         return ExitCode::FAILURE;
     }
     // Script capacity: the longest single replay is the from-genesis worst
     // case + the reproducer tail; each mock intercept is 100 ns of V-time.
     let intercepts = ((args.hops as u64 + 2) * (args.hop_delta + 200) + args.tail_delta) / 100 + 8;
-    let mut server = match conductor::mock::server(conductor::mock::chain_fork_script(
+    let mut server = match campaign_runner::mock::server(campaign_runner::mock::chain_fork_script(
         intercepts as usize,
         false,
     )) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[conductor] failed to compose the mock server: {e}");
+            eprintln!("[campaign-runner] failed to compose the mock server: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -791,40 +791,40 @@ fn run_mock_materialize(args: MatArgs) -> ExitCode {
         snapshot_max_attempts: 64,
     };
     let initial = EnvSpec::Seeded {
-        seed: conductor::mock::BOOT_SEED,
+        seed: campaign_runner::mock::BOOT_SEED,
         policy: FaultPolicy::none(),
     };
     println!(
-        "[conductor] materialize (mock): {}-hop chain, hop_delta {}, tail {}\n",
+        "[campaign-runner] materialize (mock): {}-hop chain, hop_delta {}, tail {}\n",
         cfg.hops, cfg.hop_delta, cfg.tail_delta
     );
     let (served, report) = run_session(&mut server, move |stream| {
-        conductor::materialize_client(stream, initial, cfg)
+        campaign_runner::materialize_client(stream, initial, cfg)
     });
     let report = match report {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[conductor] materialize: the chain protocol failed: {e}");
+            eprintln!("[campaign-runner] materialize: the chain protocol failed: {e}");
             if let Err(se) = served {
-                eprintln!("[conductor] server session ended with: {se}");
+                eprintln!("[campaign-runner] server session ended with: {se}");
             }
             return ExitCode::FAILURE;
         }
     };
     if let Err(se) = served {
-        eprintln!("[conductor] server session ended with a fatal error: {se}");
+        eprintln!("[campaign-runner] server session ended with a fatal error: {se}");
         return ExitCode::FAILURE;
     }
     print!("{}", render_materialize_table(&report));
     let failures = verify_materialize(&report, None);
     if failures.is_empty() {
         println!(
-            "\n[conductor] materialize GATES PASS: parent-rooted hot path, bit-identical \
+            "\n[campaign-runner] materialize GATES PASS: parent-rooted hot path, bit-identical \
              eviction round-trip (folded + worst case), composed reproducer replays."
         );
         ExitCode::SUCCESS
     } else {
-        eprintln!("\n[conductor] materialize GATES FAILED:");
+        eprintln!("\n[campaign-runner] materialize GATES FAILED:");
         for f in &failures {
             eprintln!("  - {f}");
         }
@@ -837,7 +837,7 @@ fn parse_retain(s: &str) -> Option<RetentionPolicy> {
     match RetentionPolicy::parse(s) {
         Some(p) => Some(p),
         None => {
-            eprintln!("[conductor] unknown --retain {s:?}: use all | interesting | env-only");
+            eprintln!("[campaign-runner] unknown --retain {s:?}: use all | interesting | env-only");
             None
         }
     }
@@ -858,14 +858,14 @@ fn finish_recording(
     failures.extend(verify_store_reload(store, report));
     if failures.is_empty() {
         println!(
-            "\n[conductor] {mode} RECORDING GATES PASS: per-seed determinism (state_hash + \
+            "\n[campaign-runner] {mode} RECORDING GATES PASS: per-seed determinism (state_hash + \
              byte-identical journal), >= {min_distinct} distinct guest state_hashes, non-empty \
              monotone records, lossless reload. Traces under {}",
             dir.display()
         );
         ExitCode::SUCCESS
     } else {
-        eprintln!("\n[conductor] {mode} RECORDING GATES FAILED:");
+        eprintln!("\n[campaign-runner] {mode} RECORDING GATES FAILED:");
         for f in &failures {
             eprintln!("  - {f}");
         }
@@ -879,14 +879,14 @@ fn run_mock_recording(args: &SweepArgs, dir: PathBuf, retain: RetentionPolicy) -
     let store = match TraceStore::open(&dir) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[conductor] cannot open trace store {}: {e}", dir.display());
+            eprintln!("[campaign-runner] cannot open trace store {}: {e}", dir.display());
             return ExitCode::FAILURE;
         }
     };
-    let mut server = match conductor::mock::server(conductor::mock::recording_fork_script()) {
+    let mut server = match campaign_runner::mock::server(campaign_runner::mock::recording_fork_script()) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[conductor] failed to compose the mock recording server: {e}");
+            eprintln!("[campaign-runner] failed to compose the mock recording server: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -901,7 +901,7 @@ fn run_mock_recording(args: &SweepArgs, dir: PathBuf, retain: RetentionPolicy) -
         stream: StreamId(0),
     };
     println!(
-        "[conductor] mock recording: {} seeds x {} runs, retain={}, into {}\n",
+        "[campaign-runner] mock recording: {} seeds x {} runs, retain={}, into {}\n",
         cfg.sweep.seeds.len(),
         cfg.sweep.runs_per_seed,
         retain.as_str(),
@@ -910,7 +910,7 @@ fn run_mock_recording(args: &SweepArgs, dir: PathBuf, retain: RetentionPolicy) -
     match run_recording(&mut server, &store, &cfg) {
         Ok(report) => finish_recording("mock", &report, 2, &store, &dir),
         Err(e) => {
-            eprintln!("[conductor] mock recording failed: {e}");
+            eprintln!("[campaign-runner] mock recording failed: {e}");
             ExitCode::FAILURE
         }
     }
@@ -933,20 +933,20 @@ fn run_mock(args: SweepArgs) -> ExitCode {
         deadline_delta: None, // run each fork to its clean Hlt terminal
         ..SweepConfig::default()
     };
-    let mut server = match conductor::mock::server(conductor::mock::default_fork_script()) {
+    let mut server = match campaign_runner::mock::server(campaign_runner::mock::default_fork_script()) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[conductor] failed to compose the mock server: {e}");
+            eprintln!("[campaign-runner] failed to compose the mock server: {e}");
             return ExitCode::FAILURE;
         }
     };
     // The mock live VM boots under BOOT_SEED with the never-fault policy.
     let initial = EnvSpec::Seeded {
-        seed: conductor::mock::BOOT_SEED,
+        seed: campaign_runner::mock::BOOT_SEED,
         policy: FaultPolicy::none(),
     };
     println!(
-        "[conductor] mock mode: {} seeds x {} runs over a scripted MockBackend guest\n",
+        "[campaign-runner] mock mode: {} seeds x {} runs over a scripted MockBackend guest\n",
         cfg.seeds.len(),
         cfg.runs_per_seed
     );
@@ -967,7 +967,7 @@ fn run_box(args: BoxArgs) -> ExitCode {
 #[cfg(not(target_os = "linux"))]
 fn run_box(_args: BoxArgs) -> ExitCode {
     eprintln!(
-        "[conductor] box mode needs Linux + patched KVM + the built Postgres image + the \
+        "[campaign-runner] box mode needs Linux + patched KVM + the built Postgres image + the \
          det-cfl-v1 host (see docs/BOX-PINNING.md). This is not a Linux host."
     );
     ExitCode::FAILURE
@@ -977,33 +977,33 @@ fn run_box(_args: BoxArgs) -> ExitCode {
 fn finish(
     mode: &str,
     served: Result<(), vmm_core::control::ServeError>,
-    client: Result<conductor::SweepReport, explorer::MachineError>,
+    client: Result<campaign_runner::SweepReport, explorer::MachineError>,
 ) -> ExitCode {
     let report = match client {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[conductor] {mode}: the sweep failed (transport/backend): {e}");
+            eprintln!("[campaign-runner] {mode}: the sweep failed (transport/backend): {e}");
             // A client-side failure usually means the server tore down too.
             if let Err(se) = served {
-                eprintln!("[conductor] {mode}: server session ended with: {se}");
+                eprintln!("[campaign-runner] {mode}: server session ended with: {se}");
             }
             return ExitCode::FAILURE;
         }
     };
     if let Err(se) = served {
-        eprintln!("[conductor] {mode}: server session ended with a fatal error: {se}");
+        eprintln!("[campaign-runner] {mode}: server session ended with a fatal error: {se}");
         return ExitCode::FAILURE;
     }
     print!("{}", render_table(&report));
     let failures = verify(&report, 2);
     if failures.is_empty() {
         println!(
-            "\n[conductor] {mode} GATES PASS: per-seed reproducible, >= 2 distinct futures, \
+            "\n[campaign-runner] {mode} GATES PASS: per-seed reproducible, >= 2 distinct futures, \
              replay == capture."
         );
         ExitCode::SUCCESS
     } else {
-        eprintln!("\n[conductor] {mode} GATES FAILED:");
+        eprintln!("\n[campaign-runner] {mode} GATES FAILED:");
         for f in &failures {
             eprintln!("  - {f}");
         }
@@ -1122,21 +1122,21 @@ mod tests {
         };
 
         // The two the finding names, on the path it names (the box game gate).
-        refused(&["conductor", "game", "box", "--max-branches", "0"]);
-        refused(&["conductor", "game", "box", "--deadline-delta", "0"]);
+        refused(&["campaign-runner", "game", "box", "--max-branches", "0"]);
+        refused(&["campaign-runner", "game", "box", "--deadline-delta", "0"]);
         // …and the rest of that path's budget knobs, whose zero is just as hollow.
-        refused(&["conductor", "game", "box", "--setup-deadline-delta", "0"]);
-        refused(&["conductor", "game", "box", "--repeat", "0"]);
-        refused(&["conductor", "game", "box", "--explore-period", "0"]);
+        refused(&["campaign-runner", "game", "box", "--setup-deadline-delta", "0"]);
+        refused(&["campaign-runner", "game", "box", "--repeat", "0"]);
+        refused(&["campaign-runner", "game", "box", "--explore-period", "0"]);
         // The same budgets on every other campaign path (a zero budget is never
         // a valid campaign, whichever gate is downstream of it).
-        refused(&["conductor", "game", "mock", "--max-branches", "0"]);
-        refused(&["conductor", "box", "--deadline-delta", "0"]);
-        refused(&["conductor", "campaign", "box", "--max-branches", "0"]);
-        refused(&["conductor", "campaign", "box", "--deadline-delta", "0"]);
-        refused(&["conductor", "campaign", "mock", "--max-branches", "0"]);
+        refused(&["campaign-runner", "game", "mock", "--max-branches", "0"]);
+        refused(&["campaign-runner", "box", "--deadline-delta", "0"]);
+        refused(&["campaign-runner", "campaign", "box", "--max-branches", "0"]);
+        refused(&["campaign-runner", "campaign", "box", "--deadline-delta", "0"]);
+        refused(&["campaign-runner", "campaign", "mock", "--max-branches", "0"]);
         refused(&[
-            "conductor",
+            "campaign-runner",
             "bench-campaign",
             "--bug",
             "1",
@@ -1153,15 +1153,15 @@ mod tests {
         // seals the whole chain at one V-time, and a zero-length reproducer leg
         // stops where it started — both printed `materialize GATES PASS` over
         // work that never happened.
-        refused(&["conductor", "materialize", "--tail-delta", "0"]);
-        refused(&["conductor", "materialize", "--hop-delta", "0"]);
+        refused(&["campaign-runner", "materialize", "--tail-delta", "0"]);
+        refused(&["campaign-runner", "materialize", "--hop-delta", "0"]);
         // Hex is a budget too: `0x0` is the same zero.
-        refused(&["conductor", "game", "box", "--deadline-delta", "0x0"]);
+        refused(&["campaign-runner", "game", "box", "--deadline-delta", "0x0"]);
 
         // The positive values these flags actually take still parse, in both
         // radixes — the guard rejects zero, not the flag.
         let cli = Cli::try_parse_from([
-            "conductor",
+            "campaign-runner",
             "game",
             "box",
             "--max-branches",
@@ -1332,8 +1332,8 @@ mod tests {
 
     // --- finish / finish_campaign / finish_recording -------------------------
 
-    fn sweep_report_of(hash_a: [u8; 32], hash_b: [u8; 32]) -> conductor::SweepReport {
-        use conductor::{RunRow, SeedRow, SweepReport};
+    fn sweep_report_of(hash_a: [u8; 32], hash_b: [u8; 32]) -> campaign_runner::SweepReport {
+        use campaign_runner::{RunRow, SeedRow, SweepReport};
         let run = |hash: [u8; 32]| RunRow {
             stop: explorer::StopReason::Quiescent {
                 vtime: explorer::Moment(10),
@@ -1373,7 +1373,7 @@ mod tests {
     #[test]
     fn finish_reports_failure_when_the_client_errored() {
         let served: Result<(), vmm_core::control::ServeError> = Ok(());
-        let client: Result<conductor::SweepReport, explorer::MachineError> =
+        let client: Result<campaign_runner::SweepReport, explorer::MachineError> =
             Err(explorer::MachineError::Transport("boom".into()));
         assert_eq!(finish("test", served, client), ExitCode::FAILURE);
     }
@@ -1387,7 +1387,7 @@ mod tests {
     }
 
     fn campaign_report_of(found: bool, nominal_is_bug: bool) -> CampaignReport {
-        use conductor::campaign::{CRASH_KIND_SHUTDOWN, FoundBug, NominalRow};
+        use campaign_runner::campaign::{CRASH_KIND_SHUTDOWN, FoundBug, NominalRow};
         let stop = explorer::StopReason::Crash {
             vtime: explorer::Moment(5),
             info: vec![CRASH_KIND_SHUTDOWN],
@@ -1416,7 +1416,7 @@ mod tests {
             }),
             replays: if found {
                 (0..REPLAY_BAR)
-                    .map(|_| conductor::RunRow {
+                    .map(|_| campaign_runner::RunRow {
                         stop: stop.clone(),
                         hash: [7; 32],
                     })
@@ -1457,10 +1457,10 @@ mod tests {
 
     #[test]
     fn finish_recording_reports_pass_then_failure_on_a_broken_gate() {
-        use conductor::record::run_recording;
+        use campaign_runner::record::run_recording;
         let dir = tempfile::tempdir().unwrap();
         let store = TraceStore::open(dir.path()).unwrap();
-        let mut server = conductor::mock::server(conductor::mock::recording_fork_script())
+        let mut server = campaign_runner::mock::server(campaign_runner::mock::recording_fork_script())
             .expect("compose mock recording server");
         let cfg = RecordConfig {
             sweep: SweepConfig {

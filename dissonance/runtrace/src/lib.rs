@@ -2,7 +2,7 @@
 //! # runtrace — the RunTrace journal, store, and scrape decoder (task 65)
 //!
 //! `runtrace` is the **replay-plane infrastructure** that makes a finished run
-//! *recordable*. After task 58's control loop stops, the conductor assembles a
+//! *recordable*. After task 58's control loop stops, the campaign runner assembles a
 //! [`RunTrace`](explorer::RunTrace) — the versioned, serialized bundle the whole
 //! replay plane (Sensors, Oracles, re-derivation) works over offline — and this
 //! crate is where that bundle is turned into bytes and back:

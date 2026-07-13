@@ -569,7 +569,7 @@ impl Machine for BenchToyMachine {
     fn hash(&mut self) -> Result<[u8; 32], MachineError> {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(b"conductor.benchtoy.state_hash.v1");
+        h.update(b"campaign-runner.benchtoy.state_hash.v1");
         h.update((self.current.bytes.len() as u64).to_le_bytes());
         h.update(&self.current.bytes);
         Ok(h.finalize().into())

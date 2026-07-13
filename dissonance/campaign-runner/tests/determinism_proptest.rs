@@ -13,8 +13,8 @@
 //! distinct terminal hashes). Same properties as the box gate, proven portably
 //! against the mock guest.
 
-use conductor::mock::{self, default_fork_script};
-use conductor::{SweepConfig, run_session, sweep_client, verify};
+use campaign_runner::mock::{self, default_fork_script};
+use campaign_runner::{SweepConfig, run_session, sweep_client, verify};
 use environment::{EnvSpec, FaultPolicy};
 use proptest::prelude::*;
 

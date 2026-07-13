@@ -1,3 +1,6 @@
+> **Renamed by task 105 (the GLOSSARY vocabulary sweep): this crate is now `campaign-runner`.**
+> The notes below are task 58's implementation record and keep the original `conductor` name.
+
 # IMPLEMENTATION — task 58 (close the loop: control-transport server + socket-backed `Machine`)
 
 This is the Wave-4 keystone: the two missing hops that make `dissonance/` depend on

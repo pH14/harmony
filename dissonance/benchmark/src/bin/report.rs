@@ -2,7 +2,7 @@
 //! `benchmark-report` — read a campaign discovery-event log (a JSON array of
 //! [`CampaignLog`]) and render `CORRELATION-REPORT.md` with the GO/NO-GO ruling.
 //!
-//! The campaign driver (the conductor / vmm-core campaign bin) emits the log on
+//! The campaign driver (the campaign runner / vmm-core campaign bin) emits the log on
 //! the box; this offline tool turns it into the committed report (spec gate 3).
 
 use std::path::PathBuf;

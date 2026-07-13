@@ -5,7 +5,7 @@
 //! (drained from `Vmm::serial()` at each stop, or ingested from a telemetry
 //! `Console` recording — [`crate::ingest_ndjson`]). This decoder splits that
 //! byte stream into newline-delimited [`Record`]s. It is deliberately **not** in
-//! the conductor (it must run offline over recorded chunk streams) and **not**
+//! the campaign runner (it must run offline over recorded chunk streams) and **not**
 //! in a plugin (task 67's codebook *consumes* records, never produces them):
 //! the concrete `Record` decode lives here.
 //!
@@ -23,7 +23,7 @@
 //!   each byte's arrival `Moment` never changes the decoded records, and feeding
 //!   chunks incrementally equals decoding them in one batch.
 //!
-//! Stamps are **stop-granular in v1**: the conductor drains the whole console
+//! Stamps are **stop-granular in v1**: the campaign runner drains the whole console
 //! produced by a run under a single stop `Moment`, so all of a run's records
 //! share it. Per-exit stamps wait on the `telemetry::Observer` wiring (task 65
 //! non-goal); nothing here changes when they arrive — only the chunk stream gets

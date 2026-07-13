@@ -19,8 +19,8 @@
 
 use std::io::{Read, Write};
 
-use conductor::mock::{self, default_fork_script};
-use conductor::{SweepConfig, run_session, run_sweep, sweep_client, verify};
+use campaign_runner::mock::{self, default_fork_script};
+use campaign_runner::{SweepConfig, run_session, run_sweep, sweep_client, verify};
 use control_proto::{ControlError, HashScope, HostFault, Moment as WireMoment, Reply, Request, SnapId};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
@@ -179,7 +179,7 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
         let caps = explorer::client_caps();
         assert_eq!(
             raw_call(&mut stream, 2, &Request::Hello(caps)),
-            Ok(Reply::Hello(conductor_server_caps()))
+            Ok(Reply::Hello(campaign_server_caps()))
         );
         // perturb is now served (task 59 host-plane enforcement): a malformed
         // fault blob is a loud MalformedEnvironment (an unknown tag byte), not the
@@ -251,7 +251,7 @@ fn raw_wire_cases_the_typed_adapter_cannot_express() {
 /// capability the client (`client_caps`) does not carry, so the two differ only
 /// in that flag (the adapter's negotiation checks protocol/env-version, not
 /// flags).
-fn conductor_server_caps() -> control_proto::Caps {
+fn campaign_server_caps() -> control_proto::Caps {
     control_proto::Caps {
         flags: control_proto::CapFlags::GUEST_HAS_SDK,
         ..explorer::client_caps()

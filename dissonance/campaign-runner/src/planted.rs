@@ -346,7 +346,7 @@ impl Machine for ToyPlantedMachine {
         // the run's outcome), so a fixed reproducer hashes identically every
         // replay (the N/N property) and distinct reproducers diverge.
         let mut h = Sha256::new();
-        h.update(b"conductor.toy.planted.state_hash.v1");
+        h.update(b"campaign-runner.toy.planted.state_hash.v1");
         h.update((self.current.bytes.len() as u64).to_le_bytes());
         h.update(&self.current.bytes);
         Ok(h.finalize().into())

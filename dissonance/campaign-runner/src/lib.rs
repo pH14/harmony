@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! # conductor — close the loop (task 58)
+//! # campaign-runner — close the loop (task 58; the crate formerly named `conductor`)
 //!
-//! `conductor` is the composition root where dissonance first drives consonance
+//! `campaign-runner` is the composition root where dissonance first drives consonance
 //! for real: the explorer's socket-backed [`SocketMachine`] (the R2 adapter)
 //! against vmm-core's [`ControlServer`], over a unix socketpair. The library
 //! holds the pieces the demo binary and the loopback gates share:

@@ -2,7 +2,7 @@
 //! **Task-95 M2 box gates (a0)/(a)/(b) + the (d) numbers** — `#![cfg(target_os =
 //! "linux")]` **and `#[ignore]`**: needs real + LOADED patched KVM, the
 //! det-cfl-v1 host, and the built Postgres image. Gate (c) — nothing regresses —
-//! is the existing `seal_rate_sweep.rs` and conductor `live_materialization.rs`
+//! is the existing `seal_rate_sweep.rs` and campaign-runner `live_materialization.rs`
 //! suites, run unchanged alongside this file.
 //!
 //! - **(a0) tracking is inert** — same seed, dirty logging enabled (the new

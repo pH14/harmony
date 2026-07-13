@@ -7,7 +7,7 @@
 //! `Quiescent`, so the terminal class is the whole signal — see the campaign
 //! module doc.)
 
-use conductor::campaign::CrashOracle;
+use campaign_runner::campaign::CrashOracle;
 use explorer::{Reproducer, Oracle, RunTrace, StopReason, TerminalOracle, Moment};
 use proptest::prelude::*;
 

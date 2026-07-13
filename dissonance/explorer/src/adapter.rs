@@ -721,7 +721,7 @@ fn control_error_to_machine(err: control_proto::ControlError) -> MachineError {
         // (`PerturbMomentTaken`), or an out-of-scope fault / capability this
         // backend does not service (`Unsupported`). Mapping these to the DISTINCT
         // `Inadmissible` variant lets a proposing loop discard the proposal and
-        // continue — which the benchmark campaign loop (`conductor::benchcampaign`)
+        // continue — which the benchmark campaign loop (`campaign_runner::benchcampaign`)
         // does. The generic `Explorer::rollout` does NOT yet handle this variant:
         // it propagates `Inadmissible` as an error and aborts (skip/retry for the
         // generic explorer is tracked in bead hm-f30). Either way, the genuine
@@ -1086,7 +1086,7 @@ mod tests {
     //! its ruling-mandated panics), the wire↔seam conversions, and the
     //! tail-completeness recording state machine (driven over a scripted
     //! reply stream). The live loopback (this adapter against the real vmm-core
-    //! server) is `dissonance/conductor`'s integration suite.
+    //! server) is `dissonance/campaign-runner`'s integration suite.
 
     use std::collections::BTreeMap;
     use std::io::{Cursor, Read, Write};

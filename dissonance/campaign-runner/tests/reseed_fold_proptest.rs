@@ -32,8 +32,8 @@
 //! (`live_materialization.rs`) covers the real guest, whose instruction
 //! stream does not restart at a branch.
 
-use conductor::mock;
-use conductor::{probe_vtime, run_session};
+use campaign_runner::mock;
+use campaign_runner::{probe_vtime, run_session};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{EnvCodec, Machine, SpecEnvCodec, StopConditions, StopMask, StopReason, Moment};

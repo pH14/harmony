@@ -26,10 +26,10 @@ use std::process::ExitCode;
 // call below would silently resolve to the 1-arg local fn (E0061). This code
 // is `cfg(target_os = "linux")`, so the collision is invisible to a Mac
 // `cargo check` — the Linux-target check in the gate list catches it.
-use conductor::campaign::{CampaignConfig, run_campaign as run_campaign_loop};
-use conductor::record::{RecordConfig, run_recording};
-use conductor::stopwatch::{Phase, PhaseStats, mark};
-use conductor::{SweepConfig, run_session, sweep_client};
+use campaign_runner::campaign::{CampaignConfig, run_campaign as run_campaign_loop};
+use campaign_runner::record::{RecordConfig, run_recording};
+use campaign_runner::stopwatch::{Phase, PhaseStats, mark};
+use campaign_runner::{SweepConfig, run_session, sweep_client};
 use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{SpecEnvCodec, StreamId};
@@ -39,7 +39,7 @@ use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
-use conductor::gamecampaign::{GameCampaignConfig, run_game_campaign};
+use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};
 
 use super::{
     BenchBoxArgs, BoxArgs, CampaignBoxArgs, GameBoxArgs, finish, finish_campaign, finish_game,
@@ -140,7 +140,7 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
 /// server and adapter after it stay workload-blind. Returns the composed
 /// [`ControlServer`] ready to serve plus the boot-to-ready wall-clock
 /// duration in microseconds (task 96 — observation-only, see
-/// `conductor::stopwatch`'s module doc), or a failing [`ExitCode`] with a
+/// `campaign_runner::stopwatch`'s module doc), or a failing [`ExitCode`] with a
 /// loud reason (never a vacuous success). Shared verbatim by the sweep
 /// ([`run`](run)) and the campaign ([`run_campaign`](run_campaign)) so both
 /// boot the guest identically.
@@ -157,7 +157,7 @@ fn boot_server(
 ) -> Result<BootedServer, ExitCode> {
     if !std::path::Path::new("/dev/kvm").exists() {
         eprintln!(
-            "[conductor] /dev/kvm absent — run on the determinism box with the LOADED patched \
+            "[campaign-runner] /dev/kvm absent — run on the determinism box with the LOADED patched \
              KVM modules, CPU-pinned per docs/BOX-PINNING.md."
         );
         return Err(ExitCode::FAILURE);
@@ -166,7 +166,7 @@ fn boot_server(
     let report = vmm_core::hostassert::report();
     if let Some(bad) = report.iter().find(|o| !o.pass) {
         eprintln!(
-            "[conductor] host is not the det-cfl-v1 baseline (first failing assertion: {} \
+            "[campaign-runner] host is not the det-cfl-v1 baseline (first failing assertion: {} \
              expected {}, observed {}). Run on the box.",
             bad.key, bad.expected, bad.actual
         );
@@ -174,7 +174,7 @@ fn boot_server(
     }
     let (Some(kernel), Some(initramfs)) = (artifact(kernel_name), artifact(initramfs_name)) else {
         eprintln!(
-            "[conductor] guest image missing ({kernel_name} / {initramfs_name}) — build it \
+            "[campaign-runner] guest image missing ({kernel_name} / {initramfs_name}) — build it \
              first: `make -C guest fetch && make -C guest/linux campaign-image` (or \
              `postgres-image`), or pass --initramfs for an image already on the box."
         );
@@ -196,16 +196,16 @@ fn boot_server(
     ) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[conductor] boot_linux_selected (patched) failed: {e}");
+            eprintln!("[campaign-runner] boot_linux_selected (patched) failed: {e}");
             return Err(ExitCode::FAILURE);
         }
     };
-    println!("[conductor] box: booting the guest to the readiness marker {ready_marker:?} …");
+    println!("[campaign-runner] box: booting the guest to the readiness marker {ready_marker:?} …");
     let boot_us = match drive_to_marker(&mut live, ready_marker.as_bytes()) {
         Ok(steps) => {
             let boot_us = boot_t0.elapsed_us();
             println!(
-                "\n[conductor] readiness marker reached at step {steps}; the base snapshot \
+                "\n[campaign-runner] readiness marker reached at step {steps}; the base snapshot \
                  will be sealed at the next snapshottable boundary at/after this point, wall \
                  {}s.\n",
                 boot_us / 1_000_000
@@ -213,7 +213,7 @@ fn boot_server(
             boot_us
         }
         Err(e) => {
-            eprintln!("\n[conductor] failed to reach the readiness marker: {e}");
+            eprintln!("\n[campaign-runner] failed to reach the readiness marker: {e}");
             return Err(ExitCode::FAILURE);
         }
     };
@@ -282,7 +282,7 @@ pub fn run(args: BoxArgs) -> ExitCode {
         let store = match TraceStore::open(&dir) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[conductor] cannot open trace store {}: {e}", dir.display());
+                eprintln!("[campaign-runner] cannot open trace store {}: {e}", dir.display());
                 return ExitCode::FAILURE;
             }
         };
@@ -298,7 +298,7 @@ pub fn run(args: BoxArgs) -> ExitCode {
             stream: StreamId(0),
         };
         println!(
-            "[conductor] box recording: {} seeds x {} runs, retain={}, into {}\n",
+            "[campaign-runner] box recording: {} seeds x {} runs, retain={}, into {}\n",
             cfg.sweep.seeds.len(),
             cfg.sweep.runs_per_seed,
             retain.as_str(),
@@ -307,7 +307,7 @@ pub fn run(args: BoxArgs) -> ExitCode {
         return match run_recording(&mut server, &store, &cfg) {
             Ok(report) => finish_recording("box", &report, 2, &store, &dir),
             Err(e) => {
-                eprintln!("[conductor] box recording failed: {e}");
+                eprintln!("[campaign-runner] box recording failed: {e}");
                 ExitCode::FAILURE
             }
         };
@@ -322,7 +322,7 @@ pub fn run(args: BoxArgs) -> ExitCode {
     };
     let initial = boot_env();
     println!(
-        "[conductor] box mode: {} seeds x {} runs; each branch runs {} ns of V-time past the \
+        "[campaign-runner] box mode: {} seeds x {} runs; each branch runs {} ns of V-time past the \
          snapshot.\n",
         cfg.seeds.len(),
         cfg.runs_per_seed,
@@ -354,7 +354,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
     let config = match parse_game_config(&args.game.config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[conductor] {e}");
+            eprintln!("[campaign-runner] {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -376,7 +376,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         guest_ram_len: GUEST_RAM_LEN as u64,
     };
     let repeat = args.repeat.max(1);
-    let mut first: Option<conductor::gamecampaign::GameCampaignOutcome> = None;
+    let mut first: Option<campaign_runner::gamecampaign::GameCampaignOutcome> = None;
     for rep in 0..repeat {
         // A fresh, identically-seeded boot per repetition: the determinism
         // claim is over the whole boot → seal → campaign pipeline, so nothing
@@ -393,11 +393,11 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         // `GAME_ROM_SHA256:` serial line (printed by game-init before
         // GAME_READY, from the hash baked in at image build) is the fact.
         // Every repetition boots fresh, so every boot is checked.
-        let booted = conductor::gamecampaign::serial_rom_sha256(&serial);
+        let booted = campaign_runner::gamecampaign::serial_rom_sha256(&serial);
         match (&args.game.rom_sha256, &booted) {
             (Some(claim), Some(fact)) if !claim.eq_ignore_ascii_case(fact) => {
                 eprintln!(
-                    "[conductor] game box: ROM hash mismatch — --rom-sha256 {claim} but the \
+                    "[campaign-runner] game box: ROM hash mismatch — --rom-sha256 {claim} but the \
                      booted image reports {fact}; the log would be stamped with the wrong dump. \
                      Rebuild/point at the right image or fix the flag."
                 );
@@ -405,14 +405,14 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
             }
             (Some(claim), None) => {
                 eprintln!(
-                    "[conductor] game box: --rom-sha256 {claim} was claimed but the booted image \
+                    "[campaign-runner] game box: --rom-sha256 {claim} was claimed but the booted image \
                      printed no GAME_ROM_SHA256 line (ROM-less image?) — refusing to stamp."
                 );
                 return ExitCode::FAILURE;
             }
             (None, Some(fact)) => {
                 eprintln!(
-                    "[conductor] game box: the booted image reports GAME_ROM_SHA256 {fact} but \
+                    "[campaign-runner] game box: the booted image reports GAME_ROM_SHA256 {fact} but \
                      no --rom-sha256 was passed — an unstamped log defeats the mixed-dump check; \
                      rerun with --rom-sha256 {fact}."
                 );
@@ -423,7 +423,7 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         let rep_cfg = cfg.clone();
         let initial = boot_env();
         println!(
-            "[conductor] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
+            "[campaign-runner] game box: campaign {}/{repeat} (config={:?}, {} branches, {} ns per \
              rollout; boot-to-ready {} ms)…",
             rep + 1,
             config,
@@ -439,15 +439,15 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
         let outcome = match client {
             Ok(o) => o,
             Err(e) => {
-                eprintln!("[conductor] game box: campaign failed: {e}");
+                eprintln!("[campaign-runner] game box: campaign failed: {e}");
                 if let Err(se) = served {
-                    eprintln!("[conductor] game box: server session ended with: {se}");
+                    eprintln!("[campaign-runner] game box: server session ended with: {se}");
                 }
                 return ExitCode::FAILURE;
             }
         };
         if let Err(se) = served {
-            eprintln!("[conductor] game box: server session ended with a fatal error: {se}");
+            eprintln!("[campaign-runner] game box: server session ended with a fatal error: {se}");
             return ExitCode::FAILURE;
         }
         match &first {
@@ -467,14 +467,14 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
                             |i| format!("branch {i}"),
                         );
                     eprintln!(
-                        "[conductor] game box DETERMINISM FAILED: repetition {}/{repeat} \
+                        "[campaign-runner] game box DETERMINISM FAILED: repetition {}/{repeat} \
                          diverged from the first at {at}.",
                         rep + 1
                     );
                     return ExitCode::FAILURE;
                 }
                 println!(
-                    "[conductor] game box: repetition {}/{repeat} bit-identical to the first.",
+                    "[campaign-runner] game box: repetition {}/{repeat} bit-identical to the first.",
                     rep + 1
                 );
             }
@@ -486,19 +486,19 @@ pub fn run_game(args: GameBoxArgs) -> ExitCode {
     // no work are still bit-identical, so identity is never enough. A run with
     // no branches / no V-time / no frames fails here, before any banner, no
     // matter which flags produced it.
-    let verdict = match conductor::gamecampaign::determinism_verdict(&outcome, repeat) {
+    let verdict = match campaign_runner::gamecampaign::determinism_verdict(&outcome, repeat) {
         Ok(v) => v,
         Err(vacuity) => {
             eprintln!(
-                "[conductor] game box VACUOUS RUN — refusing the determinism gate: {vacuity}\n\
-                 [conductor] evidence: {:?}",
+                "[campaign-runner] game box VACUOUS RUN — refusing the determinism gate: {vacuity}\n\
+                 [campaign-runner] evidence: {:?}",
                 outcome.work
             );
             return ExitCode::FAILURE;
         }
     };
     println!(
-        "[conductor] game box work evidence: {} branches, weakest rollout {} ns of V-time / {} \
+        "[campaign-runner] game box work evidence: {} branches, weakest rollout {} ns of V-time / {} \
          COMPLETED frames.",
         outcome.work.branches, outcome.work.min_vtime_span, outcome.work.min_completed_frames
     );
@@ -551,7 +551,7 @@ pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let n = cfg.replay_n;
     let initial = boot_env();
     println!(
-        "[conductor] campaign box: searching {} branches over {} gpa candidates × window \
+        "[campaign-runner] campaign box: searching {} branches over {} gpa candidates × window \
          [{}, {}) ns × {} mask bits; each branch runs {} ns past the base.\n",
         cfg.max_branches,
         cfg.gpa_candidates.len(),
@@ -567,15 +567,15 @@ pub fn run_campaign(args: CampaignBoxArgs) -> ExitCode {
     let mut report = match client {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[conductor] campaign box: the campaign failed (transport/backend): {e}");
+            eprintln!("[campaign-runner] campaign box: the campaign failed (transport/backend): {e}");
             if let Err(se) = served {
-                eprintln!("[conductor] campaign box: server session ended with: {se}");
+                eprintln!("[campaign-runner] campaign box: server session ended with: {se}");
             }
             return ExitCode::FAILURE;
         }
     };
     if let Err(se) = served {
-        eprintln!("[conductor] campaign box: server session ended with a fatal error: {se}");
+        eprintln!("[campaign-runner] campaign box: server session ended with a fatal error: {se}");
         return ExitCode::FAILURE;
     }
     // Fold the boot-to-ready measurement (task 96) into the report's `Boot`
@@ -619,7 +619,7 @@ fn hex32(h: &[u8; 32]) -> String {
 pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     use benchmark::manifest::{Benchmark, BugId};
     use benchmark::report::Configuration;
-    use conductor::benchcampaign::{BenchConfig, run_bench_campaign};
+    use campaign_runner::benchcampaign::{BenchConfig, run_bench_campaign};
 
     // 1. The (optionally box-calibrated) benchmark manifest + the target bug/config.
     let bench = match &args.calibration {
@@ -628,7 +628,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!(
-                        "[conductor] benchcampaign box: calibration {} is not a valid Benchmark: {e}",
+                        "[campaign-runner] benchcampaign box: calibration {} is not a valid Benchmark: {e}",
                         path.display()
                     );
                     return ExitCode::FAILURE;
@@ -636,7 +636,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
             },
             Err(e) => {
                 eprintln!(
-                    "[conductor] benchcampaign box: cannot read calibration {}: {e}",
+                    "[campaign-runner] benchcampaign box: cannot read calibration {}: {e}",
                     path.display()
                 );
                 return ExitCode::FAILURE;
@@ -646,7 +646,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     };
     let Some(spec) = bench.get(BugId(args.bug)).cloned() else {
         eprintln!(
-            "[conductor] benchcampaign box: no bug {} in the manifest",
+            "[campaign-runner] benchcampaign box: no bug {} in the manifest",
             args.bug
         );
         return ExitCode::FAILURE;
@@ -656,7 +656,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
         "baseline" => Configuration::Baseline,
         other => {
             eprintln!(
-                "[conductor] benchcampaign box: --config must be `signal` or `baseline`, got {other:?}"
+                "[campaign-runner] benchcampaign box: --config must be `signal` or `baseline`, got {other:?}"
             );
             return ExitCode::FAILURE;
         }
@@ -674,7 +674,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
             Err(code) => return code,
         };
     println!(
-        "[conductor] benchcampaign box: boot-to-ready {} ms (hash-neutral).",
+        "[campaign-runner] benchcampaign box: boot-to-ready {} ms (hash-neutral).",
         boot_us / 1_000
     );
 
@@ -692,7 +692,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     cfg.explore_period = args.explore_period.max(1);
     cfg.order_range = args.order_range.max(1);
     println!(
-        "[conductor] benchcampaign box: bug {} ({}) / {config:?} / seed {} — {} branches, \
+        "[campaign-runner] benchcampaign box: bug {} ({}) / {config:?} / seed {} — {} branches, \
          verify {}×, fault-rebase {}, explore-period {}, order-range {}.\n",
         spec.id.0,
         spec.name,
@@ -715,15 +715,15 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     let outcome = match outcome {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[conductor] benchcampaign box: campaign failed (transport/backend): {e}");
+            eprintln!("[campaign-runner] benchcampaign box: campaign failed (transport/backend): {e}");
             if let Err(se) = served {
-                eprintln!("[conductor] benchcampaign box: server session ended with: {se}");
+                eprintln!("[campaign-runner] benchcampaign box: server session ended with: {se}");
             }
             return ExitCode::FAILURE;
         }
     };
     if let Err(se) = served {
-        eprintln!("[conductor] benchcampaign box: server session ended fatally: {se}");
+        eprintln!("[campaign-runner] benchcampaign box: server session ended fatally: {se}");
         return ExitCode::FAILURE;
     }
 
@@ -732,14 +732,14 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
         Ok(json) => {
             if let Err(e) = std::fs::write(&args.out, json) {
                 eprintln!(
-                    "[conductor] benchcampaign box: write {}: {e}",
+                    "[campaign-runner] benchcampaign box: write {}: {e}",
                     args.out.display()
                 );
                 return ExitCode::FAILURE;
             }
         }
         Err(e) => {
-            eprintln!("[conductor] benchcampaign box: serialize CampaignLog: {e}");
+            eprintln!("[campaign-runner] benchcampaign box: serialize CampaignLog: {e}");
             return ExitCode::FAILURE;
         }
     }
@@ -754,19 +754,19 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
             Ok(json) => {
                 if let Err(e) = std::fs::write(rec, json) {
                     eprintln!(
-                        "[conductor] benchcampaign box: write traces {}: {e}",
+                        "[campaign-runner] benchcampaign box: write traces {}: {e}",
                         rec.display()
                     );
                     return ExitCode::FAILURE;
                 }
                 println!(
-                    "[conductor] benchcampaign box: retained {} branch traces -> {}.",
+                    "[campaign-runner] benchcampaign box: retained {} branch traces -> {}.",
                     outcome.traces.len(),
                     rec.display()
                 );
             }
             Err(e) => {
-                eprintln!("[conductor] benchcampaign box: serialize traces: {e}");
+                eprintln!("[campaign-runner] benchcampaign box: serialize traces: {e}");
                 return ExitCode::FAILURE;
             }
         }
@@ -783,7 +783,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
         .flat_map(|e| e.touched.iter().copied())
         .collect();
     println!(
-        "[conductor] benchcampaign box: {} branches logged, {} distinct signal cells, {} certified find(s). Wrote {}.",
+        "[campaign-runner] benchcampaign box: {} branches logged, {} distinct signal cells, {} certified find(s). Wrote {}.",
         outcome.log.events.len(),
         distinct_cells.len(),
         outcome.certs.len(),
@@ -796,7 +796,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     // written above, plus these certs — is preserved even on the guardrail exit.)
     for c in &outcome.certs {
         println!(
-            "[conductor] FIND bug {} branch {} state_hash {}",
+            "[campaign-runner] FIND bug {} branch {} state_hash {}",
             c.bug.0,
             c.branch,
             hex32(&c.state_hash),
@@ -812,7 +812,7 @@ pub fn run_bench_campaign_box(args: BenchBoxArgs) -> ExitCode {
     // the ruling. (Baseline makes no cells by design, so this fires on Signal only.)
     if matches!(config, Configuration::Signal) && distinct_cells.is_empty() {
         eprintln!(
-            "[conductor] benchcampaign box: FATAL — the SIGNAL config produced ZERO cells. The \
+            "[campaign-runner] benchcampaign box: FATAL — the SIGNAL config produced ZERO cells. The \
              real LogSensor/CellFnV1 saw no guest console, so the signal has nothing to steer on. \
              This is NOT a valid signal campaign — failing hard (fix the console capture / guest \
              logging before re-running); the written log MUST NOT be used in the ruling."

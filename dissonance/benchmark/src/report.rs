@@ -96,7 +96,7 @@ pub struct FindRecord {
 }
 
 /// One campaign's discovery-event log (one `(config, seed)` run). The
-/// campaign driver (`consonance/vmm-core` / the conductor campaign bin) emits
+/// campaign driver (`consonance/vmm-core` / the campaign runner campaign bin) emits
 /// these; the report analyses them offline.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CampaignLog {

@@ -11,8 +11,8 @@
 //! replays the identical crash (same terminal `StopReason`, same `state_hash`)
 //! 25/25; a nominal-seed control run does not crash.
 
-use conductor::campaign::{CampaignConfig, render_campaign_table, run_campaign, verify_campaign};
-use conductor::planted::{ToyPlantedMachine, Trigger};
+use campaign_runner::campaign::{CampaignConfig, render_campaign_table, run_campaign, verify_campaign};
+use campaign_runner::planted::{ToyPlantedMachine, Trigger};
 use explorer::{SpecEnvCodec, StopReason};
 
 /// The milestone, on the portable toy: found, reproduced 25/25, nominal clean.
@@ -104,8 +104,8 @@ fn finder_adapts_to_a_replanted_bug() {
         gpa: 0x1000,
         mask: 1 << 7,
         window: (
-            conductor::planted::BASE_VTIME,
-            conductor::planted::BASE_VTIME + 8,
+            campaign_runner::planted::BASE_VTIME,
+            campaign_runner::planted::BASE_VTIME + 8,
         ),
     };
     let mut m = ToyPlantedMachine::new(replanted);
@@ -128,8 +128,8 @@ fn an_unreachable_trigger_fails_loud() {
         gpa: 0xDEAD_0000, // not in CampaignConfig::toy().gpa_candidates
         mask: 1 << 31,
         window: (
-            conductor::planted::BASE_VTIME + 3,
-            conductor::planted::BASE_VTIME + 4,
+            campaign_runner::planted::BASE_VTIME + 3,
+            campaign_runner::planted::BASE_VTIME + 4,
         ),
     };
     let mut m = ToyPlantedMachine::new(unreachable);

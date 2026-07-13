@@ -50,7 +50,7 @@
 //! HARMONY_SMB_CORE=guest/build/fceumm_libretro.so \
 //! HARMONY_SMB_ROM=/root/roms/smb.nes \
 //! FILM_OUT_DIR=/root/t86-film \
-//! taskset -c <leased core> timeout 7200 cargo test -p conductor --test live_film \
+//! taskset -c <leased core> timeout 7200 cargo test -p campaign-runner --test live_film \
 //!     -- --ignored --nocapture --test-threads=1 2>&1 | tee /root/t86-film.log
 //! ```
 //!
@@ -81,11 +81,11 @@ use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
 
-/// 2 GiB guest RAM (the game-image boot shape, matching `conductor game box`).
+/// 2 GiB guest RAM (the game-image boot shape, matching `campaign-runner game box`).
 const GUEST_RAM_LEN: usize = 2 << 30;
 /// The boot seed the live VM runs under (matches the branching demo).
 const BOOT_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
-/// The determinism command line (identical to the conductor box modes).
+/// The determinism command line (identical to the campaign-runner box modes).
 const CMDLINE: &str = "console=ttyS0 panic=-1 reboot=t,force tsc=reliable no_timer_check \
                        lpj=4000000 nokaslr nosmp maxcpus=1 nox2apic hpet=disable";
 /// A safety cap on the boot-to-marker drive.
@@ -450,7 +450,7 @@ fn boot_game_server() -> ControlServer<Box<dyn Backend>> {
 /// `(gpa, len)` — the play-agent's register catalog, via the same
 /// `sdk_events::decode_events` path the campaign uses.
 fn scrape_plan_inputs(raw: &[(u64, u32, Vec<u8>)]) -> (Vec<FrameTick>, Option<(u64, u64)>) {
-    use conductor::gamecampaign::reg;
+    use campaign_runner::gamecampaign::reg;
     let decoded = sdk_events::decode_events(
         &raw.iter()
             .map(|(m, id, b)| (explorer::Moment(*m), *id, b.clone()))
@@ -506,7 +506,7 @@ fn film_live_gate() {
     assert!(reps >= 25, "FILM_REPS {reps} is BELOW the 25/25 gate floor");
 
     let mut server = boot_game_server();
-    let (served, gate) = conductor::run_session(&mut server, move |stream| {
+    let (served, gate) = campaign_runner::run_session(&mut server, move |stream| {
         run_gate(stream, seed, delta, reps, min_frames, &out_dir)
             .map_err(explorer::MachineError::Transport)
     });

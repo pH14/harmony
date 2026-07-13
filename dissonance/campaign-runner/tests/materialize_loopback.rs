@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! **Portable loopback gate (task 68).** The chain protocol —
-//! [`conductor::materialize::run_materialize`] over the explorer's socket
+//! [`campaign_runner::materialize::run_materialize`] over the explorer's socket
 //! [`Machine`] + the production [`SpecEnvCodec`], against vmm-core's real
 //! control-transport server with a scripted `MockBackend` guest — proves the
 //! whole task-68 mechanism end-to-end with no `/dev/kvm`:
@@ -24,9 +24,9 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
-use conductor::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
-use conductor::mock::{self, chain_fork_script};
-use conductor::{materialize_client, probe_vtime, run_session};
+use campaign_runner::materialize::{MaterializeConfig, render_materialize_table, verify_materialize};
+use campaign_runner::mock::{self, chain_fork_script};
+use campaign_runner::{materialize_client, probe_vtime, run_session};
 use environment::{Action, BitMask, EnvSpec, FaultPolicy, HostFault};
 use explorer::adapter::SocketMachine;
 use explorer::{

@@ -741,11 +741,11 @@ impl GateVerdict {
     pub fn banner(&self) -> Option<String> {
         match self {
             GateVerdict::Pass { repeat } => Some(format!(
-                "[conductor] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
+                "[campaign-runner] game box DETERMINISM PASS: {repeat}/{repeat} identical per-branch \
                  state_hash sequences (gate floor {DETERMINISM_BAR})."
             )),
             GateVerdict::BelowFloor { repeat } => Some(format!(
-                "[conductor] game box determinism smoke: {repeat}/{repeat} identical — BELOW the \
+                "[campaign-runner] game box determinism smoke: {repeat}/{repeat} identical — BELOW the \
                  {DETERMINISM_BAR}-run gate floor, NOT the task-86 determinism gate."
             )),
             GateVerdict::Single => None,
@@ -1126,7 +1126,7 @@ impl Machine for GameToyMachine {
     fn hash(&mut self) -> Result<[u8; 32], MachineError> {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
-        h.update(b"conductor.gametoy.state_hash.v1");
+        h.update(b"campaign-runner.gametoy.state_hash.v1");
         h.update((self.current.bytes.len() as u64).to_le_bytes());
         h.update(&self.current.bytes);
         Ok(h.finalize().into())

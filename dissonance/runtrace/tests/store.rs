@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `TraceStore` discipline and the retention knob (the store half of gate 5;
-//! the campaign-level "no reads / same verbs" half lives in the conductor's
+//! the campaign-level "no reads / same verbs" half lives in the campaign runner's
 //! recording gate). Plus the telemetry NDJSON `Console` ingest path.
 
 use explorer::{Reproducer, Moment, Record, RunTrace, StopReason, StreamId};

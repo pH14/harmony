@@ -370,7 +370,7 @@ fn host_plane_record_replay_closure() {
     );
 }
 
-/// Compact stop rendering (local — `conductor::fmt_stop` is not a dep here).
+/// Compact stop rendering (local — `campaign_runner::fmt_stop` is not a dep here).
 fn vmm_core_fmt_stop(stop: &StopReason) -> String {
     match stop {
         StopReason::Deadline { vtime } => format!("Deadline@{}", vtime.0),
