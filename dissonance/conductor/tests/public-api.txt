@@ -231,12 +231,12 @@ pub fn conductor::mock::CountingBackend::complete_hypercall(&mut self, u64) -> v
 pub fn conductor::mock::CountingBackend::complete_ok(&mut self) -> vmm_backend::error::Result<()>
 pub fn conductor::mock::CountingBackend::complete_read(&mut self, u64) -> vmm_backend::error::Result<()>
 pub fn conductor::mock::CountingBackend::exit_counts(&self) -> vmm_backend::exit::ExitCounts
-pub fn conductor::mock::CountingBackend::inject(&mut self, vmm_backend::exit::Event) -> vmm_backend::error::Result<()>
+pub fn conductor::mock::CountingBackend::inject(&mut self, vmm_backend::exit::Injection) -> vmm_backend::error::Result<()>
 pub unsafe fn conductor::mock::CountingBackend::map_memory(&mut self, vmm_backend::types::Gpa, &mut [u8]) -> vmm_backend::error::Result<()>
 pub fn conductor::mock::CountingBackend::reset_exit_counts(&mut self)
 pub fn conductor::mock::CountingBackend::restore(&mut self, &vmm_backend::state::VcpuState) -> vmm_backend::error::Result<()>
 pub fn conductor::mock::CountingBackend::run(&mut self) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
-pub fn conductor::mock::CountingBackend::run_until(&mut self, vmm_backend::types::Vtime) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
+pub fn conductor::mock::CountingBackend::run_until(&mut self, vmm_backend::types::Moment) -> vmm_backend::error::Result<vmm_backend::exit::Exit>
 pub fn conductor::mock::CountingBackend::save(&self) -> vmm_backend::error::Result<vmm_backend::state::VcpuState>
 pub fn conductor::mock::CountingBackend::set_cpuid(&mut self, &vmm_backend::config::CpuidModel) -> vmm_backend::error::Result<()>
 pub fn conductor::mock::CountingBackend::set_msr_filter(&mut self, &vmm_backend::config::MsrFilter) -> vmm_backend::error::Result<()>

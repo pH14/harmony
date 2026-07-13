@@ -26,7 +26,7 @@
 
 use crate::error::{BackendError, Result};
 use crate::exit::Exit;
-use crate::types::Vtime;
+use crate::types::Moment;
 use vtime::{CpuBackend, InjectionPlanner, PlanOutcome, VtimeError};
 
 /// The arm-early margin (work units, in retired conditional branches). The overflow
@@ -201,13 +201,13 @@ pub(crate) fn drive_run_until<C: PreemptCpu>(
             // ran past it, so the TIMER WINS. The post-deadline instruction runs on the
             // next entry, after the timer ISR (host-timing-independent; nothing lost).
             None => Ok(Exit::Deadline {
-                reached: Vtime(stopped_at),
+                reached: Moment(stopped_at),
             }),
         },
         // The deadline was already passed when we were called — the timer is
         // overdue. Deliver at once (reached ≥ deadline); never silently absorbed.
         Ok(PlanOutcome::TargetInPast { now, .. }) => Ok(Exit::Deadline {
-            reached: Vtime(now),
+            reached: Moment(now),
         }),
         // Skid past the target despite the margin: a determinism hazard. Loud.
         Err(VtimeError::SkidExceeded { .. }) => Err(BackendError::Internal(
@@ -706,7 +706,7 @@ mod tests {
         assert_eq!(
             drive_run_until(&planner(), &mut before, deadline).unwrap(),
             Exit::Deadline {
-                reached: Vtime(deadline)
+                reached: Moment(deadline)
             },
             "an overflow strictly before the deadline is single-stepped to the exact boundary"
         );
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(
             classify_run_until(0, 0),
             RunUntilStart::AtOrPastDeadline,
-            "fresh run_until(Vtime(0)): at the deadline, NO guest step"
+            "fresh run_until(Moment(0)): at the deadline, NO guest step"
         );
         assert_eq!(
             classify_run_until(100, 100),
@@ -891,7 +891,7 @@ mod tests {
             assert_eq!(
                 exit,
                 Exit::Deadline {
-                    reached: Vtime(10_000)
+                    reached: Moment(10_000)
                 },
                 "must land at EXACTLY the deadline (count-neutral), seed {seed}"
             );
@@ -930,7 +930,7 @@ mod tests {
             assert_eq!(
                 exit,
                 Exit::Deadline {
-                    reached: Vtime(10_000)
+                    reached: Moment(10_000)
                 },
                 "timer wins at the branch; the post-deadline IO is not reached (skid {skid})"
             );
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: Vtime(500)
+                reached: Moment(500)
             },
             "an overdue deadline delivers at once (reached = now ≥ deadline)"
         );
@@ -1068,7 +1068,7 @@ mod tests {
             let mut cpu = SimPreempt::new(cfg, deadline);
             let exit = drive_run_until(&planner(), &mut cpu, deadline)
                 .expect("run_until on an in-margin skid");
-            prop_assert_eq!(exit, Exit::Deadline { reached: Vtime(deadline) });
+            prop_assert_eq!(exit, Exit::Deadline { reached: Moment(deadline) });
             prop_assert_eq!(cpu.work(), deadline);
         }
 

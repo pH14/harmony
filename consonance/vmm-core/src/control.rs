@@ -1872,7 +1872,7 @@ mod tests {
         READ_CAP, Reply, Request, SnapId, StopConditions, StopMask, StopReason, VTime,
     };
     use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
-    use vmm_backend::{Backend, Exit, MockBackend, Vtime};
+    use vmm_backend::{Backend, Exit, MockBackend};
 
     use proptest::prelude::*;
 
@@ -3331,10 +3331,10 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             self.0.run()
         }
-        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             self.0.run_until(d)
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -3509,7 +3509,7 @@ mod tests {
     /// so every armed arrival (`work_for_vns(moment) = moment ≥ 1`) is a real
     /// forward entry.
     fn enforce_vmm(deadlines: usize, image: [u8; RAM], seed: u64) -> Vmm<MockBackend> {
-        let mut exits = vec![Exit::Deadline { reached: Vtime(0) }; deadlines];
+        let mut exits = vec![Exit::Deadline { reached: vmm_backend::Moment(0) }; deadlines];
         exits.push(Exit::Hlt);
         let mut m = MockBackend::with_exits(exits);
         m.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3676,7 +3676,7 @@ mod tests {
                 size: 4,
                 write: Some(n as u32),
             },
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline { reached: vmm_backend::Moment(0) },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3763,7 +3763,7 @@ mod tests {
                 write: Some(n as u32),
             },
             Exit::Rdtsc,
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline { reached: vmm_backend::Moment(0) },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -3844,7 +3844,7 @@ mod tests {
                 write: Some(n as u32),
             },
             Exit::Rdtsc,
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline { reached: vmm_backend::Moment(0) },
             Exit::Hlt,
         ]);
         mb.set_cpuid(&vmm_backend::CpuidModel::default()).unwrap();
@@ -4861,10 +4861,10 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             Ok(Exit::Hlt)
         }
-        fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             Ok(Exit::Deadline { reached: d })
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -5553,12 +5553,12 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             Ok(Exit::Hlt)
         }
-        fn run_until(&mut self, _d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, _d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             // The guest idles (a natural HLT) before any deadline — the arrival is
             // reached through the idle jump, not a run_until Deadline.
             Ok(Exit::Hlt)
         }
-        fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
         }
         fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -5873,7 +5873,7 @@ mod tests {
         // buggify doorbell (decides AFTER the reseed) → HLT.
         let fork_exits = vec![
             Exit::Rdtsc,
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline { reached: vmm_backend::Moment(0) },
             Exit::Io {
                 port: 0x0CA1,
                 size: 4,

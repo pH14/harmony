@@ -35,11 +35,11 @@
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::exit::{Capabilities, Injection, Exit, ExitCounts};
 use crate::kvm::patched_capabilities;
 use crate::kvm_sys::KvmBackend;
 use crate::state::VcpuState;
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// The patched-KVM determinism backend (R-Backend baseline). Wraps an inner
 /// [`KvmBackend`] built with `KVM_CAP_X86_DETERMINISTIC_INTERCEPTS` enabled.
@@ -101,11 +101,11 @@ impl Backend for PatchedKvmBackend {
         self.inner.run()
     }
 
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit> {
         self.inner.run_until(deadline)
     }
 
-    fn inject(&mut self, event: Event) -> Result<()> {
+    fn inject(&mut self, event: Injection) -> Result<()> {
         self.inner.inject(event)
     }
 

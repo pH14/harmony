@@ -6,7 +6,7 @@
 //! dispositions, V-time, hypercalls, snapshot/restore, the userspace xAPIC/PIT
 //! models — compiles against this trait **alone** and never branches on which
 //! backend is in use. The portable surface (the trait, the
-//! [`Exit`]/[`Event`]/[`VcpuState`]/[`Capabilities`]/[`ExitCounts`]/[`BackendError`]
+//! [`Exit`]/[`Injection`]/[`VcpuState`]/[`Capabilities`]/[`ExitCounts`]/[`BackendError`]
 //! value types, and a deterministic in-process [`MockBackend`] behind the
 //! non-default `mock` feature) compiles and is fully tested on macOS and Linux;
 //! the Linux-only `KvmBackend` (the bring-up stock-KVM impl, `KVM_IRQCHIP_NONE`,
@@ -72,11 +72,11 @@ mod patched_kvm;
 pub use backend::Backend;
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
 pub use error::{BackendError, Result};
-pub use exit::{Capabilities, Event, Exit, ExitCounts, ExitReason, HypercallRegs};
+pub use exit::{Capabilities, Injection, Exit, ExitCounts, ExitReason, HypercallRegs};
 pub use state::{
     DebugRegs, DescriptorTable, MpState, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
 };
-pub use types::{Gpa, Vtime};
+pub use types::{Gpa, Moment};
 
 #[cfg(feature = "mock")]
 pub use mock::{Completion, MockBackend};

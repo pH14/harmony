@@ -162,13 +162,13 @@ impl Backend for CountingBackend {
         self.work.on_exit();
         Ok(exit)
     }
-    fn run_until(&mut self, d: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+    fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
         let cur = self.work.current();
         if d.0 <= cur {
             // Zero-step: already at/past the deadline — reached == work-before,
             // no guest entry (round-13).
             return Ok(Exit::Deadline {
-                reached: vmm_backend::Vtime(cur),
+                reached: vmm_backend::Moment(cur),
             });
         }
         if d.0
@@ -184,7 +184,7 @@ impl Backend for CountingBackend {
             // work counts as an unarmed run.
             self.work.arrival.store(d.0, Ordering::Relaxed);
             return Ok(Exit::Deadline {
-                reached: vmm_backend::Vtime(d.0),
+                reached: vmm_backend::Moment(d.0),
             });
         }
         // Far deadline: the next scripted exit lands first. Delegate to the
@@ -201,7 +201,7 @@ impl Backend for CountingBackend {
         }
         Ok(exit)
     }
-    fn inject(&mut self, e: vmm_backend::Event) -> vmm_backend::Result<()> {
+    fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
         self.inner.inject(e)
     }
     fn set_pending_irq(&mut self, v: Option<u8>) -> vmm_backend::Result<()> {
@@ -368,7 +368,7 @@ mod tests {
     //! (`cargo miri test -p conductor --lib` — the unsafe⇒Miri rule).
 
     use super::*;
-    use vmm_backend::Vtime;
+    use vmm_backend::Moment;
 
     /// Composing the mock VM exercises the unsafe `map_memory` forward
     /// (GuestRam is mapped into the backend at `Vmm::new`), and a step
@@ -404,25 +404,25 @@ mod tests {
         };
         // Arrival at 40 (< natural 0 + 100): a Deadline at exactly 40, script
         // untouched, reads observe 40.
-        let exit = b.run_until(vmm_backend::Vtime(40)).unwrap();
+        let exit = b.run_until(vmm_backend::Moment(40)).unwrap();
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: vmm_backend::Vtime(40)
+                reached: vmm_backend::Moment(40)
             }
         );
         assert_eq!(work.current(), 40);
         // Zero-step: at-or-past deadline reports reached == current, no entry.
-        let exit = b.run_until(vmm_backend::Vtime(40)).unwrap();
+        let exit = b.run_until(vmm_backend::Moment(40)).unwrap();
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: vmm_backend::Vtime(40)
+                reached: vmm_backend::Moment(40)
             }
         );
         // The deferred scripted exit still lands on its natural boundary
         // (100), clearing the transient arrival.
-        let exit = b.run_until(vmm_backend::Vtime(500)).unwrap();
+        let exit = b.run_until(vmm_backend::Moment(500)).unwrap();
         assert_eq!(exit, Exit::Rdtsc);
         assert_eq!(work.current(), WORK_STEP);
     }
@@ -435,7 +435,7 @@ mod tests {
     fn counting_backend_far_deadline_rewrites_a_scripted_deadline() {
         let work = Arc::new(SharedWork::default());
         let mut inner =
-            MockBackend::with_exits(vec![Exit::Deadline { reached: Vtime(0) }, Exit::Hlt]);
+            MockBackend::with_exits(vec![Exit::Deadline { reached: Moment(0) }, Exit::Hlt]);
         inner
             .set_cpuid(&vmm_backend::CpuidModel::default())
             .unwrap();
@@ -449,11 +449,11 @@ mod tests {
         // d = 250 is beyond natural + WORK_STEP (0 + 100): the far path must
         // service the scripted Deadline REWRITTEN to reached = 250, not the
         // stale scripted 0.
-        let exit = b.run_until(Vtime(250)).unwrap();
+        let exit = b.run_until(Moment(250)).unwrap();
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: Vtime(250)
+                reached: Moment(250)
             },
             "a scripted Deadline placeholder is rewritten to the armed deadline"
         );
@@ -472,7 +472,7 @@ mod tests {
     fn counting_backend_next_intercept_samples_at_or_above_the_reached_deadline() {
         let work = Arc::new(SharedWork::default());
         let mut inner = MockBackend::with_exits(vec![
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline { reached: Moment(0) },
             Exit::Rdtsc,
             Exit::Hlt,
         ]);
@@ -486,11 +486,11 @@ mod tests {
             inner,
             work: Arc::clone(&work),
         };
-        let exit = b.run_until(Vtime(250)).unwrap();
+        let exit = b.run_until(Moment(250)).unwrap();
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: Vtime(250)
+                reached: Moment(250)
             }
         );
         assert_eq!(work.current(), 250, "grid at the reached deadline");
@@ -514,7 +514,7 @@ mod tests {
     fn counting_backend_saturates_at_the_top_of_the_work_axis() {
         let work = Arc::new(SharedWork::default());
         let mut inner = MockBackend::with_exits(vec![
-            Exit::Deadline { reached: Vtime(0) },
+            Exit::Deadline { reached: Moment(0) },
             Exit::Rdtsc,
             Exit::Hlt,
         ]);
@@ -529,11 +529,11 @@ mod tests {
             work: Arc::clone(&work),
         };
         // Drive the grid to the top via the delegated scripted Deadline.
-        let exit = b.run_until(Vtime(u64::MAX)).unwrap();
+        let exit = b.run_until(Moment(u64::MAX)).unwrap();
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: Vtime(u64::MAX)
+                reached: Moment(u64::MAX)
             }
         );
         assert_eq!(work.current(), u64::MAX, "grid pinned at the axis top");
@@ -543,11 +543,11 @@ mod tests {
         assert_eq!(work.current(), u64::MAX, "on_exit saturates at u64::MAX");
         // Re-arming at the pinned top is the zero-step (reached == current),
         // exercising the saturating boundary comparison, not an overflow.
-        let exit = b.run_until(Vtime(u64::MAX)).unwrap();
+        let exit = b.run_until(Moment(u64::MAX)).unwrap();
         assert_eq!(
             exit,
             Exit::Deadline {
-                reached: Vtime(u64::MAX)
+                reached: Moment(u64::MAX)
             },
             "at-the-top re-arm is a zero-step"
         );

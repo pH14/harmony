@@ -5,7 +5,7 @@
 //! purity/coverage. This is the `vmcall-transport` loopback pattern applied to the
 //! backend seam (tasks/15 §"Mock-backend testing").
 
-use vmm_backend::{Backend, Exit, Gpa, MockBackend, MpState, VcpuState, Vtime};
+use vmm_backend::{Backend, Exit, Gpa, MockBackend, MpState, VcpuState, Moment};
 use vmm_core::contract::{cpuid_model, msr_filter_allow};
 use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
 
@@ -379,7 +379,7 @@ fn deadline_exit_fails_closed() {
     // A `Deadline` only ever answers `run_until`, which the VMM issues solely on the
     // V-time-wired determinism path (task 47). One arriving with **no V-time wired**
     // (this bring-up VMM) is a backend contract violation → loud, never absorbed.
-    let mut vmm = vmm_with(vec![Exit::Deadline { reached: Vtime(0) }]);
+    let mut vmm = vmm_with(vec![Exit::Deadline { reached: Moment(0) }]);
     assert!(matches!(vmm.run(), Err(VmmError::ContractViolation(_))));
 }
 

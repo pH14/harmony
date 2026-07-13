@@ -533,10 +533,10 @@ mod tests {
         fn run(&mut self) -> vmm_backend::Result<Exit> {
             self.inner.run()
         }
-        fn run_until(&mut self, deadline: vmm_backend::Vtime) -> vmm_backend::Result<Exit> {
+        fn run_until(&mut self, deadline: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
             self.inner.run_until(deadline)
         }
-        fn inject(&mut self, event: vmm_backend::Event) -> vmm_backend::Result<()> {
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.inner.inject(event)
         }
         fn set_pending_irq(&mut self, vector: Option<u8>) -> vmm_backend::Result<()> {

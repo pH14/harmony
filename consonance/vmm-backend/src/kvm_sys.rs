@@ -39,7 +39,7 @@ use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 use crate::backend::Backend;
 use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Event, Exit, ExitCounts};
+use crate::exit::{Capabilities, Injection, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::{MemRegions, split_around_hole};
@@ -48,7 +48,7 @@ use crate::run_until::{
     drive_run_until, free_run_decision,
 };
 use crate::state::VcpuState;
-use crate::types::{Gpa, Vtime};
+use crate::types::{Gpa, Moment};
 
 /// `KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE` — apply the in-kernel allow to
 /// both directions (the `allow-stateful` rows are bidirectional).
@@ -1333,7 +1333,7 @@ impl Backend for KvmBackend {
         self.enter_guest()
     }
 
-    fn run_until(&mut self, deadline: Vtime) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit> {
         // The §2 inversion seam (task 47): drive the pure precise-injection planner
         // over the live PMU + KVM single-step. Arm the retired-branch overflow at
         // `deadline − skid_margin`, free-run until it kicks `KVM_RUN` out, then
@@ -1396,7 +1396,7 @@ impl Backend for KvmBackend {
                 // contaminate this VM's counter. Any completion staged by the prior step
                 // stays in the run page and is committed by the NEXT entry's `KVM_RUN`.
                 RunUntilStart::AtOrPastDeadline => Ok(Exit::Deadline {
-                    reached: Vtime(start),
+                    reached: Moment(start),
                 }),
             }
         };
@@ -1430,17 +1430,17 @@ impl Backend for KvmBackend {
         Ok(exit)
     }
 
-    fn inject(&mut self, event: Event) -> Result<()> {
+    fn inject(&mut self, event: Injection) -> Result<()> {
         match event {
             // Set the pending maskable vector (overwrite); same as set_pending_irq.
-            Event::Interrupt { vector } => {
+            Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
                 Ok(())
             }
             // NMIs are non-maskable; queue immediately via the KVM_NMI ioctl. (Not
             // needed by the Linux boot — timer IRQ only — but honoured so the trait
             // method is complete.)
-            Event::Nmi => self.vcpu.nmi().map_err(kvm_err),
+            Injection::Nmi => self.vcpu.nmi().map_err(kvm_err),
         }
     }
 

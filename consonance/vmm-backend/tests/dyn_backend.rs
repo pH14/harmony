@@ -10,7 +10,7 @@
 #![cfg(feature = "mock")]
 
 use vmm_backend::{
-    Backend, CpuidModel, Event, Exit, Gpa, HypercallRegs, MockBackend, MsrFilter, VcpuState, Vtime,
+    Backend, CpuidModel, Injection, Exit, Gpa, HypercallRegs, MockBackend, MsrFilter, VcpuState, Moment,
 };
 
 /// Compiles only while `Backend` is dyn-compatible (no generic methods, no
@@ -43,7 +43,7 @@ fn boxed_backend_forwards_every_method() {
             size: 1,
             write: None,
         },
-        Exit::Deadline { reached: Vtime(0) },
+        Exit::Deadline { reached: Moment(0) },
     ];
     let mut backend: Box<dyn Backend> = Box::new(MockBackend::with_exits(script));
 
@@ -113,13 +113,13 @@ fn boxed_backend_forwards_every_method() {
     // run_until forward: the mock returns `Deadline` with the requested deadline,
     // so a dropped forward (or wrong value) fails this assertion.
     assert_eq!(
-        backend.run_until(Vtime(5)).unwrap(),
-        Exit::Deadline { reached: Vtime(5) }
+        backend.run_until(Moment(5)).unwrap(),
+        Exit::Deadline { reached: Moment(5) }
     );
 
     // inject forward: exercised through the box (its effect is not trait-observable
     // — see `.cargo/mutants.toml` exclude for the forward).
-    backend.inject(Event::Nmi).unwrap();
+    backend.inject(Injection::Nmi).unwrap();
 
     // exit_counts forward: 7 exits delivered. reset_exit_counts forward: back to 0.
     assert_eq!(backend.exit_counts().total(), 7);
