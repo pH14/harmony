@@ -32,28 +32,29 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (3 workers, 0 slots open)
+## In flight (1 active worker; 2 PRs in foreman review)
 
-- **The ARCH-BOUNDARY restructure, steps 1–4** (`hm-b5n`, tasks/108, worker
-  agent-arch-boundary-restructure, Fable 5, dispatched 2026-07-13 eve) — pre-build queue
-  lane 1: the compiler-enforced arch seam, two-level `Exit`, engine/vendor module split,
-  arch-tagged vm-state records. Portable gates only; its box verification rides the
-  post-re-cert window (foreman-owned).
-- **ARM pre-build apparatus** (`hm-2kj`, tasks/109, worker agent-arm-prebuild-apparatus,
-  Opus 4.8, dispatched 2026-07-13 eve) — pre-build queue lane 4-ARM: arm64 oracle payloads
-  + minimal KVM harness (aarch64-cross, TCG liveness smoke), floor-checker schemas, the
-  kvm/arm64 0004-analogue patch draft. Zero box contact; Altra arrival day becomes
-  scp + run.
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — Paul's 2026-07-12
-  ruling executing on `spike/nested-x86`: harness-integrity set DONE (e0a62e2 —
-  patched-backend hammer + armed-capability asserts, gate-RC propagation, independent guest
-  oracle, per-record PMI accounting, retained-runset audit); N-2 re-run DONE (e492a69 —
-  1,052,000/1,052,000 exact on the PATCHED mechanism, ≥1M floor met); N-3 floor matrix
-  RUNNING on the box (1,000 reps/condition; zero mismatches throughout: smoke ✓,
-  solo ✓ 1,000/1,000, other-core ✓ complete, same-core ~900/1,000 at the 2026-07-13
-  evening foreman check; then migrate / pause pair / migrate-live / 10k control / metal
-  session) · `hm-dbh` evidence committed, `hm-jpu` running → disposition re-record +
-  PR #98 merge = `hm-60k` → unblocks appliance `hm-tn9` + preflight CLI `hm-69y`
+  ruling executing on `spike/nested-x86`: harness-integrity set DONE (`hm-b5b`); N-2 re-run
+  DONE (`hm-dbh` CLOSED 2026-07-14 — 1,052,000/1,052,000 exact on the patched mechanism);
+  **N-3 nested phase COMPLETE at the binding floors** (all six conditions ≥1,000 reps
+  bit-identical to one reference hash — solo, other-core, same-core, migrate under 23,218
+  forced migrations, both pause modes; live-migration finished green on the destination;
+  one harness verdict bug fixed mid-run, recert-001 retained + documented). **Metal session
+  RUNNING** (foreman GO 2026-07-14 morning — nested==metal hash equality, the last `hm-jpu`
+  leg), then the `hm-60k` close-out: disposition re-record from new evidence only, audit-note
+  update, box restore-verify (KVM back to stock), foreman re-review of PR #98 → merge
+  unblocks appliance `hm-tn9` + preflight CLI `hm-69y`.
+- **The ARCH-BOUNDARY restructure, steps 1–4** (tasks/108; `hm-b5n` closed at branch-done) —
+  worker COMPLETE, all portable gates green (workspace 1691/1691, cross-target clippy, Miri
+  on vmm-core/vmm-backend/vm-state, public-api snapshots); **PR #109 opened 2026-07-14**,
+  foreman review tracked as `hm-54m` (substantive tier, cross-model pass mandatory; box
+  gates per the IMPLEMENTATION-task108.md readiness table ride the post-re-cert window).
+  Merge unblocks the vmm-core churn lanes `hm-rk5` / `hm-cbt` / `hm-0nf`.
+- **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — worker COMPLETE; **PR #108 awaiting
+  foreman review**: arm64 oracle payloads, minimal KVM harness (aarch64-cross, TCG liveness
+  smoke), floor-checker + evidence schemas with 13 fixtures, the kvm/arm64 0004-analogue
+  patch draft. Zero box contact; Altra arrival day becomes scp + run.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -112,9 +113,10 @@ spawn these until that lane re-opens):
   **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
   consumer exists; appliance ships gate mode only — do not auto-spawn).
 - **Pre-build queue, gated lanes** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling): the
-  paravirt work-derived clock x86-first `hm-rk5` ← seam keystone `hm-b5n` (both churn
-  vmm-core); the ARM backend skeleton (D-list) `hm-cbt` ← `hm-b5n`; the contract vendor
-  column (AE-4's shape) `hm-0nf` ← `hm-b5n`; AMD hammer variants + `svm.c` draft `hm-8v4`
+  paravirt work-derived clock x86-first `hm-rk5`, the ARM backend skeleton (D-list)
+  `hm-cbt`, and the contract vendor column (AE-4's shape) `hm-0nf` — all three now ←
+  **PR #109 merge gate `hm-54m`** (the keystone branch is done but unmerged; the
+  merge-window rule holds until it lands); AMD hammer variants + `svm.c` draft `hm-8v4`
   ← spike-branch merge `hm-l2g` (the hammer source and the Intel box both free then).
 - **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
   cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
@@ -148,6 +150,14 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **Cloud-vendor CLI moved out-of-band** (Paul, 2026-07-14): `hm-6ge` closed — the
+  budget-gated machine-lease CLI is Paul's personal toolchain outside this repo's task
+  queue; this repo just consumes it. Spec committed to main for reference
+  (tasks/106-cloud-vendor-cli.md, b565d58).
+- **Nested-x86 N-2 re-run CLOSED** (`hm-dbh`, 2026-07-14): 1,052,000/1,052,000 accounted
+  at the ≥1M floor on the patched mechanism, with the review-demanded instruments
+  (PatchedKvmBackend hammer, per-record PMI overflow accounting, independent guest work
+  oracle). Evidence on `spike/nested-x86` results/.
 - **vmm-core Miri gate CLOSED** (tasks/98, PR #99, 2026-07-13, Paul ruled merge-now over
   a re-litigated codex finding): own nightly job box-demonstrated twice (~48-50 min vs a
   120-min contention-derived ceiling); both `map_memory` seams Miri-run (the new
