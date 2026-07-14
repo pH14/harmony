@@ -46,15 +46,18 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   update, box restore-verify (KVM back to stock), foreman re-review of PR #98 → merge
   unblocks appliance `hm-tn9` + preflight CLI `hm-69y`.
 - **The ARCH-BOUNDARY restructure, steps 1–4** (tasks/108; `hm-b5n` closed at branch-done) —
-  worker COMPLETE, all portable gates green (workspace 1691/1691, cross-target clippy, Miri
-  on vmm-core/vmm-backend/vm-state, public-api snapshots); **PR #109 opened 2026-07-14**,
-  foreman review tracked as `hm-54m` (substantive tier, cross-model pass mandatory; box
-  gates per the IMPLEMENTATION-task108.md readiness table ride the post-re-cert window).
-  Merge unblocks the vmm-core churn lanes `hm-rk5` / `hm-cbt` / `hm-0nf`.
-- **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — worker COMPLETE; **PR #108 awaiting
-  foreman review**: arm64 oracle payloads, minimal KVM harness (aarch64-cross, TCG liveness
-  smoke), floor-checker + evidence schemas with 13 fixtures, the kvm/arm64 0004-analogue
-  patch draft. Zero box contact; Altra arrival day becomes scp + run.
+  worker COMPLETE, all portable gates green; **PR #109 opened 2026-07-14**, foreman review
+  tracked as `hm-54m` (substantive tier; box gates ride the post-re-cert window). The blind
+  cross-model pass already returned 3 P1s (aarch64 cross-check fails on x86-gated kvm.rs;
+  ControlServer enforces x86 interrupt-ID semantics generically; envcodec u32 widening makes
+  interrupt faults ~always inadmissible) — dispatched to the live worker 2026-07-14 morning
+  so fixes pipeline ahead of the formal review. Merge unblocks `hm-rk5` / `hm-cbt` / `hm-0nf`.
+- **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round-1 review POSTED** (PR #108,
+  2026-07-14: 8 verified blocking threads — wrong perf_event_attr bits, probe-RC discards,
+  the missing KVM_RUN loop vs spec deliverable 2, floor-checker stage-blindness incl. a
+  vacuous state_digest rep floor, an elf.rs overflow panic + stripped-ELF vacuous scan,
+  truth-table schema −3 mandatory rows, deny/CI/Miri gates); fix worker respawned and
+  dispatched same iteration. Architecture itself is strong; one round expected.
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
