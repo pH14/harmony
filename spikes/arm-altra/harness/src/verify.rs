@@ -95,6 +95,25 @@ pub fn verify(elf: &Elf, payload: Payload) -> Result<Verdict, ElfError> {
                     )),
                 }
             }
+            // Predicate operand: a CBZ/CBNZ/TBZ/TBNZ tests a specific register (and, for
+            // a bit test, a specific bit). Changing which register or bit is tested keeps
+            // the class and the target but changes the taken-branch count — a regression
+            // the class+condition+target checks all pass. This does not.
+            if let Some(expected_op) = model.inline_branch_operands.get(i).copied().flatten() {
+                match b.operand {
+                    Some(op) if op == expected_op => {}
+                    Some(op) => failures.push(format!(
+                        "branch #{i} at {:#x}: predicate operand {op:#x} != model's {expected_op:#x} \
+                         (a changed CBZ/TBZ register or bit changes the taken-branch count)",
+                        b.addr
+                    )),
+                    None => failures.push(format!(
+                        "branch #{i} at {:#x}: model expects a register/bit predicate ({expected_op:#x}) \
+                         but this branch class carries none",
+                        b.addr
+                    )),
+                }
+            }
             // Target: an immediate branch must land at the EXACT address the model
             // declares (`window_base + offset`), not merely somewhere in the window.
             // In-window-only verification accepts a backedge or CBZ/TBZ retargeted to a

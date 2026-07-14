@@ -363,30 +363,53 @@ impl Elf {
     /// all. That is the fail-closed half: a scan of nothing may never be reported as
     /// a clean scan.
     pub fn executable_ranges(&self) -> Result<Vec<(u64, &[u8])>, ElfError> {
-        let mut ranges: Vec<(u64, &[u8])> = self
+        // Resolve an (offset, size) into the file bytes, or None if it is malformed
+        // (overflows `usize`, its span overflows, or it runs past the file). A malformed
+        // executable region is NOT dropped — `filter_map` doing so would let a scan of
+        // one valid segment beside a truncated one report a clean *partial* scan, which
+        // for AA-5 (where the opcode scan IS the enforcement) is exactly the fail-open
+        // this must not do. It fails closed instead: the caller gets `Truncated`.
+        let resolve = |offset: u64, size: u64| -> Option<&[u8]> {
+            let from = usize::try_from(offset).ok()?;
+            let len = usize::try_from(size).ok()?;
+            let to = from.checked_add(len)?;
+            self.data.get(from..to)
+        };
+
+        let mut ranges: Vec<(u64, &[u8])> = Vec::new();
+        for s in self
             .segments
             .iter()
             .filter(|s| s.executable && s.file_size > 0)
-            .filter_map(|s| {
-                let from = usize::try_from(s.offset).ok()?;
-                let len = usize::try_from(s.file_size).ok()?;
-                let to = from.checked_add(len)?;
-                Some((s.vaddr, self.data.get(from..to)?))
-            })
-            .collect();
+        {
+            match resolve(s.offset, s.file_size) {
+                Some(bytes) => ranges.push((s.vaddr, bytes)),
+                None => {
+                    return Err(ElfError::Truncated(
+                        "an executable PT_LOAD segment's file range is out of bounds or overflows",
+                    ));
+                }
+            }
+        }
 
+        // The section fallback runs ONLY when there was no executable segment at all
+        // (a relocatable object) — not when a segment was malformed (that already
+        // returned above). Same fail-closed discipline for the sections it does read.
         if ranges.is_empty() {
-            ranges = self
+            for s in self
                 .sections
                 .iter()
                 .filter(|s| s.executable && !s.nobits && s.size > 0)
-                .filter_map(|s| {
-                    let from = usize::try_from(s.offset).ok()?;
-                    let len = usize::try_from(s.size).ok()?;
-                    let to = from.checked_add(len)?;
-                    Some((s.addr, self.data.get(from..to)?))
-                })
-                .collect();
+            {
+                match resolve(s.offset, s.size) {
+                    Some(bytes) => ranges.push((s.addr, bytes)),
+                    None => {
+                        return Err(ElfError::Truncated(
+                            "an executable section's file range is out of bounds or overflows",
+                        ));
+                    }
+                }
+            }
         }
 
         if ranges.is_empty() {
@@ -661,6 +684,23 @@ mod tests {
         assert!(matches!(
             elf.executable_ranges(),
             Err(ElfError::NoExecutableSurface)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_executable_segment_fails_closed_not_dropped() {
+        // An executable PT_LOAD whose `p_filesz` runs past the file. The old
+        // `filter_map` silently dropped it — so an image with one valid and one
+        // truncated executable segment reported a clean PARTIAL scan, which for AA-5
+        // (where the opcode scan IS the enforcement) is a fail-open. It must fail
+        // closed: a malformed executable region is a hard error, not a dropped one.
+        let code = [0xC0, 0x03, 0x5F, 0xD6];
+        let img = one_segment_image(0x4008_0000, &code, u64::MAX, code.len() as u64, true);
+        let elf =
+            Elf::parse(img).expect("the header and phdr are valid; the segment size is the fault");
+        assert!(matches!(
+            elf.executable_ranges(),
+            Err(ElfError::Truncated(_))
         ));
     }
 

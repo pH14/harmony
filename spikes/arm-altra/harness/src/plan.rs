@@ -86,7 +86,17 @@ pub fn plan(spec: &PlanSpec) -> Vec<PlannedSample> {
                     if hi <= lo {
                         lo
                     } else {
-                        lo + draw % (hi - lo + 1)
+                        // The inclusive range [lo, hi] has `hi - lo + 1` values. `hi - lo`
+                        // is safe (hi > lo), but `+ 1` overflows when the span is the whole
+                        // of u64 (lo == 0, hi == u64::MAX) — a debug build panics on the
+                        // add, a release build wraps the divisor to 0 and panics on the
+                        // modulo. When the width would overflow, every u64 is in range, so
+                        // the draw itself is the value. (`lo + draw % width` cannot
+                        // overflow: `draw % width <= hi - lo`, so the sum is at most `hi`.)
+                        match (hi - lo).checked_add(1) {
+                            Some(width) => lo + draw % width,
+                            None => draw,
+                        }
                     }
                 });
                 let seed = rng.next_u64();
@@ -229,6 +239,25 @@ mod tests {
         s.target_delta_range = Some((7, 7));
         for sample in plan(&s) {
             assert_eq!(sample.target_delta, Some(7));
+        }
+    }
+
+    #[test]
+    fn a_full_width_range_does_not_overflow_or_panic() {
+        // `(0, u64::MAX)` makes the inclusive width `hi - lo + 1` overflow: a debug
+        // build panicked on the add, a release build wrapped the divisor to 0 and
+        // panicked on the modulo. `PlanSpec` is public and takes untrusted input, so
+        // it must not panic. Every drawn delta must still be a valid u64 in range.
+        let mut s = spec();
+        s.target_delta_range = Some((0, u64::MAX));
+        let samples = plan(&s);
+        assert!(!samples.is_empty());
+        // (Every u64 is in [0, u64::MAX]; the point is that this ran at all.)
+
+        // A near-maximal window one below the overflow boundary is also fine.
+        s.target_delta_range = Some((1, u64::MAX));
+        for sample in plan(&s) {
+            assert!(sample.target_delta.unwrap() >= 1);
         }
     }
 }

@@ -1137,13 +1137,20 @@ impl PerfCounter {
             machine.enable_deterministic_intercepts()?;
         }
 
-        // Open the fd in COUNTING mode — no period. The event must count across the
-        // whole window (so `work_end - work_begin` is real), but the overflow must
-        // NOT be armed until MARK_BEGIN: an event opened with a small period and
-        // enabled at construction overflows during the guest's boot, and that kick
-        // arrives before anything is armed (`run_sample` rejects it). The period is
-        // programmed at `arm_overflow`, which the loop calls at the mark.
-        let open_attr = br_retired_attr(None);
+        // Open in the mode the run needs, and get the "don't overflow before the mark"
+        // property from the PERIOD VALUE, not from being non-sampling:
+        //
+        // - A **counting** run (no targets, AA-1(b)) never arms an overflow, so it opens
+        //   non-sampling (`sample_period == 0`) and just counts.
+        // - An **armed** run (`--with-targets`) MUST open as a SAMPLING event, because
+        //   `PERF_EVENT_IOC_PERIOD` — which `arm_overflow` uses to program the deadline
+        //   at MARK_BEGIN — rejects a non-sampling event (`!is_sampling_event`, i.e.
+        //   `sample_period == 0`) with `EINVAL`. Opening it non-sampling therefore breaks
+        //   the very first arm on real hardware. It is opened with a period beyond any
+        //   window's reach (`u64::MAX`), so the event is sampling from the start yet does
+        //   not overflow during the guest's boot; `arm_overflow` reprograms it to the
+        //   real `delta` at the mark.
+        let open_attr = br_retired_attr(sample_period.map(|_| u64::MAX));
         // SAFETY: `open_attr` is a fully initialised perf_event_attr on this frame.
         // Counting the calling thread (pid 0) wherever it runs (-1) — the thread is
         // pinned, so "wherever" is the one core.

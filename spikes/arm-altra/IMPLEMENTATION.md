@@ -604,6 +604,60 @@ Fixtures: 24, unchanged in count; `accept-aa6-gate` is now the full 8-payload ma
 every record carries the new `step: null`. Schema v3. Miri runs arm-harness (80) plus
 oracle-model (24, incl. the shared clock-page layout with the work-derived flag).
 
+## Round-8 review fixes (PR #108, cross-model pass r8)
+
+Five P1 + three P2 (the Miri finding is adjudicated-settled from r7 and was not
+re-litigated). Seven fixed; one (per-class offsets) rebutted as a documented arrival-day
+deferral.
+
+- **The armed perf event could not arm (foreman-confirmed EINVAL).** `PerfCounter::open`
+  opened every run — armed or not — with `br_retired_attr(None)` (`sample_period == 0`, a
+  non-sampling event). `PERF_EVENT_IOC_PERIOD`, which `arm_overflow` uses at MARK_BEGIN,
+  rejects a non-sampling event with `EINVAL`, so the first arm of every `--with-targets`
+  run failed on real hardware. An armed run now opens in SAMPLING mode with a period
+  beyond any window's reach (`u64::MAX`) — sampling from the start (so `IOC_PERIOD` works)
+  yet not overflowing during boot; a counting run stays non-sampling.
+- **Zero/below-normative floors + the floor was not printed.** Two-part. (a) The r7 claim
+  that "the verdict names the exact floor" was wrong for a PASS: `floor-check` printed only
+  `[PASS] armed-overflow-floor`, not the number. It now prints each outcome's DETAIL, so
+  the exact floor is on the face of the verdict. (b) Added the stage-normative minima
+  (AA-1/AA-3 = 1,000,000 armed, AA-6 = 1,000 reps): a requested floor below the minimum
+  now fails closed unless `--sub-normative` is passed, and every weakened outcome is tagged
+  `[SUB-NORMATIVE]` so it can never be mistaken for a normative acceptance. (Fixtures pass
+  `--sub-normative`.)
+- **AA-1's cumulative floor was not summable across conditions.** `floor-check` took one
+  directory, but `arm-spike run` emits one run-set per condition and AA-1's million-overflow
+  floor is cumulative across the contamination matrix. The CLI now takes several
+  directories; `check_run_sets` runs each set's per-record floors on its own and applies
+  the armed-overflow floor ONCE over the union (`check_armed_floor` split out for it) — so
+  a million `pinned-solo` overflows can no longer pass while the contamination conditions
+  went unmeasured, and smaller condition sets that together clear the floor now do.
+- **[REBUTTED — arrival-day deferral] Per-class window offsets.** The model uses one global
+  `window_offset`; AA-1's contract permits *stable per-class* offsets. This is a deliberate,
+  documented deferral (oracle-model:456-500), not a gap: emitting a per-class pack requires
+  the differential-scale-intercept solve whose input is the 1e6/1e7/1e8 counts AA-1 measures
+  on silicon, and building that solve pre-silicon as a free per-class fit would make the
+  model *unidentifiable* — destroying the over-determination (`Solved::residual`) that
+  catches a wrong answer. The apparatus validates the identifiable uniform model pre-silicon
+  and names the per-class generalization as the escape hatch — the accepted skid-landing
+  deferral shape. Rebutted on the PR; the field doc strengthened.
+- **ELF executable-segment scan was fail-open.** `executable_ranges` `filter_map`ped
+  segments, silently dropping a malformed one — so an image with one valid and one truncated
+  executable segment reported a clean *partial* scan, a fail-open for AA-5 where the opcode
+  scan IS the enforcement. It now fails closed: a malformed executable segment (or section)
+  is `Truncated`, never dropped. (Test: a segment with `p_filesz` past the file errors.)
+- **CBZ/TBZ predicate operands were unverified (P2).** Window verification checked `B.cond`
+  conditions and exact targets, but a `TBZ` whose tested bit/register — or a `CBZ` whose
+  source register — is changed keeps its class and target while changing the taken-branch
+  count. The model now declares each branch's register/bit operand
+  (`scan::branch_test_operand`, extracted by construction), and `verify` checks it.
+- **Full-width target ranges panicked (P2).** `PlanSpec { target_delta_range: Some((0,
+  u64::MAX)) }` overflowed the inclusive width `hi - lo + 1` — a debug panic, a release
+  divide-by-zero. `PlanSpec` is public/untrusted, so the width is now checked: a full-u64
+  span uses the draw directly. (Test pins it.)
+
+Schema unchanged (v3). Fixtures: 24. Miri runs arm-harness (82) plus oracle-model (24).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

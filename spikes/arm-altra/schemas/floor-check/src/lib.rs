@@ -47,5 +47,5 @@ pub mod check;
 pub mod error;
 pub mod fixtures;
 
-pub use check::{CheckId, CheckReport, Floors, Outcome, Status, check_run_set};
+pub use check::{CheckId, CheckReport, Floors, Outcome, Status, check_run_set, check_run_sets};
 pub use error::LoadError;

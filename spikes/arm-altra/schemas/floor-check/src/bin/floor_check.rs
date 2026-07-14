@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use floor_check::{Floors, Status, check_run_set};
+use floor_check::{Floors, Status, check_run_sets};
 
 /// Recompute a run-set's acceptance floors from its retained per-sample records.
 #[derive(Parser, Debug)]
@@ -26,19 +26,31 @@ use floor_check::{Floors, Status, check_run_set};
                   this verdict; a harness done-marker may not."
 )]
 struct Cli {
-    /// The run-set directory (contains `run-set.json` and its records file).
-    run_set_dir: PathBuf,
+    /// One or more run-set directories (each contains `run-set.json` and its records
+    /// file). Passing several sums them into ONE stage verdict — AA-1's million-overflow
+    /// floor is cumulative across the required condition matrix, one run-set per
+    /// condition, so the conditions must be summable rather than each meeting the floor
+    /// alone.
+    #[arg(required = true)]
+    run_set_dir: Vec<PathBuf>,
 
-    /// Fail unless at least this many armed overflows are present in the records.
-    /// The real AA-1/AA-3 floor is 1_000_000; pass it explicitly so the number a
-    /// disposition rests on is visible in the command.
+    /// Fail unless at least this many armed overflows are present. The normative
+    /// AA-1/AA-3 floor is 1_000_000; a smaller value fails closed unless
+    /// `--sub-normative` is also passed.
     #[arg(long)]
     min_armed_overflows: Option<u64>,
 
-    /// Fail unless at least this many samples (same-seed repetitions) are present.
-    /// The real AA-6 mini-gate floor is 1_000.
+    /// Fail unless at least this many same-seed repetitions are present. The normative
+    /// AA-6 floor is 1_000; a smaller value fails closed unless `--sub-normative`.
     #[arg(long)]
     min_reps: Option<u64>,
+
+    /// Permit a floor BELOW the stage-normative minimum. Off by default so a weakened
+    /// verdict is never produced by accident; when on, sub-normative outcomes are marked
+    /// `[SUB-NORMATIVE]` and can never be read as a normative acceptance. For fixtures
+    /// and dev runs, not a disposition.
+    #[arg(long)]
+    sub_normative: bool,
 }
 
 fn main() -> ExitCode {
@@ -46,9 +58,11 @@ fn main() -> ExitCode {
     let floors = Floors {
         min_armed_overflows: cli.min_armed_overflows,
         min_reps: cli.min_reps,
+        sub_normative: cli.sub_normative,
     };
 
-    let report = match check_run_set(&cli.run_set_dir, &floors) {
+    let dirs: Vec<&std::path::Path> = cli.run_set_dir.iter().map(PathBuf::as_path).collect();
+    let report = match check_run_sets(&dirs, &floors) {
         Ok(report) => report,
         Err(e) => {
             eprintln!("floor-check: cannot load run-set: {e}");
@@ -57,14 +71,16 @@ fn main() -> ExitCode {
         }
     };
 
-    // stdout: the per-check summary — clean, deterministic, capture-friendly.
+    // stdout: the per-check summary — clean, deterministic, capture-friendly. The DETAIL
+    // is printed too, so the exact floor a disposition rests on ("meets the floor of N")
+    // is on the face of the retained verdict, never only in a status word.
     println!(
         "floor-check {} stage={}",
         report.run_set_id,
         stage_slug(report.stage)
     );
     for o in &report.outcomes {
-        println!("  [{}] {}", o.status, o.id);
+        println!("  [{}] {}: {}", o.status, o.id, o.detail);
     }
 
     // stderr: the detail behind every failure, and behind every floor the evidence

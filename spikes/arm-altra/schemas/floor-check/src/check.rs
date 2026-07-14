@@ -75,6 +75,13 @@ pub struct Floors {
     /// `--min-reps`: the run-set must contain at least this many samples (AA-6's
     /// same-seed repetition floor).
     pub min_reps: Option<u64>,
+    /// `--sub-normative`: permit a floor BELOW the stage's normative minimum (AA-1/AA-3's
+    /// 1,000,000 armed overflows, AA-6's 1,000 repetitions). Off by default: a
+    /// below-normative floor fails closed, so a weakened verdict cannot be produced by
+    /// accident. When on, the run may pass a smaller floor, but every such outcome is
+    /// marked `SUB-NORMATIVE` so it is never mistaken for a normative acceptance. This is
+    /// for the checker's own fixtures and for dev runs, never a real disposition.
+    pub sub_normative: bool,
 }
 
 /// The identity of a single check. Also its stable name, via [`CheckId::name`].
@@ -129,6 +136,8 @@ pub enum CheckId {
     /// floor only grades inputs that are present, so a missing payload is otherwise
     /// invisible).
     Aa6Matrix,
+    /// A cumulative (condition-matrix) check spans exactly one stage.
+    Aggregation,
 }
 
 impl CheckId {
@@ -158,6 +167,7 @@ impl CheckId {
             CheckId::ArmedOverflowFloor => "armed-overflow-floor",
             CheckId::RepFloor => "rep-floor",
             CheckId::Aa6Matrix => "aa6-matrix",
+            CheckId::Aggregation => "aggregation",
         }
     }
 }
@@ -282,6 +292,120 @@ const fn requires_patched_mechanism(stage: Stage) -> bool {
 /// not an error; it is a [`CheckReport`] with failing outcomes and a nonzero
 /// [`CheckReport::exit_code`].
 pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadError> {
+    let (run_set, records, records_bytes) = load_run_set(dir)?;
+
+    let mut outcomes = Vec::new();
+    run_stage_checks(&run_set, floors, &records, &records_bytes, &mut outcomes);
+    // One run-set: the armed floor is over this set's own overflows.
+    check_armed_floor(run_set.stage, floors, count_armed(&records), &mut outcomes);
+
+    Ok(CheckReport {
+        run_set_id: run_set.run_set_id,
+        stage: run_set.stage,
+        outcomes,
+    })
+}
+
+/// Every per-run-set check EXCEPT the armed-overflow floor. The armed floor is applied
+/// by the caller — per-set for a single run-set ([`check_run_set`]), cumulative over the
+/// union for a condition matrix ([`check_run_sets`]) — because AA-1's floor is cumulative
+/// across the contamination conditions, each of which is its own run-set.
+fn run_stage_checks(
+    run_set: &RunSet,
+    floors: &Floors,
+    records: &[RunRecord],
+    records_bytes: &[u8],
+    out: &mut Vec<Outcome>,
+) {
+    check_schema_version(run_set, out);
+    check_well_formed(run_set, records, out);
+    check_records_sha256(run_set, records_bytes, out);
+    check_totality(run_set, records, out);
+    check_multiplicity(records, out);
+    check_weights_and_counts(run_set, records, out);
+    check_skid(run_set, records, out);
+    check_mechanism(run_set, records, out);
+    check_perf(run_set, records, out);
+    check_image_pins(run_set, out);
+    check_pinning(run_set, out);
+    check_params_mode(records, out);
+    check_clockpage_mode(run_set, records, out);
+    check_replay_identity(run_set.stage, records, out);
+    check_debug_evidence(run_set.stage, records, out);
+    check_aa6_matrix(run_set.stage, records, out);
+    check_payload_status(records, out);
+    check_rep_floor(run_set, floors, records, out);
+}
+
+/// Check a **condition matrix**: several run-set directories, one per contamination
+/// condition, summed into a single stage verdict.
+///
+/// AA-1's million-overflow floor is *cumulative across the required condition matrix*,
+/// not per-condition — so a run-set per condition must be summable. Each set is checked
+/// on its own (every per-record floor, and its own rep floor), and the armed-overflow
+/// floor is then applied ONCE over the union: a million `pinned-solo` overflows can no
+/// longer pass while the contamination conditions went unmeasured, and several smaller
+/// condition sets that together exceed the floor now can. A single directory falls
+/// straight through to [`check_run_set`].
+///
+/// # Errors
+/// [`LoadError`] if any directory's evidence is unreadable.
+pub fn check_run_sets(dirs: &[&Path], floors: &Floors) -> Result<CheckReport, LoadError> {
+    match dirs {
+        [] => return check_run_set(Path::new("."), floors), // no dirs: let the loader fail cleanly
+        [only] => return check_run_set(only, floors),
+        _ => {}
+    }
+
+    // Load every run-set up front; a single unreadable one fails the whole matrix.
+    let mut loaded: Vec<(RunSet, Vec<RunRecord>, Vec<u8>)> = Vec::new();
+    for dir in dirs {
+        loaded.push(load_run_set(dir)?);
+    }
+
+    let stage = loaded[0].0.stage;
+    let mut outcomes = Vec::new();
+
+    // The matrix must be one stage. Mixing stages is not a cumulative run.
+    let mismatched: Vec<&str> = loaded
+        .iter()
+        .filter(|(rs, _, _)| rs.stage != stage)
+        .map(|(rs, _, _)| rs.run_set_id.as_str())
+        .collect();
+    if !mismatched.is_empty() {
+        outcomes.push(fail(
+            CheckId::Aggregation,
+            format!(
+                "the run-sets span more than one stage: {stage:?} and {} — a cumulative verdict \
+                 is over one stage's condition matrix, not a mix of stages",
+                mismatched.join(", ")
+            ),
+        ));
+    }
+
+    // Every per-set check runs on each set (its records, its rep floor). The armed floor
+    // is deferred to the cumulative check below.
+    for (rs, records, bytes) in &loaded {
+        run_stage_checks(rs, floors, records, bytes, &mut outcomes);
+    }
+
+    // The cumulative armed-overflow floor, over every condition's overflows.
+    let total_armed: u64 = loaded.iter().map(|(_, r, _)| count_armed(r)).sum();
+    check_armed_floor(stage, floors, total_armed, &mut outcomes);
+
+    let ids: Vec<&str> = loaded
+        .iter()
+        .map(|(rs, _, _)| rs.run_set_id.as_str())
+        .collect();
+    Ok(CheckReport {
+        run_set_id: format!("aggregate[{}]", ids.join(" + ")),
+        stage,
+        outcomes,
+    })
+}
+
+/// Load one run-set (manifest + records + raw record bytes) from a directory.
+fn load_run_set(dir: &Path) -> Result<(RunSet, Vec<RunRecord>, Vec<u8>), LoadError> {
     let manifest_path = dir.join(MANIFEST_FILE);
     let manifest_bytes =
         std::fs::read(&manifest_path).map_err(|source| LoadError::ReadManifest {
@@ -293,40 +417,13 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
             path: manifest_path.clone(),
             source,
         })?;
-
     let records_path = dir.join(&run_set.records_file);
     let records_bytes = std::fs::read(&records_path).map_err(|source| LoadError::ReadRecords {
         path: records_path.clone(),
         source,
     })?;
     let records = parse_records(&records_path, &records_bytes)?;
-
-    let mut outcomes = Vec::new();
-
-    check_schema_version(&run_set, &mut outcomes);
-    check_well_formed(&run_set, &records, &mut outcomes);
-    check_records_sha256(&run_set, &records_bytes, &mut outcomes);
-    check_totality(&run_set, &records, &mut outcomes);
-    check_multiplicity(&records, &mut outcomes);
-    check_weights_and_counts(&run_set, &records, &mut outcomes);
-    check_skid(&run_set, &records, &mut outcomes);
-    check_mechanism(&run_set, &records, &mut outcomes);
-    check_perf(&run_set, &records, &mut outcomes);
-    check_image_pins(&run_set, &mut outcomes);
-    check_pinning(&run_set, &mut outcomes);
-    check_params_mode(&records, &mut outcomes);
-    check_clockpage_mode(&run_set, &records, &mut outcomes);
-    check_replay_identity(run_set.stage, &records, &mut outcomes);
-    check_debug_evidence(run_set.stage, &records, &mut outcomes);
-    check_aa6_matrix(run_set.stage, &records, &mut outcomes);
-    check_payload_status(&records, &mut outcomes);
-    check_floors(&run_set, floors, &records, &mut outcomes);
-
-    Ok(CheckReport {
-        run_set_id: run_set.run_set_id,
-        stage: run_set.stage,
-        outcomes,
-    })
+    Ok((run_set, records, records_bytes))
 }
 
 /// Parse `records.jsonl`: one [`RunRecord`] per non-empty line.
@@ -1591,12 +1688,42 @@ fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
 /// not a clean verdict, it is a silent one — and silence, on the face of a document
 /// a disposition rests on, reads as acceptance. The checker therefore demands the
 /// *presence* of an explicit floor while never supplying its value.
-fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &mut Vec<Outcome>) {
-    let armed = records
+/// The normative (binding) acceptance floors, `docs/ARM-ALTRA.md`: AA-1/AA-3 land
+/// ≥1,000,000 armed overflows; AA-6's mini gate repeats each input ≥1,000 times. A
+/// floor below these does not certify the stage — it must fail closed unless the
+/// operator opts into a `SUB-NORMATIVE` verdict explicitly.
+const NORMATIVE_ARMED_FLOOR: u64 = 1_000_000;
+const NORMATIVE_REP_FLOOR: u64 = 1_000;
+
+/// The stage's normative armed-overflow minimum, if it has one.
+const fn normative_armed_floor(stage: Stage) -> Option<u64> {
+    match stage {
+        Stage::Aa1 | Stage::Aa3 | Stage::Aa4 => Some(NORMATIVE_ARMED_FLOOR),
+        _ => None,
+    }
+}
+
+/// The stage's normative repetition minimum, if it has one.
+const fn normative_rep_floor(stage: Stage) -> Option<u64> {
+    match stage {
+        Stage::Aa6 => Some(NORMATIVE_REP_FLOOR),
+        _ => None,
+    }
+}
+
+/// Count the armed overflows in a record set.
+fn count_armed(records: &[RunRecord]) -> u64 {
+    records
         .iter()
         .filter(|r| r.overflow.as_ref().is_some_and(|o| o.armed))
-        .count() as u64;
+        .count() as u64
+}
 
+/// The armed-overflow floor, over an ALREADY-SUMMED armed count. Split out of
+/// [`check_floors`] so a condition-matrix run — one run-set per contamination condition
+/// — checks the CUMULATIVE 1,000,000 floor over the union of all conditions, which is
+/// how AA-1's floor is defined, rather than demanding each condition reach it alone.
+fn check_armed_floor(stage: Stage, floors: &Floors, armed: u64, out: &mut Vec<Outcome>) {
     // A stage whose acceptance IS armed deadlines (AA-3's ≥10⁶ armed overflows,
     // landed exactly) may not pass without armed records OR without the floor being
     // requested. The missing-floor case must NOT be gated on `armed > 0`: an AA-3 run
@@ -1604,7 +1731,7 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
     // emit no floor outcome at all, and the mechanism and skid checks have nothing to
     // inspect — so AA-3 would pass without testing a single deadline. The requirement
     // is enforced on the STAGE, independent of what the records happened to contain.
-    let requires_armed = requires_patched_mechanism(run_set.stage);
+    let requires_armed = requires_patched_mechanism(stage);
     match floors.min_armed_overflows {
         // A floor of zero is not a floor: `armed >= 0` holds for a run that armed no
         // deadline at all, so `--min-armed-overflows 0` is exactly the vacuous pass the
@@ -1616,22 +1743,44 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
              1000000 cumulative)."
                 .to_string(),
         )),
-        Some(min) if armed >= min => out.push(pass(
-            CheckId::ArmedOverflowFloor,
-            format!("{armed} armed overflows meets the floor of {min}"),
-        )),
-        Some(min) => out.push(fail(
-            CheckId::ArmedOverflowFloor,
-            format!("only {armed} armed overflows, below the floor of {min}"),
-        )),
+        Some(min) => {
+            let normative = normative_armed_floor(stage);
+            let below = normative.is_some_and(|norm| min < norm);
+            if below && !floors.sub_normative {
+                // A below-normative floor may not silently produce an acceptance.
+                out.push(fail(
+                    CheckId::ArmedOverflowFloor,
+                    format!(
+                        "the requested floor {min} is below the stage-normative minimum {} \
+                         (AA-1/AA-3 land 1000000 armed overflows). Pass --sub-normative to accept \
+                         a weakened verdict — it will be marked SUB-NORMATIVE, never silent.",
+                        normative.unwrap_or(NORMATIVE_ARMED_FLOOR)
+                    ),
+                ));
+            } else {
+                // A weakened but explicitly-permitted floor is tagged so the verdict can
+                // never be mistaken for a normative acceptance.
+                let tag = if below { " [SUB-NORMATIVE]" } else { "" };
+                if armed >= min {
+                    out.push(pass(
+                        CheckId::ArmedOverflowFloor,
+                        format!("{armed} armed overflows meets the floor of {min}{tag}"),
+                    ));
+                } else {
+                    out.push(fail(
+                        CheckId::ArmedOverflowFloor,
+                        format!("only {armed} armed overflows, below the floor of {min}{tag}"),
+                    ));
+                }
+            }
+        }
         None if requires_armed => out.push(not_requested(
             CheckId::ArmedOverflowFloor,
             format!(
-                "stage {:?} rests on armed deadlines (AA-3's acceptance is ≥1000000 armed \
+                "stage {stage:?} rests on armed deadlines (AA-3's acceptance is ≥1000000 armed \
                  overflows landed exactly), but no --min-armed-overflows floor was requested and \
                  the records carry {armed} armed overflow(s). This verdict cannot accept a landing \
-                 stage that tested no deadline; pass the floor explicitly.",
-                run_set.stage
+                 stage that tested no deadline; pass the floor explicitly."
             ),
         )),
         None if armed > 0 => out.push(not_requested(
@@ -1645,7 +1794,23 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
         )),
         None => {}
     }
+}
 
+/// Both floors together, over one run-set — the single-set convenience the unit tests
+/// drive. Production paths call [`check_armed_floor`] and [`check_rep_floor`] directly
+/// (so the armed floor can be cumulative across a condition matrix).
+#[cfg(test)]
+fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    check_armed_floor(run_set.stage, floors, count_armed(records), out);
+    check_rep_floor(run_set, floors, records, out);
+}
+
+fn check_rep_floor(
+    run_set: &RunSet,
+    floors: &Floors,
+    records: &[RunRecord],
+    out: &mut Vec<Outcome>,
+) {
     // The rep floor is PER-REPEATED-INPUT, not total rows. AA-6 needs ≥1000
     // repetitions of the SAME (payload, scale, seed, condition, target) input,
     // bit-identical. Counting total records would let 1,000 rows that are 125 reps of
@@ -1663,31 +1828,46 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
                 .to_string(),
         )),
         Some(min) => {
-            let mut groups: BTreeMap<RepKey, u64> = BTreeMap::new();
-            for r in records {
-                *groups.entry(rep_key(r)).or_default() += 1;
-            }
-            let distinct = groups.len();
-            let min_group = groups.values().copied().min().unwrap_or(0);
-            if min_group >= min {
-                out.push(pass(
-                    CheckId::RepFloor,
-                    format!(
-                        "{distinct} distinct input(s), each repeated at least {min_group} times \
-                         (floor {min})"
-                    ),
-                ));
-            } else {
+            let normative = normative_rep_floor(run_set.stage);
+            let below = normative.is_some_and(|norm| min < norm);
+            if below && !floors.sub_normative {
                 out.push(fail(
                     CheckId::RepFloor,
                     format!(
-                        "the least-repeated input appears only {min_group} time(s), below the \
-                         per-input rep floor of {min} (there are {distinct} distinct inputs across \
-                         {} records; a total-count floor would have hidden this — AA-6 needs {min} \
-                         reps of the SAME input)",
-                        records.len()
+                        "the requested rep floor {min} is below AA-6's normative minimum {} \
+                         same-input repetitions. Pass --sub-normative to accept a weakened verdict \
+                         — it will be marked SUB-NORMATIVE, never silent.",
+                        normative.unwrap_or(NORMATIVE_REP_FLOOR)
                     ),
                 ));
+            } else {
+                let tag = if below { " [SUB-NORMATIVE]" } else { "" };
+                let mut groups: BTreeMap<RepKey, u64> = BTreeMap::new();
+                for r in records {
+                    *groups.entry(rep_key(r)).or_default() += 1;
+                }
+                let distinct = groups.len();
+                let min_group = groups.values().copied().min().unwrap_or(0);
+                if min_group >= min {
+                    out.push(pass(
+                        CheckId::RepFloor,
+                        format!(
+                            "{distinct} distinct input(s), each repeated at least {min_group} times \
+                             (floor {min}){tag}"
+                        ),
+                    ));
+                } else {
+                    out.push(fail(
+                        CheckId::RepFloor,
+                        format!(
+                            "the least-repeated input appears only {min_group} time(s), below the \
+                             per-input rep floor of {min} (there are {distinct} distinct inputs across \
+                             {} records; a total-count floor would have hidden this — AA-6 needs {min} \
+                             reps of the SAME input){tag}",
+                            records.len()
+                        ),
+                    ));
+                }
             }
         }
         None if run_set.stage == Stage::Aa6 => out.push(not_requested(
@@ -1839,6 +2019,13 @@ mod tests {
 
     fn status(out: &[Outcome], id: CheckId) -> Option<Status> {
         out.iter().find(|o| o.id == id).map(|o| o.status)
+    }
+
+    fn detail(out: &[Outcome], id: CheckId) -> String {
+        out.iter()
+            .find(|o| o.id == id)
+            .map(|o| o.detail.clone())
+            .unwrap_or_default()
     }
 
     #[test]
@@ -2194,10 +2381,61 @@ mod tests {
     }
 
     #[test]
+    fn a_below_normative_armed_floor_fails_closed_unless_opted_into() {
+        // `--min-armed-overflows 8` at AA-3 is far below the normative 1,000,000. A
+        // silent pass on it is exactly the weakened verdict this closes: it FAILS unless
+        // --sub-normative is passed, and then the outcome is tagged so it can never read
+        // as a normative acceptance.
+        let below = Floors {
+            min_armed_overflows: Some(8),
+            min_reps: None,
+            sub_normative: false,
+        };
+        let mut out = Vec::new();
+        check_armed_floor(Stage::Aa3, &below, 16, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::Fail),
+            "a below-normative floor must not silently pass"
+        );
+
+        let opted = Floors {
+            sub_normative: true,
+            ..below
+        };
+        let mut out = Vec::new();
+        check_armed_floor(Stage::Aa3, &opted, 16, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::Pass)
+        );
+        assert!(
+            detail(&out, CheckId::ArmedOverflowFloor).contains("SUB-NORMATIVE"),
+            "a weakened pass must be marked, never indistinguishable from a normative one"
+        );
+
+        // The normative floor itself passes clean (no tag), over a CUMULATIVE count —
+        // this is what a condition matrix sums to.
+        let normative = Floors {
+            min_armed_overflows: Some(1_000_000),
+            min_reps: None,
+            sub_normative: false,
+        };
+        let mut out = Vec::new();
+        check_armed_floor(Stage::Aa3, &normative, 1_000_000, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::Pass)
+        );
+        assert!(!detail(&out, CheckId::ArmedOverflowFloor).contains("SUB-NORMATIVE"));
+    }
+
+    #[test]
     fn rep_floor_fails_below_the_minimum() {
         let floors = Floors {
             min_armed_overflows: None,
             min_reps: Some(1_000),
+            sub_normative: false,
         };
         let mut out = Vec::new();
         check_floors(&a_run_set(), &floors, &[a_record(0)], &mut out);
@@ -2296,6 +2534,7 @@ mod tests {
         let floors = Floors {
             min_armed_overflows: None,
             min_reps: Some(3),
+            sub_normative: false,
         };
         let mut out = Vec::new();
         check_floors(&a_run_set(), &floors, &three_distinct, &mut out);

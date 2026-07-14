@@ -482,6 +482,17 @@ pub struct Weights {
     /// unidentifiable — the over-determination that gives [`Solved::residual`] its
     /// meaning would be gone, and the model would fit anything, including a wrong
     /// answer.
+    ///
+    /// That is why the per-class *constants pack* is an arrival-day deliverable, not a
+    /// pre-silicon one, and this is a deliberate deferral rather than a gap: emitting it
+    /// requires the differential-scale-intercept solve above, whose input is the actual
+    /// 1e6/1e7/1e8 counts AA-1 measures — data that does not exist until the box is in
+    /// hand. Building that solve now, against synthetic data, would be building the
+    /// unidentifiable free-per-class fit the paragraph above forbids. So the apparatus
+    /// validates the identifiable *uniform* model pre-silicon (which its fixtures and
+    /// gates exercise in full) and names the per-class generalization as the escape
+    /// hatch — the same shape as the accepted skid-landing deferral: the mechanism is
+    /// ready, the constants it takes are measured on silicon, never invented here.
     pub window_offset: u64,
 }
 
@@ -559,6 +570,14 @@ pub struct Expectation {
     /// a different in-window label — same class, same condition, different control flow
     /// and taken-branch count — is caught, where an in-window-only check would pass it.
     pub inline_branch_targets: &'static [Option<i32>],
+    /// The expected **predicate operand** of each branch, position-aligned with
+    /// [`Expectation::inline_branch_seq`]: `Some(op)` is the register/bit a `CBZ`/`CBNZ`/
+    /// `TBZ`/`TBNZ` tests (encoded by [`scan::branch_test_operand`]), `None` for classes
+    /// whose predicate is elsewhere (`B.cond`'s condition, the unconditional/indirect
+    /// classes). The verifier checks it so a `TBZ` whose tested bit or register is changed
+    /// — same class, same target, different taken-branch count — is caught, where a
+    /// class+target check would pass it.
+    pub inline_branch_operands: &'static [Option<u32>],
 }
 
 impl Expectation {
@@ -775,6 +794,30 @@ mod seq {
     pub const LSE_ATOMICS_TARGETS: &[Option<i32>] = &[Some(4)];
     pub const CLOCK_PAGE_TARGETS: &[Option<i32>] = &[Some(20), Some(20), Some(20)];
     pub const NONE_TARGETS: &[Option<i32>] = &[];
+
+    /// The register/bit predicate operand of each branch (`scan::branch_test_operand`
+    /// encoding), position-aligned with the `BranchKind` slices: `Some(op)` at each
+    /// `CBZ`/`CBNZ`/`TBZ`/`TBNZ`, `None` elsewhere. Extracted by construction from the
+    /// built ELF, then frozen — a later edit that retargets a bit-test to a different
+    /// register or bit changes the taken count and diverges from these.
+    pub const STRAIGHT_LINE_OPERANDS: &[Option<u32>] = &[None];
+    pub const BRANCH_DENSE_OPERANDS: &[Option<u32>] = &[
+        Some(0x004),
+        Some(0x024),
+        Some(0x044),
+        Some(0x064),
+        Some(0x084),
+        Some(0x0a4),
+        Some(0x02d),
+        None,
+    ];
+    pub const SVC_OPERANDS: &[Option<u32>] = &[None];
+    pub const EXCEPTION_ABORT_OPERANDS: &[Option<u32>] = &[None];
+    pub const WFI_IDLE_OPERANDS: &[Option<u32>] = &[None];
+    pub const LLSC_ATOMICS_OPERANDS: &[Option<u32>] = &[Some(0x005), None];
+    pub const LSE_ATOMICS_OPERANDS: &[Option<u32>] = &[None];
+    pub const CLOCK_PAGE_OPERANDS: &[Option<u32>] = &[Some(0x008), None, None];
+    pub const NONE_OPERANDS: &[Option<u32>] = &[];
 }
 
 /// The expected count for a (payload, scale, seed).
@@ -836,6 +879,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         inline_branch_seq: seq::NONE,
         inline_branch_conds: seq::NONE_CONDS,
         inline_branch_targets: seq::NONE_TARGETS,
+        inline_branch_operands: seq::NONE_OPERANDS,
     };
 
     match payload {
@@ -846,6 +890,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.inline_branch_seq = seq::STRAIGHT_LINE;
             e.inline_branch_conds = seq::STRAIGHT_LINE_CONDS;
             e.inline_branch_targets = seq::STRAIGHT_LINE_TARGETS;
+            e.inline_branch_operands = seq::STRAIGHT_LINE_OPERANDS;
         }
         Payload::BranchDense => {
             let mut rng = XorShift64Star::new(seed);
@@ -857,6 +902,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.inline_branch_seq = seq::BRANCH_DENSE;
             e.inline_branch_conds = seq::BRANCH_DENSE_CONDS;
             e.inline_branch_targets = seq::BRANCH_DENSE_TARGETS;
+            e.inline_branch_operands = seq::BRANCH_DENSE_OPERANDS;
         }
         Payload::Svc => {
             e.exception_entries = trips;
@@ -865,6 +911,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.inline_branch_seq = seq::SVC;
             e.inline_branch_conds = seq::SVC_CONDS;
             e.inline_branch_targets = seq::SVC_TARGETS;
+            e.inline_branch_operands = seq::SVC_OPERANDS;
         }
         Payload::ExceptionAbort => {
             e.exception_entries = trips;
@@ -872,6 +919,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.inline_branch_seq = seq::EXCEPTION_ABORT;
             e.inline_branch_conds = seq::EXCEPTION_ABORT_CONDS;
             e.inline_branch_targets = seq::EXCEPTION_ABORT_TARGETS;
+            e.inline_branch_operands = seq::EXCEPTION_ABORT_OPERANDS;
         }
         Payload::WfiIdle => {
             e.exception_entries = trips;
@@ -880,23 +928,27 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             e.inline_branch_seq = seq::WFI_IDLE;
             e.inline_branch_conds = seq::WFI_IDLE_CONDS;
             e.inline_branch_targets = seq::WFI_IDLE_TARGETS;
+            e.inline_branch_operands = seq::WFI_IDLE_OPERANDS;
         }
         Payload::LlscAtomics => {
             e.has_reported_term = true;
             e.inline_branch_seq = seq::LLSC_ATOMICS;
             e.inline_branch_conds = seq::LLSC_ATOMICS_CONDS;
             e.inline_branch_targets = seq::LLSC_ATOMICS_TARGETS;
+            e.inline_branch_operands = seq::LLSC_ATOMICS_OPERANDS;
         }
         Payload::LseAtomics => {
             e.inline_branch_seq = seq::LSE_ATOMICS;
             e.inline_branch_conds = seq::LSE_ATOMICS_CONDS;
             e.inline_branch_targets = seq::LSE_ATOMICS_TARGETS;
+            e.inline_branch_operands = seq::LSE_ATOMICS_OPERANDS;
         }
         Payload::ClockPage => {
             e.has_reported_term = true;
             e.inline_branch_seq = seq::CLOCK_PAGE;
             e.inline_branch_conds = seq::CLOCK_PAGE_CONDS;
             e.inline_branch_targets = seq::CLOCK_PAGE_TARGETS;
+            e.inline_branch_operands = seq::CLOCK_PAGE_OPERANDS;
         }
     }
 
@@ -1186,6 +1238,12 @@ mod tests {
                 e.inline_branch_seq.len(),
                 e.inline_branch_targets.len(),
                 "{}: targets not aligned with seq",
+                p.name()
+            );
+            assert_eq!(
+                e.inline_branch_seq.len(),
+                e.inline_branch_operands.len(),
+                "{}: operands not aligned with seq",
                 p.name()
             );
         }

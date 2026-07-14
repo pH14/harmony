@@ -270,8 +270,39 @@ pub fn branch_target(word: u32, addr: u64) -> Option<u64> {
     Some(addr.wrapping_add((off << 2) as u64))
 }
 
+/// The **predicate operand** of a register-tested branch — the register (and, for a
+/// bit test, the bit) whose value decides whether the branch is taken. `None` for a
+/// `B.cond` (its predicate is the condition code, see [`decode_cond`]) and for the
+/// unconditional/register-indirect classes.
+///
+/// - `CBZ`/`CBNZ`: `(sf << 5) | Rt` — the source register and its 32/64-bit size.
+/// - `TBZ`/`TBNZ`: `(bit << 5) | Rt` — the tested bit position (`b5:b40`) and register.
+///
+/// Changing the tested register or bit while keeping the branch class and target is a
+/// different predicate — a different taken-branch count — that a class+target check
+/// would pass. This is the discriminator the verifier checks against the model.
+#[must_use]
+pub fn branch_test_operand(word: u32) -> Option<u32> {
+    // CBZ / CBNZ: bits[30:24] == 0b0110100, then bit 24 selects Z/NZ.
+    if word & 0x7E00_0000 == 0x3400_0000 {
+        let rt = word & 0x1F;
+        let sf = (word >> 31) & 1;
+        return Some((sf << 5) | rt);
+    }
+    // TBZ / TBNZ: bits[30:25] == 0b011011.
+    if word & 0x7E00_0000 == 0x3600_0000 {
+        let rt = word & 0x1F;
+        let b40 = (word >> 19) & 0x1F;
+        let b5 = (word >> 31) & 1;
+        let bit = (b5 << 5) | b40;
+        return Some((bit << 5) | rt);
+    }
+    None
+}
+
 /// One window branch, decoded to the detail the "known by construction" gate needs:
-/// its class, its condition (for `B.cond`), and its resolved target.
+/// its class, its condition (for `B.cond`), its resolved target, and its register/bit
+/// predicate operand (for `CBZ`/`TBZ`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct WindowBranch {
     /// Address of the branch.
@@ -282,6 +313,8 @@ pub struct WindowBranch {
     pub cond: Option<u8>,
     /// The resolved target, for immediate branches.
     pub target: Option<u64>,
+    /// The register/bit predicate operand, for `CBZ`/`CBNZ`/`TBZ`/`TBNZ`.
+    pub operand: Option<u32>,
 }
 
 /// Every branch in a range, decoded to [`WindowBranch`] detail, in address order.
@@ -295,6 +328,7 @@ pub fn window_branches(base: u64, code: &[u8]) -> Vec<WindowBranch> {
                 kind,
                 cond: decode_cond(h.word),
                 target: branch_target(h.word, h.addr),
+                operand: branch_test_operand(h.word),
             }),
             _ => None,
         })

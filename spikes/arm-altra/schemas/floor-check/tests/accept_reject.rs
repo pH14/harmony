@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use floor_check::fixtures::all_fixtures;
-use floor_check::{CheckId, CheckReport, Floors, Status, check_run_set};
+use floor_check::{CheckId, CheckReport, Floors, Status, check_run_set, check_run_sets};
 
 /// `schemas/fixtures/`, resolved from this crate's manifest dir.
 fn fixtures_dir() -> PathBuf {
@@ -34,6 +34,40 @@ fn check(name: &str, floors: Floors) -> CheckReport {
 
 fn no_floors() -> Floors {
     Floors::default()
+}
+
+#[test]
+fn the_armed_floor_sums_across_a_condition_matrix() {
+    // AA-1's million-overflow floor is cumulative across conditions. Two run-sets
+    // (here, the AA-3 `accept` fixture stands in for two conditions — 16 armed each)
+    // must SUM to 32: a floor of 32 is met by the union, a floor of 33 is not, and
+    // neither set meets 32 alone. This is the aggregation the single-dir path cannot do.
+    let dir = fixtures_dir().join("accept");
+    let dirs = [dir.as_path(), dir.as_path()];
+
+    let met = Floors {
+        min_armed_overflows: Some(32),
+        min_reps: None,
+        sub_normative: true,
+    };
+    let report = check_run_sets(&dirs, &met).expect("aggregate loads");
+    assert_eq!(
+        report.status_of(CheckId::ArmedOverflowFloor),
+        Some(Status::Pass),
+        "16 + 16 armed overflows meet a cumulative floor of 32: {:?}",
+        report.failed()
+    );
+
+    let unmet = Floors {
+        min_armed_overflows: Some(33),
+        ..met
+    };
+    let report = check_run_sets(&dirs, &unmet).expect("aggregate loads");
+    assert_eq!(
+        report.status_of(CheckId::ArmedOverflowFloor),
+        Some(Status::Fail),
+        "32 summed overflows do not meet a floor of 33"
+    );
 }
 
 /// A reject fixture whose single failing check is `id`, checked under `floors`.
@@ -63,6 +97,7 @@ fn accept_is_accepted() {
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: None,
+        sub_normative: true,
     };
     let report = check("accept", floors);
     assert!(
@@ -96,6 +131,7 @@ fn accept_aa6_gate_is_accepted() {
     let floors = Floors {
         min_armed_overflows: Some(4),
         min_reps: Some(4),
+        sub_normative: true,
     };
     let report = check("accept-aa6-gate", floors);
     assert!(
@@ -114,6 +150,7 @@ fn reject_aa6_rep_floor_counts_per_input_not_total() {
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: Some(2),
+        sub_normative: true,
     };
     assert_single_failure("reject-aa6-rep-floor", floors, CheckId::RepFloor);
 }
@@ -139,6 +176,7 @@ fn reject_short_count() {
     let floors = Floors {
         min_armed_overflows: Some(1_000_000),
         min_reps: None,
+        sub_normative: true,
     };
     assert_single_failure("reject-short-count", floors, CheckId::ArmedOverflowFloor);
 }
@@ -178,6 +216,7 @@ fn reject_overshoot() {
     let floors = Floors {
         min_armed_overflows: Some(1),
         min_reps: None,
+        sub_normative: true,
     };
     assert_single_failure("reject-overshoot", floors, CheckId::Skid);
 }
@@ -187,6 +226,7 @@ fn reject_skid_exceeds_margin() {
     let floors = Floors {
         min_armed_overflows: Some(1),
         min_reps: None,
+        sub_normative: true,
     };
     assert_single_failure("reject-skid-exceeds-margin", floors, CheckId::Skid);
 }
@@ -200,6 +240,7 @@ fn accept_aa1_skid_is_accepted_positive_skid_and_all() {
     let floors = Floors {
         min_armed_overflows: Some(8),
         min_reps: None,
+        sub_normative: true,
     };
     let report = check("accept-aa1-skid", floors);
     assert!(
@@ -315,6 +356,7 @@ fn reject_divergent_digests() {
     let floors = Floors {
         min_armed_overflows: None,
         min_reps: Some(2),
+        sub_normative: true,
     };
     assert_single_failure("reject-divergent-digests", floors, CheckId::ReplayIdentity);
 }
