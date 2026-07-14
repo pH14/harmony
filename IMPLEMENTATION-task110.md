@@ -16,9 +16,11 @@ and code agree at ABI freeze; the natural-exit refresh now runs at **every**
 exit tail (value-keyed — resolves the r1 natural-exit P1 under the same
 ruling); the full channel configuration (offer + Δ + registration) is carried,
 cross-validated symmetrically on restore, and folded into state identity as
-the `PVCK` chunk; seals canonicalize only after all validation
-(reject-before-mutation); the opcode scan accounts per-function instruction
-COUNTS; G3 re-arms the refresh log at its window and fails on saturation. The
+the `PVCK` chunk; seals re-stamped the page canonically only after all
+validation (reject-before-mutation) — **later superseded at r4: seals are
+verbatim, see "The seal ruling"**; the opcode scan accounts per-function
+instruction COUNTS; G3 re-arms the refresh log at its window and fails on
+saturation. The
 W^X/rescan-on-exec follow-up is bead **hm-rfz** (ruling item 3).
 
 **Review round 2 folded in** (cross-model r2: 2 P1 + 1 P2 with foreman
@@ -146,6 +148,32 @@ classification (P2)** — a composition keeping the doorbell alive for another
 channel graded pvclock requests (`BadRequest` / `UnknownOpcode`) *before* the
 availability gate, leaking the service's existence; availability is checked
 first now, per the generic dispatcher contract.
+
+**Review round 6 folded in** (cross-model r6: 3 P1 + 3 P2, all edges of the r5
+machinery). (a) **PVCK hashes the capability** — the fold carried Δ and the GPA
+but not `pvclock_available()`, so two offered VMs with V-time wired but different
+`deterministic_clock` backends hashed identically, though the next registration
+succeeds on one and answers `UnknownService` on the other (the very future
+difference `registrable` preserves in the restore record). PVCK now appends the
+availability bit. (b) **Reject the impossible v4 tuple** — a crafted
+`(delta, Some(gpa), registrable=false)` blob would pass the equality validator on
+an offered-but-unavailable target and commit an *active* registration (next
+refresh errors with no V-time; page freezes with no deterministic backend). A
+registered page can only exist on a VM that could register, so the record is
+rejected **at decode**, before the validator. (c) **G1 negotiates Hello** — the
+live arm's first `Run` came back `Unsupported` (the server refuses every verb
+until the handshake) and panicked before the gate reached its hash comparison;
+Hello is sent first now. (d) **Registration restores `vtime_synchronized`** — a
+`step()` clears it before entry, and registration anchors to the frozen
+doorbell-`OUT` work count exactly like RDTSC but hadn't set it back, so a direct
+caller that registered then snapshotted got a spurious `NotQuiescent`. Set now.
+(e) **Perf window must complete** — the Postgres arm discarded `RunObs`, so a
+step error / guest terminal / wall timeout before the window produced positive
+*partial* counts that passed the sanity check as valid kill-condition evidence;
+it now requires no step error and final V-time ≥ window. (f) **doc §3.1** — the
+normative lines still said "the doorbell `OUT` is not a V-time intercept, so the
+first value may lag", contradicting the r5 fix they forced; amended to the
+immediate fresh-anchor arm rule.
 
 **ABI coordination (ruled on PR #108 r9, folded into r3):** ABI-v1 `flags`
 bit 1 = `WORK_DERIVED` — set by every real stamp (`vtime::pvclock` publishes
