@@ -252,8 +252,14 @@ pub mod kvm {
     pub const DEV_ARM_VGIC_GRP_ADDR: u32 = 0;
     /// `KVM_DEV_ARM_VGIC_GRP_CTRL`.
     pub const DEV_ARM_VGIC_GRP_CTRL: u32 = 4;
+    /// `KVM_DEV_ARM_VGIC_GRP_DIST_REGS` — the distributor register save/restore group.
+    /// The `attr` is the GICD register offset; reading it returns that register, which
+    /// is where the guest-visible interrupt state (enable/pending/active) lives.
+    pub const DEV_ARM_VGIC_GRP_DIST_REGS: u32 = 5;
     /// `KVM_DEV_ARM_VGIC_CTRL_INIT`.
     pub const DEV_ARM_VGIC_CTRL_INIT: u64 = 0;
+    /// `KVM_GET_DEVICE_ATTR` — `_IOWR(KVMIO, 0xe2, struct kvm_device_attr)`.
+    pub const GET_DEVICE_ATTR: u64 = 0xC018_AEE2;
     /// `KVM_VGIC_V3_ADDR_TYPE_DIST`.
     pub const VGIC_V3_ADDR_TYPE_DIST: u64 = 2;
     /// `KVM_VGIC_V3_ADDR_TYPE_REDIST`.
@@ -404,20 +410,32 @@ pub fn stage_mmio_read(run: &mut KvmRun, data: &[u8]) {
     run.mmio.data[..n].copy_from_slice(&data[..n]);
 }
 
-/// Hash a landed guest state — every architectural register (in sorted id order) plus
-/// all of guest RAM — into the digest AA-3's replay-identity and AA-6's bit-identity
-/// floors compare.
+/// Hash a landed guest state — every architectural register (in sorted id order),
+/// all of guest RAM, and the in-kernel vGIC's distributor state — into the digest
+/// AA-3's replay-identity and AA-6's bit-identity floors compare.
+///
+/// The `vgic` bytes are the vGIC distributor register save-state (the injection-
+/// relevant enable/pending/active bits). Two AA-6 repetitions that differ only in
+/// pending/active/injected interrupt state carry identical vCPU registers and RAM, so
+/// without the vGIC state they would digest identically and a real injection
+/// divergence would be accepted as replay-identical. (AA-6's own investigation is
+/// which vGIC state round-trips bit-identically, `KVM_DEV_ARM_VGIC_GRP_*`; this hashes
+/// the distributor registers it retrieves.)
 ///
 /// Registers are a `BTreeMap` so iteration order (which reaches the hashed bytes) is
 /// the register id, never insertion order (Conventions rule 4). Pure and Miri-testable:
-/// `machine` reads the registers by ioctl and forms the RAM slice from its mapping,
-/// then hands both here — so the hashing itself, and the order discipline, are
-/// interpreter-checked.
+/// `machine` reads the registers by ioctl, forms the RAM slice from its mapping, and
+/// dumps the vGIC state, then hands all three here — so the hashing itself, and the
+/// order discipline, are interpreter-checked.
 #[must_use]
-pub fn digest_state(regs: &std::collections::BTreeMap<u64, Vec<u8>>, ram: &[u8]) -> String {
+pub fn digest_state(
+    regs: &std::collections::BTreeMap<u64, Vec<u8>>,
+    ram: &[u8],
+    vgic: &[u8],
+) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(b"arm-spike-state-v1");
+    h.update(b"arm-spike-state-v2");
     for (id, value) in regs {
         // Host-time-derived registers (the generic-timer counters) advance with real
         // elapsed time, so hashing them would make two otherwise-identical same-seed
@@ -433,6 +451,10 @@ pub fn digest_state(regs: &std::collections::BTreeMap<u64, Vec<u8>>, ram: &[u8])
         h.update(value);
     }
     h.update(ram);
+    // The vGIC distributor state (enable/pending/active) — the injection axis AA-6
+    // exercises. Length-prefixed so an empty dump can never collide with a one-byte one.
+    h.update((vgic.len() as u64).to_le_bytes());
+    h.update(vgic);
     format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
 }
 
@@ -571,7 +593,9 @@ mod imp {
     //! Compiled on Linux so the cross-build gate proves they *build* for
     //! aarch64-linux; they have not been *run*, because the box is not yet here.
 
-    use super::{BR_RETIRED_RAW, Capability, PerfEventAttr, SysError, br_retired_attr, kvm};
+    use super::{
+        BR_RETIRED_RAW, Capability, PerfEventAttr, SysError, br_retired_attr, kvm, perf_flags,
+    };
 
     /// The last errno, read immediately after a failed libc call.
     fn errno() -> i32 {
@@ -602,23 +626,37 @@ mod imp {
         unsafe { libc::syscall(libc::SYS_perf_event_open, attr, pid, cpu, group_fd, flags) }
     }
 
-    /// Whether raw `BR_RETIRED` can be **scheduled** as a pinned, guest-only event
-    /// (AA-0's PMU row, and the precondition for the entire work-clock bet).
+    /// Whether raw `BR_RETIRED` can be **scheduled** as a pinned, non-multiplexed
+    /// event (AA-0's PMU row, and the precondition for the entire work-clock bet).
     ///
     /// Opening the descriptor is not enough: a pinned event that cannot actually be
     /// placed on the PMU (too many competing counters) fails only once *scheduling* is
     /// attempted — `perf_event_open` succeeds, the fd is valid, and yet the counter
-    /// never runs. So this enables the event, does a little work, and reads it back
-    /// with `TOTAL_TIME_ENABLED`/`TOTAL_TIME_RUNNING`: the row is green only if the
+    /// never runs. So this enables the event, does a little branch work, and reads it
+    /// back with `TOTAL_TIME_ENABLED`/`TOTAL_TIME_RUNNING`: the row is green only if the
     /// counter actually advanced and ran for the whole time it was enabled
     /// (`enabled == running` — not multiplexed). This is the "non-multiplexed counter"
     /// the AA-0 row is about, not just an openable descriptor.
+    ///
+    /// The probe workload is a **host-userspace** loop — there is no guest here — so
+    /// the probe event must NOT set `exclude_host`: the measurement-loop attr
+    /// ([`br_retired_attr`]) is guest-only (`exclude_host`), and a guest-only counter
+    /// measuring a host loop would read exactly zero, making `count > 0` impossible and
+    /// this mandatory row always fail. So the probe opens a host-userspace-counting
+    /// variant (still pinned, raw `0x21`). Whether the *guest-only* attribution works
+    /// on N1 is AA-1(b)'s measurement; this row is only "can raw 0x21 be scheduled,
+    /// pinned and non-multiplexed" — which is answered by counting host work.
     fn probe_br_retired() -> Result<bool, SysError> {
         // PERF_FORMAT_TOTAL_TIME_ENABLED (1<<0) | PERF_FORMAT_TOTAL_TIME_RUNNING (1<<1):
         // read() then returns [count, time_enabled, time_running].
         const READ_FORMAT: u64 = 0b11;
         let mut attr = br_retired_attr(None);
         attr.read_format = READ_FORMAT;
+        // Count host userspace (this thread's loop below): clear exclude_host, and
+        // exclude the kernel so scheduler/IRQ branches do not inflate the count. The
+        // point is only that the pinned raw event schedules and advances.
+        attr.flags &= !perf_flags::EXCLUDE_HOST;
+        attr.flags |= perf_flags::EXCLUDE_KERNEL;
 
         // SAFETY: `attr` is a fully initialized perf_event_attr on this frame; the
         // pointer is valid for the call. Counting this thread (pid 0) on whatever CPU
@@ -954,6 +992,8 @@ mod tests {
         use std::collections::BTreeMap;
         let ram = vec![0u8; 64];
 
+        let vgic: &[u8] = &[0x00; 16];
+
         let mut a = BTreeMap::new();
         a.insert(2u64, vec![0xAA]);
         a.insert(1u64, vec![0xBB]);
@@ -961,19 +1001,32 @@ mod tests {
         let mut b = BTreeMap::new();
         b.insert(1u64, vec![0xBB]);
         b.insert(2u64, vec![0xAA]);
-        assert_eq!(digest_state(&a, &ram), digest_state(&b, &ram));
+        assert_eq!(digest_state(&a, &ram, vgic), digest_state(&b, &ram, vgic));
 
         // Different RAM → different digest (the RAM really is hashed).
         let mut other_ram = ram.clone();
         other_ram[0] = 1;
-        assert_ne!(digest_state(&a, &ram), digest_state(&a, &other_ram));
+        assert_ne!(
+            digest_state(&a, &ram, vgic),
+            digest_state(&a, &other_ram, vgic)
+        );
 
         // Different register value → different digest.
         let mut c = a.clone();
         c.insert(1u64, vec![0xCC]);
-        assert_ne!(digest_state(&a, &ram), digest_state(&c, &ram));
+        assert_ne!(digest_state(&a, &ram, vgic), digest_state(&c, &ram, vgic));
 
-        assert!(digest_state(&a, &ram).starts_with("sha256:"));
+        // Different vGIC state (an interrupt now pending/active) → different digest.
+        // This is the AA-6 injection axis: same registers and RAM, different vGIC.
+        let mut other_vgic = vgic.to_vec();
+        other_vgic[8] = 1;
+        assert_ne!(
+            digest_state(&a, &ram, vgic),
+            digest_state(&a, &ram, &other_vgic),
+            "the vGIC distributor state must reach the digest"
+        );
+
+        assert!(digest_state(&a, &ram, vgic).starts_with("sha256:"));
     }
 
     #[test]
@@ -1028,16 +1081,20 @@ mod tests {
         let mut run_b = run_a.clone();
         run_b.insert(cntvct, 9_999_999u64.to_le_bytes().to_vec()); // the clock moved
 
+        let vgic: &[u8] = &[];
         assert_eq!(
-            digest_state(&run_a, &ram),
-            digest_state(&run_b, &ram),
+            digest_state(&run_a, &ram, vgic),
+            digest_state(&run_b, &ram, vgic),
             "the live counter must not reach the digest"
         );
 
         // But a real guest-state difference (the pc) still diverges.
         let mut run_c = run_a.clone();
         run_c.insert(kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC, vec![0xBB; 8]);
-        assert_ne!(digest_state(&run_a, &ram), digest_state(&run_c, &ram));
+        assert_ne!(
+            digest_state(&run_a, &ram, vgic),
+            digest_state(&run_c, &ram, vgic)
+        );
     }
 
     #[test]
@@ -1072,6 +1129,7 @@ mod tests {
         assert_eq!(kvm::ENABLE_CAP, iow(0xa3, 104));
         assert_eq!(kvm::CREATE_DEVICE, iowr(0xe0, 12));
         assert_eq!(kvm::SET_DEVICE_ATTR, iow(0xe1, 24));
+        assert_eq!(kvm::GET_DEVICE_ATTR, iowr(0xe2, 24));
         // The patch draft's two additions (host/patches/0001-…).
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);

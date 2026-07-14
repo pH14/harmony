@@ -478,6 +478,14 @@ pub struct Expectation {
     /// The branch instructions the window's body contains, in address order.
     /// The harness scanner decodes the built ELF and asserts equality.
     pub inline_branch_seq: &'static [BranchKind],
+    /// The expected 4-bit **condition code** of each branch, position-aligned with
+    /// [`Expectation::inline_branch_seq`]: `Some(cond)` for a `B.cond` (e.g. `NE = 0x1`
+    /// for a loop back-edge), `None` for every other class (they encode their test in
+    /// the opcode, which the kind already distinguishes). The verifier checks this, so
+    /// a `b.ne` → `b.eq` flip — same [`BranchKind::BCond`], different control flow and
+    /// therefore different taken-branch count — is caught, where a class-only check
+    /// would pass it.
+    pub inline_branch_conds: &'static [Option<u8>],
 }
 
 impl Expectation {
@@ -651,6 +659,21 @@ mod seq {
     pub const LSE_ATOMICS: &[BranchKind] = &[BCond];
     pub const CLOCK_PAGE: &[BranchKind] = &[Tbnz, BCond, BCond];
     pub const NONE: &[BranchKind] = &[];
+
+    /// AArch64 condition code for `NE` (`Z == 0`) — every counted loop's back-edge
+    /// (`subs; b.ne loop`). The `*_CONDS` slices are position-aligned with the
+    /// `BranchKind` slices above: `Some(cond)` at each `BCond`, `None` elsewhere.
+    pub const NE: u8 = 0x1;
+    pub const STRAIGHT_LINE_CONDS: &[Option<u8>] = &[Some(NE)];
+    pub const BRANCH_DENSE_CONDS: &[Option<u8>] =
+        &[None, None, None, None, None, None, None, Some(NE)];
+    pub const SVC_CONDS: &[Option<u8>] = &[Some(NE)];
+    pub const EXCEPTION_ABORT_CONDS: &[Option<u8>] = &[Some(NE)];
+    pub const WFI_IDLE_CONDS: &[Option<u8>] = &[Some(NE)];
+    pub const LLSC_ATOMICS_CONDS: &[Option<u8>] = &[None, Some(NE)];
+    pub const LSE_ATOMICS_CONDS: &[Option<u8>] = &[Some(NE)];
+    pub const CLOCK_PAGE_CONDS: &[Option<u8>] = &[None, Some(NE), Some(NE)];
+    pub const NONE_CONDS: &[Option<u8>] = &[];
 }
 
 /// The expected count for a (payload, scale, seed).
@@ -710,6 +733,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         wfi_instructions: 0,
         has_reported_term: false,
         inline_branch_seq: seq::NONE,
+        inline_branch_conds: seq::NONE_CONDS,
     };
 
     match payload {
@@ -718,6 +742,7 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
         }
         Payload::StraightLine => {
             e.inline_branch_seq = seq::STRAIGHT_LINE;
+            e.inline_branch_conds = seq::STRAIGHT_LINE_CONDS;
         }
         Payload::BranchDense => {
             let mut rng = XorShift64Star::new(seed);
@@ -727,34 +752,41 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
             }
             e.certain_taken = back_edges.saturating_add(data_taken);
             e.inline_branch_seq = seq::BRANCH_DENSE;
+            e.inline_branch_conds = seq::BRANCH_DENSE_CONDS;
         }
         Payload::Svc => {
             e.exception_entries = trips;
             e.exception_returns = trips;
             e.svc_instructions = trips;
             e.inline_branch_seq = seq::SVC;
+            e.inline_branch_conds = seq::SVC_CONDS;
         }
         Payload::ExceptionAbort => {
             e.exception_entries = trips;
             e.exception_returns = trips;
             e.inline_branch_seq = seq::EXCEPTION_ABORT;
+            e.inline_branch_conds = seq::EXCEPTION_ABORT_CONDS;
         }
         Payload::WfiIdle => {
             e.exception_entries = trips;
             e.exception_returns = trips;
             e.wfi_instructions = trips;
             e.inline_branch_seq = seq::WFI_IDLE;
+            e.inline_branch_conds = seq::WFI_IDLE_CONDS;
         }
         Payload::LlscAtomics => {
             e.has_reported_term = true;
             e.inline_branch_seq = seq::LLSC_ATOMICS;
+            e.inline_branch_conds = seq::LLSC_ATOMICS_CONDS;
         }
         Payload::LseAtomics => {
             e.inline_branch_seq = seq::LSE_ATOMICS;
+            e.inline_branch_conds = seq::LSE_ATOMICS_CONDS;
         }
         Payload::ClockPage => {
             e.has_reported_term = true;
             e.inline_branch_seq = seq::CLOCK_PAGE;
+            e.inline_branch_conds = seq::CLOCK_PAGE_CONDS;
         }
     }
 

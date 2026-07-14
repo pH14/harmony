@@ -40,7 +40,7 @@ use std::path::Path;
 
 use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage};
 use arm_harness::sys::BR_RETIRED_RAW;
-use oracle_model::{Weights, expected};
+use oracle_model::{Expectation, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
 
 use crate::error::LoadError;
@@ -301,7 +301,7 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
     check_pinning(&run_set, &mut outcomes);
     check_params_mode(&records, &mut outcomes);
     check_clockpage_mode(&run_set, &records, &mut outcomes);
-    check_replay_identity(&records, &mut outcomes);
+    check_replay_identity(run_set.stage, &records, &mut outcomes);
     check_payload_status(&records, &mut outcomes);
     check_floors(&run_set, floors, &records, &mut outcomes);
 
@@ -637,6 +637,16 @@ fn check_weights_and_counts(run_set: &RunSet, records: &[RunRecord], out: &mut V
 fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
 
+    // Memoize the oracle by `(payload, scale, seed)`. `expected` iterates the FULL
+    // scale (for branch-dense, `2 * trips` PRNG steps at 1e8 = 2×10⁸ per call), and
+    // AA-1/AA-3 submit tens of thousands of records repeating the same few inputs at
+    // the large scales — recomputing per record would be trillions of iterations and
+    // make the checker impractical. The cache collapses that to one compute per
+    // distinct input. `BTreeMap`, not `HashMap`: nothing here may make iteration order
+    // reach an output. (The oracle is a pure function of the key, so caching is exact.)
+    type OracleKey = (Payload, Scale, u64);
+    let mut oracle: BTreeMap<OracleKey, Expectation> = BTreeMap::new();
+
     for r in records {
         // Recompute the measured count from the two window endpoints, and fail the
         // record's own `measured_taken` if it disagrees.
@@ -657,7 +667,9 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
             continue;
         }
 
-        let e = expected(r.payload, r.scale, r.seed);
+        let e = *oracle
+            .entry((r.payload, r.scale, r.seed))
+            .or_insert_with(|| expected(r.payload, r.scale, r.seed));
 
         // A payload with no reported term may not report retries: a nonzero value
         // would silently inflate the prediction to match a corrupt measurement.
@@ -1121,18 +1133,40 @@ fn check_params_mode(records: &[RunRecord], out: &mut Vec<Outcome>) {
     }
 }
 
-/// AA-5's records must attest the **harness-maintained** clock page.
+/// AA-5's **clock-page** records must attest the harness-maintained clock page.
 ///
 /// `self-seeded` means the payload published its own static page because the harness
 /// never did — the fallback path, not the work-derived clock page whose determinism
-/// AA-5 exists to certify. An AA-5 run-set whose guests all printed `self-seeded`
-/// tested the fallback and would have been graded as if it had tested the mechanism.
+/// AA-5 exists to certify. An AA-5 run-set whose clock-page guests all printed
+/// `self-seeded` tested the fallback and would have been graded as if it had tested
+/// the mechanism.
+///
+/// Only the [`Payload::ClockPage`] payload emits a `CLOCKPAGE` line; the other seven
+/// windowed payloads legitimately carry `clockpage_mode: None`. The default AA-5 plan
+/// runs the whole matrix, so this check is **scoped to clock-page records** — grading
+/// every record would reject the standard AA-5 run unconditionally, though its
+/// clock-page samples proved managed mode correctly. But it still requires that at
+/// least one clock-page record exists: an AA-5 run with none tested the mechanism not
+/// at all.
 fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     if run_set.stage != Stage::Aa5 {
         return;
     }
 
-    let mut bad: Vec<(u64, String)> = records
+    let clockpage: Vec<&RunRecord> = records
+        .iter()
+        .filter(|r| r.payload == Payload::ClockPage)
+        .collect();
+    if clockpage.is_empty() {
+        out.push(fail(
+            CheckId::ClockPageMode,
+            "AA-5 run-set contains no clock-page records: the paravirt-clock mechanism AA-5 \
+             certifies was never exercised",
+        ));
+        return;
+    }
+
+    let mut bad: Vec<(u64, String)> = clockpage
         .iter()
         .filter(|r| r.clockpage_mode.as_deref() != Some(MANAGED_CLOCKPAGE))
         .map(|r| {
@@ -1149,7 +1183,10 @@ fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<O
     if bad.is_empty() {
         out.push(pass(
             CheckId::ClockPageMode,
-            format!("every record attests the {MANAGED_CLOCKPAGE} clock page (AA-5)"),
+            format!(
+                "all {} clock-page record(s) attest the {MANAGED_CLOCKPAGE} clock page (AA-5)",
+                clockpage.len()
+            ),
         ));
     } else {
         let shown: Vec<String> = bad
@@ -1219,7 +1256,7 @@ fn comparison_digest(r: &RunRecord) -> &str {
 /// data — no check ever read it. Now one does, on the digest that actually matters
 /// for the record's mode ([`comparison_digest`]), and an empty digest (which would
 /// compare equal to every other empty digest) is a failure in its own right.
-fn check_replay_identity(records: &[RunRecord], out: &mut Vec<Outcome>) {
+fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut problems: Vec<String> = Vec::new();
 
     // A malformed record whose overflow deadline is BEFORE the window opened
@@ -1306,18 +1343,43 @@ fn check_replay_identity(records: &[RunRecord], out: &mut Vec<Outcome>) {
         }
     }
 
-    verdict(
-        CheckId::ReplayIdentity,
-        &problems,
-        if compared == 0 {
-            "no repeated (payload, scale, seed, condition, target) group to compare; every \
-             record carries a digest"
-                .to_string()
-        } else {
-            format!("{compared} repeated group(s) landed on bit-identical state digests")
-        },
-        out,
-    );
+    // A stage whose acceptance IS replay identity (AA-3's replay-identical landings,
+    // AA-6's ≥1000 same-input bit-identity) may not PASS this check having compared
+    // NOTHING. With the default `--reps 1` there is no repeated group, so grading zero
+    // comparisons as a pass would let evidence claim replay identity without a single
+    // replay — the exact vacuous-pass the evidence-integrity bar forbids. So when the
+    // stage requires it and no repeated group exists, the check is NOT-REQUESTED
+    // (nonzero, not a pass); the operator must submit repeated inputs (`--reps`).
+    if !problems.is_empty() {
+        out.push(fail(CheckId::ReplayIdentity, join_problems(&problems)));
+    } else if compared == 0 && requires_replay_identity(stage) {
+        out.push(not_requested(
+            CheckId::ReplayIdentity,
+            format!(
+                "stage {stage:?} rests on replay identity, but the records contain no repeated \
+                 (payload, scale, seed, condition, target) group to compare — with --reps 1 there \
+                 is nothing to replay. Submit repeated inputs; this verdict cannot accept replay \
+                 identity it never tested"
+            ),
+        ));
+    } else if compared == 0 {
+        out.push(pass(
+            CheckId::ReplayIdentity,
+            "no repeated group to compare at this stage; every record carries a digest",
+        ));
+    } else {
+        out.push(pass(
+            CheckId::ReplayIdentity,
+            format!("{compared} repeated group(s) landed on bit-identical state digests"),
+        ));
+    }
+}
+
+/// Whether a stage's acceptance **is** replay identity: AA-3 (replay-identical landed
+/// state) and AA-6 (≥1,000 same-input bit-identical). At those, comparing zero
+/// digests is not a pass. AA-1/AA-2/AA-4/AA-5 do not rest on it.
+const fn requires_replay_identity(stage: Stage) -> bool {
+    matches!(stage, Stage::Aa3 | Stage::Aa6)
 }
 
 fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
@@ -1362,6 +1424,14 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
         .filter(|r| r.overflow.as_ref().is_some_and(|o| o.armed))
         .count() as u64;
 
+    // A stage whose acceptance IS armed deadlines (AA-3's ≥10⁶ armed overflows,
+    // landed exactly) may not pass without armed records OR without the floor being
+    // requested. The missing-floor case must NOT be gated on `armed > 0`: an AA-3 run
+    // submitted with no armed records (e.g. run without `--with-targets`) would then
+    // emit no floor outcome at all, and the mechanism and skid checks have nothing to
+    // inspect — so AA-3 would pass without testing a single deadline. The requirement
+    // is enforced on the STAGE, independent of what the records happened to contain.
+    let requires_armed = requires_patched_mechanism(run_set.stage);
     match floors.min_armed_overflows {
         Some(min) if armed >= min => out.push(pass(
             CheckId::ArmedOverflowFloor,
@@ -1370,6 +1440,16 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
         Some(min) => out.push(fail(
             CheckId::ArmedOverflowFloor,
             format!("only {armed} armed overflows, below the floor of {min}"),
+        )),
+        None if requires_armed => out.push(not_requested(
+            CheckId::ArmedOverflowFloor,
+            format!(
+                "stage {:?} rests on armed deadlines (AA-3's acceptance is ≥1000000 armed \
+                 overflows landed exactly), but no --min-armed-overflows floor was requested and \
+                 the records carry {armed} armed overflow(s). This verdict cannot accept a landing \
+                 stage that tested no deadline; pass the floor explicitly.",
+                run_set.stage
+            ),
         )),
         None if armed > 0 => out.push(not_requested(
             CheckId::ArmedOverflowFloor,
@@ -1765,29 +1845,43 @@ mod tests {
         let mut rs = a_run_set();
         rs.stage = Stage::Aa5;
 
+        // A clock-page record: the payload whose mode the attestation is about.
+        let clockpage = |mode: Option<&str>| {
+            let mut r = a_record(0);
+            r.payload = Payload::ClockPage;
+            r.clockpage_mode = mode.map(str::to_string);
+            r
+        };
+
         // The self-seeded fallback: the payload published its own static page.
-        let mut r = a_record(0);
-        r.clockpage_mode = Some("self-seeded".into());
         let mut out = Vec::new();
-        check_clockpage_mode(&rs, &[r], &mut out);
+        check_clockpage_mode(&rs, &[clockpage(Some("self-seeded"))], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Fail));
 
         // No attestation at all is not better than the wrong one.
         let mut out = Vec::new();
-        check_clockpage_mode(&rs, &[a_record(0)], &mut out);
+        check_clockpage_mode(&rs, &[clockpage(None)], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Fail));
 
         // The managed page: what AA-5 exists to certify.
-        let mut r = a_record(0);
-        r.clockpage_mode = Some("managed".into());
         let mut out = Vec::new();
-        check_clockpage_mode(&rs, &[r], &mut out);
+        check_clockpage_mode(&rs, &[clockpage(Some("managed"))], &mut out);
         assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Pass));
+
+        // An AA-5 run-set with NO clock-page records at all is a vacuous pass waiting
+        // to happen — the mechanism AA-5 certifies was never exercised. Finding 4.
+        let mut out = Vec::new();
+        check_clockpage_mode(&rs, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ClockPageMode),
+            Some(Status::Fail),
+            "an AA-5 set with no clock-page payload must not pass silently"
+        );
 
         // And the check does not fire outside AA-5, where the page is not the subject.
         let rs = a_run_set();
         let mut out = Vec::new();
-        check_clockpage_mode(&rs, &[a_record(0)], &mut out);
+        check_clockpage_mode(&rs, &[clockpage(Some("managed"))], &mut out);
         assert!(out.is_empty());
     }
 
@@ -1808,7 +1902,7 @@ mod tests {
         set_landed_digest(&mut a, "sha256:aaaa");
         set_landed_digest(&mut b, "sha256:bbbb");
         let mut out = Vec::new();
-        check_replay_identity(&[a, b], &mut out);
+        check_replay_identity(Stage::Aa1, &[a, b], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
     }
 
@@ -1824,7 +1918,7 @@ mod tests {
         set_landed_digest(&mut a, "sha256:landed-a");
         set_landed_digest(&mut b, "sha256:landed-b");
         let mut out = Vec::new();
-        check_replay_identity(&[a, b], &mut out);
+        check_replay_identity(Stage::Aa1, &[a, b], &mut out);
         assert_eq!(
             status(&out, CheckId::ReplayIdentity),
             Some(Status::Fail),
@@ -1837,7 +1931,7 @@ mod tests {
         let a = a_record(0);
         let b = a_record(1);
         let mut out = Vec::new();
-        check_replay_identity(&[a, b], &mut out);
+        check_replay_identity(Stage::Aa1, &[a, b], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
 
         // An empty comparison digest compares equal to every other empty one: it
@@ -1845,7 +1939,7 @@ mod tests {
         let mut a = a_record(0);
         set_landed_digest(&mut a, "");
         let mut out = Vec::new();
-        check_replay_identity(&[a], &mut out);
+        check_replay_identity(Stage::Aa1, &[a], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
     }
 
@@ -1932,7 +2026,7 @@ mod tests {
             o.landed_digest = "sha256:bbbb".into();
         }
         let mut out = Vec::new();
-        check_replay_identity(&[a, b], &mut out);
+        check_replay_identity(Stage::Aa1, &[a, b], &mut out);
         assert_eq!(
             status(&out, CheckId::ReplayIdentity),
             Some(Status::Fail),
@@ -1949,7 +2043,7 @@ mod tests {
             o.target = 1_000; // before work_begin — negative delta
         }
         let mut out = Vec::new();
-        check_replay_identity(&[r], &mut out);
+        check_replay_identity(Stage::Aa1, &[r], &mut out);
         assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
     }
 
@@ -2029,11 +2123,29 @@ mod tests {
             Some(Status::NotRequested)
         );
 
-        // With no armed overflows there is no floor to be silent about.
+        // Finding 6: an AA-3 run submitted with NO armed records and no floor is the
+        // vacuous pass — the stage rests on armed deadlines but tested none. The
+        // requirement is on the STAGE, so it must be NOT-REQUESTED even (especially)
+        // when the records carry nothing to inspect. `a_run_set()` is AA-3.
         let mut r = a_record(0);
         r.overflow = None;
         let mut out = Vec::new();
         check_floors(&a_run_set(), &Floors::default(), &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::NotRequested),
+            "AA-3 with zero armed records and no floor must not pass silently"
+        );
+
+        // A pre-patch stage (AA-2) legitimately has no armed-deadline floor: with no
+        // armed records there really is nothing to be silent about, and no outcome is
+        // emitted.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa2;
+        let mut r = a_record(0);
+        r.overflow = None;
+        let mut out = Vec::new();
+        check_floors(&rs, &Floors::default(), &[r], &mut out);
         assert_eq!(status(&out, CheckId::ArmedOverflowFloor), None);
     }
 

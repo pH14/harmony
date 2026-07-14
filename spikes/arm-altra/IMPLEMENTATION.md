@@ -378,6 +378,88 @@ documentation).
 
 Fixtures: 24 (four accept, twenty reject). Miri now runs 78 tests (was 76).
 
+## Round-5 review fixes (PR #108, cross-model pass r5)
+
+Ten P1s of the same evidence-integrity species — two hardware-ABI bugs the foreman
+independently confirmed, two vacuous-pass paths the foreman flagged as blocking, and
+five more of the same shape. Nine implemented; one (skid-aware exact landing) rebutted
+on the PR as a deliberate AA-2/AA-3 arrival-day deferral.
+
+- **The PMU probe could never see a nonzero count on real hardware.** `probe_br_retired`
+  reused `br_retired_attr`, which sets `EXCLUDE_HOST` (correct for the guest measurement
+  loop), but the probe's workload is a *host-userspace* loop with no guest — so a
+  guest-only counter reads exactly zero and the mandatory AA-0 row always fails.
+  The probe now clears `EXCLUDE_HOST` and sets `EXCLUDE_KERNEL` (so scheduler/IRQ
+  branches don't inflate the count); whether the *guest-only* attribution works on N1 is
+  AA-1(b)'s measurement, called out in the doc comment.
+- **AA-5 guests self-seeded the clock page unconditionally.** `Machine::build` loaded the
+  image and params but never published a pvclock page, so the guest saw a zero ABI page
+  and reported `mode=self-seeded` — the fallback, not the work-derived mechanism AA-5
+  certifies. `build` now calls `publish_pvclock_page`, writing the managed ABI-1 page
+  (SEQ/VNS/GUEST_CLOCK/HZ/FLAGS) at the pvclock GPA before the vCPU runs.
+- **The AA-5 clock check rejected every standard run.** It graded *all* AA-5 records, but
+  seven of the eight default payloads emit no `CLOCKPAGE` line (`clockpage_mode == None`),
+  so a run that proved managed mode on the clock-page payload still failed. The check is
+  now scoped to `Payload::ClockPage` records — and fails if an AA-5 set contains *none*
+  (the mechanism was never exercised), closing the mirror-image vacuity.
+- **Replay-identity passed after comparing zero digests.** With the default `--reps 1`,
+  AA-3 has no repeated group, yet the check left the verdict PASS — evidence could claim
+  replay identity with no replay performed. `check_replay_identity` now emits
+  NOT-REQUESTED (never PASS) when nothing was compared at a stage that requires it
+  (AA-3/AA-6). The `accept` fixture is now two bit-identical reps of each of eight inputs,
+  so replay identity is actually exercised and passes.
+- **AA-3 could pass with zero armed records.** The missing-armed-floor case was gated on
+  `armed > 0`, so an AA-3 run submitted without `--with-targets` emitted *no* floor
+  outcome and the mechanism/skid checks had nothing to inspect — a landing stage passing
+  without testing a single deadline. The requirement is now enforced on the *stage*
+  (`requires_patched_mechanism`), independent of what the records happened to contain:
+  AA-3/AA-4/AA-6 without a floor is NOT-REQUESTED, even (especially) at zero armed.
+- **Window verification checked branch *classes* only.** A `b.ne`→`b.eq` flip or a
+  redirected target keeps the `BCond` class while reversing the loop / changing the taken
+  count, and the class-sequence compare passed both. `verify` now also checks each
+  `B.cond`'s condition against the model's `inline_branch_conds` and that every immediate
+  branch's target lands inside the counting window. New portable, Miri-tested
+  `scan::decode_cond` / `branch_target` / `window_branches`; the oracle model gained the
+  per-payload condition sequence (all window `B.cond`s are `NE`).
+- **`ident` read BR_RETIRED support from the wrong register.** Common event 0x21 lives in
+  `PMCEID1_EL0` bit 1 (`PMCEID0_EL0` covers 0x00–0x1F); `pmceid0 >> 0x21` sampled a
+  reserved-zero bit and would falsely report BR_RETIRED unsupported on conforming PMUv3.
+  The payload now reads `PMCEID1_EL0`, prints it, and tests bit 1. Golden regenerated for
+  the new `ID pmceid1=` line.
+- **The replay digest omitted vGIC state.** Two AA-6 reps differing only in pending/
+  active/injected interrupt state carried identical vCPU registers and RAM, so the digest
+  matched and a real injection divergence read as replay-identical. `state_digest` now
+  dumps the vGIC distributor's enable/pending/active registers via `KVM_GET_DEVICE_ATTR`
+  (`GRP_DIST_REGS`, a fixed offset order spanning IRQ IDs 0–95) and length-prefixes them
+  into `digest_state` (bumped `v1`→`v2`). At AA-3 (no injection) the distributor is
+  quiescent and identical across reps, so this strengthens AA-6 without disturbing AA-3.
+- **The oracle recomputed `expected` per record at the large floors.** At scale 1e8,
+  tens of thousands of `branch-dense` records each re-ran the full-scale PRNG — trillions
+  of iterations, an impractical checker. `check_counts` now memoizes `expected` by
+  `(payload, scale, seed)`.
+- **[REBUTTED — arrival-day deferral] Skid-aware exact landing before grading AA-3.**
+  The run loop arms at the full remaining delta and has no early-margin arm or single-step
+  convergence, so exact landing happens only on zero-skid delivery. This is a deliberate
+  AA-2/AA-3 deferral, not a defect: the convergence loop needs AA-1's *measured*
+  `skid_margin` (task 109 forbids defaulting it) and AA-2's *validation* that single-step
+  delivers exactly one instruction (an open question AA-2 answers before any patch is
+  written). Arming at the full delta is exactly what AA-1(c) needs to measure the skid
+  distribution. Crucially, the grading is *not* vacuous: `check_skid` at AA-3
+  (`exact_required`) fails any record where `landed != target`, any overshoot, and any
+  `|skid|` past the margin — so a nonzero-skid run *fails* AA-3, it cannot pass silently.
+  Building the on-silicon convergence now would presume the very results AA-1/AA-2
+  establish (docs/ARCH-BOUNDARY.md §Pre-build ruling: spikes gate trust, not
+  construction). Rebutted on the PR with this reasoning.
+
+Also fixed two cfg(linux)-only breakages the native gates cannot see (the
+ci-cfg-linux-review-gap): the new `perf_flags` reference needed importing into the linux
+`imp` module, and a latent `useless_conversion` in `arm_spike.rs` surfaced only under
+aarch64 *clippy* (prior rounds ran aarch64 `check`). Round 5 runs aarch64 clippy, not
+just check, so both are now caught pre-merge.
+
+Fixtures unchanged in count (24); only the `accept` fixture's records changed (now 2
+reps × 8 inputs). Miri still runs 78 tests.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

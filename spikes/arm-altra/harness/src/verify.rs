@@ -17,7 +17,7 @@
 //! identifiability argument, so it is verified rather than asserted.
 
 use crate::elf::{Elf, ElfError};
-use crate::scan::branch_sequence;
+use crate::scan::{branch_sequence, window_branches};
 use oracle_model::{BranchKind, Payload, Scale, expected};
 use serde::Serialize;
 
@@ -69,6 +69,44 @@ pub fn verify(elf: &Elf, payload: Payload) -> Result<Verdict, ElfError> {
         failures.push(format!(
             "window branch sequence differs: model says {expected_branches:?}, ELF has {found_branches:?}"
         ));
+    } else {
+        // The class sequence matches — now verify the PREDICATE and TARGET of each
+        // branch, not just its class. A `b.ne` → `b.eq` flip keeps the class
+        // (`BCond`) but reverses the loop, changing the taken-branch count while the
+        // console output and exit status can stay identical (the svc loop, e.g., does
+        // not count its own iterations). And a redirected target changes the control
+        // flow within the same class. Class-only verification passes both; this does
+        // not.
+        let end = base.saturating_add(code.len() as u64);
+        for (i, b) in window_branches(base, code).iter().enumerate() {
+            // Predicate: a `B.cond`'s condition must match the model's.
+            if let Some(expected_cond) = model.inline_branch_conds.get(i).copied().flatten() {
+                match b.cond {
+                    Some(c) if c == expected_cond => {}
+                    Some(c) => failures.push(format!(
+                        "branch #{i} at {:#x}: condition {c:#x} != model's {expected_cond:#x} \
+                         (a flipped predicate keeps the class but changes the taken-branch count)",
+                        b.addr
+                    )),
+                    None => failures.push(format!(
+                        "branch #{i} at {:#x}: model expects a conditional ({expected_cond:#x}) \
+                         but this is not a B.cond",
+                        b.addr
+                    )),
+                }
+            }
+            // Target: an immediate branch must land inside the counting window. A
+            // target redirected out of the loop changes the control flow.
+            if let Some(target) = b.target
+                && !(base..end).contains(&target)
+            {
+                failures.push(format!(
+                    "branch #{i} at {:#x}: target {target:#x} is outside the window \
+                     [{base:#x}, {end:#x}) — a redirected branch changes the counted control flow",
+                    b.addr
+                ));
+            }
+        }
     }
 
     let handler_branches = match handler_stem(payload) {

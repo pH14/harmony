@@ -224,6 +224,83 @@ pub fn branch_sequence(base: u64, code: &[u8]) -> Vec<BranchKind> {
         .collect()
 }
 
+/// The 4-bit condition code of a `B.cond`, or `None` if the word is not a `B.cond`.
+///
+/// This is what distinguishes `b.ne` (`0x1`) from `b.eq` (`0x0`) — instructions that
+/// share [`BranchKind::BCond`] but flip the control flow, and so the taken-branch
+/// count. Class-only verification cannot tell them apart; this is the discriminator
+/// the window verifier checks against the model.
+#[must_use]
+pub fn decode_cond(word: u32) -> Option<u8> {
+    if word & 0xFF00_0010 == 0x5400_0000 {
+        Some((word & 0xF) as u8)
+    } else {
+        None
+    }
+}
+
+/// The resolved target address of an **immediate** branch (`B`/`BL`/`B.cond`/`CBZ`/
+/// `CBNZ`/`TBZ`/`TBNZ`), or `None` for register/indirect branches whose target is a
+/// runtime register value. Used to check that a window branch's target stays inside
+/// the window — a redirected target that leaves the counted loop changes the control
+/// flow while keeping the branch's class and condition.
+#[must_use]
+pub fn branch_target(word: u32, addr: u64) -> Option<u64> {
+    // Sign-extend an `bits`-wide immediate.
+    let sext = |imm: u64, bits: u32| -> i64 {
+        let shift = 64 - bits;
+        ((imm << shift) as i64) >> shift
+    };
+    let off = if word & 0xFC00_0000 == 0x1400_0000 || word & 0xFC00_0000 == 0x9400_0000 {
+        // B / BL: imm26.
+        sext((word & 0x03FF_FFFF) as u64, 26)
+    } else if word & 0xFF00_0010 == 0x5400_0000 {
+        // B.cond: imm19 at bits [23:5].
+        sext(((word >> 5) & 0x7_FFFF) as u64, 19)
+    } else if word & 0x7E00_0000 == 0x3400_0000 {
+        // CBZ / CBNZ: imm19 at bits [23:5].
+        sext(((word >> 5) & 0x7_FFFF) as u64, 19)
+    } else if word & 0x7E00_0000 == 0x3600_0000 {
+        // TBZ / TBNZ: imm14 at bits [18:5].
+        sext(((word >> 5) & 0x3FFF) as u64, 14)
+    } else {
+        return None;
+    };
+    // The immediate is in units of 4-byte instructions, relative to the branch.
+    Some(addr.wrapping_add((off << 2) as u64))
+}
+
+/// One window branch, decoded to the detail the "known by construction" gate needs:
+/// its class, its condition (for `B.cond`), and its resolved target.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct WindowBranch {
+    /// Address of the branch.
+    pub addr: u64,
+    /// The branch class.
+    pub kind: BranchKind,
+    /// The 4-bit condition, for `B.cond` only.
+    pub cond: Option<u8>,
+    /// The resolved target, for immediate branches.
+    pub target: Option<u64>,
+}
+
+/// Every branch in a range, decoded to [`WindowBranch`] detail, in address order.
+#[must_use]
+pub fn window_branches(base: u64, code: &[u8]) -> Vec<WindowBranch> {
+    scan(base, code)
+        .into_iter()
+        .filter_map(|h| match h.kind {
+            HitKind::Branch(kind) => Some(WindowBranch {
+                addr: h.addr,
+                kind,
+                cond: decode_cond(h.word),
+                target: branch_target(h.word, h.addr),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -502,7 +502,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
     let scales = if args.scales.is_empty() {
         vec![Scale::Smoke]
     } else {
-        args.scales.iter().copied().map(Scale::from).collect()
+        args.scales.clone()
     };
     let samples = plan(&plan_spec(
         args.seed,

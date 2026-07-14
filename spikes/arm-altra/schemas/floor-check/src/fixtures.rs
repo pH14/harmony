@@ -294,9 +294,29 @@ fn fixture(name: &'static str, run_set: &RunSet, records: &[RunRecord]) -> Fixtu
 }
 
 /// The valid AA-3 accept fixture: patched mechanism, exact landings, oracle-exact
-/// counts. Everything a real AA-3 landing-run's evidence should be, in miniature.
+/// counts, AND each input **repeated bit-identically** — because AA-3's acceptance
+/// includes replay-identical landed-state digests, which a single-rep run cannot
+/// prove. Everything a real AA-3 landing-run's evidence should be, in miniature.
 fn accept() -> Fixture {
-    let records = base_records(ExitReason::Preempt);
+    // Two reps of each windowed payload, the pair sharing one landed_digest (a
+    // bit-identical replay). Distinct only by sample_id, which is not in the RepKey.
+    let mut records = Vec::new();
+    for (i, &p) in WINDOWED.iter().enumerate() {
+        for rep in 0..2u64 {
+            let mut r = generate_record(
+                i as u64 + rep * WINDOWED.len() as u64,
+                p,
+                ExitReason::Preempt,
+            );
+            // Same input ⇒ one landed state ⇒ one digest across the pair.
+            if let Some(o) = r.overflow.as_mut() {
+                o.landed_digest =
+                    format!("sha256:{}", synth_sha256(&format!("landed-{}", p.name())));
+            }
+            r.state_digest = format!("sha256:{}", synth_sha256(&format!("state-{}", p.name())));
+            records.push(r);
+        }
+    }
     let run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
     fixture("accept", &run_set, &records)
 }

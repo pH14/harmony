@@ -63,6 +63,10 @@ extern "C" fn payload_main() -> ! {
     let dfr0 = mrs!("id_aa64dfr0_el1");
     let pfr0 = mrs!("id_aa64pfr0_el1");
     let pmceid0 = mrs!("pmceid0_el0");
+    // BR_RETIRED is common event 0x21, which lives in PMCEID1_EL0 (it covers events
+    // 0x20-0x3F); PMCEID0_EL0 covers 0x00-0x1F. Reading PMCEID0>>0x21 samples a
+    // reserved bit and would falsely report BR_RETIRED unsupported on real PMUv3.
+    let pmceid1 = mrs!("pmceid1_el0");
 
     println!("ID midr={midr:#x}");
     println!("ID id_aa64isar0={isar0:#x}");
@@ -70,6 +74,7 @@ extern "C" fn payload_main() -> ! {
     println!("ID id_aa64dfr0={dfr0:#x}");
     println!("ID id_aa64pfr0={pfr0:#x}");
     println!("ID pmceid0={pmceid0:#x}");
+    println!("ID pmceid1={pmceid1:#x}");
 
     // Decoded, as expect-vs-found rows. The *expectations* are N1's
     // (`docs/ARM-ALTRA.md` AA-0); under TCG they will not all hold, and that is
@@ -78,7 +83,8 @@ extern "C" fn payload_main() -> ! {
     let ecv = field(mmfr0, 60); // ID_AA64MMFR0_EL1.ECV
     let pmuver = field(dfr0, 8); // ID_AA64DFR0_EL1.PMUVer
     let sve = field(pfr0, 32); // ID_AA64PFR0_EL1.SVE
-    let br_retired = (pmceid0 >> 0x21) & 1; // PMCEID0_EL0 bit 0x21 == BR_RETIRED
+    // BR_RETIRED (0x21) → PMCEID1_EL0 bit (0x21 - 0x20) = bit 1.
+    let br_retired = (pmceid1 >> 1) & 1;
 
     println!("CAP lse={lse} expect=present");
     println!("CAP ecv={ecv} expect=absent");

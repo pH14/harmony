@@ -5,6 +5,7 @@ ID id_aa64mmfr0=<hex>
 ID id_aa64dfr0=<hex>
 ID id_aa64pfr0=<hex>
 ID pmceid0=<hex>
+ID pmceid1=<hex>
 CAP lse=<n> expect=present
 CAP ecv=<n> expect=absent
 CAP pmuver=<n> expect=nonzero

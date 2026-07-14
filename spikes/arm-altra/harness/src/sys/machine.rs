@@ -406,6 +406,7 @@ impl Machine {
 
         self.load_image(image)?;
         self.write_params(params);
+        self.publish_pvclock_page();
         self.set_pc(image.entry())?;
         Ok(())
     }
@@ -539,6 +540,43 @@ impl Machine {
         // RAM_BASE`), well inside the mapping, and the vCPU is not running.
         unsafe {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.mem, bytes.len());
+        }
+    }
+
+    /// Publish a **managed** work-derived clock page (`docs/PARAVIRT-CLOCK.md` ABI 1)
+    /// at `PVCLOCK_GPA`, so an AA-5 guest reads `CLOCKPAGE mode=managed`.
+    ///
+    /// Without this the page reads as zeroed RAM, the guest falls back to publishing
+    /// its own static page, and reports `self-seeded` — which AA-5's acceptance forbids
+    /// (`payloads/runtime/src/pvclock.rs`). This is the *minimum* the harness owes AA-5:
+    /// a valid, materialized, deterministic page. The full work-derived refresh (the
+    /// value advancing with `work`) is `hm-8h8`'s design, which AA-5 validates; a static
+    /// materialized page is deterministic across same-seed reps and is what the
+    /// pre-silicon apparatus needs to exercise the managed-vs-self-seeded attestation.
+    /// The page is published for every stage — non-AA-5 payloads simply do not read it.
+    fn publish_pvclock_page(&mut self) {
+        // Layout mirrors `payloads/runtime/src/pvclock.rs`.
+        const OFF_ABI: usize = 0x00; // u32 == PVCLOCK_ABI (the managed marker)
+        const OFF_SEQ: usize = 0x04; // u32, even == stable
+        const OFF_VNS: usize = 0x08; // u64, materialized V-time
+        const OFF_GUEST_CLOCK: usize = 0x10; // u64, materialized virtual counter
+        const OFF_HZ: usize = 0x18; // u64
+        const OFF_FLAGS: usize = 0x20; // u32, bit0 = materialized
+        const FLAG_MATERIALIZED: u32 = 1;
+
+        let base = (oracle_model::PVCLOCK_GPA - RAM_BASE) as usize;
+        let mut page = [0u8; 0x28];
+        page[OFF_ABI..OFF_ABI + 4].copy_from_slice(&oracle_model::PVCLOCK_ABI.to_le_bytes());
+        page[OFF_SEQ..OFF_SEQ + 4].copy_from_slice(&2u32.to_le_bytes());
+        page[OFF_VNS..OFF_VNS + 8].copy_from_slice(&0u64.to_le_bytes());
+        page[OFF_GUEST_CLOCK..OFF_GUEST_CLOCK + 8].copy_from_slice(&0u64.to_le_bytes());
+        page[OFF_HZ..OFF_HZ + 8].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+        page[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&FLAG_MATERIALIZED.to_le_bytes());
+
+        // SAFETY: `PVCLOCK_GPA` is the second page of guest RAM, well inside the
+        // `self.mem_size`-byte mapping, and the vCPU is not running.
+        unsafe {
+            core::ptr::copy_nonoverlapping(page.as_ptr(), self.mem.add(base), page.len());
         }
     }
 
@@ -700,15 +738,80 @@ impl Vcpu for Machine {
             regs.insert(id, value);
         }
 
+        let vgic = self
+            .vgic_dist_state()
+            .map_err(|e| seam("ioctl(KVM_GET_DEVICE_ATTR, vGIC dist)", e))?;
+
         // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
         // is not running (we are between exits), so nothing else writes it. The hashing
         // and the sorted-order discipline are the portable, Miri-tested `digest_state`.
         let ram = unsafe { core::slice::from_raw_parts(self.mem, self.mem_size) };
-        Ok(super::digest_state(&regs, ram))
+        Ok(super::digest_state(&regs, ram, &vgic))
     }
 }
 
 impl Machine {
+    /// Dump the in-kernel vGIC distributor's injection-relevant registers via
+    /// `KVM_GET_DEVICE_ATTR` / `KVM_DEV_ARM_VGIC_GRP_DIST_REGS`.
+    ///
+    /// The bytes returned are the GICD enable/pending/active state for the first
+    /// blocks of interrupt IDs (private + the low SPIs the payloads use — the timer
+    /// PPI and any test SPI land here), read in a fixed, documented offset order so
+    /// the concatenation is a stable digest input. Two AA-6 reps that differ only in
+    /// which interrupt is pending/active carry identical vCPU registers and RAM; this
+    /// is the byte that makes that difference visible to the bit-identity floor.
+    ///
+    /// At AA-3 (no injection) the distributor is quiescent and identical across reps,
+    /// so this contributes the same bytes to every rep's digest — it strengthens AA-6
+    /// without disturbing AA-3's replay identity.
+    fn vgic_dist_state(&self) -> Result<Vec<u8>, SysError> {
+        // No vGIC (should not happen after build, which always creates one): nothing to
+        // hash, and hashing a fabricated zero would be worse than an honest empty.
+        if self.vgic_fd < 0 {
+            return Ok(Vec::new());
+        }
+
+        // GICD register offsets, in ascending order. CTLR carries the group-enable
+        // state; ISENABLER/ISPENDR/ISACTIVER word `n` covers interrupt IDs
+        // `32*n .. 32*n+31`, so words 0..3 span IDs 0..95 — the private range plus the
+        // low SPIs. (GICD_CTLR = 0x0000, ISENABLERn = 0x0100+4n, ISPENDRn = 0x0200+4n,
+        // ISACTIVERn = 0x0300+4n.)
+        const OFFSETS: &[u64] = &[
+            0x0000, // GICD_CTLR
+            0x0100, 0x0104, 0x0108, // ISENABLER0..2
+            0x0200, 0x0204, 0x0208, // ISPENDR0..2
+            0x0300, 0x0304, 0x0308, // ISACTIVER0..2
+        ];
+
+        let mut out = Vec::with_capacity(OFFSETS.len() * 4);
+        for &offset in OFFSETS {
+            // The DIST_REGS accessor writes the 32-bit register value into the buffer
+            // the attr's `addr` points at. `attr` = mpidr(63:32) | offset(31:0); mpidr
+            // is 0 for the single-affinity spike guest.
+            let mut value: u32 = 0;
+            let da = KvmDeviceAttr {
+                flags: 0,
+                group: kvm::DEV_ARM_VGIC_GRP_DIST_REGS,
+                attr: offset,
+                addr: (&raw mut value) as u64,
+            };
+            // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u32 on this frame,
+            // which is what KVM_GET_DEVICE_ATTR's DIST_REGS accessor writes.
+            if unsafe {
+                libc::ioctl(
+                    self.vgic_fd,
+                    kvm::GET_DEVICE_ATTR as libc::c_ulong,
+                    &raw const da,
+                )
+            } < 0
+            {
+                return Err(err("ioctl(KVM_GET_DEVICE_ATTR, vGIC dist)"));
+            }
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        Ok(out)
+    }
+
     /// `KVM_GET_REG_LIST`: ask for the count, then the ids.
     fn reg_list(&self) -> Result<Vec<u64>, SysError> {
         // The ioctl takes a `struct kvm_reg_list { __u64 n; __u64 reg[n]; }` and, when
