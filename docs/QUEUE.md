@@ -34,17 +34,20 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 
 ## In flight (1 active worker; 2 PRs in foreman review)
 
-- **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — Paul's 2026-07-12
-  ruling executing on `spike/nested-x86`: harness-integrity set DONE (`hm-b5b`); N-2 re-run
-  DONE (`hm-dbh` CLOSED 2026-07-14 — 1,052,000/1,052,000 exact on the patched mechanism);
-  **N-3 nested phase COMPLETE at the binding floors** (all six conditions ≥1,000 reps
-  bit-identical to one reference hash — solo, other-core, same-core, migrate under 23,218
-  forced migrations, both pause modes; live-migration finished green on the destination;
-  one harness verdict bug fixed mid-run, recert-001 retained + documented). **Metal session
-  RUNNING** (foreman GO 2026-07-14 morning — nested==metal hash equality, the last `hm-jpu`
-  leg), then the `hm-60k` close-out: disposition re-record from new evidence only, audit-note
-  update, box restore-verify (KVM back to stock), foreman re-review of PR #98 → merge
-  unblocks appliance `hm-tn9` + preflight CLI `hm-69y`.
+- **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
+  AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
+  conditions 1000/1000 bit-identical, live-migration green on destination, metal reference
+  at floor strength, nested==metal equal at both seeds — foreman re-ran the machine
+  floor-check independently) and the box is restore-verified + FREE. But the fresh
+  cross-model pass caught, and the foreman confirmed **from the retained perf records**,
+  that N-2's `armed` summary counted MTF-only (no-PMI) deadlines: true armed PMIs =
+  **588,923 of the ≥1,000,000 floor** (55%; `hm-dbh` REOPENED — my earlier close cited the
+  inflated count). Mechanism evidence stands (all 588,923 exactly-once, exact,
+  oracle-agreed); the floor as written is unmet. Per the program's own stop rule this is
+  **Paul's ruling: top-up run (~750k more deadlines, hours of box time) vs criterion
+  revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
+  (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
+  n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
 - **The ARCH-BOUNDARY restructure, steps 1–4** (tasks/108; PR #109, gate `hm-54m`) —
   **PORTABLE SIDE APPROVED 2026-07-14 morning** (head 72468d5, two review rounds): round-1's
   3 cross-model P1s fixed + foreman-verified (aarch64 seam check clean and CI-gated; vendor-
