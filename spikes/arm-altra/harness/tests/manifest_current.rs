@@ -13,6 +13,16 @@
 
 use std::process::Command;
 
+// Miri cannot spawn a subprocess (its isolation rejects `Command`), and this test's
+// whole method is to run the real `arm-scan` binary and diff its output. The crate
+// carries `unsafe` (the perf/KVM seam), so it must run clean under the pinned Miri —
+// which means this one test steps aside there. Nothing is lost: it exercises no
+// unsafe code, and the interpreted suite still covers every pure-logic path,
+// including the ELF reader and the run loop that the seam feeds.
+#[cfg_attr(
+    miri,
+    ignore = "shells out to arm-scan; Miri's isolation forbids subprocesses"
+)]
 #[test]
 fn committed_manifest_is_current() {
     let exe = env!("CARGO_BIN_EXE_arm-scan");

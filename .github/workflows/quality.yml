@@ -123,6 +123,88 @@ jobs:
           cargo deny --manifest-path guest/play-agent/Cargo.toml check --config deny.toml licenses
           cargo build --manifest-path guest/play-agent/Cargo.toml --bin play-agent
 
+  # spikes/arm-altra (task 109) — the ARM pre-build apparatus: three out-of-workspace
+  # workspaces (harness+floor-check, oracle-model, payloads) that the root gates above
+  # cannot see. It is gated here, and not left to a local-only script, for one reason:
+  # the floor-checkers are ARRIVAL-DAY LOAD-BEARING evidence-integrity code. They are
+  # what a stage disposition will rest on when the Altra lands, and between merge and
+  # arrival there is nothing else to stop them rotting green.
+  #
+  # Miri runs in THIS job rather than the nightly one: arm-harness carries `unsafe`
+  # (the perf/KVM syscall seam), the suite is seconds not minutes, and the repo bar is
+  # that unsafe crates run clean under the pinned interpreter.
+  #
+  # NOT gated here: the qemu-system-aarch64 TCG payload smoke (payloads/smoke.sh). It
+  # needs qemu on the runner, which this self-hosted box does not have and which no
+  # job may `sudo apt-get` into place. It stays the documented LOCAL gate — run it
+  # before pushing anything under payloads/ (spikes/arm-altra/README.md says so, and
+  # says what it does and does not prove). The window-verification gate below is the
+  # part of that smoke which needs no emulator, and it is the part that checks the
+  # oracle's central claim: that each payload's branches are the ones the model says.
+  spike-arm-altra:
+    name: spikes/arm-altra (ARM pre-build apparatus)
+    runs-on: self-hosted
+    env:
+      PINNED_NIGHTLY: nightly-2026-06-16
+      MIRIFLAGS: -Zmiri-permissive-provenance
+      SPIKE: spikes/arm-altra
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchains + cross targets
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          # The bare-metal payload target, and the Altra's Linux target: `cargo check`
+          # for aarch64-linux is what proves the KVM/perf syscall seam COMPILES for the
+          # box (it cannot be run here, and it has never run anywhere — the hardware is
+          # not yet in hand).
+          rustup target add aarch64-unknown-none aarch64-unknown-linux-gnu
+          rustup toolchain install "${PINNED_NIGHTLY}" --profile minimal --component miri
+      - name: harness + floor-check (fmt, clippy, tests, deny)
+        run: |
+          cargo fmt --manifest-path "$SPIKE/Cargo.toml" --all -- --check
+          cargo clippy --manifest-path "$SPIKE/Cargo.toml" --all-features --all-targets -- -D warnings
+          cargo test --manifest-path "$SPIKE/Cargo.toml" --all-features
+          cargo deny --manifest-path "$SPIKE/Cargo.toml" check --config deny.toml
+      - name: oracle-model (own workspace; no_std + std)
+        run: |
+          cargo fmt --manifest-path "$SPIKE/oracle-model/Cargo.toml" --all -- --check
+          cargo clippy --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std --all-targets -- -D warnings
+          cargo test --manifest-path "$SPIKE/oracle-model/Cargo.toml" --features std
+          # The model is shared with the no_std payloads: it must still build for the
+          # bare-metal target with default features.
+          cargo build --manifest-path "$SPIKE/oracle-model/Cargo.toml" --target aarch64-unknown-none
+          cargo deny --manifest-path "$SPIKE/oracle-model/Cargo.toml" check --config deny.toml
+      - name: harness cross-build for the box (aarch64-linux syscall seam)
+        run: cargo check --manifest-path "$SPIKE/Cargo.toml" -p arm-harness --all-targets --target aarch64-unknown-linux-gnu
+      - name: payloads (bare-metal build + the window-vs-oracle gate)
+        # cd, not --manifest-path: the payload workspace's .cargo/config.toml pins the
+        # aarch64-unknown-none target and the static relocation model, and cargo only
+        # reads that config from the working directory upward.
+        run: |
+          cd "$SPIKE/payloads"
+          cargo fmt --all -- --check
+          # No `--all-targets`: aarch64-unknown-none has no `test` crate, so building
+          # the (nonexistent) test targets of a `no_std` bare-metal workspace fails
+          # E0463. The payloads' behaviour is gated by the TCG smoke locally and by
+          # the window-vs-oracle scan below; clippy here covers the lib and the bins.
+          cargo clippy --bins -- -D warnings
+          cargo build --release
+          cargo deny check --config ../../../deny.toml
+          cd ../harness
+          # The claim "the taken-branch count is known by construction", machine-checked:
+          # every payload's window is disassembled out of the built ELF and its branch
+          # sequence must equal the oracle model's. RC propagates.
+          cargo run --quiet --bin arm-scan -- windows ../payloads/target/aarch64-unknown-none/release
+      # arm-harness is the crate with `unsafe` (the perf/KVM syscall seam), so the
+      # repo's unsafe⇒Miri bar applies to it. floor-check is deliberately NOT here:
+      # it contains no `unsafe`, its fixture tests are filesystem reads Miri's
+      # isolation forbids, and interpreting it would buy minutes of CI for no UB
+      # coverage. (`cargo miri test -p floor-check` still works locally — its
+      # fixture target is `#![cfg(not(miri))]`.)
+      - name: miri — arm-harness (the unsafe perf/KVM seam)
+        run: cargo "+${PINNED_NIGHTLY}" miri test --manifest-path "$SPIKE/Cargo.toml" -p arm-harness
+
   # Miri (UB validation for the `unsafe` crates) was MOVED to the nightly workflow
   # (.github/workflows/nightly.yml). Rationale (2026-06-24): on the shared `ci.slice`
   # under PR concurrency the Miri run was OOM/timeout-flaky (SIGKILL/137) and
