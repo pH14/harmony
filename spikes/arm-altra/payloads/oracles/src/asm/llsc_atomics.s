@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* llsc-atomics: an LDXR/STXR increment loop — AA-4's (a) payload, the hazard.
  *
  * This is the ONE payload whose taken-branch count is deliberately **not** known

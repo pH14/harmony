@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The minimal arm64 bare-metal runtime the oracle payloads boot on.
 //!
 //! Boot shim (EL1, MMU on, identity-mapped low 2 GiB), a default exception vector

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `clock-page` — AA-5's payload: seqlock reads of the work-derived clock page.
 //!
 //! Reads a *materialized* V-time — no arithmetic against any live hardware

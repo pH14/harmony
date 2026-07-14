@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `wfi-idle` — deterministic idle: mask, make an interrupt pending, `WFI`,
 //! unmask.
 //!

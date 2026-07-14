@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* branch-dense: seven data-dependent branches per trip, four encodings.
  *
  * The branch targets are decided by a xorshift64* stream seeded from the params

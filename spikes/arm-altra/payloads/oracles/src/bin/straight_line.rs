@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `straight-line` — 64 unbranched ALU instructions per trip, one back-edge.
 //!
 //! The lowest branch density in the payload set. With `branch-dense` (the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The polled PL011 console — the guest's only MMIO window.
 //!
 //! The FIFO is deliberately **disabled** (`LCR_H.FEN = 0`). Two reasons, both

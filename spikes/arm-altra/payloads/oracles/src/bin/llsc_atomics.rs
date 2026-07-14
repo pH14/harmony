@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `llsc-atomics` — AA-4's (a) payload: the LL/SC hazard, demonstrated.
 //!
 //! The only payload whose taken-branch count is deliberately not known by

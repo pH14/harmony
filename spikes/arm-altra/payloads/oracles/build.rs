@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Inject the payload linker script.
 //!
 //! This lives in the *bin* package rather than in `runtime` because

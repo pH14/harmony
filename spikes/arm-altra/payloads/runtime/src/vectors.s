@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* The runtime's default EL1 vector table.
  *
  * It is deliberately dumb: every one of the 16 entries funnels into a single

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* exception-abort: one translation fault per trip.
  *
  * The faulting address (0x8000_0000) is unmapped **by construction**, not by luck:

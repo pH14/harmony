@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `branch-dense` — seven data-dependent branches per trip, four encodings.
 //!
 //! The accumulator this payload returns is the exact complement of its taken

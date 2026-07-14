@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* svc: one `SVC #0` per trip into a one-instruction handler.
  *
  * The payload installs its OWN vector table around the window, with the handler

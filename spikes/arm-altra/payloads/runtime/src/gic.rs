@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Minimal GICv3 bring-up: distributor, redistributor, and the CPU interface's
 //! system-register face.
 //!

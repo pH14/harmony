@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `svc` — one `SVC #0` per trip into a one-instruction handler.
 //!
 //! Carries an exception entry, an `ERET` and an `SVC` per trip, each of unknown

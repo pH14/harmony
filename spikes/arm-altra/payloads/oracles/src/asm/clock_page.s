@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* clock-page: seqlock reads of the work-derived clock page — AA-5's payload.
  *
  * The guest reads a **materialized** V-time (`docs/PARAVIRT-CLOCK.md` §0): the

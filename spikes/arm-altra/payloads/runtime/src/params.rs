@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The params page: how the harness tells the guest which scale and seed to run.
 //!
 //! # The unmanaged fallback, and why it attests

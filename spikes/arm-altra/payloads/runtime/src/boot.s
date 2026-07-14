@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* Boot shim + MMU bring-up for the arm64 oracle payloads.
  *
  * Entry state we assume (and nothing more): EL1 (QEMU `virt` without

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `exception-abort` — one translation fault (EC 0x25) per trip.
 //!
 //! The same entry/`ERET` pair as `svc` with no `SVC` instruction, at a different

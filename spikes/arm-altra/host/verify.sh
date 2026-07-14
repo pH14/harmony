@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # verify.sh — apply + build + assert gate for the arm64 KVM_EXIT_PREEMPT draft patch
 # (harmony task 109). Untested-on-silicon: this proves "applies + compiles", nothing more.
 #

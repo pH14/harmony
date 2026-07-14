@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The payload output protocol and the exit path.
 //!
 //! First line `PAYLOAD <name> START`, then deterministic protocol lines, then

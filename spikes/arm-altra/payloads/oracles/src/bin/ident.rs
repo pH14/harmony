@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `ident` — the guest-side capability report. No counting window.
 //!
 //! This is the payload to run first on arrival day: it proves the whole toolchain

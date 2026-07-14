@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The work-derived clock page (`docs/PARAVIRT-CLOCK.md` ABI 1).
 //!
 //! The guest reads a **materialized** value — the V-time and virtual counter the
