@@ -96,9 +96,12 @@ install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
 echo "ok: $ART_DIR/bzImage"
 
 # Task 110: the counter-opcode reachability gate (PARAVIRT-CLOCK.md §3.3, x86
-# half) — every rdtsc/rdtscp left in the image must be a reviewed,
-# trap-backstopped allowlist site. Scans the uncompressed vmlinux (symbols);
-# self-tests its own ability to fail before scanning. See
-# scan-counter-opcodes.sh + rdtsc-allowlist.txt for the review workflow.
+# half) — every rdtsc/rdtscp left in the image must match a reviewed,
+# trap-backstopped allowlist entry (function + exact instruction count). Scans
+# the uncompressed vmlinux (symbols); self-tests its own ability to fail
+# before scanning. While rdtsc-allowlist.txt carries its GATE-UNARMED marker
+# (baseline pending) the scan runs in capture mode — prints the found sites
+# and exits 0 — so this build works before the baseline review; removing the
+# marker arms the gate. See scan-counter-opcodes.sh for the full workflow.
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)"
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" "$LINUX_DIR/rdtsc-allowlist.txt"

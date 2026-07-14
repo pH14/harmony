@@ -618,7 +618,10 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
     let mut session = ExecSession::new(spin, 1);
     let input = session.input().to_vec();
     vmm.inject_serial_input(&input);
-    let refreshes_before = vmm.pvclock_refreshes().len();
+    // Re-arm the refresh log at the measured window's start (cross-model r1
+    // P1): a boot-saturated trace would record nothing during the spin and
+    // `max_gap` below would vacuously read 0.
+    vmm.pvclock_clear_refreshes();
     let mut cursor = vmm.serial_output().len();
     let obs = run_bounded(&mut vmm, 200_000_000, Duration::from_secs(900), |vmm, _| {
         let out = vmm.serial_output();
@@ -643,14 +646,28 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
         String::from_utf8_lossy(&outcome.output[outcome.output.len().saturating_sub(200)..])
     );
     // Staleness bound: no two consecutive refresh anchors in the spin window
-    // more than Δ apart (the §6 G3 assertion, on the work axis).
-    let refreshes = vmm.pvclock_refreshes();
-    let window = &refreshes[refreshes_before.saturating_sub(1)..];
+    // more than Δ apart (the §6 G3 assertion, on the work axis). The window
+    // is the cleared-at-spin-start log; a saturated or near-empty window is a
+    // measurement FAILURE, never a pass (cross-model r1 P1 — a full log
+    // proves only that ≥cap refreshes happened, not that any bound held, and
+    // an empty `windows(2)` would report a vacuous zero gap).
+    let window = vmm.pvclock_refreshes();
+    assert!(
+        window.len() >= 2,
+        "only {} refreshes recorded during a 2-virtual-second spin — no gap can be measured \
+         (expected ~2s/Δ refreshes); the G3 bound was NOT established",
+        window.len()
+    );
+    assert!(
+        window.len() < vmm_core::vmm::PVCLOCK_REFRESH_TRACE_CAP,
+        "the refresh log saturated during the spin window — gaps beyond the cap are unobserved, \
+         so the ≤Δ bound cannot be asserted; raise the cap or shorten the window"
+    );
     let max_gap = window
         .windows(2)
         .map(|p| p[1].0.saturating_sub(p[0].0))
         .max()
-        .unwrap_or(0);
+        .expect("len >= 2 checked above");
     eprintln!(
         "[REPORT] G3: spin completed (status {:?}), {} refreshes in the window, max anchor gap \
          {max_gap} (Δ = {delta}). RESULT: {}",

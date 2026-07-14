@@ -1,25 +1,32 @@
 # Reviewed raw-counter-read sites in the built guest kernel (task 110, the
 # PARAVIRT-CLOCK.md §3.3 reachability gate, x86 half — see
-# scan-counter-opcodes.sh). One function name per line; everything after `#`
-# is comment. A site is allowlistable ONLY because the retained RDTSC/RDTSCP
-# trap completes it with the same work-derived value the pvclock page carries
-# (§4.1 — on x86 a raw read is survivable-by-trap, never a determinism hole).
-# The scan fails the kernel build on any site not listed here AND on any
-# entry with no matching site (exact accounting, both directions).
+# scan-counter-opcodes.sh). One `function count` entry per line — the function
+# containing rdtsc/rdtscp instructions AND their exact count, so a NEW read
+# added inside an already-reviewed function is caught (its count moves) and a
+# removed one goes stale; everything after `#` is comment. A site is
+# allowlistable ONLY because the retained RDTSC/RDTSCP trap completes it with
+# the same work-derived value the pvclock page carries (§4.1 — on x86 a raw
+# read is survivable-by-trap, never a determinism hole). The armed scan fails
+# the kernel build on any drift, in either direction.
 #
-# STATUS: BASELINE NOT YET CAPTURED. The active set below is EMPTY on
-# purpose: the first box kernel build fails the scan and prints every site in
-# the real 6.18.35 image; each is then reviewed against the criteria above
-# and committed here (with a justification comment), after which the build is
-# green and the gate is armed against any NEW unreviewed site. Candidate
-# sites expected from the source (COMMENTED — documentation, not yet
-# reviewed against the built image):
+# GATE-UNARMED: baseline pending. While this marker line is present the scan
+# runs in CAPTURE mode — it prints every site found in the built image (in
+# paste-ready `function count` form) under a loud banner and exits 0, so the
+# kernel build and MANIFEST regeneration work before the baseline exists. The
+# first box build's capture output is reviewed entry-by-entry against the
+# criteria above, committed here, and this marker line REMOVED — from then on
+# the gate is armed. (The scan's self-test proves the armed mode can fail on
+# every invocation, marker or not.)
+#
+# Candidate sites expected from the 6.18.35 source with this config
+# (COMMENTED — documentation to speed the review, not yet verified against
+# the built image; the capture output is authoritative):
 #
 #   native_sched_clock        # arch/x86/kernel/tsc.c — sched_clock until the
 #                             # pvclock init routes it; trap-backstopped
 #   delay_tsc                 # arch/x86/lib/delay.c — udelay busy loop;
-#                             # trap-backstopped (see IMPLEMENTATION.md on the
-#                             # deliberate delay-path decision)
+#                             # trap-backstopped (see IMPLEMENTATION-task110.md
+#                             # on the deliberate delay-path decision)
 #   delay_halt_tpause         # arch/x86/lib/delay.c variants (config-dependent)
 #   delay_halt_mwaitx         # arch/x86/lib/delay.c variants (config-dependent)
 #   pit_calibrate_tsc         # arch/x86/kernel/tsc.c — boot calibration

@@ -5,46 +5,49 @@
 # transposed to counter reads: rdtsc `0F 31`, rdtscp `0F 01 F9`).
 #
 # WHAT IT PROVES on x86: every raw counter read left in the image is a KNOWN,
-# REVIEWED site (the committed allowlist) — each survivable because the
-# retained RDTSC/RDTSCP trap completes it with the same work-derived value
-# (PARAVIRT-CLOCK.md §4.1). A site NOT in the allowlist fails the build: no
-# new raw-counter path can slip into the image unreviewed. A stale allowlist
-# entry (no matching site) fails too — the accounting is exact both ways.
-# (On ARM, where no trap exists, the transposed gate has an EMPTY allowlist by
-# necessity; that discipline is validated at spike stage AA-5, not here.)
+# REVIEWED site — the committed allowlist records each containing function AND
+# its exact instruction count, so a NEW rdtsc added inside an already-reviewed
+# function is caught (its count moves), as is a removed one (the entry goes
+# stale). Each is allowlistable ONLY because the retained RDTSC/RDTSCP trap
+# completes it with the same work-derived value the pvclock page carries
+# (§4.1 — on x86 a raw read is survivable-by-trap, never a determinism hole).
+# Exact accounting in both directions: an unlisted (or count-changed) site
+# fails the build; a stale entry fails too. (On ARM, where no trap exists, the
+# transposed gate has an EMPTY allowlist by necessity; that discipline is
+# validated at spike stage AA-5, not here.)
+#
+# ARMING: while the allowlist carries a `# GATE-UNARMED` marker line (the
+# shipped state — the baseline cannot be reviewed before the first box build
+# exists), the scan runs in CAPTURE mode: it prints every found site in
+# paste-ready `function count` form under a loud UNARMED banner and exits 0,
+# so the kernel build (and MANIFEST regeneration) works while the baseline is
+# being reviewed. Removing the marker (with the reviewed baseline committed)
+# arms the gate; from then on any drift fails the build. The self-test proves
+# the ARMED mode can fail on every invocation regardless of the marker.
 #
 # RUNTIME HALF — SPECCED AND STUBBED (stated per the task-110 evidence bar,
-# not faked): the §3.3 ladder's third rung, W^X + rescan-on-exec (re-scanning
-# any page the guest makes executable at runtime, so a JIT cannot mint a
-# counter read the static scan never saw) needs vmm-side executable-page
-# tracking — contract work that does not exist yet. Until it lands, the static
-# scan covers exactly the built image + the no-modules config
-# (CONFIG_MODULES is asserted off, so there is no loadable code either).
+# not faked; accepted as such by the PR #110 foreman ruling): the §3.3
+# ladder's third rung, W^X + rescan-on-exec (re-scanning any page the guest
+# makes executable at runtime, so a JIT cannot mint a counter read the static
+# scan never saw) needs vmm-side executable-page tracking — contract work
+# tracked as bead hm-rfz. Until it lands, the static scan covers exactly the
+# built image + the no-modules config (CONFIG_MODULES is asserted off, so
+# there is no loadable code either).
 #
 # Usage: scan-counter-opcodes.sh <vmlinux> [allowlist]
 #   Scans the UNCOMPRESSED vmlinux ELF (disassembly needs symbols; the
 #   compressed bzImage is not scannable). Defaults the allowlist to
 #   rdtsc-allowlist.txt next to this script.
-#
-# SELF-TEST: every invocation first proves the gate can fail — a fixture with
-# a planted rdtsc in a non-allowlisted function MUST be caught, and a stale
-# allowlist entry MUST be caught — before the real image is scanned. A gate
-# that cannot fail never passes anything (the PR-98/PR-108 vacuity bar).
 set -euo pipefail
 
 VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux> [allowlist]}
 ALLOWLIST=${2:-"$(dirname "$0")/rdtsc-allowlist.txt"}
 
-# scan <disasm-file> <allowlist-file>: 0 = clean, 1 = violations (printed).
-# Pure text → text, so the self-test can drive it on fixtures.
-scan() {
-    local disasm=$1 allow=$2
-    # Symbol-attributed counter-read sites: walk the objdump text, tracking
-    # the enclosing function; record it when an instruction line's mnemonic
-    # is exactly rdtsc/rdtscp (the mnemonic field, never a symbol-name or
-    # byte-pattern substring match).
-    local found
-    found=$(awk '
+# sites <disasm-file>: emit "function count" per function containing rdtsc/
+# rdtscp instructions (mnemonic-field match — never a symbol-name or
+# byte-pattern substring), sorted by name.
+sites() {
+    awk '
         /^[0-9a-f]+ <[^>]+>:$/ {
             sym = $2; gsub(/[<>:]/, "", sym); next
         }
@@ -53,48 +56,74 @@ scan() {
             n = split($0, f, "\t")
             if (n >= 3) {
                 mn = f[3]; sub(/[[:space:]].*$/, "", mn)
-                if (mn == "rdtsc" || mn == "rdtscp") print sym
+                if (mn == "rdtsc" || mn == "rdtscp") count[sym]++
             }
         }
-    ' "$disasm" | sort -u)
-    # Reviewed allowlist entries (comments/blank lines stripped).
-    local allowed
-    allowed=$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' -e '/^$/d' "$allow" | sort -u)
-    local bad=0
-    # Any found site not in the allowlist → violation.
-    local unlisted
+        END { for (s in count) print s, count[s] }
+    ' "$1" | sort
+}
+
+# allowed <allowlist-file>: emit the reviewed "function count" entries
+# (comments/blank lines stripped), sorted; FAIL on a count-less entry (the
+# per-instruction accounting is the gate — a bare name would silently weaken
+# it back to function granularity).
+allowed() {
+    local entries
+    entries=$(sed -e 's/#.*$//' -e 's/[[:space:]]*$//' -e '/^$/d' "$1")
+    if [ -n "$entries" ] && ! printf '%s\n' "$entries" \
+        | awk 'NF != 2 || $2 !~ /^[0-9]+$/ { bad = 1 } END { exit bad }'; then
+        echo "FAIL: malformed allowlist entry — every entry is 'function count' (the" >&2
+        echo "  per-instruction accounting); offending line(s):" >&2
+        printf '%s\n' "$entries" | awk 'NF != 2 || $2 !~ /^[0-9]+$/' | sed 's/^/  /' >&2
+        return 2
+    fi
+    printf '%s\n' "$entries" | sed '/^$/d' | sort
+}
+
+# scan <disasm-file> <allowlist-file>: 0 = clean, 1 = violations (printed).
+# Pure text → text, so the self-test can drive it on fixtures.
+scan() {
+    local disasm=$1 allow=$2
+    local found allowed_entries bad=0
+    found=$(sites "$disasm")
+    allowed_entries=$(allowed "$allow") || return 2
+    local unlisted stale
     unlisted=$(comm -23 <(printf '%s\n' "$found" | sed '/^$/d') \
-        <(printf '%s\n' "$allowed" | sed '/^$/d'))
+        <(printf '%s\n' "$allowed_entries" | sed '/^$/d'))
+    stale=$(comm -13 <(printf '%s\n' "$found" | sed '/^$/d') \
+        <(printf '%s\n' "$allowed_entries" | sed '/^$/d'))
     if [ -n "$unlisted" ]; then
-        echo "FAIL: raw counter read (rdtsc/rdtscp) in NON-allowlisted function(s):" >&2
+        echo "FAIL: raw counter read(s) (rdtsc/rdtscp) not matching the allowlist" >&2
+        echo "  (new function, or the instruction COUNT changed inside a reviewed one):" >&2
         printf '%s\n' "$unlisted" | sed 's/^/  /' >&2
-        echo "  Review each site: if it is a legitimate trap-backstopped path, add the" >&2
-        echo "  function name to $ALLOWLIST with a justification comment; if it is new" >&2
-        echo "  timekeeping code, route it through the harmony pvclock page instead." >&2
+        echo "  Review each: if it is a legitimate trap-backstopped path, record" >&2
+        echo "  'function count' in $ALLOWLIST with a justification comment; if it is" >&2
+        echo "  new timekeeping code, route it through the harmony pvclock page instead." >&2
         bad=1
     fi
-    # Any allowlist entry with no matching site → stale accounting.
-    local stale
-    stale=$(comm -13 <(printf '%s\n' "$found" | sed '/^$/d') \
-        <(printf '%s\n' "$allowed" | sed '/^$/d'))
     if [ -n "$stale" ]; then
-        echo "FAIL: stale allowlist entr(ies) — no matching rdtsc/rdtscp site in the image:" >&2
+        echo "FAIL: stale allowlist entr(ies) — no matching site/count in the image:" >&2
         printf '%s\n' "$stale" | sed 's/^/  /' >&2
-        echo "  Remove them from $ALLOWLIST (exact accounting, both directions)." >&2
+        echo "  Update or remove them in $ALLOWLIST (exact accounting, both directions)." >&2
         bad=1
     fi
     return $bad
 }
 
-# ---- self-test (every invocation): the gate must be able to FAIL -----------
+# unarmed <allowlist-file>: 0 iff the GATE-UNARMED marker is present.
+unarmed() {
+    grep -q '^# GATE-UNARMED' "$1"
+}
+
+# ---- self-test (every invocation): the ARMED gate must be able to FAIL -----
 self_test() {
     local d
     d=$(mktemp -d)
     trap 'rm -rf "$d"' RETURN
 
-    # Fixture disassembly: one allowlisted rdtsc site, one clean function, one
-    # function whose NAME contains "rdtsc" but executes none (must not match),
-    # and one call whose OPERAND mentions an rdtsc-named symbol (must not match).
+    # Fixture: an allowlisted single-rdtsc site, a clean function, a function
+    # whose NAME contains "rdtsc" but executes none (must not match), and a
+    # call whose OPERAND mentions an rdtsc-named symbol (must not match).
     cat > "$d/clean.dis" << 'EOF'
 ffffffff81000000 <native_sched_clock>:
 ffffffff81000000:	0f 31                	rdtsc
@@ -107,13 +136,13 @@ ffffffff81000020 <trace_rdtsc_event>:
 ffffffff81000020:	31 c0                	xor    %eax,%eax
 ffffffff81000022:	c3                   	ret
 EOF
-    printf 'native_sched_clock\n' > "$d/allow.txt"
+    printf 'native_sched_clock 1\n' > "$d/allow.txt"
     if ! scan "$d/clean.dis" "$d/allow.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — the clean fixture must pass" >&2
         exit 1
     fi
 
-    # Planted rdtsc in a non-allowlisted function: the gate MUST fail.
+    # Planted rdtscp in a non-allowlisted function: MUST fail.
     cat > "$d/planted.dis" << 'EOF'
 ffffffff81000000 <native_sched_clock>:
 ffffffff81000000:	0f 31                	rdtsc
@@ -127,13 +156,34 @@ EOF
         exit 1
     fi
 
-    # Stale allowlist entry: the gate MUST fail.
-    printf 'native_sched_clock\nremoved_function\n' > "$d/stale.txt"
+    # A SECOND rdtsc planted inside an ALREADY-allowlisted function (count
+    # 1 → 2): MUST fail — the per-instruction accounting (cross-model r1 P1).
+    cat > "$d/planted-inside.dis" << 'EOF'
+ffffffff81000000 <native_sched_clock>:
+ffffffff81000000:	0f 31                	rdtsc
+ffffffff81000002:	90                   	nop
+ffffffff81000003:	0f 31                	rdtsc
+ffffffff81000005:	c3                   	ret
+EOF
+    if scan "$d/planted-inside.dis" "$d/allow.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — a NEW rdtsc inside an allowlisted function was NOT caught" >&2
+        exit 1
+    fi
+
+    # Stale allowlist entry: MUST fail.
+    printf 'native_sched_clock 1\nremoved_function 1\n' > "$d/stale.txt"
     if scan "$d/clean.dis" "$d/stale.txt" >/dev/null 2>&1; then
         echo "FAIL: self-test — a stale allowlist entry was NOT caught" >&2
         exit 1
     fi
-    echo "ok: scan self-test (planted-opcode + stale-entry fixtures both caught)"
+
+    # A count-less (function-granularity) entry: MUST be rejected as malformed.
+    printf 'native_sched_clock\n' > "$d/bare.txt"
+    if scan "$d/clean.dis" "$d/bare.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — a count-less allowlist entry was NOT rejected" >&2
+        exit 1
+    fi
+    echo "ok: scan self-test (planted-new, planted-inside-allowlisted, stale-entry, and bare-entry fixtures all caught)"
 }
 
 self_test
@@ -156,9 +206,20 @@ DIS=$(mktemp)
 trap 'rm -f "$DIS"' EXIT
 objdump -d "$VMLINUX" > "$DIS"
 
+if unarmed "$ALLOWLIST"; then
+    echo "###############################################################################"
+    echo "# WARNING: counter-opcode gate UNARMED (baseline pending — '# GATE-UNARMED'"
+    echo "# marker present in $ALLOWLIST)."
+    echo "# Found sites, paste-ready after review (then REMOVE the marker to arm):"
+    echo "###############################################################################"
+    sites "$DIS" | sed 's/^/  /'
+    echo "ok: scan ran UNARMED — not a gate result; review + commit the baseline to arm"
+    exit 0
+fi
+
 if scan "$DIS" "$ALLOWLIST"; then
     N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
-    echo "ok: counter-opcode scan — every rdtsc/rdtscp site is one of the $N reviewed allowlist entries"
+    echo "ok: counter-opcode scan — every rdtsc/rdtscp site matches one of the $N reviewed allowlist entries (function + count)"
 else
     exit 1
 fi

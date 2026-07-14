@@ -69,7 +69,7 @@ torn update:
 | 0x00 | u32 | `abi_version` | Layout ABI = 1. Read once at clocksource registration; a mismatch is a guest-side hard fault, never a silent reinterpret. |
 | 0x04 | u32 | `seq` | Seqlock counter. **Odd ⇒ update in progress** (retry); even ⇒ stable. The torn-read guard. |
 | 0x08 | u64 | `vns` | Materialized V-time in nanoseconds = `VClock::vns(work)` at the refresh's work count (`consonance/vtime/src/clock.rs:74`). The generic-timer/monotonic clocksource value. |
-| 0x10 | u64 | `guest_clock` | Materialized virtual counter = `VClock::guest_clock(work)` (today `VClock::tsc(work)`, `clock.rs:85`; renamed per §5). The vendor-counter analogue the guest's counter-shaped clocksource reads. |
+| 0x10 | u64 | `guest_clock` | Materialized virtual counter — the **guest-visible** clock: `VClock::guest_ticks(work)` **plus the vendor clock-offset register** (x86: `IA32_TSC_ADJUST`, wrapping mod 2⁶⁴), exactly what the retained RDTSC trap completes with, so the §6 G2 oracle equality is definitional (offset `0` for every audited payload). *(Offset term recorded at the task-110 review under the stamping ruling.)* The vendor-counter analogue the guest's counter-shaped clocksource reads. |
 | 0x18 | u64 | `guest_clock_hz` | Counter frequency in Hz (`VClockConfig::tsc_hz`, renamed §5). Constant for the machine's life; lets the guest scale `guest_clock` to ns if it wants a counter-native read. |
 | 0x20 | u32 | `flags` | Bit 0 `MATERIALIZED` (always 1 for this ABI — signals "value is finished, do not interpolate against a live counter"). Remaining bits reserved-zero. |
 | 0x24 | u32 | `vcpu_index` | Pinned 0. |
@@ -135,10 +135,21 @@ are exits the run loop already takes, plus one bounded forced refresh. Enumerate
 existing `consonance/vtime` seams:
 
 1. **`run_until` / any natural exit returns.** Every time `KVM_RUN` exits (hypercall, MMIO,
-   deadline, HLT, the forced overflow below), the vmm holds the current work count from
-   `CpuBackend::work()` (`consonance/vtime/src/planner.rs:16`) and stamps
-   `vns = VClock::vns(work)`, `guest_clock = VClock::guest_clock(work)`. This is the natural,
-   zero-added-cost refresh: the exit was going to happen anyway.
+   deadline, HLT, the forced overflow below), the vmm re-stamps the page with the clock at the
+   **skid-free anchor** — the work count of the last deterministic clock-advance boundary
+   (`last_intercept_work`: the V-time intercepts, `Deadline` landings, and idle warps), the
+   same value the RDTSC-trap oracle returns — and stamps
+   `vns = VClock::vns(anchor)`, `guest_clock` = the guest-visible clock at `anchor` (§1). The
+   stamp is **value-keyed**: between two clock advances the anchor cannot move, so the refresh
+   at a non-intercept exit republishes identical bytes (a no-op), and the published value
+   stream advances exactly at the deterministic boundaries. This is the natural,
+   zero-added-cost refresh: the exit was going to happen anyway. *(Amended at the task-110
+   implementation review — the foreman's 2026-07-14 stamping ruling, flagged for Paul's veto:
+   the original text read "the current work count from `CpuBackend::work()`", but a live
+   counter read at a non-intercept boundary carries non-deterministic exit-path skid (the
+   task-27 O1 evidence), and the page is hashed guest RAM — the literal reading contradicted
+   this section's own determinism argument. The anchor formulation is the intent made
+   implementable.)*
 2. **Deadline landings.** When `TimerQueue::pop_due` (`consonance/vtime/src/queue.rs:106`) fires
    a timer, the run loop is at the exact injection work count reached by
    `InjectionPlanner::stop_at` → `PlanOutcome::ReadyToInject` (`planner.rs:119`). The page is
@@ -196,7 +207,12 @@ raw-counter path survives.
   hypercall doorbell (`docs/GLOSSARY.md` hypercall-doorbell) or a contract-reserved MSR write
   that the CPU contract handles; the vmm validates the GPA lands in guest RAM and begins
   stamping. (Exact transport is an implementation choice for the follow-on bead; both are
-  already-modeled seams.)
+  already-modeled seams. Task 110 chose the doorbell — `hypercall-proto` service id 7 —
+  with the host advertising its offer via the `harmony_pvclock` kernel parameter.) The
+  registration stamp publishes the clock at the **current anchor**: a doorbell `OUT` is not a
+  V-time intercept, so the page's first value may lag live work by the since-last-intercept
+  margin — the same staleness contract as any refresh window, re-stamped at the next clock
+  advance. *(Recorded at the task-110 review under the stamping ruling.)*
 - **Pinned kernel config / no-fallback.** `CONFIG_HARMONY_PVCLOCK=y` (the new clocksource),
   and the TSC clocksource must be **unselectable**: mark TSC unstable / drop it from the
   clocksource registry so the kernel can never fall back to raw `rdtsc` for timekeeping. RDTSC
