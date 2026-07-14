@@ -32,13 +32,30 @@
 //! page bytes (hashed as guest RAM) a pure function of the clock-value stream
 //! rather than of the refresh *schedule*.
 //!
-//! ## Canonical form (§1.1)
+//! ## Canonical form — an INITIALIZATION form, not a seal form (§1.1, amended r4)
 //!
-//! [`stamp_canonical`] re-stamps the whole page to its canonical form —
-//! `seq = 0`, values for the given `(vns, guest_clock)`, reserved tail zeroed —
-//! a total function of `(work, config)` carrying zero refresh-history entropy.
-//! Sealed/snapshotted pages are always canonical, so a restored run and a
-//! never-restored run at the same effective V-time hash identically.
+//! [`stamp_canonical`] writes the whole page to its canonical form — `seq = 0`,
+//! values for the given `(vns, guest_clock)`, reserved tail zeroed — a total
+//! function of `(work, config)` carrying zero prior-content entropy. It is used
+//! at exactly **one** point: registration, where the guest has just handed the
+//! host a page and cannot yet be reading it.
+//!
+//! **It must never be applied to a page a guest reader could be straddling** —
+//! which is why the seal path does NOT canonicalize (cross-model r4 P1).
+//! Resetting a live `seq` to a fixed epoch is an ABA: a reader that sampled
+//! `seq = 0`, then took an exit before validating, would find `seq = 0` again
+//! after a refresh-then-canonicalize and accept the stale values it had already
+//! loaded — so *taking a snapshot* would change the guest's future. Since task
+//! 41 a seal is taken at any V-time-synchronized intercept, not only at an HLT
+//! quiescent point, so a straddling reader is reachable and the hazard is real.
+//!
+//! History-freedom at a seal comes instead from **value-keyed stamping** (see
+//! [`stamp`]): the epoch advances only on a *distinct-value* publication, and
+//! the value stream is a pure function of the deterministic execution — so the
+//! epoch is already reproducible, and a sealed page is preserved verbatim rather
+//! than erased. A restored run inherits the parent's epoch and continues in
+//! lockstep with it (the sealed image stays a faithful copy of live guest RAM,
+//! which is what the snapshot engine's derive path assumes).
 
 /// The page-layout ABI version stamped at [`ABI_VERSION_OFF`]
 /// (`HARMONY_PVCLOCK_ABI = 1`). A guest reads it once at clocksource
@@ -190,18 +207,24 @@ pub fn stamp(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_hz: u64) -
     true
 }
 
-/// Re-stamp the **whole page** to canonical form (§1.1): `seq = 0`, the given
-/// values, fixed fields at their constants, reserved tail zeroed. Returns
-/// `true` iff the page bytes changed.
+/// Write the **whole page** to canonical form: `seq = 0`, the given values,
+/// fixed fields at their constants, reserved tail zeroed. Returns `true` iff the
+/// page bytes changed.
 ///
-/// This is the seal/snapshot-quiescent-point form: a total function of
-/// `(vns, guest_clock, guest_clock_hz)` and nothing else, carrying zero
-/// refresh-history entropy — two same-seed runs that refreshed different
-/// numbers of times (or a restored vs. never-restored run) seal byte-identical
-/// pages. The guest never observes `seq = 0` as special: it only reads the
-/// page while running, and a reader that straddled the seal retries (the
-/// epoch changed) and then succeeds against the canonical frame, whose values
-/// equal the pre-seal stable frame's at the same work count.
+/// This is the **registration** form (§1.1 as amended at r4): a total function
+/// of `(vns, guest_clock, guest_clock_hz)` and nothing else, so the channel
+/// starts from a known epoch and a zeroed tail no matter what the guest's
+/// allocator left in the page. From there the epoch is a pure function of the
+/// deterministic value stream ([`stamp`]).
+///
+/// # ABA hazard — do not call this on a page a running guest may be mid-read of
+///
+/// It resets `seq` to a value the page has held before. A reader that sampled
+/// that epoch, then took an exit before its validating re-read, would see the
+/// same epoch again and accept values that have since been superseded. That is
+/// benign at registration (the guest is at the doorbell `OUT`; it has no page to
+/// read yet) and **unsound at a seal**, which is why [`crate`]'s vmm-core caller
+/// canonicalizes only at registration and seals the page verbatim.
 ///
 /// A short slice is a no-op returning `false` (see [`stamp`]).
 pub fn stamp_canonical(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_hz: u64) -> bool {
@@ -343,21 +366,53 @@ mod tests {
     }
 
     #[test]
-    fn post_canonical_epochs_match_restored_and_continued_runs() {
-        // A sealed-and-continued run and a restored run both continue from the
-        // canonical page: the next distinct-value stamp lands the same epoch.
-        let mut continued = fresh_page();
+    fn a_verbatim_sealed_page_keeps_restored_and_continued_runs_in_lockstep() {
+        // The r4 seal contract: the image is the live page VERBATIM (no
+        // canonicalization), so a restored run inherits the parent's epoch and
+        // the two evolve byte-identically. This is what a copy-only
+        // canonicalization would break — the child would start at seq 0 while
+        // the parent carried seq K, and their guest RAM would differ forever.
+        let mut parent = fresh_page();
         for i in 0..5u64 {
-            stamp(&mut continued, i, i, 7);
+            stamp(&mut parent, i, i, 7);
         }
-        stamp_canonical(&mut continued, 4, 4, 7);
-        let mut restored = fresh_page();
-        stamp_canonical(&mut restored, 4, 4, 7); // the snapshot's page image
-        assert_eq!(continued, restored);
-        assert!(stamp(&mut continued, 9, 9, 7));
-        assert!(stamp(&mut restored, 9, 9, 7));
-        assert_eq!(continued, restored);
-        assert_eq!(read(&continued).unwrap().seq, 2);
+        let sealed = parent.clone(); // exactly what the snapshot engine captures
+        let mut child = sealed.clone(); // exactly what a restore installs
+        assert_eq!(parent, child);
+        // Both run on to the same next value: same bytes, same epoch.
+        assert!(stamp(&mut parent, 9, 9, 7));
+        assert!(stamp(&mut child, 9, 9, 7));
+        assert_eq!(parent, child);
+    }
+
+    #[test]
+    fn canonical_reset_would_be_an_aba_on_a_live_page() {
+        // Why the seal path does NOT canonicalize (r4 P1), pinned as a test: a
+        // reader samples the epoch, is interrupted, a refresh publishes new
+        // values, and a canonicalizing seal puts the epoch BACK — so the
+        // reader's validating re-read matches and it accepts the stale value it
+        // loaded before the refresh.
+        let mut page = fresh_page();
+        stamp_canonical(&mut page, 100, 200, 7); // registration
+        let reader_sampled_seq = read(&page).unwrap().seq;
+        let reader_loaded_vns = read(&page).unwrap().vns;
+        stamp(&mut page, 500, 600, 7); // a refresh the reader straddled
+        assert_ne!(
+            read(&page).unwrap().seq,
+            reader_sampled_seq,
+            "mid-run the epoch moves, so the straddling reader retries — correct"
+        );
+        // Now canonicalize as a seal once would have:
+        stamp_canonical(&mut page, 500, 600, 7);
+        assert_eq!(
+            read(&page).unwrap().seq,
+            reader_sampled_seq,
+            "the epoch is back where the reader sampled it: its re-read validates and it \
+             accepts vns={reader_loaded_vns} even though the page now publishes 500 — the ABA \
+             the seal path must not create"
+        );
+        // The seal path therefore leaves live pages alone; only registration
+        // (no reader possible) canonicalizes.
     }
 
     #[test]

@@ -1,9 +1,23 @@
 # Reviewed raw-counter-read sites in the built guest kernel (task 110, the
 # PARAVIRT-CLOCK.md §3.3 reachability gate, x86 half — see
-# scan-counter-opcodes.sh). One `function count` entry per line — the function
-# containing rdtsc/rdtscp instructions AND their exact count, so a NEW read
-# added inside an already-reviewed function is caught (its count moves) and a
-# removed one goes stale; everything after `#` is comment. A site is
+# scan-counter-opcodes.sh). One `artifact:function count` entry per line — the
+# artifact and function containing rdtsc/rdtscp instructions AND their exact
+# count, so a NEW read added inside an already-reviewed function is caught (its
+# count moves) and a removed one goes stale; everything after `#` is comment.
+#
+# ARTIFACT QUALIFICATION (cross-model r4 P2): bzImage is three executable
+# artifacts and all three run — the real-mode `setup`, the `decompressor`, and
+# the kernel proper (`vmlinux`). All three are scanned; the tag namespaces the
+# entry, so the same symbol name in two artifacts (`startup_32` is in two) cannot
+# spend the other's budget. As of the baseline below, `setup` and `decompressor`
+# contain ZERO counter reads — confirmed both by symbol-attributed disassembly
+# (4,846 and 5,988 instructions scanned) and, because the real-mode setup's
+# 16-bit stream could in principle decode differently, by a raw byte search of
+# their executable images for `0F 31` / `0F 01 F9` (zero occurrences of each).
+# They therefore contribute no entries, and the scan's stale-entry check keeps
+# it that way: the first counter read to appear in either one fails the build.
+#
+# A site is
 # allowlistable ONLY because the retained RDTSC/RDTSCP trap completes it with
 # the same work-derived value the pvclock page carries (§4.1 — on x86 a raw
 # read is survivable-by-trap, never a determinism hole). The armed scan fails
@@ -39,54 +53,54 @@
 #   [harmony] our own deliberate pre-registration anchor-freshening rdtsc
 #   [fs]     ext4 mballoc criteria timing (mb_stats path) — trapped
 #
-.altinstr_replacement 28                     # [alt]
-__dmar_enable_qi 2                           # [iommu]
-__iommu_flush_context 2                      # [iommu]
-__iommu_flush_iotlb 2                        # [iommu]
-add_device_randomness 1                      # [rng]
-add_interrupt_randomness 1                   # [rng]
-add_timer_randomness 1                       # [rng]
-check_tsc_warp 2                             # [time] tsc_sync
-delay_halt 2                                 # [time] delay backstop
-delay_tsc 3                                  # [time] delay backstop
-dmar_disable_qi 4                            # [iommu]
-do_syscall_64 1                              # [entry] kstack offset
-ecmd_submit_sync 2                           # [iommu]
-entropy_timer 1                              # [rng]
-ext4_mb_generate_buddy 2                     # [fs]
-extract_entropy.constprop.0 1                # [rng]
-harmony_pvclock_init 2                       # [harmony] the two deliberate reads (pre-ring anchor freshener + post-registration clock advance; see patches/README.md)
-hpet_enable 2                                # [time] calibration (hpet off at runtime)
-iommu_disable_irq_remapping.part.0 2         # [iommu]
-iommu_disable_protect_mem_regions.part.0 2   # [iommu]
-iommu_disable_translation 2                  # [iommu]
-iommu_enable_irq_remapping 4                 # [iommu]
-iommu_enable_translation 2                   # [iommu]
-iommu_flush_write_buffer 2                   # [iommu]
-iommu_set_irq_remapping 2                    # [iommu]
-iommu_set_root_entry 2                       # [iommu]
-irqentry_exit_to_user_mode 1                 # [entry] kstack offset
-jent_get_nstime 1                            # [rng] jitter entropy
-lapic_cal_handler 1                          # [time] APIC calibration
-lapic_next_deadline 1                        # [time] TSC-deadline programming
-msr_event_add 1                              # [perf]
-msr_event_start 1                            # [perf]
-msr_event_update 1                           # [perf]
-native_sched_clock 1                         # [time] sched_clock until pvclock routes it
-pit_hpet_ptimer_calibrate_cpu 2              # [time] calibration
-pvclock_clocksource_read 1                   # [guest] kvmclock reader (inert)
-pvclock_clocksource_read_nowd 1              # [guest] kvmclock reader (inert)
-quick_pit_calibrate 4                        # [time] calibration
-random_init 1                                # [rng]
-read_current_timer 1                         # [time]
-read_tsc 1                                   # [time] the tsc clocksource (unselectable when active)
-ret_from_fork 1                              # [entry] kstack offset
-setup_boot_APIC_clock 2                      # [time] APIC calibration
-timer_irq_works 2                            # [time] boot check
-trace_clock_x86_tsc 1                        # [time] trace clock
-try_to_generate_entropy 3                    # [rng]
-tsc_enable_sched_clock 1                     # [time]
-tsc_read_refs 2                              # [time] calibration
-vmclock_get_crosststamp 2                    # [guest] vmclock PTP (inert)
-vmware_platform_setup 1                      # [guest] vmware detect (inert)
-vmware_sched_clock 1                         # [guest] vmware (inert)
+vmlinux:.altinstr_replacement 28                    # [alt]
+vmlinux:__dmar_enable_qi 2                          # [iommu]
+vmlinux:__iommu_flush_context 2                     # [iommu]
+vmlinux:__iommu_flush_iotlb 2                       # [iommu]
+vmlinux:add_device_randomness 1                     # [rng]
+vmlinux:add_interrupt_randomness 1                  # [rng]
+vmlinux:add_timer_randomness 1                      # [rng]
+vmlinux:check_tsc_warp 2                            # [time] tsc_sync
+vmlinux:delay_halt 2                                # [time] delay backstop
+vmlinux:delay_tsc 3                                 # [time] delay backstop
+vmlinux:dmar_disable_qi 4                           # [iommu]
+vmlinux:do_syscall_64 1                             # [entry] kstack offset
+vmlinux:ecmd_submit_sync 2                          # [iommu]
+vmlinux:entropy_timer 1                             # [rng]
+vmlinux:ext4_mb_generate_buddy 2                    # [fs]
+vmlinux:extract_entropy.constprop.0 1               # [rng]
+vmlinux:harmony_pvclock_init 2                      # [harmony] the two deliberate reads (pre-ring anchor freshener + post-registration clock advance; see patches/README.md)
+vmlinux:hpet_enable 2                               # [time] calibration (hpet off at runtime)
+vmlinux:iommu_disable_irq_remapping.part.0 2        # [iommu]
+vmlinux:iommu_disable_protect_mem_regions.part.0 2  # [iommu]
+vmlinux:iommu_disable_translation 2                 # [iommu]
+vmlinux:iommu_enable_irq_remapping 4                # [iommu]
+vmlinux:iommu_enable_translation 2                  # [iommu]
+vmlinux:iommu_flush_write_buffer 2                  # [iommu]
+vmlinux:iommu_set_irq_remapping 2                   # [iommu]
+vmlinux:iommu_set_root_entry 2                      # [iommu]
+vmlinux:irqentry_exit_to_user_mode 1                # [entry] kstack offset
+vmlinux:jent_get_nstime 1                           # [rng] jitter entropy
+vmlinux:lapic_cal_handler 1                         # [time] APIC calibration
+vmlinux:lapic_next_deadline 1                       # [time] TSC-deadline programming
+vmlinux:msr_event_add 1                             # [perf]
+vmlinux:msr_event_start 1                           # [perf]
+vmlinux:msr_event_update 1                          # [perf]
+vmlinux:native_sched_clock 1                        # [time] sched_clock until pvclock routes it
+vmlinux:pit_hpet_ptimer_calibrate_cpu 2             # [time] calibration
+vmlinux:pvclock_clocksource_read 1                  # [guest] kvmclock reader (inert)
+vmlinux:pvclock_clocksource_read_nowd 1             # [guest] kvmclock reader (inert)
+vmlinux:quick_pit_calibrate 4                       # [time] calibration
+vmlinux:random_init 1                               # [rng]
+vmlinux:read_current_timer 1                        # [time]
+vmlinux:read_tsc 1                                  # [time] the tsc clocksource (unselectable when active)
+vmlinux:ret_from_fork 1                             # [entry] kstack offset
+vmlinux:setup_boot_APIC_clock 2                     # [time] APIC calibration
+vmlinux:timer_irq_works 2                           # [time] boot check
+vmlinux:trace_clock_x86_tsc 1                       # [time] trace clock
+vmlinux:try_to_generate_entropy 3                   # [rng]
+vmlinux:tsc_enable_sched_clock 1                    # [time]
+vmlinux:tsc_read_refs 2                             # [time] calibration
+vmlinux:vmclock_get_crosststamp 2                   # [guest] vmclock PTP (inert)
+vmlinux:vmware_platform_setup 1                     # [guest] vmware detect (inert)
+vmlinux:vmware_sched_clock 1                        # [guest] vmware (inert)

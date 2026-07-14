@@ -121,18 +121,42 @@ and their rulings:
 
 - **`seq` carries refresh count.** If the guest is snapshotted with whatever `seq` happened to
   accumulate, and a same-seed sibling run refreshed a different number of times before the same
-  Moment, the two pages hash differently → nondeterminism. **Ruling: at every seal/snapshot
-  quiescent point the page is re-stamped to canonical form** — `seq = 0` (even, stable),
-  `vns = VClock::vns(w)`, `guest_clock = VClock::guest_clock(w)` for the exact seal work count
-  `w`, `flags`/`vcpu_index`/reserved at their fixed values. The canonical page is thus a total
-  function of `(w, config)` and nothing else. The guest never observes `seq = 0` as special: it
-  only reads the page while running, never at the seal boundary (a seal is taken at an HLT
-  quiescent Moment, `consonance/vm-state/src/types.rs:118`).
-- **Refresh count is deterministic-in-principle but we do not lean on it.** The exit/refresh
-  schedule is itself a pure function of the seed (§2), so `seq` *would* be reproducible — but it
-  is fragile against a change in the staleness window Δ or backend skid, so canonicalization at
-  seal is the robust guarantee, not an accident of scheduling. The determinism gate (§6) is what
-  proves it.
+  Moment, the two pages hash differently → nondeterminism.
+
+  **Original ruling (superseded): re-stamp the page to canonical form at every seal/snapshot
+  quiescent point** — `seq = 0`, values at the exact seal work count `w`, reserved tail zeroed —
+  so the sealed page is a total function of `(w, config)`. Its safety argument was that "the
+  guest only reads the page while running, never at the seal boundary (a seal is taken at an HLT
+  quiescent Moment)".
+
+  **AMENDED RULING (PR #110 cross-model r4, 2026-07-14): the page is sealed VERBATIM; nothing
+  canonicalizes a live page except registration.** The original ruling's premise is false —
+  since **task 41** a seal is taken at *any* V-time-synchronized intercept, not only at an HLT
+  quiescent Moment, so a guest reader **can** be mid-seqlock-read across a seal. Resetting a
+  live `seq` to a fixed epoch is then an **ABA**: a reader that sampled `seq = 0`, took an exit
+  before its validating re-read, and resumed after a refresh-then-canonicalize would see `seq =
+  0` again, accept the values it had already loaded, and miss the refresh — *taking a snapshot
+  would change the guest's future*. Canonicalizing only the snapshot **copy** is no better: it
+  makes the sealed image differ from live guest RAM, which breaks both the snapshot engine's
+  derive path (`snapshot_derive` diffs live RAM against the parent *image*) and same-state ⇒
+  same-future (a parent that seals and continues would diverge, by exactly its `seq`, from a
+  child restored from its own snapshot).
+
+  What replaces canonicalization is **value-keyed stamping** (§2, ruled at r1): a stamp that
+  publishes values the page already carries writes **nothing** and does not move the epoch. So
+  `seq` advances only on *distinct-value* publications, whose stream is a pure function of the
+  deterministic execution — the epoch is reproducible by construction, and a restored run
+  inherits its parent's epoch and continues in lockstep. Two same-seed runs cannot refresh a
+  *different number of value-changing times*, which is the only thing the page bytes see.
+
+  The two fragilities the original ruling cited are closed by other rulings in the same PR, so
+  the "accident of scheduling" it feared is now a contract: **backend skid** cannot reach the
+  values (stamps use the skid-free `last_intercept_work` anchor, r1), and **Δ** is machine
+  configuration carried in the sealed device blob and cross-validated on restore (r3) — a Δ
+  mismatch is *rejected*, never silently divergent. Canonical form survives as the
+  **registration** form (a fresh page, no reader possible, no prior epoch to alias), which is
+  what gives the channel a known starting epoch and a zeroed tail regardless of what the guest's
+  allocator left behind. The determinism gate (§6, G1) is what proves the whole story.
 
 ---
 

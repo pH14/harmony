@@ -36,20 +36,43 @@
 # built image + the no-modules config (CONFIG_MODULES is asserted off, so
 # there is no loadable code either).
 #
+# COVERAGE — every executable component of bzImage, not just the kernel proper
+# (cross-model r4 P2). bzImage is three distinct executable artifacts glued
+# together, and all three run: the real-mode `setup` code, the `compressed`
+# decompressor that unpacks the kernel, and the kernel proper. Scanning only
+# `vmlinux` left the first two unscanned — an rdtsc added to the decompressor
+# would have sailed through a gate that calls itself a final-image reachability
+# scan. All three are scanned from their (symbol-bearing) ELF build products,
+# and allowlist entries are ARTIFACT-QUALIFIED (`artifact:function count`) so
+# same-named symbols in different artifacts (`startup_32` exists in two) cannot
+# alias each other's budget.
+#
 # Usage: scan-counter-opcodes.sh <vmlinux> [allowlist]
-#   Scans the UNCOMPRESSED vmlinux ELF (disassembly needs symbols; the
-#   compressed bzImage is not scannable). Defaults the allowlist to
+#   <vmlinux> is the UNCOMPRESSED kernel ELF; the sibling boot artifacts are
+#   derived from its build tree (arch/x86/boot/{setup.elf,compressed/vmlinux}).
+#   The compressed bzImage itself is not directly scannable (no symbols) — it is
+#   covered through the ELF products it is built from. Defaults the allowlist to
 #   rdtsc-allowlist.txt next to this script.
 set -euo pipefail
 
 VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux> [allowlist]}
 ALLOWLIST=${2:-"$(dirname "$0")/rdtsc-allowlist.txt"}
 
-# sites <disasm-file>: emit "function count" per function containing rdtsc/
-# rdtscp instructions (mnemonic-field match — never a symbol-name or
-# byte-pattern substring), sorted by name.
+# The executable boot artifacts, as `tag=path` (tag prefixes every allowlist
+# entry from that artifact). KOBJ is vmlinux's build tree.
+KOBJ=$(dirname "$VMLINUX")
+ARTIFACTS=(
+    "vmlinux=$VMLINUX"
+    "setup=$KOBJ/arch/x86/boot/setup.elf"
+    "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
+)
+
+# sites <disasm-file> [artifact-tag]: emit "[tag:]function count" per function
+# containing rdtsc/rdtscp instructions (mnemonic-field match — never a
+# symbol-name or byte-pattern substring), sorted by name. The tag namespaces the
+# entry to one boot artifact; the self-test fixtures drive it untagged.
 sites() {
-    awk '
+    awk -v tag="${2:-}" '
         /^[0-9a-f]+ <[^>]+>:$/ {
             sym = $2; gsub(/[<>:]/, "", sym); next
         }
@@ -61,8 +84,30 @@ sites() {
                 if (mn == "rdtsc" || mn == "rdtscp") count[sym]++
             }
         }
-        END { for (s in count) print s, count[s] }
+        END {
+            for (s in count) print (tag == "" ? s : tag ":" s), count[s]
+        }
     ' "$1" | sort
+}
+
+# all_sites: disassemble every executable boot artifact and emit the combined,
+# artifact-qualified site list. FAILS if an artifact is missing — a gate that
+# silently skips an unbuilt component is a gate that passes vacuously.
+all_sites() {
+    local a tag path dis
+    for a in "${ARTIFACTS[@]}"; do
+        tag=${a%%=*}
+        path=${a#*=}
+        if [ ! -f "$path" ]; then
+            echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
+            echo "  bzImage must be scanned (setup + decompressor + kernel); build first." >&2
+            return 1
+        fi
+        dis=$(mktemp)
+        objdump -d "$path" > "$dis"
+        sites "$dis" "$tag"
+        rm -f "$dis"
+    done | sort
 }
 
 # allowed <allowlist-file>: emit the reviewed "function count" entries
@@ -85,9 +130,15 @@ allowed() {
 # scan <disasm-file> <allowlist-file>: 0 = clean, 1 = violations (printed).
 # Pure text → text, so the self-test can drive it on fixtures.
 scan() {
-    local disasm=$1 allow=$2
-    local found allowed_entries bad=0
-    found=$(sites "$disasm")
+    scan_sites "$(sites "$1")" "$2"
+}
+
+# scan_sites <site-list> <allowlist-file>: the comparison itself, over an
+# already-collected site list (so the real scan can feed it every artifact at
+# once and the self-test can feed it a fixture).
+scan_sites() {
+    local found=$1 allow=$2
+    local allowed_entries bad=0
     allowed_entries=$(allowed "$allow") || return 2
     local unlisted stale
     unlisted=$(comm -23 <(printf '%s\n' "$found" | sed '/^$/d') \
@@ -185,7 +236,36 @@ EOF
         echo "FAIL: self-test — a count-less allowlist entry was NOT rejected" >&2
         exit 1
     fi
-    echo "ok: scan self-test (planted-new, planted-inside-allowlisted, stale-entry, and bare-entry fixtures all caught)"
+
+    # ARTIFACT QUALIFICATION (r4 P2). Two artifacts define the same symbol
+    # (`startup_32` really does exist in both the decompressor and the kernel).
+    # An rdtsc planted in ONE of them must not be absolved by the other's
+    # allowlist entry — the tag is what keeps their budgets separate.
+    cat > "$d/kernel.dis" << 'EOF'
+ffffffff81000000 <startup_32>:
+ffffffff81000000:	0f 31                	rdtsc
+ffffffff81000002:	c3                   	ret
+EOF
+    cat > "$d/decomp.dis" << 'EOF'
+00000000 <startup_32>:
+       0:	0f 31                	rdtsc
+       2:	c3                   	ret
+EOF
+    printf 'vmlinux:startup_32 1\n' > "$d/tagged.txt"
+    # The kernel's own site is allowlisted → clean on its own.
+    if ! scan_sites "$(sites "$d/kernel.dis" vmlinux)" "$d/tagged.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — the tagged clean fixture must pass" >&2
+        exit 1
+    fi
+    # The SAME function name in the decompressor is a different, unreviewed
+    # site: scanning both artifacts must FAIL (unlisted decompressor:startup_32).
+    if scan_sites "$(sites "$d/kernel.dis" vmlinux
+        sites "$d/decomp.dis" decompressor | sort)" "$d/tagged.txt" >/dev/null 2>&1; then
+        echo "FAIL: self-test — an rdtsc in the decompressor was absolved by the KERNEL's" >&2
+        echo "  allowlist entry for the same symbol name (artifact qualification broken)" >&2
+        exit 1
+    fi
+    echo "ok: scan self-test (planted-new, planted-inside-allowlisted, stale-entry, bare-entry, and cross-artifact-alias fixtures all caught)"
 }
 
 self_test
@@ -204,9 +284,8 @@ command -v objdump >/dev/null 2>&1 || {
     exit 1
 }
 
-DIS=$(mktemp)
-trap 'rm -f "$DIS"' EXIT
-objdump -d "$VMLINUX" > "$DIS"
+# Every executable boot artifact, artifact-qualified (r4 P2).
+FOUND=$(all_sites)
 
 if unarmed "$ALLOWLIST"; then
     echo "###############################################################################" >&2
@@ -215,13 +294,13 @@ if unarmed "$ALLOWLIST"; then
     echo "# (fail-closed). Captured baseline, paste-ready after entry-by-entry review" >&2
     echo "# (commit it + REMOVE the marker to arm the gate):" >&2
     echo "###############################################################################" >&2
-    sites "$DIS" | sed 's/^/  /' >&2
+    printf '%s\n' "$FOUND" | sed 's/^/  /' >&2
     exit 1
 fi
 
-if scan "$DIS" "$ALLOWLIST"; then
+if scan_sites "$FOUND" "$ALLOWLIST"; then
     N=$(sed -e 's/#.*$//' -e '/^[[:space:]]*$/d' "$ALLOWLIST" | wc -l | tr -d ' ')
-    echo "ok: counter-opcode scan — every rdtsc/rdtscp site matches one of the $N reviewed allowlist entries (function + count)"
+    echo "ok: counter-opcode scan — every rdtsc/rdtscp site across all ${#ARTIFACTS[@]} executable boot artifacts (setup, decompressor, kernel) matches one of the $N reviewed allowlist entries (artifact + function + count)"
 else
     exit 1
 fi

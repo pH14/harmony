@@ -479,7 +479,10 @@ pub const PVCLOCK_DEFAULT_DELTA_WORK: u64 = 10_000_000;
 pub const PVCLOCK_REFRESH_TRACE_CAP: usize = PREEMPTION_TRACE_CAP;
 
 /// Which stamp [`Vmm::pvclock_stamp`] writes: the mid-run seqlock refresh, or
-/// the seal-quiescent-point canonical form (§1.1 — `seq = 0`, zeroed tail).
+/// the one-shot canonical form written at **registration** (§1.1 — `seq = 0`,
+/// zeroed tail). Canonical is a registration-only form: applying it to a page a
+/// running guest may be mid-read of is an ABA (see
+/// [`vtime::pvclock::stamp_canonical`]), so the seal path does not use it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StampKind {
     Refresh,
@@ -618,6 +621,19 @@ pub(crate) struct PvclockChannel {
     /// write) surfaces as a log/oracle mismatch, not a silently-wrong page.
     /// The G2 gate's evidence. Capped at [`PREEMPTION_TRACE_CAP`].
     refreshes: Vec<(u64, u64, u64)>,
+    /// Diagnostic count (**not** hashed) of `Deadline` landings **attributable
+    /// to the Δ staleness bound**: a landing at or past the armed pvclock target
+    /// at which neither the periodic timer nor a staged arrival was due, so the
+    /// pvclock deadline is what bounded the entry.
+    ///
+    /// This is G3's **attribution** evidence (cross-model r4 P1). Without it the
+    /// live gate is vacuous on a Linux guest: the 100 Hz tick already forces a
+    /// `Deadline` (and hence a refresh) about every 10 ms, so a `max_gap ≤ Δ`
+    /// assertion at the default Δ ≈ 10 ms would pass with the forced-refresh
+    /// deadline *deleted*. Counting the landings the pvclock deadline itself
+    /// caused proves the mechanism ran. Reset with the refresh log
+    /// ([`Vmm::pvclock_clear_refreshes`]) so a gate can measure one window.
+    forced_landings: u64,
 }
 
 /// The SDK channel's **replay-relevant** state, captured with a snapshot (task
@@ -1299,18 +1315,22 @@ where
     /// excluded by snapshotting only at a clean, synchronized boundary, of which an
     /// interrupt-driven guest has many (every RDTSC the workload takes).
     ///
-    /// **Canonical pvclock re-stamp (task 110, §1.1).** A successful save is a
-    /// seal quiescent point, so — when a clock page is registered — the page is
-    /// re-stamped to canonical form (`seq = 0`, values at the exact seal work
-    /// count, reserved tail zeroed) here, after **every** rejection path (the
-    /// boundary guards, the fallible vCPU read, and the sealability check) has
-    /// passed — a rejected seal attempt mutates nothing (reject-before-
-    /// mutation), so the `NotQuiescent` retry loops and sealability probes are
-    /// side-effect-free. That is why this takes `&mut self`: a *successful*
-    /// seal mutates one page of guest RAM (value-preserving — only the seqlock
-    /// epoch and any guest scribbles reset), and every seal path shares this
-    /// chokepoint, so the RAM image any caller captures next is canonical. The
-    /// page carries zero refresh-history entropy in a sealed image.
+    /// **The pvclock page is sealed VERBATIM (task 110 §1.1, amended at r4).** A
+    /// seal does not touch guest RAM at all: the clock page rides the memory
+    /// image exactly as the guest sees it. Canonicalizing it here — the design
+    /// doc's original ruling — would reset a *live* seqlock epoch to a value the
+    /// page has held before, and since task 41 a seal is taken at any
+    /// V-time-synchronized intercept (not only at an HLT quiescent point) a guest
+    /// reader can be straddling one: it would re-read the restored epoch, match,
+    /// and accept the values it loaded before the last refresh. Taking a snapshot
+    /// would change the guest's future. It would also make the sealed image
+    /// *differ* from live guest RAM, which the snapshot engine's derive path and
+    /// `restore ⇒ same future` both rely on not happening.
+    ///
+    /// History-freedom is instead structural: [`vtime::pvclock::stamp`] is
+    /// value-keyed, so the epoch advances only on distinct-value publications and
+    /// is already a pure function of the deterministic execution. A restored run
+    /// inherits the parent's epoch and continues in lockstep with it.
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] at an RNG mid-exit boundary, a non-synchronized
@@ -1319,7 +1339,7 @@ where
     /// [`crate::snapshot::unrepresentable_state`]); [`VmmError::Backend`] if reading the
     /// live vCPU state fails (a snapshot **fails closed** rather than sealing a zeroed or
     /// lossy vCPU).
-    pub fn save_vm_state(&mut self) -> Result<vm_state::VmState, VmmError> {
+    pub fn save_vm_state(&self) -> Result<vm_state::VmState, VmmError> {
         // The boundary gate is the shared `can_snapshot()` predicate (so the SDK
         // snapshot-point surface can never advertise a point this rejects); when
         // it fails, report WHICH precondition failed for a precise diagnostic.
@@ -1352,16 +1372,12 @@ where
         // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
         // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
-        // Task 110 (§1.1): the seal is quiescent, synchronized, AND now fully
-        // validated, so re-stamp the pvclock page to canonical form at the
-        // exact seal work count — a no-op without a registration, value-
-        // preserving with one. Deliberately AFTER every rejection path above
-        // (reject-before-mutation, the PR #12 round-8 posture): a seal attempt
-        // the caller treats as recoverable (`NotQuiescent` retry loops, the
-        // sealability probes) must leave guest RAM and the refresh history
-        // byte-for-byte untouched. `build_vm_state` below is infallible, so a
-        // canonicalized page never outlives a failed seal.
-        self.pvclock_stamp(StampKind::Canonical)?;
+        // Task 110 (r4): NO pvclock re-stamp here. The page is sealed exactly as
+        // the guest sees it — see this method's doc comment for why
+        // canonicalizing a live page is an ABA on a straddling reader, and why
+        // value-keyed stamping already makes the epoch reproducible. A seal
+        // mutates nothing, so the `NotQuiescent` retry loops and sealability
+        // probes stay side-effect-free for free rather than by careful ordering.
         Ok(<B::A as Vendor>::build_vm_state(self, &vcpu))
     }
 
@@ -2145,6 +2161,7 @@ where
             gpa: None,
             first_advance_seen: false,
             refreshes: Vec::new(),
+            forced_landings: 0,
         });
         self
     }
@@ -2263,14 +2280,29 @@ where
         }
     }
 
-    /// Reset the diagnostic refresh log — re-arm the G2/G3 evidence window at
-    /// a measurement boundary, so a bounded assertion (e.g. G3's ≤Δ gap check)
-    /// measures its own window instead of a boot-saturated trace. Never
-    /// touches the page or the registration.
+    /// Reset the diagnostic refresh log **and the forced-landing count** — re-arm
+    /// the G2/G3 evidence window at a measurement boundary, so a bounded
+    /// assertion (e.g. G3's ≤Δ gap check and its attribution count) measures its
+    /// own window instead of a boot-saturated trace. Never touches the page or
+    /// the registration.
     pub fn pvclock_clear_refreshes(&mut self) {
         if let Some(pv) = self.pvclock.as_mut() {
             pv.refreshes.clear();
+            pv.forced_landings = 0;
         }
+    }
+
+    /// How many `Deadline` landings in the current window the **Δ staleness
+    /// bound itself** forced (neither the periodic timer nor a staged arrival was
+    /// due). Zero when nothing is registered.
+    ///
+    /// G3's attribution evidence (cross-model r4 P1): on a 100 Hz Linux guest the
+    /// tick alone refreshes the page about every 10 ms, so a gap-bound assertion
+    /// at the default Δ proves nothing about the forced refresh. A window with a
+    /// non-zero count is a window in which the pvclock deadline demonstrably
+    /// fired; delete [`Vmm::pvclock_refresh_deadline`] and this goes to zero.
+    pub fn pvclock_forced_landings(&self) -> u64 {
+        self.pvclock.as_ref().map_or(0, |pv| pv.forced_landings)
     }
 
     /// The diagnostic pvclock refresh log: `(work anchor, vns, guest_clock)`
@@ -3510,6 +3542,20 @@ where
         let arrival_due = self.arrival_deadline.is_some_and(|a| reached.0 >= a.0);
         if (timer_due || arrival_due) && self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
             self.preemption_landings.push(reached.0);
+        }
+        // The complement (r4 P1): a landing at/past the armed pvclock target at
+        // which nothing else was due is a landing the Δ staleness bound itself
+        // forced. Counting it is what lets G3 attribute its refreshes to the
+        // pvclock deadline rather than to the guest's 100 Hz tick.
+        let pvclock_due = self
+            .pvclock_refresh_deadline()
+            .is_some_and(|p| reached.0 >= p.0);
+        if pvclock_due
+            && !timer_due
+            && !arrival_due
+            && let Some(pv) = self.pvclock.as_mut()
+        {
+            pv.forced_landings = pv.forced_landings.saturating_add(1);
         }
         match self.vtime.as_mut() {
             Some(vt) => {
@@ -8358,7 +8404,7 @@ mod tests {
         // A backend `save()` failure must abort the snapshot (fail closed), never
         // seal a zeroed vCPU and return Ok (the bug `current_vcpu`'s unwrap_or_default
         // would have hidden).
-        let mut v = Vmm::new(
+        let v = Vmm::new(
             SaveFailBackend(configured_mock(vec![])),
             GuestRam::new(0x1000).unwrap(),
         );
@@ -8510,7 +8556,7 @@ mod tests {
         // restore, so the snapshot fails closed instead of sealing a lossy blob.
         let mut flags = nonzero_state();
         flags.sregs.flags = 1; // e.g. PDPTRS_VALID
-        let mut v = full_vmm(flags, vec![], 0, 1);
+        let v = full_vmm(flags, vec![], 0, 1);
         assert!(matches!(
             v.save_vm_state(),
             Err(VmmError::ContractViolation(_))
@@ -8518,7 +8564,7 @@ mod tests {
 
         let mut pdptr = nonzero_state();
         pdptr.sregs.pdptrs[2] = 0xDEAD_BEEF;
-        let mut v2 = full_vmm(pdptr, vec![], 0, 1);
+        let v2 = full_vmm(pdptr, vec![], 0, 1);
         assert!(matches!(
             v2.save_vm_state(),
             Err(VmmError::ContractViolation(_))
@@ -8527,7 +8573,7 @@ mod tests {
         // `kvm_debugregs.flags` (not carried) — DR0..3/DR6/DR7 ARE carried.
         let mut dbg = nonzero_state();
         dbg.debugregs.flags = 1;
-        let mut v3 = full_vmm(dbg, vec![], 0, 1);
+        let v3 = full_vmm(dbg, vec![], 0, 1);
         assert!(matches!(
             v3.save_vm_state(),
             Err(VmmError::ContractViolation(_))
@@ -8546,7 +8592,7 @@ mod tests {
         let in_flight = |events: vmm_backend::VcpuEvents, name: &str| {
             let mut st = nonzero_state();
             st.events = events;
-            let mut a = full_vmm(st, vec![], 0, 1);
+            let a = full_vmm(st, vec![], 0, 1);
             // Save SUCCEEDS at the non-quiescent point (no fail-closed rejection).
             let s = a
                 .save_vm_state()
@@ -8605,7 +8651,7 @@ mod tests {
         let rejects = |events: vmm_backend::VcpuEvents, needle: &str| {
             let mut st = nonzero_state();
             st.events = events;
-            let mut v = full_vmm(st, vec![], 0, 1);
+            let v = full_vmm(st, vec![], 0, 1);
             match v.save_vm_state() {
                 Err(VmmError::ContractViolation(msg)) => assert!(
                     msg.contains(needle),
@@ -8631,7 +8677,7 @@ mod tests {
         );
         // A clean quiescent point still snapshots (no regression), and the validity-mask
         // `flags` is carried like any other field now.
-        let mut v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
+        let v_ok = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
             v_ok.save_vm_state().is_ok(),
             "a quiescent point still snapshots"
@@ -8645,7 +8691,7 @@ mod tests {
         // different/buggy encoder) may carry RAW KVM modifier residuals. `restore_vm_state`
         // must canonicalize them (mirror the save side), so a foreign/corrupt blob cannot
         // reintroduce the exact residuals `KVM_SET_VCPU_EVENTS` would choke on.
-        let mut a = full_vmm(nonzero_state(), vec![], 0, 1);
+        let a = full_vmm(nonzero_state(), vec![], 0, 1);
         let mut s = a.save_vm_state().expect("quiescent save");
         // Forge an external blob: raw inert residuals (a stale interrupt.nr / exception.nr /
         // has_error_code + the GET-only validity flags), as a non-canonicalizing encoder
@@ -8706,7 +8752,7 @@ mod tests {
             let mut b = full_vmm(marked, vec![], 0, 1);
             let before = b.backend.save().unwrap();
             // Forge an external blob (valid except for the cap-gated event field).
-            let mut a = full_vmm(nonzero_state(), vec![], 0, 1);
+            let a = full_vmm(nonzero_state(), vec![], 0, 1);
             let mut s = a.save_vm_state().unwrap();
             let mut dev = snapshot::decode_device_blob(&s.devices.0).unwrap();
             dev.events = bad;
@@ -9265,13 +9311,14 @@ mod tests {
             .expect("the natural-exit refresh restored oracle equality");
     }
 
-    /// A REJECTED seal attempt mutates nothing (cross-model r1 P2): with a
-    /// registered page mid-run (non-zero seq) and a vCPU that fails the
-    /// sealability check, `save_vm_state` errors AND leaves the page bytes,
-    /// the refresh log, and the host-dirty set byte-for-byte untouched — the
-    /// `NotQuiescent` retry loops and sealability probes are side-effect-free.
+    /// NO seal — accepted or rejected — touches the live page (cross-model r4
+    /// P1, superseding the r1 reject-before-mutation ordering with a stronger
+    /// property: there is no mutation to order). Canonicalizing a live page
+    /// would reset its seqlock epoch to a value the page has held before, and a
+    /// guest reader straddling the seal would then accept the values it loaded
+    /// before the last refresh — a snapshot would change the guest's future.
     #[test]
-    fn pvclock_rejected_seal_does_not_canonicalize_the_page() {
+    fn pvclock_seal_never_touches_the_live_page() {
         let mut vmm = pvclock_vmm(
             vec![Exit::Arch(X86Exit::Rdtsc)],
             Box::new(ScriptedWork::at(10)),
@@ -9309,16 +9356,19 @@ mod tests {
             vmm.host_dirty.is_empty(),
             "a rejected seal marked host-dirty state"
         );
-        // And the SAME point seals fine once the vCPU is sealable again —
-        // canonicalizing exactly then.
+        // And a SUCCESSFUL seal at the same point leaves the page equally
+        // untouched — the epoch keeps its mid-run value (r4: sealed verbatim).
         bad.sregs.flags = 0;
         vmm.backend.restore(&bad).unwrap();
         vmm.save_vm_state().unwrap();
         assert_eq!(
-            vtime::pvclock::read(vmm.pvclock_page().unwrap())
-                .unwrap()
-                .seq,
-            0
+            vmm.pvclock_page().unwrap(),
+            page_before.as_slice(),
+            "a successful seal rewrote the live page — the ABA the r4 P1 rules out"
+        );
+        assert!(
+            vmm.host_dirty.is_empty(),
+            "a seal marked host-dirty state — it wrote to guest RAM"
         );
     }
 
@@ -9567,13 +9617,17 @@ mod tests {
             .expect("restored page matches the restored clock");
     }
 
-    /// §1.1: a seal re-stamps the page to canonical form (`seq = 0`) at the
-    /// exact seal values, and a restored sibling continues byte-identically —
-    /// the sealed registration riding the vm_state device blob (v4)
-    /// authoritatively replaces whatever registration the target VM held
-    /// (r3: the direct restore path carries the channel with the state).
+    /// §1.1 as amended at r4: a seal captures the page **verbatim**, so the
+    /// image is a faithful copy of live guest RAM (what the snapshot engine's
+    /// derive path assumes, `control.rs`'s
+    /// `seal_derives_from_tracked_parent_and_reproduces_the_image`) and a
+    /// restored sibling inherits the parent's epoch — the two stay in lockstep
+    /// instead of diverging by a canonicalized-away `seq`. The sealed
+    /// registration riding the vm_state device blob (v4) authoritatively
+    /// replaces whatever registration the target VM held (r3: the direct restore
+    /// path carries the channel with the state).
     #[test]
-    fn pvclock_seal_canonicalizes_and_restore_carries_the_registration() {
+    fn pvclock_seal_is_verbatim_and_restore_carries_the_registration() {
         let mut a = pvclock_vmm(
             vec![Exit::Arch(X86Exit::Rdtsc), Exit::Arch(X86Exit::Rdtsc)],
             Box::new(ScriptedWork::at(10)),
@@ -9583,15 +9637,26 @@ mod tests {
         a.step().unwrap(); // RDTSC at work 10: stamped, seq moved
         let live = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
         assert_ne!(live.seq, 0, "a mid-run refresh bumped the epoch");
-        // Seal: the page canonicalizes (seq 0, same values) inside save_vm_state.
+        let page_before_seal = a.pvclock_page().unwrap().to_vec();
+        // Seal: guest RAM is untouched, so the image IS the live machine.
         let vm_state = a.save_vm_state().unwrap();
-        let sealed = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
-        assert_eq!(sealed.seq, 0, "sealed page is canonical");
-        assert_eq!(
-            (sealed.vns, sealed.guest_clock),
-            (live.vns, live.guest_clock)
-        );
         let image = a.guest_memory().to_vec();
+        assert_eq!(
+            a.pvclock_page().unwrap(),
+            page_before_seal.as_slice(),
+            "the seal rewrote the live page"
+        );
+        assert_eq!(
+            &image[PV_GPA as usize..PV_GPA as usize + PVCLOCK_PAGE_LEN],
+            page_before_seal.as_slice(),
+            "the sealed image must reproduce live guest memory, page included"
+        );
+        let sealed = vtime::pvclock::read(&image[PV_GPA as usize..]).unwrap();
+        assert_eq!(
+            (sealed.seq, sealed.vns, sealed.guest_clock),
+            (live.seq, live.vns, live.guest_clock),
+            "the sealed page carries the live epoch and values verbatim"
+        );
 
         // Restore into a fresh, like-composed VM whose guest even registered a
         // DIFFERENT page first: the blob's sealed registration is
@@ -9863,8 +9928,65 @@ mod tests {
             "pvclock forced refreshes polluted the timer-preemption evidence: {:?}",
             vmm.preemption_landings()
         );
-        // The refreshes themselves DID happen (the page advanced).
+        // The refreshes themselves DID happen (the page advanced)...
         assert_eq!(vmm.pvclock_refreshes().len(), 2);
+        // ...and both landings are ATTRIBUTED to the Δ bound (r4 P1) — the
+        // evidence G3 needs to show the forced refresh, not the guest's tick,
+        // is what kept the page fresh.
+        assert_eq!(vmm.pvclock_forced_landings(), 2);
+        // The window resets with the refresh log, so a gate measures its own.
+        vmm.pvclock_clear_refreshes();
+        assert_eq!(vmm.pvclock_forced_landings(), 0);
+    }
+
+    /// The other half of the attribution (cross-model r4 P1): a landing the
+    /// **periodic timer** caused must NOT count as a Δ forced refresh. Without
+    /// this, `pvclock_forced_landings` would just re-count the 100 Hz tick and
+    /// G3's attribution would be exactly as vacuous as the `max_gap ≤ Δ` check
+    /// it exists to shore up.
+    #[test]
+    fn pvclock_forced_landings_do_not_count_a_timer_tick() {
+        // Δ far away, so the timer is what bounds the entry.
+        const FAR_DELTA: u64 = 100_000_000;
+        let mut exits = arm_timer_exits(1000);
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // arms the Δ deadline
+        exits.push(Exit::Common(CommonExit::Deadline { reached: Moment(0) }));
+        let mut vmm = pvclock_vmm(exits, Box::new(ScriptedWork::new()), 7);
+        vmm.enable_pvclock(FAR_DELTA);
+        vmm.wire_lapic(
+            lapic::Lapic::new(lapic::LapicConfig {
+                apic_id: 0,
+                timer_hz: 24_000_000,
+            })
+            .unwrap(),
+        );
+        ring_pvclock_register(&mut vmm, PV_GPA);
+        for _ in 0..3 {
+            vmm.step().unwrap(); // arm the LAPIC timer
+        }
+        vmm.step().unwrap(); // Rdtsc: a fresh anchor arms the Δ deadline
+        let pv_target = vmm
+            .pvclock_refresh_deadline()
+            .expect("Δ deadline armed off the fresh anchor");
+        let timer_target = vmm.preemption_deadline().expect("the timer is armed");
+        assert!(
+            timer_target.0 < pv_target.0,
+            "precondition: the timer must land FIRST (timer {} vs Δ {})",
+            timer_target.0,
+            pv_target.0
+        );
+        vmm.step().unwrap(); // the landing — caused by the timer
+        assert_eq!(
+            vmm.preemption_landings().len(),
+            1,
+            "a timer landing IS a preemption"
+        );
+        assert_eq!(
+            vmm.pvclock_forced_landings(),
+            0,
+            "a timer-caused landing was miscounted as a Δ forced refresh — G3's attribution \
+             would then be satisfied by the tick alone, exactly the vacuity it must rule out"
+        );
     }
 
     /// The mock's default capabilities, named so the no-deterministic-clock

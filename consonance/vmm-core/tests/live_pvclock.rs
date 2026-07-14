@@ -193,6 +193,22 @@ fn delta_work() -> u64 {
     env_u64("PVCLOCK_DELTA_WORK", PVCLOCK_DEFAULT_DELTA_WORK)
 }
 
+/// The guest's periodic tick interval in counted work units: `CONFIG_HZ=100` ⇒
+/// 10 ms, and the contract clock counts ≈1 work unit per V-time ns (which is why
+/// [`PVCLOCK_DEFAULT_DELTA_WORK`] = 10_000_000 is documented as "≈ 10 ms").
+const GUEST_TICK_WORK: u64 = 10_000_000;
+
+/// **G3's Δ: deliberately BELOW the guest tick** (cross-model r4 P1). At the
+/// default Δ ≈ 10 ms the 100 Hz tick already forces a `Deadline` — and hence a
+/// page refresh — about every 10 ms, so `max_gap ≤ Δ` would hold with the
+/// forced-refresh deadline *deleted* and the gate would pass vacuously. A Δ of
+/// one tenth of a tick cannot be met by the tick: ten of every eleven refreshes
+/// must come from the Δ bound itself, and [`Vmm::pvclock_forced_landings`]
+/// counts them, so G3 now fails in both ways if the mechanism is removed.
+fn g3_delta_work() -> u64 {
+    env_u64("PV_G3_DELTA_WORK", GUEST_TICK_WORK / 10)
+}
+
 fn base_cmdline() -> String {
     std::env::var("BOOT_CMDLINE").unwrap_or_else(|_| DEFAULT_CMDLINE.to_string())
 }
@@ -206,6 +222,18 @@ fn hex(d: &[u8; 32]) -> String {
 /// and offers the page host-side (`enable_pvclock`). One body, one knob — the
 /// A/B arms cannot drift apart in wiring.
 fn boot(kernel: &[u8], initramfs: &[u8], seed: u64, page_on: bool) -> DynVmm {
+    boot_with_delta(kernel, initramfs, seed, page_on, delta_work())
+}
+
+/// [`boot`] with an explicit Δ — G3 runs below the guest tick (see
+/// [`g3_delta_work`]); every other gate takes the documented default.
+fn boot_with_delta(
+    kernel: &[u8],
+    initramfs: &[u8],
+    seed: u64,
+    page_on: bool,
+    delta: u64,
+) -> DynVmm {
     let cmdline = if page_on {
         format!("{} harmony_pvclock", base_cmdline())
     } else {
@@ -221,7 +249,7 @@ fn boot(kernel: &[u8], initramfs: &[u8], seed: u64, page_on: bool) -> DynVmm {
     )
     .expect("patched Linux boot — needs the LOADED patched KVM + perf + det-cfl-v1 host");
     if page_on {
-        vmm.enable_pvclock(delta_work());
+        vmm.enable_pvclock(delta);
     }
     vmm
 }
@@ -577,10 +605,18 @@ fn g2_page_matches_trap_oracle_at_refresh_moments() {
 /// spins on `date +%s` (clock_gettime → the pvclock clocksource → the page)
 /// until 2 virtual seconds elapse — pure compute, no timer sleep — which can
 /// only complete if the §2.4 staleness-bound forced refresh keeps advancing
-/// the page. Asserts completion AND that no gap between consecutive refresh
-/// anchors exceeded Δ. (The frozen-page failure mode is covered by the
-/// portable deliberate-fault test; a frozen page here would time out the
-/// spin, failing loudly by construction.)
+/// the page. Asserts completion, that no gap between consecutive refresh anchors
+/// exceeded Δ, AND that the refreshes are actually **attributable to the Δ
+/// deadline**.
+///
+/// **Non-vacuity** (cross-model r4 P1). This guest's 100 Hz tick forces a
+/// `Deadline` — and so a refresh — every ~10 ms all by itself, which is also the
+/// *default* Δ: at that Δ the gap assertion would hold with the forced-refresh
+/// deadline deleted, and the gate would prove nothing. Two changes close that:
+/// G3 runs at [`g3_delta_work`] (one tenth of a tick — a bound the tick cannot
+/// meet), and it asserts [`Vmm::pvclock_forced_landings`] — landings at which
+/// neither the timer nor an arrival was due — dominate the window. Delete
+/// `pvclock_refresh_deadline` and both assertions fail.
 #[test]
 #[ignore = "box-only (see g0); needs initramfs-exec.cpio.gz + INITRAMFS_EXEC_SHA256; run g0 first"]
 fn g3_busy_wait_on_page_time_terminates_within_delta() {
@@ -588,9 +624,14 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
     require_host_baseline();
     let kernel = pvclock_kernel();
     let initramfs = exec_initramfs();
-    let delta = delta_work();
+    let delta = g3_delta_work();
+    assert!(
+        delta < GUEST_TICK_WORK,
+        "G3's Δ ({delta}) must be strictly below the guest tick ({GUEST_TICK_WORK}), else the \
+         periodic tick alone satisfies the gap bound and the gate is vacuous"
+    );
 
-    let mut vmm = boot(&kernel, &initramfs, SEED, true);
+    let mut vmm = boot_with_delta(&kernel, &initramfs, SEED, true, delta);
     // Boot to the interactive shell (GUEST_READY on the console), checking
     // the serial only periodically (a byte-scan per step would be O(n²)).
     let obs = run_bounded(
@@ -668,16 +709,34 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
         .map(|p| p[1].0.saturating_sub(p[0].0))
         .max()
         .expect("len >= 2 checked above");
+    // ATTRIBUTION (r4 P1): how many of those refreshes did the Δ deadline
+    // itself force — as opposed to the guest's periodic tick, which refreshes
+    // the page for free every ~10 ms and would otherwise carry this gate?
+    let forced = vmm.pvclock_forced_landings();
+    let refreshes = window.len() as u64;
     eprintln!(
-        "[REPORT] G3: spin completed (status {:?}), {} refreshes in the window, max anchor gap \
-         {max_gap} (Δ = {delta}). RESULT: {}",
+        "[REPORT] G3: spin completed (status {:?}), {refreshes} refreshes in the window, \
+         {forced} of them forced by the Δ deadline (tick ≈ {GUEST_TICK_WORK} work, \
+         Δ = {delta}), max anchor gap {max_gap}. RESULT: {}",
         outcome.status,
-        window.len(),
-        if max_gap <= delta { "PASS" } else { "FAIL" }
+        if max_gap <= delta && forced * 2 >= refreshes {
+            "PASS"
+        } else {
+            "FAIL"
+        }
     );
     assert!(
         max_gap <= delta,
         "a refresh gap of {max_gap} work units exceeded Δ = {delta}"
+    );
+    // At Δ = tick/10 the staleness bound must supply the large majority of the
+    // refreshes. A window the tick could have carried on its own is not evidence
+    // that the forced refresh works — it is the vacuity this assertion rules out.
+    assert!(
+        forced * 2 >= refreshes,
+        "only {forced} of {refreshes} refreshes were attributable to the Δ deadline (Δ = {delta}, \
+         tick ≈ {GUEST_TICK_WORK}) — the periodic tick, not the staleness bound, kept this page \
+         fresh, so G3 proves nothing about the forced refresh"
     );
 }
 
