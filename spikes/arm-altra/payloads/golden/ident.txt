@@ -1,0 +1,15 @@
+PAYLOAD ident START
+ID midr=<hex>
+ID id_aa64isar0=<hex>
+ID id_aa64mmfr0=<hex>
+ID id_aa64dfr0=<hex>
+ID id_aa64pfr0=<hex>
+ID pmceid0=<hex>
+CAP lse=<n> expect=present
+CAP ecv=<n> expect=absent
+CAP pmuver=<n> expect=nonzero
+CAP sve=<n> expect=absent
+CAP br_retired_implemented=<n> expect=1
+OK ident-reported
+PAYLOAD ident PASS
+PAYLOAD EXIT 0

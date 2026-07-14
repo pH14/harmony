@@ -1,0 +1,7 @@
+PAYLOAD branch-dense START
+PARAMS mode=self-seeded scale=smoke seed=0x5eed5eed5eed5eed
+WINDOW trips=1000
+ACC value=0x4433
+OK window-complete
+PAYLOAD branch-dense PASS
+PAYLOAD EXIT 0

@@ -25,7 +25,8 @@ use arm_harness::elf::Elf;
 use arm_harness::scan::{HitKind, scan};
 use arm_harness::verify::verify;
 use clap::{Parser, Subcommand};
-use oracle_model::{ALL_PAYLOADS, Payload};
+use oracle_model::{ALL_PAYLOADS, ALL_SCALES, Payload, expected};
+use serde::Serialize;
 
 #[derive(Parser)]
 #[command(
@@ -57,6 +58,73 @@ enum Command {
         /// The ELF to scan.
         image: PathBuf,
     },
+    /// Emit the per-payload expected-count manifest as stable JSON.
+    Manifest,
+}
+
+/// The expected-count manifest — one entry per (payload, scale).
+///
+/// This is deliverable 1's "machine-readable expected-count manifest per payload,
+/// with the derivation documented". It carries the count decomposition with the
+/// four ambiguity weights left **as unknowns**: `certain_taken` is exact, the
+/// `*_count` fields say how many times each unknown-weight event occurs, and there
+/// is deliberately **no total** — a total needs measured weights, and those are
+/// stage AA-1's to produce, never this apparatus's to assume. The manifest is what
+/// silicon's measurements are checked against; before silicon it is the derivation,
+/// written down and generator-tested.
+#[derive(Serialize)]
+struct ManifestEntry {
+    payload: String,
+    scale: String,
+    seed: u64,
+    trips: u64,
+    /// Taken branches known exactly, no unknowns.
+    certain_taken: u64,
+    /// Occurrences of each unknown-weight event.
+    exception_entry_count: u64,
+    exception_return_count: u64,
+    svc_count: u64,
+    wfi_count: u64,
+    /// The window's constant offset is itself a measured unknown (AA-1(a)).
+    window_offset: &'static str,
+    /// Whether the count includes a term the payload can only report at runtime.
+    has_reported_term: bool,
+    /// The window's branch instructions, in address order.
+    inline_branches: Vec<String>,
+}
+
+fn emit_manifest() -> Result<(), String> {
+    let mut entries = Vec::new();
+    for payload in ALL_PAYLOADS {
+        if !payload.has_window() {
+            continue;
+        }
+        for scale in ALL_SCALES {
+            let e = expected(payload, scale, oracle_model::DEFAULT_SEED);
+            entries.push(ManifestEntry {
+                payload: payload.name().to_string(),
+                scale: scale.name().to_string(),
+                seed: e.seed,
+                trips: e.trips,
+                certain_taken: e.certain_taken,
+                exception_entry_count: e.exception_entries,
+                exception_return_count: e.exception_returns,
+                svc_count: e.svc_instructions,
+                wfi_count: e.wfi_instructions,
+                window_offset: "measured-AA-1 (unknown pre-silicon)",
+                has_reported_term: e.has_reported_term,
+                inline_branches: e
+                    .inline_branch_seq
+                    .iter()
+                    .map(|b| format!("{b:?}"))
+                    .collect(),
+            });
+        }
+    }
+    let json =
+        serde_json::to_string_pretty(&entries).map_err(|e| format!("serialize manifest: {e}"))?;
+    println!("{json}");
+    Ok(())
 }
 
 fn load(path: &Path) -> Result<Elf, String> {
@@ -156,6 +224,7 @@ fn run() -> Result<(), String> {
             expect_present,
         } => scan_exclusives(&image, expect_present),
         Command::CounterReads { image } => scan_counter_reads(&image),
+        Command::Manifest => emit_manifest(),
     }
 }
 
