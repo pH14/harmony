@@ -2190,6 +2190,25 @@ where
             && self.backend.capabilities().arch.deterministic_clock()
     }
 
+    /// Is a doorbell `service` id **offered** by this composition? The generic
+    /// dispatcher contract (INTEGRATION.md §1) is that an unoffered service
+    /// answers `UnknownService` for **any** request — before opcode or payload
+    /// classification, so a composition that keeps the doorbell alive for one
+    /// channel never advertises another by grading its requests `UnknownOpcode`
+    /// (cross-model r7 P2). Each arm below already checks availability for its
+    /// `op == 1`; this is the single source of truth the fall-through shares so
+    /// a bad opcode is gated the same way.
+    fn doorbell_service_offered(&self, service: u16) -> bool {
+        match service {
+            s if s == ServiceId::Event as u16 => self.sdk.is_some(),
+            s if s == ServiceId::Sdk as u16 => self.sdk.is_some(),
+            s if s == ServiceId::Net as u16 => self.net.is_some(),
+            s if s == ServiceId::Entropy as u16 => self.sdk.is_some() || self.net.is_some(),
+            s if s == ServiceId::Pvclock as u16 => self.pvclock_available(),
+            _ => false,
+        }
+    }
+
     /// The registered pvclock page GPA, or `None` when the guest has not
     /// published one (or the page is not offered).
     pub fn pvclock_registration(&self) -> Option<u64> {
@@ -2458,7 +2477,7 @@ where
     }
 
     /// Register the guest-published pvclock page: validate the GPA, record it,
-    /// and stamp the page to **canonical form** at the current skid-free
+    /// and stamp the page to **canonical form** at the existing skid-free
     /// anchor (a deterministic baseline regardless of what the guest left in
     /// those bytes). Returns the doorbell `Status` + the ABI version to
     /// answer. Gated on the determinism-complete path — a stock/M1/M2
@@ -2470,11 +2489,21 @@ where
     /// re-registration — same GPA or not — is a guest fault, rejected with
     /// `BadRequest` and touching nothing. The stamping target never moves.
     ///
-    /// The Δ forced refresh does not arm off this boundary: a doorbell `OUT`
-    /// is not a V-time intercept, so the anchor here may be stale, and an
-    /// `anchor + Δ` armed stale could be already overdue — whose zero-step
-    /// would adopt a live PMU count (the r2 P1). The first arm waits for a
-    /// deterministic clock advance ([`PvclockChannel::first_advance_seen`]).
+    /// **Deterministic-anchor immediate arm (cross-model r7 P1, foreman-ruled).**
+    /// The doorbell `OUT` is a plain PIO exit, **not** a V-time intercept — on
+    /// real patched KVM the work counter read at a PIO carries exit-path skid
+    /// (the same reason this module treats a live `work()` read at a non-intercept
+    /// boundary as skid-tainted, task-27 O1). So registration does **not** read
+    /// live work, does **not** update `last_intercept_work`, and does **not** mark
+    /// V-time synchronized (an r5/r6 mistake that would publish nondeterministic
+    /// page bytes and arm a nondeterministic Δ target). It stamps and arms off the
+    /// **existing** `last_intercept_work` — deterministic, staleness-bounded by
+    /// the same one-window contract as any refresh. The Δ deadline
+    /// ([`Vmm::pvclock_refresh_deadline`]) therefore arms **immediately** at
+    /// `last_intercept_work + Δ`; if that target is already in the past, the
+    /// existing overdue `Deadline` handling forces the guest out and advances the
+    /// anchor with no fresh live read. Liveness is preserved (a register-then-spin
+    /// guest is still forced out) with zero skid-tainted reads.
     fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
         if !self.pvclock_available() {
             return (Status::UnknownService, None);
@@ -2485,52 +2514,13 @@ where
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
-        // ENFORCED DETERMINISTIC FIRST-ARM (cross-model r5 P1). Anchor V-time
-        // HERE, from a fresh work read, exactly as an RDTSC intercept does
-        // (`complete_tsc`): the doorbell `OUT` is an instruction-caused,
-        // synchronous exit — the same class as RDTSC, not an asynchronous
-        // boundary — so the counter is frozen at the instruction and the read is
-        // exact, not skid-laden.
-        //
-        // This is what makes the Δ refresh arm at registration and not one
-        // guest-trap later. Without it, `anchor + Δ` had to wait for the guest to
-        // take some *other* intercept, because an arm off a STALE anchor could be
-        // born already overdue and the backend's overdue zero-step reports a live
-        // PMU count (the r2 P1). A guest that registers and immediately busy-waits
-        // on the page — no timer, no RDTSC, no MSR — would then never be forced
-        // out at all, and its page would stay frozen forever. The reference kernel
-        // hides that by executing an `rdtsc` right after registering, but the
-        // **public protocol must not depend on the guest doing us a favour**.
-        //
-        // With a fresh anchor the invariant that retires the overdue case is
-        // established at registration and self-maintaining thereafter: every entry
-        // is `run_until`-bounded at or before `anchor + Δ`, and a bounded entry
-        // cannot overshoot its target, so the guest's work is always ≤ the armed
-        // target and no pvclock deadline is ever born overdue.
-        let work = match self.vtime.as_ref().expect("checked above").work.work() {
-            Ok(w) => w,
-            // The counter is the substrate; a failed read is breakage, not a
-            // guest error. Answer Internal and register nothing.
-            Err(_) => return (Status::Internal, None),
-        };
-        {
-            let vt = self.vtime.as_mut().expect("checked above");
-            vt.last_intercept_work = work;
-        }
-        // The doorbell `OUT` is now treated as an exact V-time boundary (we just
-        // anchored to its frozen work count), so V-time IS synchronized here —
-        // exactly as `complete_tsc` sets it after an RDTSC (cross-model r6 P2).
-        // A `step()` clears this flag before entry, so without restoring it a
-        // direct caller that registers and then snapshots gets a spurious
-        // `NotQuiescent`, even though the point is as synchronized as any RDTSC
-        // boundary.
-        self.vtime_synchronized = true;
         {
             let pv = self.pvclock.as_mut().expect("checked above");
             pv.gpa = Some(gpa);
         }
-        // Canonical initial stamp at that fresh anchor — a total function of the
-        // clock values, never of whatever the guest's allocator left in the page.
+        // Canonical initial stamp at the EXISTING deterministic anchor — a total
+        // function of the clock values there, never of whatever the guest's
+        // allocator left in the page, and never of a skid-tainted PIO read.
         match self.pvclock_stamp(StampKind::Canonical) {
             Ok(()) => (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION)),
             // A stamp failure here is a validated-GPA slice failing to
@@ -2644,21 +2634,19 @@ where
     /// out — and the page re-stamped — within Δ. `None` without a
     /// registration, so every existing path arms exactly as before.
     ///
-    /// **Armed from the moment of registration** (cross-model r5 P1). It used to
-    /// wait for the guest's next *other* intercept, because an arm off a stale
-    /// anchor could be born already overdue and the backend's overdue zero-step
-    /// reports a live PMU count — nondeterminism straight into hashed guest RAM
-    /// (the r2 P1). But a guest that registers and immediately busy-waits on the
-    /// page takes no other intercept, so it would never be forced out and its
-    /// page would stay frozen: the mechanism's headline case, broken, and masked
-    /// only by the reference kernel's courtesy `rdtsc`.
-    ///
-    /// [`pvclock_register`](Self::pvclock_register) now anchors V-time from a
-    /// fresh work read (the doorbell `OUT` is a synchronous instruction trap,
-    /// like RDTSC), so the arm is **never** off a stale anchor and the overdue
-    /// case is retired by an invariant instead of by a delay: the guest's work is
-    /// always ≤ the armed target, because every entry is `run_until`-bounded at
-    /// or before it and a bounded entry cannot overshoot.
+    /// **Armed immediately at registration, off the deterministic anchor**
+    /// (cross-model r7 P1, superseding the r5 fresh-read arm). The target is
+    /// `last_intercept_work + Δ` — a pure function of the *existing* deterministic
+    /// anchor, never of a skid-tainted PIO read (the r7 P1 fix: the doorbell `OUT`
+    /// is not a V-time intercept, so reading live work there would leak
+    /// nondeterminism into the armed target and thence into hashed guest RAM).
+    /// A guest that registers and immediately busy-waits on the page still gets
+    /// forced out, because the deadline is live the moment the page is registered
+    /// — no wait for another intercept, no dependence on the reference kernel's
+    /// courtesy `rdtsc`. If the anchor is stale enough that `anchor + Δ` is
+    /// already in the past, the existing overdue `Deadline` handling forces the
+    /// guest out at the next `run_until` and advances the anchor; the staleness is
+    /// bounded by Δ, the same one-window contract as any refresh.
     pub(crate) fn pvclock_refresh_deadline(&self) -> Option<Moment> {
         let pv = self.pvclock.as_ref()?;
         pv.gpa?;
@@ -3084,80 +3072,36 @@ where
                 .unwrap_or(0);
             return (m, None);
         }
-        // Any other service/opcode: the SDK demo rings Event / Sdk / Entropy, so
-        // this is unreached in practice. Answer a clean UnknownOpcode for a known
-        // service, and a clean UnknownService (echoing the raw service id) for an
-        // unrecognized one — never a silent drop (the guest transport reads an
-        // unwritten response page as a host rejection and hangs, violating the
-        // hypercall error contract). A fuller campaign wiring Console/Block
-        // registers them here.
-        if header.service == ServiceId::Event as u16 {
-            let n = encode_response(
-                ServiceId::Event,
+        // Any other service/opcode. Two rules, in order (cross-model r7 P2):
+        // (1) AVAILABILITY BEFORE OPCODE — an unoffered service answers
+        //     `UnknownService` for any opcode, so a composition that keeps the
+        //     doorbell alive for one channel never advertises another by grading
+        //     a bad opcode `UnknownOpcode`. This gates every known service the
+        //     same way its `op == 1` arm already does.
+        // (2) A KNOWN, OFFERED service with a bad opcode answers `UnknownOpcode`;
+        //     an entirely unrecognized service id echoes the raw fields as
+        //     `UnknownService` (round-9 P2).
+        // Never a silent drop — the guest reads an unwritten response page as a
+        // host rejection and hangs, violating the hypercall error contract.
+        let known = matches!(
+            header.service,
+            s if s == ServiceId::Event as u16
+                || s == ServiceId::Sdk as u16
+                || s == ServiceId::Net as u16
+                || s == ServiceId::Entropy as u16
+                || s == ServiceId::Pvclock as u16
+        );
+        if known && self.doorbell_service_offered(header.service) {
+            let n = encode_error(
+                header.service,
                 header.opcode,
                 header.seq,
                 Status::UnknownOpcode,
-                &[],
                 resp,
-            )
-            .unwrap_or(0);
-            (n, None)
-        } else if header.service == ServiceId::Sdk as u16 {
-            let n = encode_response(
-                ServiceId::Sdk,
-                header.opcode,
-                header.seq,
-                Status::UnknownOpcode,
-                &[],
-                resp,
-            )
-            .unwrap_or(0);
-            (n, None)
-        } else if header.service == ServiceId::Net as u16 {
-            // Net is a KNOWN service (op 1 handled above), so a bad opcode is
-            // `UnknownOpcode`, not the `UnknownService` fall-through — consistent
-            // with the Event/Sdk/Entropy arms (task 61).
-            let n = encode_response(
-                ServiceId::Net,
-                header.opcode,
-                header.seq,
-                Status::UnknownOpcode,
-                &[],
-                resp,
-            )
-            .unwrap_or(0);
-            (n, None)
-        } else if header.service == ServiceId::Entropy as u16 {
-            // Entropy is a KNOWN service (op 1 handled above), so a bad opcode is
-            // `UnknownOpcode`, not the `UnknownService` fall-through below (round-10
-            // P3 — consistent with the Event/Sdk arms).
-            let n = encode_response(
-                ServiceId::Entropy,
-                header.opcode,
-                header.seq,
-                Status::UnknownOpcode,
-                &[],
-                resp,
-            )
-            .unwrap_or(0);
-            (n, None)
-        } else if header.service == ServiceId::Pvclock as u16 {
-            // Pvclock is a KNOWN service (op 1 handled above), so a bad opcode
-            // is `UnknownOpcode` — consistent with the other known services.
-            let n = encode_response(
-                ServiceId::Pvclock,
-                header.opcode,
-                header.seq,
-                Status::UnknownOpcode,
-                &[],
-                resp,
-            )
-            .unwrap_or(0);
+            );
             (n, None)
         } else {
-            // An unrecognized service id: no `ServiceId` variant represents it, so
-            // echo the raw fields via `encode_error` (round-9 P2) — the guest gets
-            // a correlatable `UnknownService` frame instead of a hang.
+            // Unoffered known service OR an unrecognized id: both `UnknownService`.
             let n = encode_error(
                 header.service,
                 header.opcode,
@@ -9574,27 +9518,41 @@ mod tests {
         );
     }
 
-    /// Registration is a synchronized V-time boundary (cross-model r6 P2): it
-    /// anchors to the frozen doorbell-`OUT` work count exactly like an RDTSC, so
-    /// a direct caller can snapshot immediately after a successful registration
-    /// rather than getting a spurious `NotQuiescent`.
+    /// Registration is NOT a synchronized V-time boundary (cross-model r7 P1,
+    /// reverting the r6 P2 mistake): the doorbell `OUT` is a plain PIO exit, not a
+    /// skid-corrected intercept, so it must not set `vtime_synchronized` — doing
+    /// so would let a caller snapshot off a skid-tainted anchor. A registration
+    /// that lands with V-time unsynchronized leaves it unsynchronized; a snapshot
+    /// there is correctly refused `NotQuiescent` until a real intercept.
     #[test]
-    fn pvclock_registration_is_a_synchronized_snapshot_point() {
+    fn pvclock_registration_does_not_synchronize_off_the_pio() {
         let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::at(10)), 7);
-        // Force the flag to the mid-entry state a real `step()` would leave, so
-        // the test proves registration RESTORES it rather than merely inheriting
-        // a stale `true`.
+        // The mid-entry state a real `step()` leaves before servicing a PIO exit.
         vmm.vtime_synchronized = false;
         let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
         assert!(
-            vmm.vtime_synchronized,
-            "registration left V-time unsynchronized — a snapshot right here would be refused \
-             NotQuiescent despite the anchor being exact"
+            !vmm.vtime_synchronized,
+            "registration marked V-time synchronized off a PIO — the skid-tainted anchor the r7 \
+             P1 fix rules out"
         );
-        // And a seal at this exact point succeeds (the observable consequence).
-        vmm.save_vm_state()
-            .expect("snapshot immediately after registration must succeed");
+        // And a snapshot right here is refused (the observable consequence): the
+        // exact V-time a restored TSC would resume from is known only at an
+        // intercept, which the doorbell OUT is not.
+        assert!(
+            matches!(vmm.save_vm_state(), Err(VmmError::ContractViolation(_))),
+            "a snapshot immediately after a PIO registration must be NotQuiescent"
+        );
+        // A subsequent real RDTSC intercept synchronizes, and THEN a seal works.
+        let mut vmm2 = pvclock_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(10)),
+            7,
+        );
+        ring_pvclock_register(&mut vmm2, PV_GPA);
+        vmm2.step().unwrap(); // the RDTSC: a real intercept
+        vmm2.save_vm_state()
+            .expect("a snapshot at a real intercept after registration succeeds");
     }
 
     /// The §2 point-1 natural-exit refresh runs at NON-intercept exits too
@@ -9779,15 +9737,13 @@ mod tests {
         let f = vtime::pvclock::read(vmm.pvclock_page().unwrap()).unwrap();
         assert_eq!((f.guest_clock, f.seq), (25, seq_before));
 
-        // The refresh log holds exactly ONE entry: the TSC_ADJUST publish. Since
-        // r5 the registration anchors V-time from a fresh work read and stamps
-        // there, so the page already published (vns 10, clock 20) before step 1 —
-        // and step 1's RDTSC refresh is therefore a value-keyed byte no-op, which
-        // by design is not a publish and not logged. (The registration's own
-        // canonical stamp is not a refresh entry either.) The page's agreement
-        // with the trap oracle at every step is asserted above, and by
-        // `pvclock_check_oracle`; the log records *changes*, and there was one.
-        assert_eq!(vmm.pvclock_refreshes(), &[(10, 10, 25)]);
+        // The refresh log records the two distinct-value publishes: step 1's
+        // RDTSC (anchor 10 → vns 10, clock 20) and step 2's TSC_ADJUST (clock
+        // 25). Since r7 the registration stamps at the EXISTING deterministic
+        // anchor (not a fresh PIO read), which differs from the work-10 values,
+        // so step 1's RDTSC is a genuine publish rather than a value-keyed no-op.
+        // (The registration's own canonical stamp is not a refresh-log entry.)
+        assert_eq!(vmm.pvclock_refreshes(), &[(10, 10, 20), (10, 10, 25)]);
     }
 
     /// G2's evidence-integrity bar (the deliberate-fault test the task spec
@@ -10257,6 +10213,27 @@ mod tests {
             entropy_before,
             "an unoffered entropy ask advanced the shared seeded stream"
         );
+
+        // AVAILABILITY BEFORE OPCODE (cross-model r7 P2): a **non-1** opcode for
+        // an unoffered service must ALSO answer `UnknownService`, not
+        // `UnknownOpcode` — grading the opcode of an unoffered service leaks that
+        // the service id is known. Event/Sdk/Net/Entropy all share the structure.
+        for (svc, name) in [
+            (ServiceId::Event, "Event"),
+            (ServiceId::Sdk, "Sdk"),
+            (ServiceId::Net, "Net"),
+            (ServiceId::Entropy, "Entropy"),
+        ] {
+            let n = hypercall_proto::encode_request(svc, 1, 7, &[], &mut frame).unwrap();
+            let (step, status) = ring(&mut vmm, &frame[..n]);
+            assert_eq!(
+                status,
+                Status::UnknownService as u16,
+                "{name} opcode 7 on a pvclock-only VM must be UnknownService (unoffered), not \
+                 UnknownOpcode — that would advertise the service"
+            );
+            assert_eq!(step, Step::Continued);
+        }
 
         // The pvclock service itself still works on the same composition.
         let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);

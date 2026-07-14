@@ -921,21 +921,36 @@ fn n4_perf_postgres_window_page_off_vs_page_on() {
     };
     let (off_rdtsc, off_total, off_vns) = arm(false);
     let (on_rdtsc, on_total, on_vns) = arm(true);
-    let per_vsec = |n: u64, vns: u64| n as f64 / (vns.max(1) as f64 / 1e9);
+    // DENOMINATOR = the exact predetermined `window` (cross-model r7 P2), NOT each
+    // arm's measured `effective_vns()`. After the run stops, V-time is not
+    // synchronized and `effective_vns()` is only a last-intercept LOWER BOUND —
+    // and its bias is NOT common-mode, because page-off takes the very clocksource
+    // RDTSC exits page-on removes, so the two arms' lower bounds are stale by
+    // different amounts. Dividing by a single predetermined interval both arms ran
+    // *past* (`vns >= window` asserted above) removes that differential bias; the
+    // ratio is then the pure exit-count ratio. Each arm slightly overshoots
+    // `window` (the periodic ~1000-step boundary check), page-on by a little more
+    // (fewer exits/vsec ⇒ coarser granularity), which only *understates* the
+    // reduction — the conservative direction for the kill-condition verdict.
+    let window_secs = window as f64 / 1e9;
+    let per_vsec = |n: u64| n as f64 / window_secs;
     eprintln!(
-        "[REPORT] pg window page-OFF: rdtsc={off_rdtsc} ({:.0}/vsec) total={off_total} vns={off_vns}",
-        per_vsec(off_rdtsc, off_vns)
+        "[REPORT] pg window page-OFF: rdtsc={off_rdtsc} ({:.0}/vsec over the {window}-vns window) \
+         total={off_total} measured_vns={off_vns}",
+        per_vsec(off_rdtsc)
     );
     eprintln!(
-        "[REPORT] pg window page-ON:  rdtsc={on_rdtsc} ({:.0}/vsec) total={on_total} vns={on_vns}",
-        per_vsec(on_rdtsc, on_vns)
+        "[REPORT] pg window page-ON:  rdtsc={on_rdtsc} ({:.0}/vsec over the {window}-vns window) \
+         total={on_total} measured_vns={on_vns}",
+        per_vsec(on_rdtsc)
     );
     eprintln!(
-        "[REPORT] pg window: rdtsc-exit-rate reduction = {:.2}x (kill condition 3 threshold: 2x)",
-        per_vsec(off_rdtsc, off_vns) / per_vsec(on_rdtsc, on_vns).max(f64::MIN_POSITIVE)
+        "[REPORT] pg window: rdtsc-exit-rate reduction = {:.2}x over the exact {window}-vns \
+         interval (kill condition 3 threshold: 2x)",
+        per_vsec(off_rdtsc) / per_vsec(on_rdtsc).max(f64::MIN_POSITIVE)
     );
     assert!(
-        off_rdtsc > 0 && off_vns > 0 && on_vns > 0,
-        "not a real measurement"
+        off_rdtsc > 0,
+        "not a real measurement (page-off took no RDTSC exits)"
     );
 }
