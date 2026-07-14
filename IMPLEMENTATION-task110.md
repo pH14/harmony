@@ -70,6 +70,16 @@ timer/arrival deadline was actually due), and the reference
 `PvclockRegistrar` enforces the one-shot exactly like production
 (`BadRequest` on any second register, ordered before the range check).
 
+**ABI coordination (ruled on PR #108 r9, folded into r3):** ABI-v1 `flags`
+bit 1 = `WORK_DERIVED` — set by every real stamp (`vtime::pvclock` publishes
+`MATERIALIZED | WORK_DERIVED`; canonical re-stamps included; remaining bits
+reserved-zero), verified by `pvclock_check_oracle`, and amended into
+`docs/PARAVIRT-CLOCK.md` §1. The ARM spike's static placeholder page
+deliberately leaves the bit clear, so AA-5 fails closed against a page
+nothing is actually deriving. The guest kernel's `MATERIALIZED` check is
+unaffected (bit 0 unchanged) — the committed kernel image and MANIFEST stay
+valid.
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/

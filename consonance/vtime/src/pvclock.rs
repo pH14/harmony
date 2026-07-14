@@ -53,6 +53,20 @@ pub const PVCLOCK_PAGE_LEN: usize = 4096;
 /// interpolate against a live counter). Always set for ABI v1.
 pub const PVCLOCK_FLAG_MATERIALIZED: u32 = 1;
 
+/// `flags` bit 1: the values are **work-derived** — computed from the
+/// deterministic work counter by a real stamping path, never a placeholder.
+/// Set by every stamp this module writes; the ARM vendor spike's *static
+/// placeholder page* deliberately leaves it clear, so the AA-5 gate (and any
+/// consumer that requires it) fails closed against a page nothing is
+/// actually deriving. (Ruled at the PR #108 r9 / PR #110 coordination,
+/// 2026-07-14.)
+pub const PVCLOCK_FLAG_WORK_DERIVED: u32 = 1 << 1;
+
+/// The full ABI-v1 flags word every real stamp publishes
+/// ([`PVCLOCK_FLAG_MATERIALIZED`] | [`PVCLOCK_FLAG_WORK_DERIVED`]); remaining
+/// bits reserved-zero.
+pub const PVCLOCK_FLAGS_V1: u32 = PVCLOCK_FLAG_MATERIALIZED | PVCLOCK_FLAG_WORK_DERIVED;
+
 /// Byte offset of `abi_version: u32` (little-endian, like every field).
 pub const ABI_VERSION_OFF: usize = 0x00;
 /// Byte offset of `seq: u32` — the seqlock counter (odd ⇒ update in progress).
@@ -86,7 +100,7 @@ pub struct PvclockFields {
     pub guest_clock: u64,
     /// Counter frequency in Hz.
     pub guest_clock_hz: u64,
-    /// Flag bits ([`PVCLOCK_FLAG_MATERIALIZED`]).
+    /// Flag bits ([`PVCLOCK_FLAG_MATERIALIZED`] | [`PVCLOCK_FLAG_WORK_DERIVED`]).
     pub flags: u32,
     /// vCPU index (pinned 0 for ABI v1).
     pub vcpu_index: u32,
@@ -130,7 +144,7 @@ pub fn published(page: &[u8], vns: u64, guest_clock: u64, guest_clock_hz: u64) -
         && get_u64(page, VNS_OFF) == vns
         && get_u64(page, GUEST_CLOCK_OFF) == guest_clock
         && get_u64(page, GUEST_CLOCK_HZ_OFF) == guest_clock_hz
-        && get_u32(page, FLAGS_OFF) == PVCLOCK_FLAG_MATERIALIZED
+        && get_u32(page, FLAGS_OFF) == PVCLOCK_FLAGS_V1
         && get_u32(page, VCPU_INDEX_OFF) == 0
 }
 
@@ -168,7 +182,7 @@ pub fn stamp(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_hz: u64) -
     put_u64(page, VNS_OFF, vns);
     put_u64(page, GUEST_CLOCK_OFF, guest_clock);
     put_u64(page, GUEST_CLOCK_HZ_OFF, guest_clock_hz);
-    put_u32(page, FLAGS_OFF, PVCLOCK_FLAG_MATERIALIZED);
+    put_u32(page, FLAGS_OFF, PVCLOCK_FLAGS_V1);
     put_u32(page, VCPU_INDEX_OFF, 0);
     // seq ← odd + 1 (even: stable, one epoch newer). Wrapping: a u32 epoch
     // rolling over is deterministic and the reader only compares equality.
@@ -200,7 +214,7 @@ pub fn stamp_canonical(page: &mut [u8], vns: u64, guest_clock: u64, guest_clock_
     put_u64(&mut canonical, VNS_OFF, vns);
     put_u64(&mut canonical, GUEST_CLOCK_OFF, guest_clock);
     put_u64(&mut canonical, GUEST_CLOCK_HZ_OFF, guest_clock_hz);
-    put_u32(&mut canonical, FLAGS_OFF, PVCLOCK_FLAG_MATERIALIZED);
+    put_u32(&mut canonical, FLAGS_OFF, PVCLOCK_FLAGS_V1);
     // vcpu_index = 0, reserved tail = 0 — already the zeroed default.
     if page[..PVCLOCK_PAGE_LEN] == canonical {
         return false;
@@ -271,13 +285,13 @@ mod tests {
             page[GUEST_CLOCK_HZ_OFF..GUEST_CLOCK_HZ_OFF + 8],
             2_000_000_000u64.to_le_bytes()
         );
-        assert_eq!(page[FLAGS_OFF..FLAGS_OFF + 4], 1u32.to_le_bytes());
+        assert_eq!(page[FLAGS_OFF..FLAGS_OFF + 4], 3u32.to_le_bytes());
         assert_eq!(page[VCPU_INDEX_OFF..VCPU_INDEX_OFF + 4], 0u32.to_le_bytes());
         let f = read(&page).expect("stable frame");
         assert_eq!(f.vns, 0x1122_3344_5566_7788);
         assert_eq!(f.guest_clock, 0xAABB_CCDD_EEFF_0011);
         assert_eq!(f.guest_clock_hz, 2_000_000_000);
-        assert_eq!(f.flags, PVCLOCK_FLAG_MATERIALIZED);
+        assert_eq!(f.flags, PVCLOCK_FLAGS_V1);
         assert_eq!(f.vcpu_index, 0);
         // First publish from a zeroed page: 0 → 1 → 2.
         assert_eq!(f.seq, 2);
@@ -355,7 +369,7 @@ mod tests {
         // `published` no longer holds, so the next stamp re-publishes and
         // repairs the fixed fields.
         assert!(stamp(&mut page, 5, 10, 3));
-        assert_eq!(read(&page).unwrap().flags, PVCLOCK_FLAG_MATERIALIZED);
+        assert_eq!(read(&page).unwrap().flags, PVCLOCK_FLAGS_V1);
     }
 
     #[test]

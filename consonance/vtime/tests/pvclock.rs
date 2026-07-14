@@ -7,7 +7,7 @@
 
 use proptest::prelude::*;
 use vtime::pvclock::{
-    PVCLOCK_ABI_VERSION, PVCLOCK_FLAG_MATERIALIZED, PVCLOCK_PAGE_LEN, published, read, stamp,
+    PVCLOCK_ABI_VERSION, PVCLOCK_FLAGS_V1, PVCLOCK_PAGE_LEN, published, read, stamp,
     stamp_canonical,
 };
 
@@ -42,7 +42,7 @@ proptest! {
         prop_assert_eq!(f.guest_clock, gc);
         prop_assert_eq!(f.guest_clock_hz, hz);
         prop_assert_eq!(f.abi_version, PVCLOCK_ABI_VERSION);
-        prop_assert_eq!(f.flags, PVCLOCK_FLAG_MATERIALIZED);
+        prop_assert_eq!(f.flags, PVCLOCK_FLAGS_V1);
         prop_assert_eq!(f.vcpu_index, 0);
         prop_assert_eq!(f.seq & 1, 0);
         prop_assert!(published(&page, vns, gc, hz));

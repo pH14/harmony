@@ -2336,6 +2336,18 @@ where
                 f.vns, f.guest_clock, f.guest_clock_hz
             )));
         }
+        // The ABI-v1 flags word: MATERIALIZED | WORK_DERIVED, remaining bits
+        // reserved-zero (the PR #108 r9 coordination ruling — bit 1 is what a
+        // static placeholder page deliberately lacks, so a page nothing is
+        // actually deriving can never pass this gate).
+        if f.flags != vtime::pvclock::PVCLOCK_FLAGS_V1 {
+            return Err(VmmError::ContractViolation(format!(
+                "pvclock page flags {:#x} != the ABI-v1 MATERIALIZED|WORK_DERIVED word {:#x} — a \
+                 placeholder or corrupted page, never a real work-derived stamp",
+                f.flags,
+                vtime::pvclock::PVCLOCK_FLAGS_V1
+            )));
+        }
         Ok(())
     }
 
@@ -9049,6 +9061,9 @@ mod tests {
         let f = vtime::pvclock::read(vmm.pvclock_page().unwrap()).expect("stable frame");
         assert_eq!((f.seq, f.vns, f.guest_clock), (0, 500, 1000));
         assert_eq!(f.guest_clock_hz, 2_000_000_000);
+        // The ABI-v1 flags word: MATERIALIZED | WORK_DERIVED (bit 1 is the
+        // real-stamping-path attestation the ARM placeholder lacks).
+        assert_eq!(f.flags, vtime::pvclock::PVCLOCK_FLAGS_V1);
         // The oracle check holds at registration (G2's function equality).
         vmm.pvclock_check_oracle()
             .expect("page matches the trap oracle");

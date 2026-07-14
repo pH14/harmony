@@ -13,7 +13,9 @@ pub const vtime::pvclock::FLAGS_OFF: usize
 pub const vtime::pvclock::GUEST_CLOCK_HZ_OFF: usize
 pub const vtime::pvclock::GUEST_CLOCK_OFF: usize
 pub const vtime::pvclock::PVCLOCK_ABI_VERSION: u32
+pub const vtime::pvclock::PVCLOCK_FLAGS_V1: u32
 pub const vtime::pvclock::PVCLOCK_FLAG_MATERIALIZED: u32
+pub const vtime::pvclock::PVCLOCK_FLAG_WORK_DERIVED: u32
 pub const vtime::pvclock::PVCLOCK_PAGE_LEN: usize
 pub const vtime::pvclock::RESERVED_OFF: usize
 pub const vtime::pvclock::SEQ_OFF: usize
