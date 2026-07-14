@@ -9,8 +9,13 @@ day: every stage below is specified to the level of "run this, retain that, deci
 criteria."
 
 This program is the gate `docs/ARM-PORT.md` demanded ("spike #1 on real silicon decides
-whether ARM happens") and the gate `docs/ARCH-BOUNDARY.md` holds its D-list behind: **no
-production ARM backend code is built before this program returns GO.** It does not modify the
+whether ARM happens") and the gate `docs/ARCH-BOUNDARY.md` originally held its D-list behind:
+**no production ARM backend code is built before this program returns GO** — a sequencing
+clause superseded 2026-07-13 by the pre-build ruling (`docs/ARCH-BOUNDARY.md` §Pre-build
+ruling): the D-list may now be built pre-GO on the port lane (`hm-cbt`), and this program's
+GO/NO-GO decides whether that pre-built work is *kept and trusted*, plus every measured
+constant and the trait freeze. Unchanged either way: this spike itself never writes
+production backend code. It does not modify the
 production architecture, does not fill the reach-matrix cell by itself (cell-fill — one
 documented command builds the pinned stack, boots, and passes the same-seed determinism gate —
 is the *port program's* exit, downstream of this spike), and does not decide procurement
@@ -253,9 +258,11 @@ Not a feasibility essay. The terminal deliverable is:
    `docs/BOX-PINNING.md` table gains an Altra section on arrival), and the box left in its
    recorded baseline state whenever the lock is yielded.
 
-On ALL-GO, what unblocks is the **D-list build** (`docs/ARCH-BOUNDARY.md` §D — the additive
-ARM backend/vendor wave), whose own exit is the reach-matrix cell-fill demo. This spike never
-writes production backend code.
+On ALL-GO, what unblocks is **trust in the D-list work** (`docs/ARCH-BOUNDARY.md` §D — the
+additive ARM backend/vendor wave, pre-buildable since the 2026-07-13 ruling): the measured
+constants get applied, the trait freezes per the AA-3 memo, and the port proceeds to the
+reach-matrix cell-fill demo as its exit. On NO-GO, the pre-built ARM-specific slice is the
+sunk cost that ruling accepted. This spike never writes production backend code.
 
 ## Execution constraints (binding)
 

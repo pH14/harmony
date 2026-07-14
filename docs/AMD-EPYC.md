@@ -254,7 +254,10 @@ data-driven pipeline with a vendor axis; the Reproducer artifact is never forked
 never-fork-the-one-reproducer rule). AE-4 delivers the **enforcement-mechanism truth table**
 (each contract row → the SVM trap/freeze that enforces it, or recorded as undeniable on this
 silicon with a disposition); the full AMD contract document is downstream port work, not this
-spike.
+spike. *(Pre-build ruling, 2026-07-13: the vendor-axis restructure of the contract
+table/loader with a draft AMD column — every enforcement cell marked verify-on-silicon — is
+queued as production pre-build work, `hm-0nf`, behind the `hm-b5n` seam keystone; AE-4 still
+owns the on-silicon truth table that ratifies it.)*
 
 ## 5. Nested SVM as the virtualized-form cell (deferred, gated on bare-metal GO)
 

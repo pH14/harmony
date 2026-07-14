@@ -1,12 +1,16 @@
 # The architecture boundary — ISA seam design
 
 Status: **design ruling (2026-07-03); vendor programs ruled 2026-07-12/13** (`docs/ARM-ALTRA.md`,
-`docs/AMD-EPYC.md` — the reserved engine/vendor split names activate with the ARM window). Supersedes the codebase survey in `docs/ARM-PORT.md`
+`docs/AMD-EPYC.md` — the reserved engine/vendor split names activate with the ARM window);
+**pre-build ruled 2026-07-13** (§Pre-build ruling below — building no longer waits for spike
+GO; trust still does). Supersedes the codebase survey in `docs/ARM-PORT.md`
 ("What a port costs, by component" and its "no arch seam exists yet" premise), which predates
 Wave 4/5 and undercounts the tree by most of `vmm-core`, `vmm-backend`, `lapic`, `vm-state`,
 and all seven dissonance crates. ARM-PORT.md's **hardware facts and its viability gate stand
-unchanged**: no ARM backend gets built before the PMU spike (ARM-PORT.md §gate) returns GO on
-real silicon. What this document rules is the *boundary* — where the ISA seam goes, what shape
+unchanged in what they decide** — the spike still rules whether ARM ships and what may be
+trusted — but since the 2026-07-13 pre-build ruling the gate no longer sequences
+*construction* (it originally read: no ARM backend gets built before the PMU spike returns GO
+on real silicon). What this document rules is the *boundary* — where the ISA seam goes, what shape
 it takes, and which parts are justified now on x86-hygiene grounds versus frozen until spike
 data exists.
 
@@ -152,7 +156,8 @@ The **engine** (arch-neutral, generic over `Arch`): run-loop skeleton, `GuestRam
 `SnapshotEngine`, the state-hash *framework* (canonical record list → hash), `control.rs`,
 `corpus.rs`, `work.rs`, the `DeviceBlob` mechanism, V-time/idle wiring.
 
-The **personality** (per-arch; x86 is the first and, until spike GO, only one):
+The **personality** (per-arch; x86 is the first — the ARM one is the pre-build wave's
+deliverable, `hm-cbt`):
 
 | Responsibility | x86 today | ARM later |
 |---|---|---|
@@ -183,7 +188,7 @@ is named) extends naturally: main names the `(Backend impl, Arch personality)` p
 4. `campaign-runner/main.rs` box-mode defaults (`bzImage`, x86 cmdline, `BackendKind`) become
    per-arch config data.
 
-### D. Explicitly NOT restructuring — the ARM new-build (post-spike only)
+### D. Explicitly NOT restructuring — the ARM new-build (pre-buildable since the 2026-07-13 ruling; trusted only post-spike)
 
 Additive crates/artifacts, zero edits to the neutral spine: KVM/arm64 backend impl; GICv3 +
 generic-timer models; the ARM CPU-contract document (the x86 one is the template for *rigor*,
@@ -198,8 +203,8 @@ re-measured `skid_margin` / `SimCpu` parameters; arm64 kernel-config audit + `ka
 semantics change, all gates green. (3) **The keystone**: `Arch` trait + generic `Backend` +
 engine/personality module split in `vmm-core`, x86 as the sole implementation, every existing
 portable + box gate passing unchanged through it. (4) `vm-state` arch-tagged records + version
-bump. Then — only after ARM-PORT.md's spike #1 returns GO on real silicon — the D-list as an
-additive backend wave.
+bump. Then the D-list as an additive backend wave — originally gated on ARM-PORT.md's spike #1
+returning GO on real silicon, un-gated by the pre-build ruling below (2026-07-13).
 
 **Cost.** Steps 1–4 ≈ four tasks, mostly mechanical. The creative parts: the `Arch` trait
 shape (ruled above; freeze per the spike caveat below) and keeping the state-hash canonical
@@ -222,16 +227,63 @@ that slip.
   pressure `run_until_overflow`'s late-only-stop contract. Design the trait now; **freeze it
   only with spike data in hand.**
 
+## Pre-build ruling (Paul, 2026-07-13) — build-first; the spike gates trust, not construction
+
+With two vendor boxes incoming on unknown arrival dates (Altra `hm-7pb`, Epyc `hm-9wt`), the
+integrator reversed the "no ARM-side building before the spike GOes" cost hedge: **everything
+pre-buildable gets built now**, so box-wait converts into worker throughput and arrival day
+stays experiment day — with better tooling.
+
+**The risk acceptance, recorded.** The hedge existed because Altra's PMU can fail the AA-1/AA-3
+kill conditions. Pre-building reverses it: if the ARM work clock NO-GOes, the ARM-specific
+slice (the §D backend/GIC/boot/vendor work, `hm-cbt`) is sunk — a few worker-weeks, accepted
+against zero box idle time. The seam restructure (`hm-b5n`) and the paravirt clock (`hm-rk5`)
+sit outside that risk: both pay for themselves on x86 regardless of any ARM verdict.
+
+**What the spike still gates (unchanged):** the `Arch`/`CpuBackend` trait *freeze* (AA-3's
+trait-freeze memo — pre-built code accepts rework against the unfrozen trait); every measured
+constant (`skid_margin`, event density, count offsets — never inherited, never invented);
+on-silicon validation and the reach-matrix cell fill itself; and both spike programs'
+execution + evidence-integrity discipline, verbatim. GO/NO-GO now decides whether the
+pre-built work is *kept and trusted*, not whether it may be written.
+
+**Mechanics.** Pre-build lands via normal task branches and reviewed PRs to main: spike
+apparatus under `spikes/arm-altra/` + `spikes/amd-epyc/` (as both programs' offline-work
+clauses already sanction), production code as additive crates/modules behind the seam. The
+spike-*execution* discipline (dedicated worktree, evidence rules, never-push-during-execution)
+is untouched.
+
+**The ruled queue (dispatch order as slots and gates clear):**
+
+1. **This document's steps 1–4** (`hm-b5n`, tasks/108) — the seam + engine/vendor split, the
+   single biggest enabler for both vendors. Fable-tier, dispatched 2026-07-13.
+2. **Appliance build + host-qualification preflight** (`hm-tn9` / `hm-69y`, ← `hm-l2g` =
+   PR #98 lands), with the AA-0/AE-0 capability-truth-table probes absorbed into the preflight
+   as machine-readable GO/refuse checks (rider recorded on `hm-69y`).
+3. **The paravirt work-derived clock, x86-first** (`hm-rk5`, ← `hm-b5n`) — ratified-to-build;
+   perf win + backstop oracle on x86 now, correctness requirement on ARM later (AA-5
+   validates the design on silicon).
+4. **The harness pre-build lane** — AMD: parameterized exactness-hammer variants dry-run on
+   the Intel box + `svm.c` 0004-analogue draft (`hm-8v4`, ← `hm-l2g`); ARM: arm64 oracle
+   payloads + minimal KVM harness, aarch64-cross + TCG-smoked, + kvm/arm64 0004-analogue
+   draft (`hm-2kj`, tasks/109, dispatched 2026-07-13). Plus the dev-loop probe `hm-8l3`
+   (nested KVM in an aarch64 VM on the Mac).
+5. **The ARM backend skeleton behind the new seam** (`hm-cbt`, ← `hm-b5n`) — the §D reversal
+   proper. Sibling lane: the contract vendor column, AE-4's shape (`hm-0nf`, ← `hm-b5n`).
+
 ## Relationship to ARM-PORT.md
 
 Still true and still binding: the hardware table (Spark vs Grace, ECV), the three
-load-bearing-mechanism analysis, the rr evidence base, the LL/SC vs LSE hazard, and the gate —
-**spike #1 on real silicon decides whether ARM happens; no D-list work before GO.**
+load-bearing-mechanism analysis, the rr evidence base, the LL/SC vs LSE hazard, and the gate's
+verdict authority — **spike #1 on real silicon decides whether ARM happens.** Its "no D-list
+work before GO" sequencing clause is superseded by the pre-build ruling above (2026-07-13):
+D-list work may be *built* pre-GO; only the spike can make it *trusted*.
 
 Superseded by this document: the "What a port costs, by component" survey and its premises
 ("no arch seam exists", "`vmm-core` unwritten", the ~60/40 split) — the audit above replaces
-them; and the blanket "do not build the arch abstraction pre-emptively" is **refined**, not
-reversed: the A–C restructure is justified on x86-hygiene grounds alone (it makes the
-R-Backend boundary compiler-enforced and the product thesis explicit — a deterministic-execution
-engine with an x86 backend, not an x86 hypervisor with a bug-finder attached), while the trait
-*freeze* and all ARM-side building remain spike-gated exactly as ARM-PORT.md demands.
+them; and the blanket "do not build the arch abstraction pre-emptively" is now superseded in
+two dated steps: the A–C restructure was justified on x86-hygiene grounds alone (2026-07-03 —
+it makes the R-Backend boundary compiler-enforced and the product thesis explicit — a
+deterministic-execution engine with an x86 backend, not an x86 hypervisor with a bug-finder
+attached), and ARM-side *building* was un-gated by the pre-build ruling (2026-07-13). The
+trait *freeze* remains spike-gated exactly as ARM-PORT.md demands.

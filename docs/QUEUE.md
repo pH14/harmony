@@ -7,8 +7,9 @@
 > issues, task-spec headers, and memory notes.
 
 _Dissonance strategy/dependency section reconciled with Beads: 2026-07-12. Foreman rows
-reconciled 2026-07-12 (loop iteration under the reach-matrix ruling); the tracker remains
-authoritative._
+reconciled 2026-07-12 (loop iteration under the reach-matrix ruling); pre-build queue
+recorded and started 2026-07-13 eve (Paul's build-first ruling — `docs/ARCH-BOUNDARY.md`
+§Pre-build ruling); the tracker remains authoritative._
 
 Decision-gate safety: before dispatching ready work, the foreman inspects any closed decision
 blocker and requires a recorded GO; it never dispatches in the same iteration that closes that
@@ -26,8 +27,23 @@ and passes the same-seed determinism gate. "Vendor" replaces "personality" (GLOS
 ratified via PR #103). ARM = Linux/KVM on an incoming Ampere
 Altra (Apple-silicon route dead); AMD = incoming Epyc; ARM > AMD, parallelize the docs.
 
-## In flight (1 worker, 2 slots open)
+**Pre-build ruling (Paul, 2026-07-13)**: build-first — box-wait converts into worker
+throughput; the vendor spikes gate *trust* (measured constants, the trait freeze, the cell
+fill), not construction. The ruled 5-lane queue and its risk acceptance live in
+`docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
+## In flight (3 workers, 0 slots open)
+
+- **The ARCH-BOUNDARY restructure, steps 1–4** (`hm-b5n`, tasks/108, worker
+  agent-arch-boundary-restructure, Fable 5, dispatched 2026-07-13 eve) — pre-build queue
+  lane 1: the compiler-enforced arch seam, two-level `Exit`, engine/vendor module split,
+  arch-tagged vm-state records. Portable gates only; its box verification rides the
+  post-re-cert window (foreman-owned).
+- **ARM pre-build apparatus** (`hm-2kj`, tasks/109, worker agent-arm-prebuild-apparatus,
+  Opus 4.8, dispatched 2026-07-13 eve) — pre-build queue lane 4-ARM: arm64 oracle payloads
+  + minimal KVM harness (aarch64-cross, TCG liveness smoke), floor-checker schemas, the
+  kvm/arm64 0004-analogue patch draft. Zero box contact; Altra arrival day becomes
+  scp + run.
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — Paul's 2026-07-12
   ruling executing on `spike/nested-x86`: harness-integrity set DONE (e0a62e2 —
   patched-backend hammer + armed-capability asserts, gate-RC propagation, independent guest
@@ -50,14 +66,14 @@ reviewers; Exemplar→Entry structural merge deferred as `hm-74w`).
 
 Reach-matrix lane (foreman-owned or spawnable next):
 
-- **Multiarch docs reconcile** (`hm-xi7`, P2, foreman docs work) — bring ROADMAP /
-  ARM-PORT / ARCH-BOUNDARY to the ruled reach-matrix state (their 2026-07-09/10
-  Apple-promoting drafts were dropped from PR #103), plus the two hm-2uw items the slate
-  never contained: APPLE-SILICON.md demotion-status header, NESTED-INTEGRATION
-  parked-not-ratified header. Next foreman docs slot.
+- **Mac nested-KVM dev-loop probe** (`hm-8l3`, P3, ~an hour) — can an aarch64 Linux VM on
+  this Mac expose /dev/kvm for the ARM backend's ioctl dev loop? GO/refuse note recorded on
+  `hm-cbt`; TCG stays the fallback oracle either way.
 - **Hardware-arrival lane** — Altra arrival blocker `hm-7pb` (P1) → ARM spike execution
   `hm-idb`; Epyc arrival blocker `hm-9wt` (P2) → AMD spike execution `hm-u1n`. Paul
   closes an arrival bead when its box is racked; the execution surfaces dispatch-ready.
+  Arrival day now lands on pre-built tooling: the preflight truth-table probes (`hm-69y`
+  rider) and the harness lanes (`hm-8v4` / `hm-2kj`).
 - **Campaign-runner Miri box confirmation** (`hm-d4y` residue) — one green box-dispatched
   nightly once the re-cert window frees the box (~13 min expected vs the 155 ceiling).
 - **Nested-x86 spike findings** — stale insn-cpuid golden (`hm-zc2`), SIGSTOP-cycling
@@ -90,11 +106,16 @@ spawn these until that lane re-opens):
 ## Blocked (dependency edges enforce these — they surface via `bd ready` when cleared)
 
 - **Appliance as first-class repo build** `hm-tn9` ← spike-branch merge `hm-l2g`;
-  **host-qualification preflight CLI** (`hm-69y`) ← same.
+  **host-qualification preflight CLI** (`hm-69y`) ← same — now carrying the pre-build
+  rider: absorb the AA-0/AE-0 capability truth tables as machine-readable GO/refuse
+  checks (comment on the bead).
   **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
   consumer exists; appliance ships gate mode only — do not auto-spawn).
-- **ARCH-BOUNDARY restructure → engine/vendor split** `hm-b5n` ← vocabulary rename sweep
-  `hm-u7q` ← game-workload merge `hm-ahb` (the shared post-merge-window slot).
+- **Pre-build queue, gated lanes** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling): the
+  paravirt work-derived clock x86-first `hm-rk5` ← seam keystone `hm-b5n` (both churn
+  vmm-core); the ARM backend skeleton (D-list) `hm-cbt` ← `hm-b5n`; the contract vendor
+  column (AE-4's shape) `hm-0nf` ← `hm-b5n`; AMD hammer variants + `svm.c` draft `hm-8v4`
+  ← spike-branch merge `hm-l2g` (the hammer source and the Intel box both free then).
 - **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
   cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
   spike and blocks deterministic Revision coordination `hm-bbx.3` plus atomic seal-cut capture

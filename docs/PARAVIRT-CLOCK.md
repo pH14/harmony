@@ -1,10 +1,12 @@
 # The paravirt work-derived clock — design spec
 
-Status: **design spec (2026-07-12), not ratified; no implementation.** Bead `hm-8h8`. This
+Status: **design spec (2026-07-12); ratified-to-build x86-first 2026-07-13** (the pre-build
+ruling, `docs/ARCH-BOUNDARY.md` §Pre-build ruling — implementation bead `hm-rk5`, sequenced
+behind the `hm-b5n` seam keystone; ABI details freeze through that implementation PR's review;
+the ARM closure story is validated on silicon at stage AA-5). Spec bead `hm-8h8`. This
 document rules the layout, update discipline, guest-kernel integration, per-vendor closure
 story, migration path, validation plan, and kill conditions for routing guest time reads
-through a **work-derived paravirtual clock page** instead of trapping counter reads. A separate
-bead implements it after ratification; nothing here touches code.
+through a **work-derived paravirtual clock page** instead of trapping counter reads.
 
 The design exists for two independent reasons, and the doc argues both because they load-bear
 differently — one is a *correctness forcing function*, the other a *free optimization*:

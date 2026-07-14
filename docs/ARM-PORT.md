@@ -21,7 +21,12 @@ measurement nobody has taken, not a code-cleanliness problem. **Do not build the
 abstraction pre-emptively; a clean trait boundary cannot de-risk an unmeasured PMU.**
 *(Refined 2026-07-03 by `docs/ARCH-BOUNDARY.md`: the boundary restructure is justified on
 x86-hygiene grounds and may proceed; the trait freeze and all ARM-side building stay
-spike-gated.)*
+spike-gated.)* *(Amended 2026-07-13 by the pre-build ruling, `docs/ARCH-BOUNDARY.md`
+§Pre-build ruling: ARM-side building is un-gated too — the spike now rules what is trusted
+and kept, not what may be written; the trait freeze and every measured constant still wait
+for silicon. The bolded sentence stays true as stated: a clean boundary cannot de-risk the
+PMU, and the pre-built ARM-specific slice is sunk cost if AA-1 NO-GOes — a risk the
+integrator accepted explicitly.)*
 
 ## The fact-correction that everything else hinges on
 
@@ -106,6 +111,10 @@ So spike #1 (below) is *runnable* on a Spark — the access half is solved. The 
 is entirely PMU determinism on uncharacterized, heterogeneous client cores.
 
 ## The gate: ARM viability = Phase 0.5 spike #1, re-run on real ARM hardware
+
+*(2026-07-13: the ruled execution of this gate is `docs/ARM-ALTRA.md` stage AA-1, and the
+pre-build ruling re-scopes what the gate sequences — construction no longer waits; trust,
+constants, and the trait freeze do. The measurement and its kill conditions are unchanged.)*
 
 Before any line of ARM `vmm-core`, run PLAN.md's PMU precise-count spike on the actual box:
 measure whether `BR_RETIRED` (taken-branch) counting is **bit-deterministic** on one pinned

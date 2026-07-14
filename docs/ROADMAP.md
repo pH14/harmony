@@ -106,12 +106,16 @@ against it.
   seed-driven loop works. The explorer's current AFL-shaped corpus gets no further investment
   before that redesign.
 - **ARM vendor: Linux/KVM on Ampere Altra** (`docs/ARM-ALTRA.md`, ruled 2026-07-12) — a
-  reach-matrix cell (see the vendor × form matrix below), gated on the Altra box arriving
-  (bead `hm-7pb` → execution `hm-idb`). Altra has no FEAT_ECV, so the clock question runs
-  through the paravirt work-derived clock design (`docs/PARAVIRT-CLOCK.md`). The
-  Apple-silicon route is DEAD (`docs/APPLE-SILICON.md`, archaeology only). The **ISA seam
-  design is ruled** (`docs/ARCH-BOUNDARY.md`): the engine/vendor split's reserved names
-  wait for the ARM window; all ARM-side building stays spike-gated per `docs/ARM-ALTRA.md`.
+  reach-matrix cell (see the vendor × form matrix below); *spike execution* gated on the
+  Altra box arriving (bead `hm-7pb` → execution `hm-idb`). Altra has no FEAT_ECV, so the
+  clock question runs through the paravirt work-derived clock design
+  (`docs/PARAVIRT-CLOCK.md` — ratified-to-build x86-first, `hm-rk5`). The Apple-silicon
+  route is DEAD (`docs/APPLE-SILICON.md`, archaeology only). The **ISA seam design is
+  ruled** (`docs/ARCH-BOUNDARY.md`) and its restructure is in flight (`hm-b5n`); per the
+  **pre-build ruling (Paul 2026-07-13, `docs/ARCH-BOUNDARY.md` §Pre-build ruling)**,
+  ARM-side building no longer waits for spike GO — the spike gates trust (measured
+  constants, the trait freeze, the cell fill), and the pre-build queue
+  (appliance/preflight, paravirt clock, harness lanes, ARM backend skeleton) runs now.
 - **AMD vendor: SVM on Epyc** (`docs/AMD-EPYC.md`, ruled 2026-07-13) — the second
   reach-matrix vendor cell, gated on the Epyc box (bead `hm-9wt` → execution `hm-u1n`).
   ARM > AMD if bandwidth forces a choice; parallelize when both boxes are up.
