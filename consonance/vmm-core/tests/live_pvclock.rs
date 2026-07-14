@@ -360,7 +360,19 @@ fn g0_smoke_boot_registers_and_reads_sane_time() {
         find(serial.as_bytes(), b"GUEST_READY"),
         "guest did not reach GUEST_READY with the page on"
     );
-    assert_eq!(obs.reason, Some(TerminalReason::Shutdown), "unclean end");
+    // Clean poweroff = any terminal with no step error, matching the canonical
+    // `live_linux_boot` gate's `terminated_cleanly()`. The minimal image's
+    // `poweroff` surfaces as `Idle` (the kernel's post-poweroff `cli; hlt`,
+    // task-52), NOT `Shutdown` — asserting `Shutdown` specifically was stricter
+    // than the project's own definition of a clean end.
+    assert!(
+        matches!(
+            obs.reason,
+            Some(TerminalReason::Shutdown | TerminalReason::Idle)
+        ),
+        "unclean end: reason={:?} (expected a clean halt — Shutdown or the post-poweroff Idle)",
+        obs.reason
+    );
     eprintln!(
         "[REPORT] smoke: registered gpa={:#x?} refreshes={} vns_last={} RESULT: PASS",
         vmm.pvclock_registration().unwrap(),
@@ -785,10 +797,15 @@ fn perf_arm(kernel: &[u8], initramfs: &[u8], page_on: bool) -> PerfArm {
     let mut vmm = boot(kernel, initramfs, SEED, page_on);
     let obs = run_bounded(&mut vmm, 100_000_000, Duration::from_secs(900), |_, _| true);
     assert!(obs.step_error.is_none(), "step error: {:?}", obs.step_error);
-    assert_eq!(
-        obs.reason,
-        Some(TerminalReason::Shutdown),
-        "minimal boot did not power off cleanly"
+    // Clean poweroff = a terminal with no step error (the minimal image ends on
+    // the post-poweroff `Idle` halt, not `Shutdown` — see g0_smoke).
+    assert!(
+        matches!(
+            obs.reason,
+            Some(TerminalReason::Shutdown | TerminalReason::Idle)
+        ),
+        "minimal boot did not power off cleanly: reason={:?}",
+        obs.reason
     );
     if page_on {
         assert!(
