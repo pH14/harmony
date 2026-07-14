@@ -136,10 +136,17 @@ pub enum ExitReason {
 pub struct ImagePin {
     /// Path the artifact was loaded from. Never trusted — the hash is the identity.
     pub path: String,
-    /// sha256 of the bytes actually loaded.
+    /// sha256 of the bytes actually loaded. This is the artifact's identity.
     pub sha256: String,
-    /// md5 cross-reference, per the box-gate image discipline.
-    pub md5: String,
+    /// md5 cross-reference, per the box-gate image discipline — **optional**.
+    ///
+    /// It is a belt-and-suspenders cross-reference, not the identity (sha256 is). No
+    /// md5 implementation is on the dependency whitelist, so the harness emits `None`
+    /// rather than a placeholder: an empty string would violate the schema's
+    /// `^[0-9a-f]{32}$` pattern, making even a good run-set's evidence
+    /// schema-invalid. When present it must be 32 lowercase hex; `None` is the honest
+    /// "not computed".
+    pub md5: Option<String>,
     /// Whether the hash was recomputed and compared **immediately before** the
     /// artifact was used.
     pub verified_before_boot: bool,

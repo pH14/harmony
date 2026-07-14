@@ -88,12 +88,24 @@ struct RunOpts {
     /// under every class's label would produce mislabeled evidence.
     #[arg(long)]
     payload_dir: PathBuf,
-    /// The running host kernel image (e.g. `/boot/Image`). It is read and hashed, and
-    /// that hash becomes both the mechanism block's `host_kernel_sha256` and a
-    /// verified image pin — so the kernel the run attests is content-verified, never
-    /// an operator-typed string the checker only checks is nonempty.
+    /// A JSON object of **trusted expected sha256 pins**, `{ "<payload>": "<sha256>" }`,
+    /// one per payload class. Each loaded ELF is hashed and compared against its pin;
+    /// a mismatch (a swapped or rebuilt artifact) is a hard error, and only a match
+    /// attests `verified_before_boot`. Without this, the harness would hash whatever
+    /// bytes are present and hand a changed artifact a fresh accepted identity —
+    /// exactly what §Evidence integrity #3 forbids.
+    #[arg(long)]
+    payload_pins: PathBuf,
+    /// The running host kernel image (e.g. `/boot/Image`).
     #[arg(long)]
     host_kernel_image: PathBuf,
+    /// The **trusted expected sha256** of the running host kernel, from the box's boot
+    /// record. The `--host-kernel-image` bytes are hashed and compared against it; a
+    /// mismatch means the image is not the one the operator vouched is running, and is
+    /// a hard error. (Binding the file to the *live* kernel is a box-day step; the
+    /// operator asserts identity by pinning, and the harness verifies the bytes match.)
+    #[arg(long)]
+    host_kernel_sha256: String,
     /// The core to hard-pin the vCPU thread to. Pinning is a correctness condition on
     /// this lineage (rr #3607), not hygiene.
     #[arg(long)]
@@ -344,7 +356,9 @@ fn execute(_args: RunArgs) -> Result<(), String> {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct RunArgs {
     payload_dir: PathBuf,
+    payload_pins: std::collections::BTreeMap<String, String>,
     host_kernel_image: PathBuf,
+    host_kernel_sha256: String,
     core: u32,
     stage: Stage,
     mechanism: MechanismArg,
@@ -360,32 +374,82 @@ struct RunArgs {
     with_targets: bool,
 }
 
-/// A payload ELF loaded from the payload directory, with its verified content pin.
+/// A payload ELF loaded from the payload directory, hashed and verified against its
+/// trusted pin.
 #[cfg(target_os = "linux")]
 struct LoadedPayload {
     image: arm_harness::elf::Elf,
     sha256: String,
 }
 
-/// Read, hash, and parse the ELF for `payload` out of `dir`, keyed by the payload's
-/// canonical name. Loading one ELF for every class would run one payload under seven
-/// wrong labels — mislabeled evidence — so each class is loaded from its own file.
+/// Normalise a recorded/expected sha256: drop an optional `sha256:` prefix, lowercase.
+#[cfg(target_os = "linux")]
+fn normalise_sha256(h: &str) -> String {
+    h.strip_prefix("sha256:").unwrap_or(h).to_ascii_lowercase()
+}
+
+/// Read, hash, and parse the ELF for `payload` out of `dir`, and **verify it against
+/// its trusted expected pin** before returning it.
+///
+/// Loading one ELF for every class would run one payload under seven wrong labels;
+/// hashing whatever bytes are present without comparing to a trusted pin would give a
+/// swapped or rebuilt artifact a fresh accepted identity (§Evidence integrity #3). So
+/// each class is loaded from its own file AND its hash is compared to the pin the
+/// operator supplied: a mismatch, or a missing pin, is a hard error — nothing is
+/// attested that was not verified against an identity the operator vouched for.
 #[cfg(target_os = "linux")]
 fn load_payload(
     dir: &std::path::Path,
     payload: oracle_model::Payload,
+    pins: &std::collections::BTreeMap<String, String>,
 ) -> Result<LoadedPayload, String> {
     use arm_harness::elf::Elf;
     use arm_harness::evidence::hex_lower;
     use sha2::{Digest, Sha256};
 
-    let path = dir.join(payload.name());
+    let name = payload.name();
+    let path = dir.join(name);
     let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let mut h = Sha256::new();
     h.update(&bytes);
     let sha256 = hex_lower(&h.finalize());
+
+    let expected = pins.get(name).ok_or_else(|| {
+        format!(
+            "no trusted sha256 pin for payload `{name}` in --payload-pins: cannot attest an \
+             artifact whose identity was not vouched for"
+        )
+    })?;
+    let expected = normalise_sha256(expected);
+    if expected != sha256 {
+        return Err(format!(
+            "payload `{name}` at {} hashes to {sha256}, but its trusted pin is {expected}: \
+             refusing to boot an artifact that is not the one pinned",
+            path.display()
+        ));
+    }
+
     let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", path.display()))?;
     Ok(LoadedPayload { image, sha256 })
+}
+
+/// The uniform overflow period across the armed records, or `None` if they vary (or
+/// nothing armed). Each armed record's period is `target - work_begin`.
+#[cfg(target_os = "linux")]
+fn uniform_period(records: &[arm_harness::evidence::RunRecord]) -> Option<u64> {
+    let mut period: Option<u64> = None;
+    for r in records {
+        let Some(o) = r.overflow.as_ref().filter(|o| o.armed) else {
+            continue;
+        };
+        let p = o.target.checked_sub(r.work_begin)?;
+        match period {
+            None => period = Some(p),
+            Some(prev) if prev == p => {}
+            Some(_) => return None, // periods vary → not uniform
+        }
+    }
+    period
 }
 
 #[cfg(target_os = "linux")]
@@ -403,10 +467,12 @@ fn execute(args: RunArgs) -> Result<(), String> {
     // is an untrusted one (rr #3607).
     pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
 
-    // Content-verify the running host kernel by hashing the image itself, rather than
-    // trusting an operator-typed string. That hash is the mechanism block's kernel
-    // identity AND a verified image pin, so §Evidence integrity #3's rule — which
-    // explicitly includes host kernels — actually covers it.
+    // Content-verify the host kernel against its TRUSTED expected pin: hash the image
+    // and compare to the sha256 the operator vouched is the running kernel. A mismatch
+    // means the file is not the one attested, and is a hard error — hashing whatever
+    // bytes are present and asserting `verified_before_boot` would hand a stale or
+    // swapped kernel a fresh accepted identity (§Evidence integrity #3, which names
+    // host kernels).
     let host_kernel_bytes = std::fs::read(&args.host_kernel_image)
         .map_err(|e| format!("read host kernel {}: {e}", args.host_kernel_image.display()))?;
     let host_kernel_sha256 = {
@@ -414,12 +480,23 @@ fn execute(args: RunArgs) -> Result<(), String> {
         h.update(&host_kernel_bytes);
         hex_lower(&h.finalize())
     };
+    let expected_kernel = normalise_sha256(&args.host_kernel_sha256);
+    if expected_kernel != host_kernel_sha256 {
+        return Err(format!(
+            "host kernel {} hashes to {host_kernel_sha256}, but its trusted pin is \
+             {expected_kernel}: refusing to attest a kernel that is not the one pinned",
+            args.host_kernel_image.display()
+        ));
+    }
 
-    // Load every payload class the plan will run, up front — one ELF per class, from
-    // its own file, each with its verified content pin.
+    // Load every payload class the plan will run, up front — one ELF per class, each
+    // verified against its trusted pin.
     let mut payloads: BTreeMap<String, LoadedPayload> = BTreeMap::new();
     for p in ALL_PAYLOADS.iter().copied().filter(|p| p.has_window()) {
-        payloads.insert(p.name().to_string(), load_payload(&args.payload_dir, p)?);
+        payloads.insert(
+            p.name().to_string(),
+            load_payload(&args.payload_dir, p, &args.payload_pins)?,
+        );
     }
 
     let scales = if args.scales.is_empty() {
@@ -508,14 +585,17 @@ fn execute(args: RunArgs) -> Result<(), String> {
         let mut images = vec![ImagePin {
             path: args.host_kernel_image.display().to_string(),
             sha256: host_kernel_sha256.clone(),
-            md5: String::new(),
+            // No md5 implementation is on the dependency whitelist; sha256 is the
+            // identity. `None` keeps the pin schema-valid (an empty string would
+            // violate `^[0-9a-f]{32}$`).
+            md5: None,
             verified_before_boot: true,
         }];
         for (name, l) in &payloads {
             images.push(ImagePin {
                 path: args.payload_dir.join(name).display().to_string(),
                 sha256: l.sha256.clone(),
-                md5: String::new(),
+                md5: None,
                 verified_before_boot: true,
             });
         }
@@ -533,7 +613,18 @@ fn execute(args: RunArgs) -> Result<(), String> {
                 patch_marker_observed: patch_marker,
             },
             images,
-            perf: perf_config(&attr),
+            // The perf block comes from the armed attr, but `sample_period` is
+            // per-sample (each cell draws its own target_delta). So it is derived from
+            // the records: `Some(p)` only when EVERY armed record used one uniform
+            // period p, else `None` — a varying-period run whose per-sample truth is
+            // each record's `target - work_begin`. This is what the checker's uniform
+            // cross-check enforces, so the manifest cannot claim one period while the
+            // records used another.
+            perf: {
+                let mut cfg = perf_config(&attr);
+                cfg.sample_period = uniform_period(&records);
+                cfg
+            },
             pinning: Pinning {
                 pinned: true,
                 core: Some(args.core),
@@ -595,9 +686,13 @@ fn run() -> Result<(), String> {
                 Some(p) => Some(read_json(p)?),
                 None => None,
             };
+            let payload_pins: std::collections::BTreeMap<String, String> =
+                read_json(&opts.payload_pins)?;
             execute(RunArgs {
                 payload_dir: opts.payload_dir,
+                payload_pins,
                 host_kernel_image: opts.host_kernel_image,
+                host_kernel_sha256: opts.host_kernel_sha256,
                 core: opts.core,
                 stage: opts.stage.into(),
                 mechanism: opts.mechanism,
