@@ -40,6 +40,7 @@ use vmm_backend::{Backend, Gpa, X86, X86Exit};
 
 pub use dispatch::{X86Devices, contract_vclock_config};
 
+use crate::vendor::x86::linux_loader::{LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE_LEN};
 use crate::vendor::{InterruptReject, Vendor};
 use crate::vmm::{Step, Vmm, VmmError};
 
@@ -49,6 +50,13 @@ impl Vendor for X86 {
 
     fn new_devices() -> Self::Devices {
         X86Devices::new()
+    }
+
+    fn mmio_holes() -> &'static [(u64, u64)] {
+        // The xAPIC page: `KvmBackend::map_memory` splits the RAM memslots around
+        // exactly this range (`split_around_hole`, vmm-backend), so it is device
+        // MMIO, never RAM — the one hole the x86 machine model punches today.
+        &[(LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE_LEN)]
     }
 
     fn dispatch_arch<B: Backend<A = Self>>(

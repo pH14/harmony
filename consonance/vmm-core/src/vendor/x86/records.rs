@@ -707,13 +707,17 @@ pub(crate) struct DeviceState {
     /// `vm-state` still carries unchanged for task-39 codec compatibility.
     pub events: vmm_backend::VcpuEvents,
     /// The task-110 pvclock channel configuration (v4): `None` = the page was
-    /// not offered on the sealing VM; `Some((delta_work, gpa))` = offered with
-    /// staleness bound Δ and, when `gpa` is `Some`, the guest's one-shot
-    /// registration. Validated symmetrically against the restore target's own
-    /// composition (offer/Δ/GPA/deterministic-backend) before any mutation and
-    /// committed with the rest of the restore — the engine's
+    /// not offered on the sealing VM; `Some((delta_work, gpa, registrable))` =
+    /// offered with staleness bound Δ, the guest's one-shot registration when
+    /// `gpa` is `Some`, and whether the sealing VM could register a page at all
+    /// (`Vmm::pvclock_available` — V-time wired and a deterministic work
+    /// counter). `registrable` is carried because a snapshot sealed BEFORE
+    /// registration has no GPA to re-validate yet still promises a future
+    /// registration (cross-model r5 P1). Validated symmetrically against the
+    /// restore target's own composition (offer / Δ / capability / GPA) before any
+    /// mutation and committed with the rest of the restore — the engine's
     /// `pvclock_validate_restore`/`pvclock_commit_restore` pair.
-    pub pvclock: Option<(u64, Option<u64>)>,
+    pub pvclock: Option<(u64, Option<u64>, bool)>,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -832,7 +836,7 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
     // The pvclock channel record (task 110, v4 only) — trailing, so every
     // earlier offset is unchanged from v3, and ABSENT entirely at v3, so an
     // unoffered VM's bytes are identical to main's.
-    if let Some((delta_work, gpa)) = &d.pvclock {
+    if let Some((delta_work, gpa, registrable)) = &d.pvclock {
         put_u64(&mut out, *delta_work);
         match gpa {
             Some(g) => {
@@ -841,6 +845,7 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
             }
             None => out.push(0),
         }
+        out.push(u8::from(*registrable));
     }
     DeviceBlob(out)
 }
@@ -1004,7 +1009,8 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
             1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
             _ => return Err(bad("bad pvclock gpa flag")),
         };
-        Some((delta_work, gpa))
+        let registrable = r.bool().ok_or(bad("bad pvclock registrable flag"))?;
+        Some((delta_work, gpa, registrable))
     } else {
         None
     };
@@ -1316,7 +1322,7 @@ mod tests {
             }),
             events: full_events(),
             // A registered pvclock channel (task 110, v4).
-            pvclock: Some((10_000_000, Some(0x4000))),
+            pvclock: Some((10_000_000, Some(0x4000), true)),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
@@ -1967,7 +1973,7 @@ mod tests {
         // Offering the channel is the ONLY thing that appends bytes, and it
         // bumps the version — so the v3 prefix is untouched.
         let on = encode_device_blob(&DeviceState {
-            pvclock: Some((10_000_000, Some(0x4000))),
+            pvclock: Some((10_000_000, Some(0x4000), true)),
             ..d.clone()
         })
         .0;
@@ -1982,15 +1988,28 @@ mod tests {
         );
         assert_eq!(
             on.len(),
-            off.len() + 8 + 1 + 8,
-            "v4 appends exactly Δ (u64) + the GPA-present flag + the GPA (u64)"
+            off.len() + 8 + 1 + 8 + 1,
+            "v4 appends exactly Δ (u64) + the GPA-present flag + the GPA (u64) + the \
+             registrable flag"
         );
         // Both decode back to what they encoded, and the v3 blob (what main
         // writes) decodes here as "no channel" rather than being rejected.
         assert_eq!(decode_device_blob(&off).unwrap(), d);
         assert_eq!(
             decode_device_blob(&on).unwrap().pvclock,
-            Some((10_000_000, Some(0x4000)))
+            Some((10_000_000, Some(0x4000), true))
+        );
+        // The registrable bit round-trips independently of the GPA — it is the
+        // whole point of carrying it (a snapshot with NO registration still
+        // records whether the source COULD register). r5 P1.
+        let unreg = encode_device_blob(&DeviceState {
+            pvclock: Some((10_000_000, None, false)),
+            ..d.clone()
+        })
+        .0;
+        assert_eq!(
+            decode_device_blob(&unreg).unwrap().pvclock,
+            Some((10_000_000, None, false))
         );
     }
 

@@ -72,6 +72,21 @@ pub trait Vendor: Arch + Sized {
     /// the vendor composition root's job (e.g. `wire_lapic` on x86).
     fn new_devices() -> Self::Devices;
 
+    /// The arch's **device-MMIO holes** as `(base, len)` — GPA ranges that are
+    /// *not* guest RAM even when the RAM image spans them, because the backend
+    /// deliberately leaves them out of its memslots (x86: the 4 KiB xAPIC page at
+    /// `0xFEE00000`, which `KvmBackend::map_memory` splits around so guest
+    /// accesses fault out to the device model instead of hitting RAM).
+    ///
+    /// The engine needs this to validate **guest-published GPAs**: a page the
+    /// guest hands the host (the task-110 pvclock page) must be real, host-
+    /// writable RAM. Inside a hole, the host would stamp backing the guest cannot
+    /// see while the guest's own reads went to a device — a silently-wrong clock
+    /// (cross-model r5 P2). Naming which addresses those are is vendor knowledge,
+    /// so it lives behind this seam rather than in the engine
+    /// (`docs/ARCH-BOUNDARY.md`).
+    fn mmio_holes() -> &'static [(u64, u64)];
+
     // --- run-loop dispatch ---------------------------------------------------
 
     /// Dispatch one vendor exit against the contract dispositions and the device

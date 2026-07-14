@@ -649,14 +649,27 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
         find(vmm.serial(), b"GUEST_READY"),
         "exec image did not reach its shell"
     );
-    assert!(
-        vmm.pvclock_registration().is_some(),
-        "guest never registered the clock page"
-    );
+    let gpa = vmm
+        .pvclock_registration()
+        .expect("guest never registered the clock page");
 
-    // The busy-wait: spin on the page-backed clock for 2 virtual seconds.
-    let spin = "t0=$(date +%s); while [ $(( $(date +%s) - t0 )) -lt 2 ]; do :; done";
-    let mut session = ExecSession::new(spin, 1);
+    // The busy-wait: `pvclock-spin` mmaps the clock page and spins on it for 2
+    // virtual seconds, making NO syscalls and taking NO counter traps inside the
+    // loop (guest/linux/pvclock-spin.c).
+    //
+    // The obvious shell version — `while [ $(date +%s) -lt N ]` — is NOT a test
+    // of this mechanism (cross-model r5 P1). Every `date` is a syscall, and this
+    // kernel randomizes the kernel stack offset on syscall entry by reading the
+    // TSC: `do_syscall_64` carries an `rdtsc` (it is in the reviewed allowlist).
+    // That is a V-time intercept, so each syscall exits, advances the anchor and
+    // refreshes the page for free — the loop would terminate whether or not the Δ
+    // staleness bound did anything, and the constant intercepts can even keep the
+    // pvclock deadline from ever landing, zeroing the attribution count. The
+    // gate would be vacuous in both directions.
+    //
+    // The host already knows where the page is, so there is nothing to parse.
+    let spin = format!("/bin/pvclock-spin {gpa:#x} 2000000000");
+    let mut session = ExecSession::new(&spin, 1);
     let input = session.input().to_vec();
     vmm.inject_serial_input(&input);
     // Re-arm the refresh log at the measured window's start (cross-model r1
@@ -685,6 +698,16 @@ fn g3_busy_wait_on_page_time_terminates_within_delta() {
          status={:?} output tail={:?}",
         outcome.status,
         String::from_utf8_lossy(&outcome.output[outcome.output.len().saturating_sub(200)..])
+    );
+    // The spinner reports how it ended: PVSPIN_DONE means the page clock really
+    // advanced 2 virtual seconds under its own (syscall-free) reads. A
+    // PVSPIN_FAIL — bad ABI, /dev/mem, mmap — must never be mistaken for a pass,
+    // and the exit status alone would not tell them apart from a shell error.
+    assert!(
+        find(&outcome.output, b"PVSPIN_DONE"),
+        "pvclock-spin did not report PVSPIN_DONE — it never observed 2 virtual seconds pass by \
+         reading the page directly. Output tail: {:?}",
+        String::from_utf8_lossy(&outcome.output[outcome.output.len().saturating_sub(300)..])
     );
     // Staleness bound: no two consecutive refresh anchors in the spin window
     // more than Δ apart (the §6 G3 assertion, on the work axis). The window

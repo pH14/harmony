@@ -690,7 +690,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // The task-110 pvclock channel (v4): offer + Δ + the one-shot
             // registration, so the direct restore path carries the stamping
             // obligation with the state it governs (same-state ⇒ same-future).
-            pvclock: self.pvclock_snapshot().map(|s| (s.delta_work, s.gpa)),
+            pvclock: self
+                .pvclock_snapshot()
+                .map(|s| (s.delta_work, s.gpa, s.registrable)),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();

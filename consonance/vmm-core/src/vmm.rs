@@ -592,28 +592,6 @@ pub(crate) struct PvclockChannel {
     /// a guest fault and the stamping target never moves for the machine's
     /// life (the PR #110 r2 GPA ruling).
     gpa: Option<u64>,
-    /// `true` once a **deterministic clock advance** (a V-time intercept, a
-    /// `Deadline` landing, or an idle warp — any step ending
-    /// `vtime_synchronized`) has occurred since the registration was
-    /// established. The Δ forced-refresh deadline arms **only** when this
-    /// holds (`Vmm::pvclock_refresh_deadline`): the registration itself
-    /// happens at a doorbell `OUT`, where the anchor may be arbitrarily stale
-    /// — arming `anchor + Δ` there could be *already overdue*, and the
-    /// backend's overdue zero-step reports a **live PMU count** that
-    /// `on_deadline` would promote into the anchor and thence into hashed
-    /// guest RAM (the r2 P1 determinism leak). Deferring the first arm to a
-    /// fresh anchor makes every armed pvclock target strictly ahead of the
-    /// guest at arming time, and — because a `run_until`-bounded entry can
-    /// never overshoot its armed target — no pvclock deadline is ever overdue
-    /// after that. Restore sets it `true` directly (a restored VM's anchor is
-    /// exactly 0 — synchronized by construction), and every *seal* implies it
-    /// (a seal's own step ended synchronized), so it needs no snapshot carry
-    /// and no hash fold. The reference guest kernel shrinks the not-yet-armed
-    /// window to a few branches by executing one `rdtsc` (a trapping V-time
-    /// intercept) immediately before ringing the doorbell; liveness inside
-    /// the window is otherwise bounded by the always-armed periodic tick on
-    /// the Linux path.
-    first_advance_seen: bool,
     /// Diagnostic refresh log (**not** hashed, like
     /// [`Vmm::preemption_landings`]): `(work anchor, vns, guest_clock)` for
     /// every *value-publishing* stamp, **read back from the page bytes** after
@@ -686,6 +664,16 @@ pub struct PvclockSnapshot {
     pub(crate) delta_work: u64,
     /// The registered page GPA, if the guest had published one.
     pub(crate) gpa: Option<u64>,
+    /// Whether the sealing VM could actually *register* a page
+    /// ([`Vmm::pvclock_available`]: offered + V-time + a deterministic work
+    /// counter). Carried because a snapshot taken **before** registration has no
+    /// GPA to re-validate, yet still promises a future: restore it onto a VM
+    /// whose backend has no deterministic counter and the guest's next
+    /// registration — which succeeded on the source — answers `UnknownService`
+    /// (cross-model r5 P1). Cross-validated for *equality* on restore, so the
+    /// reverse (a child that can register where its parent could not) fails
+    /// loud too.
+    pub(crate) registrable: bool,
 }
 
 pub struct Vmm<B: Backend>
@@ -2159,7 +2147,6 @@ where
         self.pvclock = Some(PvclockChannel {
             delta_work: delta_work.max(1),
             gpa: None,
-            first_advance_seen: false,
             refreshes: Vec::new(),
             forced_landings: 0,
         });
@@ -2170,6 +2157,28 @@ where
     /// page (regardless of whether the guest has registered one).
     pub fn pvclock_offered(&self) -> bool {
         self.pvclock.is_some()
+    }
+
+    /// Is the pvclock service **available** on this composition — offered, V-time
+    /// wired, and a *deterministic* work counter behind it? This is the exact
+    /// precondition for a registration to succeed, and it is used in three
+    /// places, which is the point of naming it:
+    ///
+    /// - the doorbell gate, which must answer `UnknownService` for an
+    ///   unavailable service **before** it classifies the payload or the opcode
+    ///   (cross-model r5 P2);
+    /// - [`pvclock_register`](Self::pvclock_register) itself;
+    /// - and the restore validation, which requires a snapshot's availability to
+    ///   MATCH this VM's (r5 P1). A source that could register, restored onto a
+    ///   VM that could not, would answer `UnknownService` to the very
+    ///   registration the source accepted — same state, different future — and
+    ///   the reverse would let a child register where its parent never could.
+    ///   Neither is caught by the GPA check, because a snapshot taken *before*
+    ///   registration carries no GPA to check.
+    fn pvclock_available(&self) -> bool {
+        self.pvclock.is_some()
+            && self.vtime.is_some()
+            && self.backend.capabilities().arch.deterministic_clock()
     }
 
     /// The registered pvclock page GPA, or `None` when the guest has not
@@ -2187,9 +2196,11 @@ where
     /// channel's, restoring (and cross-validating) via
     /// [`pvclock_restore`](Self::pvclock_restore).
     pub fn pvclock_snapshot(&self) -> Option<PvclockSnapshot> {
+        let registrable = self.pvclock_available();
         self.pvclock.as_ref().map(|pv| PvclockSnapshot {
             delta_work: pv.delta_work,
             gpa: pv.gpa,
+            registrable,
         })
     }
 
@@ -2212,7 +2223,7 @@ where
     /// deterministic work counter.
     pub(crate) fn pvclock_validate_restore(
         &self,
-        rec: Option<&(u64, Option<u64>)>,
+        rec: Option<&(u64, Option<u64>, bool)>,
     ) -> Result<(), VmmError> {
         match (rec, self.pvclock.as_ref()) {
             (None, None) => Ok(()),
@@ -2222,12 +2233,12 @@ where
                  restore into a VM composed like the snapshot source."
                     .to_string(),
             )),
-            (Some((delta, gpa)), None) => Err(VmmError::ContractViolation(format!(
+            (Some((delta, gpa, _)), None) => Err(VmmError::ContractViolation(format!(
                 "restore_vm_state: snapshot carries a pvclock channel (Δ = {delta}, \
                  registration {gpa:#x?}) but this VM was composed without enable_pvclock — \
                  restore into a VM composed like the snapshot source."
             ))),
-            (Some((delta, gpa)), Some(pv)) => {
+            (Some((delta, gpa, registrable)), Some(pv)) => {
                 if *delta != pv.delta_work {
                     return Err(VmmError::ContractViolation(format!(
                         "restore_vm_state: pvclock staleness bound mismatch (snapshot Δ = \
@@ -2237,14 +2248,32 @@ where
                         pv.delta_work
                     )));
                 }
+                // REGISTRATION CAPABILITY, independent of whether a GPA is
+                // present (cross-model r5 P1). A snapshot taken BEFORE the guest
+                // registered carries no GPA — so the GPA check below never runs —
+                // yet it still promises a future in which the guest registers.
+                // Restored onto a backend with no deterministic work counter, that
+                // registration would answer `UnknownService` where the source
+                // accepted it: same state, different future. Equality (not merely
+                // "this VM can too") because the converse — a child that CAN
+                // register where its parent never could — forks the timeline just
+                // as hard.
+                if *registrable != self.pvclock_available() {
+                    return Err(VmmError::ContractViolation(format!(
+                        "restore_vm_state: pvclock registration capability mismatch (the \
+                         snapshot's VM {} register a clock page; this VM {}) — the restored \
+                         guest's next registration would take a different branch than the \
+                         sealed timeline's. Restore into a VM composed like the snapshot \
+                         source (V-time wired, deterministic work counter).",
+                        if *registrable { "could" } else { "could NOT" },
+                        if self.pvclock_available() {
+                            "can"
+                        } else {
+                            "can NOT"
+                        }
+                    )));
+                }
                 if let Some(gpa) = gpa {
-                    if !self.backend.capabilities().arch.deterministic_clock() {
-                        return Err(VmmError::ContractViolation(format!(
-                            "restore_vm_state: snapshot carries a registered pvclock page \
-                             ({gpa:#x}) but this backend has no deterministic work counter to \
-                             stamp from — the original registration required one."
-                        )));
-                    }
                     self.pvclock_validate_gpa(*gpa).map_err(|reason| {
                         VmmError::ContractViolation(format!(
                             "restore_vm_state: snapshot pvclock page GPA {gpa:#x} does not \
@@ -2265,18 +2294,17 @@ where
     /// and an unregistered record clears any stale-timeline registration
     /// this VM held (the arrival-deadline stale-arm class). Infallible, per
     /// the restore commit phase's contract.
-    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(u64, Option<u64>)>) {
+    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(u64, Option<u64>, bool)>) {
         if let Some(pv) = self.pvclock.as_mut() {
-            let gpa = rec.and_then(|(_, g)| *g);
-            pv.gpa = gpa;
-            // A restored VM's anchor is exactly 0 (the work counter restarts
-            // and `restore_vm_state` anchors there — synchronized by
-            // construction), so a restored registration arms the Δ refresh
-            // immediately: `0 + Δ` is strictly ahead of the re-baselined
-            // counter. No overdue hazard, unlike the live-registration path
-            // (see `first_advance_seen`).
-            pv.first_advance_seen = gpa.is_some();
+            // A restored VM's anchor is exactly 0 (the work counter restarts and
+            // `restore_vm_state` anchors there — synchronized by construction),
+            // so a restored registration arms the Δ refresh immediately: `0 + Δ`
+            // is strictly ahead of the re-baselined counter. Since r5 the live
+            // registration path arms from a fresh anchor too, so both paths now
+            // establish the same invariant and neither can be born overdue.
+            pv.gpa = rec.and_then(|(_, g, _)| *g);
             pv.refreshes.clear();
+            pv.forced_landings = 0;
         }
     }
 
@@ -2384,9 +2412,18 @@ where
     }
 
     /// Validate a pvclock page GPA against this VM: page-aligned, wholly
-    /// inside guest RAM, and clear of the doorbell frame pages (a stamp there
-    /// would clobber an in-flight hypercall exchange). Returns the failing
-    /// reason for the caller's status/error mapping.
+    /// inside guest RAM, clear of the doorbell frame pages (a stamp there would
+    /// clobber an in-flight hypercall exchange), and clear of the vendor's
+    /// device-MMIO holes. Returns the failing reason for the caller's
+    /// status/error mapping.
+    ///
+    /// **The hole check is not redundant with the RAM bound** (cross-model r5
+    /// P2): the RAM *image* spans the vendor's MMIO holes, but the backend
+    /// deliberately leaves them out of its memslots (x86: the xAPIC page at
+    /// `0xFEE00000`). A page there passes "inside guest RAM" while the guest's
+    /// own loads go to the *device model*, not to the bytes the host stamps — so
+    /// registration would report success and then publish time into backing the
+    /// guest can never read. Fail closed instead.
     fn pvclock_validate_gpa(&self, gpa: u64) -> Result<(), &'static str> {
         let page_len = vtime::pvclock::PVCLOCK_PAGE_LEN as u64;
         if !gpa.is_multiple_of(page_len) {
@@ -2400,6 +2437,13 @@ where
         // a 4 KiB-aligned page overlaps them iff it IS one of them.
         if gpa == REQ_GPA as u64 || gpa == RESP_GPA as u64 {
             return Err("overlaps a doorbell frame page");
+        }
+        // Device MMIO the backend never maps as RAM (x86: the xAPIC page).
+        for &(hole, hole_len) in <B::A as Vendor>::mmio_holes() {
+            let hole_end = hole.saturating_add(hole_len);
+            if gpa < hole_end && hole < end {
+                return Err("overlaps a device-MMIO hole (not backed as guest RAM)");
+            }
         }
         Ok(())
     }
@@ -2423,10 +2467,7 @@ where
     /// would adopt a live PMU count (the r2 P1). The first arm waits for a
     /// deterministic clock advance ([`PvclockChannel::first_advance_seen`]).
     fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
-        if self.pvclock.is_none()
-            || self.vtime.is_none()
-            || !self.backend.capabilities().arch.deterministic_clock()
-        {
+        if !self.pvclock_available() {
             return (Status::UnknownService, None);
         }
         if self.pvclock_registration().is_some() {
@@ -2435,16 +2476,44 @@ where
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
+        // ENFORCED DETERMINISTIC FIRST-ARM (cross-model r5 P1). Anchor V-time
+        // HERE, from a fresh work read, exactly as an RDTSC intercept does
+        // (`complete_tsc`): the doorbell `OUT` is an instruction-caused,
+        // synchronous exit — the same class as RDTSC, not an asynchronous
+        // boundary — so the counter is frozen at the instruction and the read is
+        // exact, not skid-laden.
+        //
+        // This is what makes the Δ refresh arm at registration and not one
+        // guest-trap later. Without it, `anchor + Δ` had to wait for the guest to
+        // take some *other* intercept, because an arm off a STALE anchor could be
+        // born already overdue and the backend's overdue zero-step reports a live
+        // PMU count (the r2 P1). A guest that registers and immediately busy-waits
+        // on the page — no timer, no RDTSC, no MSR — would then never be forced
+        // out at all, and its page would stay frozen forever. The reference kernel
+        // hides that by executing an `rdtsc` right after registering, but the
+        // **public protocol must not depend on the guest doing us a favour**.
+        //
+        // With a fresh anchor the invariant that retires the overdue case is
+        // established at registration and self-maintaining thereafter: every entry
+        // is `run_until`-bounded at or before `anchor + Δ`, and a bounded entry
+        // cannot overshoot its target, so the guest's work is always ≤ the armed
+        // target and no pvclock deadline is ever born overdue.
+        let work = match self.vtime.as_ref().expect("checked above").work.work() {
+            Ok(w) => w,
+            // The counter is the substrate; a failed read is breakage, not a
+            // guest error. Answer Internal and register nothing.
+            Err(_) => return (Status::Internal, None),
+        };
+        {
+            let vt = self.vtime.as_mut().expect("checked above");
+            vt.last_intercept_work = work;
+        }
         {
             let pv = self.pvclock.as_mut().expect("checked above");
             pv.gpa = Some(gpa);
-            pv.first_advance_seen = false;
         }
-        // Canonical initial stamp (total function of the anchor values — never
-        // of the guest's prior page content). The doorbell OUT is not a V-time
-        // intercept, so the anchor may lag the live work here; the page then
-        // publishes a (deterministic) lower bound until the next clock-advance
-        // boundary re-stamps it — same staleness contract as any other window.
+        // Canonical initial stamp at that fresh anchor — a total function of the
+        // clock values, never of whatever the guest's allocator left in the page.
         match self.pvclock_stamp(StampKind::Canonical) {
             Ok(()) => (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION)),
             // A stamp failure here is a validated-GPA slice failing to
@@ -2548,17 +2617,6 @@ where
     /// on the page is repaired at the next exit, not merely the next
     /// intercept.
     fn pvclock_refresh(&mut self) -> Result<(), VmmError> {
-        // A step that ended V-time-synchronized IS a deterministic clock
-        // advance — the anchor is exactly current here, so from the NEXT
-        // arming on, `anchor + Δ` is strictly ahead of the guest and the Δ
-        // deadline can never be born overdue (the r2 P1; see
-        // [`PvclockChannel::first_advance_seen`]).
-        if self.vtime_synchronized
-            && let Some(pv) = self.pvclock.as_mut()
-            && pv.gpa.is_some()
-        {
-            pv.first_advance_seen = true;
-        }
         self.pvclock_stamp(StampKind::Refresh)
     }
 
@@ -2569,26 +2627,24 @@ where
     /// out — and the page re-stamped — within Δ. `None` without a
     /// registration, so every existing path arms exactly as before.
     ///
-    /// **Arms only from a fresh anchor** (the r2 P1 fix): `None` until a
-    /// deterministic clock advance has occurred since registration
-    /// ([`PvclockChannel::first_advance_seen`]). Armed off the registration's
-    /// possibly-stale anchor, `anchor + Δ` could be already overdue, and the
-    /// backend's overdue zero-step would report a live PMU count that
-    /// [`on_deadline`](Self::on_deadline) promotes into the anchor — a
-    /// nondeterministic value entering hashed guest RAM. Once armed from a
-    /// fresh anchor, every entry is `run_until`-bounded at or before this
-    /// target, and a bounded entry never overshoots its target — so no
-    /// pvclock deadline is ever overdue and the zero-step path is unreachable
-    /// for it. Liveness inside the brief not-yet-armed window is bounded by
-    /// the always-armed periodic tick on the Linux path, and the reference
-    /// guest shrinks the window to a few branches with a pre-registration
-    /// `rdtsc`.
+    /// **Armed from the moment of registration** (cross-model r5 P1). It used to
+    /// wait for the guest's next *other* intercept, because an arm off a stale
+    /// anchor could be born already overdue and the backend's overdue zero-step
+    /// reports a live PMU count — nondeterminism straight into hashed guest RAM
+    /// (the r2 P1). But a guest that registers and immediately busy-waits on the
+    /// page takes no other intercept, so it would never be forced out and its
+    /// page would stay frozen: the mechanism's headline case, broken, and masked
+    /// only by the reference kernel's courtesy `rdtsc`.
+    ///
+    /// [`pvclock_register`](Self::pvclock_register) now anchors V-time from a
+    /// fresh work read (the doorbell `OUT` is a synchronous instruction trap,
+    /// like RDTSC), so the arm is **never** off a stale anchor and the overdue
+    /// case is retired by an invariant instead of by a delay: the guest's work is
+    /// always ≤ the armed target, because every entry is `run_until`-bounded at
+    /// or before it and a bounded entry cannot overshoot.
     pub(crate) fn pvclock_refresh_deadline(&self) -> Option<Moment> {
         let pv = self.pvclock.as_ref()?;
         pv.gpa?;
-        if !pv.first_advance_seen {
-            return None;
-        }
         if !self.backend.capabilities().arch.deterministic_clock() {
             return None;
         }
@@ -2767,7 +2823,35 @@ where
         // answers `UnknownService` so a probing guest cleanly keeps its
         // trap-backstopped time paths. No seeded stream is touched either way
         // (the inert-guest `state_hash` property needs no guard here).
-        if header.service == ServiceId::Pvclock as u16 && header.opcode == 1 {
+        if header.service == ServiceId::Pvclock as u16 {
+            // AVAILABILITY FIRST (cross-model r5 P2): an unoffered service answers
+            // `UnknownService` — before any payload or opcode classification. A
+            // composition that keeps the doorbell alive for some *other* channel
+            // must not leak the pvclock service's existence by grading its
+            // requests (`BadRequest` for a malformed payload, `UnknownOpcode` for
+            // a bad op) when the service is not there at all. That is the generic
+            // dispatcher's contract (INTEGRATION.md §1) and the same posture Event
+            // / Sdk / Entropy / Net take below.
+            if !self.pvclock_available() {
+                let n = encode_error(
+                    header.service,
+                    header.opcode,
+                    header.seq,
+                    Status::UnknownService,
+                    resp,
+                );
+                return (n, None);
+            }
+            if header.opcode != 1 {
+                let n = encode_error(
+                    header.service,
+                    header.opcode,
+                    header.seq,
+                    Status::UnknownOpcode,
+                    resp,
+                );
+                return (n, None);
+            }
             if payload.len() != 8 {
                 let n = encode_response(
                     ServiceId::Pvclock,
@@ -9138,6 +9222,151 @@ mod tests {
         }
     }
 
+    /// A page-aligned GPA inside the RAM *image* but inside a **device-MMIO
+    /// hole** must be refused (cross-model r5 P2). `KvmBackend::map_memory`
+    /// splits its memslots around the xAPIC page, so RAM there is not mapped:
+    /// the host would happily stamp its backing bytes while the guest's own loads
+    /// went to the LAPIC device model. Registration would report `Ok` and the
+    /// guest would read a clock that never ticks — the worst failure shape there
+    /// is (silently wrong, not loud).
+    ///
+    /// Needs a RAM image that actually extends past `0xFEE00000`; the mapping is
+    /// lazy (untouched pages never commit), but it is far too big for Miri.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "4 GiB guest RAM image — lazy mmap, but not for the interpreter"
+    )]
+    fn pvclock_registration_rejects_the_lapic_mmio_hole() {
+        const LAPIC_HOLE: u64 = 0xFEE0_0000;
+        // Just past the hole, so both a normal page and the hole are in range.
+        let ram_len = (LAPIC_HOLE + 0x2000) as usize;
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(ram_len).unwrap());
+        vmm.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
+        );
+        vmm.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
+        // The hole itself: inside the image, page-aligned — and refused.
+        let (status, _) = ring_pvclock_register(&mut vmm, LAPIC_HOLE);
+        assert_eq!(
+            status,
+            Status::OutOfRange as u16,
+            "the xAPIC MMIO page was accepted as a clock page — the host would stamp backing \
+             the guest cannot read, and the guest would read the LAPIC instead of its clock"
+        );
+        assert_eq!(vmm.pvclock_registration(), None);
+        // ...while a normal page just past it still registers, so the check is a
+        // hole test and not a blanket ban on high memory.
+        let (status, _) = ring_pvclock_register(&mut vmm, LAPIC_HOLE + 0x1000);
+        assert_eq!(status, Status::Ok as u16);
+        assert_eq!(vmm.pvclock_registration(), Some(LAPIC_HOLE + 0x1000));
+    }
+
+    /// The doorbell answers `UnknownService` for an unavailable pvclock service
+    /// **before** it classifies the payload or the opcode (cross-model r5 P2). A
+    /// composition that keeps the doorbell alive for some other channel must not
+    /// leak the service's existence by grading its requests — a malformed payload
+    /// must not come back `BadRequest`, and a bad opcode must not come back
+    /// `UnknownOpcode`, when the service is not there at all.
+    #[test]
+    fn pvclock_unavailable_answers_unknown_service_before_classifying() {
+        // Offered, but no deterministic work counter ⇒ unavailable.
+        let mut caps = MOCK_TEST_CAPS;
+        caps.arch.deterministic_tsc = false;
+        let mut m = MockBackend::with_capabilities(caps);
+        m.set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter::default(),
+        })
+        .unwrap();
+        let mut vmm = Vmm::new(m, GuestRam::new(TEST_RAM).unwrap());
+        vmm.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
+        );
+        vmm.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
+        assert!(!vmm.pvclock_available());
+
+        let ring_raw = |vmm: &mut Vmm<MockBackend>, opcode: u32, payload: &[u8]| -> u16 {
+            let mut frame = [0_u8; 64];
+            let len =
+                hypercall_proto::encode_request(ServiceId::Pvclock, 1, opcode, payload, &mut frame)
+                    .expect("encode");
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + len].copy_from_slice(&frame[..len]);
+            vmm.service_doorbell(len as u32).expect("doorbell");
+            let resp = &vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + HC_PAGE];
+            decode(resp).expect("well-formed response frame").0.status
+        };
+        // A well-formed register, a MALFORMED payload, and a bad opcode: all three
+        // must be UnknownService, not Ok / BadRequest / UnknownOpcode.
+        assert_eq!(
+            ring_raw(&mut vmm, 1, &PV_GPA.to_le_bytes()),
+            Status::UnknownService as u16
+        );
+        assert_eq!(
+            ring_raw(&mut vmm, 1, &[0u8; 3]),
+            Status::UnknownService as u16,
+            "a malformed payload was graded BadRequest on a service that is not offered"
+        );
+        assert_eq!(
+            ring_raw(&mut vmm, 9, &[]),
+            Status::UnknownService as u16,
+            "a bad opcode was graded UnknownOpcode on a service that is not offered"
+        );
+        assert_eq!(vmm.pvclock_registration(), None);
+    }
+
+    /// The headline case the r5 P1 first-arm fix exists for: a guest that
+    /// registers and then **busy-waits on the page**, taking no other intercept
+    /// at all (no timer, no RDTSC, no MSR). The Δ deadline must arm off the
+    /// registration itself — otherwise nothing ever forces the guest out, the
+    /// page never advances, and the busy-wait hangs forever on a frozen clock.
+    /// (Before r5 this arm waited for some *other* deterministic clock advance,
+    /// which this guest never produces; the reference kernel's courtesy `rdtsc`
+    /// hid it, but the public protocol cannot depend on that.)
+    #[test]
+    fn pvclock_registering_guest_that_only_busy_waits_is_still_forced_out() {
+        const DELTA: u64 = 1_000;
+        // The ONLY exits this guest ever takes are the forced-refresh landings.
+        let mut vmm = Vmm::new(
+            configured_mock(vec![
+                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+            ]),
+            GuestRam::new(TEST_RAM).unwrap(),
+        );
+        vmm.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
+        );
+        vmm.enable_pvclock(DELTA);
+        ring_pvclock_register(&mut vmm, PV_GPA);
+        // Armed immediately — no intervening intercept.
+        assert_eq!(
+            vmm.run_until_deadline(),
+            Some(Moment(DELTA)),
+            "the busy-waiting guest was never armed: its page would freeze and it would spin \
+             forever"
+        );
+        // And it keeps being forced out, advancing the page every Δ.
+        let mut last = 0;
+        for i in 1..=3 {
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+            let f = vtime::pvclock::read(vmm.pvclock_page().unwrap()).unwrap();
+            assert_eq!(
+                f.vns,
+                i * DELTA,
+                "page did not advance at forced refresh {i}"
+            );
+            assert!(f.vns > last);
+            last = f.vns;
+        }
+        assert_eq!(
+            vmm.pvclock_forced_landings(),
+            3,
+            "every landing here is the Δ bound's doing — nothing else is armed"
+        );
+    }
+
     /// The pure-opt-in gate, host side: an offered-but-vtime-unwired VM and a
     /// backend without a deterministic work counter both answer
     /// `UnknownService` — the probing guest keeps its trap-backstopped paths.
@@ -9319,13 +9548,19 @@ mod tests {
     /// before the last refresh — a snapshot would change the guest's future.
     #[test]
     fn pvclock_seal_never_touches_the_live_page() {
+        // TSC_ADJUST (not a bare RDTSC): since r5 the registration already
+        // publishes the current values, so only a genuine clock CHANGE moves the
+        // epoch off its canonical 0 — which is the precondition this test needs.
         let mut vmm = pvclock_vmm(
-            vec![Exit::Arch(X86Exit::Rdtsc)],
+            vec![Exit::Arch(X86Exit::Wrmsr {
+                index: IA32_TSC_ADJUST,
+                value: 5,
+            })],
             Box::new(ScriptedWork::at(10)),
             7,
         );
         ring_pvclock_register(&mut vmm, PV_GPA);
-        vmm.step().unwrap(); // synchronized; page stamped, seq moved off 0
+        vmm.step().unwrap(); // synchronized; page re-stamped, seq moved off 0
         // Drain the registration's dirty bookkeeping so the assertion below
         // isolates the seal attempt.
         vmm.host_dirty.clear();
@@ -9443,9 +9678,15 @@ mod tests {
         let f = vtime::pvclock::read(vmm.pvclock_page().unwrap()).unwrap();
         assert_eq!((f.guest_clock, f.seq), (25, seq_before));
 
-        // The refresh log recorded the two distinct-value publishes (the
-        // registration's canonical stamp is not a refresh entry).
-        assert_eq!(vmm.pvclock_refreshes(), &[(10, 10, 20), (10, 10, 25)]);
+        // The refresh log holds exactly ONE entry: the TSC_ADJUST publish. Since
+        // r5 the registration anchors V-time from a fresh work read and stamps
+        // there, so the page already published (vns 10, clock 20) before step 1 —
+        // and step 1's RDTSC refresh is therefore a value-keyed byte no-op, which
+        // by design is not a publish and not logged. (The registration's own
+        // canonical stamp is not a refresh entry either.) The page's agreement
+        // with the trap oracle at every step is asserted above, and by
+        // `pvclock_check_oracle`; the log records *changes*, and there was one.
+        assert_eq!(vmm.pvclock_refreshes(), &[(10, 10, 25)]);
     }
 
     /// G2's evidence-integrity bar (the deliberate-fault test the task spec
@@ -9513,14 +9754,16 @@ mod tests {
         assert_eq!(vmm.run_until_deadline(), None);
         let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
-        // Registered but no clock advance yet: the Δ deadline must NOT arm off
-        // the registration's possibly-stale anchor (r2 P1 — armed stale it
-        // could be born overdue, and the overdue zero-step adopts a live PMU
-        // count into the anchor).
-        assert_eq!(vmm.run_until_deadline(), None);
-        // The first deterministic clock advance (an RDTSC intercept) arms it.
+        // REGISTRATION ARMS IT (cross-model r5 P1) — no second guest trap needed.
+        // The registration anchored V-time from a fresh work read, so `anchor + Δ`
+        // is strictly ahead of the guest and cannot be born overdue. This is what
+        // a guest that registers and immediately busy-waits on the page depends
+        // on: it takes no other intercept, so if the arm waited for one (the r2
+        // behaviour) it would never be forced out and its page would freeze.
+        assert_eq!(vmm.run_until_deadline(), Some(Moment(DELTA)));
+        // An intervening RDTSC intercept re-anchors at the same work (0 here) and
+        // leaves the bound where it is.
         assert_eq!(vmm.step().unwrap(), Step::Continued);
-        // Registered + fresh anchor: the next entry is bounded at anchor + delta.
         assert_eq!(vmm.run_until_deadline(), Some(Moment(DELTA)));
         // The forced refresh lands exactly at the bound (the mock rewrites the
         // scripted Deadline to the requested one), advances the anchor, and the
@@ -9628,13 +9871,24 @@ mod tests {
     /// path carries the channel with the state).
     #[test]
     fn pvclock_seal_is_verbatim_and_restore_carries_the_registration() {
+        // The clock must actually MOVE after registration for the epoch to leave
+        // its canonical 0 — and since r5 the registration itself already publishes
+        // the current values, so a plain RDTSC at the same work is a byte no-op.
+        // An IA32_TSC_ADJUST write changes the guest-visible clock at the same
+        // anchor: a genuine distinct-value publish, so seq advances.
         let mut a = pvclock_vmm(
-            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Arch(X86Exit::Rdtsc)],
+            vec![
+                Exit::Arch(X86Exit::Wrmsr {
+                    index: IA32_TSC_ADJUST,
+                    value: 5,
+                }),
+                Exit::Arch(X86Exit::Rdtsc),
+            ],
             Box::new(ScriptedWork::at(10)),
             7,
         );
         ring_pvclock_register(&mut a, PV_GPA);
-        a.step().unwrap(); // RDTSC at work 10: stamped, seq moved
+        a.step().unwrap(); // TSC_ADJUST: the clock changes, so the epoch moves
         let live = vtime::pvclock::read(a.pvclock_page().unwrap()).unwrap();
         assert_ne!(live.seq, 0, "a mid-run refresh bumped the epoch");
         let page_before_seal = a.pvclock_page().unwrap().to_vec();
@@ -9789,12 +10043,20 @@ mod tests {
             &registered_state,
             "registration onto a non-deterministic-clock backend",
         );
-        // The same target accepts the UNREGISTERED channel state (no stamps
-        // will ever be derived until a registration, which the doorbell gate
-        // would itself refuse there).
-        no_det
-            .restore_vm_state(&offered_unregistered_state)
-            .unwrap();
+        // ...and it must ALSO reject the UNREGISTERED channel state (cross-model
+        // r5 P1 — this assertion used to expect acceptance, which was the bug).
+        // The snapshot carries no GPA, so the GPA check never runs; but its source
+        // COULD register (it had a deterministic counter) and this target cannot.
+        // Accept it and the restored guest's very next `pvclock_register` — the
+        // one the sealed timeline accepted — answers `UnknownService` instead:
+        // same state, different future. The carried `registrable` bit is what
+        // catches it.
+        reject(
+            &mut no_det,
+            &offered_unregistered_state,
+            "a PRE-registration snapshot from a registrable source, onto a backend that can \
+             never register",
+        );
     }
 
     /// An unknown pvclock opcode answers `UnknownOpcode`; a malformed payload
