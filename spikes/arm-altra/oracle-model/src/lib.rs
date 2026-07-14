@@ -386,6 +386,36 @@ pub struct Weights {
     /// The constant offset of the counting window itself: the branches, if any,
     /// that the counter attributes to the window but that the body does not
     /// contain (the arm/read edges). x86's analogue measured `n+2`.
+    ///
+    /// # This field is a falsifiable prediction, and AA-1 is its test
+    ///
+    /// One offset, shared by every payload class — the model's stance is that the
+    /// bracket overhead is a property of the *window* (the two mark stores and the
+    /// counter reads around them), not of what runs inside it. That is a claim about
+    /// N1, and it is the kind of claim this apparatus is forbidden from quietly
+    /// assuming, so it is stated here as a prediction that the measurements can
+    /// **refute**:
+    ///
+    /// - [`solve`] derives the offset independently from the two zero-ambiguity
+    ///   classes (straight-line and branch-dense) and returns
+    ///   [`SolveError::InconsistentOffset`] if they disagree. A variable offset is a
+    ///   mismatch, not a calibration (`docs/ARM-ALTRA.md` §AA-1(a)).
+    /// - The `SVC` class then over-determines the system, so a per-class offset the
+    ///   four weights cannot absorb surfaces as a nonzero [`Solved::residual`].
+    ///
+    /// Both of those fail *loudly*. What they do not do is repair the model, and the
+    /// AA-1 acceptance criterion speaks of "stable **per-class** count offsets" — so
+    /// the escape hatch is named here rather than discovered on arrival day:
+    ///
+    /// **If N1 delivers stable but class-dependent offsets, this field generalizes to
+    /// a per-class intercept map, solved as the intercept of count-vs-trips across
+    /// the 1e6/1e7/1e8 scales** (which is exactly why AA-1(a) sweeps scales
+    /// differentially rather than measuring one size). It is deliberately *not*
+    /// generalized pre-silicon: a free offset per class, fitted from one scale each,
+    /// would absorb every ambiguity weight into itself and make the solve
+    /// unidentifiable — the over-determination that gives [`Solved::residual`] its
+    /// meaning would be gone, and the model would fit anything, including a wrong
+    /// answer.
     pub window_offset: u64,
 }
 

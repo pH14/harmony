@@ -57,10 +57,12 @@ opcode fixtures are the real target ISA.
 | Payloads build | `cd payloads && cargo build --release` | nine payloads link for `aarch64-unknown-none` |
 | **TCG smoke** | `cd payloads && ./smoke.sh` | every payload boots under `qemu-system-aarch64`, round-trips its protocol, matches golden structure — **liveness and protocol only**, with RC propagation |
 | Window verification | `cd harness && cargo run --bin arm-scan -- windows ../payloads/target/aarch64-unknown-none/release` | every payload's window branches match the oracle model (makes "known by construction" checked) |
-| Harness logic | `cd harness && cargo test` | scanner, ELF reader, console, planner, evidence — all pure-logic, tested natively |
-| Harness cross-build | `cd harness && cargo build --target aarch64-unknown-linux-gnu` | the box binary links (the perf/KVM syscall paths compile for Linux) |
+| Harness logic | `cd harness && cargo test` | scanner, ELF reader, console, planner, evidence, **and the `KVM_RUN` loop** (driven against a scripted seam) — all pure-logic, tested natively |
+| Harness cross-build | `cd harness && cargo check --target aarch64-unknown-linux-gnu` | the box binary compiles (the perf/KVM syscall paths build for Linux; linking needs the container — see `host/BUILD.md`) |
+| Harness under Miri | `MIRIFLAGS=-Zmiri-permissive-provenance cargo +nightly-2026-06-16 miri test -p arm-harness` | the crate carries `unsafe` (the syscall seam), so the repo's unsafe⇒Miri bar applies |
 | Expected-count manifest | `cd harness && cargo run --bin arm-scan -- manifest` | regenerates `payloads/expected/expected-counts.json` (kept current by a generator test) |
-| **Floor checker** | `cd schemas/floor-check && cargo test` | every acceptance floor is recomputed from records; 12 reject fixtures each fail the right check |
+| **Floor checker** | `cargo test -p floor-check` | every acceptance floor is recomputed from records; 17 reject fixtures each fail the *right* check |
+| Dependency policy | `cargo deny check` (and in `payloads/`, `oracle-model/`) | advisories, bans, licenses, sources — all three spike workspaces |
 | **Patch gate** | `cd host && ./verify.sh` | the kvm/arm64 patch applies to pristine `linux-6.18.35` and compiles, with the mechanism asserted in the built objects |
 
 ## What is validated here vs. what only silicon can say
@@ -72,7 +74,9 @@ opcode fixtures are the real target ISA.
 | The runtime boots (MMU, GICv3, PL011, exceptions) | ✅ on the *emulated* N1 under TCG | that it boots on real N1 (AA-0) |
 | `BR_RETIRED` counting is bit-deterministic on a pinned core | ❌ | **AA-1** — the existential measurement |
 | Per-class count offsets, the N1 `skid_margin`, the density table | ❌ (left as explicit unknowns everywhere) | **AA-1** — the constants pack |
-| Overflow PMIs arrive exactly once out of `KVM_RUN` | ❌ | **AA-1** (multiplicity) |
+| Overflow PMIs arrive exactly once out of `KVM_RUN` | ❌ — the loop *counts* deliveries per record and the checker demands exactly 1 | **AA-1** (multiplicity) |
+| The `KVM_RUN` loop assembles an honest record | ✅ the loop's decisions (mark decode, counter sampling, delivery counting, skid, every fail-closed refusal) are driven natively against a scripted vCPU | that the ioctls behave as documented on a real N1 (**AA-1**) |
+| The perf event armed is the work clock | ✅ the `perf_event_attr` flag bits are pinned to their kernel-ABI positions by test, and the manifest's `perf` block is *derived from the attr that was armed* | that raw `0x21` opens pinned + guest-only on N1 (**AA-0**) |
 | Single-step lands exactly one instruction | ❌ | **AA-2** |
 | The patch converts overflow → deterministic exit; exact landing | ❌ — the patch only *applies + compiles* | **AA-3** |
 | LSE-only guest holds count-determinism under injection | ❌ — the a/b payloads *exist* and the scanner enforces LSE-only statically | **AA-4** |
@@ -97,7 +101,11 @@ lesson) are structural properties of this apparatus, not review checklists:
    believe.
 3. **Content-hash-verified boots** — the evidence schema makes `verified_before_boot`
    a required field the checker enforces; a recorded-but-unverified hash fails.
-4. **Mechanism attestation** — the checker rejects any run whose per-record exit
+4. **Mechanism attestation** — the patched mechanism cannot be silently downgraded:
+   `PerfCounter::open` *refuses* to arm the patched exit on a kernel that does not
+   advertise the capability (there is no code path from the request to the stock
+   kick), the stages that ride the patched force-exit (AA-3/AA-4/AA-6) must declare
+   and prove it, and the checker rejects any run whose per-record exit
    reasons do not match the mechanism the manifest claims (the stock-vs-patched
    masquerade that PR-98 caught).
 5. **Independent oracle** — counts are judged against the analytical oracle model,
