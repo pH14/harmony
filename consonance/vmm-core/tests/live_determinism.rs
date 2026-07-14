@@ -7,7 +7,7 @@
 //!
 //! - **deterministic twice** — two runs from the same seed produce a
 //!   bit-identical `state_hash` and identical guest memory;
-//! - **RDTSC/RDTSCP** read a **V-time** TSC (`VClock::tsc(work)` = `2·work`
+//! - **RDTSC/RDTSCP** read a **V-time** TSC (`VClock::guest_ticks(work)` = `2·work`
 //!   ticks here): strictly monotonic, constant per-branch delta, never the host
 //!   TSC (which would be ~10¹³, not single digits); `RDTSCP`'s ECX is the
 //!   contract `IA32_TSC_AUX`;
@@ -228,7 +228,7 @@ fn p6_rdtsc_rng_are_deterministic_and_vtime_backed() {
     );
 
     // RDTSC/RDTSCP are V-time, not host TSC: small, strictly monotonic, constant
-    // per-branch delta (VClock::tsc(work) = 2·work; one branch between reads).
+    // per-branch delta (VClock::guest_ticks(work) = 2·work; one branch between reads).
     let t = res_a.tsc;
     assert!(
         t.windows(2).all(|w| w[1] > w[0]),

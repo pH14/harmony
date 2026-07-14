@@ -405,7 +405,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     /// Complete a pending `RDTSC`/`RDTSCP` with the **V-time** TSC,
-    /// [`VtimeWiring::visible_tsc`] (`VClock::tsc(work)` + `IA32_TSC_ADJUST`) — never
+    /// [`VtimeWiring::guest_clock`] (`VClock::guest_ticks(work)` + `IA32_TSC_ADJUST`) — never
     /// a host TSC, and identical to what `RDMSR(IA32_TSC)` returns. `work` is read
     /// from the host counter at this exit; the backend writes the value to EDX:EAX
     /// (and, for RDTSCP, the guest's `IA32_TSC_AUX` to ECX, which the backend
@@ -478,7 +478,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     /// Service an `emulate-vtime` `WRMSR`. `WRMSR(IA32_TSC, X)` sets the guest-visible
-    /// TSC to `X` by choosing the adjust `X − VClock::tsc(work)` (architecturally a
+    /// TSC to `X` by choosing the adjust `X − VClock::guest_ticks(work)` (architecturally a
     /// TSC write also moves `IA32_TSC_ADJUST` by the same delta — this is exactly
     /// that); `WRMSR(IA32_TSC_ADJUST, Y)` sets the adjust to `Y`, shifting the visible
     /// TSC by `Y − old`. Both are honored (`complete_ok`); the write is deterministic
@@ -496,7 +496,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 IA32_TSC => {
                     let work = vt.work.work()?;
                     vt.last_intercept_work = work;
-                    // visible_tsc(work) == value ⇔ adjust = value − VClock::tsc(work).
+                    // guest_clock(work) == value ⇔ adjust = value − VClock::guest_ticks(work).
                     vt.guest_clock_offset = value.wrapping_sub(vt.clock.guest_ticks(work));
                 }
                 IA32_TSC_ADJUST => {

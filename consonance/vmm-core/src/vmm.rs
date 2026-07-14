@@ -758,7 +758,7 @@ where
 
     /// Wire the determinism-complete V-time + seeded-RNG path (the
     /// `PatchedKvmBackend` composition root calls this; stock KVM leaves it
-    /// unwired). After this, `RDTSC`/`RDTSCP` resolve to `VClock::tsc(work)` and
+    /// unwired). After this, `RDTSC`/`RDTSCP` resolve to `VClock::guest_ticks(work)` and
     /// `RDRAND`/`RDSEED` to the seeded stream, instead of failing closed.
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
         self.vtime = Some(wiring);
@@ -4970,7 +4970,7 @@ mod tests {
 
     /// Task-27 item 1: a guest reading `IA32_TSC` via `RDMSR(0x10)` gets the **same**
     /// V-time value the RDTSC instruction would at the same work — both flow through
-    /// `visible_tsc` (`VClock::tsc` + the default-0 `IA32_TSC_ADJUST`) — and it is
+    /// `guest_clock` (`VClock::guest_ticks` + the default-0 `IA32_TSC_ADJUST`) — and it is
     /// deterministic-twice. (Previously this aborted with a stale "V-time is not
     /// wired in this skeleton" `ContractViolation`.)
     #[test]
@@ -5012,7 +5012,7 @@ mod tests {
     /// are honored (`Completion::Ok`).
     #[test]
     fn emulate_vtime_tsc_msr_write_paths() {
-        // ScriptedWork fixed at work=10 → base V-time TSC = VClock::tsc(10) = 20.
+        // ScriptedWork fixed at work=10 → base V-time TSC = VClock::guest_ticks(10) = 20.
         let mut vmm = vtime_vmm(
             vec![
                 Exit::Arch(X86Exit::Wrmsr {
@@ -7365,7 +7365,7 @@ mod tests {
         b.step().unwrap(); // RDTSC at reset work=0 → visible = 2*vns_base + tsc_adjust
         b.step().unwrap(); // RDRAND → the word AFTER A's first draw
 
-        // visible_tsc = VClock::tsc(0) [= 2 * vns_base = 1000] + IA32_TSC_ADJUST
+        // guest_clock = VClock::guest_ticks(0) [= 2 * vns_base = 1000] + IA32_TSC_ADJUST
         // [0x1234, set by mutate_exits and round-tripped through the snapshot].
         assert_eq!(
             b.backend.completions()[0],
