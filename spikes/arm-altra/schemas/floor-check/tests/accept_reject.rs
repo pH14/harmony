@@ -56,10 +56,13 @@ fn assert_single_failure(name: &str, floors: Floors, id: CheckId) {
 
 #[test]
 fn accept_is_accepted() {
-    // Checked with the floors it meets: eight armed overflows, eight reps.
+    // Checked with the armed-overflow floor it meets. No --min-reps: the accept
+    // fixture is an AA-3 landing run of eight DISTINCT inputs (one rep each), not an
+    // AA-6 same-input gate, so a per-input rep floor above 1 does not apply to it —
+    // the AA-6 gate is covered by accept-aa6-gate.
     let floors = Floors {
         min_armed_overflows: Some(8),
-        min_reps: Some(8),
+        min_reps: None,
     };
     let report = check("accept", floors);
     assert!(
@@ -83,6 +86,36 @@ fn accept_counting_is_accepted() {
         report.failed()
     );
     assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn accept_aa6_gate_is_accepted() {
+    // A real AA-6 mini-gate shape: the SAME input repeated, all bit-identical. The
+    // per-input rep floor accepts it (four reps of one input meets a floor of four),
+    // and replay-identity confirms the four landed identically.
+    let floors = Floors {
+        min_armed_overflows: Some(4),
+        min_reps: Some(4),
+    };
+    let report = check("accept-aa6-gate", floors);
+    assert!(
+        report.passed(),
+        "the AA-6 gate fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(report.exit_code(), 0);
+}
+
+#[test]
+fn reject_aa6_rep_floor_counts_per_input_not_total() {
+    // The evasion the per-input floor closes: eight DISTINCT inputs, one rep each. The
+    // total (8) meets a floor of 2, but no input is repeated even twice — which a
+    // total-count floor accepted and the per-input floor rejects.
+    let floors = Floors {
+        min_armed_overflows: Some(8),
+        min_reps: Some(2),
+    };
+    assert_single_failure("reject-aa6-rep-floor", floors, CheckId::RepFloor);
 }
 
 #[test]
@@ -126,12 +159,41 @@ fn reject_count_mismatch() {
 
 #[test]
 fn reject_overshoot() {
-    assert_single_failure("reject-overshoot", no_floors(), CheckId::Skid);
+    // AA-4 (a patched landing-contract stage): a +1 landing is forbidden. The floor
+    // is passed so the armed overflows are accounted, leaving Skid the sole failure.
+    let floors = Floors {
+        min_armed_overflows: Some(1),
+        min_reps: None,
+    };
+    assert_single_failure("reject-overshoot", floors, CheckId::Skid);
 }
 
 #[test]
 fn reject_skid_exceeds_margin() {
-    assert_single_failure("reject-skid-exceeds-margin", no_floors(), CheckId::Skid);
+    let floors = Floors {
+        min_armed_overflows: Some(1),
+        min_reps: None,
+    };
+    assert_single_failure("reject-skid-exceeds-margin", floors, CheckId::Skid);
+}
+
+#[test]
+fn accept_aa1_skid_is_accepted_positive_skid_and_all() {
+    // The counterpart to reject-overshoot: AA-1(c) MEASURES the early/late skid
+    // distribution, so a landing at target+k is the datum, not a violation. The same
+    // positive skid AA-4 forbids, AA-1 must accept. `skid_margin: null` is legitimate
+    // here — the stage is deriving it.
+    let floors = Floors {
+        min_armed_overflows: Some(8),
+        min_reps: None,
+    };
+    let report = check("accept-aa1-skid", floors);
+    assert!(
+        report.passed(),
+        "the AA-1 skid-distribution fixture was rejected: {:?}",
+        report.failed()
+    );
+    assert_eq!(report.exit_code(), 0);
 }
 
 #[test]

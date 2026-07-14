@@ -100,6 +100,34 @@ impl Schema {
             }
         }
 
+        // pattern. No regex crate is on the whitelist, so this enforces exactly the
+        // patterns the committed schemas use, keyed by their literal text — and PANICS
+        // on any pattern it does not recognise, so a new one cannot slip in unchecked
+        // (which is the whole failure this test exists to catch). A `pattern` is only
+        // meaningful on a string.
+        if let Some(Value::String(pat)) = schema.get("pattern")
+            && let Some(s) = value.as_str()
+            && !pattern_matches(pat, s)
+        {
+            errs.push(format!("{path}: {s:?} does not match pattern {pat}"));
+        }
+
+        // minLength.
+        if let Some(min) = schema.get("minLength").and_then(Value::as_u64)
+            && let Some(s) = value.as_str()
+            && (s.chars().count() as u64) < min
+        {
+            errs.push(format!("{path}: string shorter than minLength {min}"));
+        }
+
+        // minimum.
+        if let Some(min) = schema.get("minimum").and_then(Value::as_i64)
+            && let Some(n) = value.as_i64()
+            && n < min
+        {
+            errs.push(format!("{path}: {n} is below minimum {min}"));
+        }
+
         // type.
         if let Some(Value::String(ty)) = schema.get("type") {
             let ok = match ty.as_str() {
@@ -159,6 +187,13 @@ impl Schema {
         }
     }
 
+    /// Validate, returning the errors rather than asserting — for negative tests.
+    fn errors(&self, value: &Value) -> Vec<String> {
+        let mut errs = Vec::new();
+        self.validate(&self.root, value, "$", &mut errs);
+        errs
+    }
+
     fn check(&self, value: &Value, what: &str) {
         let mut errs = Vec::new();
         self.validate(&self.root, value, what, &mut errs);
@@ -205,10 +240,67 @@ fn every_fixture_conforms_to_the_committed_json_schemas() {
 
     // The gate is only meaningful if it actually validated something.
     assert!(
-        checked_manifests >= 19,
-        "expected ≥19 fixture manifests, saw {checked_manifests}"
+        checked_manifests >= 20,
+        "expected ≥20 fixture manifests, saw {checked_manifests}"
     );
     assert!(checked_records > 0, "no records were validated");
+}
+
+#[test]
+fn the_validator_enforces_pattern_and_minimum_not_just_structure() {
+    // The finding: a structural-only validator leaves malformed values (an empty MD5,
+    // a zero sampling period) green, though the schemas constrain both with `pattern`
+    // and `minimum`. These negative cases prove the keywords are enforced.
+    let run_set_schema = Schema::from_file("run-set.schema.json");
+    let record_schema = Schema::from_file("run-record.schema.json");
+
+    // Start from a known-good fixture manifest and record.
+    let base = fixtures_dir().join("accept");
+    let mut manifest = load(&base.join("run-set.json"));
+    let good_record: Value = serde_json::from_str(
+        std::fs::read_to_string(base.join("records.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        record_schema.errors(&good_record).is_empty(),
+        "the base record should be valid"
+    );
+
+    // An empty MD5 pin violates `^[0-9a-f]{32}$`.
+    manifest["images"][0]["md5"] = Value::String(String::new());
+    assert!(
+        !run_set_schema.errors(&manifest).is_empty(),
+        "an empty md5 must fail the pattern"
+    );
+
+    // A malformed sha256 (wrong length) violates its pattern.
+    let mut m2 = load(&base.join("run-set.json"));
+    m2["images"][0]["sha256"] = Value::String("deadbeef".into());
+    assert!(
+        !run_set_schema.errors(&m2).is_empty(),
+        "a short sha256 must fail the pattern"
+    );
+
+    // A zero sampling period violates `minimum: 1`.
+    let mut m3 = load(&base.join("run-set.json"));
+    m3["perf"]["sample_period"] = Value::from(0);
+    assert!(
+        !run_set_schema.errors(&m3).is_empty(),
+        "a zero sample_period must fail the minimum"
+    );
+
+    // And a valid 32-hex md5 passes, so the matcher is not simply rejecting everything.
+    let mut m4 = load(&base.join("run-set.json"));
+    m4["images"][0]["md5"] = Value::String("0".repeat(32));
+    assert!(
+        run_set_schema.errors(&m4).is_empty(),
+        "a valid md5 must pass: {:?}",
+        run_set_schema.errors(&m4)
+    );
 }
 
 #[test]
@@ -226,4 +318,32 @@ fn the_schema_version_const_matches_the_rust_constant() {
         "run-set.schema.json pins schema_version {pinned} but the Rust SCHEMA_VERSION is {}",
         arm_harness::evidence::SCHEMA_VERSION
     );
+}
+
+/// Whether `s` matches a JSON-Schema `pattern`.
+///
+/// No regex crate is on the dependency whitelist, so this recognises exactly the two
+/// patterns the committed schemas use — a sha256 (with an optional `sha256:` prefix)
+/// and an md5 — and **panics on any other pattern string**. That is deliberate: a new
+/// pattern the schemas start using must be handled here explicitly rather than
+/// silently passing, which is the failure mode this whole test guards against.
+fn pattern_matches(pattern: &str, s: &str) -> bool {
+    match pattern {
+        "^(sha256:)?[0-9a-f]{64}$" => {
+            let hex = s.strip_prefix("sha256:").unwrap_or(s);
+            is_lower_hex(hex, 64)
+        }
+        "^[0-9a-f]{32}$" => is_lower_hex(s, 32),
+        other => panic!(
+            "schema_conformance: unrecognised pattern {other:?} — add an explicit matcher \
+             rather than letting it validate unchecked"
+        ),
+    }
+}
+
+/// Exactly `len` lowercase hex digits.
+fn is_lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }

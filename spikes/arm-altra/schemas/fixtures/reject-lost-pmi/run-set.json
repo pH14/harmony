@@ -38,7 +38,7 @@
     "exclude_guest": false,
     "exclude_hv": true,
     "pinned": true,
-    "sample_period": 1000000
+    "sample_period": 500
   },
   "pinning": {
     "pinned": true,
@@ -57,5 +57,5 @@
   "skid_margin": 64,
   "attempted": 8,
   "records_file": "records.jsonl",
-  "records_sha256": "169a79a265d35cdbf622e95788b3c699e44cbcc785c84b87bd6b3bd202c4ad6f"
+  "records_sha256": "224ac197147e00108eceb9037a812f4719e30f2ac58707e6c25585461eab59ea"
 }

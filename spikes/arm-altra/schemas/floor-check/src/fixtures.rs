@@ -2,7 +2,8 @@
 //! The fixture generator.
 //!
 //! Seventeen synthetic run-sets the checker must reject (one per failure mode) and
-//! two it must accept (a patched AA-3 landing run and an AA-1 counting run). They are **generated from the oracle model**, not hand
+//! three it must accept (a patched AA-3 landing run, an AA-1 counting run, and an
+//! AA-1(c) skid-distribution run with early/late landings). They are **generated from the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
 //! the fixtures stay consistent with the model as it evolves, and a reject fixture
@@ -57,6 +58,11 @@ fn synthetic_weights() -> Weights {
 /// *a* measured margin; the real one is AA-1's to produce.
 const SYNTHETIC_SKID_MARGIN: u64 = 64;
 
+/// The synthetic overflow period every armed fixture record shares — a uniform
+/// deadline `work_begin + SYNTHETIC_PERIOD`, so the manifest's single `sample_period`
+/// is a truthful uniform claim.
+const SYNTHETIC_PERIOD: u64 = 500;
+
 /// The eight windowed payload classes, in a stable order. [`Payload::Ident`] is
 /// excluded: it has no counting window, so it is not an armed-overflow sample.
 const WINDOWED: [Payload; 8] = [
@@ -103,13 +109,13 @@ fn synthetic_images() -> Vec<ImagePin> {
         ImagePin {
             path: "/boot/Image.det".to_string(),
             sha256: synth_sha256("host-kernel-image"),
-            md5: synth_md5("host-kernel-image"),
+            md5: Some(synth_md5("host-kernel-image")),
             verified_before_boot: true,
         },
         ImagePin {
             path: "payloads/target/oracle.elf".to_string(),
             sha256: synth_sha256("payload-elf"),
-            md5: synth_md5("payload-elf"),
+            md5: Some(synth_md5("payload-elf")),
             verified_before_boot: true,
         },
     ]
@@ -123,7 +129,7 @@ fn synthetic_perf() -> PerfConfig {
         exclude_guest: false,
         exclude_hv: true,
         pinned: true,
-        sample_period: Some(1_000_000),
+        sample_period: Some(SYNTHETIC_PERIOD),
     }
 }
 
@@ -166,6 +172,11 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
     let measured_taken = e.total(&synthetic_weights(), reported_taken);
     let work_begin = 1_000;
     let work_end = work_begin + measured_taken;
+    // The overflow deadline is `work_begin + SYNTHETIC_PERIOD`, a UNIFORM period across
+    // every record, decoupled from the window count. That is what lets the manifest
+    // carry one `sample_period` truthfully; a real varying-period run would carry
+    // `null` and let each record state its own (target - work_begin).
+    let target = work_begin + SYNTHETIC_PERIOD;
     // The token the guest actually prints when the harness published the page
     // (`payloads/runtime/src/pvclock.rs`): `managed`, versus `self-seeded` for the
     // payload's own static fallback. The AA-5 check reads this field, so a fixture
@@ -191,8 +202,8 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
             armed: true,
             deliveries: 1,
             advisory_exits: 0,
-            target: measured_taken,
-            landed: measured_taken,
+            target,
+            landed: target,
             skid: 0,
             landed_digest: format!(
                 "sha256:{}",
@@ -308,10 +319,76 @@ fn accept_counting() -> Fixture {
     fixture("accept-counting", &run_set, &records)
 }
 
+/// The valid AA-1(c) skid-distribution accept fixture: a stock signal-kick run whose
+/// landings scatter EARLY AND LATE around the target. AA-1(c) measures this
+/// distribution to derive the margin, so a `target + k` landing is the datum, not a
+/// violation — the checker must accept it. This is the counterpart to
+/// `reject-overshoot`: the same positive skid that AA-4 forbids, AA-1 collects.
+fn accept_aa1_skid() -> Fixture {
+    let mut records = base_records(ExitReason::SignalKick);
+    // Scatter the landings: some late (positive skid), some early (negative), all
+    // self-consistent (skid == landed - target). None is a violation at AA-1.
+    for (i, r) in records.iter_mut().enumerate() {
+        if let Some(o) = r.overflow.as_mut() {
+            let k = (i as i64 % 5) - 2; // -2, -1, 0, +1, +2, …
+            o.landed = (o.target as i64 + k) as u64;
+            o.skid = k;
+        }
+    }
+    // AA-1 is still deriving the margin, so the manifest legitimately carries none.
+    let mut run_set = build_run_set(Stage::Aa1, stock_mechanism(), &records);
+    run_set.skid_margin = None;
+    run_set.records_sha256 = synth_sha256_of_bytes(records_jsonl(&records).as_bytes());
+    fixture("accept-aa1-skid", &run_set, &records)
+}
+
+/// The number of same-input repetitions the AA-6 fixtures use. Small — the real gate
+/// floor is 1,000, but the fixtures test the checker's *logic*, not the number.
+const AA6_REPS: u64 = 4;
+
+/// One repetition of the SAME input, landing bit-identically: same payload, scale,
+/// seed, condition, target, AND the same `landed_digest`. Distinct only by
+/// `sample_id`, which does not enter the [`RepKey`].
+fn aa6_rep(sample_id: u64) -> RunRecord {
+    let mut r = generate_record(sample_id, Payload::StraightLine, ExitReason::Preempt);
+    // Bit-identical landings: every repetition of one input lands on one state, so the
+    // whole group shares a single digest (what replay-identity compares).
+    if let Some(o) = r.overflow.as_mut() {
+        o.landed_digest = format!("sha256:{}", synth_sha256("aa6-landed"));
+    }
+    r.state_digest = format!("sha256:{}", synth_sha256("aa6-final"));
+    r
+}
+
+/// The valid AA-6 mini-gate accept fixture: the SAME input repeated [`AA6_REPS`]
+/// times, all bit-identical. This is what a real AA-6 gate looks like in miniature —
+/// one input, many reps — and the per-input rep floor accepts it.
+fn accept_aa6_gate() -> Fixture {
+    let records: Vec<RunRecord> = (0..AA6_REPS).map(aa6_rep).collect();
+    let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    fixture("accept-aa6-gate", &run_set, &records)
+}
+
+/// The AA-6 rep-floor evasion, rejected: an eight-payload matrix of DISTINCT inputs
+/// whose TOTAL record count meets a floor, though no single input is repeated even
+/// twice. A total-count floor passed this; the per-input floor does not — AA-6 needs
+/// N reps of the SAME input, not N distinct inputs once each.
+fn reject_aa6_rep_floor() -> Fixture {
+    let records = base_records(ExitReason::Preempt);
+    let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
+    fixture("reject-aa6-rep-floor", &run_set, &records)
+}
+
 /// Generate all fixtures.
 #[must_use]
 pub fn all_fixtures() -> Vec<Fixture> {
-    let mut fixtures = vec![accept(), accept_counting()];
+    let mut fixtures = vec![
+        accept(),
+        accept_counting(),
+        accept_aa1_skid(),
+        accept_aa6_gate(),
+        reject_aa6_rep_floor(),
+    ];
 
     // 1. reject-short-count — a valid but small run-set. The checker rejects it
     //    only when a floor larger than its armed-overflow count is demanded; the
@@ -363,9 +440,11 @@ pub fn all_fixtures() -> Vec<Fixture> {
         },
     ));
 
-    // 5. reject-count-mismatch — a count that disagrees with the oracle. Kept
+    // 5. reject-count-mismatch — a WINDOW count that disagrees with the oracle. Kept
     //    self-consistent with its own window endpoints (measured_taken ==
-    //    work_end - work_begin), so the *oracle* mismatch is the sole failure.
+    //    work_end - work_begin), and the overflow deadline is left alone (it is
+    //    decoupled from the window count and carries a uniform period), so the *oracle*
+    //    mismatch is the sole failure.
     fixtures.push(mutated_reject(
         "reject-count-mismatch",
         Stage::Aa3,
@@ -374,20 +453,19 @@ pub fn all_fixtures() -> Vec<Fixture> {
         |records| {
             records[0].measured_taken += 1;
             records[0].work_end += 1;
-            if let Some(o) = records[0].overflow.as_mut() {
-                o.target += 1;
-                o.landed += 1;
-            }
         },
     ));
 
-    // 6. reject-overshoot — a landing past the target. AA-1 (skid-distribution)
-    //    stage, so exact landing is not required and overshoot is the sole failure.
+    // 6. reject-overshoot — a landing PAST the target. Placed at AA-4, a patched
+    //    LANDING-CONTRACT stage where the late-only-stop bound binds but exact landing
+    //    is NOT required (that is AA-3's alone). A +1 skid within the margin therefore
+    //    fails the overshoot sub-check ALONE. (Overshoot is valid evidence at AA-1(c),
+    //    which measures the skid distribution — see the accept-aa1-skid fixture.)
     fixtures.push(mutated_reject(
         "reject-overshoot",
-        Stage::Aa1,
-        stock_mechanism(),
-        ExitReason::SignalKick,
+        Stage::Aa4,
+        patched_mechanism(),
+        ExitReason::Preempt,
         |records| {
             if let Some(o) = records[0].overflow.as_mut() {
                 o.landed = o.target + 1;
@@ -397,12 +475,13 @@ pub fn all_fixtures() -> Vec<Fixture> {
     ));
 
     // 7. reject-skid-exceeds-margin — an early landing beyond the margin. Negative
-    //    skid, so it is not an overshoot; the margin bound is the sole failure.
+    //    skid, so not an overshoot; also at AA-4 (bounds the margin, does not require
+    //    exact), so the margin bound is the sole failure.
     fixtures.push(mutated_reject(
         "reject-skid-exceeds-margin",
-        Stage::Aa1,
-        stock_mechanism(),
-        ExitReason::SignalKick,
+        Stage::Aa4,
+        patched_mechanism(),
+        ExitReason::Preempt,
         |records| {
             if let Some(o) = records[0].overflow.as_mut() {
                 let delta = SYNTHETIC_SKID_MARGIN + 1;
@@ -561,13 +640,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_nineteen_fixtures_with_unique_names() {
+    fn there_are_twenty_two_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 19);
+        assert_eq!(fixtures.len(), 22);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 19, "fixture names must be unique");
+        assert_eq!(names.len(), 22, "fixture names must be unique");
     }
 
     #[test]

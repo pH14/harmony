@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "stage": "aa3",
-  "run_set_id": "fixture-aa3",
+  "stage": "aa6",
+  "run_set_id": "fixture-aa6",
   "environment": {
     "midr": 1094701248,
     "soc": "Ampere Altra Q80-30 (synthetic)",
@@ -47,7 +47,13 @@
     "migration_probe": false
   },
   "condition": "pinned-solo",
-  "weights": null,
+  "weights": {
+    "exception_entry": 0,
+    "exception_return": 0,
+    "svc_instruction": 0,
+    "wfi_instruction": 0,
+    "window_offset": 2
+  },
   "skid_margin": 64,
   "attempted": 8,
   "records_file": "records.jsonl",

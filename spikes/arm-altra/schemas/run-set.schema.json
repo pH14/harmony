@@ -216,9 +216,16 @@
           "pattern": "^(sha256:)?[0-9a-f]{64}$"
         },
         "md5": {
-          "description": "md5 cross-reference, per the box-gate image discipline.",
-          "type": "string",
-          "pattern": "^[0-9a-f]{32}$"
+          "description": "md5 cross-reference, per the box-gate image discipline \u2014 optional (sha256 is the identity, and no md5 implementation is on the dependency whitelist). When present, 32 lowercase hex digits.",
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "verified_before_boot": {
           "description": "Whether the hash was recomputed and compared IMMEDIATELY BEFORE the artifact was used. `false` fails the checker.",

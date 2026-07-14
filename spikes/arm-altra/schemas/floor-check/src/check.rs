@@ -600,26 +600,48 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
     );
 }
 
-/// Skid: never overshoot, always within margin, and — at AA-3 — land exactly.
+/// Skid — stage-and-mechanism-aware, because the two stages that touch skid mean
+/// opposite things by it.
 ///
-/// The margin check is refused (never defaulted) when the manifest carries no
-/// measured margin, mirroring the weights refusal.
+/// **AA-1(c) MEASURES the skid distribution.** `docs/ARM-ALTRA.md` §AA-1(c): "the
+/// early/late skid distribution measured → the candidate N1 `skid_margin`". A landing
+/// at `target + 1` is not a violation there — it is the datum the stage exists to
+/// collect, and the margin is *derived* from the spread. So at AA-1 the checker
+/// enforces only that the recorded skid is self-consistent with `landed - target`;
+/// it does not forbid overshoot, does not bound against a margin (there is none yet),
+/// and does not fail on `skid_margin: null` (producing it is the whole point).
+///
+/// **AA-3/AA-4/AA-6 ENFORCE the landing contract.** These ride the patched force-exit
+/// (`requires_patched_mechanism`), whose acceptance is the late-only-stop bound:
+/// never overshoot, always within the AA-1-measured margin, and — at AA-3 — land
+/// exactly (`work == target`). Here a measured margin must be present, exactly as the
+/// weights refusal, because a landing cannot be bounded against a margin that does not
+/// exist.
 fn check_skid(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let stage = run_set.stage;
+    let binds_landing_contract = requires_patched_mechanism(stage);
+    let exact_required = stage == Stage::Aa3;
     let margin = run_set.skid_margin;
-    if margin.is_some() {
-        out.push(pass(
-            CheckId::SkidMarginPresent,
-            "the manifest carries a measured skid margin",
-        ));
-    } else {
-        out.push(fail(
-            CheckId::SkidMarginPresent,
-            "the manifest carries no measured skid margin (`skid_margin: null`): \
-             skid cannot be bounded, and the checker refuses to invent one",
-        ));
+
+    // The skid-margin-present requirement binds only where landings are bounded
+    // against it. At AA-1(c) the margin is being derived, so its absence is the
+    // stage's product, not a failure — the check simply does not apply.
+    if binds_landing_contract {
+        if margin.is_some() {
+            out.push(pass(
+                CheckId::SkidMarginPresent,
+                "the manifest carries a measured skid margin",
+            ));
+        } else {
+            out.push(fail(
+                CheckId::SkidMarginPresent,
+                "the manifest carries no measured skid margin (`skid_margin: null`) at a \
+                 landing-contract stage: skid cannot be bounded, and the checker refuses to \
+                 invent one",
+            ));
+        }
     }
 
-    let exact_required = run_set.stage == Stage::Aa3;
     let mut problems: Vec<String> = Vec::new();
 
     for r in records {
@@ -635,8 +657,9 @@ fn check_skid(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
             continue;
         }
 
-        // Recompute the skid from landed and target; fail the record's own field
-        // if it disagrees.
+        // Data integrity, ALWAYS: the recorded skid must equal `landed - target`.
+        // This is not the landing contract — it is the record being self-consistent,
+        // and it holds at every stage, AA-1 included.
         let recomputed = i128::from(o.landed) - i128::from(o.target);
         if recomputed != i128::from(o.skid) {
             problems.push(format!(
@@ -645,43 +668,49 @@ fn check_skid(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
             ));
         }
 
-        // Never overshoot: a positive skid violates the late-only-stop contract
-        // outright, whatever the margin.
-        if recomputed > 0 {
-            problems.push(format!(
-                "sample {}: landing overshot the target by {recomputed} \
-                 (landed {} > target {}); the late-only-stop contract forbids it",
-                r.sample_id, o.landed, o.target
-            ));
-        }
-
-        // Within margin, when a margin was measured.
-        if let Some(m) = margin
-            && recomputed.unsigned_abs() > u128::from(m)
-        {
-            problems.push(format!(
-                "sample {}: |skid| {} exceeds the measured margin {m}",
-                r.sample_id,
-                recomputed.unsigned_abs()
-            ));
-        }
-
-        // AA-3's exact landing: work == target on every landing.
-        if exact_required && recomputed != 0 {
-            problems.push(format!(
-                "sample {}: AA-3 requires work == target but landed {} != target {}",
-                r.sample_id, o.landed, o.target
-            ));
+        // The landing contract — patched stages only. At AA-1 the spread below IS the
+        // measurement, so none of this applies.
+        if binds_landing_contract {
+            // Never overshoot: a positive skid violates late-only-stop, whatever the
+            // margin.
+            if recomputed > 0 {
+                problems.push(format!(
+                    "sample {}: landing overshot the target by {recomputed} \
+                     (landed {} > target {}); the late-only-stop contract forbids it at {stage:?}",
+                    r.sample_id, o.landed, o.target
+                ));
+            }
+            // Within the measured margin.
+            if let Some(m) = margin
+                && recomputed.unsigned_abs() > u128::from(m)
+            {
+                problems.push(format!(
+                    "sample {}: |skid| {} exceeds the measured margin {m}",
+                    r.sample_id,
+                    recomputed.unsigned_abs()
+                ));
+            }
+            // AA-3's exact landing: work == target on every landing.
+            if exact_required && recomputed != 0 {
+                problems.push(format!(
+                    "sample {}: AA-3 requires work == target but landed {} != target {}",
+                    r.sample_id, o.landed, o.target
+                ));
+            }
         }
     }
 
     verdict(
         CheckId::Skid,
         &problems,
-        if exact_required {
-            "no overshoot; all landings within margin and exact (AA-3)"
+        if !binds_landing_contract {
+            "skid distribution recorded and self-consistent (AA-1 measures it; \
+             the landing contract does not bind here)"
+                .to_string()
+        } else if exact_required {
+            "no overshoot; all landings within margin and exact (AA-3)".to_string()
         } else {
-            "no overshoot; all landings within margin"
+            format!("no overshoot; all landings within margin ({stage:?})")
         },
         out,
     );
@@ -835,22 +864,49 @@ fn check_perf(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
         );
     }
 
-    // A sampling period is what arms an overflow. The manifest and the records must
-    // agree about whether this run armed any.
-    let armed = records
+    // The sampling period. It is genuinely PER-SAMPLE: an AA-3 run draws a different
+    // `target_delta` for each matrix cell, so its overflow deadline — the period —
+    // varies across the run-set, and each record carries its own as
+    // `target - work_begin`. The manifest's single `sample_period` therefore means
+    // "every armed sample used THIS period" (a uniform run); a run with varying
+    // periods carries `null` and the per-sample truth is read from the records. The
+    // cross-check enforces that meaning both ways, so a manifest cannot claim one
+    // period while the records used another.
+    let armed_periods: Vec<(u64, i128)> = records
         .iter()
-        .any(|r| r.overflow.as_ref().is_some_and(|o| o.armed));
+        .filter_map(|r| {
+            r.overflow
+                .as_ref()
+                .filter(|o| o.armed)
+                .map(|o| (r.sample_id, i128::from(o.target) - i128::from(r.work_begin)))
+        })
+        .collect();
+    let armed = !armed_periods.is_empty();
     match (p.sample_period, armed) {
-        (None, true) => problems.push(
-            "records arm overflows but perf.sample_period is null: an overflow cannot be armed \
-             without a period, so the manifest does not describe the run that happened"
-                .to_string(),
-        ),
+        (Some(period), true) => {
+            // A uniform claim must be true for every armed record.
+            let mismatched: Vec<u64> = armed_periods
+                .iter()
+                .filter(|(_, per)| *per != i128::from(period))
+                .map(|(id, _)| *id)
+                .collect();
+            if !mismatched.is_empty() {
+                problems.push(format!(
+                    "perf.sample_period claims a uniform {period}, but {} armed record(s) used a \
+                     different period (target - work_begin): samples {}. A run with per-sample \
+                     periods must carry `sample_period: null` and let each record state its own",
+                    mismatched.len(),
+                    preview(mismatched.iter().copied())
+                ));
+            }
+        }
         (Some(period), false) => problems.push(format!(
             "perf.sample_period is {period} but no record armed an overflow: the manifest \
              describes a sampling run and the records are a counting one"
         )),
-        _ => {}
+        // (None, true) is legitimate: a varying-period run reads each period from the
+        // record. (None, false) is a pure counting run. Neither is a mismatch.
+        (None, _) => {}
     }
 
     verdict(
@@ -1190,19 +1246,45 @@ fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &
         None => {}
     }
 
-    let reps = records.len() as u64;
+    // The rep floor is PER-REPEATED-INPUT, not total rows. AA-6 needs ≥1000
+    // repetitions of the SAME (payload, scale, seed, condition, target) input,
+    // bit-identical. Counting total records would let 1,000 rows that are 125 reps of
+    // an eight-payload matrix pass a 1,000 floor, though no single input was repeated
+    // 1,000 times — which is not the same-seed determinism the gate certifies. So the
+    // floor is the count of the *least-repeated* distinct input: every group must meet
+    // it. (replay-identity then checks those reps actually landed identically.)
     match floors.min_reps {
-        Some(min) if reps >= min => out.push(pass(
-            CheckId::RepFloor,
-            format!("{reps} samples meets the rep floor of {min}"),
-        )),
-        Some(min) => out.push(fail(
-            CheckId::RepFloor,
-            format!("only {reps} samples, below the rep floor of {min}"),
-        )),
+        Some(min) => {
+            let mut groups: BTreeMap<RepKey, u64> = BTreeMap::new();
+            for r in records {
+                *groups.entry(rep_key(r)).or_default() += 1;
+            }
+            let distinct = groups.len();
+            let min_group = groups.values().copied().min().unwrap_or(0);
+            if min_group >= min {
+                out.push(pass(
+                    CheckId::RepFloor,
+                    format!(
+                        "{distinct} distinct input(s), each repeated at least {min_group} times \
+                         (floor {min})"
+                    ),
+                ));
+            } else {
+                out.push(fail(
+                    CheckId::RepFloor,
+                    format!(
+                        "the least-repeated input appears only {min_group} time(s), below the \
+                         per-input rep floor of {min} (there are {distinct} distinct inputs across \
+                         {} records; a total-count floor would have hidden this — AA-6 needs {min} \
+                         reps of the SAME input)",
+                        records.len()
+                    ),
+                ));
+            }
+        }
         None if run_set.stage == Stage::Aa6 => out.push(not_requested(
             CheckId::RepFloor,
-            "AA-6's mini determinism gate rests on ≥1000 same-seed repetitions, but no \
+            "AA-6's mini determinism gate rests on ≥1000 same-input repetitions, but no \
              --min-reps floor was requested: this verdict cannot be read as accepting one",
         )),
         None => {}
@@ -1259,6 +1341,9 @@ mod tests {
     fn a_record(sample_id: u64) -> RunRecord {
         // straight-line at smoke: certain 999, window offset 2 => 1001 taken.
         let measured = 1001;
+        // The overflow deadline is a UNIFORM 500 events past the window open — matching
+        // `a_run_set().perf.sample_period`, decoupled from the window count.
+        let target = 1_000 + 500;
         RunRecord {
             sample_id,
             payload: Payload::StraightLine,
@@ -1275,8 +1360,8 @@ mod tests {
                 armed: true,
                 deliveries: 1,
                 advisory_exits: 0,
-                target: measured,
-                landed: measured,
+                target,
+                landed: target,
                 skid: 0,
                 landed_digest: "sha256:aa".into(),
             }),
@@ -1285,6 +1370,14 @@ mod tests {
             clockpage_mode: None,
             payload_status: 0,
         }
+    }
+
+    /// A record with a chosen `seed`, so tests can build distinct or identical
+    /// repetition inputs (`seed` is part of the [`RepKey`]).
+    fn a_record_seeded(sample_id: u64, seed: u64) -> RunRecord {
+        let mut r = a_record(sample_id);
+        r.seed = seed;
+        r
     }
 
     fn a_run_set() -> RunSet {
@@ -1308,7 +1401,7 @@ mod tests {
             images: vec![ImagePin {
                 path: "img".into(),
                 sha256: "0".repeat(64),
-                md5: "0".repeat(32),
+                md5: Some("0".repeat(32)),
                 verified_before_boot: true,
             }],
             perf: PerfConfig {
@@ -1317,7 +1410,7 @@ mod tests {
                 exclude_guest: false,
                 exclude_hv: true,
                 pinned: true,
-                sample_period: Some(1_000_000),
+                sample_period: Some(500),
             },
             pinning: Pinning {
                 pinned: true,
@@ -1493,21 +1586,41 @@ mod tests {
     }
 
     #[test]
-    fn the_sample_period_must_agree_with_whether_overflows_were_armed() {
-        // Armed records, no period: the manifest does not describe the run.
-        let mut rs = a_run_set();
-        rs.perf.sample_period = None;
-        let mut out = Vec::new();
-        check_perf(&rs, &[a_record(0)], &mut out);
-        assert_eq!(status(&out, CheckId::PerfConfig), Some(Status::Fail));
-
-        // A period, but a pure counting run: likewise.
+    fn the_sample_period_cross_checks_against_the_records() {
+        // A period, but a pure counting run: the manifest describes a sampling run and
+        // the records are a counting one.
         let rs = a_run_set();
         let mut r = a_record(0);
         r.overflow = None;
         let mut out = Vec::new();
         check_perf(&rs, &[r], &mut out);
         assert_eq!(status(&out, CheckId::PerfConfig), Some(Status::Fail));
+
+        // A uniform period claim that a record VIOLATES: the manifest says every armed
+        // sample used period 500, but this record's target - work_begin is different.
+        let mut rs = a_run_set();
+        rs.perf.sample_period = Some(500);
+        let mut r = a_record(0);
+        if let Some(o) = r.overflow.as_mut() {
+            o.target = r.work_begin + 999; // period 999, not the claimed 500
+            o.landed = o.target;
+            o.skid = 0;
+        }
+        let mut out = Vec::new();
+        check_perf(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::PerfConfig),
+            Some(Status::Fail),
+            "a uniform-period claim the records contradict must fail"
+        );
+
+        // A null period with armed records is LEGITIMATE: a varying-period run reads
+        // each period from its record (target - work_begin). Not a mismatch.
+        let mut rs = a_run_set();
+        rs.perf.sample_period = None;
+        let mut out = Vec::new();
+        check_perf(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::PerfConfig), Some(Status::Pass));
     }
 
     #[test]
@@ -1654,6 +1767,39 @@ mod tests {
         let mut out = Vec::new();
         check_floors(&a_run_set(), &floors, &[a_record(0)], &mut out);
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Fail));
+    }
+
+    #[test]
+    fn the_rep_floor_is_per_input_not_total_records() {
+        // The evasion: many records, but each distinct input repeated only once. A
+        // total-count floor of 3 passes on 3 distinct inputs; the per-input floor does
+        // not — AA-6 needs 3 reps of the SAME input, not 3 inputs once each.
+        let three_distinct = vec![
+            a_record_seeded(0, 1),
+            a_record_seeded(1, 2),
+            a_record_seeded(2, 3),
+        ];
+        let floors = Floors {
+            min_armed_overflows: None,
+            min_reps: Some(3),
+        };
+        let mut out = Vec::new();
+        check_floors(&a_run_set(), &floors, &three_distinct, &mut out);
+        assert_eq!(
+            status(&out, CheckId::RepFloor),
+            Some(Status::Fail),
+            "three distinct inputs is not three reps of one input"
+        );
+
+        // Three reps of the SAME input (same seed) meets a per-input floor of 3.
+        let three_reps = vec![
+            a_record_seeded(0, 7),
+            a_record_seeded(1, 7),
+            a_record_seeded(2, 7),
+        ];
+        let mut out = Vec::new();
+        check_floors(&a_run_set(), &floors, &three_reps, &mut out);
+        assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Pass));
     }
 
     #[test]
