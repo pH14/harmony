@@ -97,7 +97,7 @@ fn require_kvm() {
 /// Print the CPU-MSR-CONTRACT §1.1 host-baseline assertion report; return whether
 /// **every** assertion passes. Pure diagnostic — it does not decide pass/fail.
 fn print_host_baseline_report() -> bool {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all_pass = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 host-baseline report:");
     for o in &report {

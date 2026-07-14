@@ -107,7 +107,7 @@ fn run_irq_landing_rng(seed: u64) -> Run {
 ///
 /// `landings` is the VMM-MEASURED preemption work (`vmm.preemption_landings()`): the
 /// retired-branch count at which `run_until` actually delivered each LAPIC timer
-/// (`Exit::Deadline { reached }`). This is the **load-bearing** seed signal (P2 round-13):
+/// (`CommonExit::Deadline { reached }`). This is the **load-bearing** seed signal (P2 round-13):
 /// it is what the backend measured, NOT the ICR the guest programmed — a backend that
 /// ignored the deadline but still delivered IRQs would have seed-varying *reports* anyway
 /// (the RDRAND inputs differ), so only the measured LANDING work proves seed-dependent

@@ -177,7 +177,8 @@ fn expected_rng(seed: u64) -> (u32, u32) {
 /// Boot the patched backend over the payload, **panicking loudly** with a precise
 /// reason if the box is not ready (no patched `/dev/kvm`, no perf, non-baseline
 /// host) — never an early-return that nextest counts as a vacuous pass.
-fn boot_patched_or_panic() -> vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend>> {
+fn boot_patched_or_panic() -> vmm_core::vmm::Vmm<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>
+{
     assert!(
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run this `#[ignore]`d box gate on `ssh <det-box>` with the patched KVM \

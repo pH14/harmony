@@ -186,7 +186,7 @@ fn require_kvm() {
 /// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report
 /// (`boot_linux` would also refuse such a host).
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
     for o in &report {
@@ -359,7 +359,7 @@ impl BootOutcome {
 /// `vmm.exit_counts()` (a read-only accessor) and writes its own file — it never
 /// reads or feeds `state_hash`/`observable_digest`, so attaching it CANNOT perturb
 /// the deterministic run (the `Observer` read-only contract). A viewer artifact.
-fn run_bounded<B: vmm_backend::Backend>(
+fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(
     vmm: &mut Vmm<B>,
     rec: &mut Option<Recorder>,
 ) -> BootOutcome {

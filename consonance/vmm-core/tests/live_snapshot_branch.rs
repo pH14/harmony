@@ -33,7 +33,7 @@
 //! `src/vmm.rs` and the portable `tests/snapshot_branch.rs` integration test.
 #![cfg(target_os = "linux")]
 
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::{BackendKind, boot_selected};
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
@@ -105,7 +105,7 @@ fn payload_image() -> Vec<u8> {
     img
 }
 
-type DynVmm = Vmm<Box<dyn Backend>>;
+type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
 /// Boot the patched backend over the payload, **panicking loudly** with a precise
 /// reason if the box is not ready — never an early-return that nextest counts as a

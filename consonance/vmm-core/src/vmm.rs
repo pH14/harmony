@@ -15,43 +15,15 @@ use hypercall_proto::{
     encode_response,
 };
 use sha2::{Digest, Sha256};
-use vmm_backend::{Backend, Exit, Gpa, Moment, VcpuState};
+use vmm_backend::{Arch, ArchCaps, Backend, CommonExit, Exit, Moment};
 use vtime::{IdlePlanner, VClock, VClockConfig};
 
-use crate::contract::{self, MsrDisposition};
-use crate::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
-use crate::snapshot::{self, DeviceState, LegacyState, SnapshotError, UartState};
+use crate::vendor::Vendor;
 use crate::work::{WorkError, WorkSource};
 
-/// xAPIC MMIO base (`0xFEE0_0000`, the architectural default the contract fixes
-/// `IA32_APIC_BASE` to — its relocation write is deny-ignore, so the page never
-/// moves). The Linux boot path routes loads/stores in `[APIC_MMIO_BASE,
-/// APIC_MMIO_BASE + 0x1000)` into the userspace [`lapic::Lapic`].
-const APIC_MMIO_BASE: u64 = 0xFEE0_0000;
-/// One past the xAPIC MMIO page (`APIC_MMIO_BASE` + one 4 KiB page). A literal (not
-/// `BASE + SIZE`) so the page-range check carries no arithmetic mutant.
-const APIC_MMIO_END: u64 = 0xFEE0_1000;
-
-/// Legacy ISA IRQ line for COM1 (the modeled 8250 at `0x3F8`). The kernel
-/// registers `ttyS0` with this IRQ.
-const COM1_IRQ: u8 = 4;
-/// The interrupt **vector** the guest delivers COM1's IRQ 4 on. With no IO-APIC
-/// and a real 8259, Linux maps the legacy ISA IRQs to a static vector window
-/// starting at `ISA_IRQ_VECTOR(0) = 0x30` (the master PIC's ICW2 offset), so
-/// `ISA_IRQ_VECTOR(4) = 0x30 + 4 = 0x34`. The VMM injects this vector (via the
-/// `KVM_INTERRUPT` legacy-injection seam, exactly as a PIC `INTR`/`ExtINT` would)
-/// when the 8250 raises its THRE interrupt; the guest IRQ-4 handler then drains
-/// the userspace TX and EOIs the 8259. (Verified against the boot log: the guest
-/// uses the 8259 in virtual-wire mode, no IO-APIC — see IMPLEMENTATION.md.)
-const COM1_IRQ_VECTOR: u8 = 0x34;
-
-/// `IA32_TSC` — the architectural time-stamp-counter MSR. The contract marks it
-/// `emulate-vtime`; a guest `RDMSR(0x10)` reads the same V-time TSC the RDTSC
-/// instruction returns, and `WRMSR(0x10)` sets it.
-const IA32_TSC: u32 = 0x10;
-/// `IA32_TSC_ADJUST` — the architectural per-logical-processor TSC offset MSR.
-/// Also `emulate-vtime`; backs [`VtimeWiring::tsc_adjust`].
-const IA32_TSC_ADJUST: u32 = 0x3b;
+/// The engine's alias for the vCPU record set of the vendor `B` traps — how the
+/// engine names "the register file" without naming an ISA.
+pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
 
 /// Why a run stopped. M1 requires `DebugExit { code: 0 }` specifically — **not**
 /// `Hlt` (the payload's fallback) and **not** a non-zero code.
@@ -74,14 +46,6 @@ pub enum TerminalReason {
     SdkStop,
 }
 
-/// The hypercall **doorbell** port (task 73 / INTEGRATION.md §1): an `OUT` here
-/// is a cooperating guest SDK ringing a hypercall. Mirrors
-/// `vmcall_transport::DOORBELL_PORT` (conventions rule 2 — the guest/host
-/// protocol pattern; deliberately distinct from the task-04 report channel at
-/// `0x0CA2`). Serviced only when an SDK channel is wired ([`Vmm::enable_sdk`]);
-/// otherwise an `OUT 0x0CA1` stays the default-deny contract violation, so every
-/// non-SDK path is byte-for-byte unchanged.
-const DOORBELL_PORT: u16 = 0x0CA1;
 /// Guest-physical address of the fixed hypercall **request** page. Mirrors
 /// `vmcall_transport::REQ_GPA`.
 const REQ_GPA: usize = 0x0000_E000;
@@ -144,11 +108,11 @@ pub enum VmmError {
     Backend(#[from] vmm_backend::BackendError),
     /// The loader rejected the image or RAM was too small.
     #[error("load error")]
-    Load(#[from] crate::multiboot::LoadError),
+    Load(#[from] crate::vendor::x86::multiboot::LoadError),
     /// The Linux bzImage loader rejected the kernel/initramfs (malformed image,
     /// does-not-fit, etc.) — the direct 64-bit boot path's trust boundary.
     #[error("linux load error")]
-    LinuxLoad(#[from] crate::linux_loader::LinuxLoadError),
+    LinuxLoad(#[from] crate::vendor::x86::linux_loader::LinuxLoadError),
     /// An exit the skeleton does not model (unmodeled port/MMIO/hypercall, a
     /// backend-dependent RDTSC/RDRAND, or an MSR access with no V-time backing).
     #[error("contract violation: {0}")]
@@ -310,22 +274,6 @@ impl GuestRam {
     }
 }
 
-/// The frozen V-time clock config (CPU-MSR-CONTRACT: the guest TSC is **2.0 GHz**,
-/// leaf `0x15`). The work→nanosecond ratio is **1 ns per retired conditional
-/// branch** — an integer ratio (`ratio_den == 1`), which INTEGRATION.md §4
-/// requires for any snapshot-bearing config (a fractional ratio's sub-ns
-/// remainder cannot survive `snapshot_vns`). So `tsc(work) = 2 · work` ticks,
-/// strictly increasing whenever the guest retires a branch between two reads.
-pub fn contract_vclock_config() -> VClockConfig {
-    VClockConfig {
-        ratio_num: 1,
-        ratio_den: 1,
-        guest_hz: 2_000_000_000,
-        guest_base: 0,
-        vns_base: 0,
-    }
-}
-
 /// The V-time + seeded-RNG wiring for the **determinism-complete** path
 /// (`PatchedKvmBackend`): the work→time [`VClock`], the host [`WorkSource`]
 /// (retired-branch counter, read at each exit), and the [`SeededEntropy`] stream
@@ -340,10 +288,10 @@ pub fn contract_vclock_config() -> VClockConfig {
 /// values are computed here.
 pub struct VtimeWiring {
     /// Retained so the clock can be rebuilt with a new `vns_base` on restore.
-    cfg: VClockConfig,
-    clock: VClock,
-    work: Box<dyn WorkSource>,
-    entropy: SeededEntropy,
+    pub(crate) cfg: VClockConfig,
+    pub(crate) clock: VClock,
+    pub(crate) work: Box<dyn WorkSource>,
+    pub(crate) entropy: SeededEntropy,
     /// The work counter value read at the **last V-time intercept** — every
     /// determinism-cap trap (`RDTSC`/`RDTSCP`/`RDRAND`/`RDSEED`) and the
     /// `IA32_TSC`/`IA32_TSC_ADJUST` MSR paths — i.e. the synchronized point the
@@ -359,15 +307,16 @@ pub struct VtimeWiring {
     /// `vns_base`; the work counter itself re-baselines at the NEXT guest entry via
     /// `start_run`, round-12). Starts at `0`: before the first intercept the effective
     /// V-time is exactly `vns_base`.
-    last_intercept_work: u64,
-    /// `IA32_TSC_ADJUST` (MSR `0x3b`): the architectural signed offset added to the
-    /// base V-time TSC to form the **guest-visible** TSC (`visible = VClock::tsc +
-    /// tsc_adjust`, wrapping mod 2⁶⁴ as the 64-bit counter does). `0` at reset and
-    /// for every audited payload (none touches the TSC MSRs), so the visible TSC is
-    /// exactly `VClock::tsc(work)`. A guest `WRMSR(IA32_TSC, X)` sets it so the
-    /// visible TSC reads `X`; `WRMSR(IA32_TSC_ADJUST, Y)` sets it to `Y`. Stored as
-    /// `u64` (two's-complement); hashed (it governs future TSC output).
-    tsc_adjust: u64,
+    pub(crate) last_intercept_work: u64,
+    /// The signed offset added to the base V-time guest clock to form the
+    /// **guest-visible** clock (`visible = VClock::guest_ticks + offset`, wrapping
+    /// mod 2⁶⁴ as the architectural 64-bit counter does). `0` at reset and for
+    /// every audited payload, so the visible clock is exactly
+    /// `VClock::guest_ticks(work)`. The vendor's clock-offset register writes it
+    /// (x86: `IA32_TSC_ADJUST`, and a `WRMSR(IA32_TSC, X)` that sets the visible
+    /// clock to `X`). Stored as `u64` (two's-complement); hashed (it governs
+    /// future clock output).
+    pub(crate) guest_clock_offset: u64,
 }
 
 impl VtimeWiring {
@@ -404,7 +353,7 @@ impl VtimeWiring {
             work,
             entropy: SeededEntropy::new(seed),
             last_intercept_work: 0,
-            tsc_adjust: 0,
+            guest_clock_offset: 0,
         })
     }
 
@@ -413,7 +362,7 @@ impl VtimeWiring {
     /// hypercall service (opcode 1, a `u32` count) so the two never diverge. The
     /// value is returned with the low `width` bytes set (the backend writes only
     /// those to the destination register).
-    fn draw_rng(&mut self, width: u8) -> Result<u64, VmmError> {
+    pub(crate) fn draw_rng(&mut self, width: u8) -> Result<u64, VmmError> {
         // The exit `width` is decoded from untrusted guest instruction bytes;
         // RDRAND/RDSEED only have 16/32/64-bit forms, so accept ONLY {2,4,8} and
         // fail closed on anything else (1/3/5/6/7/…) rather than service it.
@@ -445,17 +394,21 @@ impl VtimeWiring {
     /// diverge or duplicate words. `req` is the `Entropy`-service request payload
     /// (a `u32` LE count), forwarded verbatim — the stream validates it and fills
     /// `resp`, returning `(status, bytes written)`.
-    fn draw_entropy(&mut self, req: &[u8], resp: &mut [u8]) -> (Status, usize) {
+    pub(crate) fn draw_entropy(&mut self, req: &[u8], resp: &mut [u8]) -> (Status, usize) {
         self.entropy.handle(1, req, resp)
     }
 
-    /// The **guest-visible** TSC at work `work`: the base V-time TSC
-    /// `VClock::tsc(work)` plus [`IA32_TSC_ADJUST`](Self::tsc_adjust), wrapping mod
-    /// 2⁶⁴ as the architectural 64-bit counter does. RDTSC, RDTSCP, and
-    /// `RDMSR(IA32_TSC)` all read this, so they agree exactly; with the default
-    /// `tsc_adjust == 0` it is exactly `VClock::tsc(work)`.
-    fn visible_tsc(&self, work: u64) -> u64 {
-        self.clock.guest_ticks(work).wrapping_add(self.tsc_adjust)
+    /// The **guest-visible** clock at work `work`: the base V-time guest clock
+    /// `VClock::guest_ticks(work)` plus
+    /// [`guest_clock_offset`](Self::guest_clock_offset), wrapping mod 2⁶⁴ as the
+    /// architectural 64-bit counter does. Every guest clock read the vendor
+    /// dispatches (x86: `RDTSC`, `RDTSCP`, `RDMSR(IA32_TSC)`) resolves to this, so
+    /// they agree exactly; with the default zero offset it is exactly
+    /// `VClock::guest_ticks(work)`.
+    pub(crate) fn guest_clock(&self, work: u64) -> u64 {
+        self.clock
+            .guest_ticks(work)
+            .wrapping_add(self.guest_clock_offset)
     }
 }
 
@@ -472,9 +425,10 @@ pub struct VtimeSnapshot {
     /// is the current work — so this is exact (restore resumes the TSC from it), never
     /// a stale last-intercept value.
     pub vns: u64,
-    /// `IA32_TSC_ADJUST` at snapshot time (the contract places TSC/TSC_ADJUST in
-    /// `vm_state`), so a guest that wrote the MSR snapshots/restores faithfully.
-    pub tsc_adjust: u64,
+    /// The guest clock-offset register at snapshot time (x86: `IA32_TSC_ADJUST`;
+    /// the contract places it in `vm_state`), so a guest that wrote it
+    /// snapshots/restores faithfully.
+    pub guest_clock_offset: u64,
     /// `SeededEntropy::save_state()` (the PRNG position).
     pub entropy: Vec<u8>,
 }
@@ -485,14 +439,7 @@ pub struct VtimeSnapshot {
 /// (`irq-landing` 8, `irq-landing-rng` 4). Recording stops at the cap.
 const PREEMPTION_TRACE_CAP: usize = 4096;
 
-/// `RFLAGS.IF` (interrupt-enable flag, bit 9) — the guest's own signal for "I am
-/// waiting for an interrupt I can take". [`Vmm::idle_resume_target`] uses it to
-/// tell a *resumable idle* `HLT` (`IF == 1`, an armed timer will wake the guest)
-/// from a *terminal* one (`IF == 0` — the kernel's final `cli; hlt`, a wait
-/// nothing will satisfy).
-const RFLAGS_IF: u64 = 1 << 9;
-
-/// What an `Exit::Idle` should do, decided by [`Vmm::idle_action`] (task 52).
+/// What an `CommonExit::Idle` should do, decided by [`Vmm::idle_action`] (task 52).
 enum IdleAction {
     /// Terminal halt — `IF == 0`, off the determinism path, or no deliverable wake.
     Terminal,
@@ -511,7 +458,7 @@ enum IdleAction {
 /// rings the doorbell leaves it untouched, and it is **never folded into the
 /// state hash** (host-side observation, like the report stream), so an SDK-less
 /// run's `state_hash` is byte-for-byte unchanged.
-struct SdkChannel {
+pub(crate) struct SdkChannel {
     /// Answers buggify decisions ([`DecisionPoint::Buggify`](environment::DecisionPoint)):
     /// materialized from the run's reproducer, so a seeded run draws from the
     /// seeded fault stream and a replay draws from the recorded overrides.
@@ -553,7 +500,7 @@ struct SdkChannel {
 /// The "inert guest" property is preserved: a flow-agent-less guest makes zero
 /// `net_decide` calls, so it never advances the stream and its `state_hash` is
 /// byte-for-byte unchanged (there is no `NET` hash chunk).
-struct NetChannel {
+pub(crate) struct NetChannel {
     /// The per-flow decisions this run resolved: `(moment, conn, answer)`, in
     /// arrival order. Evidence the box gate reads (a flow decision appears at a
     /// stable `Moment` across two runs) and the control server folds into the
@@ -598,9 +545,17 @@ pub struct NetSnapshot {
     decisions: Vec<(u64, u64, environment::Answer)>,
 }
 
-pub struct Vmm<B: Backend> {
-    backend: B,
-    ram: RamBacking,
+pub struct Vmm<B: Backend>
+where
+    B::A: Vendor,
+{
+    pub(crate) backend: B,
+    pub(crate) ram: RamBacking,
+    /// The vendor's device state ([`Vendor::Devices`]) — the interrupt fabric,
+    /// the platform shims, and the serial device. The engine never names one; it
+    /// reaches them only through [`Vendor`], which is what makes the engine
+    /// compiler-provably arch-blind (`docs/ARCH-BOUNDARY.md` §B).
+    pub(crate) devices: <B::A as Vendor>::Devices,
     /// Guest frame numbers written **host-side** since the last
     /// [`Vmm::reset_dirty_tracking`] / [`Vmm::harvest_dirty_gfns`] drain (task 95
     /// M2.1). The backend's dirty log sees only *guest* writes (KVM tracks sptes,
@@ -610,15 +565,14 @@ pub struct Vmm<B: Backend> {
     /// order can reach the (already order-insensitive) capture. **Not hashed**
     /// (host bookkeeping, like the exit counters); the writes themselves are what
     /// the hash sees.
-    host_dirty: std::collections::BTreeSet<u64>,
+    pub(crate) host_dirty: std::collections::BTreeSet<u64>,
     /// Latched when guest RAM was host-written **wholesale or untrackably**
     /// ([`Vmm::restore_guest_memory`]'s full-image overwrite). While set,
     /// [`Vmm::harvest_dirty_gfns`] answers `None` — the safety rule: a dirty set
     /// that cannot be proven complete is never handed out; the caller full-scans.
     /// Cleared only by [`Vmm::reset_dirty_tracking`] (the caller's explicit
     /// "this state is my new baseline" arm point).
-    host_dirty_wholesale: bool,
-    uart: Uart8250,
+    pub(crate) host_dirty_wholesale: bool,
     /// The ordered **report stream** (corpus box-integration): every value the
     /// guest wrote to [`REPORT_PORT`] via `OUT`, in execution order. Each
     /// `report(u64)` payload call is two dwords (low then high). This is the
@@ -626,9 +580,9 @@ pub struct Vmm<B: Backend> {
     /// (the O2/O3 digest), **not** [`Vmm::state_hash`] (the O1 full-state hash),
     /// so a stock / M1/M2 run that never touches the port leaves it empty and its
     /// `state_hash` is byte-for-byte unchanged from before this channel existed.
-    report_stream: Vec<u32>,
+    pub(crate) report_stream: Vec<u32>,
     /// Diagnostic trace of the MEASURED preemption landings: the retired-branch work
-    /// (`Exit::Deadline { reached }`) at which `run_until` actually delivered each LAPIC
+    /// (`CommonExit::Deadline { reached }`) at which `run_until` actually delivered each LAPIC
     /// timer — the value the backend/VMM measured, NOT the ICR the guest programmed.
     /// **Not** hashed (observability only, like [`Self::report_stream`]); the task-47
     /// gate-2 seed-dependence assertion compares THIS (the actual landing work) across
@@ -636,9 +590,9 @@ pub struct Vmm<B: Backend> {
     /// RDRAND inputs differ) and so cannot prove seed-dependent *preemption*. Capped at
     /// [`PREEMPTION_TRACE_CAP`] so a long-running guest (task 48 Postgres, which preempts
     /// constantly) cannot grow it unbounded.
-    preemption_landings: Vec<u64>,
+    pub(crate) preemption_landings: Vec<u64>,
     /// Diagnostic trace of the idle-resume landings (task 52): the **V-time** (ns) the
-    /// clock was warped to when the guest went idle (`Exit::Idle` with `RFLAGS.IF == 1`
+    /// clock was warped to when the guest went idle (`CommonExit::Idle` with `RFLAGS.IF == 1`
     /// and an armed timer) and [`Self::resume_idle`] jumped to the timer deadline. The
     /// dual of [`Self::preemption_landings`] — *jumped to* the next event instead of
     /// *executed to* it. It records the **landed V-time** (the deadline), **not** a work
@@ -647,14 +601,14 @@ pub struct Vmm<B: Backend> {
     /// timer deadline. **Not** hashed (observability only); deterministic across same-seed
     /// runs and seed-dependent for a seed-consuming guest, so it witnesses the idle path
     /// engaged. Capped at [`PREEMPTION_TRACE_CAP`].
-    idle_landings: Vec<u64>,
-    terminal: Option<TerminalReason>,
+    pub(crate) idle_landings: Vec<u64>,
+    pub(crate) terminal: Option<TerminalReason>,
     /// The vCPU state captured at terminal (so `state_blob` is consistent and the
     /// fallible `save` is resolved once, where errors can propagate from `run`).
-    saved_state: Option<VcpuState>,
+    pub(crate) saved_state: Option<VcpuOf<B>>,
     /// V-time + seeded-RNG wiring for the determinism-complete path. `None` for
     /// stock KVM / M1/M2 (RDTSC/RNG never surface there).
-    vtime: Option<VtimeWiring>,
+    pub(crate) vtime: Option<VtimeWiring>,
     /// Set when the most-recently-serviced exit staged an **RNG** completion
     /// (RDRAND/RDSEED) whose seeded draw advanced the entropy stream but whose
     /// register-write/RIP-advance is only staged for the next `KVM_RUN` (not in
@@ -664,7 +618,7 @@ pub struct Vmm<B: Backend> {
     /// at the next `step` (its re-entry commits the staged completion). RDTSC/
     /// RDTSCP/IO/MSR/CPUID completions are **idempotent on replay** (positional
     /// work / re-queried device-or-contract value), so they do not set this.
-    rng_completion_staged: bool,
+    pub(crate) rng_completion_staged: bool,
     /// `true` when the **last serviced exit staged *any* backend completion** (a
     /// read-style IO/MMIO load, an `Rdmsr`/`Wrmsr`, a `Cpuid`, or a determinism
     /// `Rdtsc`/`Rdtscp`/`Rdrand`/`Rdseed`) whose register-write/RIP-advance is only
@@ -676,7 +630,7 @@ pub struct Vmm<B: Backend> {
     /// and would commit the *old* exit's reg-write/RIP-advance on the next run — so
     /// [`Vmm::restore_vm_state`] requires a fresh/committed backend. Set after each
     /// `step`'s `run` from the serviced exit; `false` initially and after a restore.
-    completion_staged: bool,
+    pub(crate) completion_staged: bool,
     /// `true` when the current point is a **V-time intercept boundary** — the last
     /// serviced exit was a V-time intercept (RDTSC/RDTSCP/RDRAND/RDSEED or a TSC
     /// MSR), or the VM is fresh (work 0) — so the **exact** effective V-time is known:
@@ -690,7 +644,7 @@ pub struct Vmm<B: Backend> {
     /// V-time-intercept completion. **Not** part of the hash — `state_blob` is
     /// replay-equivalence *to the last intercept* and is correct at any exit (see
     /// [`encode_vtime`]); only the *snapshot* needs exactness here.
-    vtime_synchronized: bool,
+    pub(crate) vtime_synchronized: bool,
     /// `false` until the **first guest entry** (the first `backend.run()`, whether
     /// reached via [`step`](Vmm::step) or [`run`](Vmm::run)). On that first entry the
     /// work counter is prepared ([`WorkSource::start_run`](crate::work::WorkSource::start_run))
@@ -701,21 +655,7 @@ pub struct Vmm<B: Backend> {
     /// a `step()`-then-`run()` consumer (telemetry/diagnostics) correct — it neither
     /// skips the early `step()` entries nor restarts work mid-run. Not hashed (a
     /// transient run-control flag, like `rng_completion_staged`/`vtime_synchronized`).
-    first_entry_done: bool,
-    /// The userspace xAPIC (ruling R1), wired **only** on the Linux boot path
-    /// ([`crate::bringup::boot_linux`]); `None` for M1/M2/corpus payloads, which
-    /// never touch the APIC page — so their `state_hash` is byte-for-byte
-    /// unchanged (no `LAPC` chunk) and an MMIO exit there stays the default-deny
-    /// [`VmmError::ContractViolation`]. When wired, a load/store in the
-    /// `0xFEE0_0000` page is serviced from the register file (and its timer is
-    /// driven off V-time). The register state is folded into the hash so two
-    /// same-seed Linux runs that leave the APIC in different state diverge.
-    lapic: Option<lapic::Lapic>,
-    /// Minimal legacy PC platform I/O (PCI/PIC/PIT/CMOS/POST/extra-COM = "no
-    /// device"), wired with the xAPIC on the Linux boot path; `None` for
-    /// M1/M2/corpus (which never touch these ports), so their port-I/O default-deny
-    /// and `state_hash` are unchanged.
-    legacy: Option<LegacyPlatform>,
+    pub(crate) first_entry_done: bool,
     /// When set ([`Vmm::wire_snapshot_hashing`]), [`Vmm::state_blob`] folds the
     /// **canonical `vm_state` encoding** into the hash as a `VMST` chunk — the
     /// snapshot/branch path's "the canonical `vm_state` blob drives `state_hash`"
@@ -723,7 +663,7 @@ pub struct Vmm<B: Backend> {
     /// byte unchanged (their goldens do not move); a snapshot/branch consumer opts
     /// in. The chunk is the same bytes a [`Vmm::save_vm_state`] would seal, so two
     /// states whose canonical blob differs hash differently.
-    snapshot_hashing: bool,
+    pub(crate) snapshot_hashing: bool,
     /// The **host-fault arrival deadline** (task 59): an absolute retired-branch
     /// **work count** at which a staged [`HostFault`](environment::HostFault) is
     /// to be applied, armed by [`Vmm::arm_arrival`] and folded into
@@ -734,22 +674,36 @@ pub struct Vmm<B: Backend> {
     /// unchanged. Like the preemption deadline it is a pure function of the
     /// (seed-deterministic) work axis, so arrival lands at the same instruction
     /// across same-seed runs.
-    arrival_deadline: Option<Moment>,
+    pub(crate) arrival_deadline: Option<Moment>,
     /// The task-73 SDK channel, wired per run by [`Vmm::enable_sdk`]. `None` for
     /// every non-SDK path (M1/M2/corpus/Linux-boot) — the doorbell then stays the
     /// default-deny contract violation and this field never touches the hash.
-    sdk: Option<SdkChannel>,
+    pub(crate) sdk: Option<SdkChannel>,
     /// The task-61 `Net` channel, wired per run by [`Vmm::enable_net`]. `None` for
     /// every path without a flow agent — the doorbell then behaves exactly as
     /// before and this field never touches the hash.
-    net: Option<NetChannel>,
+    pub(crate) net: Option<NetChannel>,
 }
 
-impl<B: Backend> Vmm<B> {
+impl<B: Backend> Vmm<B>
+where
+    B::A: Vendor,
+{
     /// Construct over an already-configured backend (CPUID/MSR-filter installed,
     /// entry state restored, RAM mapped) **and the [`GuestRam`] it owns**.
     pub fn new(backend: B, guest_ram: GuestRam) -> Self {
         Self::with_backing(backend, RamBacking::Owned(guest_ram))
+    }
+
+    /// The backend, for the vendor half's own dispatch (`pub(crate)`; the engine
+    /// boundary, not a public accessor).
+    pub(crate) fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// The vendor's device state ([`Vendor::Devices`]).
+    pub(crate) fn devices(&self) -> &<B::A as Vendor>::Devices {
+        &self.devices
     }
 
     /// Construct over an already-configured backend and **either** RAM backing —
@@ -761,9 +715,9 @@ impl<B: Backend> Vmm<B> {
         Self {
             backend,
             ram,
+            devices: <B::A as Vendor>::new_devices(),
             host_dirty: std::collections::BTreeSet::new(),
             host_dirty_wholesale: false,
-            uart: Uart8250::new(),
             report_stream: Vec::new(),
             preemption_landings: Vec::new(),
             idle_landings: Vec::new(),
@@ -776,29 +730,11 @@ impl<B: Backend> Vmm<B> {
             // a snapshot here is exact (synchronized).
             vtime_synchronized: true,
             first_entry_done: false,
-            lapic: None,
-            legacy: None,
             snapshot_hashing: false,
             arrival_deadline: None,
             sdk: None,
             net: None,
         }
-    }
-
-    /// Wire the userspace xAPIC **and** the minimal legacy PC platform I/O for the
-    /// Linux boot path: after this, a guest load/store in the `0xFEE0_0000` MMIO
-    /// page is serviced by `lapic`, and the curated legacy ISA/PCI ports return
-    /// "no device" instead of failing closed. M1/M2/corpus leave both unwired (they
-    /// never touch the page or those ports), keeping their `state_hash` unchanged.
-    pub fn wire_lapic(&mut self, lapic: lapic::Lapic) -> &mut Self {
-        self.lapic = Some(lapic);
-        self.legacy = Some(LegacyPlatform::new());
-        self
-    }
-
-    /// `true` once the userspace xAPIC is wired (the Linux boot path).
-    pub fn lapic_wired(&self) -> bool {
-        self.lapic.is_some()
     }
 
     /// Wire the determinism-complete V-time + seeded-RNG path (the
@@ -830,6 +766,24 @@ impl<B: Backend> Vmm<B> {
         self.snapshot_hashing
     }
 
+    /// `true` iff a **genuine guest interrupt is pending delivery but not yet
+    /// accepted** — a real identity raised into the vendor's interrupt fabric and
+    /// re-arbitrated as deliverable (e.g. the periodic V-time timer), or a legacy
+    /// line asserting — held in the inject seam awaiting the next safe VM-entry.
+    ///
+    /// This is the **architecturally in-flight event** the determinism overlay makes
+    /// observable at a *synchronized* (snapshottable) boundary: unlike a backend
+    /// injected-interrupt bit — which exists only at a non-synchronized
+    /// interrupt-window exit, where [`Vmm::save_vm_state`] fails closed — a pending
+    /// identity sits in the captured fabric state (device blob) and is **re-derived
+    /// exactly** on restore. The live gate seals on this (or on
+    /// [`Vmm::has_active_event_injection`]) to prove restore of a true in-flight
+    /// event. Re-arbitrates but does not perturb the snapshot; `false` when no
+    /// fabric is wired and no legacy line is asserting.
+    pub fn has_pending_guest_interrupt(&mut self) -> Result<bool, VmmError> {
+        <B::A as Vendor>::has_pending_guest_interrupt(self)
+    }
+
     /// The current full guest-memory image (the owned [`RamBacking`]) — the
     /// memory half a snapshot captures into [`crate::snapshot::SnapshotEngine`].
     pub fn guest_memory(&self) -> &[u8] {
@@ -852,14 +806,14 @@ impl<B: Backend> Vmm<B> {
     /// (`docs/RESOLUTION.md`), so this input is never recorded, hashed, or
     /// snapshotted. Inert for every run that never calls it.
     pub fn inject_serial_input(&mut self, bytes: &[u8]) {
-        self.uart.inject_input(bytes);
+        <B::A as Vendor>::inject_serial_input(&mut self.devices, bytes);
     }
 
     /// The serial output captured so far (the 8250 THR transmit stream) — the same
     /// buffer the snapshot adapter reads. Task 81's `exec` loop diffs this across
     /// steps to feed the completion-sentinel scanner.
     pub fn serial_output(&self) -> &[u8] {
-        self.uart.capture()
+        <B::A as Vendor>::serial_capture(&self.devices)
     }
 
     /// The current guest-visible vCPU register file, read **best-effort** and
@@ -872,7 +826,7 @@ impl<B: Backend> Vmm<B> {
     /// *view*, never the fallible snapshot seal ([`save_vm_state`](Vmm::save_vm_state),
     /// which fails closed at a non-synchronized boundary). Pairs with
     /// [`effective_vns`](Vmm::effective_vns) for the view's `Moment`/V-time.
-    pub fn inspect_vcpu(&self) -> VcpuState {
+    pub fn inspect_vcpu(&self) -> VcpuOf<B> {
         self.current_vcpu()
     }
 
@@ -888,7 +842,7 @@ impl<B: Backend> Vmm<B> {
     /// matching [`Vmm::state_blob`]'s `current_vcpu`); the fallible snapshot path
     /// ([`Vmm::save_vm_state`]) reads it strictly instead. Does not mutate the VM.
     pub fn has_inflight_event_injection(&self) -> bool {
-        snapshot::has_inflight_injection(&self.current_vcpu().events)
+        <B::A as Vendor>::vcpu_has_inflight_injection(&self.current_vcpu())
     }
 
     /// `true` iff the live vCPU carries a **genuine in-flight event** — a real
@@ -904,41 +858,7 @@ impl<B: Backend> Vmm<B> {
     /// residual (which collapses to the clean quiescent record under canonicalization).
     /// Best-effort read, like [`Vmm::has_inflight_event_injection`]; does not mutate the VM.
     pub fn has_active_event_injection(&self) -> bool {
-        snapshot::has_active_event_injection(&self.current_vcpu().events)
-    }
-
-    /// `true` iff a **genuine guest interrupt is pending delivery but not yet accepted** —
-    /// a real vector raised into the LAPIC IRR and re-arbitrated as deliverable (e.g. the
-    /// periodic V-time LAPIC timer), or the legacy COM1 ExtINT line asserting — held in the
-    /// inject seam awaiting the next safe VM-entry.
-    ///
-    /// This is the **architecturally in-flight event** that the determinism overlay makes
-    /// observable at a *synchronized* (snapshottable) boundary. Unlike a `kvm_vcpu_events`
-    /// `interrupt_injected` bit — which exists only at a non-synchronized interrupt-window
-    /// exit, where [`Vmm::save_vm_state`] fails closed — a vector pending in the IRR sits in
-    /// the captured LAPIC state (device blob) and is **re-derived exactly** on restore (the
-    /// IRR→ISR acceptance transition models a hypervisor-side event, so vmm-core leaves the
-    /// vector in IRR until acceptance — see [`lapic::Lapic::peek_interrupt`] and
-    /// `snapshot_restore_re_derives_the_in_flight_lapic_irq`). It is **distinct from an
-    /// inert `kvm_vcpu_events` modifier residual** (a stale post-delivery `interrupt.nr`):
-    /// this is a committed, *undelivered* interrupt. The live gate seals on this (or on
-    /// [`Vmm::has_active_event_injection`]) to prove restore of a true in-flight event.
-    ///
-    /// Re-arbitrates (`advance_to(now)`, idempotent with the run loop's per-step service)
-    /// and peeks **without** moving IRR→ISR, so it does not perturb the snapshot. Returns
-    /// `false` when no LAPIC is wired (M1/M2/corpus) and no serial line is asserting.
-    pub fn has_pending_guest_interrupt(&mut self) -> Result<bool, VmmError> {
-        if self.lapic.is_none() {
-            return Ok(self.pending_serial_vector().is_some());
-        }
-        let now = self.lapic_now_vns()?;
-        // Scope the `&mut lapic` borrow so it ends before `self.pending_serial_vector()`.
-        let lapic_pending = {
-            let lapic = self.lapic.as_mut().expect("is_some checked above");
-            lapic.advance_to(now);
-            lapic.peek_interrupt().is_some()
-        };
-        Ok(lapic_pending || self.pending_serial_vector().is_some())
+        <B::A as Vendor>::vcpu_has_active_injection(&self.current_vcpu())
     }
 
     /// Overwrite the full guest-memory image on restore. `image` must be exactly the
@@ -1045,7 +965,7 @@ impl<B: Backend> Vmm<B> {
                 // work, so `snapshot_vns(last_intercept_work)` is the exact V-time.
                 Ok(Some(VtimeSnapshot {
                     vns: vt.clock.snapshot_vns(vt.last_intercept_work),
-                    tsc_adjust: vt.tsc_adjust,
+                    guest_clock_offset: vt.guest_clock_offset,
                     entropy: vt.entropy.save_state(),
                 }))
             }
@@ -1097,7 +1017,7 @@ impl<B: Backend> Vmm<B> {
     /// then rejected). NOT included here: the vCPU-state representability check
     /// (`unrepresentable_state`) — that is a property of the captured state, not
     /// the boundary.
-    fn can_snapshot(&self) -> bool {
+    pub(crate) fn can_snapshot(&self) -> bool {
         !self.rng_completion_staged && (self.vtime.is_none() || self.vtime_synchronized)
     }
 
@@ -1171,7 +1091,7 @@ impl<B: Backend> Vmm<B> {
         //    round-trip errors, NOTHING below runs and the VM is byte-for-byte untouched
         //    (true all-or-nothing). `save`->`restore` is a vCPU identity, so the hash is
         //    unchanged. (B is unreachable directly — the production backend is
-        //    `Box<dyn Backend>` and the FROZEN trait must not grow a re-arm method.)
+        //    `Box<dyn Backend<A = X86>>` and the FROZEN trait must not grow a re-arm method.)
         let vcpu = self.backend.save()?;
         self.backend.restore(&vcpu)?;
         // 3. Commit the validated state — ALL infallible (the round-trip above was the last
@@ -1179,7 +1099,7 @@ impl<B: Backend> Vmm<B> {
         //    effective V-time lives in `cfg.vns_base` and the last-intercept anchor resets to
         //    0 (effective V-time = `vns_base` until the next intercept advances work) —
         //    keeping a restored VM byte-identical to a fresh one at the same effective V-time
-        //    (task-27 item 2). `IA32_TSC_ADJUST` is re-applied from the snapshot.
+        //    (task-27 item 2). The guest clock offset is re-applied from the snapshot.
         let vt = self.vtime.as_mut().ok_or_else(|| {
             VmmError::ContractViolation("restore_vtime called but V-time is not wired".to_string())
         })?;
@@ -1187,7 +1107,7 @@ impl<B: Backend> Vmm<B> {
         vt.cfg = cfg;
         vt.entropy = entropy;
         vt.last_intercept_work = 0;
-        vt.tsc_adjust = snap.tsc_adjust;
+        vt.guest_clock_offset = snap.guest_clock_offset;
         // 4. Re-baseline counter A. `vt.work.reset()` is BEST-EFFORT (its error is NOT a
         //    hard failure — that is what keeps the round-trip above the SOLE abort point, so
         //    A and B can never end up re-armed-XOR-not): it gives the portable `ScriptedWork`
@@ -1219,80 +1139,6 @@ impl<B: Backend> Vmm<B> {
     }
 
     // --- full vm_state snapshot / restore (task 39) ------------------------
-
-    /// Build the canonical [`vm_state::VmState`] from `vcpu` + the **current** live
-    /// machine (the memory-less half of a snapshot): the supplied vCPU registers, the
-    /// V-time block + entropy stream, and a vmm-core-owned device blob carrying the
-    /// xAPIC, the legacy 8259/PCI latches, the 8250 UART, the ordered report stream,
-    /// and `IA32_TSC_ADJUST`. The `contract_hash` is stamped so a restore can reject a
-    /// blob taken under a different contract. The caller supplies `vcpu` (so the
-    /// fallible `Backend::save` is resolved where the error can propagate —
-    /// [`Vmm::save_vm_state`] — rather than swallowed). Infallible; the V-time block is
-    /// anchored to the deterministic `last_intercept_work`, exactly like
-    /// [`encode_vtime`], so it is byte-deterministic at any exit.
-    fn build_vm_state(&self, vcpu: &VcpuState) -> vm_state::VmState {
-        let mut s = vm_state::VmState::default();
-        snapshot::fill_vcpu_state(&mut s, vcpu);
-        let tsc_adjust = match &self.vtime {
-            Some(vt) => {
-                s.vtime = vm_state::VtimeState {
-                    ratio_num: vt.cfg.ratio_num,
-                    // `VtimeWiring::new` enforces `ratio_den == 1`; carry it so the
-                    // blob is encodable (a fractional ratio is rejected at encode).
-                    ratio_den: 1,
-                    guest_hz: vt.cfg.guest_hz,
-                    guest_base: vt.cfg.guest_base,
-                    snapshot_vns: vt.clock.snapshot_vns(vt.last_intercept_work),
-                };
-                // The entropy PRNG position rides the `hypercall` section
-                // (INTEGRATION.md §4: `Dispatcher::save_state()`, "notably the
-                // entropy PRNG position") — vmm-core's hypercall RNG and RDRAND draw
-                // from this one stream.
-                s.hypercall = vt.entropy.save_state();
-                vt.tsc_adjust
-            }
-            None => {
-                // Unwired (M1/M2): a sentinel encodable V-time block, no entropy.
-                s.vtime.ratio_den = 1;
-                0
-            }
-        };
-        let dev = DeviceState {
-            tsc_adjust,
-            // The ordered conformance report stream is guest-observable output (it
-            // feeds `observable_digest` / the O2 oracle), captured here so a restore
-            // resumes it — else a branch taken after `REPORT_PORT` writes would lose
-            // them and its `observable_digest` would diverge from the reference. It is
-            // NOT in the default `state_hash` (O1): that path never emits a `VMST`
-            // chunk (snapshot-hashing is opt-in), so O1/O2 stay separate.
-            report_stream: self.report_stream.clone(),
-            uart: UartState {
-                capture: self.uart.capture().to_vec(),
-                regs: *self.uart.shadow_regs(),
-                dlab: self.uart.dlab(),
-                dlm: self.uart.dlm(),
-            },
-            lapic: self.lapic.as_ref().map(|l| l.snapshot()),
-            legacy: self.legacy.as_ref().map(|l| {
-                let imr = l.pic_imr();
-                LegacyState {
-                    config_address: l.config_address(),
-                    master_imr: imr[0],
-                    slave_imr: imr[1],
-                }
-            }),
-            // The full `kvm_vcpu_events` (task 41), **canonicalized** so an in-flight
-            // interrupt/exception injection round-trips while KVM's inert modifier
-            // residuals (a stale `interrupt.nr`/`exception.nr`, the GET-only validity
-            // bits) collapse to the clean record — replaying those raw into
-            // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
-            // point, so M1/M2/corpus blobs are unchanged.
-            events: snapshot::canonical_events(&vcpu.events),
-        };
-        s.devices = snapshot::encode_device_blob(&dev);
-        s.contract_hash = contract::contract_hash();
-        s
-    }
 
     /// Capture the **non-memory** machine state as a canonical [`vm_state::VmState`]
     /// (INTEGRATION.md §4) — pair with [`Vmm::guest_memory`] +
@@ -1359,12 +1205,8 @@ impl<B: Backend> Vmm<B> {
         // injection/SMM/triple-fault bookkeeping) — sealing a lossy blob is worse
         // than refusing it. Zero at a real quiescent snapshot point (64-bit guest, no
         // armed injection); a non-zero value is a misuse / a non-quiescent snapshot.
-        if let Some(reason) = snapshot::unrepresentable_state(&vcpu) {
-            return Err(VmmError::ContractViolation(format!(
-                "save_vm_state: {reason}"
-            )));
-        }
-        Ok(self.build_vm_state(&vcpu))
+        <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
+        Ok(<B::A as Vendor>::build_vm_state(self, &vcpu))
     }
 
     /// Restore the **non-memory** machine state from a [`vm_state::VmState`] (pair
@@ -1404,65 +1246,26 @@ impl<B: Backend> Vmm<B> {
             ));
         }
         // 1. Validate, committing nothing.
-        // 1a. Contract: a blob taken under a different CPUID/MSR contract would
-        //     silently diverge on restore (INTEGRATION.md §4 `contract_hash`).
-        if s.contract_hash != contract::contract_hash() {
-            return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
-        }
-        // 1a-bis. A non-empty timer queue cannot be applied: vmm-core has no
-        //     `vtime::TimerQueue` (the only timer is the xAPIC timer, carried in the
-        //     device blob), so a non-default `timers` section would be silently
+        // 1a-bis. A non-empty timer queue cannot be applied: the engine has no
+        //     `vtime::TimerQueue` (the only timer is the vendor fabric's, carried in
+        //     the device blob), so a non-default `timers` section would be silently
         //     dropped. Fail closed (a well-formed vmm-core blob always seals it empty).
         if s.timers != vm_state::TimerQueueState::default() {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state: snapshot carries a non-empty timer queue, but vmm-core has no \
                  TimerQueue to apply it — restoring would silently drop it. (A vmm-core snapshot \
-                 always seals an empty timer queue; the xAPIC timer rides the device blob.)"
+                 always seals an empty timer queue; the fabric timer rides the device blob.)"
                     .to_string(),
             ));
         }
-        // 1b. Decode the vmm-core device blob (total, never panics).
-        let dev = snapshot::decode_device_blob(&s.devices.0)?;
-        // 1b. Reject an UNRESTORABLE `kvm_vcpu_events` blob up front — a foreign / malformed
-        //     v3 blob that sets a cap-disabled validity bit (`VALID_TRIPLE_FAULT`/`VALID_PAYLOAD`)
-        //     would make `KVM_SET_VCPU_EVENTS` return `-EINVAL` only AFTER earlier `KVM_SET_*`
-        //     ioctls inside `Backend::restore` already mutated the target vCPU. Validate here,
-        //     while committing nothing, to preserve restore's reject-before-mutation (atomic)
-        //     contract — symmetric with the `save_vm_state` guard (PR #12 round 8).
-        if let Some(reason) = snapshot::cap_unrestorable_events(&dev.events) {
-            return Err(VmmError::ContractViolation(format!(
-                "restore_vm_state: {reason}"
-            )));
-        }
-        // 1c. The blob's LAPIC must be coherent AND match this VM's wiring.
-        let new_lapic = match (&dev.lapic, self.lapic.is_some()) {
-            (Some(ls), true) => Some(
-                lapic::Lapic::restore(ls)
-                    .map_err(|_| SnapshotError::Lapic("incoherent LapicState in device blob"))?,
-            ),
-            (Some(_), false) | (None, true) => {
-                return Err(VmmError::ContractViolation(
-                    "restore_vm_state: snapshot/VM xAPIC wiring mismatch (one has a LAPIC, the other \
-                     does not) — restore into a VM composed like the snapshot source."
-                        .to_string(),
-                ));
-            }
-            (None, false) => None,
-        };
-        // 1c-bis. The legacy platform must match this VM's wiring too — a blob whose
-        // legacy subrecord is absent (or present) where the VM's is not is a malformed
-        // snapshot, **rejected** rather than silently skipped (which would leave the
-        // 8259 IMRs / PCI latch stale). (LAPIC + legacy are wired together by
-        // `wire_lapic`, so a well-formed blob always agrees; this fails closed on one
-        // that does not.)
-        if dev.legacy.is_some() != self.legacy.is_some() {
-            return Err(VmmError::ContractViolation(
-                "restore_vm_state: snapshot/VM legacy-platform wiring mismatch (one has the 8259/PCI \
-                 latches, the other does not) — restore into a VM composed like the snapshot source."
-                    .to_string(),
-            ));
-        }
-        // 1d. V-time: validate the rate matches and pre-build the clock + entropy.
+        // 1b. The vendor half: the contract hash, the device blob, the event records,
+        //     and the fabric/platform wiring coherence — all validated **without
+        //     mutating anything**, so a bad snapshot leaves the VM fully intact. It
+        //     yields the decoded vCPU record set (events already canonicalized for
+        //     restore), the guest clock-offset register the engine re-applies with its
+        //     V-time commit, and the prepared devices.
+        let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
+        // 1c. V-time: validate the rate matches and pre-build the clock + entropy.
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
                 if s.vtime.ratio_num != vt.cfg.ratio_num
@@ -1500,28 +1303,6 @@ impl<B: Backend> Vmm<B> {
                 None
             }
         };
-        // 2. Build the vCPU state (pure). The typed records yield the reduced
-        //    `vm_state` event subset; overwrite `events` with the device blob's **full**
-        //    `kvm_vcpu_events` (task 41) so an in-flight interrupt/exception injection is
-        //    re-established exactly (`KVM_SET_VCPU_EVENTS`), not silently zeroed — the
-        //    device-blob record is a strict superset of the typed one and is
-        //    authoritative. (The inject-seam `set_pending_irq` slot is NOT serialized:
-        //    it is re-derived from the restored LAPIC IRR / UART THRE on the restored
-        //    VM's first `service_pending_irqs`, so there is no separate plan to carry.)
-        let mut vcpu = snapshot::vcpu_state_from(s);
-        // Canonicalize on restore too — mirror the save side (`build_vm_state`, which stores
-        // `canonical_events` in the device blob). This VM's own save path already strips KVM's
-        // inert modifier residuals, but an **external or older v3 blob** (hand-built, or from a
-        // different/buggy encoder) may carry RAW residuals; forwarding them verbatim to
-        // `KVM_SET_VCPU_EVENTS` would reintroduce the exact corruption canonicalization exists
-        // to prevent. Use `events_for_restore` (not `canonical_events`): it additionally forces
-        // the cap-free NMI_PENDING/SHADOW/SMM validity bits ON, so KVM **clears** any stale
-        // NMI-pending / interrupt-shadow / SMM left on a NON-fresh target vCPU (a clear bit means
-        // "leave unchanged" to `KVM_SET_VCPU_EVENTS`) — restore is then independent of the prior
-        // occupant (the branch / restore-in-place case; PR #12 round 6). The cap-gated
-        // TRIPLE_FAULT/PAYLOAD were already rejected up front (step 1b).
-        // Idempotent for a self-produced blob; the `state_hash` still uses `canonical_events`.
-        vcpu.events = snapshot::events_for_restore(&dev.events);
         // 3. Commit the fallible backend restore first — a failure here leaves the
         //    V-time/device state untouched (nothing below this line can reject the
         //    blob; only the hardware counter reset can fail, infrastructurally).
@@ -1542,21 +1323,14 @@ impl<B: Backend> Vmm<B> {
             vt.clock = clock;
             vt.entropy = entropy;
             vt.last_intercept_work = 0;
-            vt.tsc_adjust = dev.tsc_adjust;
+            vt.guest_clock_offset = clock_offset;
             self.vtime_synchronized = true;
         }
-        if let Some(l) = new_lapic {
-            self.lapic = Some(l);
-        }
-        if let (Some(legacy), Some(ls)) = (self.legacy.as_mut(), dev.legacy) {
-            legacy.restore(ls.config_address, ls.master_imr, ls.slave_imr);
-        }
-        self.uart
-            .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
-        // The ordered report stream is restored so a branch resumes the guest's
-        // observable output (its `observable_digest` / O2 signal) instead of losing
-        // every report emitted before the snapshot.
-        self.report_stream = dev.report_stream;
+        // The vendor half of the commit (all infallible): the prepared fabric /
+        // platform / serial devices, and the restored guest-observable report stream
+        // (so a branch resumes the guest's `observable_digest` / O2 signal instead of
+        // losing every report emitted before the snapshot).
+        <B::A as Vendor>::commit_restore(self, prep);
         // A restored VM is runnable again from the snapshot point: clear the latched
         // terminal + cached vCPU so `step`/`run` resume and `state_blob` re-reads the
         // restored backend state.
@@ -1674,7 +1448,7 @@ impl<B: Backend> Vmm<B> {
         // VM-entry (Linux path only; a no-op when the xAPIC is unwired, so
         // M1/M2/corpus state + hash are untouched). Done **before** the entry so the
         // queued IRQ rides the upcoming `KVM_RUN`.
-        self.service_pending_irqs()?;
+        <B::A as Vendor>::service_pending_irqs(self)?;
         // This `run` re-enters the guest, which COMMITS any completion the prior step
         // staged (incl. an RNG reg-write/RIP-advance) — so once it SUCCEEDS that
         // boundary is clean again. `complete_rng` re-sets the flag if the exit we
@@ -1718,7 +1492,9 @@ impl<B: Backend> Vmm<B> {
         // beyond it. (`B≡A`, so the backend's `reached` and vmm-core's `work_before` share
         // an axis.)
         let entered = match &exit {
-            Exit::Deadline { reached } => work_before.is_some_and(|wb| reached.0 > wb),
+            Exit::Common(CommonExit::Deadline { reached }) => {
+                work_before.is_some_and(|wb| reached.0 > wb)
+            }
             _ => true,
         };
         // INVARIANT (round-13): if NO guest entry occurred this call, do NOT touch ANY
@@ -1733,7 +1509,7 @@ impl<B: Backend> Vmm<B> {
             // refuse to restore into a backend with a pending completion (which would commit
             // the old exit's reg-write/RIP-advance on the next run).
             self.rng_completion_staged = false;
-            self.completion_staged = exit_stages_completion(&exit);
+            self.completion_staged = exit.stages_completion();
         }
         // else: a no-entry zero-step `Deadline`. The prior step's staged completion is
         // STILL pending (no `KVM_RUN` committed it) and commits on the next REAL entry, so
@@ -1745,34 +1521,25 @@ impl<B: Backend> Vmm<B> {
         // guest APIC read / EOI in this exit (and any snapshot) sees a LAPIC vector
         // in-service exactly once KVM accepted it. (The legacy serial vector takes no
         // LAPIC transition — it is EOI'd at the 8259.)
-        self.complete_irq_delivery();
+        <B::A as Vendor>::complete_irq_delivery(self);
+        // The two-level dispatch (`docs/ARCH-BOUNDARY.md` §A). The engine matches
+        // the **common** exits exhaustively and hands every **arch** exit to that
+        // vendor's own dispatch, which matches its enum exhaustively — so an
+        // unhandled arch exit can never fall through an engine-written wildcard
+        // arm (default-deny stays structural).
         match exit {
-            Exit::Io {
-                port,
-                size,
-                write: Some(v),
-            } => self.dispatch_out(port, size, v),
-            Exit::Io {
-                port,
-                size,
-                write: None,
-            } => self.dispatch_in(port, size),
-            Exit::Rdmsr { index } => self.dispatch_rdmsr(index),
-            Exit::Wrmsr { index, value } => self.dispatch_wrmsr(index, value),
-            Exit::Cpuid { leaf, subleaf } => self.dispatch_cpuid(leaf, subleaf),
-            Exit::Idle => self.on_idle(),
-            Exit::Shutdown => Ok(self.terminate(TerminalReason::Shutdown)),
-            Exit::Mmio { gpa, size, write } => self.dispatch_mmio(gpa, size, write),
-            Exit::Hypercall(_) => Err(VmmError::ContractViolation(
-                "unmodeled VMCALL hypercall (host handler is a later phase)".to_string(),
+            Exit::Common(CommonExit::Idle) => self.on_idle(),
+            Exit::Common(CommonExit::Shutdown) => Ok(self.terminate(TerminalReason::Shutdown)),
+            Exit::Common(CommonExit::Mmio { gpa, size, write }) => {
+                <B::A as Vendor>::dispatch_mmio(self, gpa, size, write)
+            }
+            Exit::Common(CommonExit::Hypercall(_)) => Err(VmmError::ContractViolation(
+                "unmodeled hypercall-instruction exit (host handler is a later phase; the \
+                 cooperating-guest channel rides the doorbell)"
+                    .to_string(),
             )),
-            // Determinism-complete path: RDTSC/RDTSCP → V-time TSC; RDRAND/RDSEED
-            // → seeded stream. Computed here, above the trait; the backend only
-            // surfaced + will complete the exit. Unwired (stock KVM / M1/M2) is a
-            // loud contract violation, never a host-derived value.
-            Exit::Rdtsc | Exit::Rdtscp => self.complete_tsc(),
-            Exit::Rdrand { width } | Exit::Rdseed { width } => self.complete_rng(width),
-            Exit::Deadline { reached } => self.on_deadline(reached),
+            Exit::Common(CommonExit::Deadline { reached }) => self.on_deadline(reached),
+            Exit::Arch(e) => <B::A as Vendor>::dispatch_arch(self, e),
         }
     }
 
@@ -1811,7 +1578,7 @@ impl<B: Backend> Vmm<B> {
         Ok(RunResult {
             reason,
             sdk_stop,
-            serial: self.uart.capture().to_vec(),
+            serial: <B::A as Vendor>::serial_capture(&self.devices).to_vec(),
             exit_counts: self.backend.exit_counts(),
         })
     }
@@ -1835,29 +1602,25 @@ impl<B: Backend> Vmm<B> {
     pub fn state_blob(&self) -> Vec<u8> {
         let mut out = Vec::new();
         put_chunk(&mut out, b"MEM\0", self.ram.as_bytes());
-        put_chunk(&mut out, b"VCPU", &encode_vcpu_state(&self.current_vcpu()));
-        put_chunk(&mut out, b"SERL", self.uart.capture());
+        put_chunk(
+            &mut out,
+            b"VCPU",
+            &<B::A as Vendor>::encode_vcpu_chunk(&self.current_vcpu()),
+        );
+        put_chunk(
+            &mut out,
+            b"SERL",
+            <B::A as Vendor>::serial_capture(&self.devices),
+        );
         put_chunk(&mut out, b"DEV\0", &self.encode_device_terminal());
         if let Some(vt) = &self.vtime {
             put_chunk(&mut out, b"VTIM", &encode_vtime(vt));
         }
-        // The xAPIC chunk is present **only** on the Linux boot path (`lapic`
-        // wired); M1/M2/corpus emit none, so their hash is byte-for-byte
-        // unchanged. It captures the register file + timer bookkeeping that
-        // governs future interrupt delivery, so two same-seed Linux runs that
-        // leave the APIC in different state hash differently.
-        if let Some(lapic) = &self.lapic {
-            put_chunk(&mut out, b"LAPC", &encode_lapic_state(&lapic.snapshot()));
-        }
-        // Legacy-platform state (the PCI CONFIG_ADDRESS latch + the 8259 master/
-        // slave IMR) — Linux path only. The IMR governs which IRQ lines deliver, so
-        // two same-seed runs that leave it different (hence future interrupt
-        // delivery different) hash differently.
-        if let Some(legacy) = &self.legacy {
-            let mut legy = legacy.config_address().to_le_bytes().to_vec();
-            legy.extend_from_slice(&legacy.pic_imr());
-            put_chunk(&mut out, b"LEGY", &legy);
-        }
+        // The vendor's own device chunks, at this fixed position in the blob (x86:
+        // `LAPC` then `LEGY`). A vendor emits none for a device it has not wired
+        // (M1/M2/corpus never wire the xAPIC or the legacy platform), so their hash
+        // is byte-for-byte unchanged.
+        <B::A as Vendor>::hash_device_chunks(&self.devices, &mut out);
         // The task-73 SDK channel's **replay-relevant** state — present **only**
         // when a channel is wired (`enable_sdk`), so an SDK-less run's blob
         // (M1/M2/corpus/Linux-boot) is byte-for-byte unchanged (round-7). It folds
@@ -1881,13 +1644,37 @@ impl<B: Backend> Vmm<B> {
             // Best-effort like the other hash chunks: `current_vcpu` uses the
             // terminal-captured state or a swallowing live `save` (the snapshot path,
             // `save_vm_state`, reads the vCPU fallibly instead).
-            let bytes = self
-                .build_vm_state(&self.current_vcpu())
+            let bytes = <B::A as Vendor>::build_vm_state(self, &self.current_vcpu())
                 .encode()
                 .unwrap_or_default();
             put_chunk(&mut out, b"VMST", &bytes);
         }
         out
+    }
+
+    /// Device + terminal state for the `DEV\0` hash chunk: the vendor's device
+    /// residual registers followed by the engine's latched terminal reason /
+    /// debug-exit code. Two runs that drive the devices into a different residual
+    /// configuration — even with byte-identical serial output — hash differently
+    /// (their future I/O behavior differs).
+    fn encode_device_terminal(&self) -> Vec<u8> {
+        let mut v = <B::A as Vendor>::encode_device_state(&self.devices);
+        match self.terminal {
+            None => v.push(0),
+            Some(TerminalReason::DebugExit { code }) => {
+                v.push(1);
+                v.push(code);
+            }
+            Some(TerminalReason::Idle) => v.push(2),
+            Some(TerminalReason::Shutdown) => v.push(3),
+            // `SdkStop` is a `run` stop reason, never latched as the VM's terminal
+            // (only substrate terminals latch via `terminate`), so it is never
+            // serialized here.
+            Some(TerminalReason::SdkStop) => {
+                unreachable!("SdkStop never latches as the VM terminal")
+            }
+        }
+        v
     }
 
     /// `sha256(state_blob())` — the M2 determinism hash and the unison
@@ -1912,7 +1699,7 @@ impl<B: Backend> Vmm<B> {
             h.update(bytes);
             h.finalize().into()
         }
-        let s = self.current_vcpu();
+        let vcpu = self.current_vcpu();
         let mut out: Vec<(&'static str, [u8; 32])> = Vec::new();
 
         // RAM in named regions — localize non-zeroed / host-dependent scratch. The
@@ -1929,109 +1716,16 @@ impl<B: Backend> Vmm<B> {
         out.push(("RAM:2M..16M", region(0x20_0000, 0x100_0000)));
         out.push(("RAM:16M..", region(0x100_0000, ram.len())));
 
-        // GPRs.
-        let r = &s.regs;
-        let mut regs = Vec::new();
-        for x in [
-            r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rsp, r.rbp, r.r8, r.r9, r.r10, r.r11,
-            r.r12, r.r13, r.r14, r.r15, r.rip, r.rflags,
-        ] {
-            regs.extend_from_slice(&x.to_le_bytes());
-        }
-        out.push(("regs", dig(&regs)));
-
-        // Segment selectors/descriptors.
-        let mut segs = Vec::new();
-        for seg in [
-            &s.sregs.cs,
-            &s.sregs.ds,
-            &s.sregs.es,
-            &s.sregs.fs,
-            &s.sregs.gs,
-            &s.sregs.ss,
-            &s.sregs.tr,
-            &s.sregs.ldt,
-        ] {
-            encode_segment(&mut segs, seg);
-        }
-        out.push(("segments", dig(&segs)));
-
-        // Descriptor tables (GDT, IDT).
-        let mut dt = Vec::new();
-        for d in [&s.sregs.gdt, &s.sregs.idt] {
-            dt.extend_from_slice(&d.base.to_le_bytes());
-            dt.extend_from_slice(&d.limit.to_le_bytes());
-        }
-        out.push(("desc-tables", dig(&dt)));
-
-        // Control registers.
-        let mut cr = Vec::new();
-        for x in [
-            s.sregs.cr0,
-            s.sregs.cr2,
-            s.sregs.cr3,
-            s.sregs.cr4,
-            s.sregs.cr8,
-            s.sregs.efer,
-            s.sregs.apic_base,
-            s.sregs.flags,
-        ] {
-            cr.extend_from_slice(&x.to_le_bytes());
-        }
-        out.push(("control-regs", dig(&cr)));
-
-        // PDPTRs + XCR0.
-        let mut pd = Vec::new();
-        for p in s.sregs.pdptrs {
-            pd.extend_from_slice(&p.to_le_bytes());
-        }
-        out.push(("pdptrs", dig(&pd)));
-        out.push(("xcr0", dig(&s.xcr0.to_le_bytes())));
-
-        // Debug registers.
-        let mut dr = Vec::new();
-        for d in s.debugregs.db {
-            dr.extend_from_slice(&d.to_le_bytes());
-        }
-        dr.extend_from_slice(&s.debugregs.dr6.to_le_bytes());
-        dr.extend_from_slice(&s.debugregs.dr7.to_le_bytes());
-        dr.extend_from_slice(&s.debugregs.flags.to_le_bytes());
-        out.push(("debugregs", dig(&dr)));
-
-        // Pending events.
-        let mut ev = Vec::new();
-        encode_events(&mut ev, &s.events);
-        out.push(("events", dig(&ev)));
-
-        // MP state.
-        let mp = match s.mp_state {
-            vmm_backend::MpState::Runnable => 0u8,
-            vmm_backend::MpState::Halted => 1,
-        };
-        out.push(("mp_state", dig(&[mp])));
-
-        // MSRs (BTreeMap, ascending key order).
-        let mut msr = Vec::new();
-        for (idx, val) in &s.msrs {
-            msr.extend_from_slice(&idx.to_le_bytes());
-            msr.extend_from_slice(&val.to_le_bytes());
-        }
-        out.push(("msrs", dig(&msr)));
-
-        // XSAVE split into legacy (x87 + SSE), the 64-byte XSAVE header, and the
-        // extended area — the prime suspects for host-leaked / init-optimization
-        // bytes.
-        let xs = &s.xsave;
-        let part = |lo: usize, hi: usize| {
-            let (lo, hi) = (lo.min(xs.len()), hi.min(xs.len()));
-            dig(&xs[lo..hi])
-        };
-        out.push(("xsave-legacy", part(0, 512)));
-        out.push(("xsave-header", part(512, 576)));
-        out.push(("xsave-extended", part(576, xs.len())));
+        // The vendor's register-file breakdown (GPRs, segments, descriptor tables,
+        // control regs, pending events, the FPU/extended-state image, …) — which
+        // records exist is per-arch, so the vendor names them.
+        <B::A as Vendor>::vcpu_components(&vcpu, &mut out);
 
         // Serial + device + V-time.
-        out.push(("serial", dig(self.uart.capture())));
+        out.push((
+            "serial",
+            dig(<B::A as Vendor>::serial_capture(&self.devices)),
+        ));
         out.push(("dev", dig(&self.encode_device_terminal())));
         if let Some(vt) = &self.vtime {
             // V-time chunk broken out for the O1 localizer (PR #51 box-review). The
@@ -2052,7 +1746,7 @@ impl<B: Backend> Vmm<B> {
                 vt.cfg.ratio_num,
                 vt.cfg.guest_hz,
                 vt.cfg.guest_base,
-                vt.tsc_adjust,
+                vt.guest_clock_offset,
             ] {
                 cfg.extend_from_slice(&x.to_le_bytes());
             }
@@ -2090,7 +1784,7 @@ impl<B: Backend> Vmm<B> {
     }
 
     /// The MEASURED preemption landings: the retired-branch work at which `run_until`
-    /// delivered each LAPIC timer (`Exit::Deadline { reached }`), in order. This is the
+    /// delivered each LAPIC timer (`CommonExit::Deadline { reached }`), in order. This is the
     /// VMM/backend's measurement — distinct from the ICR the guest programmed — and is
     /// what proves seed-DEPENDENT preemption (the landing work differs across seeds for a
     /// seed-consuming guest, but is identical for a pure one). Empty when no preemption
@@ -2117,7 +1811,7 @@ impl<B: Backend> Vmm<B> {
     /// but this lets a bounded step loop (e.g. the box Linux-boot gate) watch the
     /// console **mid-run** to detect `GUEST_READY` before the guest powers off.
     pub fn serial(&self) -> &[u8] {
-        self.uart.capture()
+        <B::A as Vendor>::serial_capture(&self.devices)
     }
 
     /// The backend's per-exit-reason trap counts so far (R-Backend observability).
@@ -2148,54 +1842,17 @@ impl<B: Backend> Vmm<B> {
     /// two runs that emit different reported values digest differently even with
     /// byte-identical serial output.
     pub fn observable_digest(&self) -> [u8; 32] {
-        crate::corpus::observable_digest_of(&self.report_stream, self.uart.capture())
+        crate::corpus::observable_digest_of(
+            &self.report_stream,
+            <B::A as Vendor>::serial_capture(&self.devices),
+        )
     }
 
     // --- dispatch helpers --------------------------------------------------
 
-    fn terminate(&mut self, reason: TerminalReason) -> Step {
+    pub(crate) fn terminate(&mut self, reason: TerminalReason) -> Step {
         self.terminal = Some(reason);
         Step::Terminal(reason)
-    }
-
-    fn dispatch_out(&mut self, port: u16, size: u8, value: u32) -> Result<Step, VmmError> {
-        if port == ISA_DEBUG_EXIT_PORT {
-            require_byte_io("OUT", port, size)?;
-            return Ok(self.terminate(TerminalReason::DebugExit { code: value as u8 }));
-        }
-        if Uart8250::owns(port) {
-            require_byte_io("OUT", port, size)?;
-            self.uart.write(port, value as u8);
-            return Ok(Step::Continued);
-        }
-        if port == REPORT_PORT {
-            // The conformance report channel: a 32-bit `OUT REPORT_PORT, EAX`
-            // appends `EAX` to the ordered report stream (corpus box-integration).
-            // It is a write (no completion); the value is already deterministic
-            // (a V-time TSC / seeded-PRNG word / retired-count the guest computed),
-            // and the stream is ordered by execution, so it is a pure function of
-            // the run. The 4-byte width is the ABI — a non-dword access is unmodeled
-            // and fails closed (never a truncated/extended report value).
-            require_dword_io("OUT", port, size)?;
-            self.report_stream.push(value);
-            return Ok(Step::Continued);
-        }
-        // Task 73: the hypercall doorbell. Serviced only when an SDK channel is
-        // wired; otherwise it falls through to the default-deny below (so no
-        // non-SDK path is affected). One `OUT` = one atomic exchange.
-        if port == DOORBELL_PORT && (self.sdk.is_some() || self.net.is_some()) {
-            return self.service_doorbell(size, value);
-        }
-        // Linux path: the curated legacy ISA/PCI ports accept-and-drop.
-        if let Some(legacy) = self.legacy.as_mut()
-            && LegacyPlatform::owns(port)
-        {
-            legacy.write(port, size, value);
-            return Ok(Step::Continued);
-        }
-        Err(VmmError::ContractViolation(format!(
-            "unmodeled OUT to port {port:#06x} value {value:#x} (size {size})"
-        )))
     }
 
     /// Wire the task-73 SDK channel for the upcoming run: `env` answers buggify
@@ -2349,8 +2006,7 @@ impl<B: Backend> Vmm<B> {
     /// write the response frame to [`RESP_GPA`], and — for an assertion violation
     /// or a `setup_complete` — arm a [`SdkStop`]. One exit ⇒ the whole exchange
     /// is serviced before the guest resumes (the single-`OUT` atomic doorbell).
-    fn service_doorbell(&mut self, size: u8, req_len: u32) -> Result<Step, VmmError> {
-        require_dword_io("OUT", DOORBELL_PORT, size)?;
+    pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
         // ABI: the request occupies exactly one page — the loopback host reads a
         // fixed `MAX_FRAME` buffer. A `req_len` past the page is a malformed request:
         // REJECT it with a clean `BadRequest` (round-4 P2) rather than silently
@@ -2790,68 +2446,6 @@ impl<B: Backend> Vmm<B> {
         bytes
     }
 
-    fn dispatch_in(&mut self, port: u16, size: u8) -> Result<Step, VmmError> {
-        if Uart8250::owns(port) {
-            require_byte_io("IN", port, size)?;
-            // `read_in` (not `read`): a byte read of the RBR consumes the next
-            // injected `exec` input byte (task 81), the way real hardware pops the
-            // receive FIFO. Inert on every non-`exec` run (the queue is empty).
-            if let Some(byte) = self.uart.read_in(port) {
-                self.backend.complete_read(u64::from(byte))?;
-                return Ok(Step::Continued);
-            }
-        }
-        // Linux path: the curated legacy ISA/PCI ports read back "no device".
-        if let Some(legacy) = self.legacy.as_ref()
-            && LegacyPlatform::owns(port)
-        {
-            let value = legacy.read(port, size);
-            self.backend.complete_read(value)?;
-            return Ok(Step::Continued);
-        }
-        Err(VmmError::ContractViolation(format!(
-            "unmodeled IN from port {port:#06x} (size {size})"
-        )))
-    }
-
-    /// Service an MMIO exit. On the Linux path (`lapic` wired) a load/store in the
-    /// `0xFEE0_0000` xAPIC page is routed to the userspace [`lapic::Lapic`]; every
-    /// other MMIO — and **all** MMIO when the LAPIC is unwired (M1/M2/corpus) —
-    /// stays the default-deny [`VmmError::ContractViolation`]. xAPIC registers are
-    /// 32-bit; a load completes with the register value, a store updates the
-    /// register file (no completion). A bad offset / out-of-page access fails
-    /// closed (never a silent value).
-    fn dispatch_mmio(&mut self, gpa: Gpa, size: u8, write: Option<u64>) -> Result<Step, VmmError> {
-        let in_apic_page = self.lapic.is_some() && (APIC_MMIO_BASE..APIC_MMIO_END).contains(&gpa.0);
-        if !in_apic_page {
-            return Err(VmmError::ContractViolation(format!(
-                "unmodeled MMIO at {:#x} (size {size}); only the xAPIC page is modeled, and only on \
-                 the Linux boot path",
-                gpa.0
-            )));
-        }
-        let now_vns = self.lapic_now_vns()?;
-        let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
-        let lapic = self.lapic.as_mut().expect("in_apic_page implies wired");
-        match write {
-            None => {
-                // xAPIC register load (32-bit). `complete_read` masks to `size`.
-                let value = lapic.mmio_read(offset, now_vns).map_err(|e| {
-                    VmmError::ContractViolation(format!("xAPIC read {offset:#x}: {e}"))
-                })?;
-                self.backend.complete_read(u64::from(value))?;
-                Ok(Step::Continued)
-            }
-            Some(v) => {
-                // xAPIC register store (32-bit); no completion.
-                lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
-                    VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
-                })?;
-                Ok(Step::Continued)
-            }
-        }
-    }
-
     /// The V-time (ns) the xAPIC sees — for the Current-Count register read and for
     /// the LAPIC timer's expiry. `0` when V-time is unwired (M1/M2 never touch the
     /// APIC page, so this is moot there).
@@ -2878,10 +2472,10 @@ impl<B: Backend> Vmm<B> {
     /// posture as the TSC/RNG completions — rather than silently reusing a stale
     /// `last_intercept_work` (which would freeze or shift the timer, a determinism
     /// hazard) or fabricating a clock value.
-    fn lapic_now_vns(&self) -> Result<u64, VmmError> {
+    pub(crate) fn now_vns(&self) -> Result<u64, VmmError> {
         match &self.vtime {
             Some(vt) => {
-                let work = if self.backend.capabilities().deterministic_tsc {
+                let work = if self.backend.capabilities().arch.deterministic_clock() {
                     vt.last_intercept_work
                 } else {
                     vt.work.work()?
@@ -2911,7 +2505,7 @@ impl<B: Backend> Vmm<B> {
     /// V-time reaches the deadline, so the post-preemption anchor does fire the timer).
     ///
     /// [`Capabilities::deterministic_tsc`]: vmm_backend::Capabilities
-    fn preemption_deadline(&self) -> Option<Moment> {
+    pub(crate) fn preemption_deadline(&self) -> Option<Moment> {
         let deadline_vns = self.armed_timer_deadline_vns()?;
         let vt = self
             .vtime
@@ -2928,7 +2522,7 @@ impl<B: Backend> Vmm<B> {
     /// the min is what lets a timer preemption and a fault arrival coexist: the
     /// guest is forced out at whichever seed-deterministic work count comes first,
     /// and the loser stays armed for the following step.
-    fn run_until_deadline(&self) -> Option<Moment> {
+    pub(crate) fn run_until_deadline(&self) -> Option<Moment> {
         match (self.preemption_deadline(), self.arrival_deadline) {
             (Some(p), Some(a)) => Some(Moment(p.0.min(a.0))),
             (only, None) | (None, only) => only,
@@ -2971,7 +2565,7 @@ impl<B: Backend> Vmm<B> {
     /// forbids — so such a backend rejects `perturb` rather than silently applying
     /// late (task 59; PR #51 round-2 finding). Pure; does not touch the arm.
     pub fn can_arm_arrival(&self) -> bool {
-        self.vtime.is_some() && self.backend.capabilities().deterministic_tsc
+        self.vtime.is_some() && self.backend.capabilities().arch.deterministic_clock()
     }
 
     /// The armed host-fault arrival as an **effective V-time** (`vns`), or `None`
@@ -2982,7 +2576,7 @@ impl<B: Backend> Vmm<B> {
     /// `vns` axis) and jump to whichever comes first — see
     /// [`idle_action`](Vmm::idle_action). Round-trips exactly under the contract
     /// clock (`ratio_den == 1`).
-    fn arrival_vns(&self) -> Option<u64> {
+    pub(crate) fn arrival_vns(&self) -> Option<u64> {
         let d = self.arrival_deadline?;
         let vt = self.vtime.as_ref()?;
         Some(vt.clock.snapshot_vns(d.0))
@@ -3043,7 +2637,7 @@ impl<B: Backend> Vmm<B> {
                 self.corrupt_memory(*gpa, mask.0)
             }
             environment::HostFault::InjectInterrupt { vector } => {
-                self.inject_host_interrupt(*vector)
+                <B::A as Vendor>::inject_wire_interrupt(self, *vector)
             }
             environment::HostFault::SkewTime(_) | environment::HostFault::SetClockRate(_) => {
                 Err(VmmError::ContractViolation(
@@ -3094,7 +2688,7 @@ impl<B: Backend> Vmm<B> {
     /// full-image write and latches [`Self::host_dirty_wholesale`] instead. Any
     /// **new** host write into guest RAM must call one of the two, or derived
     /// snapshots silently corrupt — that invariant is the review centerpiece.
-    fn mark_host_dirty(&mut self, gpa: u64, len: u64) {
+    pub(crate) fn mark_host_dirty(&mut self, gpa: u64, len: u64) {
         if len == 0 {
             return;
         }
@@ -3140,35 +2734,6 @@ impl<B: Backend> Vmm<B> {
         self.backend.harvest_dirty_gfns().is_ok()
     }
 
-    /// Raise `vector` into the userspace-LAPIC IRR so the existing IRQ
-    /// arbitration delivers it — the [`InjectInterrupt`] apply. Fails loud if the
-    /// LAPIC is unwired (there is no arbitration path to assert through), the
-    /// vector exceeds the xAPIC's 8-bit identity space (the wire field is u32;
-    /// per-arch identities exceed 8 bits, ARCH-BOUNDARY §C), or the vector is
-    /// architecturally reserved (`< 16`).
-    ///
-    /// [`InjectInterrupt`]: environment::HostFault::InjectInterrupt
-    fn inject_host_interrupt(&mut self, vector: u32) -> Result<(), VmmError> {
-        let Ok(vector) = u8::try_from(vector) else {
-            return Err(VmmError::ContractViolation(format!(
-                "InjectInterrupt vector {vector:#x} exceeds the xAPIC's 8-bit vector space — \
-                 refusing to truncate"
-            )));
-        };
-        let Some(lapic) = self.lapic.as_mut() else {
-            return Err(VmmError::ContractViolation(format!(
-                "InjectInterrupt vector {vector:#x} but the userspace LAPIC is unwired — no IRQ \
-                 arbitration path to assert the vector through (task 59 enforces host interrupts \
-                 through the Linux-boot xAPIC)"
-            )));
-        };
-        lapic.raise(vector).map_err(|e| {
-            VmmError::ContractViolation(format!(
-                "InjectInterrupt vector {vector:#x} rejected: {e:?}"
-            ))
-        })
-    }
-
     /// The next-timer **V-time deadline (ns)** on the determinism-complete path, or
     /// `None` when V-time is unwired, the backend has no deterministic counter, the
     /// LAPIC is unwired, or no timer is armed. The shared gating behind both
@@ -3178,21 +2743,21 @@ impl<B: Backend> Vmm<B> {
     /// exactly the condition "a LAPIC timer is armed on the determinism path", so an
     /// idle `HLT` is resumable precisely when this is `Some` **and** the guest can take
     /// the interrupt (`RFLAGS.IF == 1`).
-    fn armed_timer_deadline_vns(&self) -> Option<u64> {
-        if self.vtime.is_none() || !self.backend.capabilities().deterministic_tsc {
+    pub(crate) fn armed_timer_deadline_vns(&self) -> Option<u64> {
+        if self.vtime.is_none() || !self.backend.capabilities().arch.deterministic_clock() {
             return None;
         }
-        self.lapic.as_ref()?.next_timer_deadline()
+        <B::A as Vendor>::next_timer_deadline_vns(self)
     }
 
-    /// Handle [`Exit::Deadline`]: the guest was preempted at exactly `reached`
+    /// Handle [`CommonExit::Deadline`]: the guest was preempted at exactly `reached`
     /// retired branches (a pure function of the seed — bit-identical across same-seed
     /// runs even mid-spin). Advance the skid-free last-intercept anchor to it — a
     /// deterministic V-time intercept, like an RDTSC trap — so the NEXT `step`'s
     /// [`Self::service_pending_irqs`] sees [`Self::lapic_now_vns`] at the timer
     /// deadline, fires the timer into the LAPIC IRR, and injects it at the first
     /// injectable entry. No completion (the backend left nothing pending).
-    fn on_deadline(&mut self, reached: Moment) -> Result<Step, VmmError> {
+    pub(crate) fn on_deadline(&mut self, reached: Moment) -> Result<Step, VmmError> {
         // Trace the MEASURED landing work (diagnostic, not hashed) for the seed-dependence
         // gate — capped so a constantly-preempting guest can't grow it unbounded.
         if self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
@@ -3212,21 +2777,21 @@ impl<B: Backend> Vmm<B> {
             // One arriving with no V-time wired is a backend contract violation —
             // fail closed, never silently absorbed.
             None => Err(VmmError::ContractViolation(format!(
-                "Exit::Deadline (reached {}) with no V-time wired — run_until is the \
+                "Exit::Common(CommonExit::Deadline (reached {})) with no V-time wired — run_until is the \
                  determinism-path preemption seam and is never issued without it",
                 reached.0
             ))),
         }
     }
 
-    /// Handle [`Exit::Idle`]: discriminate a **resumable idle** halt from a **terminal**
+    /// Handle [`CommonExit::Idle`]: discriminate a **resumable idle** halt from a **terminal**
     /// one and act ([`Self::idle_action`]). The guest is either *waiting for an interrupt
     /// that will come* or *dead*. A resumable idle either delivers an already-pending
     /// interrupt (zero V-time advance) or jumps V-time to a future deliverable timer
     /// ([`Self::resume_idle`]); everything else (the kernel's final `cli; hlt` after
     /// poweroff, or any wait nothing will satisfy) terminates exactly as before — the
     /// strictly-additive change of task 52.
-    fn on_idle(&mut self) -> Result<Step, VmmError> {
+    pub(crate) fn on_idle(&mut self) -> Result<Step, VmmError> {
         match self.idle_action()? {
             // A deliverable interrupt is already pending in the IRR (e.g. a one-shot
             // timer that fired while `IF == 0`, then `sti; hlt`): re-enter with **no**
@@ -3239,67 +2804,63 @@ impl<B: Backend> Vmm<B> {
         }
     }
 
-    /// Decide what an `Exit::Idle` should do. **Resumable iff** the guest can take an
-    /// interrupt (`RFLAGS.IF == 1`) on the determinism path **and** a *deliverable* wake
-    /// event exists — either one already pending in the IRR now
-    /// ([`IdleAction::DeliverPending`], zero-advance) **or** a future deliverable armed
-    /// timer ([`IdleAction::JumpToDeadline`]). Otherwise [`IdleAction::Terminal`].
+    /// Decide what an idle exit should do. **Resumable iff** the guest can take an
+    /// interrupt (the vendor's interruptibility test — x86 `RFLAGS.IF`) on the
+    /// determinism path **and** a *deliverable* wake event exists — either one already
+    /// pending in the interrupt fabric now ([`IdleAction::DeliverPending`],
+    /// zero-advance) **or** a future deliverable armed timer
+    /// ([`IdleAction::JumpToDeadline`]). Otherwise [`IdleAction::Terminal`].
     ///
-    /// **Pending-now takes precedence over a future deadline.** A one-shot timer may have
-    /// already fired into the IRR (its deadline hit while `IF == 0`), then the guest does
-    /// `sti; hlt` — now [`next_timer_deadline`](lapic::Lapic::next_timer_deadline) is
-    /// `None` but [`peek_interrupt`](lapic::Lapic::peek_interrupt) holds a deliverable
-    /// vector that must wake the halt immediately (a normal Linux pattern: a timer fires
-    /// in a critical section, then the CPU idles). So the discriminator keys on a
-    /// *deliverable interrupt existing*, not merely on a future armed deadline.
+    /// **Pending-now takes precedence over a future deadline.** A one-shot timer may
+    /// have already fired into the fabric (its deadline hit while interrupts were
+    /// masked), and the guest then idles with them unmasked — now there is no future
+    /// armed deadline but a deliverable interrupt is pending and must wake the halt
+    /// immediately (a normal Linux pattern: a timer fires in a critical section, then
+    /// the CPU idles). So the discriminator keys on a *deliverable interrupt existing*,
+    /// not merely on a future armed deadline.
     ///
-    /// **Deliverability, not just armed.** A timer can be *armed* yet *undeliverable* — a
-    /// reserved vector (`< 16`), or masked by TPR/PPR — in which case it fires into the
-    /// IRR but never injects, so a one-shot leaves no future wake. Such a timer is
-    /// **terminal** (like `IF == 0`), never a resumable idle ([`armed_timer_deliverable`]).
+    /// **Deliverability, not just armed.** A timer can be *armed* yet *undeliverable*
+    /// (a reserved vector, or masked by the guest's priority threshold), in which case
+    /// it fires into the fabric but never injects, so a one-shot leaves no future wake.
+    /// Such a timer is **terminal**, never a resumable idle — the vendor's
+    /// [`deliverable_timer_deadline_vns`](Vendor::deliverable_timer_deadline_vns)
+    /// filters it out.
     ///
-    /// The determinism-path and `IF` gates come **first**: the common terminal paths
-    /// (minimal-boot poweroff, M1/M2/corpus, stock KVM, all `IF == 0`/no-timer) take the
-    /// early `Terminal`, so their behavior and `state_hash` are byte-for-byte unchanged
-    /// (the no-regression gate). The `RFLAGS` read is a [`Backend::save`] (a pure vCPU
-    /// read running no guest code) and **fails closed** ([`VmmError::Backend`]) on error.
-    ///
-    /// [`armed_timer_deliverable`]: lapic::Lapic::armed_timer_deliverable
-    fn idle_action(&self) -> Result<IdleAction, VmmError> {
-        // Determinism path only (stock / M1/M2 keep `HLT` terminal, byte-identical).
-        if self.vtime.is_none() || !self.backend.capabilities().deterministic_tsc {
+    /// The determinism-path gate comes **first**: the common terminal paths
+    /// (minimal-boot poweroff, M1/M2/corpus, stock KVM) take the early `Terminal`, so
+    /// their behavior and `state_hash` are byte-for-byte unchanged (the no-regression
+    /// gate). The interruptibility read is a [`Backend::save`] (a pure vCPU read
+    /// running no guest code) and **fails closed** ([`VmmError::Backend`]) on error.
+    fn idle_action(&mut self) -> Result<IdleAction, VmmError> {
+        // Determinism path only (stock / M1/M2 keep an idle halt terminal,
+        // byte-identical).
+        if self.vtime.is_none() || !self.backend.capabilities().arch.deterministic_clock() {
             return Ok(IdleAction::Terminal);
         }
         // The guest must be resumable (able to take an interrupt / be woken).
-        if self.backend.save()?.regs.rflags & RFLAGS_IF == 0 {
+        if !<B::A as Vendor>::guest_interruptible(self)? {
             return Ok(IdleAction::Terminal);
         }
-        // (a) A deliverable LAPIC interrupt already pending in the IRR → re-enter, no
-        //     clock change (peek_interrupt does the vector-validity + TPR/PPR
-        //     arbitration). LAPIC-only; takes precedence over a future deadline.
-        if let Some(lapic) = self.lapic.as_ref()
-            && lapic.peek_interrupt().is_some()
-        {
+        // (a) A deliverable interrupt already pending in the fabric → re-enter, no
+        //     clock change. Takes precedence over a future deadline.
+        if <B::A as Vendor>::pending_deliverable_interrupt(self)? {
             return Ok(IdleAction::DeliverPending);
         }
         // (b) No pending wake, but a future scheduled event → jump to the FIRST one.
         //     Two competing discrete events wake an idle guest, and V-time must land
-        //     at whichever comes first (PR #51 round-4): the deliverable LAPIC timer
+        //     at whichever comes first (PR #51 round-4): the deliverable fabric timer
         //     **and** a staged host-fault arrival ([`arm_arrival`](Vmm::arm_arrival)).
         //     Fold them the same way `run_until_deadline` folds arrival into the run:
         //     jump to `min(timer, arrival)`, waking at the arrival to apply.
         //
-        //     **The arrival wakes independent of the LAPIC (PR #51 round-6).** A host
+        //     **The arrival wakes independent of the fabric (PR #51 round-6).** A host
         //     fault is a host-plane event, not a guest interrupt — so a V-time-wired
-        //     guest with **no LAPIC** that idles before a staged `Moment` still wakes
-        //     at the arrival to apply it, rather than going `Terminal` and silently
-        //     never applying an accepted perturb. The timer half stays LAPIC-gated
-        //     (there is no timer without a LAPIC). With neither a LAPIC timer nor a
-        //     staged arrival the guest is terminal — byte-identical to before.
-        let timer = self.lapic.as_ref().and_then(|l| {
-            l.next_timer_deadline()
-                .filter(|_| l.armed_timer_deliverable())
-        });
+        //     guest with **no fabric wired** that idles before a staged `Moment` still
+        //     wakes at the arrival to apply it, rather than going `Terminal` and
+        //     silently never applying an accepted perturb. The timer half stays
+        //     fabric-gated (there is no timer without a fabric). With neither a timer
+        //     nor a staged arrival the guest is terminal — byte-identical to before.
+        let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self);
         let wake = match (timer, self.arrival_vns()) {
             (Some(t), Some(a)) => Some(t.min(a)),
             (only, None) | (None, only) => only,
@@ -3343,7 +2904,7 @@ impl<B: Backend> Vmm<B> {
     /// fires the timer into the LAPIC IRR and injects it, and `step` re-enters. The
     /// landing is the [`vtime::IdlePlanner`] seam (deterministic base: land exactly at the
     /// deadline; a future fault-overlay could prescribe `deadline + δ`).
-    fn resume_idle(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
+    pub(crate) fn resume_idle(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
         // The landing V-time, decided by the planner from the SKID-FREE anchor clock
         // (never a live HLT read). For a future deadline (guaranteed by `idle_action`'s
         // "not already fired" gate) this is exactly `deadline_vns`.
@@ -3360,7 +2921,7 @@ impl<B: Backend> Vmm<B> {
             // counters, folds `landing` into `vns_base`, anchors at 0).
             let snap = VtimeSnapshot {
                 vns: landing,
-                tsc_adjust: vt.tsc_adjust,
+                guest_clock_offset: vt.guest_clock_offset,
                 entropy: vt.entropy.save_state(),
             };
             (landing, snap)
@@ -3373,506 +2934,31 @@ impl<B: Backend> Vmm<B> {
         Ok(Step::Continued)
     }
 
-    /// Arbitrate and hand the backend the one IRQ vector to inject at the next safe
-    /// VM-entry — the V-time LAPIC timer **and** the legacy COM1 serial line — via
-    /// [`Backend::set_pending_irq`] (the `KVM_INTERRUPT` / interrupt-window handshake
-    /// lives below the trait). Runs once before every entry.
-    ///
-    /// **LAPIC timer.** Advance the timer to the current [`Self::lapic_now_vns`]
-    /// (firing the timer vector into IRR when due, re-arming if periodic), then
-    /// **peek** the current highest-priority deliverable vector. Peeking
-    /// (not taking) leaves it in the IRR; the IRR→ISR transition happens in
-    /// [`Self::complete_irq_delivery`] only once the backend confirms acceptance, so
-    /// a snapshot/`state_hash` taken while a vector waits on the interrupt window
-    /// shows it pending in IRR, not prematurely in-service.
-    ///
-    /// **Serial COM1 (IRQ 4).** [`Self::pending_serial_vector`] returns
-    /// [`COM1_IRQ_VECTOR`] while the 8250 asserts its THRE interrupt and the 8259
-    /// has not masked the line — the legacy ExtINT path (no LAPIC IRR/ISR; the guest
-    /// EOIs the 8259). It is **edge-driven by the guest's own `IER` write**, so its
-    /// timing is a deterministic function of guest execution.
-    ///
-    /// **Arbitration.** The backend holds **one** slot, so we re-arbitrate every
-    /// entry and pass the higher-priority pending vector. Local-APIC interrupts
-    /// outrank the legacy ExtINT line, so a deliverable LAPIC vector wins; the serial
-    /// vector is injected only when the LAPIC has nothing pending. Re-arbitrating
-    /// every entry means the backend never injects a stale vector (the serial line
-    /// de-asserts the moment the kernel drains the TX and clears `IER.THRI`).
-    ///
-    /// A **no-op when the xAPIC is unwired** (M1/M2/corpus/multiboot never wire the
-    /// LAPIC *or* the legacy platform), so those paths call neither `set_pending_irq`
-    /// nor `advance_to` — their state and `state_hash` are byte-for-byte unchanged.
-    fn service_pending_irqs(&mut self) -> Result<(), VmmError> {
-        if self.lapic.is_none() {
-            return Ok(());
-        }
-        let now_vns = self.lapic_now_vns()?;
-        // Scope the `&mut lapic` borrow so it ends before `self.backend`.
-        let lapic_vector = {
-            let lapic = self.lapic.as_mut().expect("is_some checked above");
-            lapic.advance_to(now_vns);
-            lapic.peek_interrupt() // re-arbitrate; do NOT move IRR→ISR
-        };
-        // Local-APIC interrupts outrank the legacy ExtINT serial line.
-        let vector = lapic_vector.or_else(|| self.pending_serial_vector());
-        self.backend.set_pending_irq(vector)?;
-        Ok(())
-    }
-
-    /// The COM1 serial interrupt vector ([`COM1_IRQ_VECTOR`]) if the 8250 is
-    /// currently asserting its THRE interrupt (the guest enabled `IER.THRI` and THR
-    /// is empty) **and** the 8259 has not masked IRQ 4 — else `None`. Gated on the
-    /// legacy platform being wired (the Linux path; it is wired together with the
-    /// xAPIC), so M1/M2/corpus never see a serial vector.
-    fn pending_serial_vector(&self) -> Option<u8> {
-        let legacy = self.legacy.as_ref()?;
-        // THRE (transmitter-empty) OR received-data-available (task 81's `exec`
-        // input): `serial_irq_asserted` folds both. Equal to `thre_irq_asserted`
-        // whenever no `exec` input is queued, so a non-`exec` run is unchanged.
-        (self.uart.serial_irq_asserted() && !legacy.irq_masked(COM1_IRQ)).then_some(COM1_IRQ_VECTOR)
-    }
-
-    /// Complete delivery of every vector the backend **accepted** (issued
-    /// `KVM_INTERRUPT` for) during the last `backend.run()`. Called after the entry
-    /// and before dispatching the exit, so a guest APIC read / EOI in that exit — and
-    /// any snapshot — observes a LAPIC vector in-service exactly once KVM accepted it
-    /// (never during the interrupt-window wait).
-    ///
-    /// An accepted **LAPIC** vector moves IRR→ISR ([`lapic::Lapic::take_interrupt`]).
-    /// An accepted **legacy COM1** vector is an ExtINT serviced + EOI'd at the 8259,
-    /// not the userspace LAPIC, so it must take **no** IRR/ISR transition — and it
-    /// doesn't: [`Self::service_pending_irqs`] only injects the serial vector when the
-    /// LAPIC has *nothing* deliverable ([`lapic::Lapic::peek_interrupt`] returned
-    /// `None`), and the LAPIC IRR cannot change between that arbitration and here (the
-    /// timer fires in `service_pending_irqs`, and any guest LAPIC write is a later
-    /// exit), so `take_interrupt` is a no-op exactly when a serial vector was the one
-    /// accepted. No-op overall when the xAPIC is unwired (the backend never accepts a
-    /// maskable IRQ there).
-    fn complete_irq_delivery(&mut self) {
-        while self.backend.take_accepted_interrupt().is_some() {
-            if let Some(lapic) = self.lapic.as_mut() {
-                lapic.take_interrupt();
-            }
-        }
-    }
-
-    fn dispatch_rdmsr(&mut self, index: u32) -> Result<Step, VmmError> {
-        let disp = contract::rdmsr_disposition(index);
-        loud_msr(
-            MsrDir::Read,
-            index,
-            None,
-            self.guest_rip(),
-            self.current_work(),
-            &disp,
-        );
-        match disp {
-            MsrDisposition::AllowFixed(v) => {
-                self.backend.complete_read(v)?;
-                Ok(Step::Continued)
-            }
-            MsrDisposition::DenyGp => {
-                self.backend.complete_fault()?;
-                Ok(Step::Continued)
-            }
-            MsrDisposition::EmulateVtime => self.rdmsr_vtime(index),
-            // allow-stateful is in-kernel and should never surface; a read-side
-            // deny-ignore-write does not exist in the contract.
-            MsrDisposition::AllowStateful | MsrDisposition::DenyIgnoreWrite => {
-                Err(VmmError::ContractViolation(format!(
-                    "RDMSR {index:#x} surfaced with a non-userspace disposition {disp:?}"
-                )))
-            }
-        }
-    }
-
-    fn dispatch_wrmsr(&mut self, index: u32, value: u64) -> Result<Step, VmmError> {
-        let disp = contract::wrmsr_disposition(index, value);
-        loud_msr(
-            MsrDir::Write,
-            index,
-            Some(value),
-            self.guest_rip(),
-            self.current_work(),
-            &disp,
-        );
-        match disp {
-            MsrDisposition::DenyIgnoreWrite => {
-                // Drop the write (already logged), then resume.
-                self.backend.complete_ok()?;
-                Ok(Step::Continued)
-            }
-            // A write to a read-only allow-fixed row, or any deny-gp row, faults.
-            MsrDisposition::DenyGp | MsrDisposition::AllowFixed(_) => {
-                self.backend.complete_fault()?;
-                Ok(Step::Continued)
-            }
-            MsrDisposition::EmulateVtime => self.wrmsr_vtime(index, value),
-            MsrDisposition::AllowStateful => Err(VmmError::ContractViolation(format!(
-                "WRMSR {index:#x} surfaced but is allow-stateful (should be in-kernel)"
-            ))),
-        }
-    }
-
-    fn dispatch_cpuid(&mut self, leaf: u32, subleaf: u32) -> Result<Step, VmmError> {
-        // Stock KVM answers CPUID in-kernel and never reaches here; a backend that
-        // surfaces it gets the frozen model overlaid with the live dynamic cells.
-        let state = self.backend.save()?;
-        let base = lookup_cpuid(leaf, subleaf);
-        let resolved = contract::resolve_cpuid(base, state.sregs.cr4, state.xcr0);
-        self.backend
-            .complete_cpuid(resolved.eax, resolved.ebx, resolved.ecx, resolved.edx)?;
-        Ok(Step::Continued)
-    }
-
-    /// Complete a pending `RDTSC`/`RDTSCP` with the **V-time** TSC,
-    /// [`VtimeWiring::visible_tsc`] (`VClock::tsc(work)` + `IA32_TSC_ADJUST`) — never
-    /// a host TSC, and identical to what `RDMSR(IA32_TSC)` returns. `work` is read
-    /// from the host counter at this exit; the backend writes the value to EDX:EAX
-    /// (and, for RDTSCP, the guest's `IA32_TSC_AUX` to ECX, which the backend
-    /// supplies from guest state). Fails closed if V-time is unwired (stock KVM /
-    /// M1/M2 never surface these exits, so reaching here without wiring is a contract
-    /// bug).
-    fn complete_tsc(&mut self) -> Result<Step, VmmError> {
-        let tsc = {
-            let Some(vt) = self.vtime.as_mut() else {
-                return Err(VmmError::ContractViolation(
-                    "RDTSC/RDTSCP surfaced but V-time is not wired (stock backend?) — refusing to \
-                     supply a host TSC"
-                        .to_string(),
-                ));
-            };
-            let work = vt.work.work()?;
-            // This is a V-time intercept (a synchronized point): record its
-            // *deterministic* work so the `VTIM` hash anchors here, not to a
-            // skid-laden live read at hash time (task-27 item 2).
-            vt.last_intercept_work = work;
-            vt.visible_tsc(work)
-        };
-        self.backend.complete_read(tsc)?;
-        // A V-time intercept: `last_intercept_work` is now the exact current work, so
-        // a snapshot here would be exact (see `save_vtime`).
-        self.vtime_synchronized = true;
-        Ok(Step::Continued)
-    }
-
-    /// Service an `emulate-vtime` `RDMSR` (`IA32_TSC` 0x10 → the guest-visible
-    /// V-time TSC, the **same** value the RDTSC instruction returns; `IA32_TSC_ADJUST`
-    /// 0x3b → the stored adjust). Fails closed if V-time is unwired (stock KVM /
-    /// M1/M2 never surface these), or if an unexpected index is routed here. Both are
-    /// V-time MSR intercepts, so each records its deterministic work as the hash
-    /// anchor (like [`complete_tsc`](Self::complete_tsc)).
-    fn rdmsr_vtime(&mut self, index: u32) -> Result<Step, VmmError> {
-        let value = {
-            let Some(vt) = self.vtime.as_mut() else {
-                return Err(VmmError::ContractViolation(format!(
-                    "emulate-vtime RDMSR {index:#x} surfaced but V-time is not wired (stock \
-                     backend?) — refusing to supply a host value"
-                )));
-            };
-            match index {
-                IA32_TSC => {
-                    let work = vt.work.work()?;
-                    vt.last_intercept_work = work;
-                    vt.visible_tsc(work)
-                }
-                IA32_TSC_ADJUST => {
-                    // A TSC_ADJUST access is a V-time MSR intercept too: sample its
-                    // deterministic work so the hashed effective V-time stays current
-                    // (the returned value — the adjust — does not depend on work).
-                    let work = vt.work.work()?;
-                    vt.last_intercept_work = work;
-                    vt.tsc_adjust
-                }
-                other => {
-                    return Err(VmmError::ContractViolation(format!(
-                        "emulate-vtime RDMSR {other:#x} is not a V-time MSR (only IA32_TSC 0x10 and \
-                         IA32_TSC_ADJUST 0x3b are emulate-vtime)"
-                    )));
-                }
-            }
-        };
-        self.backend.complete_read(value)?;
-        // A V-time MSR intercept: `last_intercept_work` is the exact current work.
-        self.vtime_synchronized = true;
-        Ok(Step::Continued)
-    }
-
-    /// Service an `emulate-vtime` `WRMSR`. `WRMSR(IA32_TSC, X)` sets the guest-visible
-    /// TSC to `X` by choosing the adjust `X − VClock::tsc(work)` (architecturally a
-    /// TSC write also moves `IA32_TSC_ADJUST` by the same delta — this is exactly
-    /// that); `WRMSR(IA32_TSC_ADJUST, Y)` sets the adjust to `Y`, shifting the visible
-    /// TSC by `Y − old`. Both are honored (`complete_ok`); the write is deterministic
-    /// (guest-driven at a deterministic work point) and folds into the hashed
-    /// `tsc_adjust`. Fails closed if V-time is unwired or the index is unexpected.
-    fn wrmsr_vtime(&mut self, index: u32, value: u64) -> Result<Step, VmmError> {
-        {
-            let Some(vt) = self.vtime.as_mut() else {
-                return Err(VmmError::ContractViolation(format!(
-                    "emulate-vtime WRMSR {index:#x} surfaced but V-time is not wired (stock \
-                     backend?) — refusing to emulate"
-                )));
-            };
-            match index {
-                IA32_TSC => {
-                    let work = vt.work.work()?;
-                    vt.last_intercept_work = work;
-                    // visible_tsc(work) == value ⇔ adjust = value − VClock::tsc(work).
-                    vt.tsc_adjust = value.wrapping_sub(vt.clock.guest_ticks(work));
-                }
-                IA32_TSC_ADJUST => {
-                    // V-time MSR intercept — sample work to keep the hashed effective
-                    // V-time current (see the RDMSR side).
-                    let work = vt.work.work()?;
-                    vt.last_intercept_work = work;
-                    vt.tsc_adjust = value;
-                }
-                other => {
-                    return Err(VmmError::ContractViolation(format!(
-                        "emulate-vtime WRMSR {other:#x} is not a V-time MSR (only IA32_TSC 0x10 and \
-                         IA32_TSC_ADJUST 0x3b are emulate-vtime)"
-                    )));
-                }
-            }
-        }
-        self.backend.complete_ok()?;
-        // A V-time MSR intercept: `last_intercept_work` is the exact current work.
-        self.vtime_synchronized = true;
-        Ok(Step::Continued)
-    }
-
-    /// Complete a pending `RDRAND`/`RDSEED` with `width` bytes from the **seeded**
-    /// entropy stream (the same one the `Entropy` hypercall uses) — never the host
-    /// RNG. The backend masks to `width` and sets CF (deterministic success).
-    /// Fails closed if V-time/RNG is unwired.
-    ///
-    /// An RNG exit is a **V-time intercept** (one of the four determinism-cap traps),
-    /// so it records its deterministic work as the hash anchor — exactly like
-    /// [`complete_tsc`](Self::complete_tsc) and the TSC-MSR paths. Without this, if an
-    /// RNG exit were the last intercept before a checkpoint, the `VTIM` hash would use
-    /// a stale (prior-intercept) work value, so two states that burned different
-    /// branch counts before the same seeded draw would collide — a false determinism
-    /// MATCH that then diverges on the next TSC read.
-    fn complete_rng(&mut self, width: u8) -> Result<Step, VmmError> {
-        let value = {
-            let Some(vt) = self.vtime.as_mut() else {
-                return Err(VmmError::ContractViolation(
-                    "RDRAND/RDSEED surfaced but the seeded entropy stream is not wired (stock \
-                     backend?) — refusing to supply host RNG"
-                        .to_string(),
-                ));
-            };
-            // Record the synchronized work at this RNG intercept (the draw itself
-            // retires no guest branches, so the order vs `draw_rng` is irrelevant).
-            let work = vt.work.work()?;
-            vt.last_intercept_work = work;
-            vt.draw_rng(width)?
-        };
-        self.backend.complete_read(value)?;
-        // A V-time intercept: the V-time is exact (`last_intercept_work` is current).
-        // Independently, the seeded draw advanced the stream but `complete_read` only
-        // STAGES the reg-write/RIP-advance for the next `KVM_RUN`, so this is an unsafe
-        // *entropy* snapshot boundary until the next `step` re-enters and commits it
-        // (see `save_vtime`, which fails on the RNG flag even though V-time is exact).
-        self.vtime_synchronized = true;
-        self.rng_completion_staged = true;
-        Ok(Step::Continued)
-    }
-
-    /// Best-effort guest RIP at the faulting instruction, for the loud §1 MSR
-    /// log. Logging must never abort the run, so a `save()` failure degrades to
-    /// `0` rather than propagating — the architectural effect (the completion) is
-    /// still serviced afterward, where its own error path applies.
-    fn guest_rip(&self) -> u64 {
-        self.backend.save().map(|s| s.regs.rip).unwrap_or_default()
-    }
-
     /// The current V-time work count for the loud §1 MSR log, or `None` when
     /// V-time is unwired (stock KVM / M1/M2) — logged honestly as `unwired`
     /// rather than a fake `0` that would read as a real branch count. A bad
     /// counter read also degrades to `None` (logging must never abort a run; the
     /// architectural effect is serviced afterward where its error path applies).
-    fn current_work(&self) -> Option<u64> {
+    pub(crate) fn current_work(&self) -> Option<u64> {
         self.vtime.as_ref().and_then(|vt| vt.work.work().ok())
     }
 
     /// The vCPU state for the hash: the snapshot captured at terminal if present,
     /// else a best-effort live `save` (default on a backend that cannot save —
     /// never happens for the mock or `KvmBackend` post-run).
-    fn current_vcpu(&self) -> VcpuState {
+    pub(crate) fn current_vcpu(&self) -> VcpuOf<B> {
         match &self.saved_state {
             Some(s) => s.clone(),
             None => self.backend.save().unwrap_or_default(),
         }
     }
-
-    /// Device + terminal state for the hash: the UART register shadows + `LCR.DLAB`
-    /// **and** the latched terminal reason / debug-exit code. The serial *bytes*
-    /// are hashed separately (the `SERL` chunk); the UART config captured here is
-    /// the device's residual state, so two runs that drive the UART into a
-    /// different register/DLAB configuration — even with byte-identical serial
-    /// output — produce different hashes (their future port-I/O behavior differs).
-    fn encode_device_terminal(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        // UART register shadows (offsets 0..=7) + the latched LCR.DLAB window.
-        v.extend_from_slice(self.uart.shadow_regs());
-        v.push(u8::from(self.uart.dlab()));
-        // The latched terminal reason / isa-debug-exit code.
-        match self.terminal {
-            None => v.push(0),
-            Some(TerminalReason::DebugExit { code }) => {
-                v.push(1);
-                v.push(code);
-            }
-            Some(TerminalReason::Idle) => v.push(2),
-            Some(TerminalReason::Shutdown) => v.push(3),
-            // `SdkStop` is a `run` stop reason, never latched as the VM's terminal
-            // (only substrate terminals latch via `terminate`), so it is never
-            // serialized here.
-            Some(TerminalReason::SdkStop) => {
-                unreachable!("SdkStop never latches as the VM terminal")
-            }
-        }
-        v
-    }
-}
-
-/// Whether servicing `exit` stages a backend completion (a register-write and/or
-/// RIP-advance committed on the next `KVM_RUN`): every read-style / MSR / CPUID /
-/// determinism exit calls a `complete_*`. Write-style (`Io`/`Mmio` store), `Hlt`,
-/// `Shutdown`, `Deadline`, and the unmodeled `Hypercall` resume with nothing pending.
-/// Drives [`Vmm::completion_staged`] (restore must not run over a staged completion).
-fn exit_stages_completion(exit: &Exit) -> bool {
-    matches!(
-        exit,
-        Exit::Io { write: None, .. }
-            | Exit::Mmio { write: None, .. }
-            | Exit::Rdmsr { .. }
-            | Exit::Wrmsr { .. }
-            | Exit::Cpuid { .. }
-            | Exit::Rdtsc
-            | Exit::Rdtscp
-            | Exit::Rdrand { .. }
-            | Exit::Rdseed { .. }
-    )
-}
-
-/// A modeled byte port (the 8250 UART block and isa-debug-exit) is
-/// **byte-addressed**; a wider access (`size != 1`) is unmodeled by the M1/M2
-/// payloads and must **fail closed** (CPU-MSR-CONTRACT default-deny), never a
-/// silent `value as u8` truncation — an `outl $x, $0xF4` must not become a fake
-/// debug-exit `PASS`, and a wide UART write must not drop its high bytes.
-fn require_byte_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
-    if size != 1 {
-        return Err(VmmError::ContractViolation(format!(
-            "{dir} to modeled byte port {port:#06x} with size {size} != 1 — the 8250 UART and \
-             isa-debug-exit are byte-addressed; a wider access is unmodeled (fail closed, not a \
-             truncation)"
-        )));
-    }
-    Ok(())
-}
-
-/// The report channel ([`REPORT_PORT`]) is **dword-addressed** (`OUT …, EAX`):
-/// a non-32-bit access is unmodeled and must **fail closed** (default-deny),
-/// never a silent truncation/extension of a reported value — a reported value
-/// rides exactly one 4-byte write, and `report(u64)` is two of them.
-fn require_dword_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
-    if size != 4 {
-        return Err(VmmError::ContractViolation(format!(
-            "{dir} to report port {port:#06x} with size {size} != 4 — the report channel is \
-             dword-addressed (a reported value is one 32-bit OUT); a different width is unmodeled \
-             (fail closed)"
-        )));
-    }
-    Ok(())
 }
 
 /// Append a domain-tagged, length-prefixed chunk: `tag(4) ‖ len(u64 LE) ‖ bytes`.
-fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
+pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
     out.extend_from_slice(tag);
     out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
     out.extend_from_slice(bytes);
-}
-
-/// MSR access direction for the loud §1 log line — carries both the human
-/// direction (`RDMSR`/`WRMSR`) and the KVM userspace exit reason it surfaces as.
-#[derive(Clone, Copy)]
-enum MsrDir {
-    Read,
-    Write,
-}
-
-impl MsrDir {
-    fn dir(self) -> &'static str {
-        match self {
-            MsrDir::Read => "RDMSR",
-            MsrDir::Write => "WRMSR",
-        }
-    }
-    /// The KVM exit reason this direction surfaces as (CPU-MSR-CONTRACT §1).
-    fn exit_reason(self) -> &'static str {
-        match self {
-            MsrDir::Read => "KVM_EXIT_X86_RDMSR",
-            MsrDir::Write => "KVM_EXIT_X86_WRMSR",
-        }
-    }
-}
-
-/// Loud host-side log of an MSR access, emitted **before** any architectural
-/// effect and never perturbing guest-visible state (CPU-MSR-CONTRACT §1
-/// loud-event policy). §1 mandates the full context: access direction, the KVM
-/// exit reason, the MSR index, the WRMSR data (`n/a` on a read), the guest RIP at
-/// the faulting instruction, the current work counter / V-time, and the
-/// disposition applied. `work` is the retired-branch counter at this exit
-/// (task-21 P3): `Some(n)` on the determinism-complete path, `None` →
-/// `work=unwired` when V-time is not wired (stock KVM / M1/M2) — logged honestly
-/// rather than a fake `0` that would read as a real count.
-fn loud_msr(
-    dir: MsrDir,
-    index: u32,
-    data: Option<u64>,
-    rip: u64,
-    work: Option<u64>,
-    disp: &MsrDisposition,
-) {
-    let data = match data {
-        Some(v) => format!("{v:#x}"),
-        None => "n/a".to_string(),
-    };
-    let work = match work {
-        Some(n) => n.to_string(),
-        None => "unwired".to_string(),
-    };
-    eprintln!(
-        "[vmm-core] msr-exit dir={} exit-reason={} index={index:#x} data={data} rip={rip:#x} \
-         work={work} disposition={disp:?}",
-        dir.dir(),
-        dir.exit_reason(),
-    );
-}
-
-/// Look up the frozen CPUID entry for `(leaf, subleaf)`: an exact `(leaf,
-/// subleaf)` match, else a `leaf`-only (insignificant-subleaf) match, else a
-/// zeroed entry (the `cpuid-default zeroed` rule).
-fn lookup_cpuid(leaf: u32, subleaf: u32) -> vmm_backend::CpuidEntry {
-    let model = contract::cpuid_model();
-    let mut leaf_only = None;
-    for e in &model.entries {
-        if e.leaf == leaf {
-            if e.subleaf == subleaf {
-                return *e;
-            }
-            if !e.subleaf_significant {
-                leaf_only = Some(*e);
-            }
-        }
-    }
-    leaf_only.unwrap_or(vmm_backend::CpuidEntry {
-        leaf,
-        subleaf,
-        ..Default::default()
-    })
 }
 
 /// Deterministic, fixed-layout encoding of the V-time + seeded-RNG state for the
@@ -3925,7 +3011,7 @@ fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
         vt.cfg.ratio_num,
         vt.cfg.guest_hz,
         vt.cfg.guest_base,
-        vt.tsc_adjust,
+        vt.guest_clock_offset,
     ] {
         v.extend_from_slice(&x.to_le_bytes());
     }
@@ -3961,180 +3047,20 @@ fn encode_sdk_channel(sdk: &SdkChannel) -> Vec<u8> {
     v
 }
 
-/// Deterministic, fixed-layout encoding of an xAPIC [`lapic::LapicState`] for the
-/// `LAPC` hash chunk: every field little-endian in declaration order (all plain
-/// `u32`/`u64`/`[u32; N]`/`bool` POD — no map iteration, no float). A change in any
-/// register, the timer bookkeeping, or the armed/pending flags changes the hash.
-fn encode_lapic_state(s: &lapic::LapicState) -> Vec<u8> {
-    let mut v = Vec::new();
-    for x in [s.version, s.id] {
-        v.extend_from_slice(&x.to_le_bytes());
-    }
-    v.extend_from_slice(&s.timer_hz.to_le_bytes());
-    for x in [
-        s.tpr,
-        s.svr,
-        s.ldr,
-        s.dfr,
-        s.esr,
-        s.icr_low,
-        s.icr_high,
-        s.divide_config,
-    ] {
-        v.extend_from_slice(&x.to_le_bytes());
-    }
-    for word in s.isr.iter().chain(&s.tmr).chain(&s.irr).chain(&s.lvt) {
-        v.extend_from_slice(&word.to_le_bytes());
-    }
-    v.extend_from_slice(&s.initial_count.to_le_bytes());
-    v.extend_from_slice(&s.count_at_arm.to_le_bytes());
-    v.extend_from_slice(&s.timer_arm_vns.to_le_bytes());
-    v.push(u8::from(s.timer_running));
-    v.push(u8::from(s.timer_pending));
-    v
-}
-
-/// Deterministic, fixed-layout encoding of a `VcpuState` (no map iteration into
-/// bytes beyond the already-sorted `BTreeMap`; no float; no host clock).
-fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
-    let mut v = Vec::new();
-    let r = &s.regs;
-    for x in [
-        r.rax, r.rbx, r.rcx, r.rdx, r.rsi, r.rdi, r.rsp, r.rbp, r.r8, r.r9, r.r10, r.r11, r.r12,
-        r.r13, r.r14, r.r15, r.rip, r.rflags,
-    ] {
-        v.extend_from_slice(&x.to_le_bytes());
-    }
-    for seg in [
-        &s.sregs.cs,
-        &s.sregs.ds,
-        &s.sregs.es,
-        &s.sregs.fs,
-        &s.sregs.gs,
-        &s.sregs.ss,
-        &s.sregs.tr,
-        &s.sregs.ldt,
-    ] {
-        encode_segment(&mut v, seg);
-    }
-    for dt in [&s.sregs.gdt, &s.sregs.idt] {
-        v.extend_from_slice(&dt.base.to_le_bytes());
-        v.extend_from_slice(&dt.limit.to_le_bytes());
-    }
-    for cr in [
-        s.sregs.cr0,
-        s.sregs.cr2,
-        s.sregs.cr3,
-        s.sregs.cr4,
-        s.sregs.cr8,
-        s.sregs.efer,
-        s.sregs.apic_base,
-        s.sregs.flags,
-    ] {
-        v.extend_from_slice(&cr.to_le_bytes());
-    }
-    for p in s.sregs.pdptrs {
-        v.extend_from_slice(&p.to_le_bytes());
-    }
-    v.extend_from_slice(&s.xcr0.to_le_bytes());
-    for d in s.debugregs.db {
-        v.extend_from_slice(&d.to_le_bytes());
-    }
-    v.extend_from_slice(&s.debugregs.dr6.to_le_bytes());
-    v.extend_from_slice(&s.debugregs.dr7.to_le_bytes());
-    v.extend_from_slice(&s.debugregs.flags.to_le_bytes());
-    encode_events(&mut v, &s.events);
-    v.push(match s.mp_state {
-        vmm_backend::MpState::Runnable => 0,
-        vmm_backend::MpState::Halted => 1,
-    });
-    // MSRs: BTreeMap iterates in ascending key order (deterministic).
-    v.extend_from_slice(&(s.msrs.len() as u64).to_le_bytes());
-    for (idx, val) in &s.msrs {
-        v.extend_from_slice(&idx.to_le_bytes());
-        v.extend_from_slice(&val.to_le_bytes());
-    }
-    v.extend_from_slice(&(s.xsave.len() as u64).to_le_bytes());
-    v.extend_from_slice(&s.xsave);
-    v
-}
-
-fn encode_segment(v: &mut Vec<u8>, seg: &vmm_backend::Segment) {
-    v.extend_from_slice(&seg.base.to_le_bytes());
-    v.extend_from_slice(&seg.limit.to_le_bytes());
-    v.extend_from_slice(&seg.selector.to_le_bytes());
-    // An **unusable** segment's `type` (and the rest of its access-rights byte) is
-    // architecturally **don't-care**: the CPU never consults the descriptor cache of a
-    // segment whose unusable bit is set (SDM Vol. 3 §24.4.1 — the VMX "unusable"
-    // attribute means the segment is treated as absent; the hidden type/attr bits are
-    // ignored on every use). KVM **normalizes** it (a `KVM_GET` of an unusable segment
-    // reports `type = 0`, but after `KVM_SET_SREGS` a `KVM_GET` reports `type = 1`), so
-    // a snapshot/restore round-trip otherwise perturbs this don't-care field and breaks
-    // restore-transparency on `state_hash`. Canonicalize it to `0` so the hash reflects
-    // only architecturally-meaningful state. Golden-safe: every live-`KVM_GET` value
-    // already reports `type = 0` for unusable segments, so no existing (relative) golden
-    // moves; the only effect is making a restored unusable segment hash like a live one.
-    let type_ = if seg.unusable != 0 { 0 } else { seg.type_ };
-    v.extend_from_slice(&[
-        type_,
-        seg.present,
-        seg.dpl,
-        seg.db,
-        seg.s,
-        seg.l,
-        seg.g,
-        seg.avl,
-        seg.unusable,
-    ]);
-}
-
-/// Encode the pending-event state into the `state_hash` in **canonical** form
-/// ([`snapshot::canonical_events`]): an inert `kvm_vcpu_events` modifier residual KVM
-/// leaves set when its active bit is clear (a stale `interrupt.nr`/`exception.nr`, the
-/// GET-only validity `flags` bits) has **no architectural effect** — the VM-entry
-/// interruption-information / exception fields are consumed only when their valid bit is
-/// set (SDM Vol. 3 §24.8.3, §26.5). Hashing the canonical form makes a restored VM
-/// (whose events were canonicalized at restore for soundness — see
-/// [`snapshot::canonical_events`]) hash **identically** to a never-restored VM at the
-/// same point, so restore-transparency holds on the full `state_hash`. Determinism is
-/// unaffected (canonical is a pure function; two same-seed runs share identical raw
-/// events ⇒ identical canonical), and it is golden-safe (the M1/M2/corpus paths carry
-/// all-zero events ⇒ canonical == raw; the Linux paths' goldens are relative
-/// deterministic-twice checks, so no pinned value moves).
-fn encode_events(v: &mut Vec<u8>, raw: &vmm_backend::VcpuEvents) {
-    let e = &snapshot::canonical_events(raw);
-    v.extend_from_slice(&[
-        e.exception_injected,
-        e.exception_nr,
-        e.exception_has_error_code,
-        e.exception_pending,
-    ]);
-    v.extend_from_slice(&e.exception_error_code.to_le_bytes());
-    v.push(e.exception_has_payload);
-    v.extend_from_slice(&e.exception_payload.to_le_bytes());
-    v.extend_from_slice(&[
-        e.interrupt_injected,
-        e.interrupt_nr,
-        e.interrupt_soft,
-        e.interrupt_shadow,
-        e.nmi_injected,
-        e.nmi_pending,
-        e.nmi_masked,
-    ]);
-    v.extend_from_slice(&e.sipi_vector.to_le_bytes());
-    v.extend_from_slice(&e.flags.to_le_bytes());
-    v.extend_from_slice(&[
-        e.smi_smm,
-        e.smi_pending,
-        e.smi_inside_nmi,
-        e.smi_latched_init,
-        e.triple_fault_pending,
-    ]);
-}
-
 #[cfg(test)]
 mod tests {
+    //! Engine tests, driven over the x86 vendor (`MockBackend`'s `Arch` is `X86`) —
+    //! the engine is generic, but a test needs *a* vendor to run against.
+
     use super::*;
+    use vmm_backend::{Gpa, VcpuState, X86, X86Caps, X86Exit, X86Policy};
+
+    use crate::vendor::x86::devices::REPORT_PORT;
+    use crate::vendor::x86::dispatch::{
+        APIC_MMIO_BASE, COM1_IRQ_VECTOR, DOORBELL_PORT, MsrDir, RFLAGS_IF, contract_vclock_config,
+        lookup_cpuid,
+    };
+    use crate::vendor::x86::records as snapshot;
 
     /// Guest RAM for the snapshot/save/restore-shaped tests: 128 KiB natively,
     /// 64 KiB under Miri — the smallest size covering the doorbell protocol pages
@@ -4182,16 +3108,18 @@ mod tests {
 
     /// A configured MockBackend (so `run`/`step` pass the `NotConfigured` gate)
     /// pre-loaded with `exits`.
-    fn configured_mock(exits: Vec<Exit>) -> MockBackend {
+    fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_exits(exits);
-        m.set_cpuid(&CpuidModel::default()).expect("set_cpuid");
-        m.set_msr_filter(&MsrFilter::default())
-            .expect("set_msr_filter");
+        m.set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter::default(),
+        })
+        .expect("set_policy");
         m
     }
 
     /// A `Vmm<MockBackend>` with the determinism path wired (clock + work + seed).
-    fn vtime_vmm(exits: Vec<Exit>, work: Box<dyn WorkSource>, seed: u64) -> Vmm<MockBackend> {
+    fn vtime_vmm(exits: Vec<Exit<X86>>, work: Box<dyn WorkSource>, seed: u64) -> Vmm<MockBackend> {
         let mut vmm = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
         vmm.wire_vtime(VtimeWiring::new(contract_vclock_config(), work, seed).unwrap());
         vmm
@@ -4923,12 +3851,12 @@ mod tests {
 
         let mut vmm = Vmm::new(
             configured_mock(vec![
-                Exit::Io {
+                Exit::Arch(X86Exit::Io {
                     port: DOORBELL_PORT,
                     size: 4,
                     write: Some(n as u32),
-                },
-                Exit::Idle,
+                }),
+                Exit::Common(CommonExit::Idle),
             ]),
             GuestRam::new(TEST_RAM).unwrap(),
         );
@@ -4980,11 +3908,11 @@ mod tests {
         let mut resumed_state = nonzero_state();
         resumed_state.regs.rip = 0x2000;
 
-        let mut mock = configured_mock(vec![Exit::Io {
+        let mut mock = configured_mock(vec![Exit::Arch(X86Exit::Io {
             port: DOORBELL_PORT,
             size: 4,
             write: Some(n as u32),
-        }]);
+        })]);
         mock.set_state(stop_state.clone());
         let mut vmm = Vmm::new(mock, GuestRam::new(TEST_RAM).unwrap());
         vmm.enable_sdk(
@@ -5151,7 +4079,7 @@ mod tests {
     fn entropy_fill_and_rdrand_share_one_stream() {
         use environment::{EnvSpec, FaultPolicy};
         // A V-time-wired VM with RAM large enough for the doorbell pages (0xE000).
-        let mk = |script: Vec<Exit>| {
+        let mk = |script: Vec<Exit<X86>>| {
             let mut vmm = Vmm::new(configured_mock(script), GuestRam::new(TEST_RAM).unwrap());
             vmm.wire_vtime(
                 VtimeWiring::new(
@@ -5205,16 +4133,19 @@ mod tests {
         };
 
         // A: entropy_fill (stream word 1), then a guest RDRAND (word 2).
-        let mut a = mk(vec![Exit::Rdrand { width: 8 }, Exit::Idle]);
+        let mut a = mk(vec![
+            Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            Exit::Common(CommonExit::Idle),
+        ]);
         let word1 = u64::from_le_bytes(entropy_fill(&mut a).try_into().unwrap());
         a.run().unwrap();
         let a_stream = vec![word1, reads(&a)[0]];
 
         // B (same seed): two plain RDRANDs — the pure stream, words 1 then 2.
         let mut b = mk(vec![
-            Exit::Rdrand { width: 8 },
-            Exit::Rdrand { width: 8 },
-            Exit::Idle,
+            Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            Exit::Common(CommonExit::Idle),
         ]);
         b.run().unwrap();
 
@@ -5236,7 +4167,7 @@ mod tests {
         use environment::{EnvSpec, FaultPolicy};
         let mk = || {
             let mut vmm = Vmm::new(
-                configured_mock(vec![Exit::Idle]),
+                configured_mock(vec![Exit::Common(CommonExit::Idle)]),
                 GuestRam::new(TEST_RAM).unwrap(),
             );
             vmm.wire_vtime(
@@ -5567,7 +4498,7 @@ mod tests {
     fn rdtsc_completes_with_vtime_tsc_not_host() {
         // work = 10 → vns = 10 (ratio 1:1) → tsc = floor(10 * 2GHz/1e9) = 20.
         let mut vmm = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Idle],
+            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
             Box::new(ScriptedWork::at(10)),
             1,
         );
@@ -5605,7 +4536,11 @@ mod tests {
         // the top of run().
         let starts = std::rc::Rc::new(Cell::new(0u32));
         let mut vmm = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle]),
+            configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ]),
             GuestRam::new(0x1000).unwrap(),
         );
         vmm.wire_vtime(
@@ -5640,7 +4575,7 @@ mod tests {
         // RDTSCP is resolved identically above the trait (the backend supplies
         // ECX=IA32_TSC_AUX below it); the VMM still completes the V-time value.
         let mut vmm = vtime_vmm(
-            vec![Exit::Rdtscp, Exit::Idle],
+            vec![Exit::Arch(X86Exit::Rdtscp), Exit::Common(CommonExit::Idle)],
             Box::new(ScriptedWork::at(7)),
             1,
         );
@@ -5652,7 +4587,12 @@ mod tests {
     fn rdtsc_is_strictly_monotonic_when_work_advances() {
         // Three reads, one "branch" between each (step=3): work 0,3,6 → tsc 0,6,12.
         let mut vmm = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Rdtsc, Exit::Idle],
+            vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ],
             Box::new(AutoWork {
                 next: Cell::new(0),
                 step: 3,
@@ -5678,9 +4618,9 @@ mod tests {
         const SEED: u64 = 0xABCD_1234;
         let mut vmm = vtime_vmm(
             vec![
-                Exit::Rdrand { width: 8 },
-                Exit::Rdseed { width: 4 },
-                Exit::Idle,
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+                Exit::Arch(X86Exit::Rdseed { width: 4 }),
+                Exit::Common(CommonExit::Idle),
             ],
             Box::new(ScriptedWork::new()),
             SEED,
@@ -5710,12 +4650,12 @@ mod tests {
         // Stock-style Vmm (no wire_vtime): the four exits must NOT be serviced
         // with a host value — they are loud ContractViolations.
         let mut tsc = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc]),
+            configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(matches!(tsc.step(), Err(VmmError::ContractViolation(_))));
         let mut rng = Vmm::new(
-            configured_mock(vec![Exit::Rdrand { width: 8 }]),
+            configured_mock(vec![Exit::Arch(X86Exit::Rdrand { width: 8 })]),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(matches!(rng.step(), Err(VmmError::ContractViolation(_))));
@@ -5730,7 +4670,10 @@ mod tests {
         // the trailing RDTSC, `save_vtime` would fail closed — see
         // `save_vtime_fails_closed_at_rng_mid_exit_boundary`.)
         let mut a = vtime_vmm(
-            vec![Exit::Rdrand { width: 8 }, Exit::Rdtsc],
+            vec![
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+                Exit::Arch(X86Exit::Rdtsc),
+            ],
             Box::new(ScriptedWork::at(50)),
             SEED,
         );
@@ -5747,7 +4690,10 @@ mod tests {
         // vns_base=50, and resume the RNG stream at the *next* word — not the
         // first. (B starting non-zero is what makes the counter-reset observable.)
         let mut b = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Rdrand { width: 8 }],
+            vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            ],
             Box::new(ScriptedWork::at(99)),
             SEED, // a different seed would be overwritten by restore anyway
         );
@@ -5781,7 +4727,10 @@ mod tests {
     #[test]
     fn save_vtime_fails_closed_at_rng_mid_exit_boundary() {
         let mut v = vtime_vmm(
-            vec![Exit::Rdrand { width: 8 }, Exit::Rdtsc],
+            vec![
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+                Exit::Arch(X86Exit::Rdtsc),
+            ],
             Box::new(ScriptedWork::at(10)),
             0xABCD,
         );
@@ -5847,13 +4796,13 @@ mod tests {
     fn save_vtime_fails_closed_at_non_intercept_exit() {
         let mut v = vtime_vmm(
             vec![
-                Exit::Rdtsc,
-                Exit::Io {
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Io {
                     port: 0x3F8, // UART THR — a non-V-time exit (Continued)
                     size: 1,
                     write: Some(u32::from(b'x')),
-                },
-                Exit::Rdtsc,
+                }),
+                Exit::Arch(X86Exit::Rdtsc),
             ],
             Box::new(ScriptedWork::at(10)),
             1,
@@ -5882,7 +4831,11 @@ mod tests {
     /// skip the clear and leave a stale-synchronized state.)
     #[test]
     fn run_error_leaves_vtime_desynchronized() {
-        let mut v = vtime_vmm(vec![Exit::Rdtsc], Box::new(ScriptedWork::at(10)), 1);
+        let mut v = vtime_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(10)),
+            1,
+        );
         v.step().unwrap(); // RDTSC → synchronized
         assert!(v.save_vtime().is_ok(), "synchronized after the intercept");
         // Next step: the mock's run-queue is empty → backend.run() errors.
@@ -5908,7 +4861,7 @@ mod tests {
         // atomic version leaves everything as-is.
         let bad = VtimeSnapshot {
             vns: 9_999,
-            tsc_adjust: 0,
+            guest_clock_offset: 0,
             entropy: vec![0u8; 8],
         };
         assert!(matches!(
@@ -5943,7 +4896,7 @@ mod tests {
         let snap0 = v.save_vtime().expect("clean save").expect("V-time wired");
         let snap = VtimeSnapshot {
             vns: snap0.vns + 4_096,
-            tsc_adjust: snap0.tsc_adjust,
+            guest_clock_offset: snap0.guest_clock_offset,
             entropy: snap0.entropy.clone(),
         };
         let before = v.state_hash();
@@ -5970,7 +4923,10 @@ mod tests {
     fn restore_vtime_fails_closed_at_rng_mid_exit_boundary() {
         const SEED: u64 = 0x99;
         let mut v = vtime_vmm(
-            vec![Exit::Rdrand { width: 8 }, Exit::Rdtsc],
+            vec![
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+                Exit::Arch(X86Exit::Rdtsc),
+            ],
             Box::new(ScriptedWork::at(5)),
             SEED,
         );
@@ -6003,7 +4959,10 @@ mod tests {
         const WORK: u64 = 21; // vns(21)=21 → tsc = floor(21·2GHz/1e9) = 42.
         let run_msr = || {
             let mut v = vtime_vmm(
-                vec![Exit::Rdmsr { index: 0x10 }, Exit::Idle],
+                vec![
+                    Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                    Exit::Common(CommonExit::Idle),
+                ],
                 Box::new(ScriptedWork::at(WORK)),
                 1,
             );
@@ -6011,7 +4970,7 @@ mod tests {
             v
         };
         let mut insn = vtime_vmm(
-            vec![Exit::Rdtsc, Exit::Idle],
+            vec![Exit::Arch(X86Exit::Rdtsc), Exit::Common(CommonExit::Idle)],
             Box::new(ScriptedWork::at(WORK)),
             1,
         );
@@ -6037,19 +4996,19 @@ mod tests {
         // ScriptedWork fixed at work=10 → base V-time TSC = VClock::tsc(10) = 20.
         let mut vmm = vtime_vmm(
             vec![
-                Exit::Wrmsr {
+                Exit::Arch(X86Exit::Wrmsr {
                     index: 0x3b,
                     value: 1000,
-                }, // IA32_TSC_ADJUST = 1000
-                Exit::Rdmsr { index: 0x10 }, // IA32_TSC = 20 + 1000 = 1020
-                Exit::Rdmsr { index: 0x3b }, // IA32_TSC_ADJUST = 1000
-                Exit::Wrmsr {
+                }), // IA32_TSC_ADJUST = 1000
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // IA32_TSC = 20 + 1000 = 1020
+                Exit::Arch(X86Exit::Rdmsr { index: 0x3b }), // IA32_TSC_ADJUST = 1000
+                Exit::Arch(X86Exit::Wrmsr {
                     index: 0x10,
                     value: 7777,
-                }, // IA32_TSC = 7777 → adjust = 7777 − 20 = 7757
-                Exit::Rdmsr { index: 0x10 }, // IA32_TSC = 7777
-                Exit::Rdmsr { index: 0x3b }, // IA32_TSC_ADJUST = 7757
-                Exit::Idle,
+                }), // IA32_TSC = 7777 → adjust = 7777 − 20 = 7757
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }), // IA32_TSC = 7777
+                Exit::Arch(X86Exit::Rdmsr { index: 0x3b }), // IA32_TSC_ADJUST = 7757
+                Exit::Common(CommonExit::Idle),
             ],
             Box::new(ScriptedWork::at(10)),
             1,
@@ -6074,10 +5033,10 @@ mod tests {
     fn tsc_adjust_state_is_in_the_hash() {
         let with_adjust = |adjust: u64| {
             let mut v = vtime_vmm(
-                vec![Exit::Wrmsr {
+                vec![Exit::Arch(X86Exit::Wrmsr {
                     index: 0x3b,
                     value: adjust,
-                }],
+                })],
                 Box::new(ScriptedWork::at(0)),
                 1,
             );
@@ -6099,7 +5058,7 @@ mod tests {
     fn tsc_adjust_access_records_work_in_the_hash() {
         let at_work = |work: u64| {
             let mut v = vtime_vmm(
-                vec![Exit::Rdmsr { index: 0x3b }],
+                vec![Exit::Arch(X86Exit::Rdmsr { index: 0x3b })],
                 Box::new(ScriptedWork::at(work)),
                 1,
             );
@@ -6122,15 +5081,15 @@ mod tests {
     fn vtime_snapshot_round_trips_tsc_adjust() {
         let mut v = vtime_vmm(
             vec![
-                Exit::Wrmsr {
+                Exit::Arch(X86Exit::Wrmsr {
                     index: 0x3b,
                     value: 9,
-                }, // tsc_adjust = 9
-                Exit::Wrmsr {
+                }), // tsc_adjust = 9
+                Exit::Arch(X86Exit::Wrmsr {
                     index: 0x3b,
                     value: 99,
-                }, // tsc_adjust = 99
-                Exit::Rdmsr { index: 0x3b }, // reads back the restored adjust
+                }), // tsc_adjust = 99
+                Exit::Arch(X86Exit::Rdmsr { index: 0x3b }), // reads back the restored adjust
             ],
             Box::new(ScriptedWork::at(0)),
             1,
@@ -6140,7 +5099,10 @@ mod tests {
             .save_vtime()
             .expect("save with non-zero adjust succeeds")
             .expect("wired");
-        assert_eq!(snap.tsc_adjust, 9, "snapshot must capture IA32_TSC_ADJUST");
+        assert_eq!(
+            snap.guest_clock_offset, 9,
+            "snapshot must capture IA32_TSC_ADJUST"
+        );
         v.step().unwrap(); // WRMSR(0x3b, 99) → tsc_adjust = 99 (diverge)
         v.restore_vtime(&snap).expect("restore");
         v.step().unwrap(); // RDMSR(0x3b) → must read the restored 9
@@ -6159,15 +5121,15 @@ mod tests {
     fn emulate_vtime_tsc_msr_unwired_fails_closed() {
         for idx in [0x10u32, 0x3b] {
             let mut rd = Vmm::new(
-                configured_mock(vec![Exit::Rdmsr { index: idx }]),
+                configured_mock(vec![Exit::Arch(X86Exit::Rdmsr { index: idx })]),
                 GuestRam::new(0x1000).unwrap(),
             );
             assert!(matches!(rd.step(), Err(VmmError::ContractViolation(_))));
             let mut wr = Vmm::new(
-                configured_mock(vec![Exit::Wrmsr {
+                configured_mock(vec![Exit::Arch(X86Exit::Wrmsr {
                     index: idx,
                     value: 0,
-                }]),
+                })]),
                 GuestRam::new(0x1000).unwrap(),
             );
             assert!(matches!(wr.step(), Err(VmmError::ContractViolation(_))));
@@ -6290,7 +5252,7 @@ mod tests {
         // differs between them.
         fn stepped_with_work(work: u64) -> Vmm<MockBackend> {
             let mut v = Vmm::new(
-                configured_mock(vec![Exit::Rdtsc]),
+                configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
                 GuestRam::new(0x1000).unwrap(),
             );
             v.wire_vtime(
@@ -6320,12 +5282,12 @@ mod tests {
     // its stream, and the observable digest — all mock-driven, every platform.
     // -----------------------------------------------------------------------
 
-    fn report_out(value: u32) -> Exit {
-        Exit::Io {
+    fn report_out(value: u32) -> Exit<X86> {
+        Exit::Arch(X86Exit::Io {
             port: REPORT_PORT,
             size: 4,
             write: Some(value),
-        }
+        })
     }
 
     #[test]
@@ -6338,7 +5300,7 @@ mod tests {
                 report_out(0x0000_0000),
                 report_out(0xDEAD_BEEF),
                 report_out(0x0000_0001),
-                Exit::Idle,
+                Exit::Common(CommonExit::Idle),
             ]),
             GuestRam::new(0x1000).unwrap(),
         );
@@ -6358,11 +5320,11 @@ mod tests {
         // and must fail closed, never silently truncate a reported value.
         for bad_size in [1u8, 2] {
             let mut vmm = Vmm::new(
-                configured_mock(vec![Exit::Io {
+                configured_mock(vec![Exit::Arch(X86Exit::Io {
                     port: REPORT_PORT,
                     size: bad_size,
                     write: Some(0xAB),
-                }]),
+                })]),
                 GuestRam::new(0x1000).unwrap(),
             );
             assert!(
@@ -6407,7 +5369,9 @@ mod tests {
         let mut quiet = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         let mut loud = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         for &byte in b"PAYLOAD x PASS\n" {
-            loud.uart.write(crate::devices::UART_PORT_BASE, byte);
+            loud.devices
+                .uart
+                .write(crate::vendor::x86::devices::UART_PORT_BASE, byte);
         }
         assert_ne!(quiet.observable_digest(), loud.observable_digest());
         // A length prefix guards against the classic concatenation ambiguity:
@@ -6481,7 +5445,10 @@ mod tests {
     fn expected_draw_matches_completion_for_each_width() {
         for width in [2u8, 4, 8] {
             let mut vmm = vtime_vmm(
-                vec![Exit::Rdrand { width }, Exit::Idle],
+                vec![
+                    Exit::Arch(X86Exit::Rdrand { width }),
+                    Exit::Common(CommonExit::Idle),
+                ],
                 Box::new(ScriptedWork::new()),
                 0xFEED,
             );
@@ -6516,7 +5483,10 @@ mod tests {
         }
         let reads = Rc::new(Cell::new(0u32));
         let mut vmm = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Idle]),
+            configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ]),
             GuestRam::new(0x1000).unwrap(),
         );
         vmm.wire_vtime(
@@ -6580,7 +5550,10 @@ mod tests {
         }
         let run_with_skid = |skid: u64| {
             let mut vmm = Vmm::new(
-                configured_mock(vec![Exit::Rdtsc, Exit::Idle]),
+                configured_mock(vec![
+                    Exit::Arch(X86Exit::Rdtsc),
+                    Exit::Common(CommonExit::Idle),
+                ]),
                 GuestRam::new(0x1000).unwrap(),
             );
             vmm.wire_vtime(
@@ -6620,7 +5593,7 @@ mod tests {
         // Fresh: vns_base=0, step one RDTSC reading work=E ⇒ last_intercept_work=E,
         // effective V-time = snapshot_vns(E) = E.
         let mut fresh = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc]),
+            configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
             GuestRam::new(0x1000).unwrap(),
         );
         fresh.wire_vtime(
@@ -6648,7 +5621,7 @@ mod tests {
         );
         let snap = VtimeSnapshot {
             vns: E,
-            tsc_adjust: 0,
+            guest_clock_offset: 0,
             entropy: SeededEntropy::new(SEED).save_state(),
         };
         restored.restore_vtime(&snap).unwrap();
@@ -6670,7 +5643,7 @@ mod tests {
     fn rng_exit_advances_the_vtim_work_anchor() {
         let after_rng_at_work = |work: u64| {
             let mut v = vtime_vmm(
-                vec![Exit::Rdrand { width: 8 }],
+                vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
                 Box::new(ScriptedWork::at(work)),
                 0x7777, // same seed ⇒ identical draw in both
             );
@@ -6689,7 +5662,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// A `Vmm<MockBackend>` with the Linux platform wired (xAPIC + legacy I/O).
-    fn linux_vmm(exits: Vec<Exit>) -> Vmm<MockBackend> {
+    fn linux_vmm(exits: Vec<Exit<X86>>) -> Vmm<MockBackend> {
         let mut v = Vmm::new(configured_mock(exits), GuestRam::new(0x1000).unwrap());
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -6706,17 +5679,17 @@ mod tests {
         // Wired: a load of the xAPIC Version register (offset 0x30) completes with
         // the architectural value; a store is accepted (Continued).
         let mut v = linux_vmm(vec![
-            Exit::Mmio {
+            Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(0xFEE0_0030),
                 size: 4,
                 write: None,
-            },
-            Exit::Mmio {
+            }),
+            Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(0xFEE0_00B0),
                 size: 4,
                 write: Some(0),
-            }, // EOI store
-            Exit::Idle,
+            }), // EOI store
+            Exit::Common(CommonExit::Idle),
         ]);
         assert!(v.lapic_wired());
         let r = v.run().expect("run");
@@ -6728,11 +5701,11 @@ mod tests {
 
         // Unwired (M1/M2): any MMIO is a loud contract violation, never serviced.
         let mut stock = Vmm::new(
-            configured_mock(vec![Exit::Mmio {
+            configured_mock(vec![Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(0xFEE0_0030),
                 size: 4,
                 write: None,
-            }]),
+            })]),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(!stock.lapic_wired(), "stock Vmm has no xAPIC wired");
@@ -6743,11 +5716,11 @@ mod tests {
     fn mmio_outside_apic_page_fails_closed_even_on_linux_path() {
         // A non-xAPIC MMIO address is unmodeled and fails closed even with the
         // Linux platform wired (the xAPIC page is the only modeled MMIO).
-        let mut v = linux_vmm(vec![Exit::Mmio {
+        let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEB0_0000),
             size: 4,
             write: None,
-        }]);
+        })]);
         assert!(matches!(v.step(), Err(VmmError::ContractViolation(_))));
     }
 
@@ -6756,28 +5729,28 @@ mod tests {
         // Wired: OUT to the PCI CONFIG_ADDRESS latch, then IN from CONFIG_DATA reads
         // "no device" (all-ones).
         let mut v = linux_vmm(vec![
-            Exit::Io {
+            Exit::Arch(X86Exit::Io {
                 port: 0x0CF8,
                 size: 4,
                 write: Some(0x8000_0000),
-            },
-            Exit::Io {
+            }),
+            Exit::Arch(X86Exit::Io {
                 port: 0x0CFC,
                 size: 4,
                 write: None,
-            },
-            Exit::Idle,
+            }),
+            Exit::Common(CommonExit::Idle),
         ]);
         v.run().expect("run");
         assert_eq!(v.backend.completions(), &[Completion::Read(0xFFFF_FFFF)]);
 
         // Unwired: the same legacy port OUT is a contract violation.
         let mut stock = Vmm::new(
-            configured_mock(vec![Exit::Io {
+            configured_mock(vec![Exit::Arch(X86Exit::Io {
                 port: 0x0CF8,
                 size: 4,
                 write: Some(0),
-            }]),
+            })]),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(matches!(stock.step(), Err(VmmError::ContractViolation(_))));
@@ -6805,11 +5778,11 @@ mod tests {
         // The LEGY chunk tracks the PCI latch: two Linux VMs that program different
         // CONFIG_ADDRESS values hash differently.
         let with_pci = |addr: u32| {
-            let mut v = linux_vmm(vec![Exit::Io {
+            let mut v = linux_vmm(vec![Exit::Arch(X86Exit::Io {
                 port: 0x0CF8,
                 size: 4,
                 write: Some(addr),
-            }]);
+            })]);
             v.step().unwrap();
             v
         };
@@ -6821,17 +5794,17 @@ mod tests {
         // The box-gate accessors return the real captured console + trap counts (not
         // a constant / Default).
         let mut v = linux_vmm(vec![
-            Exit::Io {
+            Exit::Arch(X86Exit::Io {
                 port: 0x3F8,
                 size: 1,
                 write: Some(u32::from(b'H')),
-            },
-            Exit::Io {
+            }),
+            Exit::Arch(X86Exit::Io {
                 port: 0x3F8,
                 size: 1,
                 write: Some(u32::from(b'i')),
-            },
-            Exit::Idle,
+            }),
+            Exit::Common(CommonExit::Idle),
         ]);
         v.run().expect("run");
         assert_eq!(v.serial(), b"Hi");
@@ -6842,11 +5815,11 @@ mod tests {
     fn mmio_just_past_apic_page_fails_closed() {
         // An access one page above the xAPIC base is outside the modeled page → a
         // loud contract violation (pins the `..APIC_MMIO_END` upper bound).
-        let mut v = linux_vmm(vec![Exit::Mmio {
+        let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEE0_1000),
             size: 4,
             write: None,
-        }]);
+        })]);
         assert!(matches!(v.step(), Err(VmmError::ContractViolation(_))));
     }
 
@@ -6859,28 +5832,28 @@ mod tests {
         const W: u64 = 100_000_000; // 100 ms of V-time at ratio 1:1 → many timer ticks
         let mut v = Vmm::new(
             configured_mock(vec![
-                Exit::Mmio {
+                Exit::Common(CommonExit::Mmio {
                     gpa: Gpa(0xFEE0_00F0),
                     size: 4,
                     write: Some(0x1FF),
-                }, // SVR: enable
-                Exit::Mmio {
+                }), // SVR: enable
+                Exit::Common(CommonExit::Mmio {
                     gpa: Gpa(0xFEE0_0320),
                     size: 4,
                     write: Some(0x40),
-                }, // LVT timer: unmasked oneshot, vec 0x40
-                Exit::Mmio {
+                }), // LVT timer: unmasked oneshot, vec 0x40
+                Exit::Common(CommonExit::Mmio {
                     gpa: Gpa(0xFEE0_0380),
                     size: 4,
                     write: Some(0xFFFF_FFFF),
-                }, // TMICT: arm at now=0
-                Exit::Rdtsc, // V-time intercept → last_intercept_work = W
-                Exit::Mmio {
+                }), // TMICT: arm at now=0
+                Exit::Arch(X86Exit::Rdtsc), // V-time intercept → last_intercept_work = W
+                Exit::Common(CommonExit::Mmio {
                     gpa: Gpa(0xFEE0_0390),
                     size: 4,
                     write: None,
-                }, // read TMCCT at now=W
-                Exit::Idle,
+                }), // read TMCCT at now=W
+                Exit::Common(CommonExit::Idle),
             ]),
             GuestRam::new(0x1000).unwrap(),
         );
@@ -6914,11 +5887,11 @@ mod tests {
         // (kills the `encode_lapic_state -> vec![]/vec![0]/vec![1]` constant mutants,
         // which would erase the register content from the LAPC chunk).
         let base = linux_vmm(vec![]);
-        let mut modified = linux_vmm(vec![Exit::Mmio {
+        let mut modified = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEE0_0080),
             size: 4,
             write: Some(0x20),
-        }]);
+        })]);
         modified.step().unwrap(); // write TPR = 0x20
         assert_ne!(
             base.state_hash(),
@@ -6936,17 +5909,21 @@ mod tests {
 
     /// A configured mock reporting **stock** capabilities (no deterministic TSC),
     /// so [`Vmm::lapic_now_vns`] reads the live work counter (the Phase B.1 path).
-    fn configured_stock_mock(exits: Vec<Exit>) -> MockBackend {
+    fn configured_stock_mock(exits: Vec<Exit<X86>>) -> MockBackend {
         let mut m = MockBackend::with_capabilities(vmm_backend::Capabilities {
             name: "mock-stock",
-            deterministic_tsc: false,
             deterministic_rng: false,
-            enforces_tsc_deadline_msr: false,
+            arch: X86Caps {
+                deterministic_tsc: false,
+                enforces_tsc_deadline_msr: false,
+            },
         });
         m.extend_exits(exits);
-        m.set_cpuid(&CpuidModel::default()).expect("set_cpuid");
-        m.set_msr_filter(&MsrFilter::default())
-            .expect("set_msr_filter");
+        m.set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter::default(),
+        })
+        .expect("set_policy");
         m
     }
 
@@ -6966,11 +5943,13 @@ mod tests {
     /// Arm a one-shot LAPIC timer (vector `0x40`) via three MMIO writes: SVR
     /// software-enable, LVT-timer unmasked one-shot, and an Initial Count that
     /// arms it at the current V-time. (Default reset divide-config = ÷2.)
-    fn arm_timer_exits(initial_count: u64) -> Vec<Exit> {
-        let w = |off: u64, v: u64| Exit::Mmio {
-            gpa: Gpa(APIC_MMIO_BASE + off),
-            size: 4,
-            write: Some(v),
+    fn arm_timer_exits(initial_count: u64) -> Vec<Exit<X86>> {
+        let w = |off: u64, v: u64| {
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(APIC_MMIO_BASE + off),
+                size: 4,
+                write: Some(v),
+            })
         };
         vec![
             w(u64::from(lapic::APIC_SVR), 0x1FF), // software-enable, spurious vec 0xFF
@@ -6989,9 +5968,9 @@ mod tests {
         const W: u64 = 100_000_000; // 100 ms of V-time — far past the timer period
         let mut exits = arm_timer_exits(1000);
         exits.push(read_mmio(isr_gpa(0x40))); // A: anchor still 0 → not delivered
-        exits.push(Exit::Rdtsc); // V-time intercept → last_intercept_work = W
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // V-time intercept → last_intercept_work = W
         exits.push(read_mmio(isr_gpa(0x40))); // B: anchor = W → delivered
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(W)));
 
         v.run().expect("run");
@@ -7019,7 +5998,7 @@ mod tests {
         let mut exits = arm_timer_exits(1000);
         exits.push(read_mmio(isr_gpa(0x40))); // A: live work still 0 → not delivered
         exits.push(read_mmio(isr_gpa(0x40))); // B: after bumping live work → delivered
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut v = lapic_vmm(configured_stock_mock(exits), work);
 
         // Steps 1-3 program the timer (live work 0). Step 4 reads ISR (A): not fired.
@@ -7050,16 +6029,16 @@ mod tests {
     fn run_until_deadline_advances_anchor_and_fires_the_timer() {
         // The preemption path (task 47), wiring proof on the portable mock: once a
         // LAPIC timer is armed on the determinism-complete path, the VMM runs via
-        // `run_until` (busy-spin preemption). An `Exit::Deadline` advances the
+        // `run_until` (busy-spin preemption). An `CommonExit::Deadline` advances the
         // skid-free anchor to the reached work, so the NEXT entry fires the timer
         // into the IRR and delivers it (IRR→ISR on acceptance). A guest that never
         // exits on its own thus still observes the timer.
         let mut exits = arm_timer_exits(1000);
         // The mock rewrites `reached` to the deadline the VMM passed `run_until`
         // (= work_for_vns(timer deadline)); the literal here is a placeholder.
-        exits.push(Exit::Deadline { reached: Moment(0) });
+        exits.push(Exit::Common(CommonExit::Deadline { reached: Moment(0) }));
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: vector 0x40 in service
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         // Default (deterministic) caps so `preemption_deadline` engages; the
         // ScriptedWork value is irrelevant (the clock reads the intercept anchor).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(0)));
@@ -7096,7 +6075,11 @@ mod tests {
         // class). Both restore primitives clear it.
         // A fresh V-time-wired VM is at a synchronized, snapshottable point with no
         // staged completion — so both `save_vtime` and `save_vm_state` succeed.
-        let mut v = vtime_vmm(vec![Exit::Idle], Box::new(ScriptedWork::at(100)), 1);
+        let mut v = vtime_vmm(
+            vec![Exit::Common(CommonExit::Idle)],
+            Box::new(ScriptedWork::at(100)),
+            1,
+        );
         let snap = v.save_vtime().unwrap().expect("v-time wired");
         let vm_state = v.save_vm_state().unwrap();
 
@@ -7120,7 +6103,7 @@ mod tests {
     }
 
     /// P1 round-13 — the comprehensive zero-step invariant: a `run_until` that returns
-    /// `Exit::Deadline` WITHOUT entering the guest (the overdue/at-deadline path, no
+    /// `CommonExit::Deadline` WITHOUT entering the guest (the overdue/at-deadline path, no
     /// `KVM_RUN`) must NOT clear any entry-side state. A staged completion is committed only
     /// by a real entry, so a no-entry Deadline must leave `completion_staged` /
     /// `rng_completion_staged` SET (else a snapshot here is taken/restored across a live
@@ -7138,9 +6121,9 @@ mod tests {
         let cell = std::rc::Rc::new(Cell::new(0u64));
         let work = Box::new(SharedWork(cell.clone()));
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Rdrand { width: 8 }); // stages a completion (RNG: both guards)
-        exits.push(Exit::Deadline { reached: Moment(0) }); // mock rewrites reached := deadline
-        exits.push(Exit::Idle); // a real entry that commits the staged completion
+        exits.push(Exit::Arch(X86Exit::Rdrand { width: 8 })); // stages a completion (RNG: both guards)
+        exits.push(Exit::Common(CommonExit::Deadline { reached: Moment(0) })); // mock rewrites reached := deadline
+        exits.push(Exit::Common(CommonExit::Idle)); // a real entry that commits the staged completion
         let mut v = lapic_vmm(configured_mock(exits), work);
 
         for _ in 0..3 {
@@ -7203,7 +6186,11 @@ mod tests {
         // box-tested in `live_preemption.rs`, since the mock has no run_until PMU.)
         let starts = std::rc::Rc::new(Cell::new(0u32));
         let mut v = Vmm::new(
-            configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle]),
+            configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ]),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(
@@ -7244,7 +6231,11 @@ mod tests {
     fn restore_vtime_failure_leaves_counter_a_not_rearmed() {
         let starts = std::rc::Rc::new(Cell::new(0u32));
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![Exit::Rdtsc, Exit::Rdtsc, Exit::Idle])),
+            SaveFailBackend(configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ])),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(
@@ -7282,16 +6273,16 @@ mod tests {
         // peeks) every entry and overwrites the backend's pending slot — so the now-
         // stale vector is NOT injected, yet stays pending in the LAPIC IRR (not lost).
         const W: u64 = 100_000_000;
-        let tpr_write = Exit::Mmio {
+        let tpr_write = Exit::Common(CommonExit::Mmio {
             gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_TPR)),
             size: 4,
             write: Some(0xF0), // TPR class 0xF masks vector 0x40 (class 4)
-        };
+        });
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Rdtsc); // advance anchor → timer fires next service (peek 0x40)
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // advance anchor → timer fires next service (peek 0x40)
         exits.push(tpr_write); // guest raises TPR while 0x40 waits on the window
         exits.push(read_mmio(irr_gpa(0x40))); // 0x40 still pending in IRR
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true); // hold 0x40 un-accepted across the TPR raise
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -7333,7 +6324,7 @@ mod tests {
         // it never calls `set_pending_irq`, so those paths' behavior and hash are
         // untouched.
         let mut v = Vmm::new(
-            configured_mock(vec![Exit::Idle]),
+            configured_mock(vec![Exit::Common(CommonExit::Idle)]),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(!v.lapic_wired());
@@ -7355,17 +6346,17 @@ mod tests {
 
     /// Unmask IRQ 4 in the 8259 master IMR (port 0x21) — the state after the kernel
     /// `request_irq(4)`s ttyS0 (every other line left masked).
-    const UNMASK_IRQ4: Exit = Exit::Io {
+    const UNMASK_IRQ4: Exit<X86> = Exit::Arch(X86Exit::Io {
         port: 0x0021,
         size: 1,
         write: Some(0xEF),
-    }; // 0xFF & !(1 << 4)
+    }); // 0xFF & !(1 << 4)
     /// Enable IER.THRI (port 0x3F9, IER = 0x3F8+1) — the kernel's `start_tx`.
-    const ENABLE_THRI: Exit = Exit::Io {
+    const ENABLE_THRI: Exit<X86> = Exit::Arch(X86Exit::Io {
         port: 0x03F9,
         size: 1,
         write: Some(0x02),
-    };
+    });
 
     #[test]
     fn serial_thre_interrupt_injects_com1_vector() {
@@ -7373,7 +6364,11 @@ mod tests {
         // enables IER.THRI; the VMM then injects the COM1 vector (0x34) so the
         // kernel's IRQ-4 handler can drain the TX. Deterministic (edge-driven by the
         // IER write, no V-time), so it works on the deterministic backend at work 0.
-        let mut mock = configured_mock(vec![UNMASK_IRQ4, ENABLE_THRI, Exit::Idle]);
+        let mut mock = configured_mock(vec![
+            UNMASK_IRQ4,
+            ENABLE_THRI,
+            Exit::Common(CommonExit::Idle),
+        ]);
         mock.set_defer_accept(true); // hold the injection so the pending slot is observable
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
 
@@ -7404,7 +6399,7 @@ mod tests {
         // THRE enabled but IRQ 4 still masked in the 8259 (reset IMR = all-masked):
         // no injection — the VMM honors the PIC mask (e.g. while the kernel's handler
         // runs with the line masked), so a masked line is never re-injected.
-        let mut mock = configured_mock(vec![ENABLE_THRI, Exit::Idle]);
+        let mut mock = configured_mock(vec![ENABLE_THRI, Exit::Common(CommonExit::Idle)]);
         mock.set_defer_accept(true);
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
         assert!(matches!(v.step().unwrap(), Step::Continued)); // IER = THRI
@@ -7428,8 +6423,8 @@ mod tests {
         let mut exits = arm_timer_exits(1000);
         exits.push(UNMASK_IRQ4);
         exits.push(ENABLE_THRI);
-        exits.push(Exit::Rdtsc); // advance the anchor → the timer fires into IRR
-        exits.push(Exit::Idle);
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // advance the anchor → the timer fires into IRR
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -7448,7 +6443,7 @@ mod tests {
         // 0x34 after acceptance to confirm it is clear.
         let mut exits = vec![UNMASK_IRQ4, ENABLE_THRI];
         exits.push(read_mmio(isr_gpa(COM1_IRQ_VECTOR))); // accepted before this exit
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         // Default mock accepts at run (not deferred).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(0)));
         v.run().expect("run");
@@ -7468,12 +6463,12 @@ mod tests {
     fn irr_gpa(v: u8) -> Gpa {
         Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_IRR) + u64::from(v / 32) * 0x10)
     }
-    fn read_mmio(gpa: Gpa) -> Exit {
-        Exit::Mmio {
+    fn read_mmio(gpa: Gpa) -> Exit<X86> {
+        Exit::Common(CommonExit::Mmio {
             gpa,
             size: 4,
             write: None,
-        }
+        })
     }
 
     /// The `Completion::Read` values the mock recorded, in order (the resolved
@@ -7510,10 +6505,10 @@ mod tests {
         // IRR** and **not in service** — so a snapshot/hash in that window is correct.
         const W: u64 = 100_000_000;
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Rdtsc); // advance the anchor so the timer fires next service
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // advance the anchor so the timer fires next service
         exits.push(read_mmio(irr_gpa(0x40))); // IRR bank for vec 0x40
         exits.push(read_mmio(isr_gpa(0x40))); // ISR bank for vec 0x40
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true); // never accept → vector stays pending
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -7547,10 +6542,10 @@ mod tests {
         // service and the IRR bit cleared.
         const W: u64 = 100_000_000;
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Rdtsc);
+        exits.push(Exit::Arch(X86Exit::Rdtsc));
         exits.push(read_mmio(irr_gpa(0x40)));
         exits.push(read_mmio(isr_gpa(0x40)));
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         // Default mock accepts at run (not deferred).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(W)));
 
@@ -7585,7 +6580,7 @@ mod tests {
         }
         // Stock caps so `lapic_now_vns` reads the live work counter (the failing one).
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut v = lapic_vmm(configured_stock_mock(exits), Box::new(FailingWork));
 
         // The first step's `service_pending_irqs` reads the work counter → error.
@@ -7624,9 +6619,9 @@ mod tests {
         // at anchor 0) and fabricates ZERO retired branches AND does NOT read the live
         // (skid-tainted) HLT work counter.
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Idle); // the guest idles, waiting for the timer
+        exits.push(Exit::Common(CommonExit::Idle)); // the guest idles, waiting for the timer
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
-        exits.push(Exit::Idle); // one-shot fired → no timer armed → terminal
+        exits.push(Exit::Common(CommonExit::Idle)); // one-shot fired → no timer armed → terminal
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
@@ -7687,7 +6682,7 @@ mod tests {
         // fault applies there), NOT sail past it to the timer. The idle jump routes
         // through the same min-fold as `run_until_deadline`.
         let mut exits = arm_timer_exits(1_000_000); // a FAR one-shot timer deadline
-        exits.push(Exit::Idle); // the guest idles before the arrival
+        exits.push(Exit::Common(CommonExit::Idle)); // the guest idles before the arrival
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
@@ -7724,7 +6719,7 @@ mod tests {
         // declared terminal.
         let mut v = lapic_vmm(
             {
-                let mut m = configured_mock(vec![Exit::Idle]);
+                let mut m = configured_mock(vec![Exit::Common(CommonExit::Idle)]);
                 m.set_state(if_set_state());
                 m
             },
@@ -7750,7 +6745,7 @@ mod tests {
         // A V-time-wired guest with NO LAPIC that idles (HLT, IF=1) before a staged
         // `Moment` must still wake at the arrival to apply it — otherwise it goes
         // Terminal and silently never applies an accepted perturb.
-        let mut mock = configured_mock(vec![Exit::Idle]);
+        let mut mock = configured_mock(vec![Exit::Common(CommonExit::Idle)]);
         mock.set_state(if_set_state());
         let mut v = Vmm::new(mock, GuestRam::new(0x1000).unwrap());
         v.wire_vtime(
@@ -7773,7 +6768,7 @@ mod tests {
         // IF==0 (the kernel's final `cli; hlt`): terminal even with a timer armed
         // — a wait nothing will satisfy. The byte-identical existing behavior.
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         // Default mock state: rflags == 0 (IF clear).
         let mut v = lapic_vmm(configured_mock(exits), Box::new(ScriptedWork::at(1000)));
         let r = v.run().expect("run");
@@ -7788,7 +6783,7 @@ mod tests {
     fn hlt_without_armed_timer_is_terminal_even_with_if() {
         // IF==1 but no timer armed (LAPIC wired, never programmed): terminal. The
         // no-timer gate short-circuits before the RFLAGS read.
-        let mut mock = configured_mock(vec![Exit::Idle]);
+        let mut mock = configured_mock(vec![Exit::Common(CommonExit::Idle)]);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
         let r = v.run().expect("run");
@@ -7802,7 +6797,7 @@ mod tests {
         // IF==1 and a timer armed — the determinism gate (deterministic_tsc)
         // returns no deadline, so the HLT stays terminal (Phase B.1 unchanged).
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut mock = configured_stock_mock(exits);
         mock.set_state(if_set_state());
         let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
@@ -7830,7 +6825,12 @@ mod tests {
         }
         // The timer IS armed (a LAPIC query, backend-independent)...
         assert!(
-            v.lapic.as_ref().unwrap().next_timer_deadline().is_some(),
+            v.devices
+                .lapic
+                .as_ref()
+                .unwrap()
+                .next_timer_deadline()
+                .is_some(),
             "the LAPIC timer is armed",
         );
         // ...yet preemption_deadline is None on the non-deterministic backend.
@@ -7849,14 +6849,16 @@ mod tests {
         // it like IF==0: terminate, do NOT advance V-time or re-enter. (Deterministic, not
         // a determinism bug; Linux's timer is deliverable so runc/Postgres are unaffected
         // — this hardens the keystone against adversarial guests.)
-        let w = |off: u64, val: u64| Exit::Mmio {
-            gpa: Gpa(APIC_MMIO_BASE + off),
-            size: 4,
-            write: Some(val),
+        let w = |off: u64, val: u64| {
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(APIC_MMIO_BASE + off),
+                size: 4,
+                write: Some(val),
+            })
         };
-        let undeliverable_timer_hlt_terminates = |setup: Vec<Exit>| {
+        let undeliverable_timer_hlt_terminates = |setup: Vec<Exit<X86>>| {
             let mut exits = setup;
-            exits.push(Exit::Idle);
+            exits.push(Exit::Common(CommonExit::Idle));
             let mut mock = configured_mock(exits);
             mock.set_state(if_set_state());
             let mut v = lapic_vmm(mock, Box::new(ScriptedWork::at(0)));
@@ -7895,7 +6897,7 @@ mod tests {
         // a save error must fail closed (VmmError::Backend), never guess the
         // disposition (which would risk a wrong terminate/resume).
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Idle);
+        exits.push(Exit::Common(CommonExit::Idle));
         let mut inner = configured_mock(exits);
         inner.set_state(if_set_state()); // irrelevant — save() fails before the read
         let mut v = Vmm::new(SaveFailBackend(inner), GuestRam::new(0x1000).unwrap());
@@ -7935,18 +6937,20 @@ mod tests {
         // task 52). The guest never executes between ticks, yet V-time advances by a
         // period between the two idle resumes — pure event-driven clock progress.
         // Periodic one-shot→periodic: LVT vector 0x40 with mode bit 17 set.
-        let w = |off: u64, val: u64| Exit::Mmio {
-            gpa: Gpa(APIC_MMIO_BASE + off),
-            size: 4,
-            write: Some(val),
+        let w = |off: u64, val: u64| {
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(APIC_MMIO_BASE + off),
+                size: 4,
+                write: Some(val),
+            })
         };
         let exits = vec![
             w(u64::from(lapic::APIC_SVR), 0x1FF),
             w(u64::from(lapic::APIC_LVT_TIMER), 0x40 | (1 << 17)), // periodic
             w(u64::from(lapic::APIC_TMICT), 1000),
-            Exit::Idle,                       // idle #1
+            Exit::Common(CommonExit::Idle),   // idle #1
             w(u64::from(lapic::APIC_EOI), 0), // the timer ISR EOIs (retires 0x40 from ISR)
-            Exit::Idle,                       // idle #2 (re-armed period; deliverable again)
+            Exit::Common(CommonExit::Idle),   // idle #2 (re-armed period; deliverable again)
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
@@ -7991,10 +6995,10 @@ mod tests {
         // (un-accepted) across the HLT, modelling the IF==0 window.
         const W: u64 = 100_000_000; // past the timer deadline → the timer fires into IRR
         let mut exits = arm_timer_exits(1000); // one-shot, vector 0x40
-        exits.push(Exit::Rdtsc); // advance the anchor past the deadline → timer fires into IRR
-        exits.push(Exit::Idle); // sti; hlt with the fired vector still pending, no future timer
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // advance the anchor past the deadline → timer fires into IRR
+        exits.push(Exit::Common(CommonExit::Idle)); // sti; hlt with the fired vector still pending, no future timer
         exits.push(read_mmio(isr_gpa(0x40))); // after delivery: 0x40 in service
-        exits.push(Exit::Idle); // terminal (vector delivered, no timer armed)
+        exits.push(Exit::Common(CommonExit::Idle)); // terminal (vector delivered, no timer armed)
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
         mock.set_defer_accept(true); // hold the fired vector in the IRR across the HLT
@@ -8056,18 +7060,20 @@ mod tests {
         // deadline converts to a future work count.
         let cell = std::rc::Rc::new(Cell::new(0u64));
         let work = Box::new(SharedWork(cell.clone()));
-        let w = |off: u64, val: u64| Exit::Mmio {
-            gpa: Gpa(APIC_MMIO_BASE + off),
-            size: 4,
-            write: Some(val),
+        let w = |off: u64, val: u64| {
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(APIC_MMIO_BASE + off),
+                size: 4,
+                write: Some(val),
+            })
         };
         let exits = vec![
             w(u64::from(lapic::APIC_SVR), 0x1FF),
             w(u64::from(lapic::APIC_LVT_TIMER), 0x40 | (1 << 17)), // periodic
             w(u64::from(lapic::APIC_TMICT), 1000),
-            Exit::Idle, // idle #1 (with a STALE anchor + high live work)
+            Exit::Common(CommonExit::Idle), // idle #1 (with a STALE anchor + high live work)
             w(u64::from(lapic::APIC_EOI), 0), // timer ISR EOIs
-            Exit::Idle, // idle #2 (full period later)
+            Exit::Common(CommonExit::Idle), // idle #2 (full period later)
         ];
         let mut mock = configured_mock(exits);
         mock.set_state(if_set_state());
@@ -8134,10 +7140,10 @@ mod tests {
             let cell = std::rc::Rc::new(Cell::new(0u64));
             let work = Box::new(SharedWork(cell.clone()));
             let mut exits = arm_timer_exits(1000);
-            exits.push(Exit::Rdtsc); // intercept → skid-free anchor (identical both runs)
-            exits.push(Exit::Idle); // idle: the live work read here is skid-tainted
-            exits.push(Exit::Rdtsc); // W_next intercept — where a folded skid would surface
-            exits.push(Exit::Idle); // terminal (one-shot already fired)
+            exits.push(Exit::Arch(X86Exit::Rdtsc)); // intercept → skid-free anchor (identical both runs)
+            exits.push(Exit::Common(CommonExit::Idle)); // idle: the live work read here is skid-tainted
+            exits.push(Exit::Arch(X86Exit::Rdtsc)); // W_next intercept — where a folded skid would surface
+            exits.push(Exit::Common(CommonExit::Idle)); // terminal (one-shot already fired)
             let mut mock = configured_mock(exits);
             mock.set_state(if_set_state());
             let mut v = lapic_vmm(mock, work);
@@ -8175,7 +7181,12 @@ mod tests {
 
     /// A `Vmm<MockBackend>` with V-time + the Linux platform (xAPIC + legacy I/O)
     /// all wired — the full surface `save_vm_state` captures.
-    fn full_vmm(state: VcpuState, exits: Vec<Exit>, work_at: u64, seed: u64) -> Vmm<MockBackend> {
+    fn full_vmm(
+        state: VcpuState,
+        exits: Vec<Exit<X86>>,
+        work_at: u64,
+        seed: u64,
+    ) -> Vmm<MockBackend> {
         let mut m = configured_mock(exits);
         m.set_state(state);
         let mut v = Vmm::new(m, GuestRam::new(0x2000).unwrap());
@@ -8240,29 +7251,29 @@ mod tests {
     /// The exits that drive the device + V-time + entropy state into a non-default,
     /// clean (post-RDTSC, no staged RNG) configuration: WRMSR TSC_ADJUST, an xAPIC
     /// TPR write, a PIC IMR unmask, a serial byte, one RDRAND, then an RDTSC.
-    fn mutate_exits() -> Vec<Exit> {
+    fn mutate_exits() -> Vec<Exit<X86>> {
         vec![
-            Exit::Wrmsr {
+            Exit::Arch(X86Exit::Wrmsr {
                 index: 0x3b,
                 value: 0x1234,
-            },
-            Exit::Mmio {
+            }),
+            Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(0xFEE0_0080),
                 size: 4,
                 write: Some(0x20),
-            }, // TPR = 0x20
-            Exit::Io {
+            }), // TPR = 0x20
+            Exit::Arch(X86Exit::Io {
                 port: 0x0021,
                 size: 1,
                 write: Some(0xEF),
-            }, // PIC master IMR
-            Exit::Io {
+            }), // PIC master IMR
+            Exit::Arch(X86Exit::Io {
                 port: 0x3F8,
                 size: 1,
                 write: Some(u32::from(b'H')),
-            }, // serial 'H'
-            Exit::Rdrand { width: 8 }, // advance the entropy stream
-            Exit::Rdtsc,               // V-time intercept → clean, synchronized boundary
+            }), // serial 'H'
+            Exit::Arch(X86Exit::Rdrand { width: 8 }), // advance the entropy stream
+            Exit::Arch(X86Exit::Rdtsc), // V-time intercept → clean, synchronized boundary
         ]
     }
 
@@ -8284,7 +7295,10 @@ mod tests {
         // position, and the device blob all reflect the run.
         assert_eq!(s.regs.rax, 0x1111);
         assert_eq!(s.vtime.snapshot_vns, 500); // ratio 1:1 → vns == work
-        assert_eq!(s.contract_hash, crate::contract::contract_hash());
+        assert_eq!(
+            s.contract_hash,
+            crate::vendor::x86::contract::contract_hash()
+        );
     }
 
     #[test]
@@ -8321,7 +7335,10 @@ mod tests {
         // B's counter starts at 700 (non-zero) so the reset is observable.
         let mut b = full_vmm(
             VcpuState::default(),
-            vec![Exit::Rdtsc, Exit::Rdrand { width: 8 }],
+            vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Rdrand { width: 8 }),
+            ],
             700,
             0xDEAD, // overwritten by the restored stream
         );
@@ -8350,7 +7367,12 @@ mod tests {
     #[test]
     fn save_vm_state_fails_closed_at_rng_and_non_synchronized_boundaries() {
         // RNG mid-exit: a staged RDRAND completion ⇒ refuse.
-        let mut rng = full_vmm(VcpuState::default(), vec![Exit::Rdrand { width: 8 }], 10, 1);
+        let mut rng = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
+            10,
+            1,
+        );
         rng.step().unwrap();
         assert!(matches!(
             rng.save_vm_state(),
@@ -8360,12 +7382,12 @@ mod tests {
         let mut io = full_vmm(
             VcpuState::default(),
             vec![
-                Exit::Rdtsc,
-                Exit::Io {
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Arch(X86Exit::Io {
                     port: 0x3F8,
                     size: 1,
                     write: Some(u32::from(b'x')),
-                },
+                }),
             ],
             10,
             1,
@@ -8417,7 +7439,7 @@ mod tests {
 
         let mut b = full_vmm(
             VcpuState::default(),
-            vec![Exit::Rdrand { width: 8 }],
+            vec![Exit::Arch(X86Exit::Rdrand { width: 8 })],
             0,
             0xDEAD,
         );
@@ -8489,7 +7511,11 @@ mod tests {
         // block; restoring it into a VM with no V-time wired is refused (wiring must
         // match the snapshot source). Both the guest_hz and the snapshot_vns disjuncts
         // are pinned individually.
-        let mut a = vtime_vmm(vec![Exit::Rdtsc], Box::new(ScriptedWork::at(5)), 1);
+        let mut a = vtime_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(5)),
+            1,
+        );
         a.step().unwrap();
         let s = a.save_vm_state().unwrap();
         assert!(
@@ -8519,21 +7545,23 @@ mod tests {
     /// `save_vm_state` fails closed rather than sealing a `VcpuState::default()`.
     struct SaveFailBackend(MockBackend);
     impl Backend for SaveFailBackend {
-        fn set_cpuid(&mut self, m: &CpuidModel) -> vmm_backend::Result<()> {
-            self.0.set_cpuid(m)
-        }
-        fn set_msr_filter(&mut self, f: &MsrFilter) -> vmm_backend::Result<()> {
-            self.0.set_msr_filter(f)
+        type A = vmm_backend::X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.0.set_policy(policy)
         }
         unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
             // SAFETY: forwards to the inner mock, which only records the region
             // (no dereference); this adds no obligation beyond the trait contract.
             unsafe { self.0.map_memory(gpa, host) }
         }
-        fn run(&mut self) -> vmm_backend::Result<Exit> {
+        fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
             self.0.run()
         }
-        fn run_until(&mut self, d: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
+        fn run_until(
+            &mut self,
+            d: vmm_backend::Moment,
+        ) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
             self.0.run_until(d)
         }
         fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
@@ -8557,8 +7585,8 @@ mod tests {
         fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
             self.0.complete_hypercall(rax)
         }
-        fn complete_cpuid(&mut self, a: u32, b: u32, c: u32, d: u32) -> vmm_backend::Result<()> {
-            self.0.complete_cpuid(a, b, c, d)
+        fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
+            self.0.complete_arch(c)
         }
         fn save(&self) -> vmm_backend::Result<VcpuState> {
             Err(vmm_backend::BackendError::Memory("induced save failure"))
@@ -8572,7 +7600,7 @@ mod tests {
         fn reset_exit_counts(&mut self) {
             self.0.reset_exit_counts()
         }
-        fn capabilities(&self) -> vmm_backend::Capabilities {
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
             self.0.capabilities()
         }
     }
@@ -8647,10 +7675,12 @@ mod tests {
         // `start_run` fire again. (The serial-OUT steps stage no completion, so the
         // restore is at a clean boundary — see the staged-completion guard.)
         let starts = std::rc::Rc::new(Cell::new(0u32));
-        let out = |b: u8| Exit::Io {
-            port: 0x3F8,
-            size: 1,
-            write: Some(u32::from(b)),
+        let out = |b: u8| {
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(u32::from(b)),
+            })
         };
         let mut v = Vmm::new(
             configured_mock(vec![out(b'x'), out(b'y')]),
@@ -8691,7 +7721,12 @@ mod tests {
         let snap = src.save_vm_state().unwrap();
 
         // A target VM that just serviced an RDTSC (non-RNG) has a staged completion.
-        let mut tgt = full_vmm(VcpuState::default(), vec![Exit::Rdtsc], 10, 1);
+        let mut tgt = full_vmm(
+            VcpuState::default(),
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            10,
+            1,
+        );
         tgt.step().unwrap(); // RDTSC serviced → completion staged, NOT an RNG draw
         assert!(matches!(
             tgt.restore_vm_state(&snap),
@@ -9028,7 +8063,10 @@ mod tests {
         const W: u64 = 100_000_000;
         // Quiescent: a wired LAPIC with no timer programmed → nothing pending in the IRR.
         let mut q = lapic_vmm(
-            configured_mock(vec![Exit::Rdtsc, Exit::Idle]),
+            configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Idle),
+            ]),
             Box::new(ScriptedWork::at(W)),
         );
         q.step().unwrap();
@@ -9040,8 +8078,8 @@ mod tests {
         // (defer_accept) — exactly a snapshottable in-flight point. `peek_interrupt`
         // re-derives 0x40 without moving IRR→ISR.
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Rdtsc);
-        exits.push(Exit::Rdtsc);
+        exits.push(Exit::Arch(X86Exit::Rdtsc));
+        exits.push(Exit::Arch(X86Exit::Rdtsc));
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true);
         let mut a = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -9067,8 +8105,8 @@ mod tests {
         // the in-flight injection is reproduced, not dropped.
         const W: u64 = 100_000_000;
         let mut exits = arm_timer_exits(1000);
-        exits.push(Exit::Rdtsc); // advance the anchor + synchronize (no vector yet)
-        exits.push(Exit::Rdtsc); // service fires 0x40 into IRR + sets pending; re-sync
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // advance the anchor + synchronize (no vector yet)
+        exits.push(Exit::Arch(X86Exit::Rdtsc)); // service fires 0x40 into IRR + sets pending; re-sync
         let mut mock = configured_mock(exits);
         mock.set_defer_accept(true); // hold 0x40 un-accepted → it stays pending in IRR
         let mut a = lapic_vmm(mock, Box::new(ScriptedWork::at(W)));
@@ -9091,7 +8129,10 @@ mod tests {
 
         // Restore into a fresh, equivalently-wired VM and take one step: its first
         // service must re-derive the SAME pending vector from the restored IRR.
-        let mut bmock = configured_mock(vec![Exit::Rdtsc, Exit::Idle]);
+        let mut bmock = configured_mock(vec![
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
+        ]);
         bmock.set_defer_accept(true);
         let mut b = lapic_vmm(bmock, Box::new(ScriptedWork::at(W)));
         b.restore_vm_state(&s)
@@ -9111,17 +8152,17 @@ mod tests {
         let mut v = full_vmm(
             VcpuState::default(),
             vec![
-                Exit::Io {
+                Exit::Arch(X86Exit::Io {
                     port: 0x3FB,
                     size: 1,
                     write: Some(0x80),
-                }, // LCR: DLAB = 1
-                Exit::Io {
+                }), // LCR: DLAB = 1
+                Exit::Arch(X86Exit::Io {
                     port: 0x3F9,
                     size: 1,
                     write: Some(0x07),
-                }, // offset+1 under DLAB ⇒ DLM = 7
-                Exit::Rdtsc, // re-synchronize for the save
+                }), // offset+1 under DLAB ⇒ DLM = 7
+                Exit::Arch(X86Exit::Rdtsc), // re-synchronize for the save
             ],
             0,
             1,
@@ -9191,11 +8232,11 @@ mod tests {
         a.wire_snapshot_hashing();
         let mut b = full_vmm(
             VcpuState::default(),
-            vec![Exit::Mmio {
+            vec![Exit::Common(CommonExit::Mmio {
                 gpa: Gpa(0xFEE0_0080),
                 size: 4,
                 write: Some(0x30),
-            }],
+            })],
             0,
             1,
         );

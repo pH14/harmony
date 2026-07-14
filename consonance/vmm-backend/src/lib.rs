@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The trap apparatus, decoupled behind the [`Backend`] trait (ruling
-//! R-Backend). `vmm-backend` is the lower half of the `docs/BRINGUP.md` crate
-//! split: it owns the thing that holds the vCPU and surfaces VM-exits, while the
-//! deterministic VMM above it (vmm-core, task 15) — the CPU/MSR-contract
-//! dispositions, V-time, hypercalls, snapshot/restore, the userspace xAPIC/PIT
-//! models — compiles against this trait **alone** and never branches on which
-//! backend is in use. The portable surface (the trait, the
-//! [`Exit`]/[`Injection`]/[`VcpuState`]/[`Capabilities`]/[`ExitCounts`]/[`BackendError`]
-//! value types, and a deterministic in-process [`MockBackend`] behind the
-//! non-default `mock` feature) compiles and is fully tested on macOS and Linux;
-//! the Linux-only `KvmBackend` (the bring-up stock-KVM impl, `KVM_IRQCHIP_NONE`,
-//! one vCPU) lives under `#[cfg(target_os = "linux")]` so a Mac build stays green
-//! with the trait + types only. One impl per substrate; the binary's composition
-//! root is the one place a concrete backend is named.
+//! R-Backend), generic over the ISA it traps (the [`Arch`] seam,
+//! `docs/ARCH-BOUNDARY.md`). `vmm-backend` is the lower half of the
+//! `docs/BRINGUP.md` crate split: it owns the thing that holds the vCPU and
+//! surfaces VM-exits, while the deterministic VMM above it (vmm-core) — the
+//! CPU/MSR-contract dispositions, V-time, hypercalls, snapshot/restore, the
+//! userspace interrupt-fabric models — compiles against this trait **alone**
+//! and never branches on which backend or which ISA is in use. The portable
+//! surface (the traits, the two-level [`Exit`] and the per-vendor value types
+//! under [`arch`], [`Capabilities`]/[`ExitCounts`]/[`BackendError`], and a
+//! deterministic in-process [`MockBackend`] behind the non-default `mock`
+//! feature) compiles and is fully tested on macOS and Linux; the Linux-only
+//! `KvmBackend` (the bring-up stock-KVM impl, `KVM_IRQCHIP_NONE`, one vCPU)
+//! lives under `#[cfg(target_os = "linux")]` so a Mac build stays green with
+//! the traits + types only. One impl per (substrate, arch) pair; the binary's
+//! composition root is the one place a concrete pair is named.
 
-mod arch;
+pub mod arch;
 mod backend;
 mod error;
 mod exit;
@@ -70,15 +72,16 @@ mod patched_kvm;
 
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
-    VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
+    VcpuEvents, VcpuRegs, VcpuSregs, VcpuState, X86, X86Caps, X86Completion, X86Exit, X86Policy,
 };
+pub use arch::{Arch, ArchCaps, ArchExit};
 pub use backend::Backend;
 pub use error::{BackendError, Result};
-pub use exit::{Capabilities, Exit, ExitCounts, ExitReason, HypercallFrame};
+pub use exit::{Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame};
 pub use types::{Gpa, Moment, MpState};
 
 #[cfg(feature = "mock")]
-pub use mock::{Completion, MockBackend};
+pub use mock::{Completion, MockBackend, MockCaps};
 
 #[cfg(target_os = "linux")]
 pub use kvm_sys::KvmBackend;

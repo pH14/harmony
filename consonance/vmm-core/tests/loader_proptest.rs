@@ -5,7 +5,7 @@
 //! never a panic, slice-index OOB, or arithmetic overflow.
 
 use proptest::prelude::*;
-use vmm_core::multiboot::{self, MULTIBOOT_HEADER_MAGIC};
+use vmm_core::vendor::x86::multiboot::{self, MULTIBOOT_HEADER_MAGIC};
 
 /// Image-size bound: full 16 KiB natively; tiny under Miri (allocation + the
 /// interpreted copy dominate Miri's runtime — the UB surface is the bounds math,

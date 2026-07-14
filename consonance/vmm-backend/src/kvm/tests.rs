@@ -97,11 +97,11 @@ fn decode_io_out_reads_value_via_run_buf() {
     let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
     assert_eq!(
         exit,
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,
             write: Some(0x42)
-        }
+        })
     );
     assert_eq!(pending, Pending::None);
 }
@@ -122,11 +122,11 @@ fn decode_io_in_arms_pending() {
     let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
     assert_eq!(
         exit,
-        Exit::Io {
+        Exit::Arch(X86Exit::Io {
             port: 0x60,
             size: 2,
             write: None
-        }
+        })
     );
     assert_eq!(
         pending,
@@ -194,11 +194,11 @@ fn decode_mmio_store_and_load() {
     let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
     assert_eq!(
         exit,
-        Exit::Mmio {
+        Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEE0_0000),
             size: 4,
             write: Some(0x1234_5678)
-        }
+        })
     );
     assert_eq!(pending, Pending::None);
 
@@ -215,11 +215,11 @@ fn decode_mmio_store_and_load() {
     let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
     assert_eq!(
         exit,
-        Exit::Mmio {
+        Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEE0_0080),
             size: 4,
             write: None
-        }
+        })
     );
     assert_eq!(pending, Pending::MmioLoad { len: 4 });
 }
@@ -231,7 +231,7 @@ fn decode_rdmsr_and_wrmsr() {
     // SAFETY: union sub-field writes.
     unsafe { (*s.run()).__bindgen_anon_1.msr.index = 0x1B };
     let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
-    assert_eq!(exit, Exit::Rdmsr { index: 0x1B });
+    assert_eq!(exit, Exit::Arch(X86Exit::Rdmsr { index: 0x1B }));
     assert_eq!(pending, Pending::Rdmsr);
 
     let s = SynRun::new();
@@ -245,10 +245,10 @@ fn decode_rdmsr_and_wrmsr() {
     let (exit, pending) = decode_exit(s.page()).unwrap().unwrap();
     assert_eq!(
         exit,
-        Exit::Wrmsr {
+        Exit::Arch(X86Exit::Wrmsr {
             index: 0x6E0,
             value: 0xDEAD_BEEF
-        }
+        })
     );
     assert_eq!(pending, Pending::Wrmsr);
 }
@@ -256,8 +256,8 @@ fn decode_rdmsr_and_wrmsr() {
 #[test]
 fn decode_terminal_and_control_exits() {
     for (reason, want) in [
-        (KVM_EXIT_HLT, Exit::Idle),
-        (KVM_EXIT_SHUTDOWN, Exit::Shutdown),
+        (KVM_EXIT_HLT, Exit::Common(CommonExit::Idle)),
+        (KVM_EXIT_SHUTDOWN, Exit::Common(CommonExit::Shutdown)),
     ] {
         let s = SynRun::new();
         set_reason(&s, reason);
@@ -506,9 +506,9 @@ fn validate_restore_shape_keys_and_xsave_len() {
 fn kvm_capabilities_are_honestly_false() {
     let c = kvm_capabilities();
     assert_eq!(c.name, "kvm-stock");
-    assert!(!c.deterministic_tsc);
+    assert!(!c.arch.deterministic_tsc);
     assert!(!c.deterministic_rng);
-    assert!(!c.enforces_tsc_deadline_msr);
+    assert!(!c.arch.enforces_tsc_deadline_msr);
 }
 
 #[test]
@@ -705,7 +705,7 @@ fn decode_determinism_maps_each_insn() {
     let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDTSC, 8).page())
         .unwrap()
         .unwrap();
-    assert_eq!(exit, Exit::Rdtsc);
+    assert_eq!(exit, Exit::Arch(X86Exit::Rdtsc));
     assert_eq!(
         pending,
         Pending::Determinism {
@@ -717,7 +717,7 @@ fn decode_determinism_maps_each_insn() {
     let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDTSCP, 8).page())
         .unwrap()
         .unwrap();
-    assert_eq!(exit, Exit::Rdtscp);
+    assert_eq!(exit, Exit::Arch(X86Exit::Rdtscp));
     assert_eq!(
         pending,
         Pending::Determinism {
@@ -730,7 +730,7 @@ fn decode_determinism_maps_each_insn() {
     let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDRAND, 4).page())
         .unwrap()
         .unwrap();
-    assert_eq!(exit, Exit::Rdrand { width: 4 });
+    assert_eq!(exit, Exit::Arch(X86Exit::Rdrand { width: 4 }));
     assert_eq!(
         pending,
         Pending::Determinism {
@@ -742,7 +742,7 @@ fn decode_determinism_maps_each_insn() {
     let (exit, pending) = decode_exit(det_run(KVM_DETERMINISM_RDSEED, 2).page())
         .unwrap()
         .unwrap();
-    assert_eq!(exit, Exit::Rdseed { width: 2 });
+    assert_eq!(exit, Exit::Arch(X86Exit::Rdseed { width: 2 }));
     assert_eq!(
         pending,
         Pending::Determinism {

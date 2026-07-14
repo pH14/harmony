@@ -63,7 +63,7 @@ use campaign_runner::materialize::{
 };
 use campaign_runner::run_session;
 use environment::{EnvSpec, FaultPolicy};
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
@@ -111,7 +111,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// Drive the live guest until `marker` appears on the serial, streaming new
 /// serial bytes to stderr (mirrors the campaign-runner box mode's drive; scans only
 /// the fresh tail with a marker-1 overlap).
-fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
+fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>, marker: &[u8]) -> Result<u64, String> {
     let stderr = std::io::stderr();
     let mut printed = vmm.serial().len();
     let overlap = marker.len().saturating_sub(1);
@@ -158,7 +158,7 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
         std::path::Path::new("/dev/kvm").exists(),
         "/dev/kvm absent — run on the determinism box with the LOADED patched KVM modules"
     );
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     if let Some(bad) = report.iter().find(|o| !o.pass) {
         panic!(
             "host is not the det-cfl-v1 baseline (first failing assertion: {} expected {}, \
@@ -194,7 +194,7 @@ fn task68_box_gates_measured_depth_eviction_roundtrip_composed_reproducer() {
     let steps = drive_to_marker(&mut live, marker.as_bytes()).expect("reach readiness");
     eprintln!("\n[live_materialization] readiness at step {steps}; starting the chain protocol.");
 
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
             BackendKind::Patched,
             &kernel,

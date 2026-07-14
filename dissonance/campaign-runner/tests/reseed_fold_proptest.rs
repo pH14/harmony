@@ -49,16 +49,16 @@ fn boot_env() -> EnvSpec {
 
 /// The period-400 draw-carrying fork script (module doc): `periods` × (RDTSC,
 /// RDRAND, RDTSC, RDTSC), then a clean Hlt.
-fn period4_script(periods: usize) -> Vec<vmm_backend::Exit> {
-    use vmm_backend::Exit;
+fn period4_script(periods: usize) -> Vec<vmm_backend::Exit<vmm_backend::X86>> {
+    use vmm_backend::{CommonExit, Exit, X86Exit};
     let mut out = Vec::with_capacity(periods * 4 + 1);
     for _ in 0..periods {
-        out.push(Exit::Rdtsc);
-        out.push(Exit::Rdrand { width: 8 });
-        out.push(Exit::Rdtsc);
-        out.push(Exit::Rdtsc);
+        out.push(Exit::Arch(X86Exit::Rdtsc));
+        out.push(Exit::Arch(X86Exit::Rdrand { width: 8 }));
+        out.push(Exit::Arch(X86Exit::Rdtsc));
+        out.push(Exit::Arch(X86Exit::Rdtsc));
     }
-    out.push(Exit::Idle);
+    out.push(Exit::Common(CommonExit::Idle));
     out
 }
 

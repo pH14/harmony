@@ -2,7 +2,7 @@
 //! The **pure** KVM exit-mapping + state-conversion logic for `KvmBackend`
 //! (`#[cfg(target_os = "linux")]`).
 //!
-//! Everything here issues **no syscall**: the `kvm_run` ⇄ `Exit`/completion
+//! Everything here issues **no syscall**: the `kvm_run` ⇄ `Exit<X86>`/completion
 //! translation (`RunPage` + `decode_*`/`apply_*`), the `kvm_bindings` ⇄
 //! [`crate::arch::x86::VcpuState`] conversions, and the snapshot-shape / CPUID-table /
 //! MSR-count / capability helpers. It is driven by **non-`#[ignore]` unit tests
@@ -49,12 +49,12 @@ use kvm_bindings::{
     kvm_xsave,
 };
 
-use crate::arch::x86::{CpuidModel, MsrFilter};
+use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Exit};
 use crate::arch::x86::{
     DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
 };
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Exit};
+use crate::exit::{Capabilities, CommonExit, Exit};
 use crate::run_buf::RunBuf;
 use crate::types::{Gpa, MpState};
 
@@ -150,7 +150,7 @@ pub(crate) enum Pending {
 //
 // `RunPage` is a raw view over the `mmap`-ed `kvm_run` (or, in the unit tests, a
 // synthetic buffer). The `decode_*` / `apply_*` functions are the entire
-// `kvm_run` ⇄ `Exit`/completion translation, written against `RunPage` and
+// `kvm_run` ⇄ `Exit<X86>`/completion translation, written against `RunPage` and
 // issuing **no syscall**.
 // ---------------------------------------------------------------------------
 
@@ -357,24 +357,27 @@ pub(crate) fn plan_irq_entry(page: RunPage, pending_irq: Option<u8>) -> IrqEntry
     }
 }
 
-/// Decode the current `kvm_run` into an `Exit` (or `None` for a control exit the
+/// Decode the current `kvm_run` into an `Exit<X86>` (or `None` for a control exit the
 /// run loop re-enters on) plus the completion it requires. Pure: reads `page`,
 /// issues no syscall.
-pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit, Pending)>> {
+pub(crate) fn decode_exit(page: RunPage) -> Result<Option<(Exit<X86>, Pending)>> {
     match page.exit_reason() {
         KVM_EXIT_IO => decode_io(page).map(Some),
         KVM_EXIT_MMIO => Ok(Some(decode_mmio(page))),
         KVM_EXIT_X86_RDMSR => {
             let (index, _) = page.msr();
-            Ok(Some((Exit::Rdmsr { index }, Pending::Rdmsr)))
+            Ok(Some((Exit::Arch(X86Exit::Rdmsr { index }), Pending::Rdmsr)))
         }
         KVM_EXIT_X86_WRMSR => {
             let (index, value) = page.msr();
-            Ok(Some((Exit::Wrmsr { index, value }, Pending::Wrmsr)))
+            Ok(Some((
+                Exit::Arch(X86Exit::Wrmsr { index, value }),
+                Pending::Wrmsr,
+            )))
         }
         KVM_EXIT_DETERMINISM => decode_determinism(page).map(Some),
-        KVM_EXIT_HLT => Ok(Some((Exit::Idle, Pending::None))),
-        KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Shutdown, Pending::None))),
+        KVM_EXIT_HLT => Ok(Some((Exit::Common(CommonExit::Idle), Pending::None))),
+        KVM_EXIT_SHUTDOWN => Ok(Some((Exit::Common(CommonExit::Shutdown), Pending::None))),
         KVM_EXIT_INTERNAL_ERROR => Err(BackendError::Internal("KVM_EXIT_INTERNAL_ERROR")),
         KVM_EXIT_FAIL_ENTRY => Err(BackendError::Internal("KVM_EXIT_FAIL_ENTRY")),
         // Run-loop control exits — consumed internally, never surfaced.
@@ -445,10 +448,10 @@ pub(crate) fn classify_step_exit(page: RunPage) -> StepStop {
 /// via the `run_buf` seam); IN arms `Pending::IoIn` for completion.
 ///
 /// **Fails closed on string/REP PIO** (`io.count != 1`): such an exit carries
-/// `count * size` bytes, but `Exit::Io` models a single scalar. M1/M2 use only
+/// `count * size` bytes, but `X86Exit::Io` models a single scalar. M1/M2 use only
 /// single-byte UART access, so rather than silently drop the extra items, this
 /// returns `BackendError`.
-fn decode_io(page: RunPage) -> Result<(Exit, Pending)> {
+fn decode_io(page: RunPage) -> Result<(Exit<X86>, Pending)> {
     let (direction, size, port, count, data_offset) = page.io();
     if count != 1 {
         return Err(BackendError::Unsupported {
@@ -458,20 +461,20 @@ fn decode_io(page: RunPage) -> Result<(Exit, Pending)> {
     if u32::from(direction) != KVM_EXIT_IO_IN {
         let value = page.read_pio(data_offset, size)?;
         Ok((
-            Exit::Io {
+            Exit::Arch(X86Exit::Io {
                 port,
                 size,
                 write: Some(value),
-            },
+            }),
             Pending::None,
         ))
     } else {
         Ok((
-            Exit::Io {
+            Exit::Arch(X86Exit::Io {
                 port,
                 size,
                 write: None,
-            },
+            }),
             Pending::IoIn { data_offset, size },
         ))
     }
@@ -479,7 +482,7 @@ fn decode_io(page: RunPage) -> Result<(Exit, Pending)> {
 
 /// Map a `KVM_EXIT_MMIO`. A store carries the value out; a load arms
 /// `Pending::MmioLoad`.
-fn decode_mmio(page: RunPage) -> (Exit, Pending) {
+fn decode_mmio(page: RunPage) -> (Exit<X86>, Pending) {
     let (phys_addr, len, is_write, data) = page.mmio();
     let gpa = Gpa(phys_addr);
     let size = len.min(8) as u8;
@@ -488,58 +491,58 @@ fn decode_mmio(page: RunPage) -> (Exit, Pending) {
         let n = (len as usize).min(8);
         bytes[..n].copy_from_slice(&data[..n]);
         (
-            Exit::Mmio {
+            Exit::Common(CommonExit::Mmio {
                 gpa,
                 size,
                 write: Some(u64::from_le_bytes(bytes)),
-            },
+            }),
             Pending::None,
         )
     } else {
         (
-            Exit::Mmio {
+            Exit::Common(CommonExit::Mmio {
                 gpa,
                 size,
                 write: None,
-            },
+            }),
             Pending::MmioLoad { len },
         )
     }
 }
 
 /// Map a `KVM_EXIT_DETERMINISM` (patched KVM) into the matching instruction-read
-/// `Exit` plus the `Determinism` completion it arms. `RDTSC`/`RDTSCP` carry no
+/// `Exit<X86>` plus the `Determinism` completion it arms. `RDTSC`/`RDTSCP` carry no
 /// width to the VMM (the value is always 64-bit EDX:EAX); `RDRAND`/`RDSEED`
 /// carry the destination `width` (2/4/8) so vmm-core masks the seeded draw.
-fn decode_determinism(page: RunPage) -> Result<(Exit, Pending)> {
+fn decode_determinism(page: RunPage) -> Result<(Exit<X86>, Pending)> {
     let insn = page.det_insn()?;
     // `width` is bounded by the instruction operand size (≤ 8); the cast is
     // lossless for the conforming `2/4/8` the kernel reports.
     let width = page.det_width()?.min(u32::from(u8::MAX)) as u8;
     match insn {
         KVM_DETERMINISM_RDTSC => Ok((
-            Exit::Rdtsc,
+            Exit::Arch(X86Exit::Rdtsc),
             Pending::Determinism {
                 rdtscp: false,
                 rng: false,
             },
         )),
         KVM_DETERMINISM_RDTSCP => Ok((
-            Exit::Rdtscp,
+            Exit::Arch(X86Exit::Rdtscp),
             Pending::Determinism {
                 rdtscp: true,
                 rng: false,
             },
         )),
         KVM_DETERMINISM_RDRAND => Ok((
-            Exit::Rdrand { width },
+            Exit::Arch(X86Exit::Rdrand { width }),
             Pending::Determinism {
                 rdtscp: false,
                 rng: true,
             },
         )),
         KVM_DETERMINISM_RDSEED => Ok((
-            Exit::Rdseed { width },
+            Exit::Arch(X86Exit::Rdseed { width }),
             Pending::Determinism {
                 rdtscp: false,
                 rng: true,
@@ -707,12 +710,14 @@ pub(crate) fn validate_restore_shape(
 
 /// The honest stock-KVM capabilities: every determinism field `false` (the holes
 /// are declared, not laundered — see the crate non-determinism posture).
-pub(crate) fn kvm_capabilities() -> Capabilities {
+pub(crate) fn kvm_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-stock",
-        deterministic_tsc: false,
         deterministic_rng: false,
-        enforces_tsc_deadline_msr: false,
+        arch: X86Caps {
+            deterministic_tsc: false,
+            enforces_tsc_deadline_msr: false,
+        },
     }
 }
 
@@ -722,12 +727,14 @@ pub(crate) fn kvm_capabilities() -> Capabilities {
 /// `false`: the determinism patch touches only the four instruction intercepts,
 /// not the `0x6E0` WRMSR fastpath (the contract hides `IA32_TSC_DEADLINE`
 /// instead — INTEGRATION.md §7 / R1, no in-kernel LAPIC).
-pub(crate) fn patched_capabilities() -> Capabilities {
+pub(crate) fn patched_capabilities() -> Capabilities<X86Caps> {
     Capabilities {
         name: "kvm-patched",
-        deterministic_tsc: true,
         deterministic_rng: true,
-        enforces_tsc_deadline_msr: false,
+        arch: X86Caps {
+            deterministic_tsc: true,
+            enforces_tsc_deadline_msr: false,
+        },
     }
 }
 

@@ -14,7 +14,7 @@
 /// `MB_MAGIC`).
 pub const MULTIBOOT_HEADER_MAGIC: u32 = 0x1BAD_B002;
 /// The Multiboot v1 **bootloader** magic the loader passes to the guest in EAX
-/// at entry (set by [`crate::entry::protected_mode_entry`]).
+/// at entry (set by [`crate::vendor::x86::entry::protected_mode_entry`]).
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BAD_B002;
 /// Guest-physical load address of the payload (1 MiB) — `linker.ld` `. = 1M`.
 pub const PAYLOAD_LOAD_GPA: u32 = 0x0010_0000;
@@ -48,7 +48,7 @@ pub struct MultibootHeader {
 /// Result of flat-loading a payload into a guest-RAM slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoadedImage {
-    /// Entry point GPA — fed to [`crate::entry::protected_mode_entry`].
+    /// Entry point GPA — fed to [`crate::vendor::x86::entry::protected_mode_entry`].
     pub entry_addr: u32,
     /// GPA the payload was loaded at (`PAYLOAD_LOAD_GPA` for these payloads).
     pub load_addr: u32,

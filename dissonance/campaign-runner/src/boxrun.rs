@@ -34,7 +34,7 @@ use environment::{EnvSpec, FaultPolicy};
 use explorer::adapter::SocketMachine;
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::TraceStore;
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::boot_linux_selected;
 use vmm_core::control::{ControlServer, VmmFactory};
 use vmm_core::vmm::{Step, Vmm};
@@ -86,7 +86,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// ever-growing buffer every step would be `O(steps × serial_len)` — on a
 /// real Postgres boot (millions of steps, a large console) that alone can
 /// make the drive look hung.
-fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64, String> {
+fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend<A = X86>>>, marker: &[u8]) -> Result<u64, String> {
     let stderr = std::io::stderr();
     let mut printed = vmm.serial().len();
     // Where the next marker scan starts: keep a marker-1 overlap behind
@@ -145,7 +145,7 @@ fn drive_to_marker(vmm: &mut Vmm<Box<dyn Backend>>, marker: &[u8]) -> Result<u64
 /// boot-to-ready wall-clock (µs, task 96 — observation only), and the boot
 /// serial transcript up to the readiness marker (the game path's ROM-hash
 /// cross-check input).
-type BootedServer = (ControlServer<Box<dyn Backend>>, u64, Vec<u8>);
+type BootedServer = (ControlServer<Box<dyn Backend<A = X86>>>, u64, Vec<u8>);
 
 fn boot_server(
     kernel_name: &str,
@@ -160,7 +160,7 @@ fn boot_server(
         return Err(ExitCode::FAILURE);
     }
     // The frozen contract cannot run off the det-cfl-v1 baseline.
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     if let Some(bad) = report.iter().find(|o| !o.pass) {
         eprintln!(
             "[campaign-runner] host is not the det-cfl-v1 baseline (first failing assertion: {} \
@@ -221,7 +221,7 @@ fn boot_server(
     // kernel/initramfs copies into the closure rather than cloning them —
     // an initramfs is tens/hundreds of MB, and cloning would keep two
     // copies resident for the whole run.
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
             X86_64_BOOT.backend,
             &kernel,

@@ -73,7 +73,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use snapshot_store::SnapshotId;
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::seal_rate::{
     BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Moment, Overshoot,
@@ -100,7 +100,7 @@ const MAX_STEPS: u64 = 50_000_000_000;
 /// span we sample). The terminal itself is detected via `Step::Terminal`, not a serial marker.
 const PG_READY: &[u8] = b"database system is ready to accept connections";
 
-type DynVmm = Vmm<Box<dyn Backend>>;
+type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
 // ---------------------------------------------------------------------------
 // Preconditions + boot (loud panics; never a vacuous early-return Ok).
@@ -136,7 +136,7 @@ fn require_kvm() {
 }
 
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
     for o in &report {

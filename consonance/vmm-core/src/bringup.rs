@@ -9,17 +9,17 @@
 //! backend is named is the binary's `fn main` / the box integration test; policy
 //! goes in through `set_cpuid`/`set_msr_filter`, not a concrete constructor.
 //!
-//! [`boot`] = the §1.1 host-baseline gate ([`crate::hostassert::enforce`]) **then**
+//! [`boot`] = the §1.1 host-baseline gate ([`crate::vendor::x86::hostassert::enforce`]) **then**
 //! [`compose`]. The split keeps the composition — including the `unsafe`
 //! `map_memory` pointer seam — unit-testable with a mock backend on every platform
 //! (and under Miri), independent of the box-only host gate.
 
-use vmm_backend::{Backend, Gpa, MpState, VcpuState};
+use vmm_backend::{Backend, Gpa, MpState, VcpuState, X86, X86Policy};
 
-use crate::contract;
-use crate::entry;
-use crate::linux_loader::{self, LinuxImage};
-use crate::multiboot;
+use crate::vendor::x86::contract;
+use crate::vendor::x86::entry;
+use crate::vendor::x86::linux_loader::{self, LinuxImage};
+use crate::vendor::x86::multiboot;
 use crate::vmm::{GuestRam, RamBacking, Vmm, VmmError};
 
 /// `IA32_EFER` MSR index. `EFER` is an **allow-stateful** MSR, so the backend's
@@ -62,7 +62,7 @@ pub enum BackendKind {
 /// Order is load-bearing (tasks/15 §bringup): policy **before** the first run;
 /// map **before** restore; `ram` moves into the `Vmm` so the mapped pointer stays
 /// valid for the backend's lifetime.
-pub fn boot<B: Backend>(
+pub fn boot<B: Backend<A = X86>>(
     backend: B,
     payload: &[u8],
     guest_ram_len: usize,
@@ -74,7 +74,7 @@ pub fn boot<B: Backend>(
     //    instruction that should be absent) would diverge in native, non-trapping
     //    instruction/FPU behavior while still claiming the frozen contract, so we
     //    fail closed. No-op off the box (no physical guest there to protect).
-    crate::hostassert::enforce()?;
+    crate::vendor::x86::hostassert::enforce()?;
     // 1-5. Compose the configured `Vmm` (separable from the host gate, so the
     //      composition — including the `unsafe` map seam — is unit-testable with a
     //      mock backend on every platform and under Miri).
@@ -91,15 +91,17 @@ pub fn boot<B: Backend>(
 /// reaching this code. Order is load-bearing (tasks/15 §bringup): policy **before**
 /// the first run; map **before** restore; `ram` moves into the `Vmm` so the mapped
 /// pointer stays valid for the backend's lifetime.
-pub(crate) fn compose<B: Backend>(
+pub(crate) fn compose<B: Backend<A = X86>>(
     mut backend: B,
     payload: &[u8],
     guest_ram_len: usize,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install policy through the trait, before the first run. The backend
     //    enables the USER_SPACE_MSR_MASK cap before the filter (below the trait).
-    backend.set_cpuid(&contract::cpuid_model())?;
-    backend.set_msr_filter(&contract::msr_filter_allow())?;
+    backend.set_policy(&X86Policy {
+        cpuid: contract::cpuid_model(),
+        msr_filter: contract::msr_filter_allow(),
+    })?;
 
     // 2. Allocate RAM, flat-load the payload, write the minimal boot-info struct.
     let mut ram = GuestRam::new(guest_ram_len)?;
@@ -181,16 +183,16 @@ impl ImageKind {
 }
 
 /// Boot a Linux bzImage + initramfs via the **direct 64-bit boot protocol**: the
-/// §1.1 host-baseline gate ([`crate::hostassert::enforce`]) **then**
+/// §1.1 host-baseline gate ([`crate::vendor::x86::hostassert::enforce`]) **then**
 /// [`compose_linux`]. Mirrors [`boot`] for the Multiboot path.
-pub fn boot_linux<B: Backend>(
+pub fn boot_linux<B: Backend<A = X86>>(
     backend: B,
     kernel: &[u8],
     initramfs: &[u8],
     guest_ram_len: usize,
     cmdline: &str,
 ) -> Result<Vmm<B>, VmmError> {
-    crate::hostassert::enforce()?;
+    crate::vendor::x86::hostassert::enforce()?;
     compose_linux(backend, kernel, initramfs, guest_ram_len, cmdline)
 }
 
@@ -202,7 +204,7 @@ pub fn boot_linux<B: Backend>(
 /// the RAM, build + restore the long-mode entry state, and wire the userspace
 /// xAPIC. Order is load-bearing: policy **before** the first run; map **before**
 /// restore; `ram` moves into the `Vmm` so the mapped pointer stays valid.
-pub(crate) fn compose_linux<B: Backend>(
+pub(crate) fn compose_linux<B: Backend<A = X86>>(
     mut backend: B,
     kernel: &[u8],
     initramfs: &[u8],
@@ -210,8 +212,10 @@ pub(crate) fn compose_linux<B: Backend>(
     cmdline: &str,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install policy through the trait, before the first run.
-    backend.set_cpuid(&contract::cpuid_model())?;
-    backend.set_msr_filter(&contract::msr_filter_allow())?;
+    backend.set_policy(&X86Policy {
+        cpuid: contract::cpuid_model(),
+        msr_filter: contract::msr_filter_allow(),
+    })?;
 
     // 2. Allocate RAM and flat-load the kernel + initramfs + boot_params + page
     //    tables + GDT (the loader is total over the untrusted image bytes).
@@ -279,15 +283,17 @@ pub(crate) fn compose_linux<B: Backend>(
 /// `restore_vm_state` overwrites the complete register file from the snapshot.
 /// `MAP_PRIVATE` does the rest — guest writes stay private to this VM, and
 /// untouched pages fault lazily instead of being copied eagerly.
-pub fn compose_restore_target<B: Backend>(
+pub fn compose_restore_target<B: Backend<A = X86>>(
     mut backend: B,
     mut mapping: snapshot_store::Mapping,
     wire_lapic: bool,
 ) -> Result<Vmm<B>, VmmError> {
     // 1. Install policy through the trait, before the first run (same order as
     //    `compose`/`compose_linux`: policy precedes any entry).
-    backend.set_cpuid(&contract::cpuid_model())?;
-    backend.set_msr_filter(&contract::msr_filter_allow())?;
+    backend.set_policy(&X86Policy {
+        cpuid: contract::cpuid_model(),
+        msr_filter: contract::msr_filter_allow(),
+    })?;
 
     // 2. The mapping IS the guest RAM. `map_memory` requires page-aligned length
     //    (the mmap base is page-aligned by construction); a store sized per
@@ -352,11 +358,11 @@ fn apply_linux_entry(state: &mut VcpuState, entry: &VcpuState) {
 }
 
 /// The **composition root** (task-21 P5): select the backend by [`BackendKind`],
-/// inject it as a `Box<dyn Backend>`, [`boot`] over it, and — for
+/// inject it as a `Box<dyn Backend<A = X86>>`, [`boot`] over it, and — for
 /// [`BackendKind::Patched`] — wire the determinism-complete V-time + seeded-RNG
 /// path (a box-only `perf_event` work counter + the contract clock + `seed`). The
 /// one place `KvmBackend`/`PatchedKvmBackend` are named; the returned
-/// `Vmm<Box<dyn Backend>>` is otherwise backend-agnostic, so a `fn main` (or the
+/// `Vmm<Box<dyn Backend<A = X86>>>` is otherwise backend-agnostic, so a `fn main` (or the
 /// box integration test) drives either substrate through the same type. `seed` is
 /// ignored for [`BackendKind::Stock`] (it surfaces no RNG).
 ///
@@ -369,21 +375,25 @@ pub fn boot_selected(
     payload: &[u8],
     guest_ram_len: usize,
     seed: u64,
-) -> Result<Vmm<Box<dyn Backend>>, VmmError> {
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
     match kind {
         BackendKind::Stock => {
-            let backend: Box<dyn Backend> = Box::new(vmm_backend::KvmBackend::new()?);
+            let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
             boot(backend, payload, guest_ram_len)
         }
         BackendKind::Patched => {
-            let backend: Box<dyn Backend> = Box::new(vmm_backend::PatchedKvmBackend::new()?);
+            let backend: Box<dyn Backend<A = X86>> =
+                Box::new(vmm_backend::PatchedKvmBackend::new()?);
             let mut vmm = boot(backend, payload, guest_ram_len)?;
             // V-time work source: the guest-only retired-branch perf counter on
             // the (CPU-pinned) vCPU thread. Computed above the trait; the backend
             // never reads it.
-            let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
-            let wiring =
-                crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
+            let work = Box::new(crate::vendor::x86::work_perf::PerfWorkCounter::open()?);
+            let wiring = crate::vmm::VtimeWiring::new(
+                crate::vendor::x86::contract_vclock_config(),
+                work,
+                seed,
+            )?;
             vmm.wire_vtime(wiring);
             Ok(vmm)
         }
@@ -395,7 +405,7 @@ pub fn boot_selected(
 /// determinism-complete V-time + seeded-RNG path (so the xAPIC timer and any RDTSC
 /// the kernel reads resolve to V-time). Mirrors [`boot_selected`] for the
 /// Multiboot payloads; the box live-boot / determinism gates drive either
-/// substrate through the same returned `Vmm<Box<dyn Backend>>`.
+/// substrate through the same returned `Vmm<Box<dyn Backend<A = X86>>>`.
 #[cfg(target_os = "linux")]
 pub fn boot_linux_selected(
     kind: BackendKind,
@@ -404,7 +414,7 @@ pub fn boot_linux_selected(
     guest_ram_len: usize,
     cmdline: &str,
     seed: u64,
-) -> Result<Vmm<Box<dyn Backend>>, VmmError> {
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
     // V-time is wired on **both** substrates here, because the frozen contract
     // marks IA32_TSC (0x10) and IA32_TSC_ADJUST (0x3b) `emulate-vtime` and Linux
     // reads them early in boot — so even the stock boot must service those MSR
@@ -417,7 +427,7 @@ pub fn boot_linux_selected(
     // boot*, it claims no determinism).
     let mut vmm = match kind {
         BackendKind::Stock => {
-            let backend: Box<dyn Backend> = Box::new(vmm_backend::KvmBackend::new()?);
+            let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::KvmBackend::new()?);
             boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?
         }
         BackendKind::Patched => {
@@ -431,8 +441,9 @@ pub fn boot_linux_selected(
             );
         }
     };
-    let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
-    let wiring = crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
+    let work = Box::new(crate::vendor::x86::work_perf::PerfWorkCounter::open()?);
+    let wiring =
+        crate::vmm::VtimeWiring::new(crate::vendor::x86::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);
     Ok(vmm)
 }
@@ -451,15 +462,16 @@ pub fn boot_linux_patched_with_dirty_log(
     cmdline: &str,
     seed: u64,
     dirty_log: bool,
-) -> Result<Vmm<Box<dyn Backend>>, VmmError> {
+) -> Result<Vmm<Box<dyn Backend<A = X86>>>, VmmError> {
     let mut b = vmm_backend::PatchedKvmBackend::new()?;
     // Before `map_memory` (inside boot_linux): the knob applies to the RAM
     // memslots registered there.
     b.set_dirty_log_enabled(dirty_log);
-    let backend: Box<dyn Backend> = Box::new(b);
+    let backend: Box<dyn Backend<A = X86>> = Box::new(b);
     let mut vmm = boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?;
-    let work = Box::new(crate::work_perf::PerfWorkCounter::open()?);
-    let wiring = crate::vmm::VtimeWiring::new(crate::vmm::contract_vclock_config(), work, seed)?;
+    let work = Box::new(crate::vendor::x86::work_perf::PerfWorkCounter::open()?);
+    let wiring =
+        crate::vmm::VtimeWiring::new(crate::vendor::x86::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);
     Ok(vmm)
 }
@@ -475,7 +487,7 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use vmm_backend::{Exit, MockBackend};
+    use vmm_backend::{CommonExit, Exit, MockBackend, X86Exit};
 
     use super::*;
     use crate::vmm::TerminalReason;
@@ -513,11 +525,10 @@ mod tests {
     }
 
     impl Backend for PtrRetainingBackend {
-        fn set_cpuid(&mut self, model: &vmm_backend::CpuidModel) -> vmm_backend::Result<()> {
-            self.inner.set_cpuid(model)
-        }
-        fn set_msr_filter(&mut self, filter: &vmm_backend::MsrFilter) -> vmm_backend::Result<()> {
-            self.inner.set_msr_filter(filter)
+        type A = vmm_backend::X86;
+
+        fn set_policy(&mut self, policy: &vmm_backend::X86Policy) -> vmm_backend::Result<()> {
+            self.inner.set_policy(policy)
         }
         unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> vmm_backend::Result<()> {
             // SAFETY: forwarded under the caller's own `map_memory` contract.
@@ -530,10 +541,13 @@ mod tests {
             self.mapped.set(Some((host.as_mut_ptr(), host.len())));
             res
         }
-        fn run(&mut self) -> vmm_backend::Result<Exit> {
+        fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
             self.inner.run()
         }
-        fn run_until(&mut self, deadline: vmm_backend::Moment) -> vmm_backend::Result<Exit> {
+        fn run_until(
+            &mut self,
+            deadline: vmm_backend::Moment,
+        ) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
             self.inner.run_until(deadline)
         }
         fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
@@ -557,14 +571,8 @@ mod tests {
         fn complete_hypercall(&mut self, rax: u64) -> vmm_backend::Result<()> {
             self.inner.complete_hypercall(rax)
         }
-        fn complete_cpuid(
-            &mut self,
-            eax: u32,
-            ebx: u32,
-            ecx: u32,
-            edx: u32,
-        ) -> vmm_backend::Result<()> {
-            self.inner.complete_cpuid(eax, ebx, ecx, edx)
+        fn complete_arch(&mut self, c: vmm_backend::X86Completion) -> vmm_backend::Result<()> {
+            self.inner.complete_arch(c)
         }
         fn save(&self) -> vmm_backend::Result<VcpuState> {
             self.inner.save()
@@ -578,7 +586,7 @@ mod tests {
         fn reset_exit_counts(&mut self) {
             self.inner.reset_exit_counts()
         }
-        fn capabilities(&self) -> vmm_backend::Capabilities {
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
             self.inner.capabilities()
         }
     }
@@ -723,11 +731,11 @@ mod tests {
     fn compose_drives_guestram_and_unsafe_map_memory() {
         let payload = synthetic_multiboot();
         // A scripted clean isa-debug-exit PASS so `run()` reaches terminal.
-        let backend = MockBackend::with_exits(vec![Exit::Io {
+        let backend = MockBackend::with_exits(vec![Exit::Arch(X86Exit::Io {
             port: 0xF4,
             size: 1,
             write: Some(0),
-        }]);
+        })]);
 
         // compose(): GuestRam::new (Vec-backed under Miri) → multiboot::load →
         // write_boot_info → unsafe map_memory(.., ram.as_mut_bytes()) → restore.
@@ -858,7 +866,7 @@ mod tests {
     )]
     fn compose_linux_loads_kernel_and_wires_lapic() {
         let kernel = synthetic_bzimage(0x10_0000, 0x400);
-        let backend = MockBackend::with_exits(vec![Exit::Idle]);
+        let backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
         let ram = 0x20_0000usize; // 2 MiB (4 KiB-multiple, > pref_address + kernel)
         let mut vmm =
             compose_linux(backend, &kernel, &[], ram, "console=ttyS0").expect("compose_linux");

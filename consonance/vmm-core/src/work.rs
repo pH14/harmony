@@ -8,7 +8,7 @@
 //! [`vtime::VClock`] (so RDTSC = `VClock::tsc(work)`), plus the portable
 //! [`ScriptedWork`] used by the unit/property tests. The real, box-only
 //! `perf_event` counter (`BR_INST_RETIRED.CONDITIONAL`, guest-only, pinned) is
-//! [`crate::work_perf::PerfWorkCounter`].
+//! [`crate::vendor::x86::work_perf::PerfWorkCounter`].
 //!
 //! **Layering (R-Backend).** The work source lives **above** the `Backend`
 //! trait, in the run loop, and is the *same* regardless of which backend is in
@@ -67,7 +67,7 @@ pub trait WorkSource {
     /// entry**, so [`work`](WorkSource::work) thereafter counts only **this** run's
     /// guest execution.
     ///
-    /// This matters for the box [`PerfWorkCounter`](crate::work_perf::PerfWorkCounter):
+    /// This matters for the box [`PerfWorkCounter`](crate::vendor::x86::work_perf::PerfWorkCounter):
     /// it is enabled at open and counts guest branches on the (CPU-pinned, but
     /// **shared**) vCPU thread, so a counter opened before a *coexisting* VM runs
     /// would otherwise accumulate that VM's branches. That breaks

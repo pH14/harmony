@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use environment::EnvSpec;
 use explorer::{AdapterEnv, EnvCodec, Moment, RunTrace, SpecEnvCodec, StopReason, StreamId};
 use runtrace::{Retain, RetentionPolicy, TraceId, TraceStore, retain_for};
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::control::{ControlServer, ServeError, server_caps};
 
 use control_proto::{
@@ -132,7 +132,10 @@ pub enum RecordError {
 
 /// Dispatch a verb, collapsing the happy path to a [`Reply`] and mapping both
 /// error categories.
-fn call<B: Backend>(server: &mut ControlServer<B>, req: &Request) -> Result<Reply, RecordError> {
+fn call<B: Backend<A = X86>>(
+    server: &mut ControlServer<B>,
+    req: &Request,
+) -> Result<Reply, RecordError> {
     match server.handle(req)? {
         Ok(reply) => Ok(reply),
         Err(ce) => Err(RecordError::Control(ce)),
@@ -141,13 +144,13 @@ fn call<B: Backend>(server: &mut ControlServer<B>, req: &Request) -> Result<Repl
 
 /// Probe the current effective V-time without advancing the guest: a `run` whose
 /// deadline (`0`) is already met stops immediately and stamps the V-time.
-fn probe_vtime<B: Backend>(server: &mut ControlServer<B>) -> Result<u64, RecordError> {
+fn probe_vtime<B: Backend<A = X86>>(server: &mut ControlServer<B>) -> Result<u64, RecordError> {
     let stop = run(server, Some(0))?;
     Ok(stop.vtime().0)
 }
 
 /// Issue a `run` with an optional V-time deadline, returning the stop.
-fn run<B: Backend>(
+fn run<B: Backend<A = X86>>(
     server: &mut ControlServer<B>,
     deadline: Option<u64>,
 ) -> Result<StopReason, RecordError> {
@@ -169,7 +172,7 @@ fn run<B: Backend>(
 /// The whole-VM `state_hash` at the current point — the determinism primitive
 /// the task-58 sweep gates on. Read-only (does not advance the guest), so it is
 /// the terminal state hash when called right after a `run`.
-fn hash<B: Backend>(server: &mut ControlServer<B>) -> Result<[u8; 32], RecordError> {
+fn hash<B: Backend<A = X86>>(server: &mut ControlServer<B>) -> Result<[u8; 32], RecordError> {
     match call(
         server,
         &Request::Hash {
@@ -185,7 +188,7 @@ fn hash<B: Backend>(server: &mut ControlServer<B>) -> Result<[u8; 32], RecordErr
 
 /// Seal the base snapshot, nudging past non-snapshottable boundaries exactly as
 /// [`run_sweep`](crate::run_sweep) does. Returns `(SnapId, snapshot V-time)`.
-fn seal_base<B: Backend>(
+fn seal_base<B: Backend<A = X86>>(
     server: &mut ControlServer<B>,
     cfg: &crate::SweepConfig,
 ) -> Result<(SnapId, u64), RecordError> {
@@ -238,7 +241,7 @@ fn seal_base<B: Backend>(
 /// Drive the in-process recording campaign: `hello`, seal the base, then per
 /// seed × run `branch → run → drain → assemble → store`. See the module doc for
 /// the pure-sink / one-stamp-axis invariants.
-pub fn run_recording<B: Backend>(
+pub fn run_recording<B: Backend<A = X86>>(
     server: &mut ControlServer<B>,
     store: &TraceStore,
     cfg: &RecordConfig,
@@ -376,14 +379,14 @@ pub fn run_recording<B: Backend>(
     })
 }
 
-fn serial_len<B: Backend>(server: &ControlServer<B>) -> Result<usize, RecordError> {
+fn serial_len<B: Backend<A = X86>>(server: &ControlServer<B>) -> Result<usize, RecordError> {
     server
         .vmm()
         .map(|v| v.serial().len())
         .ok_or_else(|| RecordError::Protocol("no live VM to drain serial from".into()))
 }
 
-fn drained_serial<B: Backend>(
+fn drained_serial<B: Backend<A = X86>>(
     server: &ControlServer<B>,
     cursor: usize,
 ) -> Result<Vec<u8>, RecordError> {
@@ -401,7 +404,7 @@ fn drained_serial<B: Backend>(
 /// off the live VM — the SDK-channel mirror of [`drained_serial`]. No cursor is
 /// needed: the per-run `branch` resets the SDK channel, so the capture already
 /// holds exactly this run's events.
-fn sdk_events_raw<B: Backend>(server: &ControlServer<B>) -> Vec<(Moment, u32, Vec<u8>)> {
+fn sdk_events_raw<B: Backend<A = X86>>(server: &ControlServer<B>) -> Vec<(Moment, u32, Vec<u8>)> {
     server
         .vmm()
         .map(|v| {

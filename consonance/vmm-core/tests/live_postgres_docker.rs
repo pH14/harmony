@@ -187,7 +187,7 @@ fn require_kvm() {
 /// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report
 /// (`boot_linux` would also refuse such a host).
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
     for o in &report {
@@ -318,7 +318,7 @@ impl BootOutcome {
 /// Drive `vmm` to a terminal state (or the step / wall-clock budget), streaming the
 /// serial console to stderr as it is captured so the boot log is visible live and a
 /// hang shows the last line reached.
-fn run_bounded<B: vmm_backend::Backend>(vmm: &mut Vmm<B>) -> BootOutcome {
+fn run_bounded<B: vmm_backend::Backend<A = vmm_backend::X86>>(vmm: &mut Vmm<B>) -> BootOutcome {
     // not order-observable: a test-only wall-clock watchdog (belt-and-braces with
     // the external `timeout`) — it bounds how long this `#[ignore]`d box gate runs
     // and never reaches guest state, the serial capture, or any hash.

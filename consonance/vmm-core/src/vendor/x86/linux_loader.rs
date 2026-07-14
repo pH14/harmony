@@ -8,7 +8,7 @@
 //! command line, [`load`] writes everything the kernel needs into guest RAM and
 //! returns a [`LinuxImage`] describing the 64-bit entry, the `boot_params`
 //! ("zero page") GPA, the identity page-table root (`CR3`), the boot GDT, and the
-//! loaded ranges. [`crate::entry::long_mode_entry`] turns those into the
+//! loaded ranges. [`crate::vendor::x86::entry::long_mode_entry`] turns those into the
 //! architectural long-mode entry state; [`crate::bringup::boot_linux`] composes
 //! the two over a backend.
 //!
@@ -304,7 +304,7 @@ pub struct GpaRange {
     pub len: u64,
 }
 
-/// Everything [`crate::entry::long_mode_entry`] and [`crate::bringup`] need to run
+/// Everything [`crate::vendor::x86::entry::long_mode_entry`] and [`crate::bringup`] need to run
 /// the loaded kernel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LinuxImage {

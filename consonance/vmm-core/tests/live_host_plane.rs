@@ -29,11 +29,11 @@ use control_proto::{
     StopConditions, StopMask, StopReason,
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
 
-type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend>>;
+type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>>;
 
 const GUEST_RAM_LEN: usize = 2 << 30;
 const BASE_SEED: u64 = 0x0028_C0FF_EE5E_EDC0;
@@ -72,7 +72,7 @@ fn require_kvm() {
 }
 
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     for o in &report {
         if !o.pass {
@@ -118,7 +118,7 @@ fn boot_pg(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
 
 /// Drive one `ControlServer` verb, panicking loudly on a session-fatal `ServeError`
 /// (never a silent skip). Returns the recoverable `Result<Reply, ControlError>`.
-fn call<B: Backend>(
+fn call<B: Backend<A = X86>>(
     s: &mut ControlServer<B>,
     req: &Request,
 ) -> Result<Reply, control_proto::ControlError> {
@@ -126,14 +126,14 @@ fn call<B: Backend>(
         .expect("session-fatal ServeError from the control server")
 }
 
-fn expect_ok<B: Backend>(s: &mut ControlServer<B>, req: &Request) -> Reply {
+fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Reply {
     match call(s, req) {
         Ok(reply) => reply,
         Err(e) => panic!("verb {req:?} answered a ControlError: {e:?}"),
     }
 }
 
-fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -149,7 +149,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
     }
 }
 
-fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
+fn hash_whole<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> [u8; 32] {
     match expect_ok(
         s,
         &Request::Hash {
@@ -191,7 +191,7 @@ fn host_plane_record_replay_closure() {
     // fresh, equivalently-composed VM for each branch/replay restore target.
     let live = boot_pg(&kernel, &initramfs, BASE_SEED);
     let (fk, fi) = (kernel.clone(), initramfs.clone());
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         boot_linux_selected(
             BackendKind::Patched,
             &fk,
@@ -251,7 +251,7 @@ fn host_plane_record_replay_closure() {
 
     // Run one branch → (optional perturbs) → run(deadline) → hash cycle from `base`.
     // Returns (stop, hash, recorded-env bytes).
-    let schedule_run = |s: &mut ControlServer<Box<dyn Backend>>,
+    let schedule_run = |s: &mut ControlServer<Box<dyn Backend<A = X86>>>,
                         with_faults: bool|
      -> (StopReason, [u8; 32], Vec<u8>) {
         assert_eq!(

@@ -1,31 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `MockBackend` — a deterministic, in-process [`Backend`] for unit/property
-//! tests (behind the non-default **`mock`** feature).
+//! tests (behind the non-default **`mock`** feature), over the
+//! [`X86`](crate::arch::x86::X86) vendor.
 //!
 //! It proves the trait is implementable with no KVM and is **the substrate task
 //! 15 unit-tests vmm-core against** (turned on under that crate's
 //! `[dev-dependencies]`). It is scripted with a queue of [`Exit`]s and enforces
 //! the full run-loop / completion contract exactly as a live backend must:
-//! fail-closed `NotConfigured` until both config calls land, `PendingCompletion`
-//! on a missed completion, and `NoPendingRead`/`BadCompletion` on a mismatched
-//! one. It records injections and completions so a test can assert what the VMM
-//! asked the backend to do.
+//! fail-closed `NotConfigured` until the policy is installed,
+//! `PendingCompletion` on a missed completion, and
+//! `NoPendingRead`/`BadCompletion` on a mismatched one. It records injections
+//! and completions so a test can assert what the VMM asked the backend to do.
 //!
 //! Unlike `KvmBackend`, the mock *implements* `run_until` and `inject`: a
-//! scripted `Exit::Deadline` is returned from `run_until` with the requested
-//! deadline, and `inject` records the event (so vmm-core's injection planning is
-//! testable). Determinism: a `MockBackend` driven by the same script + same
-//! completions produces the same counters and the same saved `VcpuState`.
+//! scripted `CommonExit::Deadline` is returned from `run_until` with the
+//! requested deadline, and `inject` records the event (so vmm-core's injection
+//! planning is testable). Determinism: a `MockBackend` driven by the same
+//! script + same completions produces the same counters and the same saved
+//! `VcpuState`.
 
 use std::collections::VecDeque;
 
-use crate::arch::x86::Injection;
-use crate::arch::x86::VcpuState;
-use crate::arch::x86::{CpuidModel, MsrFilter};
+use crate::arch::x86::{
+    CpuidModel, Injection, MsrFilter, VcpuState, X86, X86Completion, X86Exit, X86Policy,
+};
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Exit, ExitCounts};
+use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts};
 use crate::types::{Gpa, Moment};
+
+/// The mock's capability type — the x86 vendor's arch flags.
+pub type MockCaps = Capabilities<crate::arch::x86::X86Caps>;
 
 /// A completion the VMM applied to a pending exit, recorded for test assertions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -38,7 +43,7 @@ pub enum Completion {
     Ok,
     /// `complete_hypercall(ret)`.
     Hypercall(u64),
-    /// `complete_cpuid(eax, ebx, ecx, edx)`.
+    /// `complete_arch` with the CPUID result quad.
     Cpuid {
         /// Result `EAX`.
         eax: u32,
@@ -66,28 +71,34 @@ enum Pending {
     Wrmsr,
     /// `Hypercall`: `complete_hypercall`.
     Hypercall,
-    /// `Cpuid`: `complete_cpuid`.
+    /// `Cpuid`: `complete_arch` (the result quad).
     Cpuid,
 }
 
 /// What an exit, once returned, is waiting on (its completion discipline).
-fn pending_for(exit: &Exit) -> Pending {
+/// Both levels of the two-level [`Exit`] are matched **exhaustively** — no
+/// wildcard arms over arch exits (default-deny discipline).
+fn pending_for(exit: &Exit<X86>) -> Pending {
     match exit {
-        Exit::Io { write: None, .. }
-        | Exit::Mmio { write: None, .. }
-        | Exit::Rdtsc
-        | Exit::Rdtscp
-        | Exit::Rdrand { .. }
-        | Exit::Rdseed { .. } => Pending::Read,
-        Exit::Rdmsr { .. } => Pending::Rdmsr,
-        Exit::Wrmsr { .. } => Pending::Wrmsr,
-        Exit::Hypercall(_) => Pending::Hypercall,
-        Exit::Cpuid { .. } => Pending::Cpuid,
-        Exit::Io { write: Some(_), .. }
-        | Exit::Mmio { write: Some(_), .. }
-        | Exit::Idle
-        | Exit::Shutdown
-        | Exit::Deadline { .. } => Pending::None,
+        Exit::Common(c) => match c {
+            CommonExit::Mmio { write: None, .. } => Pending::Read,
+            CommonExit::Hypercall(_) => Pending::Hypercall,
+            CommonExit::Mmio { write: Some(_), .. }
+            | CommonExit::Idle
+            | CommonExit::Shutdown
+            | CommonExit::Deadline { .. } => Pending::None,
+        },
+        Exit::Arch(e) => match e {
+            X86Exit::Io { write: None, .. }
+            | X86Exit::Rdtsc
+            | X86Exit::Rdtscp
+            | X86Exit::Rdrand { .. }
+            | X86Exit::Rdseed { .. } => Pending::Read,
+            X86Exit::Rdmsr { .. } => Pending::Rdmsr,
+            X86Exit::Wrmsr { .. } => Pending::Wrmsr,
+            X86Exit::Cpuid { .. } => Pending::Cpuid,
+            X86Exit::Io { write: Some(_), .. } => Pending::None,
+        },
     }
 }
 
@@ -95,20 +106,21 @@ fn pending_for(exit: &Exit) -> Pending {
 /// in-process model). Override with [`MockBackend::with_capabilities`] to test
 /// vmm-core's "refuse to claim determinism" path against a backend that reports
 /// a hole.
-const MOCK_CAPS: Capabilities = Capabilities {
+const MOCK_CAPS: MockCaps = Capabilities {
     name: "mock",
-    deterministic_tsc: true,
     deterministic_rng: true,
-    enforces_tsc_deadline_msr: true,
+    arch: crate::arch::x86::X86Caps {
+        deterministic_tsc: true,
+        enforces_tsc_deadline_msr: true,
+    },
 };
 
 /// A deterministic, scripted [`Backend`] with no KVM dependency.
 #[derive(Debug)]
 pub struct MockBackend {
-    caps: Capabilities,
-    cpuid: Option<CpuidModel>,
-    msr_filter: Option<MsrFilter>,
-    script: VecDeque<Exit>,
+    caps: MockCaps,
+    policy: Option<X86Policy>,
+    script: VecDeque<Exit<X86>>,
     pending: Pending,
     counts: ExitCounts,
     state: VcpuState,
@@ -154,8 +166,7 @@ impl MockBackend {
     pub fn new() -> Self {
         Self {
             caps: MOCK_CAPS,
-            cpuid: None,
-            msr_filter: None,
+            policy: None,
             script: VecDeque::new(),
             pending: Pending::None,
             counts: ExitCounts::default(),
@@ -171,7 +182,7 @@ impl MockBackend {
     }
 
     /// A fresh mock reporting `caps` instead of the default.
-    pub fn with_capabilities(caps: Capabilities) -> Self {
+    pub fn with_capabilities(caps: MockCaps) -> Self {
         Self {
             caps,
             ..Self::new()
@@ -180,27 +191,27 @@ impl MockBackend {
 
     /// A fresh mock pre-loaded with a script of exits to return from successive
     /// `run`/`run_until` calls.
-    pub fn with_exits(exits: impl IntoIterator<Item = Exit>) -> Self {
+    pub fn with_exits(exits: impl IntoIterator<Item = Exit<X86>>) -> Self {
         let mut m = Self::new();
         m.extend_exits(exits);
         m
     }
 
     /// Enqueue one exit to be returned by a future `run`/`run_until`.
-    pub fn push_exit(&mut self, exit: Exit) -> &mut Self {
+    pub fn push_exit(&mut self, exit: Exit<X86>) -> &mut Self {
         self.script.push_back(exit);
         self
     }
 
     /// Enqueue several exits, in order.
-    pub fn extend_exits(&mut self, exits: impl IntoIterator<Item = Exit>) -> &mut Self {
+    pub fn extend_exits(&mut self, exits: impl IntoIterator<Item = Exit<X86>>) -> &mut Self {
         self.script.extend(exits);
         self
     }
 
-    /// `true` once both `set_cpuid` and `set_msr_filter` have been called.
+    /// `true` once `set_policy` has been called.
     pub fn is_configured(&self) -> bool {
-        self.cpuid.is_some() && self.msr_filter.is_some()
+        self.policy.is_some()
     }
 
     /// `true` if the last returned exit still awaits a completion.
@@ -208,14 +219,14 @@ impl MockBackend {
         self.pending != Pending::None
     }
 
-    /// The CPUID model installed by `set_cpuid`, if any (for test assertions).
+    /// The CPUID model installed by `set_policy`, if any (for test assertions).
     pub fn installed_cpuid(&self) -> Option<&CpuidModel> {
-        self.cpuid.as_ref()
+        self.policy.as_ref().map(|p| &p.cpuid)
     }
 
-    /// The MSR filter installed by `set_msr_filter`, if any.
+    /// The MSR filter installed by `set_policy`, if any.
     pub fn installed_msr_filter(&self) -> Option<&MsrFilter> {
-        self.msr_filter.as_ref()
+        self.policy.as_ref().map(|p| &p.msr_filter)
     }
 
     /// The events passed to `inject`, in order.
@@ -287,7 +298,7 @@ impl MockBackend {
 
     /// Pop the next scripted exit, or fail closed if the script is exhausted (a
     /// test bug — a live backend would block, but the mock surfaces it loudly).
-    fn next_scripted(&mut self) -> Result<Exit> {
+    fn next_scripted(&mut self) -> Result<Exit<X86>> {
         self.script
             .pop_front()
             .ok_or(BackendError::Internal("mock run-queue empty"))
@@ -295,7 +306,7 @@ impl MockBackend {
 
     /// Account for and arm a returned exit: bump its counter and record what
     /// completion it now awaits.
-    fn deliver(&mut self, exit: Exit) -> Exit {
+    fn deliver(&mut self, exit: Exit<X86>) -> Exit<X86> {
         self.counts.bump(exit.reason());
         self.pending = pending_for(&exit);
         exit
@@ -322,13 +333,10 @@ impl MockBackend {
 }
 
 impl Backend for MockBackend {
-    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
-        self.cpuid = Some(model.clone());
-        Ok(())
-    }
+    type A = X86;
 
-    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
-        self.msr_filter = Some(filter.clone());
+    fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
+        self.policy = Some(policy.clone());
         Ok(())
     }
 
@@ -375,18 +383,20 @@ impl Backend for MockBackend {
         }
     }
 
-    fn run(&mut self) -> Result<Exit> {
+    fn run(&mut self) -> Result<Exit<X86>> {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = self.next_scripted()?;
         Ok(self.deliver(exit))
     }
 
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit<X86>> {
         self.ensure_runnable()?;
         self.accept_pending_irqs();
         let exit = match self.next_scripted()? {
-            Exit::Deadline { .. } => Exit::Deadline { reached: deadline },
+            Exit::Common(CommonExit::Deadline { .. }) => {
+                Exit::Common(CommonExit::Deadline { reached: deadline })
+            }
             other => other,
         };
         Ok(self.deliver(exit))
@@ -402,8 +412,8 @@ impl Backend for MockBackend {
         Ok(())
     }
 
-    fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
-        self.pending_irq = vector;
+    fn set_pending_irq(&mut self, id: Option<u8>) -> Result<()> {
+        self.pending_irq = id;
         Ok(())
     }
 
@@ -452,9 +462,9 @@ impl Backend for MockBackend {
         }
     }
 
-    fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()> {
-        match self.pending {
-            Pending::Cpuid => {
+    fn complete_arch(&mut self, completion: X86Completion) -> Result<()> {
+        match (self.pending, completion) {
+            (Pending::Cpuid, X86Completion::Cpuid { eax, ebx, ecx, edx }) => {
                 self.finish(Completion::Cpuid { eax, ebx, ecx, edx });
                 Ok(())
             }
@@ -483,7 +493,7 @@ impl Backend for MockBackend {
         self.counts = ExitCounts::default();
     }
 
-    fn capabilities(&self) -> Capabilities {
+    fn capabilities(&self) -> MockCaps {
         self.caps
     }
 }

@@ -59,12 +59,13 @@ use control_proto::{
     HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask, StopReason,
 };
 use environment::{EnvSpec, FaultPolicy};
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::{boot_linux_patched_with_dirty_log, compose_restore_target};
 use vmm_core::control::{ControlServer, RemapVmmFactory, RestoreMode, VmmFactory, server_caps};
-use vmm_core::vmm::{VtimeWiring, contract_vclock_config};
+use vmm_core::vendor::x86::contract_vclock_config;
+use vmm_core::vmm::VtimeWiring;
 
-type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend>>;
+type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>>;
 
 const GUEST_RAM_LEN: usize = 2 << 30;
 const BASE_SEED: u64 = 0x0095_D127_5EED_C0DE;
@@ -117,7 +118,7 @@ fn require_kvm() {
 }
 
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     for o in &report {
         if !o.pass {
@@ -205,7 +206,7 @@ fn boot_pg_no_dirty_log(kernel: &[u8], initramfs: &[u8], seed: u64) -> DynVmm {
         .expect("patched Linux boot (flags: 0 arm)")
 }
 
-fn call<B: Backend>(
+fn call<B: Backend<A = X86>>(
     s: &mut ControlServer<B>,
     req: &Request,
 ) -> Result<Reply, control_proto::ControlError> {
@@ -213,14 +214,14 @@ fn call<B: Backend>(
         .expect("session-fatal ServeError from the control server")
 }
 
-fn expect_ok<B: Backend>(s: &mut ControlServer<B>, req: &Request) -> Reply {
+fn expect_ok<B: Backend<A = X86>>(s: &mut ControlServer<B>, req: &Request) -> Reply {
     match call(s, req) {
         Ok(reply) => reply,
         Err(e) => panic!("verb {req:?} answered a ControlError: {e:?}"),
     }
 }
 
-fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
+fn run_until<B: Backend<A = X86>>(s: &mut ControlServer<B>, deadline: u64) -> StopReason {
     match expect_ok(
         s,
         &Request::Run {
@@ -236,7 +237,7 @@ fn run_until<B: Backend>(s: &mut ControlServer<B>, deadline: u64) -> StopReason 
     }
 }
 
-fn hash_whole<B: Backend>(s: &mut ControlServer<B>) -> [u8; 32] {
+fn hash_whole<B: Backend<A = X86>>(s: &mut ControlServer<B>) -> [u8; 32] {
     match expect_ok(
         s,
         &Request::Hash {
@@ -263,7 +264,7 @@ fn seeded_env(seed: u64) -> Reproducer {
 /// task-58 NotQuiescent retry), returning `(handle, boundary vtime, seal wall
 /// time)` — the wall time covers only the successful `Snapshot` verb, so the
 /// (d) numbers compare seal costs, not the retry walk.
-fn seal_with_retry<B: Backend>(
+fn seal_with_retry<B: Backend<A = X86>>(
     s: &mut ControlServer<B>,
     start_vt: u64,
     step: u64,
@@ -309,7 +310,7 @@ fn capture_arm(
     };
     let (fk, fi) = (kernel.to_vec(), initramfs.to_vec());
     let tracked_factory = tracked;
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || {
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move || {
         Ok(if tracked_factory {
             boot_pg(&fk, &fi, BASE_SEED)
         } else {
@@ -363,7 +364,7 @@ fn a0_dirty_logging_is_guest_inert() {
 
     // Sequential arms: the box allows one open perf work counter at a time.
     let run_arm = |vmm: DynVmm| -> (u64, [u8; 32]) {
-        let factory: VmmFactory<Box<dyn Backend>> =
+        let factory: VmmFactory<Box<dyn Backend<A = X86>>> =
             Box::new(|| panic!("a0 never restores; the factory must not be called"));
         let mut s = ControlServer::new(vmm, factory);
         assert_eq!(
@@ -446,14 +447,15 @@ fn b_remap_and_memcpy_restores_agree() {
 
     let live = boot_pg(&kernel, &initramfs, BASE_SEED);
     let (fk, fi) = (kernel.clone(), initramfs.clone());
-    let factory: VmmFactory<Box<dyn Backend>> = Box::new(move || Ok(boot_pg(&fk, &fi, BASE_SEED)));
+    let factory: VmmFactory<Box<dyn Backend<A = X86>>> =
+        Box::new(move || Ok(boot_pg(&fk, &fi, BASE_SEED)));
     let mut s = ControlServer::new(live, factory);
     // The remap factory mirrors the composition minus the boot-image load: the
     // mapping is the RAM; `restore_vm_state` supplies the register file.
-    let remap: RemapVmmFactory<Box<dyn Backend>> = Box::new(move |mapping| {
-        let backend: Box<dyn Backend> = Box::new(vmm_backend::PatchedKvmBackend::new()?);
+    let remap: RemapVmmFactory<Box<dyn Backend<A = X86>>> = Box::new(move |mapping| {
+        let backend: Box<dyn Backend<A = X86>> = Box::new(vmm_backend::PatchedKvmBackend::new()?);
         let mut v = compose_restore_target(backend, mapping, true)?;
-        let work = Box::new(vmm_core::work_perf::PerfWorkCounter::open()?);
+        let work = Box::new(vmm_core::vendor::x86::work_perf::PerfWorkCounter::open()?);
         v.wire_vtime(VtimeWiring::new(contract_vclock_config(), work, BASE_SEED)?);
         Ok(v)
     });
@@ -473,7 +475,7 @@ fn b_remap_and_memcpy_restores_agree() {
     let (snap, vt1, _) = seal_with_retry(&mut s, vt0, step);
     eprintln!("[b] sealed at V-time {vt1}");
 
-    let arm = |s: &mut ControlServer<Box<dyn Backend>>,
+    let arm = |s: &mut ControlServer<Box<dyn Backend<A = X86>>>,
                mode: RestoreMode|
      -> (bool, StopReason, [u8; 32], Duration) {
         s.set_restore_mode(mode);

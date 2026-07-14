@@ -341,9 +341,10 @@ fn replay_reproduces_the_pre_snapshot_hash_after_interleaved_verbs() {
 /// `record.rs:311` and `campaign.rs` now travel (previously `events: vec![]`).
 #[test]
 fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
-    use vmm_backend::{Exit, MockBackend};
+    use vmm_backend::{CommonExit, Exit, MockBackend, X86, X86Exit};
     use vmm_core::control::ControlServer;
-    use vmm_core::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
+    use vmm_core::vendor::x86::contract_vclock_config;
+    use vmm_core::vmm::{GuestRam, Vmm, VmmError, VtimeWiring};
 
     const DOORBELL_PORT: u16 = 0x0CA1;
     const REQ_GPA: usize = 0xE000;
@@ -365,10 +366,9 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
     )
     .unwrap();
 
-    let build = move |script: Vec<Exit>| -> Result<Vmm<MockBackend>, VmmError> {
+    let build = move |script: Vec<Exit<X86>>| -> Result<Vmm<MockBackend>, VmmError> {
         let mut b = MockBackend::with_exits(script);
-        vmm_backend::Backend::set_cpuid(&mut b, &vmm_backend::CpuidModel::default())?;
-        vmm_backend::Backend::set_msr_filter(&mut b, &vmm_backend::MsrFilter::default())?;
+        vmm_backend::Backend::set_policy(&mut b, &vmm_backend::X86Policy::default())?;
         let mut v = Vmm::new(b, GuestRam::new(RAM)?);
         v.wire_vtime(VtimeWiring::new(
             contract_vclock_config(),
@@ -383,20 +383,20 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
     };
     // Live guest: sync RDTSC, ring the Event doorbell, HLT.
     let live = build(vec![
-        Exit::Rdtsc,
-        Exit::Io {
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Arch(X86Exit::Io {
             port: DOORBELL_PORT,
             size: 4,
             write: Some(n as u32),
-        },
-        Exit::Idle,
+        }),
+        Exit::Common(CommonExit::Idle),
     ])
     .unwrap();
     // The factory is unused (this test runs the live VM directly, no branch), but
     // the server requires one; a minimal HLT fork suffices.
     let factory = {
         let build = build.clone();
-        Box::new(move || build(vec![Exit::Idle]))
+        Box::new(move || build(vec![Exit::Common(CommonExit::Idle)]))
     };
     let mut server = ControlServer::new(live, factory);
 
@@ -455,9 +455,10 @@ fn sdk_events_ride_the_wire_into_a_nonempty_runtrace() {
 /// **succeeds** — an Explorer gets a usable seal through `setup_complete`.
 #[test]
 fn setup_complete_yields_a_usable_seal_at_the_next_synchronized_boundary() {
-    use vmm_backend::{Exit, MockBackend};
+    use vmm_backend::{CommonExit, Exit, MockBackend, X86, X86Exit};
     use vmm_core::control::ControlServer;
-    use vmm_core::vmm::{GuestRam, Vmm, VmmError, VtimeWiring, contract_vclock_config};
+    use vmm_core::vendor::x86::contract_vclock_config;
+    use vmm_core::vmm::{GuestRam, Vmm, VmmError, VtimeWiring};
 
     const DOORBELL_PORT: u16 = 0x0CA1;
     const REQ_GPA: usize = 0xE000;
@@ -476,10 +477,9 @@ fn setup_complete_yields_a_usable_seal_at_the_next_synchronized_boundary() {
     )
     .unwrap();
 
-    let build = move |script: Vec<Exit>| -> Result<Vmm<MockBackend>, VmmError> {
+    let build = move |script: Vec<Exit<X86>>| -> Result<Vmm<MockBackend>, VmmError> {
         let mut b = MockBackend::with_exits(script);
-        vmm_backend::Backend::set_cpuid(&mut b, &vmm_backend::CpuidModel::default())?;
-        vmm_backend::Backend::set_msr_filter(&mut b, &vmm_backend::MsrFilter::default())?;
+        vmm_backend::Backend::set_policy(&mut b, &vmm_backend::X86Policy::default())?;
         let mut v = Vmm::new(b, GuestRam::new(RAM)?);
         v.wire_vtime(VtimeWiring::new(
             contract_vclock_config(),
@@ -495,19 +495,19 @@ fn setup_complete_yields_a_usable_seal_at_the_next_synchronized_boundary() {
     // Sync RDTSC, ring setup_complete (unsealable OUT), then an RDTSC — the first
     // synchronized boundary AFTER setup_complete, where the deferred point surfaces.
     let live = build(vec![
-        Exit::Rdtsc,
-        Exit::Io {
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Arch(X86Exit::Io {
             port: DOORBELL_PORT,
             size: 4,
             write: Some(n as u32),
-        },
-        Exit::Rdtsc,
-        Exit::Idle,
+        }),
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Common(CommonExit::Idle),
     ])
     .unwrap();
     let factory = {
         let build = build.clone();
-        Box::new(move || build(vec![Exit::Idle]))
+        Box::new(move || build(vec![Exit::Common(CommonExit::Idle)]))
     };
     let mut server = ControlServer::new(live, factory);
 
@@ -544,14 +544,14 @@ fn snapshot_retry_finds_a_boundary_when_the_first_point_is_unsnappable() {
     // Compose a server whose live VM sits at a NON-synchronized point (a serial
     // write after the sync RDTSC), so the first `snapshot` is NotQuiescent and
     // the sweep's retry loop must run forward to the next intercept.
-    use vmm_backend::{Exit, MockBackend};
+    use vmm_backend::{CommonExit, Exit, MockBackend, X86, X86Exit};
     use vmm_core::control::ControlServer;
-    use vmm_core::vmm::{GuestRam, Step, Vmm, VmmError, VtimeWiring, contract_vclock_config};
+    use vmm_core::vendor::x86::contract_vclock_config;
+    use vmm_core::vmm::{GuestRam, Step, Vmm, VmmError, VtimeWiring};
 
-    let build = |script: Vec<Exit>| -> Result<Vmm<MockBackend>, VmmError> {
+    let build = |script: Vec<Exit<X86>>| -> Result<Vmm<MockBackend>, VmmError> {
         let mut b = MockBackend::with_exits(script);
-        vmm_backend::Backend::set_cpuid(&mut b, &vmm_backend::CpuidModel::default())?;
-        vmm_backend::Backend::set_msr_filter(&mut b, &vmm_backend::MsrFilter::default())?;
+        vmm_backend::Backend::set_policy(&mut b, &vmm_backend::X86Policy::default())?;
         let mut v = Vmm::new(b, GuestRam::new(mock::RAM)?);
         v.wire_vtime(VtimeWiring::new(
             contract_vclock_config(),
@@ -565,21 +565,26 @@ fn snapshot_retry_finds_a_boundary_when_the_first_point_is_unsnappable() {
     // Live: sync RDTSC, then a serial OUT (unsynchronized), then an RDTSC (a
     // sealable boundary the retry reaches), then Hlt.
     let mut live = build(vec![
-        Exit::Rdtsc,
-        Exit::Io {
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Arch(X86Exit::Io {
             port: 0x3F8,
             size: 1,
             write: Some(b'x' as u32),
-        },
-        Exit::Rdtsc,
-        Exit::Idle,
+        }),
+        Exit::Arch(X86Exit::Rdtsc),
+        Exit::Common(CommonExit::Idle),
     ])
     .unwrap();
     live.step().unwrap(); // RDTSC → synchronized
     if let Step::Terminal(_) = live.step().unwrap() {
         panic!("serial OUT should not terminate");
     } // serial OUT → NOT synchronized
-    let factory = Box::new(move || build(vec![Exit::Rdtsc, Exit::Idle]));
+    let factory = Box::new(move || {
+        build(vec![
+            Exit::Arch(X86Exit::Rdtsc),
+            Exit::Common(CommonExit::Idle),
+        ])
+    });
     let mut server = ControlServer::new(live, factory);
 
     let cfg = SweepConfig {

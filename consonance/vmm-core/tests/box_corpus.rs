@@ -124,7 +124,7 @@ struct PatchedPayloadFactory {
 }
 
 impl SubjectFactory for PatchedPayloadFactory {
-    type M = CorpusMachine<Box<dyn vmm_backend::Backend>>;
+    type M = CorpusMachine<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
     fn spawn(&self, seed: u64) -> Self::M {
         boot_patched_payload(&self.payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
             panic!(

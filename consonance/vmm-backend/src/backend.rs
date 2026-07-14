@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `Backend` trait — the trap apparatus decoupled from the deterministic VMM
-//! above it (ruling R-Backend).
+//! above it (ruling R-Backend), generic over the ISA it traps
+//! (`docs/ARCH-BOUNDARY.md` §A).
 //!
-//! One impl per substrate; **nothing above this trait may branch on which one**.
-//! The trait is **object-safe / dyn-compatible** so the binary's composition root
-//! can hold a `Box<dyn Backend>` and inject `KvmBackend` vs `PatchedKvmBackend`
-//! at `fn main` — no generic methods, no `Self`-by-value returns.
+//! One impl per (substrate, arch) pair; **nothing above this trait may branch on
+//! which substrate is in use, and nothing above the arch seam may branch on
+//! which ISA is in use**. The trait is **object-safe / dyn-compatible** so the
+//! binary's composition root can hold a `Box<dyn Backend<A = X86>>` and inject
+//! `KvmBackend` vs `PatchedKvmBackend` at `fn main` — no generic methods, no
+//! `Self`-by-value returns. The composition root is the one place a concrete
+//! `(Backend impl, Arch vendor)` pair is named.
+//!
+//! **Designed, NOT frozen.** This trait's shape (and `run_until`'s
+//! late-only-stop contract, which stays exactly as-is) is the ruled §A design;
+//! the AA-3 trait-freeze memo (the ARM spike) owns the freeze decision — ARM's
+//! PMU-overflow-to-exit path may pressure `run_until` before the trait may be
+//! declared frozen. Do not treat compiles-for-x86 as frozen-for-every-vendor.
 
-use crate::arch::x86::Injection;
-use crate::arch::x86::VcpuState;
-use crate::arch::x86::{CpuidModel, MsrFilter};
+use crate::arch::Arch;
 use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::types::{Gpa, Moment};
@@ -18,21 +26,23 @@ use crate::types::{Gpa, Moment};
 ///
 /// See the crate docs for the run-loop / completion contract. Implementations:
 /// [`MockBackend`](crate::MockBackend) (portable, deterministic, for tests) and
-/// `KvmBackend` (Linux-only, the bring-up stock-KVM impl).
+/// `KvmBackend` (Linux-only, the bring-up stock-KVM impl), both over the
+/// [`X86`](crate::arch::x86::X86) vendor.
 pub trait Backend {
+    /// The ISA this backend traps ([`Arch`]); the vendor is a zero-sized type.
+    type A: Arch;
+
     // --- configuration (installed once, before the first run) ----------------
 
-    /// Install the frozen guest-visible CPUID model (`KVM_SET_CPUID2` on KVM).
-    /// MUST be called before the first `run`/`run_until`; otherwise the guest
-    /// would see KVM's host-derived defaults (boot- and determinism-breaking).
-    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()>;
-
-    /// Install the default-deny MSR policy. On KVM this enables
-    /// `KVM_CAP_X86_USER_SPACE_MSR` with the full mask
-    /// (`FILTER | UNKNOWN | INVAL`, CPU-MSR-CONTRACT §1) **then**
-    /// `KVM_X86_SET_MSR_FILTER`, so a denied/unknown/invalid MSR access surfaces
-    /// as `Exit::Rdmsr`/`Exit::Wrmsr` (loud) instead of a silent in-kernel `#GP`.
-    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()>;
+    /// Install the frozen guest-visible CPU-contract policy — on x86 the CPUID
+    /// model (`KVM_SET_CPUID2`) **then** the default-deny MSR filter
+    /// (`KVM_CAP_X86_USER_SPACE_MSR` with the full mask
+    /// `FILTER | UNKNOWN | INVAL`, then `KVM_X86_SET_MSR_FILTER`), so a
+    /// denied/unknown/invalid MSR access surfaces as an exit (loud) instead of
+    /// a silent in-kernel `#GP`. MUST be called before the first
+    /// `run`/`run_until`; otherwise the guest would see the host-derived
+    /// defaults (boot- and determinism-breaking).
+    fn set_policy(&mut self, policy: &<Self::A as Arch>::Policy) -> Result<()>;
 
     // --- memory ---------------------------------------------------------------
 
@@ -88,77 +98,81 @@ pub trait Backend {
 
     /// Run the vCPU until an exit needs the VMM. Blocking. The returned `Exit` is
     /// the ONLY channel by which the guest becomes observable. Before resuming a
-    /// read-style, `Wrmsr`, `Hypercall`, or `Cpuid` exit, the VMM MUST call the
+    /// read-style, MSR, `Hypercall`, or `Cpuid` exit, the VMM MUST call the
     /// matching completion method; calling `run` again with such an exit
     /// un-serviced is [`PendingCompletion`](crate::BackendError::PendingCompletion)
     /// (fail closed). Increments the per-reason counter for the exit it returns.
     /// Returns [`NotConfigured`](crate::BackendError::NotConfigured) if called
-    /// before `set_cpuid` AND `set_msr_filter` have both succeeded.
-    fn run(&mut self) -> Result<Exit>;
+    /// before `set_policy` has succeeded.
+    fn run(&mut self) -> Result<Exit<Self::A>>;
 
     /// Run until an exact V-time (retired-branch) deadline, then exit with
-    /// `Exit::Deadline` — the §2 inversion seam (PMU overflow-early + single-step
-    /// under the hood; task 07 supplies the skid margin). A guest exit before the
-    /// deadline returns that exit instead, short of `deadline`. **Bring-up
-    /// `KvmBackend` returns [`Unsupported`](crate::BackendError::Unsupported)`{ what: "run_until" }`** —
-    /// the live PMU/single-step path is Phase 2 (needs task 07 + the lapic
-    /// injection seam); the trait declares it now so task 15 can compile against
-    /// it.
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit>;
+    /// `CommonExit::Deadline` — the §2 inversion seam (PMU overflow-early +
+    /// single-step under the hood; task 07 supplies the skid margin). A guest
+    /// exit before the deadline returns that exit instead, short of `deadline`.
+    /// The **late-only-stop contract stays exactly as ruled** (see the trait
+    /// docs' freeze note). **Bring-up `KvmBackend` returns
+    /// [`Unsupported`](crate::BackendError::Unsupported)`{ what: "run_until" }`.**
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit<Self::A>>;
 
-    /// Inject an **NMI** (`KVM_NMI`) immediately, or set the pending maskable-IRQ
-    /// vector (equivalent to [`set_pending_irq`](Backend::set_pending_irq)`(Some(v))`).
-    /// The VMM decides WHEN (a V-time boundary). For the V-time LAPIC timer the VMM
-    /// drives the maskable path through [`set_pending_irq`](Backend::set_pending_irq)
-    /// directly (re-arbitrated each entry); `inject` exists for the NMI path and as
-    /// a one-shot maskable convenience.
-    fn inject(&mut self, event: Injection) -> Result<()>;
+    /// Inject an event immediately (x86: an **NMI** via `KVM_NMI`), or set the
+    /// pending maskable-IRQ identity (equivalent to
+    /// [`set_pending_irq`](Backend::set_pending_irq)`(Some(id))`). The VMM
+    /// decides WHEN (a V-time boundary). For the V-time timer the VMM drives
+    /// the maskable path through [`set_pending_irq`](Backend::set_pending_irq)
+    /// directly (re-arbitrated each entry); `inject` exists for the
+    /// non-maskable path and as a one-shot maskable convenience.
+    fn inject(&mut self, event: <Self::A as Arch>::Injection) -> Result<()>;
 
-    /// Set (overwrite) the single pending **maskable** IRQ vector to inject at the
-    /// next injectable VM-entry — `None` clears it (and disarms the interrupt
-    /// window). The backend holds **one** vector, not a queue: the VMM owns the
-    /// userspace LAPIC, whose IRR *is* the multi-IRQ queue, and **re-arbitrates**
-    /// (re-peeks the current highest-priority deliverable vector) at **every** entry,
-    /// overwriting this slot. So a vector is never injected stale — if the guest
-    /// raised TPR or a higher-priority IRQ arrived since (any LAPIC access exits to
-    /// the VMM), the next entry's call passes the re-arbitrated vector (or `None`) —
-    /// and a second/lower IRQ is never dropped (it stays in the LAPIC IRR).
+    /// Set (overwrite) the single pending **maskable** interrupt identity
+    /// ([`Arch::IntId`]) to inject at the next injectable VM-entry — `None`
+    /// clears it (and disarms the interrupt window). The backend holds **one**
+    /// identity, not a queue: the VMM owns the userspace interrupt fabric,
+    /// whose pending-register file *is* the multi-IRQ queue, and
+    /// **re-arbitrates** (re-peeks the current highest-priority deliverable
+    /// identity) at **every** entry, overwriting this slot. So an identity is
+    /// never injected stale — if the guest raised its priority threshold or a
+    /// higher-priority IRQ arrived since (any fabric access exits to the VMM),
+    /// the next entry's call passes the re-arbitrated identity (or `None`) —
+    /// and a second/lower IRQ is never dropped (it stays pending in the
+    /// fabric).
     ///
-    /// The backend delivers the set vector at the next entry: `KVM_INTERRUPT` when
-    /// the guest can take it, else it arms the interrupt window and retries on
-    /// `KVM_EXIT_IRQ_WINDOW_OPEN`. A vector becomes observable as *accepted* only
-    /// once `KVM_INTERRUPT` is actually issued — see [`take_accepted_interrupt`].
+    /// The backend delivers the set identity at the next entry: `KVM_INTERRUPT`
+    /// when the guest can take it, else it arms the interrupt window and
+    /// retries on `KVM_EXIT_IRQ_WINDOW_OPEN`. An identity becomes observable as
+    /// *accepted* only once `KVM_INTERRUPT` is actually issued — see
+    /// [`take_accepted_interrupt`].
     ///
     /// [`take_accepted_interrupt`]: Backend::take_accepted_interrupt
-    fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()>;
+    fn set_pending_irq(&mut self, id: Option<<Self::A as Arch>::IntId>) -> Result<()>;
 
-    /// Drain (and return) the next maskable-IRQ vector the backend has **accepted**
-    /// into the guest — i.e. for which `KVM_INTERRUPT` was actually issued — since
-    /// the last call; `None` when none is pending report.
+    /// Drain (and return) the next maskable interrupt identity the backend has
+    /// **accepted** into the guest — i.e. for which `KVM_INTERRUPT` was actually
+    /// issued — since the last call; `None` when none is pending report.
     ///
-    /// The VMM models its userspace LAPIC's IRR→ISR transition as *interrupt
-    /// acceptance*, which happens inside the backend on VM-entry. So the VMM leaves
-    /// a vector pending in the LAPIC IRR when it sets it via
-    /// [`set_pending_irq`](Backend::set_pending_irq), and completes the IRR→ISR
-    /// transition only when this method reports the vector accepted — keeping the
-    /// register file (and any snapshot taken while a vector waits on the interrupt
-    /// window) showing it pending, not prematurely in-service. Backends that never
-    /// accept a maskable IRQ return `None`.
-    fn take_accepted_interrupt(&mut self) -> Option<u8>;
+    /// The VMM models its userspace fabric's pending→in-service transition as
+    /// *interrupt acceptance*, which happens inside the backend on VM-entry. So
+    /// the VMM leaves an identity pending in the fabric when it sets it via
+    /// [`set_pending_irq`](Backend::set_pending_irq), and completes the
+    /// transition only when this method reports the identity accepted — keeping
+    /// the register file (and any snapshot taken while one waits on the
+    /// interrupt window) showing it pending, not prematurely in-service.
+    /// Backends that never accept a maskable IRQ return `None`.
+    fn take_accepted_interrupt(&mut self) -> Option<<Self::A as Arch>::IntId>;
 
     // --- exit completion (the read/write/hypercall round-trip) ----------------
 
-    /// Supply the value for a pending **read-style** exit: `Io { write: None }`,
-    /// `Mmio { write: None }`, `Rdmsr`, or an instruction-read exit (`Rdtsc`,
-    /// `Rdtscp`, `Rdrand`, `Rdseed`). The low `size`/`width` bytes are delivered
-    /// to the guest's destination. Errors
-    /// [`NoPendingRead`](crate::BackendError::NoPendingRead) if no read-style exit
-    /// is pending. (Stock `KvmBackend` never surfaces the instruction-read exits,
-    /// so it completes only IO/MMIO/MSR reads; the instruction-read completions
-    /// exist for `PatchedKvmBackend`/`DirectVmxBackend`.)
+    /// Supply the value for a pending **read-style** exit: an MMIO load, or an
+    /// arch read-style exit (x86: `Io` IN, `Rdmsr`, `Rdtsc`, `Rdtscp`,
+    /// `Rdrand`, `Rdseed`). The low `size`/`width` bytes are delivered to the
+    /// guest's destination. Errors
+    /// [`NoPendingRead`](crate::BackendError::NoPendingRead) if no read-style
+    /// exit is pending. (Stock `KvmBackend` never surfaces the instruction-read
+    /// exits, so it completes only IO/MMIO/MSR reads; the instruction-read
+    /// completions exist for `PatchedKvmBackend`/`DirectVmxBackend`.)
     fn complete_read(&mut self, value: u64) -> Result<()>;
 
-    /// The contract's `deny-gp` disposition for a pending `Rdmsr`/`Wrmsr`: inject
+    /// The contract's `deny-gp` disposition for a pending MSR exit: inject
     /// `#GP` into the guest (on KVM, set `kvm_run.msr.error != 0`). Errors
     /// [`BadCompletion`](crate::BackendError::BadCompletion) if the pending exit
     /// is not an MSR exit.
@@ -178,25 +192,23 @@ pub trait Backend {
     /// knowledge (x86: `RAX`). Errors if none pending.
     fn complete_hypercall(&mut self, ret: u64) -> Result<()>;
 
-    /// Supply the four result registers `(eax, ebx, ecx, edx)` for a pending
-    /// `Exit::Cpuid`. Stock `KvmBackend` never surfaces `Cpuid` (it answers
-    /// in-kernel from the `set_cpuid` table); a backend that does gets the
-    /// dyn-overlaid quad from vmm-core. Errors
+    /// Resolve a pending arch exit whose completion carries an **arch payload**
+    /// ([`Arch::Completion`]; x86: the CPUID result quad). Errors
     /// [`BadCompletion`](crate::BackendError::BadCompletion) if the pending exit
-    /// is not a `Cpuid`.
-    fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()>;
+    /// does not match the completion.
+    fn complete_arch(&mut self, completion: <Self::A as Arch>::Completion) -> Result<()>;
 
     // --- snapshot / restore ---------------------------------------------------
 
     /// Full guest-visible vCPU state for snapshot/restore. `[refinement]`:
     /// fallible here — the underlying `KVM_GET_*` ioctls can fail and library
     /// code must not `unwrap` (rule #4).
-    fn save(&self) -> Result<VcpuState>;
+    fn save(&self) -> Result<<Self::A as Arch>::VcpuState>;
 
-    /// Restore a `VcpuState` produced by `save`. Validates internal consistency;
+    /// Restore a vCPU state produced by `save`. Validates internal consistency;
     /// [`InvalidState`](crate::BackendError::InvalidState) on a
     /// malformed/incompatible blob (never a panic).
-    fn restore(&mut self, state: &VcpuState) -> Result<()>;
+    fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
 
     // --- observability (R-Backend normative) ----------------------------------
 
@@ -211,21 +223,19 @@ pub trait Backend {
     /// What determinism this backend can and cannot honestly provide. The
     /// unison report reads this to refuse to *claim* determinism for a
     /// payload that needs a capability the backend lacks.
-    fn capabilities(&self) -> Capabilities;
+    fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps>;
 }
 
 /// Blanket forward so the composition root can inject a concrete backend as a
-/// `Box<dyn Backend>` and run a `Vmm` over it (R-Backend / task-21 P5: the one
-/// place a concrete backend is named is `fn main`; everything above the trait is
-/// backend-agnostic). `Backend` is dyn-compatible (no generic methods, no
-/// `Self`-by-value returns), so `Box<dyn Backend>` is a `Backend` too.
+/// `Box<dyn Backend<A = …>>` and run a `Vmm` over it (R-Backend / task-21 P5:
+/// the one place a concrete backend is named is `fn main`; everything above the
+/// trait is backend-agnostic). `Backend` is dyn-compatible (no generic methods,
+/// no `Self`-by-value returns), so `Box<dyn Backend<A = …>>` is a `Backend` too.
 impl<B: Backend + ?Sized> Backend for Box<B> {
-    fn set_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
-        (**self).set_cpuid(model)
-    }
+    type A = B::A;
 
-    fn set_msr_filter(&mut self, filter: &MsrFilter) -> Result<()> {
-        (**self).set_msr_filter(filter)
+    fn set_policy(&mut self, policy: &<Self::A as Arch>::Policy) -> Result<()> {
+        (**self).set_policy(policy)
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
@@ -240,23 +250,23 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).harvest_dirty_gfns()
     }
 
-    fn run(&mut self) -> Result<Exit> {
+    fn run(&mut self) -> Result<Exit<Self::A>> {
         (**self).run()
     }
 
-    fn run_until(&mut self, deadline: Moment) -> Result<Exit> {
+    fn run_until(&mut self, deadline: Moment) -> Result<Exit<Self::A>> {
         (**self).run_until(deadline)
     }
 
-    fn inject(&mut self, event: Injection) -> Result<()> {
+    fn inject(&mut self, event: <Self::A as Arch>::Injection) -> Result<()> {
         (**self).inject(event)
     }
 
-    fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
-        (**self).set_pending_irq(vector)
+    fn set_pending_irq(&mut self, id: Option<<Self::A as Arch>::IntId>) -> Result<()> {
+        (**self).set_pending_irq(id)
     }
 
-    fn take_accepted_interrupt(&mut self) -> Option<u8> {
+    fn take_accepted_interrupt(&mut self) -> Option<<Self::A as Arch>::IntId> {
         (**self).take_accepted_interrupt()
     }
 
@@ -276,15 +286,15 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).complete_hypercall(ret)
     }
 
-    fn complete_cpuid(&mut self, eax: u32, ebx: u32, ecx: u32, edx: u32) -> Result<()> {
-        (**self).complete_cpuid(eax, ebx, ecx, edx)
+    fn complete_arch(&mut self, completion: <Self::A as Arch>::Completion) -> Result<()> {
+        (**self).complete_arch(completion)
     }
 
-    fn save(&self) -> Result<VcpuState> {
+    fn save(&self) -> Result<<Self::A as Arch>::VcpuState> {
         (**self).save()
     }
 
-    fn restore(&mut self, state: &VcpuState) -> Result<()> {
+    fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
         (**self).restore(state)
     }
 
@@ -296,7 +306,7 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).reset_exit_counts()
     }
 
-    fn capabilities(&self) -> Capabilities {
+    fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps> {
         (**self).capabilities()
     }
 }

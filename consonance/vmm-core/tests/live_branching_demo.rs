@@ -103,7 +103,7 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use snapshot_store::SnapshotId;
-use vmm_backend::Backend;
+use vmm_backend::{Backend, X86};
 use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::snapshot::SnapshotEngine;
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
@@ -179,7 +179,7 @@ fn require_kvm() {
 /// Require the §1.1 `det-cfl-v1` host baseline, else **panic** with the report (the
 /// boot would refuse such a host anyway).
 fn require_host_baseline() {
-    let report = vmm_core::hostassert::report();
+    let report = vmm_core::vendor::x86::hostassert::report();
     let mut all = true;
     eprintln!("[host-assert] CPU-MSR-CONTRACT §1.1 baseline:");
     for o in &report {
@@ -236,7 +236,7 @@ fn branch_seed(k: usize) -> u64 {
     BASE_SEED ^ 0x9E37_79B9_7F4A_7C15u64.wrapping_mul(k as u64 + 1)
 }
 
-type DynVmm = Vmm<Box<dyn Backend>>;
+type DynVmm = Vmm<Box<dyn Backend<A = X86>>>;
 
 /// What a bounded run observed (mirrors `live_postgres.rs`).
 struct RunOutcome {

@@ -33,30 +33,25 @@
 //! point, and the skeleton introduces no time source (V-time arrives later).
 
 pub mod bringup;
-pub mod contract;
 pub mod control;
 pub mod corpus;
-pub mod devices;
-pub mod entry;
 // Task 81 — the `exec` improvisation's pure sentinel state machine (what bytes to
 // type at the serial shell + how to detect completion/status). Portable and
 // off-record by ruling; the real serial wiring lives in `vmm`/`control`.
 pub mod exec;
-pub mod hostassert;
-pub mod linux_loader;
-pub mod multiboot;
 // Task 63 — the pure-logic half of the arbitrary-V-time seal-rate measurement (the
 // Wave-5 go/no-go): the V-time sampling schedule and the seal-rate / `sealable`-predicate
 // bookkeeping the box harness (`tests/seal_rate_sweep.rs`) feeds live measurements into.
 // Pure and portable (macOS + Linux); no `/dev/kvm`, no wall clock, no RNG.
 pub mod seal_rate;
 pub mod snapshot;
+// The engine/vendor seam (`docs/ARCH-BOUNDARY.md` §B): every module OUTSIDE
+// `vendor` is the arch-neutral engine; everything x86 lives under `vendor::x86`
+// (the CPU contract, exit dispatch + dispositions, the boot loaders + entry
+// state, the interrupt fabric + platform devices, the host-homogeneity probe,
+// the work-counter event, and the `vm_state` record set). A module split, not a
+// crate split — the reserved engine/vendor crate names activate with the ARM
+// window.
+pub mod vendor;
 pub mod vmm;
 pub mod work;
-
-// The box-only `perf_event` work counter (the V-time work source). Like
-// vmm-backend's `kvm_sys`, it is excluded from the coverage + mutation gates (it
-// needs `perf_event` on bare-metal Intel); the portable `work::WorkSource` seam
-// it implements is unit-tested via `work::ScriptedWork`.
-#[cfg(target_os = "linux")]
-pub mod work_perf;
