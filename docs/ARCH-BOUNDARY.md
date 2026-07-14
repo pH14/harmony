@@ -3,7 +3,15 @@
 Status: **design ruling (2026-07-03); vendor programs ruled 2026-07-12/13** (`docs/ARM-ALTRA.md`,
 `docs/AMD-EPYC.md` — the reserved engine/vendor split names activate with the ARM window);
 **pre-build ruled 2026-07-13** (§Pre-build ruling below — building no longer waits for spike
-GO; trust still does). Supersedes the codebase survey in `docs/ARM-PORT.md`
+GO; trust still does). **§Sequencing steps 1–4 LANDED 2026-07-14** (`tasks/108`, `hm-b5n`):
+the C-list neutralizations, the x86 value-type extraction, the keystone (`Arch` trait +
+generic `Backend` + the engine/vendor module split in `vmm-core`, x86 the sole vendor), and
+`vm-state`'s arch-tagged records (`VM_STATE_VERSION` 2). The seam is now
+**compiler-enforced**: the engine names no vendor device, register, or exit, and each
+vendor's exit enum is exhaustively matched by its own dispatch. **The D-list and the trait
+freeze are unchanged** — the trait is *designed, not frozen*; AA-3's trait-freeze memo (the
+ARM spike) still owns the freeze, and §D stays additive-and-spike-trusted. Supersedes the
+codebase survey in `docs/ARM-PORT.md`
 ("What a port costs, by component" and its "no arch seam exists yet" premise), which predates
 Wave 4/5 and undercounts the tree by most of `vmm-core`, `vmm-backend`, `lapic`, `vm-state`,
 and all seven dissonance crates. ARM-PORT.md's **hardware facts and its viability gate stand
