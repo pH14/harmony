@@ -45,13 +45,16 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   leg), then the `hm-60k` close-out: disposition re-record from new evidence only, audit-note
   update, box restore-verify (KVM back to stock), foreman re-review of PR #98 → merge
   unblocks appliance `hm-tn9` + preflight CLI `hm-69y`.
-- **The ARCH-BOUNDARY restructure, steps 1–4** (tasks/108; `hm-b5n` closed at branch-done) —
-  worker COMPLETE, all portable gates green; **PR #109 opened 2026-07-14**, foreman review
-  tracked as `hm-54m` (substantive tier; box gates ride the post-re-cert window). The blind
-  cross-model pass already returned 3 P1s (aarch64 cross-check fails on x86-gated kvm.rs;
-  ControlServer enforces x86 interrupt-ID semantics generically; envcodec u32 widening makes
-  interrupt faults ~always inadmissible) — dispatched to the live worker 2026-07-14 morning
-  so fixes pipeline ahead of the formal review. Merge unblocks `hm-rk5` / `hm-cbt` / `hm-0nf`.
+- **The ARCH-BOUNDARY restructure, steps 1–4** (tasks/108; PR #109, gate `hm-54m`) —
+  **PORTABLE SIDE APPROVED 2026-07-14 morning** (head 72468d5, two review rounds): round-1's
+  3 cross-model P1s fixed + foreman-verified (aarch64 seam check clean and CI-gated; vendor-
+  boundary interrupt admissibility; envcodec mask + 2000-seed test) plus both structural
+  moves (`vendor::x86::bringup`, vendor-neutral `Vmm` error — engine names no vendor, swept);
+  round-2's snapshot-state P1/P2 **ruled acknowledged-and-deferred** per the pre-build ruling
+  and documented where it binds (trait hooks + ARCH-BOUNDARY §D; flagged for Paul's veto).
+  Gates: 1692/1692, clippy ×3 targets, Miri ×4 crates. **Parked awaiting box gates** in the
+  post-re-cert window (readiness table in IMPLEMENTATION-task108.md); merge then unblocks
+  `hm-rk5` / `hm-cbt` / `hm-0nf`.
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round-1 review POSTED** (PR #108,
   2026-07-14: 8 verified blocking threads — wrong perf_event_attr bits, probe-RC discards,
   the missing KVM_RUN loop vs spec deliverable 2, floor-checker stage-blindness incl. a
