@@ -1,0 +1,33 @@
+# Reviewed raw-counter-read sites in the built guest kernel (task 110, the
+# PARAVIRT-CLOCK.md §3.3 reachability gate, x86 half — see
+# scan-counter-opcodes.sh). One function name per line; everything after `#`
+# is comment. A site is allowlistable ONLY because the retained RDTSC/RDTSCP
+# trap completes it with the same work-derived value the pvclock page carries
+# (§4.1 — on x86 a raw read is survivable-by-trap, never a determinism hole).
+# The scan fails the kernel build on any site not listed here AND on any
+# entry with no matching site (exact accounting, both directions).
+#
+# STATUS: BASELINE NOT YET CAPTURED. The active set below is EMPTY on
+# purpose: the first box kernel build fails the scan and prints every site in
+# the real 6.18.35 image; each is then reviewed against the criteria above
+# and committed here (with a justification comment), after which the build is
+# green and the gate is armed against any NEW unreviewed site. Candidate
+# sites expected from the source (COMMENTED — documentation, not yet
+# reviewed against the built image):
+#
+#   native_sched_clock        # arch/x86/kernel/tsc.c — sched_clock until the
+#                             # pvclock init routes it; trap-backstopped
+#   delay_tsc                 # arch/x86/lib/delay.c — udelay busy loop;
+#                             # trap-backstopped (see IMPLEMENTATION.md on the
+#                             # deliberate delay-path decision)
+#   delay_halt_tpause         # arch/x86/lib/delay.c variants (config-dependent)
+#   delay_halt_mwaitx         # arch/x86/lib/delay.c variants (config-dependent)
+#   pit_calibrate_tsc         # arch/x86/kernel/tsc.c — boot calibration
+#   tsc_read_refs             # arch/x86/kernel/tsc.c — boot calibration
+#   quick_pit_calibrate       # arch/x86/kernel/tsc.c — boot calibration
+#   check_tsc_warp            # arch/x86/kernel/tsc_sync.c (SMP=n: may be absent)
+#   read_tsc                  # arch/x86/kernel/tsc.c — the tsc clocksource
+#                             # (unselectable once harmony_pvclock marks it
+#                             # unstable; reads trap meanwhile)
+#   pvclock_clocksource_read  # arch/x86/kernel/pvclock.c (KVM_GUEST=y pulls it
+#                             # in; kvmclock never activates — MSRs deny-gp'd)

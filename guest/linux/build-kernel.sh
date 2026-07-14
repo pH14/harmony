@@ -16,6 +16,12 @@ require_linux_amd64
 require_tools cc make flex bison bc xz gzip
 extract_kernel
 
+# Task 110: apply the harmony guest-kernel source additions (the
+# CONFIG_HARMONY_PVCLOCK clocksource — the guest half of the paravirt
+# work-derived clock, docs/PARAVIRT-CLOCK.md §3.1). String-anchored and
+# idempotent; aborts loudly on a drifted tree (see patches/).
+python3 "$LINUX_DIR/patches/apply-guest-patches.py" "$KSRC"
+
 mkdir -p "$KOBJ" "$ART_DIR"
 
 # Base = Kata guest-kernel config. Kata builds from `allnoconfig` + its fragments
@@ -55,9 +61,13 @@ assert_off() {
     done
 }
 # Functional must-haves for the boot-to-/init image (provided by Kata and/or overlay).
+# HARMONY_PVCLOCK (task 110) is compiled in but runtime-inert without the
+# harmony_pvclock kernel parameter, so one image serves as both the page-on
+# and page-off measurement arm.
 assert_y 64BIT PRINTK TTY SERIAL_8250 SERIAL_8250_CONSOLE BINFMT_ELF \
     BINFMT_SCRIPT BLK_DEV_INITRD RD_GZIP PROC_FS SYSFS DEVTMPFS ACPI PCI \
-    HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM
+    HZ_PERIODIC HZ_100 FUTEX POSIX_TIMERS KERNEL_GZIP X86_IOPL_IOPERM DEVMEM \
+    HARMONY_PVCLOCK
 # (HPET_TIMER is not in this list: it is def_bool y on x86-64 with no prompt;
 # the HPET is excluded at runtime instead — see config-fragment.)
 # Determinism overlay: every symbol below is set ON by the Kata base and must be
@@ -84,3 +94,11 @@ make -C "$KSRC" O="$KOBJ" ARCH=x86_64 LOCALVERSION= -j"$(nproc)" bzImage
 
 install -m 0644 "$KOBJ/arch/x86/boot/bzImage" "$ART_DIR/bzImage"
 echo "ok: $ART_DIR/bzImage"
+
+# Task 110: the counter-opcode reachability gate (PARAVIRT-CLOCK.md §3.3, x86
+# half) — every rdtsc/rdtscp left in the image must be a reviewed,
+# trap-backstopped allowlist site. Scans the uncompressed vmlinux (symbols);
+# self-tests its own ability to fail before scanning. See
+# scan-counter-opcodes.sh + rdtsc-allowlist.txt for the review workflow.
+echo "== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)"
+bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" "$LINUX_DIR/rdtsc-allowlist.txt"
