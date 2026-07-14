@@ -132,9 +132,14 @@ pub mod pvclock {
     /// `flags` bit 1: the value is **work-derived and refreshed** — the harness computed
     /// V-time and the virtual counter from the guest's `BR_RETIRED` work and updates the
     /// page as work advances. This — not merely a published static page — is what AA-5
-    /// certifies. A static placeholder sets [`FLAG_MATERIALIZED`] but NOT this; the
-    /// work-derived refresh mechanism is `hm-8h8`'s (`docs/PARAVIRT-CLOCK.md`), not the
-    /// spike's, so the spike's harness leaves this clear and AA-5 reads unfulfilled.
+    /// certifies. A static placeholder sets [`FLAG_MATERIALIZED`] but NOT this.
+    ///
+    /// This bit is **defined by ABI 1** (`docs/PARAVIRT-CLOCK.md` §1 flags row); it is not
+    /// a reserved bit this spike consumed. The `hm-8h8` real stamping path publishes a
+    /// materialized work-derived page — exactly this bit alongside bit 0 — so a conforming
+    /// hm-8h8 page and this spike's reader agree by construction. The spike's own harness
+    /// publishes only a static placeholder (bit 0, not this), so AA-5 reads unfulfilled
+    /// until the work-derived path lands.
     pub const FLAG_WORK_DERIVED: u32 = 1 << 1;
 
     /// Build the clock-page bytes for a **stable** (even-`seq`) materialized page: the

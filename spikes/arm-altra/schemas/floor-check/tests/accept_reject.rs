@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 
 use floor_check::fixtures::all_fixtures;
-use floor_check::{CheckId, CheckReport, Floors, Status, check_run_set, check_run_sets};
+use floor_check::{CheckId, CheckReport, Floors, Status, check_run_set};
 
 /// `schemas/fixtures/`, resolved from this crate's manifest dir.
 fn fixtures_dir() -> PathBuf {
@@ -37,37 +37,25 @@ fn no_floors() -> Floors {
 }
 
 #[test]
-fn the_armed_floor_sums_across_a_condition_matrix() {
-    // AA-1's million-overflow floor is cumulative across conditions. Two run-sets
-    // (here, the AA-3 `accept` fixture stands in for two conditions — 16 armed each)
-    // must SUM to 32: a floor of 32 is met by the union, a floor of 33 is not, and
-    // neither set meets 32 alone. This is the aggregation the single-dir path cannot do.
+fn passing_the_same_run_set_twice_is_rejected_not_double_counted() {
+    // The dedup the r9 review flagged: the SAME directory supplied twice must not sum
+    // its records — that would inflate the cumulative floor with no new measurement.
+    // (The summing-across-DISTINCT-conditions behaviour is unit-tested in `check.rs`
+    // against in-memory run-sets, since it needs two genuinely different run-sets.)
     let dir = fixtures_dir().join("accept");
     let dirs = [dir.as_path(), dir.as_path()];
-
-    let met = Floors {
+    let floors = Floors {
         min_armed_overflows: Some(32),
         min_reps: None,
         sub_normative: true,
     };
-    let report = check_run_sets(&dirs, &met).expect("aggregate loads");
+    let report = floor_check::check_run_sets(&dirs, &floors).expect("aggregate loads");
     assert_eq!(
-        report.status_of(CheckId::ArmedOverflowFloor),
-        Some(Status::Pass),
-        "16 + 16 armed overflows meet a cumulative floor of 32: {:?}",
-        report.failed()
-    );
-
-    let unmet = Floors {
-        min_armed_overflows: Some(33),
-        ..met
-    };
-    let report = check_run_sets(&dirs, &unmet).expect("aggregate loads");
-    assert_eq!(
-        report.status_of(CheckId::ArmedOverflowFloor),
+        report.status_of(CheckId::Aggregation),
         Some(Status::Fail),
-        "32 summed overflows do not meet a floor of 33"
+        "the same run-set twice must be rejected as a duplicate, not summed"
     );
+    assert!(!report.passed());
 }
 
 /// A reject fixture whose single failing check is `id`, checked under `floors`.

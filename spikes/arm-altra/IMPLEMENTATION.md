@@ -658,6 +658,43 @@ deferral.
 
 Schema unchanged (v3). Fixtures: 24. Miri runs arm-harness (82) plus oracle-model (24).
 
+## Round-9 review fixes (PR #108, cross-model pass r9)
+
+Four P1/P2 fixes plus one ruled doc-only change. The Miri finding stays adjudicated-settled
+(r7), and the per-class-offsets rebuttal was ACCEPTED.
+
+- **`FLAG_WORK_DERIVED` reserved-bit collision — RULED (doc-only here).** PR #110 froze ABI 1
+  with bit 0 = MATERIALIZED and the rest reserved, and this spike's `FLAG_WORK_DERIVED` took
+  bit 1. Foreman ruling: amend ABI 1 to *define* bit 1 = WORK_DERIVED (docs/PARAVIRT-CLOCK.md
+  §1 flags row + the real stamping path), coordinated through PR #110; this spike's usage then
+  conforms as-is. This PR's only change is the flag comment, which now cites the amended ABI
+  (bit 1 defined, not consumed) rather than describing itself as taking a reserved bit.
+- **Duplicate run-sets could inflate the cumulative floor.** The r8 aggregation summed records
+  across directories with no uniqueness check, so the same run-set supplied twice double-counted
+  — a 500,000-record set passed as a million. `check_aggregation` now rejects duplicates by
+  run-set id AND by `records_sha256` (identical evidence), so only distinct measurements sum.
+- **AA-1 aggregation did not enforce the condition matrix.** The only cross-run-set check was
+  the stage, so a million `pinned-solo` samples (or several same-condition sets) passed without
+  the contamination probes. Two additions: (a) every record's `condition` must match its
+  manifest's (`check_condition_consistency`, per-set, all stages); (b) at AA-1, the cumulative
+  run must cover the required distinct condition matrix — pinned-solo, co-tenant-other-core,
+  co-tenant-same-core, memory-pressure (`docs/ARM-ALTRA.md` §AA-1) — before the summed floor
+  means anything (`check_aa1_condition_matrix`). `check_run_sets` now loads then delegates to a
+  unit-testable `aggregate`.
+- **AA-2 did not validate `br_retired_delta`.** The step check verified the PC advanced and one
+  instruction retired, but a `StepRecord` with `br_retired_delta: 99` passed — the branch delta
+  was never examined, so the gate proved nothing about the counter's per-branch behaviour. It
+  now ties the delta to the branch outcome: a step that lands at `pc + 4` fell through (delta 0),
+  anywhere else took a branch (delta 1); anything else fails. (This is the whole point of AA-2:
+  BR_RETIRED counts a taken branch exactly once and nothing else.)
+- **ELF load-segment parsing was fail-open (P2).** r8 fixed `executable_ranges`, but
+  `load_segments` (the guest-RAM loader's source) still `filter_map`ped — a truncated `PT_LOAD`
+  was silently dropped and the payload booted as a partial image. `load_segments` now returns
+  `Result` and fails closed on a malformed segment; `load_into` propagates it. (Test: a segment
+  with `p_filesz` past the file errors, and `load_into` refuses.)
+
+Fixtures: 24, unchanged. Miri runs arm-harness (83) plus oracle-model (24).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

@@ -284,21 +284,38 @@ impl Elf {
 
     /// The image's loadable segments, resolved to their file bytes — what the KVM
     /// harness copies into guest RAM.
-    #[must_use]
-    pub fn load_segments(&self) -> Vec<LoadSegment<'_>> {
-        self.segments
-            .iter()
-            .filter_map(|s| {
-                let from = usize::try_from(s.offset).ok()?;
-                let len = usize::try_from(s.file_size).ok()?;
-                let to = from.checked_add(len)?;
-                Some(LoadSegment {
+    ///
+    /// **Fails closed.** A `filter_map` here silently omitted a `PT_LOAD` whose
+    /// offset/size overflowed or ran past the file, so a truncated or malformed payload
+    /// would boot as a *partial* image (some segments loaded, the bad one missing)
+    /// instead of failing — the guest then runs code that was never fully placed. A
+    /// malformed loadable segment is an error, propagated to [`load_into`].
+    ///
+    /// # Errors
+    /// [`ElfError::Truncated`] if any `PT_LOAD` segment's file range or `mem_size` is
+    /// out of bounds or overflows.
+    pub fn load_segments(&self) -> Result<Vec<LoadSegment<'_>>, ElfError> {
+        let mut out = Vec::with_capacity(self.segments.len());
+        for s in &self.segments {
+            let bytes = usize::try_from(s.offset)
+                .ok()
+                .zip(usize::try_from(s.file_size).ok())
+                .and_then(|(from, len)| from.checked_add(len).map(|to| (from, to)))
+                .and_then(|(from, to)| self.data.get(from..to));
+            match (bytes, usize::try_from(s.mem_size).ok()) {
+                (Some(bytes), Some(mem_size)) => out.push(LoadSegment {
                     vaddr: s.vaddr,
-                    mem_size: usize::try_from(s.mem_size).ok()?,
-                    bytes: self.data.get(from..to)?,
-                })
-            })
-            .collect()
+                    mem_size,
+                    bytes,
+                }),
+                _ => {
+                    return Err(ElfError::Truncated(
+                        "a PT_LOAD segment's file range or mem_size is out of bounds or overflows",
+                    ));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Copy the image's loadable segments into a guest-RAM buffer whose physical base
@@ -322,7 +339,7 @@ impl Elf {
     /// [`ElfError::RangeNotMapped`] if any segment falls below `ram_base` or its span
     /// does not fit in `dst`.
     pub fn load_into(&self, dst: &mut [u8], ram_base: u64) -> Result<(), ElfError> {
-        for seg in self.load_segments() {
+        for seg in self.load_segments()? {
             let offset = seg
                 .vaddr
                 .checked_sub(ram_base)
@@ -708,12 +725,29 @@ mod tests {
     fn load_segments_resolve_to_their_bytes() {
         let code = [0xC0, 0x03, 0x5F, 0xD6];
         let elf = Elf::parse(stripped_image(&code, true)).expect("valid ELF");
-        let segs = elf.load_segments();
+        let segs = elf.load_segments().expect("valid segments");
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].vaddr, 0x4008_0000);
         assert_eq!(segs[0].bytes, &code);
         assert_eq!(segs[0].mem_size, code.len());
         assert_eq!(elf.entry(), 0x4008_0000);
+    }
+
+    #[test]
+    fn a_malformed_load_segment_fails_closed_rather_than_booting_a_partial_image() {
+        // A PT_LOAD whose p_filesz runs past the file. `load_segments`/`load_into` used
+        // to `filter_map` it away and load the rest — a truncated payload booting as a
+        // partial image. It must fail closed instead.
+        let code = [0xC0, 0x03, 0x5F, 0xD6];
+        let img = one_segment_image(0x4008_0000, &code, u64::MAX, code.len() as u64, true);
+        let elf =
+            Elf::parse(img).expect("the header and phdr are valid; the segment size is the fault");
+        assert!(matches!(elf.load_segments(), Err(ElfError::Truncated(_))));
+        let mut ram = vec![0u8; 1 << 20];
+        assert!(matches!(
+            elf.load_into(&mut ram, 0x4000_0000),
+            Err(ElfError::Truncated(_))
+        ));
     }
 
     // `load_into` is the memory-safety-critical copy, factored out of the KVM harness

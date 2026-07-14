@@ -136,8 +136,14 @@ pub enum CheckId {
     /// floor only grades inputs that are present, so a missing payload is otherwise
     /// invisible).
     Aa6Matrix,
-    /// A cumulative (condition-matrix) check spans exactly one stage.
+    /// A cumulative (condition-matrix) check spans exactly one stage, with no duplicate
+    /// run-sets double-counting the floor.
     Aggregation,
+    /// Every record's condition matches its manifest (per run-set).
+    ConditionConsistency,
+    /// At AA-1, the cumulative run covers the required distinct contamination-condition
+    /// matrix.
+    ConditionMatrix,
 }
 
 impl CheckId {
@@ -168,6 +174,8 @@ impl CheckId {
             CheckId::RepFloor => "rep-floor",
             CheckId::Aa6Matrix => "aa6-matrix",
             CheckId::Aggregation => "aggregation",
+            CheckId::ConditionConsistency => "condition-consistency",
+            CheckId::ConditionMatrix => "condition-matrix",
         }
     }
 }
@@ -333,8 +341,46 @@ fn run_stage_checks(
     check_replay_identity(run_set.stage, records, out);
     check_debug_evidence(run_set.stage, records, out);
     check_aa6_matrix(run_set.stage, records, out);
+    check_condition_consistency(run_set, records, out);
     check_payload_status(records, out);
     check_rep_floor(run_set, floors, records, out);
+}
+
+/// Every record's `condition` must match its manifest's. A record labelled with a
+/// condition its run-set did not sweep is either a mislabel or a spliced record — and a
+/// condition-matrix verdict that trusts the manifest's condition while the records carry
+/// another is not measuring what it claims. Runs on every set, single or aggregated.
+fn check_condition_consistency(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let mut mismatched: Vec<(u64, &str)> = records
+        .iter()
+        .filter(|r| r.condition != run_set.condition)
+        .map(|r| (r.sample_id, r.condition.as_str()))
+        .collect();
+    mismatched.sort_by_key(|&(id, _)| id);
+    if mismatched.is_empty() {
+        out.push(pass(
+            CheckId::ConditionConsistency,
+            format!(
+                "every record's condition matches the manifest's ({})",
+                run_set.condition
+            ),
+        ));
+    } else {
+        let shown: Vec<String> = mismatched
+            .iter()
+            .take(8)
+            .map(|(id, c)| format!("sample {id}={c}"))
+            .collect();
+        out.push(fail(
+            CheckId::ConditionConsistency,
+            format!(
+                "{} record(s) carry a condition other than the manifest's {:?}: {}",
+                mismatched.len(),
+                run_set.condition,
+                shown.join(", ")
+            ),
+        ));
+    }
 }
 
 /// Check a **condition matrix**: several run-set directories, one per contamination
@@ -362,30 +408,35 @@ pub fn check_run_sets(dirs: &[&Path], floors: &Floors) -> Result<CheckReport, Lo
     for dir in dirs {
         loaded.push(load_run_set(dir)?);
     }
+    Ok(aggregate(&loaded, floors))
+}
 
+/// The AA-1 contamination condition matrix (`docs/ARM-ALTRA.md` §AA-1 contamination
+/// probes): the baseline plus co-tenant load on other cores, on the same core, and under
+/// memory pressure. AA-1's ≥10⁶ cumulative floor is over these DISTINCT conditions — a
+/// million samples under one condition does not certify count invariance under
+/// contamination. Arrival-day AA-1 runs use these canonical labels, one run-set each.
+const REQUIRED_AA1_CONDITIONS: &[&str] = &[
+    "pinned-solo",
+    "co-tenant-other-core",
+    "co-tenant-same-core",
+    "memory-pressure",
+];
+
+/// The cumulative verdict over a set of already-loaded run-sets. Factored from the disk
+/// loading so the aggregation rules — one stage, no duplicates, the condition matrix, the
+/// summed floor — are unit-testable without fixtures on disk.
+fn aggregate(loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)], floors: &Floors) -> CheckReport {
     let stage = loaded[0].0.stage;
     let mut outcomes = Vec::new();
 
-    // The matrix must be one stage. Mixing stages is not a cumulative run.
-    let mismatched: Vec<&str> = loaded
-        .iter()
-        .filter(|(rs, _, _)| rs.stage != stage)
-        .map(|(rs, _, _)| rs.run_set_id.as_str())
-        .collect();
-    if !mismatched.is_empty() {
-        outcomes.push(fail(
-            CheckId::Aggregation,
-            format!(
-                "the run-sets span more than one stage: {stage:?} and {} — a cumulative verdict \
-                 is over one stage's condition matrix, not a mix of stages",
-                mismatched.join(", ")
-            ),
-        ));
-    }
+    check_aggregation(loaded, stage, &mut outcomes);
+    check_aa1_condition_matrix(loaded, stage, &mut outcomes);
 
-    // Every per-set check runs on each set (its records, its rep floor). The armed floor
-    // is deferred to the cumulative check below.
-    for (rs, records, bytes) in &loaded {
+    // Every per-set check runs on each set (its records, its rep floor, its own
+    // record-vs-manifest condition consistency). The armed floor is deferred to the
+    // cumulative check below.
+    for (rs, records, bytes) in loaded {
         run_stage_checks(rs, floors, records, bytes, &mut outcomes);
     }
 
@@ -397,11 +448,102 @@ pub fn check_run_sets(dirs: &[&Path], floors: &Floors) -> Result<CheckReport, Lo
         .iter()
         .map(|(rs, _, _)| rs.run_set_id.as_str())
         .collect();
-    Ok(CheckReport {
+    CheckReport {
         run_set_id: format!("aggregate[{}]", ids.join(" + ")),
         stage,
         outcomes,
-    })
+    }
+}
+
+/// The aggregation must be one stage, with **no duplicate run-sets** — summing the same
+/// evidence twice (same id, or bit-identical records) would inflate the cumulative floor
+/// without a single additional measurement (a 500,000-record set supplied twice would
+/// "meet" the million-overflow floor).
+fn check_aggregation(
+    loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)],
+    stage: Stage,
+    out: &mut Vec<Outcome>,
+) {
+    let mut problems: Vec<String> = Vec::new();
+    for (rs, _, _) in loaded {
+        if rs.stage != stage {
+            problems.push(format!(
+                "run-set {} is stage {:?}, not {stage:?} — a cumulative verdict is over one \
+                 stage, not a mix",
+                rs.run_set_id, rs.stage
+            ));
+        }
+    }
+    let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
+    let mut seen_hashes: BTreeSet<&str> = BTreeSet::new();
+    for (rs, _, _) in loaded {
+        if !seen_ids.insert(rs.run_set_id.as_str()) {
+            problems.push(format!(
+                "run-set id {} appears more than once — summing the same evidence twice inflates \
+                 the cumulative floor without a new measurement",
+                rs.run_set_id
+            ));
+        }
+        if !seen_hashes.insert(rs.records_sha256.as_str()) {
+            problems.push(format!(
+                "two run-sets carry identical records (records_sha256 {}…) — the same overflows \
+                 counted twice",
+                &rs.records_sha256[..rs.records_sha256.len().min(16)]
+            ));
+        }
+    }
+    verdict(
+        CheckId::Aggregation,
+        &problems,
+        "one stage, distinct run-sets (no duplicate evidence)",
+        out,
+    );
+}
+
+/// At AA-1, the cumulative run must cover the required distinct contamination conditions
+/// ([`REQUIRED_AA1_CONDITIONS`]). Only fires at AA-1 (the contamination matrix is AA-1's);
+/// other stages' aggregations do not carry this requirement.
+fn check_aa1_condition_matrix(
+    loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)],
+    stage: Stage,
+    out: &mut Vec<Outcome>,
+) {
+    if stage != Stage::Aa1 {
+        return;
+    }
+    let present: BTreeSet<&str> = loaded
+        .iter()
+        .map(|(rs, _, _)| rs.condition.as_str())
+        .collect();
+    let missing: Vec<&str> = REQUIRED_AA1_CONDITIONS
+        .iter()
+        .copied()
+        .filter(|c| !present.contains(c))
+        .collect();
+    if missing.is_empty() {
+        out.push(pass(
+            CheckId::ConditionMatrix,
+            format!(
+                "the AA-1 contamination matrix is covered: {}",
+                REQUIRED_AA1_CONDITIONS.join(", ")
+            ),
+        ));
+    } else {
+        out.push(fail(
+            CheckId::ConditionMatrix,
+            format!(
+                "AA-1's cumulative floor is over the contamination matrix, but these required \
+                 conditions are absent from the run: {}. A million overflows under {} does not \
+                 certify count invariance under contamination — supply one run-set per condition.",
+                missing.join(", "),
+                if present.len() == 1 {
+                    present.iter().next().copied().unwrap_or("one condition")
+                } else {
+                    "the conditions present"
+                }
+            ),
+        ));
+    }
 }
 
 /// Load one run-set (manifest + records + raw record bytes) from a directory.
@@ -1575,6 +1717,32 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
                 r.sample_id, s.insn_retired
             ));
         }
+        // The AA-2 requirement is precisely that BR_RETIRED increments once for a TAKEN
+        // branch and not otherwise — the property the whole work clock rests on. On
+        // aarch64 (4-byte instructions) a step that lands at `pc_before + 4` fell through
+        // sequentially (no taken branch → delta 0); a step that lands anywhere else took
+        // a branch (delta 1). A record with `br_retired_delta == 99` (or 0 on a taken
+        // branch, or 1 on a fall-through) is not a valid single-step measurement, and
+        // without checking it the gate proves nothing about the counter's per-branch
+        // behaviour.
+        let took_branch = s.pc_after != s.pc_before.wrapping_add(4);
+        let expected_delta = u64::from(took_branch);
+        if s.br_retired_delta != expected_delta {
+            bad.push(format!(
+                "sample {}: br_retired_delta {} but the step {} (PC {:#x}→{:#x}), so BR_RETIRED \
+                 must increment by {expected_delta} — AA-2 requires it count taken branches \
+                 exactly once and nothing else",
+                r.sample_id,
+                s.br_retired_delta,
+                if took_branch {
+                    "took a branch"
+                } else {
+                    "fell through"
+                },
+                s.pc_before,
+                s.pc_after
+            ));
+        }
     }
     if bad.is_empty() {
         out.push(pass(
@@ -2430,6 +2598,141 @@ mod tests {
         assert!(!detail(&out, CheckId::ArmedOverflowFloor).contains("SUB-NORMATIVE"));
     }
 
+    /// Build an in-memory (manifest, records, bytes) run-set with a chosen stage,
+    /// condition, records-hash, and armed-record count — enough to drive `aggregate`.
+    fn a_loaded_set(
+        stage: Stage,
+        id: &str,
+        condition: &str,
+        hash: &str,
+        n: u64,
+    ) -> (RunSet, Vec<RunRecord>, Vec<u8>) {
+        let mut rs = a_run_set();
+        rs.stage = stage;
+        rs.run_set_id = id.into();
+        rs.condition = condition.into();
+        rs.records_sha256 = hash.into();
+        let records: Vec<RunRecord> = (0..n)
+            .map(|i| {
+                let mut r = a_record(i);
+                r.condition = condition.into();
+                r
+            })
+            .collect();
+        (rs, records, Vec::new())
+    }
+
+    #[test]
+    fn aggregate_sums_distinct_run_sets_and_rejects_duplicates() {
+        let floors = Floors {
+            min_armed_overflows: Some(32),
+            min_reps: None,
+            sub_normative: true,
+        };
+
+        // Two DISTINCT AA-3 run-sets (16 armed each) sum to a cumulative 32.
+        let two = [
+            a_loaded_set(Stage::Aa3, "solo", "pinned-solo", &"a".repeat(64), 16),
+            a_loaded_set(
+                Stage::Aa3,
+                "cotenant",
+                "co-tenant-other-core",
+                &"b".repeat(64),
+                16,
+            ),
+        ];
+        let out = aggregate(&two, &floors).outcomes;
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::Pass),
+            "16 + 16 armed overflows meet a cumulative floor of 32"
+        );
+        assert_eq!(status(&out, CheckId::Aggregation), Some(Status::Pass));
+
+        // 33 is not met by 32.
+        let strict = Floors {
+            min_armed_overflows: Some(33),
+            ..floors
+        };
+        assert_eq!(
+            status(
+                &aggregate(&two, &strict).outcomes,
+                CheckId::ArmedOverflowFloor
+            ),
+            Some(Status::Fail)
+        );
+
+        // The SAME set twice (same id and records hash) is a duplicate: the aggregation
+        // fails, so 16 doubled cannot masquerade as a cumulative 32.
+        let dup = [
+            a_loaded_set(Stage::Aa3, "solo", "pinned-solo", &"a".repeat(64), 16),
+            a_loaded_set(Stage::Aa3, "solo", "pinned-solo", &"a".repeat(64), 16),
+        ];
+        assert_eq!(
+            status(&aggregate(&dup, &floors).outcomes, CheckId::Aggregation),
+            Some(Status::Fail),
+            "the same run-set twice must not sum"
+        );
+    }
+
+    #[test]
+    fn aa1_aggregation_requires_the_full_contamination_matrix() {
+        let floors = Floors {
+            min_armed_overflows: Some(2),
+            min_reps: None,
+            sub_normative: true,
+        };
+
+        // Missing same-core and memory-pressure: the matrix is incomplete → FAIL.
+        let partial = [
+            a_loaded_set(Stage::Aa1, "solo", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(
+                Stage::Aa1,
+                "other",
+                "co-tenant-other-core",
+                &"b".repeat(64),
+                2,
+            ),
+        ];
+        assert_eq!(
+            status(
+                &aggregate(&partial, &floors).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "a partial contamination matrix must not pass AA-1"
+        );
+
+        // The full matrix → PASS.
+        let full = [
+            a_loaded_set(Stage::Aa1, "c0", "pinned-solo", &"a".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "c1", "co-tenant-other-core", &"b".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "c2", "co-tenant-same-core", &"c".repeat(64), 2),
+            a_loaded_set(Stage::Aa1, "c3", "memory-pressure", &"d".repeat(64), 2),
+        ];
+        assert_eq!(
+            status(
+                &aggregate(&full, &floors).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Pass),
+            "the complete contamination matrix passes"
+        );
+    }
+
+    #[test]
+    fn a_record_whose_condition_contradicts_its_manifest_is_caught() {
+        let rs = a_run_set(); // manifest condition = pinned-solo
+        let mut r = a_record(0);
+        r.condition = "co-tenant-other-core".into(); // a record claiming another condition
+        let mut out = Vec::new();
+        check_condition_consistency(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ConditionConsistency),
+            Some(Status::Fail)
+        );
+    }
+
     #[test]
     fn rep_floor_fails_below_the_minimum() {
         let floors = Floors {
@@ -2639,16 +2942,55 @@ mod tests {
         check_debug_evidence(Stage::Aa2, &[bad_step], &mut out);
         assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
 
-        // A valid single step: PC advanced, exactly one instruction retired.
-        let mut good_step = a_record(0);
-        good_step.step = Some(StepRecord {
+        // A step that fell through sequentially (pc + 4) but claims an arbitrary
+        // BR_RETIRED delta (99) is not a valid measurement — the branch delta must match
+        // the branch outcome, and this is the exact forgery the r9 review flagged.
+        let mut wrong_delta = a_record(0);
+        wrong_delta.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after: 0x8004, // sequential: no taken branch, so delta must be 0
+            insn_retired: 1,
+            br_retired_delta: 99,
+        });
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[wrong_delta], &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
+
+        // A taken branch (PC did not advance sequentially) must carry delta 1, not 0.
+        let mut branch_no_count = a_record(0);
+        branch_no_count.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after: 0x9000, // a control transfer: BR_RETIRED must increment
+            insn_retired: 1,
+            br_retired_delta: 0,
+        });
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[branch_no_count], &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
+
+        // A valid single step: fell through by 4 bytes, one instruction retired, no
+        // taken branch, so BR_RETIRED did not move.
+        let mut good_fallthrough = a_record(0);
+        good_fallthrough.step = Some(StepRecord {
             pc_before: 0x8000,
             pc_after: 0x8004,
             insn_retired: 1,
             br_retired_delta: 0,
         });
         let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[good_step], &mut out);
+        check_debug_evidence(Stage::Aa2, &[good_fallthrough], &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Pass));
+
+        // A valid taken-branch step: PC transferred, BR_RETIRED incremented once.
+        let mut good_branch = a_record(0);
+        good_branch.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after: 0x9000,
+            insn_retired: 1,
+            br_retired_delta: 1,
+        });
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &[good_branch], &mut out);
         assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Pass));
 
         // The check does not fire outside AA-2, where single-stepping is not the subject.
