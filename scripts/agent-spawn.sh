@@ -25,22 +25,34 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SLUG="${1:?usage: agent-spawn.sh <task-slug> [--engine claude|deepseek] [--model ID] [--yolo]}"
+SLUG="${1:?usage: agent-spawn.sh <task-slug> [--engine claude|deepseek] [--model ID] [--effort low|medium|high|xhigh|max] [--yolo]}"
 shift
 ENGINE=claude
 MODEL=claude-opus-4-8          # Opus 4.8 — baseline model; --model claude-fable-5 for high-complexity,
                                 # --model claude-sonnet-5 for quick/simple tasks
+EFFORT=""                      # reasoning effort; empty = per-model default below (ruled by Paul
+                                # 2026-07-14: workers were silently landing on the CLI's lowest tier)
 # auto: classifier auto-approves low-risk commands, blocks risky ones — unattended-friendly
 PERMFLAGS="--permission-mode auto"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --engine) ENGINE="$2"; shift 2 ;;
         --model)  MODEL="$2";  shift 2 ;;
+        --effort) EFFORT="$2"; shift 2 ;;
         --perm)   PERMFLAGS="--permission-mode $2"; shift 2 ;;
         --yolo)   PERMFLAGS="--dangerously-skip-permissions"; shift ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+# Per-model effort defaults: implementation workers think hard (review rounds are the
+# expensive resource, not worker tokens); Sonnet stays brisk for its narrow-spec tasks.
+if [[ -z "$EFFORT" ]]; then
+    case "$MODEL" in
+        claude-sonnet-5) EFFORT=high ;;
+        *)               EFFORT=xhigh ;;
+    esac
+fi
 
 TASKFILE=$(find tasks -name "*${SLUG}*.md" ! -name "00-*" | sort | head -1)
 [[ -n "$TASKFILE" ]] || { echo "no task spec matching '$SLUG' in tasks/" >&2; exit 1; }
@@ -73,9 +85,10 @@ EOF
 # caffeinate (macOS): keep the machine from idle-sleeping while a worker runs
 CAFF=""
 command -v caffeinate >/dev/null && CAFF="caffeinate -i "
-# Default (claude) engine pins the model explicitly (Opus 4.8 baseline, or Fable 5 /
-# Sonnet 5 via --model for high-complexity / quick-simple tasks); deepseek ignores it.
-MODELFLAG="--model $MODEL"
+# Default (claude) engine pins the model AND effort explicitly — never inherit either
+# from ~/.claude/settings.json (its model+effortLevel pair tracks Paul's interactive
+# session, not workers); deepseek ignores both.
+MODELFLAG="--model $MODEL --effort $EFFORT"
 if [[ "$ENGINE" == deepseek ]]; then
     : "${DEEPSEEK_API_KEY:?--engine deepseek requires DEEPSEEK_API_KEY}"
     MODELFLAG=""
@@ -92,6 +105,6 @@ if [[ "$ENGINE" == deepseek ]]; then
 fi
 
 tmux new-session -d -s "$SESSION" -c "$WT" "$CMD"
-echo "spawned $SESSION (engine=$ENGINE, model=$MODEL, branch=$BRANCH, spec=$TASKFILE)"
+echo "spawned $SESSION (engine=$ENGINE, model=$MODEL, effort=${EFFORT:-engine-default}, branch=$BRANCH, spec=$TASKFILE)"
 echo "  attach: tmux attach -t $SESSION"
 echo "  marker: /tmp/harmony-agents/$WTNAME.stop"

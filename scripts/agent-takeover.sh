@@ -15,17 +15,27 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PR="${1:?usage: agent-takeover.sh <pr-number> [--model ID] [--perm MODE]}"
+PR="${1:?usage: agent-takeover.sh <pr-number> [--model ID] [--effort low|medium|high|xhigh|max] [--perm MODE]}"
 shift || true
 MODEL=claude-opus-4-8
+EFFORT=""                      # empty = per-model default below (Paul's 2026-07-14 ruling)
 PERMFLAGS="--permission-mode auto"
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --model) MODEL="$2"; shift 2 ;;
-        --perm)  PERMFLAGS="--permission-mode $2"; shift 2 ;;
+        --model)  MODEL="$2";  shift 2 ;;
+        --effort) EFFORT="$2"; shift 2 ;;
+        --perm)   PERMFLAGS="--permission-mode $2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+# Same per-model effort defaults as agent-spawn.sh: fixers think hard too.
+if [[ -z "$EFFORT" ]]; then
+    case "$MODEL" in
+        claude-sonnet-5) EFFORT=high ;;
+        *)               EFFORT=xhigh ;;
+    esac
+fi
 
 BRANCH=$(gh pr view "$PR" --json headRefName --jq .headRefName)
 [[ -n "$BRANCH" ]] || { echo "could not resolve head branch for PR #$PR" >&2; exit 1; }
@@ -64,7 +74,9 @@ EOF
 
 CAFF=""
 command -v caffeinate >/dev/null && CAFF="caffeinate -i "
-CMD="${CAFF}claude $PERMFLAGS --model $MODEL \"\$(cat .agent-prompt.md)\"; echo; echo '[claude exited — pane kept for inspection]'; exec bash"
+# CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0: same ghost-text hazard as agent-spawn.sh —
+# takeover sessions were missing it (that is why agent-pr98 showed phantom ❯ suggestions).
+CMD="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${CAFF}claude $PERMFLAGS --model $MODEL --effort $EFFORT \"\$(cat .agent-prompt.md)\"; echo; echo '[claude exited — pane kept for inspection]'; exec bash"
 
 tmux new-session -d -s "$SESSION" -c "$WT" "$CMD"
 echo "spawned $SESSION (model=$MODEL, branch=$BRANCH, PR=#$PR)"
