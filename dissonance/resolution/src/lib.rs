@@ -24,24 +24,26 @@
 //! apart: a guest outcome is a [`StopReason`] (data), a control failure is a
 //! [`SessionError`].
 //!
-//! ## The mock and the wire
+//! ## The two servers
 //!
-//! The whole laptop gate runs against the in-crate [`MockServer`] — a scripted,
-//! deterministic guest reached over the [`Server`] seam (the task-58 loopback
-//! pattern, owned here). The verbs `control-proto` already carries use its real
-//! wire types; the three tasks 80/81 add — `read` / `regs` / `exec` — are not
-//! merged on this branch, so this crate defines their views ([`RegsView`],
-//! [`ExecResult`]) and the [`Tainted`](SessionError::Tainted) guard locally
-//! (conventions rule 2), matching those specs' wire contract. The live box
-//! connection is a second [`Server`] implementor handed to the foreman.
+//! The [`Server`] seam has two implementors and a [`Session`] cannot tell them
+//! apart. [`SocketServer`] is the **production** one: every verb is a
+//! `control-proto` request/reply on a real stream, so resolution is the second
+//! client of the task-58 control server (the explorer's `SocketMachine` is the
+//! first) rather than a tunnel through explorer code. [`MockServer`] is a
+//! scripted, deterministic guest in-process — the whole laptop gate — so the
+//! client's logic is proven without a VM. The verbs use `control-proto`'s real
+//! wire types throughout; the task-80/81 reply *views* ([`RegsView`],
+//! [`ExecResult`]) are shaped here (conventions rule 2) and mirror the wire's.
 //!
 //! ## Module layout
 //!
 //! `mref` ([`MomentRef`], its textual codec, `vary`) · `server` (the
 //! [`Server`] seam + the task-80/81 views) · `session` ([`Session`] /
-//! [`MaterializedSession`]) · `mock` ([`MockServer`]) · `transcript` (the
-//! JSONL [`Record`] + the one renderer) · `repl` (the line protocol +
-//! [`Shell`]) · `error` ([`SessionError`]).
+//! [`MaterializedSession`]) · `socket` ([`SocketServer`], the production wire
+//! adapter) · `mock` ([`MockServer`]) · `transcript` (the JSONL [`Record`] +
+//! the one renderer) · `repl` (the line protocol + [`Shell`]) · `error`
+//! ([`SessionError`]).
 
 mod error;
 mod mock;
@@ -49,6 +51,7 @@ mod mref;
 mod repl;
 mod server;
 mod session;
+mod socket;
 mod transcript;
 
 pub use error::SessionError;
@@ -57,6 +60,7 @@ pub use mref::{MRefParseError, MomentRef, OverrideEdit};
 pub use repl::{Command, CommandParseError, DispatchOutput, Shell};
 pub use server::{ExecResult, RegsView, Server, Snapshot};
 pub use session::{MaterializedSession, Session, client_caps};
+pub use socket::SocketServer;
 pub use transcript::{Outcome, Record, from_jsonl, render_line, render_transcript, to_jsonl};
 
 // The wire/reproducer types that appear in this crate's public API, re-exported
@@ -81,6 +85,32 @@ pub const MAX_HEX_FIELD_BYTES: usize = 16 << 20; // 16 MiB
 /// The [`MockServer`]'s default scripted guest RAM size — the ceiling `read`
 /// range-checks against.
 pub const DEFAULT_RAM_BYTES: u64 = 1 << 30; // 1 GiB
+
+/// The default ceiling on how many events one
+/// [`sdk_events`](SocketServer::sdk_events) drain will accumulate.
+///
+/// The drain is a **paging loop over an untrusted peer**: the server signals the
+/// end of the capture with an empty page, so a server that never sends one —
+/// broken, or hostile — would otherwise grow the accumulator until the process is
+/// killed by the OOM reaper. That is not a failure a caller can catch. The budget
+/// turns it into a typed [`SessionError::Transport`], which is (conventions rule
+/// 4) the same discipline [`READ_CAP`] and the codec's frame-length check apply
+/// to every other untrusted length on this wire.
+///
+/// Sized with orders of magnitude of headroom over any real capture: the game
+/// workload the film gate scrapes emits a few register writes per frame over a
+/// few thousand frames, so a real drain is O(10⁴) events. Raise it for a specific
+/// session with
+/// [`set_sdk_event_budget`](SocketServer::set_sdk_event_budget) rather than
+/// removing the bound.
+pub const SDK_EVENTS_CAP: u32 = 1 << 20; // 1,048,576 events
+
+/// The default ceiling on the **aggregate payload bytes** one
+/// [`sdk_events`](SocketServer::sdk_events) drain will accumulate. The companion
+/// of [`SDK_EVENTS_CAP`]: a peer could stay under the event count while sending
+/// unboundedly large payloads (each page is frame-limited, but the *number* of
+/// pages is not), so the drain is bounded on both axes or on neither.
+pub const SDK_EVENTS_BYTES_CAP: usize = 64 << 20; // 64 MiB
 
 /// The default V-time budget an [`exec`](MaterializedSession::exec) adds to the
 /// current moment for its deadline (the improvisation runs until a completion
