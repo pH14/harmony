@@ -31,10 +31,7 @@ fn no_floors() -> Floors {
 /// A reject fixture whose single failing check is `id`, checked under `floors`.
 fn assert_single_failure(name: &str, floors: Floors, id: CheckId) {
     let report = check(name, floors);
-    assert!(
-        !report.passed(),
-        "{name} was accepted but must be rejected"
-    );
+    assert!(!report.passed(), "{name} was accepted but must be rejected");
     assert_eq!(
         report.status_of(id),
         Some(Status::Fail),
@@ -127,11 +124,7 @@ fn reject_stock_mechanism() {
 
 #[test]
 fn reject_unverified_image() {
-    assert_single_failure(
-        "reject-unverified-image",
-        no_floors(),
-        CheckId::ImagePins,
-    );
+    assert_single_failure("reject-unverified-image", no_floors(), CheckId::ImagePins);
 }
 
 #[test]
@@ -142,8 +135,14 @@ fn reject_no_weights() {
     // counts were not silently graded against an invented weight.
     let report = check("reject-no-weights", no_floors());
     assert!(!report.passed());
-    assert_eq!(report.status_of(CheckId::WeightsPresent), Some(Status::Fail));
-    assert_eq!(report.status_of(CheckId::CountExactness), Some(Status::Fail));
+    assert_eq!(
+        report.status_of(CheckId::WeightsPresent),
+        Some(Status::Fail)
+    );
+    assert_eq!(
+        report.status_of(CheckId::CountExactness),
+        Some(Status::Fail)
+    );
 }
 
 #[test]

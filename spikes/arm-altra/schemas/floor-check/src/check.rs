@@ -12,14 +12,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
-/// The conventional manifest file name inside a run-set directory.
-pub const MANIFEST_FILE: &str = "run-set.json";
-
 use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage};
 use oracle_model::{Weights, expected};
 use sha2::{Digest, Sha256};
 
 use crate::error::LoadError;
+
+/// The conventional manifest file name inside a run-set directory.
+pub const MANIFEST_FILE: &str = "run-set.json";
 
 /// Which floors the caller asked the checker to enforce.
 ///
@@ -165,10 +165,7 @@ impl CheckReport {
     /// not requested (`--min-*` absent) do not appear.
     #[must_use]
     pub fn status_of(&self, id: CheckId) -> Option<Status> {
-        self.outcomes
-            .iter()
-            .find(|o| o.id == id)
-            .map(|o| o.status)
+        self.outcomes.iter().find(|o| o.id == id).map(|o| o.status)
     }
 
     /// The ids of the checks that failed, in report order.
@@ -382,14 +379,14 @@ fn check_multiplicity(records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut armed = 0u64;
 
     for r in records {
-        if let Some(o) = &r.overflow {
-            if o.armed {
-                armed += 1;
-                match o.deliveries {
-                    1 => {}
-                    0 => lost.push(r.sample_id),
-                    _ => duplicated.push(r.sample_id),
-                }
+        if let Some(o) = &r.overflow
+            && o.armed
+        {
+            armed += 1;
+            match o.deliveries {
+                1 => {}
+                0 => lost.push(r.sample_id),
+                _ => duplicated.push(r.sample_id),
             }
         }
     }
@@ -556,14 +553,14 @@ fn check_skid(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
         }
 
         // Within margin, when a margin was measured.
-        if let Some(m) = margin {
-            if recomputed.unsigned_abs() > u128::from(m) {
-                problems.push(format!(
-                    "sample {}: |skid| {} exceeds the measured margin {m}",
-                    r.sample_id,
-                    recomputed.unsigned_abs()
-                ));
-            }
+        if let Some(m) = margin
+            && recomputed.unsigned_abs() > u128::from(m)
+        {
+            problems.push(format!(
+                "sample {}: |skid| {} exceeds the measured margin {m}",
+                r.sample_id,
+                recomputed.unsigned_abs()
+            ));
         }
 
         // AA-3's exact landing: work == target on every landing.
@@ -805,5 +802,181 @@ fn join_problems(problems: &[String]) -> String {
         format!("{} (+{} more)", shown.join("; "), problems.len() - 8)
     } else {
         shown.join("; ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit coverage for the checks the twelve accept/reject fixtures do not
+    //! exercise on their own — the ones the task requires but that are not among
+    //! the fixtured failure modes: schema-version refusal, the skid-margin and
+    //! weights *refusals* (no invented constants), the pinning condition, the
+    //! payload-status gate, and the rep floor. Each is driven directly against a
+    //! minimal in-memory run-set so a regression here is caught without a
+    //! round-trip through disk.
+
+    use super::*;
+    use arm_harness::evidence::{
+        Environment, ImagePin, Mechanism, OverflowRecord, PerfConfig, Pinning,
+    };
+    use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights};
+    use std::collections::BTreeMap;
+
+    fn a_record(sample_id: u64) -> RunRecord {
+        // straight-line at smoke: certain 999, window offset 2 => 1001 taken.
+        let measured = 1001;
+        RunRecord {
+            sample_id,
+            payload: Payload::StraightLine,
+            scale: Scale::Smoke,
+            seed: DEFAULT_SEED,
+            trips: 1_000,
+            condition: "pinned-solo".into(),
+            work_begin: 1_000,
+            work_end: 1_000 + measured,
+            measured_taken: measured,
+            reported_taken: 0,
+            exit_reason: ExitReason::Preempt,
+            overflow: Some(OverflowRecord {
+                armed: true,
+                deliveries: 1,
+                target: measured,
+                landed: measured,
+                skid: 0,
+            }),
+            state_digest: "sha256:00".into(),
+            params_mode: "managed".into(),
+            clockpage_mode: None,
+            payload_status: 0,
+        }
+    }
+
+    fn a_run_set() -> RunSet {
+        RunSet {
+            schema_version: SCHEMA_VERSION,
+            stage: Stage::Aa3,
+            run_set_id: "unit".into(),
+            environment: Environment {
+                midr: 0x413f_d0c0,
+                soc: "unit".into(),
+                firmware: BTreeMap::new(),
+                host_kernel: "6.18.35".into(),
+                kvm_mode: "vhe".into(),
+            },
+            mechanism: Mechanism {
+                kvm_patched: true,
+                host_kernel_sha256: "0".repeat(64),
+                expected_exit_reason: ExitReason::Preempt,
+                patch_marker_observed: true,
+            },
+            images: vec![ImagePin {
+                path: "img".into(),
+                sha256: "0".repeat(64),
+                md5: "0".repeat(32),
+                verified_before_boot: true,
+            }],
+            perf: PerfConfig {
+                raw_event: 0x21,
+                exclude_host: true,
+                exclude_guest: false,
+                exclude_hv: true,
+                pinned: true,
+                sample_period: Some(1_000_000),
+            },
+            pinning: Pinning {
+                pinned: true,
+                core: Some(2),
+                governor: "performance".into(),
+                migration_probe: false,
+            },
+            condition: "pinned-solo".into(),
+            weights: Some(Weights::measured(0, 0, 0, 0, 2)),
+            skid_margin: Some(64),
+            attempted: 1,
+            records_file: "records.jsonl".into(),
+            records_sha256: "0".repeat(64),
+        }
+    }
+
+    fn status(out: &[Outcome], id: CheckId) -> Option<Status> {
+        out.iter().find(|o| o.id == id).map(|o| o.status)
+    }
+
+    #[test]
+    fn unknown_schema_version_is_refused_not_guessed() {
+        let mut rs = a_run_set();
+        rs.schema_version = SCHEMA_VERSION + 1;
+        let mut out = Vec::new();
+        check_schema_version(&rs, &mut out);
+        assert_eq!(status(&out, CheckId::SchemaVersion), Some(Status::Fail));
+    }
+
+    #[test]
+    fn missing_weights_refuses_the_count_check() {
+        let mut rs = a_run_set();
+        rs.weights = None;
+        let mut out = Vec::new();
+        check_weights_and_counts(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::WeightsPresent), Some(Status::Fail));
+        // The count check is refused, never defaulted to a guess.
+        assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
+    }
+
+    #[test]
+    fn missing_skid_margin_refuses_the_bound() {
+        let mut rs = a_run_set();
+        rs.skid_margin = None;
+        let mut out = Vec::new();
+        check_skid(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::SkidMarginPresent), Some(Status::Fail));
+    }
+
+    #[test]
+    fn unpinned_non_probe_run_fails_pinning() {
+        let mut rs = a_run_set();
+        rs.pinning.pinned = false;
+        rs.pinning.migration_probe = false;
+        let mut out = Vec::new();
+        check_pinning(&rs, &mut out);
+        assert_eq!(status(&out, CheckId::Pinning), Some(Status::Fail));
+    }
+
+    #[test]
+    fn the_sanctioned_migration_probe_may_be_unpinned() {
+        let mut rs = a_run_set();
+        rs.pinning.pinned = false;
+        rs.pinning.migration_probe = true;
+        let mut out = Vec::new();
+        check_pinning(&rs, &mut out);
+        assert_eq!(status(&out, CheckId::Pinning), Some(Status::Pass));
+    }
+
+    #[test]
+    fn nonzero_payload_status_fails() {
+        let mut r = a_record(0);
+        r.payload_status = 1;
+        let mut out = Vec::new();
+        check_payload_status(&[r], &mut out);
+        assert_eq!(status(&out, CheckId::PayloadStatus), Some(Status::Fail));
+    }
+
+    #[test]
+    fn rep_floor_fails_below_the_minimum() {
+        let floors = Floors {
+            min_armed_overflows: None,
+            min_reps: Some(1_000),
+        };
+        let mut out = Vec::new();
+        check_floors(&floors, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Fail));
+    }
+
+    #[test]
+    fn measured_taken_must_equal_the_window_delta() {
+        let mut r = a_record(0);
+        r.work_end = r.work_begin + r.measured_taken + 1; // endpoints now disagree
+        let mut out = Vec::new();
+        check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], &mut out);
+        assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
     }
 }

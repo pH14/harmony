@@ -198,7 +198,10 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
             landed: measured_taken,
             skid: 0,
         }),
-        state_digest: format!("sha256:{}", synth_sha256(&format!("state-{sample_id}-{}", payload.name()))),
+        state_digest: format!(
+            "sha256:{}",
+            synth_sha256(&format!("state-{sample_id}-{}", payload.name()))
+        ),
         params_mode: "managed".to_string(),
         clockpage_mode,
         payload_status: 0,
@@ -273,8 +276,7 @@ fn fixture(name: &'static str, run_set: &RunSet, records: &[RunRecord]) -> Fixtu
         name,
         // Pretty-printed: the manifest is committed evidence a human reads. It is
         // not itself hashed by anything, so formatting is free to be legible.
-        manifest_json: serde_json::to_string_pretty(run_set)
-            .expect("manifest JSON is infallible"),
+        manifest_json: serde_json::to_string_pretty(run_set).expect("manifest JSON is infallible"),
         records_jsonl: records_jsonl(records),
     }
 }
