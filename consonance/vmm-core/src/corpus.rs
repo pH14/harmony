@@ -54,7 +54,7 @@ use crate::vmm::Vmm;
 /// A [`unison::Subject`] over a [`Vmm`] running one corpus payload. Generic over
 /// the backend so the bridge is exercised by both the macOS `MockBackend` unit
 /// tests and the box-only patched backend (composed by
-/// [`crate::vendor::x86::bringup::boot_patched_corpus`]).
+/// `vendor::x86::bringup::boot_patched_corpus` — box-only, so not an intra-doc link).
 ///
 /// `run_to` runs the payload to terminal on first call (see the module docs on
 /// granularity); `work` is `0` before that run and `1` after (a fresh machine

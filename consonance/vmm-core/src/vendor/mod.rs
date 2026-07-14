@@ -209,15 +209,62 @@ pub trait Vendor: Arch + Sized {
     /// represent (sealing a lossy blob is worse than refusing it).
     fn check_sealable_vcpu(vcpu: &Self::VcpuState) -> Result<(), VmmError>;
 
+    // -----------------------------------------------------------------------
+    // The snapshot-state seam — a KNOWN, RULED DEFERRAL. Read this before adding
+    // a vendor.
+    //
+    // The three hooks below are typed against the CONCRETE [`vm_state::VmState`],
+    // whose `regs`/`sregs`/`xsave` records are x86-64's. They are therefore the one
+    // place in this trait a second vendor CANNOT simply implement: an arm64 vendor
+    // has no way to represent its register set without changing this signature
+    // (an associated `type Snapshot`, or a vendor-parameterized `VmState`).
+    //
+    // This is **acknowledged and deferred to the ARM window** (`hm-cbt`), per the
+    // pre-build ruling — not an oversight:
+    //
+    // - **The trait is designed, NOT frozen.** AA-3's trait-freeze memo owns the
+    //   freeze decision, and the ruling explicitly accepts that pre-built code pays
+    //   rework against the unfrozen trait. Inventing a vendor-associated snapshot
+    //   abstraction *now* would mean designing it against zero real second
+    //   consumers — exactly the speculative-generality the "spikes gate trust"
+    //   posture exists to prevent.
+    // - **The ARM record set is AA-6's MEASURED decision**, not a guess. Which
+    //   sysregs a snapshot must carry (and which are latent) is precisely what the
+    //   spike settles; a shape chosen before it would be a coin-flip that later
+    //   constrains the real answer.
+    // - **The wire format is ALREADY extensible** — that is what step 4 bought.
+    //   `vm-state`'s TLV container, its version, and its **arch tag**
+    //   (`VM_STATE_VERSION` 2 / `ARCH_X86_64`) are arch-neutral, and a foreign
+    //   record set is rejected LOUDLY (`UnsupportedArch`) rather than
+    //   reinterpreted. The *format* is ready for a second vendor; only this Rust
+    //   type seam is pinned. The storage path is opaque already (the engine seals
+    //   encoded bytes and never reads a record).
+    //
+    // **The CI arch gate cannot catch this class**, and should not be trusted to:
+    // cross-checking for `aarch64-unknown-linux-gnu` proves the tree still compiles
+    // with the x86 vendor `cfg`'d OUT, but no vendor exists there to *instantiate*
+    // the trait, so a signature only a second vendor could refute stays invisible.
+    // The structural check is the ARM skeleton itself (`hm-cbt`) — the first real
+    // second implementor, which is the only thing that can prove the seam holds.
+    // (A stub "dummy vendor" purely to force the check was considered; it arrives
+    // for free with `hm-cbt`, which is a real one.)
+    // -----------------------------------------------------------------------
+
     /// Build the canonical [`VmState`] from `vcpu` + the current machine (the
     /// memory-less half of a snapshot): the vendor record set, the device blob,
     /// and the contract hash; the engine's V-time/entropy block is read through
     /// the engine's `pub(crate)` surface. Infallible and byte-deterministic.
+    ///
+    /// **Pinned to x86's record set — see the deferral note above.** Vendor
+    /// association of the snapshot state is reserved to the ARM window
+    /// (`hm-cbt` / AA-6); the `vm-state` v2 arch tag is the format's extension
+    /// point, and trait rework here is accepted by the pre-build ruling.
     fn build_vm_state<B: Backend<A = Self>>(vmm: &Vmm<B>, vcpu: &Self::VcpuState) -> VmState;
 
     /// Validate the vendor half of a [`VmState`] restore **without mutating
     /// anything**: the contract hash, the device blob, the event records, and the
-    /// fabric/platform wiring coherence. Returns the decoded vCPU record set (with
+    /// fabric/platform wiring coherence. (Pinned to x86's record set — see the
+    /// deferral note above [`build_vm_state`](Vendor::build_vm_state).) Returns the decoded vCPU record set (with
     /// the restore-canonicalized events already applied), the guest clock-offset
     /// register the engine re-applies with its V-time commit, and the prepared
     /// device state for [`commit_restore`](Vendor::commit_restore).

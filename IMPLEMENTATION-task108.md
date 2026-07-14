@@ -96,6 +96,32 @@ step 4's `vm-state` header (below).
 - **`ExitReason`/`ExitCounts` remain a flat roster** (common + x86 today). They are
   *observability*, not dispatch — default-deny lives in the two-level `Exit` — so a
   vendor adds variants additively when it lands. Called out in the type's doc.
+- **The snapshot-state seam is pinned to x86 — ruled and DEFERRED (round 2, PR #109).**
+  `Vendor`'s `build_vm_state` / `validate_restore` / `commit_restore` are typed against the
+  concrete `vm_state::VmState`, whose `regs`/`sregs`/`xsave` records are x86-64's. This is
+  the **one** place in the trait a second vendor cannot simply implement: `hm-cbt` (the ARM
+  skeleton) will have to change that signature — an associated `type Snapshot`, or a
+  vendor-parameterized `VmState`.
+
+  The deferral is deliberate, and I agree with it. Designing a vendor-associated snapshot
+  type *now* means inventing the abstraction against **zero real second consumers**, which
+  is the speculative-generality the pre-build ruling's "spikes gate trust" posture exists to
+  prevent; the ARM record set is **AA-6's measured decision**, not something to guess; the
+  trait is *designed, not frozen* (AA-3 owns the freeze, and the ruling explicitly accepts
+  rework); and step 4 already bought the thing that actually matters — the **format** is
+  extensible (arch-tagged TLV container; a foreign record set is rejected loudly as
+  `UnsupportedArch`, never reinterpreted), and the storage path is opaque (the engine seals
+  encoded bytes and never reads a record).
+
+  **The CI arch gate cannot catch this class**, and it would be dishonest to imply it could:
+  the aarch64 leg proves the tree compiles with the x86 vendor `cfg`'d *out*, but no vendor
+  exists there to *instantiate* the trait, so a signature only a second implementor could
+  refute stays invisible. The structural check is `hm-cbt` itself — the first real second
+  vendor. (A stub "dummy vendor" purely to force the check was considered and rejected as
+  redundant: `hm-cbt` supplies a real one.) The deferral is stated at the trait seam
+  (`vendor/mod.rs`) and scoped into `docs/ARCH-BOUNDARY.md`'s landed-note **and** §D, so the
+  additive-sibling promise carries the boundary rather than overstating it.
+
 - **`control-proto::RegsView` is an x86-shaped wire view.** I did not change the wire
   (out of surface); instead the engine fills it through a `Vendor::regs_view` hook, so
   the leak is confined to the vendor and visible for whoever specs the ARM wire. This is
