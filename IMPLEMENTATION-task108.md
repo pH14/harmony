@@ -109,9 +109,11 @@ step 4's `vm-state` header (below).
   caught a `cfg(linux)`-only type error in `live_host_plane.rs` (step 1) and the
   Linux-only `boot_selected` composition paths (step 3) that the Mac build never sees.
 - `cargo fmt -- --check`, `cargo deny check` — clean.
-- **Miri** (`nightly-2026-06-16`, `-Zmiri-permissive-provenance`) on `vmm-backend` and
-  `vm-state` — clean. No new `unsafe` was introduced; the moved pointer seams kept their
-  `// SAFETY:` comments verbatim.
+- **Miri** (`nightly-2026-06-16`, `-Zmiri-permissive-provenance`) — clean on every crate
+  with a Miri job: `vmm-core` (**308 passed, 0 failed**, its own nightly job, ~68 min
+  interpreted), `vmm-backend`, and `vm-state`. No new `unsafe` was introduced; the moved
+  pointer seams kept their `// SAFETY:` comments verbatim, and the `map_memory`
+  pointer-retention test still drives the seam through the interpreter.
 - **public-api snapshots** regenerated for `vmm-backend`, `vmm-core`, `vm-state`,
   `vtime`, `environment`, `control-proto`, `campaign-runner`. The `vmm-backend` /
   `vmm-core` snapshots are Linux-frozen (they carry `KvmBackend`), so they are generated
