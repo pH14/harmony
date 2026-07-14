@@ -34,7 +34,8 @@ use vm_state::VmState;
 
 /// Errors from the snapshot/branch path: a store failure, a `vm_state` codec
 /// failure, a malformed vmm-core device blob, a guest-image size mismatch, a
-/// LAPIC restore rejection, or a snapshot taken under a different CPU/MSR contract.
+/// vendor device model rejecting its restored state, or a snapshot taken under a
+/// different CPU/MSR contract.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
     /// An underlying [`snapshot_store::Store`] operation failed.
@@ -67,8 +68,8 @@ pub enum SnapshotError {
         pages: u64,
     },
     /// The userspace xAPIC rejected a restored [`LapicState`].
-    #[error("lapic restore rejected: {0}")]
-    Lapic(&'static str),
+    #[error("device restore rejected: {0}")]
+    DeviceRestore(&'static str),
     /// The snapshot was taken under a different ratified CPU/MSR contract than the
     /// one this VMM enforces, so its CPUID/MSR behavior would silently diverge on
     /// restore. Refused loudly (INTEGRATION.md §4 `contract_hash`).

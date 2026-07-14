@@ -35,8 +35,8 @@ use explorer::adapter::SocketMachine;
 use explorer::{SpecEnvCodec, StreamId};
 use runtrace::TraceStore;
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::boot_linux_selected;
 use vmm_core::control::{ControlServer, VmmFactory};
+use vmm_core::vendor::x86::bringup::boot_linux_selected;
 use vmm_core::vmm::{Step, Vmm};
 
 use campaign_runner::gamecampaign::{GameCampaignConfig, run_game_campaign};

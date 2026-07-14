@@ -97,15 +97,15 @@
 //! `SNAPSHOT_MARKER` (the serial substring that marks the quiescent snapshot point,
 //! default the postmaster-ready banner), `BOOT_CMDLINE` (overrides the kernel
 //! command line, as in `live_postgres.rs`).
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 use snapshot_store::SnapshotId;
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::snapshot::SnapshotEngine;
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 2 GiB of guest RAM — identical to `live_postgres.rs` (the Postgres rootfs + the

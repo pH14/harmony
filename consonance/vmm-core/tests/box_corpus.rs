@@ -61,14 +61,15 @@
 //! payload, or an unblessed golden — is a **loud panic (test FAILURE)**, never an
 //! early-return `Ok`. macOS builds an empty test binary; the bridge logic is
 //! covered there by the `MockBackend` unit tests in `src/corpus.rs`.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
 use det_corpus::{CorpusItem, Oracle, check_determinism, load_manifest};
 use sha2::{Digest, Sha256};
 use unison::{RunOutcome, Subject, SubjectFactory};
-use vmm_core::corpus::{CorpusMachine, boot_patched_payload};
+use vmm_core::corpus::CorpusMachine;
+use vmm_core::vendor::x86::bringup::boot_patched_corpus;
 use vmm_core::vmm::TerminalReason;
 
 /// 256 MiB of guest RAM — the size the C1 payloads were validated under (the
@@ -126,9 +127,9 @@ struct PatchedPayloadFactory {
 impl SubjectFactory for PatchedPayloadFactory {
     type M = CorpusMachine<Box<dyn vmm_backend::Backend<A = vmm_backend::X86>>>;
     fn spawn(&self, seed: u64) -> Self::M {
-        boot_patched_payload(&self.payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
+        boot_patched_corpus(&self.payload, GUEST_RAM_LEN, seed).unwrap_or_else(|e| {
             panic!(
-                "boot_patched_payload({}) failed: {e}. Needs the LOADED patched KVM \
+                "boot_patched_corpus({}) failed: {e}. Needs the LOADED patched KVM \
                  (KVM_CAP_X86_DETERMINISTIC_INTERCEPTS), perf_event, and the det-cfl-v1 host. \
                  Build + load per consonance/vmm-backend/kvm-patches/BUILD.md, then revert to stock after.",
                 self.name

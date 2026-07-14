@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! **Task-86 M0 film live gate** (task 87's re-homed box gate) —
-//! `#![cfg(target_os = "linux")]` **and** `#[ignore]`: needs real + LOADED
+//! `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]` **and** `#[ignore]`: needs real + LOADED
 //! patched KVM, the det-cfl-v1 host, and the built game image
 //! (`initramfs-game.cpio.gz` with the ROM baked in). One test drives the whole
 //! re-homed gate:
@@ -59,7 +59,7 @@
 //! stock + verified after the run (the `box-window.sh` lease does this on
 //! release).
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::{Read, Write};
 
@@ -71,8 +71,8 @@ use film::{
 };
 use resolution::{SessionError, SocketServer};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, Vmm};
 
 /// 2 GiB guest RAM (the game-image boot shape, matching `campaign-runner game box`).

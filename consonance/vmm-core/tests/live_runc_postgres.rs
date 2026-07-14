@@ -10,7 +10,7 @@
 //! These boot the **same Postgres-in-Docker image** task 38 built (`guest/build/bzImage`
 //! — the task-36 container-class kernel, unchanged — plus
 //! `guest/build/initramfs-docker.cpio.gz`, built by `guest/linux/build-docker-image.sh`)
-//! via [`vmm_core::bringup::boot_linux_selected`], but select the **runc** `/init`
+//! via [`vmm_core::vendor::x86::bringup::boot_linux_selected`], but select the **runc** `/init`
 //! with the kernel `rdinit=/runc-init` cmdline param (`runc-init.sh`). That init
 //! brings up cgroup-v2 and runs the **official postgres OCI image** with
 //! `runc run pg-container` on the baked `/oci` bundle — the identical bundle +
@@ -87,13 +87,13 @@
 //!     -- --ignored --nocapture --test-threads=1 r2_runc_postgres_deterministic_twice_patched
 //! # always revert to stock KVM afterwards and verify `lsmod | grep '^kvm '` == 1396736.
 //! ```
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 8 GiB of guest RAM: the static docker stack + the official postgres image's

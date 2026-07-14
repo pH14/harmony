@@ -9,7 +9,7 @@
 //! the task-36 container-class kernel, unchanged — plus
 //! `guest/build/initramfs-docker.cpio.gz`, built by
 //! `guest/linux/build-docker-image.sh`) via
-//! [`vmm_core::bringup::boot_linux_selected`]. The guest `/init`
+//! [`vmm_core::vendor::x86::bringup::boot_linux_selected`]. The guest `/init`
 //! (`docker-init.sh`) brings up cgroup-v2 and runs the **official postgres OCI
 //! image** as a real container — `unshare`d mount/uts/ipc/net/pid namespaces +
 //! chroot into the image rootfs + a per-container cgroup (`--network none` = a
@@ -90,13 +90,13 @@
 //!     -- --ignored --nocapture --test-threads=1 p2_docker_postgres_deterministic_twice_patched
 //! # always revert to stock KVM afterwards and verify `lsmod | grep '^kvm '` == 1396736.
 //! ```
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 8 GiB of guest RAM: the static docker stack (~120 MiB) + the official

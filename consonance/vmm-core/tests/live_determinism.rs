@@ -32,9 +32,9 @@
 //! panic (test FAILURE)**, never an early-return `Ok`. macOS builds an empty test
 //! binary; the determinism *logic* is covered there by the `MockBackend` +
 //! `ScriptedWork` unit tests in `src/vmm.rs`.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
-use vmm_core::bringup::{BackendKind, boot_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 use vmm_core::vmm::{Step, TerminalReason};
 
 /// Seed for the deterministic entropy stream RDRAND/RDSEED draw from.

@@ -32,6 +32,28 @@ use crate::vmm::{Step, Vmm, VmmError};
 
 pub mod x86;
 
+/// Why a vendor refuses a wire-format interrupt identity at **stage time** — a
+/// recoverable rejection the control plane turns into a reply, rather than letting
+/// it explode later as a session-fatal apply-time error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InterruptReject {
+    /// This machine has no interrupt fabric wired to deliver into — a permanent
+    /// limitation of its composition (x86: no userspace LAPIC).
+    NoFabric,
+    /// The identity lies outside this vendor's identity space entirely (x86: past
+    /// the xAPIC's 8 bits). The wire field is a `u32` precisely because identities
+    /// are per-arch and a GIC INTID exceeds 8 bits (`docs/ARCH-BOUNDARY.md` §C).
+    OutOfRange,
+    /// The identity is architecturally **reserved** on this vendor and cannot be
+    /// raised (x86: vectors `< 16`) — a request error the client can fix. The
+    /// **vendor** narrows it to the wire error's width, which it can do safely
+    /// because it knows its own reserved range; the engine assumes nothing.
+    Reserved {
+        /// The reserved identity, as the control wire carries it.
+        vector: u8,
+    },
+}
+
 /// One vendor's half of the deterministic VMM. Implemented on the vendor's
 /// [`Arch`] zero-sized type; the hooks take the engine's [`Vmm`] so the vendor
 /// half reads and writes engine state through its `pub(crate)` surface (one
@@ -105,10 +127,20 @@ pub trait Vendor: Arch + Sized {
     /// timer is no wake.
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
 
-    /// Whether this machine can enforce a wire-vector
-    /// [`InjectInterrupt`](environment::HostFault::InjectInterrupt) host fault at
-    /// all (x86: the userspace LAPIC is wired). Stage-time validation.
-    fn can_inject_wire_interrupt<B: Backend<A = Self>>(vmm: &Vmm<B>) -> bool;
+    /// **Stage-time** validation of a wire-format
+    /// [`InjectInterrupt`](environment::HostFault::InjectInterrupt) identity: can
+    /// this machine deliver it at all, and is it a legal identity *for this
+    /// vendor*?
+    ///
+    /// Which identities exist, which are reserved, and how wide the space is are
+    /// all per-arch facts — x86's xAPIC has 8-bit vectors with `0..16` reserved,
+    /// while a GIC's INTIDs run far past 255 and its `0..16` are perfectly
+    /// deliverable SGIs. So the engine asks and the vendor answers; it must never
+    /// bake one vendor's ranges into the control plane.
+    fn check_wire_interrupt<B: Backend<A = Self>>(
+        vmm: &Vmm<B>,
+        vector: u32,
+    ) -> Result<(), InterruptReject>;
 
     /// Raise the wire-format interrupt `vector` (a `u32` — identities are
     /// per-arch, ARCH-BOUNDARY §C) into the fabric so normal arbitration delivers

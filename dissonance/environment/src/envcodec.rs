@@ -234,6 +234,18 @@ fn free_non_guest_slot(map: &BTreeMap<Moment, Action>, rng: &mut Prng) -> Moment
 /// Draw one legal [`HostFault`] from `rng`. Every host fault is unconditionally
 /// legal (no service point, no admissibility), so any draw is a valid proposal;
 /// `SetClockRate`'s denominator is forced `≥ 1` so the `Ratio` always constructs.
+/// The interrupt-identity range the mutation generator draws from.
+///
+/// The wire field is a `u32` because interrupt identities are **per-arch** — a GIC
+/// INTID exceeds 8 bits (`docs/ARCH-BOUNDARY.md` §C). But a *generator* must mint
+/// identities the machine under test can actually **accept**: one outside the
+/// machine's identity space is refused at stage time, so it is a wasted mutation,
+/// not a fault. **Widening the storage must not widen the generated range.** Today
+/// the only vendor is x86, whose xAPIC identity space is 8 bits wide; when a vendor
+/// with a wider space lands, this becomes a per-vendor input to the codec rather
+/// than a constant here.
+const MUTATE_INTID_MASK: u64 = 0xFF;
+
 fn host_fault_from(rng: &mut Prng) -> HostFault {
     match rng.next_u64() % 4 {
         0 => HostFault::SkewTime(Span(rng.next_u64())),
@@ -249,7 +261,7 @@ fn host_fault_from(rng: &mut Prng) -> HostFault {
             mask: BitMask(rng.next_u64()),
         },
         _ => HostFault::InjectInterrupt {
-            vector: rng.next_u64() as u32,
+            vector: (rng.next_u64() & MUTATE_INTID_MASK) as u32,
         },
     }
 }
@@ -265,7 +277,7 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use super::{EnvCodec, MUTATE_DOMAIN, free_non_guest_slot, host_fault_from};
+    use super::{EnvCodec, MUTATE_DOMAIN, MUTATE_INTID_MASK, free_non_guest_slot, host_fault_from};
     use crate::Span;
     use crate::catalog::Answer;
     use crate::host::{Action, BitMask, HostFault, Moment, Ratio};
@@ -338,32 +350,50 @@ mod tests {
 
     #[test]
     fn host_fault_from_arm3_is_exact_inject_interrupt() {
-        // Pick an arm-3 seed whose vector word is neither all-ones nor zero, so
-        // the exact assertion distinguishes the plain truncating cast from a
-        // mutant that ORs/XORs the draw.
+        // Pick an arm-3 seed whose vector byte is neither 0xFF nor 0x00, so the
+        // exact assertion distinguishes `& 0xFF` from both `| 0xFF` (→ always 0xFF)
+        // and `^ 0xFF` (→ byte ^ 0xFF).
         let seed = (0u64..10_000)
             .find(|&s| {
                 let mut p = Prng::new(s);
                 if p.next_u64() % 4 != 3 {
                     return false;
                 }
-                let v = p.next_u64() as u32;
-                v != u32::MAX && v != 0
+                let v = p.next_u64() & MUTATE_INTID_MASK;
+                v != MUTATE_INTID_MASK && v != 0
             })
             .expect("a non-trivial arm-3 seed exists in range");
         let got = host_fault_from(&mut Prng::new(seed));
         let mut e = Prng::new(seed);
         let _arm = e.next_u64();
-        let vector = e.next_u64() as u32;
+        let vector = (e.next_u64() & MUTATE_INTID_MASK) as u32;
         assert!(
-            vector != u32::MAX && vector != 0,
-            "chosen seed has a discriminating vector word"
+            u64::from(vector) != MUTATE_INTID_MASK && vector != 0,
+            "chosen seed has a discriminating vector byte"
         );
         assert_eq!(
             got,
             HostFault::InjectInterrupt { vector },
-            "arm 3 must map to InjectInterrupt with the exact low word of the draw"
+            "arm 3 must map to InjectInterrupt with the exact masked low byte"
         );
+    }
+
+    /// The regression the ARCH-BOUNDARY §C widening nearly introduced: the wire
+    /// field is a `u32`, but the mutation generator must stay inside the identity
+    /// space the machine under test can accept. An unrestricted `u32` draw would
+    /// mint an out-of-range identity with probability 1 − 2⁻²⁴ — every one of them
+    /// refused at stage time, silently killing this mutation arm.
+    #[test]
+    fn generated_interrupt_identities_stay_inside_the_admissible_range() {
+        for seed in 0u64..2_000 {
+            if let HostFault::InjectInterrupt { vector } = host_fault_from(&mut Prng::new(seed)) {
+                assert!(
+                    u64::from(vector) <= MUTATE_INTID_MASK,
+                    "seed {seed} minted interrupt identity {vector}, outside the range the \
+                     machine under test can accept — a wasted mutation, not a fault"
+                );
+            }
+        }
     }
 
     // ---- free_non_guest_slot (kills body -> Default::default()) -------------

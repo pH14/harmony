@@ -9,7 +9,8 @@
 //! It is the frontier glue the dissonance ruling places **in vmm-core** (above the
 //! `Backend` trait): the bridge is generic over the backend, so the stream-digest
 //! and `Subject`-contract logic is unit-tested on macOS against a scripted
-//! `MockBackend`, while the live `boot_patched_payload` path is box-only.
+//! `MockBackend`, while the live patched path (a vendor composition root —
+//! `vendor::x86::bringup::boot_patched_corpus`) is box-only.
 //!
 //! ## Two digests, two oracles
 //!
@@ -52,7 +53,8 @@ use crate::vmm::Vmm;
 
 /// A [`unison::Subject`] over a [`Vmm`] running one corpus payload. Generic over
 /// the backend so the bridge is exercised by both the macOS `MockBackend` unit
-/// tests and the box-only patched backend ([`boot_patched_payload`]).
+/// tests and the box-only patched backend (composed by
+/// [`crate::vendor::x86::bringup::boot_patched_corpus`]).
 ///
 /// `run_to` runs the payload to terminal on first call (see the module docs on
 /// granularity); `work` is `0` before that run and `1` after (a fresh machine
@@ -140,32 +142,6 @@ impl<B: Backend<A: Vendor>> Subject for CorpusMachine<B> {
     }
 }
 
-/// Boot the **patched** backend over a built payload ELF and wrap it as a
-/// [`CorpusMachine`], ready for the corpus oracles (box-only). The `seed` flows to
-/// the seeded entropy stream `RDRAND`/`RDSEED` and the `Entropy` hypercall draw
-/// from, so an RNG-consuming payload's observable output varies with it (O3) while
-/// its control flow — and thus its work count — does not.
-///
-/// Box-only (`#[cfg(target_os = "linux")]`): the patched backend + `perf_event`
-/// work counter need bare-metal KVM (`boot_selected`). Fallible — a missing
-/// patched `/dev/kvm`, a non-baseline host, or a malformed payload is a
-/// [`crate::vmm::VmmError`], never a panic; the box runner turns that into a loud
-/// test failure.
-#[cfg(target_os = "linux")]
-pub fn boot_patched_payload(
-    payload: &[u8],
-    guest_ram_len: usize,
-    seed: u64,
-) -> Result<CorpusMachine<Box<dyn Backend<A = vmm_backend::X86>>>, crate::vmm::VmmError> {
-    let vmm = crate::bringup::boot_selected(
-        crate::bringup::BackendKind::Patched,
-        payload,
-        guest_ram_len,
-        seed,
-    )?;
-    Ok(CorpusMachine::new(vmm))
-}
-
 /// The domain-separated digest of an ordered report stream and a serial banner —
 /// the same bytes [`Vmm::observable_digest`] hashes, exposed as a free function so
 /// a host-side tool can recompute an O2 golden from a captured report stream
@@ -187,7 +163,7 @@ pub fn observable_digest_of(report_stream: &[u32], serial: &[u8]) -> [u8; 32] {
 mod tests {
     //! The bridge's pure logic — the stream digest and the `Subject` contract —
     //! driven by a scripted `MockBackend` on every platform (no `/dev/kvm`). The
-    //! live patched path ([`boot_patched_payload`]) is box-only and covered by the
+    //! live patched path (`vendor::x86::bringup::boot_patched_corpus`) is box-only and covered by the
     //! `box_corpus` integration test.
 
     use super::*;

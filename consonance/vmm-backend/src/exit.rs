@@ -257,7 +257,11 @@ impl ExitCounts {
     /// never wrap a counter into a smaller value and corrupt the report). Used by
     /// the backends (`mock` / Linux `KvmBackend`); dead in a bare default build.
     #[cfg_attr(
-        not(any(feature = "mock", test, target_os = "linux")),
+        not(any(
+            feature = "mock",
+            test,
+            all(target_os = "linux", target_arch = "x86_64")
+        )),
         allow(dead_code)
     )]
     pub(crate) fn bump(&mut self, reason: ExitReason) {

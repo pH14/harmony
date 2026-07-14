@@ -12,6 +12,12 @@
 //! is the sole vendor today; an ARM vendor is a sibling module here (the §D
 //! pre-build wave), not an edit to the engine.
 
+// The x86 **boot composition root** — the one place the concrete
+// `(Backend impl, Arch vendor)` pair is named (R-Backend; the §B composition-root
+// discipline). A *vendor* module, not an engine one: it installs the x86
+// CPU-contract policy, runs the Multiboot v1 / Linux bzImage loaders, and builds
+// the x86 entry state.
+pub mod bringup;
 pub mod contract;
 pub mod devices;
 pub mod dispatch;
@@ -22,8 +28,10 @@ pub mod multiboot;
 pub mod records;
 
 // The box-only `perf_event` work counter (the V-time work source): the x86
-// retired-conditional-branch event behind the arch-neutral `WorkSource` seam.
-#[cfg(target_os = "linux")]
+// retired-conditional-branch event (`0x1c4`) behind the arch-neutral `WorkSource`
+// seam. Gated on the arch as well as the OS — the raw event number is Intel's, so
+// this is x86-64-only, not merely Linux-only.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod work_perf;
 
 use control_proto::RegsView;
@@ -32,7 +40,7 @@ use vmm_backend::{Backend, Gpa, X86, X86Exit};
 
 pub use dispatch::{X86Devices, contract_vclock_config};
 
-use crate::vendor::Vendor;
+use crate::vendor::{InterruptReject, Vendor};
 use crate::vmm::{Step, Vmm, VmmError};
 
 impl Vendor for X86 {
@@ -120,8 +128,25 @@ impl Vendor for X86 {
             .filter(|_| lapic.armed_timer_deliverable())
     }
 
-    fn can_inject_wire_interrupt<B: Backend<A = Self>>(vmm: &Vmm<B>) -> bool {
-        vmm.devices().lapic.is_some()
+    fn check_wire_interrupt<B: Backend<A = Self>>(
+        vmm: &Vmm<B>,
+        vector: u32,
+    ) -> Result<(), InterruptReject> {
+        // No userspace xAPIC ⇒ no IRQ arbitration path to assert a vector through.
+        if vmm.devices().lapic.is_none() {
+            return Err(InterruptReject::NoFabric);
+        }
+        // The xAPIC's identity space is 8 bits wide.
+        let Ok(vector) = u8::try_from(vector) else {
+            return Err(InterruptReject::OutOfRange);
+        };
+        // Vectors 0..16 are architecturally reserved on x86 and the LAPIC will not
+        // raise them. (An ARM vendor would NOT reject its 0..16 — those are SGIs,
+        // and they deliver.)
+        if vector < 16 {
+            return Err(InterruptReject::Reserved { vector });
+        }
+        Ok(())
     }
 
     fn inject_wire_interrupt<B: Backend<A = Self>>(

@@ -14,7 +14,7 @@
 //!
 //! **Fail-fast, never skip:** on a host without `/dev/kvm`/VMX/Intel these panic
 //! with what is missing and where to run them, rather than silently passing.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
     Backend, CommonExit, CpuidModel, Exit, Gpa, KvmBackend, MsrFilter, MsrRange, X86Exit, X86Policy,

@@ -47,12 +47,12 @@
 //!
 //! Fail-fast, never skip: a missing `/dev/kvm`, an unbuilt payload, or a non-patched
 //! backend is a loud panic. macOS builds an empty test binary.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
 use lapic::{Lapic, LapicConfig};
-use vmm_core::bringup::{BackendKind, boot_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 use vmm_core::vmm::TerminalReason;
 
 /// Two seeds. The preemption *instant* is a pure, deterministic function of the seed,

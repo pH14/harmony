@@ -12,7 +12,7 @@
 //!
 //! These boot `guest/build/bzImage` (the *unchanged* task-36 container-class
 //! kernel) + `guest/build/initramfs-k3s.cpio.gz` (built by
-//! `guest/linux/build-k3s-image.sh`) via [`vmm_core::bringup::boot_linux_selected`],
+//! `guest/linux/build-k3s-image.sh`) via [`vmm_core::vendor::x86::bringup::boot_linux_selected`],
 //! selecting the k3s `/init` with `rdinit=/k3s-init` (`k3s-init.sh`). That init
 //! brings up the cluster, waits for the postgres pod Ready, applies the client pod,
 //! and streams the client's workload output to `ttyS0`.
@@ -74,7 +74,7 @@
 //! `state_hash`/`observable_digest`, so it cannot perturb the deterministic run (the
 //! `Observer` contract). A viewer artifact only — a failure to open/write it is a
 //! warning, never a gate failure.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -82,7 +82,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use telemetry::{Event, EventKind, NdjsonRecorder, Observer};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// The telemetry recording sink for a single boot: a lossless [`NdjsonRecorder`]

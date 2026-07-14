@@ -43,7 +43,7 @@
 //! portably by the `src/control.rs` unit tests + the observation-invariance
 //! proptest (`observations_never_change_hash_or_stop_outcomes`) and the
 //! `moment_address_materializes_identically_twice` mock demonstration.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use control_proto::{
     HashScope, HostFault as WireHostFault, Moment, RegsView, Reply, Reproducer, Request, SnapId,
@@ -51,8 +51,8 @@ use control_proto::{
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault as EnvHostFault};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 
 type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>>;
 

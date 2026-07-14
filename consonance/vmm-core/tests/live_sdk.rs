@@ -24,7 +24,7 @@
 //! `det-cfl-v1` host; `#[ignore]`d so a plain `cargo nextest` shows it not-run.
 //! Run CPU-pinned per `docs/BOX-PINNING.md`, reverting KVM to stock afterwards:
 //!   `cargo test -p vmm-core --release --test live_sdk -- --ignored --nocapture`
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
@@ -33,8 +33,8 @@ use control_proto::{
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_selected};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_selected};
 
 type DynServer = ControlServer<Box<dyn Backend<A = X86>>>;
 

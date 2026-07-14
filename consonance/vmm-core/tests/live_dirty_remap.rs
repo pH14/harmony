@@ -51,7 +51,7 @@
 //! kvm_intel kvm; modprobe kvm; modprobe kvm_intel` → verify size 1396736 on a
 //! FRESH connection.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::time::Duration;
 
@@ -60,8 +60,8 @@ use control_proto::{
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{boot_linux_patched_with_dirty_log, compose_restore_target};
 use vmm_core::control::{ControlServer, RemapVmmFactory, RestoreMode, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{boot_linux_patched_with_dirty_log, compose_restore_target};
 use vmm_core::vendor::x86::contract_vclock_config;
 use vmm_core::vmm::VtimeWiring;
 

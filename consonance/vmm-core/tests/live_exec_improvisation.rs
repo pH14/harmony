@@ -64,7 +64,7 @@
 //! `Ok`. macOS builds an empty test binary; the `exec` state machine and the taint
 //! guard are covered portably by the `src/exec.rs` unit tests and the
 //! `src/control.rs` taint-guard proptest + unit tests.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use control_proto::{
     ControlError, HashScope, Moment, Reply, Reproducer, Request, SnapId, StopConditions, StopMask,
@@ -72,8 +72,8 @@ use control_proto::{
 };
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 
 type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>>;
 

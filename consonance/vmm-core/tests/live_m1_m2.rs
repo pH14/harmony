@@ -33,13 +33,13 @@
 //!
 //! The whole file compiles only on Linux (`KvmBackend` is Linux-only); on macOS it
 //! is an empty test binary.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::PathBuf;
 
 use unison::{RunOutcome, Subject, SubjectFactory};
 use vmm_backend::KvmBackend;
-use vmm_core::bringup::boot;
+use vmm_core::vendor::x86::bringup::boot;
 use vmm_core::vmm::{TerminalReason, Vmm};
 
 /// 256 MiB of guest RAM (matches the task-04 QEMU `-m 256` gate).

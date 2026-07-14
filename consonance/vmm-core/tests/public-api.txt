@@ -1,19 +1,4 @@
 pub mod vmm_core
-pub mod vmm_core::bringup
-pub enum vmm_core::bringup::BackendKind
-pub vmm_core::bringup::BackendKind::Patched
-pub vmm_core::bringup::BackendKind::Stock
-pub enum vmm_core::bringup::ImageKind
-pub vmm_core::bringup::ImageKind::Linux
-pub vmm_core::bringup::ImageKind::Multiboot
-impl vmm_core::bringup::ImageKind
-pub fn vmm_core::bringup::ImageKind::detect(&[u8]) -> core::option::Option<vmm_core::bringup::ImageKind>
-pub fn vmm_core::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
-pub fn vmm_core::bringup::boot_linux<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], &[u8], usize, &str) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
-pub fn vmm_core::bringup::boot_linux_patched_with_dirty_log(&[u8], &[u8], usize, &str, u64, bool) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
-pub fn vmm_core::bringup::boot_linux_selected(vmm_core::bringup::BackendKind, &[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
-pub fn vmm_core::bringup::boot_selected(vmm_core::bringup::BackendKind, &[u8], usize, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
-pub fn vmm_core::bringup::compose_restore_target<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, snapshot_store::mapping::Mapping, bool) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub mod vmm_core::control
 pub enum vmm_core::control::RestoreMode
 pub vmm_core::control::RestoreMode::Memcpy
@@ -50,7 +35,6 @@ pub fn vmm_core::corpus::CorpusMachine<B>::observable_digest(&self) -> [u8; 32]
 pub fn vmm_core::corpus::CorpusMachine<B>::run_to(&mut self, u64) -> core::result::Result<unison::RunOutcome, unison::SubjectError>
 pub fn vmm_core::corpus::CorpusMachine<B>::state_hash(&self) -> [u8; 32]
 pub fn vmm_core::corpus::CorpusMachine<B>::work(&self) -> u64
-pub fn vmm_core::corpus::boot_patched_payload(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
 pub fn vmm_core::corpus::observable_digest_of(&[u32], &[u8]) -> [u8; 32]
 pub mod vmm_core::exec
 pub struct vmm_core::exec::ExecOutcome
@@ -219,10 +203,10 @@ pub enum vmm_core::snapshot::SnapshotError
 pub vmm_core::snapshot::SnapshotError::Codec(vm_state::error::VmStateError)
 pub vmm_core::snapshot::SnapshotError::ContractMismatch
 pub vmm_core::snapshot::SnapshotError::DeviceBlob(&'static str)
+pub vmm_core::snapshot::SnapshotError::DeviceRestore(&'static str)
 pub vmm_core::snapshot::SnapshotError::DirtyGfnOutOfRange
 pub vmm_core::snapshot::SnapshotError::DirtyGfnOutOfRange::gfn: u64
 pub vmm_core::snapshot::SnapshotError::DirtyGfnOutOfRange::pages: u64
-pub vmm_core::snapshot::SnapshotError::Lapic(&'static str)
 pub vmm_core::snapshot::SnapshotError::MemorySize
 pub vmm_core::snapshot::SnapshotError::MemorySize::expected: usize
 pub vmm_core::snapshot::SnapshotError::MemorySize::got: usize
@@ -247,6 +231,22 @@ pub fn vmm_core::snapshot::SnapshotEngine::vm_state(&self, snapshot_store::Snaps
 pub const vmm_core::snapshot::DEFAULT_MAX_CHAIN_LEN: u32
 pub mod vmm_core::vendor
 pub mod vmm_core::vendor::x86
+pub mod vmm_core::vendor::x86::bringup
+pub enum vmm_core::vendor::x86::bringup::BackendKind
+pub vmm_core::vendor::x86::bringup::BackendKind::Patched
+pub vmm_core::vendor::x86::bringup::BackendKind::Stock
+pub enum vmm_core::vendor::x86::bringup::ImageKind
+pub vmm_core::vendor::x86::bringup::ImageKind::Linux
+pub vmm_core::vendor::x86::bringup::ImageKind::Multiboot
+impl vmm_core::vendor::x86::bringup::ImageKind
+pub fn vmm_core::vendor::x86::bringup::ImageKind::detect(&[u8]) -> core::option::Option<vmm_core::vendor::x86::bringup::ImageKind>
+pub fn vmm_core::vendor::x86::bringup::boot<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], usize) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, &[u8], &[u8], usize, &str) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux_patched_with_dirty_log(&[u8], &[u8], usize, &str, u64, bool) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_linux_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], &[u8], usize, &str, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_patched_corpus(&[u8], usize, u64) -> core::result::Result<vmm_core::corpus::CorpusMachine<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::boot_selected(vmm_core::vendor::x86::bringup::BackendKind, &[u8], usize, u64) -> core::result::Result<vmm_core::vmm::Vmm<alloc::boxed::Box<dyn vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>>, vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::x86::bringup::compose_restore_target<B: vmm_backend::backend::Backend<A = vmm_backend::arch::x86::X86>>(B, snapshot_store::mapping::Mapping, bool) -> core::result::Result<vmm_core::vmm::Vmm<B>, vmm_core::vmm::VmmError>
 pub mod vmm_core::vendor::x86::contract
 pub enum vmm_core::vendor::x86::contract::MsrDisposition
 pub vmm_core::vendor::x86::contract::MsrDisposition::AllowFixed(u64)
@@ -462,12 +462,17 @@ pub fn vmm_core::vendor::x86::work_perf::PerfWorkCounter::start_run(&mut self) -
 pub fn vmm_core::vendor::x86::work_perf::PerfWorkCounter::work(&self) -> core::result::Result<u64, vmm_core::work::WorkError>
 pub struct vmm_core::vendor::x86::X86Devices
 pub fn vmm_core::vendor::x86::contract_vclock_config() -> vtime::clock::VClockConfig
+pub enum vmm_core::vendor::InterruptReject
+pub vmm_core::vendor::InterruptReject::NoFabric
+pub vmm_core::vendor::InterruptReject::OutOfRange
+pub vmm_core::vendor::InterruptReject::Reserved
+pub vmm_core::vendor::InterruptReject::Reserved::vector: u8
 pub trait vmm_core::vendor::Vendor: vmm_backend::arch::Arch + core::marker::Sized
 pub type vmm_core::vendor::Vendor::Devices
 pub type vmm_core::vendor::Vendor::RestorePrep
 pub fn vmm_core::vendor::Vendor::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &Self::VcpuState) -> vm_state::VmState
-pub fn vmm_core::vendor::Vendor::can_inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> bool
 pub fn vmm_core::vendor::Vendor::check_sealable_vcpu(&Self::VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::Vendor::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
 pub fn vmm_core::vendor::Vendor::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_core::vendor::Vendor::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_core::vendor::Vendor::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -494,8 +499,8 @@ impl vmm_core::vendor::Vendor for vmm_backend::arch::x86::X86
 pub type vmm_backend::arch::x86::X86::Devices = vmm_core::vendor::x86::dispatch::X86Devices
 pub type vmm_backend::arch::x86::X86::RestorePrep = vmm_core::vendor::x86::dispatch::X86RestorePrep
 pub fn vmm_backend::arch::x86::X86::build_vm_state<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, &vmm_backend::arch::x86::state::VcpuState) -> vm_state::VmState
-pub fn vmm_backend::arch::x86::X86::can_inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> bool
 pub fn vmm_backend::arch::x86::X86::check_sealable_vcpu(&vmm_backend::arch::x86::state::VcpuState) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::x86::X86::check_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vendor::InterruptReject>
 pub fn vmm_backend::arch::x86::X86::commit_restore<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, Self::RestorePrep)
 pub fn vmm_backend::arch::x86::X86::complete_irq_delivery<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>)
 pub fn vmm_backend::arch::x86::X86::deliverable_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
@@ -545,11 +550,12 @@ pub enum vmm_core::vmm::VmmError
 pub vmm_core::vmm::VmmError::Backend(vmm_backend::error::BackendError)
 pub vmm_core::vmm::VmmError::ContractViolation(alloc::string::String)
 pub vmm_core::vmm::VmmError::HostAssert(alloc::string::String)
-pub vmm_core::vmm::VmmError::LinuxLoad(vmm_core::vendor::x86::linux_loader::LinuxLoadError)
-pub vmm_core::vmm::VmmError::Load(vmm_core::vendor::x86::multiboot::LoadError)
 pub vmm_core::vmm::VmmError::Snapshot(vmm_core::snapshot::SnapshotError)
+pub vmm_core::vmm::VmmError::VendorBoot(alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync + 'static)>)
 pub vmm_core::vmm::VmmError::Vtime(vtime::error::VtimeError)
 pub vmm_core::vmm::VmmError::Work(vmm_core::work::WorkError)
+impl vmm_core::vmm::VmmError
+pub fn vmm_core::vmm::VmmError::vendor_boot<E>(E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
 pub struct vmm_core::vmm::GuestRam
 impl vmm_core::vmm::GuestRam
 pub fn vmm_core::vmm::GuestRam::as_bytes(&self) -> &[u8]

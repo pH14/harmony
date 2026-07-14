@@ -5,7 +5,7 @@
 //! **Phase A — Linux runs in consonance (THE milestone).**
 //! [`a_linux_boots_to_userspace_stock`] boots the committed `guest/linux/bzImage` +
 //! `initramfs.cpio.gz` (Linux 6.18.35 + busybox 1.38.0) via
-//! [`vmm_core::bringup::boot_linux_selected`] over the **stock** `KvmBackend` (with
+//! [`vmm_core::vendor::x86::bringup::boot_linux_selected`] over the **stock** `KvmBackend` (with
 //! V-time wired for the emulate-vtime TSC MSRs), drives the event loop under a
 //! bounded step + wall-clock budget, and asserts the serial capture shows the kernel
 //! handing control to userspace (`Run /init as init process`) — the proof that a
@@ -48,13 +48,13 @@
 //! The serial console is streamed to stderr (`--nocapture`) as it is captured, so
 //! the boot log is visible live and a hang shows the last line reached. The kernel
 //! command line can be overridden for iteration via `BOOT_CMDLINE`.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 256 MiB of guest RAM (the size the loader/task spec target; initramfs lands at

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Task 63 — **the box-only seal-rate measurement** (the Wave-5 go/no-go).
-//! `#![cfg(target_os = "linux")]` **and `#[ignore]`**: needs real + LOADED patched KVM,
+//! `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]` **and `#[ignore]`**: needs real + LOADED patched KVM,
 //! the built Postgres image, and the `det-cfl-v1` host. macOS builds an empty binary;
 //! the pure bookkeeping this drives is covered portably by `src/seal_rate/` (gate 1).
 //!
@@ -67,20 +67,20 @@
 //! handful of §1 targets inside them, spec §1), `UNPROBED_TAIL_ALLOWANCE` (max §3
 //! jittered targets allowed to be dropped past a terminal break, default 4 — a mid-span step
 //! error always fails), `BOOT_CMDLINE`.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 use snapshot_store::SnapshotId;
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::seal_rate::{
     BusyKind, BusyWindow, CpuSnapshot, FailureReason, MaterializationDepth, Moment, Overshoot,
     PredicateQuality, Ruling, RulingInputs, RulingThresholds, SampleKind, SamplingSchedule,
     SealAttempt, SealResult, SealStats, Span, ppm_percent, rate_ppm, sealable,
 };
 use vmm_core::snapshot::SnapshotEngine;
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm, VmmError};
 
 /// 2 GiB of guest RAM — identical to `live_postgres.rs` / `live_nonquiescent_snapshot.rs`.

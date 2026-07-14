@@ -66,6 +66,27 @@ jobs:
           cargo deny --manifest-path dissonance/flow/fuzz/Cargo.toml check --config deny.toml licenses
       - name: cargo nextest
         run: cargo nextest run --all-features
+      # The ARCH-BOUNDARY seam gate (tasks/108). The whole point of the `Arch` trait
+      # + engine/vendor split is that a NON-x86 vendor can be added additively — but
+      # nothing else in CI would ever notice if that stopped being true, because this
+      # box is x86-64 and every other gate compiles only for it. Cross-CHECK (not
+      # run) the workspace for aarch64-linux: it type-checks the arch-neutral engine
+      # against a target where the x86 KVM substrate is cfg'd OUT, so an x86 leak into
+      # the engine — or a `cfg(target_os = "linux")` that should have been
+      # `cfg(all(target_os = "linux", target_arch = "x86_64"))` — fails HERE instead
+      # of on the day someone starts the ARM backend. (`kvm_bindings` exposes a
+      # different `kvm_regs` per arch, so an ungated x86 substrate does not even
+      # parse on aarch64 — that is exactly what this catches.)
+      #
+      # CARGO_FEATURE_NO_NEON: blake3's build script compiles a NEON `.c` for aarch64
+      # and needs an aarch64 C toolchain we do not ship. This is a CHECK — no aarch64
+      # artifact is ever linked or run — so steering blake3 to its NEON-free path is
+      # sound and keeps the gate free of a cross-compiler dependency.
+      - name: cross-check aarch64 (the arch seam must stay additive)
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          CARGO_FEATURE_NO_NEON=1 cargo clippy --target aarch64-unknown-linux-gnu \
+            --all-features --all-targets -- -D warnings
       # guest/sdk is an out-of-workspace `no_std` crate (its own Cargo.toml), so the
       # root fmt/clippy/nextest above never see it. Gate it explicitly on its own
       # manifest — its host-side loopback tests (duplicate-coordinate rejection,

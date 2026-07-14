@@ -16,10 +16,10 @@
 
 use vmm_backend::{Backend, Gpa, MpState, VcpuState, X86, X86Policy};
 
-use crate::vendor::x86::contract;
-use crate::vendor::x86::entry;
-use crate::vendor::x86::linux_loader::{self, LinuxImage};
-use crate::vendor::x86::multiboot;
+use super::contract;
+use super::entry;
+use super::linux_loader::{self, LinuxImage};
+use super::multiboot;
 use crate::vmm::{GuestRam, RamBacking, Vmm, VmmError};
 
 /// `IA32_EFER` MSR index. `EFER` is an **allow-stateful** MSR, so the backend's
@@ -74,7 +74,7 @@ pub fn boot<B: Backend<A = X86>>(
     //    instruction that should be absent) would diverge in native, non-trapping
     //    instruction/FPU behavior while still claiming the frozen contract, so we
     //    fail closed. No-op off the box (no physical guest there to protect).
-    crate::vendor::x86::hostassert::enforce()?;
+    super::hostassert::enforce()?;
     // 1-5. Compose the configured `Vmm` (separable from the host gate, so the
     //      composition — including the `unsafe` map seam — is unit-testable with a
     //      mock backend on every platform and under Miri).
@@ -105,8 +105,8 @@ pub(crate) fn compose<B: Backend<A = X86>>(
 
     // 2. Allocate RAM, flat-load the payload, write the minimal boot-info struct.
     let mut ram = GuestRam::new(guest_ram_len)?;
-    let loaded = multiboot::load(payload, ram.as_mut_bytes())?;
-    let mbi_gpa = entry::write_boot_info(ram.as_mut_bytes())?;
+    let loaded = multiboot::load(payload, ram.as_mut_bytes()).map_err(VmmError::vendor_boot)?;
+    let mbi_gpa = entry::write_boot_info(ram.as_mut_bytes()).map_err(VmmError::vendor_boot)?;
 
     // 3. Map the RAM into the backend; it retains a pointer into `ram`.
     // SAFETY (granted purpose 2): `ram` is moved into the returned `Vmm` in step 5
@@ -192,7 +192,7 @@ pub fn boot_linux<B: Backend<A = X86>>(
     guest_ram_len: usize,
     cmdline: &str,
 ) -> Result<Vmm<B>, VmmError> {
-    crate::vendor::x86::hostassert::enforce()?;
+    super::hostassert::enforce()?;
     compose_linux(backend, kernel, initramfs, guest_ram_len, cmdline)
 }
 
@@ -226,7 +226,8 @@ pub(crate) fn compose_linux<B: Backend<A = X86>>(
         guest_ram_len as u64,
         cmdline,
         ram.as_mut_bytes(),
-    )?;
+    )
+    .map_err(VmmError::vendor_boot)?;
 
     // 3. Map the RAM into the backend; it retains a pointer into `ram`.
     // SAFETY (granted purpose 2): identical to `compose` — `ram` is moved into the
@@ -369,7 +370,7 @@ fn apply_linux_entry(state: &mut VcpuState, entry: &VcpuState) {
 /// Box-only (`#[cfg(target_os = "linux")]`): the concrete backends and the
 /// `perf_event` counter need bare-metal KVM. On macOS the determinism path is
 /// exercised via the scripted `MockBackend` + `ScriptedWork` unit tests instead.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn boot_selected(
     kind: BackendKind,
     payload: &[u8],
@@ -388,12 +389,8 @@ pub fn boot_selected(
             // V-time work source: the guest-only retired-branch perf counter on
             // the (CPU-pinned) vCPU thread. Computed above the trait; the backend
             // never reads it.
-            let work = Box::new(crate::vendor::x86::work_perf::PerfWorkCounter::open()?);
-            let wiring = crate::vmm::VtimeWiring::new(
-                crate::vendor::x86::contract_vclock_config(),
-                work,
-                seed,
-            )?;
+            let work = Box::new(super::work_perf::PerfWorkCounter::open()?);
+            let wiring = crate::vmm::VtimeWiring::new(super::contract_vclock_config(), work, seed)?;
             vmm.wire_vtime(wiring);
             Ok(vmm)
         }
@@ -406,7 +403,7 @@ pub fn boot_selected(
 /// the kernel reads resolve to V-time). Mirrors [`boot_selected`] for the
 /// Multiboot payloads; the box live-boot / determinism gates drive either
 /// substrate through the same returned `Vmm<Box<dyn Backend<A = X86>>>`.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn boot_linux_selected(
     kind: BackendKind,
     kernel: &[u8],
@@ -441,9 +438,8 @@ pub fn boot_linux_selected(
             );
         }
     };
-    let work = Box::new(crate::vendor::x86::work_perf::PerfWorkCounter::open()?);
-    let wiring =
-        crate::vmm::VtimeWiring::new(crate::vendor::x86::contract_vclock_config(), work, seed)?;
+    let work = Box::new(super::work_perf::PerfWorkCounter::open()?);
+    let wiring = crate::vmm::VtimeWiring::new(super::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);
     Ok(vmm)
 }
@@ -454,7 +450,7 @@ pub fn boot_linux_selected(
 /// differ in nothing but `KVM_MEM_LOG_DIRTY_PAGES` (a hand-copied composition
 /// would silently drift and mis-attribute a divergence to dirty logging).
 /// `dirty_log = true` is exactly `boot_linux_selected(BackendKind::Patched, ..)`.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub fn boot_linux_patched_with_dirty_log(
     kernel: &[u8],
     initramfs: &[u8],
@@ -469,11 +465,31 @@ pub fn boot_linux_patched_with_dirty_log(
     b.set_dirty_log_enabled(dirty_log);
     let backend: Box<dyn Backend<A = X86>> = Box::new(b);
     let mut vmm = boot_linux(backend, kernel, initramfs, guest_ram_len, cmdline)?;
-    let work = Box::new(crate::vendor::x86::work_perf::PerfWorkCounter::open()?);
-    let wiring =
-        crate::vmm::VtimeWiring::new(crate::vendor::x86::contract_vclock_config(), work, seed)?;
+    let work = Box::new(super::work_perf::PerfWorkCounter::open()?);
+    let wiring = crate::vmm::VtimeWiring::new(super::contract_vclock_config(), work, seed)?;
     vmm.wire_vtime(wiring);
     Ok(vmm)
+}
+
+/// Boot the **patched** backend over a built payload ELF and wrap it as a
+/// [`CorpusMachine`], ready for the corpus oracles (box-only). The `seed` flows to
+/// the seeded entropy stream `RDRAND`/`RDSEED` and the `Entropy` hypercall draw
+/// from, so an RNG-consuming payload's observable output varies with it (O3) while
+/// its control flow — and thus its work count — does not.
+///
+/// Box-only (`#[cfg(target_os = "linux")]`): the patched backend + `perf_event`
+/// work counter need bare-metal KVM (`boot_selected`). Fallible — a missing
+/// patched `/dev/kvm`, a non-baseline host, or a malformed payload is a
+/// [`crate::vmm::VmmError`], never a panic; the box runner turns that into a loud
+/// test failure.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn boot_patched_corpus(
+    payload: &[u8],
+    guest_ram_len: usize,
+    seed: u64,
+) -> Result<crate::corpus::CorpusMachine<Box<dyn Backend<A = X86>>>, crate::vmm::VmmError> {
+    let vmm = boot_selected(BackendKind::Patched, payload, guest_ram_len, seed)?;
+    Ok(crate::corpus::CorpusMachine::new(vmm))
 }
 
 #[cfg(test)]

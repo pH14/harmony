@@ -103,11 +103,21 @@ step 4's `vm-state` header (below).
 
 - `cargo build` / `cargo nextest run` — **workspace 1691/1691 pass, 29 skipped** (1690
   before step 4; the +1 is the new arch-tag strictness test).
-- `cargo clippy --all-features --all-targets -- -D warnings` — clean, **and** the
-  mandatory **cross-target** `--target x86_64-unknown-linux-gnu` for
-  vmm-backend/vmm-core/campaign-runner/vm-state. That gate earned its keep twice: it
-  caught a `cfg(linux)`-only type error in `live_host_plane.rs` (step 1) and the
-  Linux-only `boot_selected` composition paths (step 3) that the Mac build never sees.
+- `cargo clippy --all-features --all-targets -- -D warnings` — clean on **three**
+  targets:
+  - native (macOS);
+  - the mandatory `--target x86_64-unknown-linux-gnu` — it earned its keep twice,
+    catching a `cfg(linux)`-only type error in `live_host_plane.rs` (step 1) and the
+    Linux-only `boot_selected` composition paths (step 3) that the Mac build never
+    sees;
+  - **`--target aarch64-unknown-linux-gnu`** (round 1, added to CI's `gates` job) —
+    *the* gate for this task's central claim. Nothing else in the tree would notice if
+    the arch seam stopped being additive, because every other gate compiles only for
+    x86-64. Run it as
+    `CARGO_FEATURE_NO_NEON=1 cargo clippy --target aarch64-unknown-linux-gnu --all-features --all-targets -- -D warnings`
+    (`CARGO_FEATURE_NO_NEON` steers blake3's build script off its NEON `.c`, which
+    would otherwise demand an aarch64 C toolchain; this is a *check* — no aarch64
+    artifact is ever linked or run — so that is sound).
 - `cargo fmt -- --check`, `cargo deny check` — clean.
 - **Miri** (`nightly-2026-06-16`, `-Zmiri-permissive-provenance`) — clean on every crate
   with a Miri job: `vmm-core` (**308 passed, 0 failed**, its own nightly job, ~68 min
@@ -119,6 +129,52 @@ step 4's `vm-state` header (below).
   `vmm-core` snapshots are Linux-frozen (they carry `KvmBackend`), so they are generated
   against `--target x86_64-unknown-linux-gnu` — the diff is the reviewable record of
   exactly how the API moved.
+
+## Round 1 — the cross-model pass (PR #109)
+
+All three findings were real. Each is verified below by the check that now *fails
+without* the fix.
+
+1. **The arch seam did not actually compile additively** (`vmm-backend/src/kvm.rs`).
+   The x86 KVM substrate was gated on `target_os = "linux"` alone, but `kvm_bindings`
+   exposes a *different* `kvm_regs`/`kvm_sregs` per architecture — so
+   `cargo check --target aarch64-unknown-linux-gnu -p vmm-backend` failed outright
+   (`no field 'rax' on type '&kvm_regs'`). The keystone's own advertised property was
+   untrue, and no gate would have said so. **Fixed:** the x86 substrate (`kvm`,
+   `kvm_sys`, `patched_kvm`, `pmu_sys`, the `KvmBackend`/`PatchedKvmBackend`
+   re-exports, `work_perf`, the composition roots in `bringup`/`corpus`/`boxrun`, and
+   the box-only live tests) is now gated on
+   `all(target_os = "linux", target_arch = "x86_64")` — the same seam `hostassert`
+   already used. The whole workspace now clippy-cleans for aarch64, and that check is
+   a CI gate so it cannot rot.
+
+2. **The engine still enforced x86 interrupt semantics** (`vmm-core/src/control.rs`).
+   The generic `ControlServer` hardcoded `vector > 255 → Unsupported` and
+   `vector < 16 → reserved` — pure xAPIC. On a GIC both are wrong: INTIDs run well past
+   255, and `0..16` are *deliverable* SGIs, not reserved. **Fixed:** the decision moved
+   behind the vendor. `Vendor::check_wire_interrupt(vmm, vector) -> Result<(),
+   InterruptReject>` replaces the old `can_inject_wire_interrupt` (which could not even
+   see the vector); the engine maps the vendor's verdict onto the wire
+   (`NoFabric`/`OutOfRange` → `Unsupported`, `Reserved{vector}` →
+   `PerturbReservedVector`). x86 behavior is bit-identical — its 25 perturb/interrupt
+   tests pass untouched — but the *ranges* now live where the knowledge is.
+
+3. **The §C widening silently killed a mutation arm**
+   (`dissonance/environment/src/envcodec.rs`). Widening `InjectInterrupt`'s vector to
+   `u32` also widened what the mutation generator *draws*: `rng.next_u64() as u32`. On
+   the only backend that exists, every drawn identity above 255 is refused at stage
+   time — so `host_fault_from`'s interrupt arm (1 of 4) minted an inadmissible fault
+   with probability 1 − 2⁻²⁴. This is on the live search path
+   (`explorer/src/engine.rs:414` → `codec.mutate`), so it was a real loss of fuzzing
+   power, introduced by me. **Fixed:** the generator draws from `MUTATE_INTID_MASK`
+   (8 bits — the identity space the machine under test can accept), with the rule
+   stated at the constant: *widening the storage must not widen the generated range*.
+   A regression test asserts every generated identity is admissible.
+
+   **Observation, not fixed (pre-existing):** the generator can still mint reserved
+   identities (`< 16`, ~6% of that arm), which the control plane rejects at stage time.
+   That predates this task and is a separate (small) efficiency question — I did not
+   change it, to keep the fix to the regression I caused.
 
 ## Box-gate readiness (NOT run — the box is under the nested-x86 re-cert lock)
 

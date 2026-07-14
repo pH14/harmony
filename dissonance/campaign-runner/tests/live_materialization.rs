@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! **Task-68 box gates (a)/(b)/(c)** — `#![cfg(target_os = "linux")]` **and
+//! **Task-68 box gates (a)/(b)/(c)** — `#![cfg(all(target_os = "linux", target_arch = "x86_64"))]` **and
 //! `#[ignore]`**: needs real + LOADED patched KVM, the det-cfl-v1 host, and
 //! the built Postgres image. Runs the same chain protocol the portable
 //! loopback proves (`campaign_runner::materialize::run_materialize`, over the
@@ -54,7 +54,7 @@
 //! appears WITH draws, that is a task-78 defect (marker lost / mis-spliced /
 //! mis-anchored) — a real finding on this task's machinery.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 
@@ -64,8 +64,8 @@ use campaign_runner::materialize::{
 use campaign_runner::run_session;
 use environment::{EnvSpec, FaultPolicy};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, Vmm};
 
 /// 2 GiB guest RAM (matches `live_branching_demo.rs` / the campaign-runner box mode).

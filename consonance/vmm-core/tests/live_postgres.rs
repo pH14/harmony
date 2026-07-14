@@ -7,7 +7,7 @@
 //! These boot the **Postgres workload image** (`guest/build/bzImage` — the task-36
 //! container-class kernel, unchanged — plus `guest/build/initramfs-postgres.cpio.gz`,
 //! built by `guest/linux/build-postgres-image.sh`) via
-//! [`vmm_core::bringup::boot_linux_selected`]. The guest `/init` (`pg-init.sh`)
+//! [`vmm_core::vendor::x86::bringup::boot_linux_selected`]. The guest `/init` (`pg-init.sh`)
 //! loop-mounts a RAM-backed ext4 holding a pre-`initdb`'d cluster, starts a real
 //! PostgreSQL 17 server, and drives a fixed insert/select workload loop whose
 //! per-iteration query results stream to `ttyS0` interleaved with postgres' own
@@ -66,13 +66,13 @@
 //!     -- --ignored --nocapture --test-threads=1 p2_postgres_deterministic_twice_patched
 //! # always revert to stock KVM afterwards and verify `lsmod | grep '^kvm '` == 1396736.
 //! ```
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::vmm::{Step, TerminalReason, Vmm};
 
 /// 2 GiB of guest RAM: room for the unpacked Postgres rootfs (busybox + the

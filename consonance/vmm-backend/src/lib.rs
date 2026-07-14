@@ -26,9 +26,15 @@ mod types;
 // offset math). Used by `KvmBackend` on Linux and by their own `#[cfg(test)]`
 // suites under Miri; dead on a non-test, non-Linux build, hence the conditional
 // allow rather than shipping the seam unguarded.
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
+    allow(dead_code)
+)]
 mod region;
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
+    allow(dead_code)
+)]
 mod run_buf;
 
 // The portable `Backend::run_until` orchestration (§2 inversion seam): drives the
@@ -37,19 +43,31 @@ mod run_buf;
 // against `vtime::sim::SimCpu` on macOS); the live `PreemptCpu` it serves is the
 // box-only `KvmBackend` adapter. Dead on a non-test, non-Linux build (only the live
 // adapter calls it), hence the conditional allow.
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
+    allow(dead_code)
+)]
 mod run_until;
 
 #[cfg(feature = "mock")]
 mod mock;
 
+// The **x86-64 KVM substrate**, gated on the architecture it traps as well as the
+// OS (`all(target_os = "linux", target_arch = "x86_64")` — the same seam
+// `vmm-core`'s `hostassert` already uses). `kvm_bindings` exposes a *different*
+// `kvm_regs`/`kvm_sregs` on each arch, so this code is not merely Linux-only, it is
+// x86-64-only: gating it on the OS alone made the crate fail to even `cargo check`
+// on `aarch64-unknown-linux-gnu`, which would have blocked the additive ARM backend
+// the `Arch` seam exists to enable (`docs/ARCH-BOUNDARY.md` §D). An ARM vendor adds
+// its own `kvm_arm64`/`kvm_arm64_sys` pair beside these under its own arch gate.
+//
 // `kvm` is the pure KVM exit-mapping + state-conversion logic (covered + mutation-
 // tested by its synthetic-`kvm_run` unit tests); `kvm_sys` is the box-only syscall
 // orchestration that wires those helpers to the ioctls (excluded from the coverage
 // + mutation gates — it cannot run without `/dev/kvm`).
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
 // `pmu` is the **pure** `perf_event` config for the run_until branch counter (the
 // `PerfEventAttr` builder + exact bit constants): no syscall, no `libc`, so it
@@ -59,15 +77,18 @@ mod kvm_sys;
 // it cannot run without perf and is excluded from coverage + mutation, behind
 // `#[cfg(not(miri))]` seams. Dead on a non-test, non-Linux build (only `pmu_sys`
 // uses `pmu`), hence the conditional allow.
-#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(target_os = "linux", target_arch = "x86_64"))),
+    allow(dead_code)
+)]
 mod pmu;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod pmu_sys;
 // `patched_kvm` is the box-only syscall orchestration for the determinism
 // backend (the `KVM_EXIT_DETERMINISM` decode/complete logic it drives is the
 // pure, unit-tested `kvm` module); like `kvm_sys` it is excluded from the
 // coverage + mutation gates (it cannot run without the patched `/dev/kvm`).
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod patched_kvm;
 
 pub use arch::x86::{
@@ -83,8 +104,8 @@ pub use types::{Gpa, Moment, MpState};
 #[cfg(feature = "mock")]
 pub use mock::{Completion, MockBackend, MockCaps};
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use kvm_sys::KvmBackend;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub use patched_kvm::PatchedKvmBackend;

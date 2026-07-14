@@ -21,7 +21,7 @@
 //! Fail-fast, never skip: a host without `/dev/kvm`/`perf_event` panics with what
 //! is missing. macOS builds an empty test binary (the contract is property-tested
 //! against `SimCpu` in `src/run_until.rs`).
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
     Backend, CommonExit, CpuidModel, Exit, Gpa, KvmBackend, Moment, MsrFilter, MsrRange, X86Exit,

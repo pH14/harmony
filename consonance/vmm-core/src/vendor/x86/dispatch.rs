@@ -722,10 +722,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         // The blob's LAPIC must be coherent AND match this VM's wiring.
         let new_lapic = match (&dev.lapic, self.devices.lapic.is_some()) {
-            (Some(ls), true) => Some(
-                lapic::Lapic::restore(ls)
-                    .map_err(|_| SnapshotError::Lapic("incoherent LapicState in device blob"))?,
-            ),
+            (Some(ls), true) => Some(lapic::Lapic::restore(ls).map_err(|_| {
+                SnapshotError::DeviceRestore("incoherent LapicState in device blob")
+            })?),
             (Some(_), false) | (None, true) => {
                 return Err(VmmError::ContractViolation(
                     "restore_vm_state: snapshot/VM xAPIC wiring mismatch (one has a LAPIC, the \

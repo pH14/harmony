@@ -112,7 +112,7 @@ use environment::{EnvError, EnvSpec, FaultPolicy};
 use snapshot_store::SnapshotId;
 use vmm_backend::Backend;
 
-use crate::vendor::Vendor;
+use crate::vendor::{InterruptReject, Vendor};
 
 use crate::exec::ExecSession;
 use crate::snapshot::{SnapshotEngine, SnapshotError};
@@ -131,7 +131,7 @@ pub type VmmFactory<B> = Box<dyn FnMut() -> Result<Vmm<B>, VmmError>>;
 
 /// Boots a fresh restore target **around a materialized snapshot mapping** —
 /// the task-95 M2.2 remap-restore factory (see
-/// [`crate::bringup::compose_restore_target`]): the mapping's buffer becomes the
+/// [`crate::vendor::x86::bringup::compose_restore_target`]): the mapping's buffer becomes the
 /// guest RAM the memslots register, so the restore performs **no** full-image
 /// memcpy and untouched pages fault lazily. Must compose its VMs exactly like
 /// the session's [`VmmFactory`] (same RAM size, wiring, contract) minus the
@@ -802,30 +802,26 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Err(ControlError::Unsupported);
             }
             environment::HostFault::InjectInterrupt { vector } => {
-                // Both `InjectInterrupt` failure modes are stage-time-decidable
-                // properties of the request/backend (PR #51 round-8) — reject them
-                // here as recoverable replies, mirroring the `CorruptMemory` bounds
-                // check, rather than letting them explode as a session-fatal
-                // `ServeError::Vmm` at `apply_host_fault`:
-                // - no userspace LAPIC to raise the vector into → `Unsupported`
-                //   (a permanent backend limitation — unlike `CorruptMemory`, which a
-                //   no-LAPIC guest can still take via the idle arrival-wake);
-                if !<B::A as Vendor>::can_inject_wire_interrupt(vmm) {
-                    return Err(ControlError::Unsupported);
-                }
-                // - a vector outside the xAPIC's 8-bit identity space (the wire
-                //   field is u32 — per-arch identities exceed 8 bits, ARCH-BOUNDARY
-                //   §C) → `Unsupported`, like any perturbation this machine's
-                //   interrupt fabric cannot deliver;
-                if *vector > u32::from(u8::MAX) {
-                    return Err(ControlError::Unsupported);
-                }
-                // - an architecturally reserved vector (`< 16`) the LAPIC cannot raise
-                //   → `PerturbReservedVector` (a request error the client can fix).
-                if *vector < 16 {
-                    // `< 16` fits the error's u8 by construction.
-                    return Err(ControlError::PerturbReservedVector {
-                        vector: *vector as u8,
+                // Every `InjectInterrupt` failure mode is a stage-time-decidable
+                // property of the request and the machine (PR #51 round-8) — reject
+                // it here as a recoverable reply, mirroring the `CorruptMemory`
+                // bounds check, rather than letting it explode as a session-fatal
+                // `ServeError::Vmm` at `apply_host_fault`.
+                //
+                // WHICH identities are legal is the **vendor's** question, not the
+                // engine's: x86's xAPIC has 8-bit vectors with `0..16` reserved,
+                // while a GIC's INTIDs run past 255 and its `0..16` are deliverable
+                // SGIs. So ask the vendor and map its verdict onto the wire.
+                if let Err(reject) = <B::A as Vendor>::check_wire_interrupt(vmm, *vector) {
+                    return Err(match reject {
+                        // A perturbation this machine's fabric simply cannot deliver.
+                        InterruptReject::NoFabric | InterruptReject::OutOfRange => {
+                            ControlError::Unsupported
+                        }
+                        // A request error the client can fix by picking another id.
+                        InterruptReject::Reserved { vector } => {
+                            ControlError::PerturbReservedVector { vector }
+                        }
                     });
                 }
             }
@@ -2027,7 +2023,8 @@ mod tests {
         let mut s = server(fork_exits.clone());
         let remap: super::RemapVmmFactory<MockBackend> = Box::new(move |mapping| {
             let m = MockBackend::with_exits(fork_exits.clone());
-            let mut v = crate::bringup::compose_restore_target(m, mapping, !sabotage_lapic)?;
+            let mut v =
+                crate::vendor::x86::bringup::compose_restore_target(m, mapping, !sabotage_lapic)?;
             v.wire_vtime(
                 VtimeWiring::new(
                     contract_vclock_config(),

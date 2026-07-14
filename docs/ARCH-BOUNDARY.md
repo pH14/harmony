@@ -7,8 +7,13 @@ GO; trust still does). **§Sequencing steps 1–4 LANDED 2026-07-14** (`tasks/10
 the C-list neutralizations, the x86 value-type extraction, the keystone (`Arch` trait +
 generic `Backend` + the engine/vendor module split in `vmm-core`, x86 the sole vendor), and
 `vm-state`'s arch-tagged records (`VM_STATE_VERSION` 2). The seam is now
-**compiler-enforced**: the engine names no vendor device, register, or exit, and each
-vendor's exit enum is exhaustively matched by its own dispatch. **The D-list and the trait
+**compiler-enforced**: the engine names no vendor device, register, exit, loader, or error
+— not in any signature, field, or error variant — and each vendor's exit enum is
+exhaustively matched by its own dispatch. The concrete `(Backend impl, Arch vendor)` pair
+is named only in a vendor's own composition root (`vendor::x86::bringup`), never in the
+engine. **The additive property is itself gated**: CI cross-checks the workspace for
+`aarch64-unknown-linux-gnu`, where the x86 KVM substrate is `cfg`'d out — so an x86 leak
+into the engine fails CI rather than surfacing on the day the ARM backend starts. **The D-list and the trait
 freeze are unchanged** — the trait is *designed, not frozen*; AA-3's trait-freeze memo (the
 ARM spike) still owns the freeze, and §D stays additive-and-spike-trusted. Supersedes the
 codebase survey in `docs/ARM-PORT.md`

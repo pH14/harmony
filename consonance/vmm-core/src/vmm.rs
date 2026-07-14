@@ -106,13 +106,19 @@ pub enum VmmError {
     /// A `Backend` operation failed.
     #[error("backend error")]
     Backend(#[from] vmm_backend::BackendError),
-    /// The loader rejected the image or RAM was too small.
-    #[error("load error")]
-    Load(#[from] crate::vendor::x86::multiboot::LoadError),
-    /// The Linux bzImage loader rejected the kernel/initramfs (malformed image,
-    /// does-not-fit, etc.) — the direct 64-bit boot path's trust boundary.
-    #[error("linux load error")]
-    LinuxLoad(#[from] crate::vendor::x86::linux_loader::LinuxLoadError),
+    /// A **vendor's boot stage** rejected the image: a malformed header, an image
+    /// that does not fit the guest RAM, a bad entry state (x86: the Multiboot v1
+    /// loader or the direct 64-bit Linux bzImage protocol — the boot path's trust
+    /// boundary over untrusted image bytes).
+    ///
+    /// The cause is carried **opaquely**: which loaders a machine has is per-vendor
+    /// (an ARM vendor loads an `Image` + DTB, and Multiboot is deleted for it, not
+    /// ported — `docs/ARCH-BOUNDARY.md` §B), so the engine's error type must not
+    /// enumerate one vendor's loaders. Construct it with
+    /// [`VmmError::vendor_boot`]; the typed cause is still reachable through
+    /// [`std::error::Error::source`] and `downcast_ref`.
+    #[error("vendor boot error: {0}")]
+    VendorBoot(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// An exit the skeleton does not model (unmodeled port/MMIO/hypercall, a
     /// backend-dependent RDTSC/RDRAND, or an MSR access with no V-time backing).
     #[error("contract violation: {0}")]
@@ -140,6 +146,19 @@ pub enum VmmError {
     /// or a snapshot taken under a different CPU/MSR contract. Never a panic.
     #[error("snapshot error")]
     Snapshot(#[from] crate::snapshot::SnapshotError),
+}
+
+impl VmmError {
+    /// Wrap a vendor boot/loader failure into the neutral
+    /// [`VendorBoot`](VmmError::VendorBoot) variant. The engine never names a
+    /// vendor's loader types; a vendor's composition root
+    /// (e.g. [`crate::vendor::x86::bringup`]) calls this on its own error.
+    pub fn vendor_boot<E>(err: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        VmmError::VendorBoot(Box::new(err))
+    }
 }
 
 /// One serviced exit.

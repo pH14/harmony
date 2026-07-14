@@ -22,7 +22,7 @@
 //! snapshot for the two fault Moments), `HP_DELTA` (V-time ns each run advances past
 //! the snapshot), `HP_GPA` (the CorruptMemory guest-physical address), `HP_VECTOR`.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use control_proto::{
     HashScope, HostFault as WireHostFault, Moment, Reply, Reproducer, Request, SnapId,
@@ -30,8 +30,8 @@ use control_proto::{
 };
 use environment::{BitMask, EnvSpec, FaultPolicy, HostFault};
 use vmm_backend::{Backend, X86};
-use vmm_core::bringup::{BackendKind, boot_linux_selected};
 use vmm_core::control::{ControlServer, VmmFactory, server_caps};
+use vmm_core::vendor::x86::bringup::{BackendKind, boot_linux_selected};
 
 type DynVmm = vmm_core::vmm::Vmm<Box<dyn Backend<A = X86>>>;
 

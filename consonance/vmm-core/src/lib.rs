@@ -6,7 +6,8 @@
 //! that trait **alone**. It **never issues `KVM_RUN` itself** — that lives below
 //! the trait in `vmm-backend`'s `KvmBackend`. Nothing here branches on which
 //! backend is in use; the one place a concrete `(Backend impl, Arch vendor)`
-//! pair is named is the composition root ([`bringup`]).
+//! pair is named is a vendor's own composition root
+//! ([`vendor::x86::bringup`]).
 //!
 //! It is split in two along the ISA seam (`docs/ARCH-BOUNDARY.md` §B):
 //!
@@ -42,7 +43,6 @@
 //! all observable state, no `HashMap` iteration reaches a hash, no floating
 //! point, and the skeleton introduces no time source (V-time arrives later).
 
-pub mod bringup;
 pub mod control;
 pub mod corpus;
 // Task 81 — the `exec` improvisation's pure sentinel state machine (what bytes to
