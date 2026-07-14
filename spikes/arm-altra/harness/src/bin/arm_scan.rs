@@ -163,10 +163,23 @@ fn verify_windows(elf_dir: &Path) -> Result<(), String> {
     }
 }
 
+/// The image's executable bytes, or a hard failure.
+///
+/// **Fail closed** (`docs/ARM-ALTRA.md` §Evidence integrity #1). A stripped image —
+/// no section table, executable `PT_LOAD` segments only, which real distro and
+/// vendor kernel images routinely are — used to yield an empty scan surface, and an
+/// empty surface scans clean: `found 0 raw counter read(s)`, exit 0, a green AA-5
+/// enforcement over an image not a byte of which was read. A scan of nothing is not
+/// a clean scan, and this is where that is enforced for both scan modes.
+fn scan_surface(elf: &Elf) -> Result<Vec<(u64, &[u8])>, String> {
+    elf.executable_ranges()
+        .map_err(|e| format!("{e} — the scan is the enforcement, so an unscannable image fails"))
+}
+
 fn scan_exclusives(image: &Path, expect_present: bool) -> Result<(), String> {
     let elf = load(image)?;
     let mut count = 0usize;
-    for (addr, code) in elf.loadable_ranges() {
+    for (addr, code) in scan_surface(&elf)? {
         for hit in scan(addr, code) {
             if hit.kind == HitKind::Exclusive {
                 count += 1;
@@ -187,7 +200,7 @@ fn scan_exclusives(image: &Path, expect_present: bool) -> Result<(), String> {
 fn scan_counter_reads(image: &Path) -> Result<(), String> {
     let elf = load(image)?;
     let mut count = 0usize;
-    for (addr, code) in elf.loadable_ranges() {
+    for (addr, code) in scan_surface(&elf)? {
         for hit in scan(addr, code) {
             if let HitKind::CounterRead(reg) = hit.kind {
                 count += 1;

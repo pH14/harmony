@@ -1,11 +1,24 @@
-//! A minimal ELF64 reader: just enough to find a symbol and read the bytes
-//! between two of them.
+//! A minimal ELF64 reader: just enough to find a symbol, read the bytes between two
+//! of them, load an image into guest RAM, and enumerate an image's executable code.
 //!
 //! Hand-rolled rather than pulled from a crate, for one reason: this is the tool
-//! that decides whether a payload's counting window contains the branches the
-//! oracle claims, and whether a guest kernel image contains a raw counter read.
-//! It is small, it is on the trusted path of two acceptance gates, and it must not
-//! panic on a malformed file. Every read is bounds-checked; there is no `unsafe`.
+//! that decides whether a payload's counting window contains the branches the oracle
+//! claims, and whether a guest kernel image contains a raw counter read or an LL/SC
+//! exclusive. It is small, it is on the trusted path of two acceptance gates, and
+//! it runs over **untrusted input** — a vendor kernel image is not this program's to
+//! trust.
+//!
+//! Two properties therefore hold, and both are tested:
+//!
+//! 1. **It never panics.** Every offset that comes from the file is combined with
+//!    `checked_add`, and every read is bounds-checked. A header claiming
+//!    `e_shoff = u64::MAX` returns [`ElfError::Truncated`]; it does not overflow in
+//!    debug or wrap into a plausible garbage parse in release. There is no `unsafe`.
+//! 2. **It fails closed.** An image that yields no executable scan surface is an
+//!    *error*, not a clean scan — because for AA-5 "a clean scan of the shipped
+//!    guest kernel *is* the enforcement" (there is no ECV trap behind it), and a
+//!    scanner that reports "found 0 raw counter reads" on an image it could not read
+//!    would be an instrument that goes green without measuring the thing.
 
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -16,7 +29,7 @@ pub enum ElfError {
     /// Not an ELF64 little-endian aarch64 object.
     #[error("not an aarch64 ELF64 little-endian object")]
     NotAarch64Elf,
-    /// A header or table ran past the end of the file.
+    /// A header or table ran past the end of the file (or its offsets overflowed).
     #[error("truncated ELF: {0}")]
     Truncated(&'static str),
     /// A symbol the caller needs is absent.
@@ -40,6 +53,18 @@ pub enum ElfError {
         /// End address.
         end: u64,
     },
+    /// The image contains no executable bytes this reader can find.
+    ///
+    /// **Fail closed.** A stripped image (no section table, `PT_LOAD` segments only)
+    /// used to yield an empty scan surface, and an empty surface scanned clean — so
+    /// the AA-4 exclusives scan and the AA-5 counter-read scan would both pass an
+    /// image they had not read a byte of. That is a failure to scan, and it is
+    /// reported as one.
+    #[error(
+        "no executable scan surface: the image has no executable PT_LOAD segment and no \
+         executable section. A scan of nothing is not a clean scan"
+    )]
+    NoExecutableSurface,
 }
 
 /// A section's placement.
@@ -48,8 +73,34 @@ struct Section {
     addr: u64,
     offset: u64,
     size: u64,
+    /// `SHF_EXECINSTR`.
+    executable: bool,
     /// `SHT_NOBITS` (.bss) occupies addresses but no file bytes.
     nobits: bool,
+}
+
+/// A `PT_LOAD` program header — how the image is actually loaded, and the scan
+/// surface that survives stripping.
+#[derive(Clone, Debug)]
+struct Segment {
+    vaddr: u64,
+    offset: u64,
+    file_size: u64,
+    mem_size: u64,
+    /// `PF_X`.
+    executable: bool,
+}
+
+/// One loadable segment, resolved to the bytes behind it.
+#[derive(Clone, Copy, Debug)]
+pub struct LoadSegment<'a> {
+    /// The address the segment is linked at.
+    pub vaddr: u64,
+    /// How many bytes it occupies in memory (`p_memsz`) — larger than `bytes` for
+    /// `.bss`, whose tail the loader zeroes.
+    pub mem_size: usize,
+    /// The file bytes backing it (`p_filesz`).
+    pub bytes: &'a [u8],
 }
 
 /// A parsed ELF64 object.
@@ -57,22 +108,43 @@ struct Section {
 pub struct Elf {
     data: Vec<u8>,
     sections: Vec<Section>,
+    segments: Vec<Segment>,
     /// Symbol name -> value. `BTreeMap`, not `HashMap`: nothing here may make an
     /// output depend on iteration order.
     symbols: BTreeMap<String, u64>,
+    entry: u64,
 }
 
-/// Read a little-endian integer at `off`, or `None` if it would run past the end.
+/// `base + off`, or a truncation error.
+///
+/// Every header-field read goes through this. It is the fix for a real panic: an
+/// aarch64 ELF header with `e_shoff = u64::MAX` reached `base + 4` and overflowed
+/// (debug) or wrapped and mis-parsed garbage as section headers (release).
+fn at(base: usize, off: usize) -> Result<usize, ElfError> {
+    base.checked_add(off)
+        .ok_or(ElfError::Truncated("header field offset overflowed"))
+}
+
+/// A file offset, as `usize`, or a truncation error naming the field.
+fn offset(value: u64, what: &'static str) -> Result<usize, ElfError> {
+    usize::try_from(value).map_err(|_| ElfError::Truncated(what))
+}
+
+/// Read a little-endian integer at `off`, or `None` if it would run past the end
+/// (or the offset arithmetic overflows).
 fn u16_at(d: &[u8], off: usize) -> Option<u16> {
-    d.get(off..off + 2)?.try_into().ok().map(u16::from_le_bytes)
+    let end = off.checked_add(2)?;
+    d.get(off..end)?.try_into().ok().map(u16::from_le_bytes)
 }
 
 fn u32_at(d: &[u8], off: usize) -> Option<u32> {
-    d.get(off..off + 4)?.try_into().ok().map(u32::from_le_bytes)
+    let end = off.checked_add(4)?;
+    d.get(off..end)?.try_into().ok().map(u32::from_le_bytes)
 }
 
 fn u64_at(d: &[u8], off: usize) -> Option<u64> {
-    d.get(off..off + 8)?.try_into().ok().map(u64::from_le_bytes)
+    let end = off.checked_add(8)?;
+    d.get(off..end)?.try_into().ok().map(u64::from_le_bytes)
 }
 
 /// A NUL-terminated string starting at `off` in `d`.
@@ -87,7 +159,8 @@ impl Elf {
     ///
     /// # Errors
     /// [`ElfError::NotAarch64Elf`] if the magic, class, endianness or machine is
-    /// wrong; [`ElfError::Truncated`] if a table runs past the end of the file.
+    /// wrong; [`ElfError::Truncated`] if a table runs past the end of the file or
+    /// its offsets overflow. Never panics, whatever the bytes say.
     pub fn parse(data: Vec<u8>) -> Result<Elf, ElfError> {
         // e_ident: magic, class=ELFCLASS64(2), data=ELFDATA2LSB(1).
         if data.len() < 64
@@ -102,71 +175,23 @@ impl Elf {
             return Err(ElfError::NotAarch64Elf);
         }
 
-        let shoff = u64_at(&data, 0x28).ok_or(ElfError::Truncated("e_shoff"))? as usize;
-        let shentsize = u16_at(&data, 0x3A).ok_or(ElfError::Truncated("e_shentsize"))? as usize;
-        let shnum = u16_at(&data, 0x3C).ok_or(ElfError::Truncated("e_shnum"))? as usize;
-
-        let mut sections = Vec::with_capacity(shnum);
-        // Section-header fields we need: sh_type(4), sh_addr(0x10), sh_offset(0x18),
-        // sh_size(0x20), sh_link(0x28).
-        let mut raw = Vec::with_capacity(shnum);
-        for i in 0..shnum {
-            let base = shoff
-                .checked_add(
-                    i.checked_mul(shentsize)
-                        .ok_or(ElfError::Truncated("shdr"))?,
-                )
-                .ok_or(ElfError::Truncated("shdr"))?;
-            let sh_type = u32_at(&data, base + 4).ok_or(ElfError::Truncated("sh_type"))?;
-            let addr = u64_at(&data, base + 0x10).ok_or(ElfError::Truncated("sh_addr"))?;
-            let offset = u64_at(&data, base + 0x18).ok_or(ElfError::Truncated("sh_offset"))?;
-            let size = u64_at(&data, base + 0x20).ok_or(ElfError::Truncated("sh_size"))?;
-            let link = u32_at(&data, base + 0x28).ok_or(ElfError::Truncated("sh_link"))?;
-            const SHT_NOBITS: u32 = 8;
-            const SHT_SYMTAB: u32 = 2;
-            sections.push(Section {
-                addr,
-                offset,
-                size,
-                nobits: sh_type == SHT_NOBITS,
-            });
-            raw.push((sh_type, offset, size, link));
-            let _ = SHT_SYMTAB;
-        }
-
-        // Symbols: the .symtab section (SHT_SYMTAB=2); its sh_link names the
-        // string table.
-        let mut symbols = BTreeMap::new();
-        for &(sh_type, offset, size, link) in &raw {
-            if sh_type != 2 {
-                continue;
-            }
-            let strtab = raw
-                .get(link as usize)
-                .ok_or(ElfError::Truncated("symtab sh_link"))?;
-            let stroff = strtab.1 as usize;
-
-            // Elf64_Sym is 24 bytes: st_name(u32), st_info(u8), st_other(u8),
-            // st_shndx(u16), st_value(u64), st_size(u64).
-            let count = (size / 24) as usize;
-            for i in 0..count {
-                let base = offset as usize + i * 24;
-                let name_off = u32_at(&data, base).ok_or(ElfError::Truncated("st_name"))? as usize;
-                let value = u64_at(&data, base + 8).ok_or(ElfError::Truncated("st_value"))?;
-                if name_off == 0 {
-                    continue;
-                }
-                if let Some(name) = str_at(&data, stroff + name_off) {
-                    symbols.insert(name, value);
-                }
-            }
-        }
+        let entry = u64_at(&data, 0x18).ok_or(ElfError::Truncated("e_entry"))?;
+        let segments = parse_segments(&data)?;
+        let (sections, symbols) = parse_sections(&data)?;
 
         Ok(Elf {
             data,
             sections,
+            segments,
             symbols,
+            entry,
         })
+    }
+
+    /// The image's entry point (`e_entry`) — where the harness sets `PC`.
+    #[must_use]
+    pub fn entry(&self) -> u64 {
+        self.entry
     }
 
     /// The address of a symbol.
@@ -201,8 +226,19 @@ impl Elf {
             }
             let s_end = s.addr.saturating_add(s.size);
             if start >= s.addr && end <= s_end {
-                let from = (s.offset + (start - s.addr)) as usize;
-                let to = (s.offset + (end - s.addr)) as usize;
+                // Checked throughout: `s.offset` is a file-supplied u64, and
+                // `offset + (start - addr)` is exactly where an adversarial section
+                // header would overflow.
+                let from = s
+                    .offset
+                    .checked_add(start - s.addr)
+                    .and_then(|o| usize::try_from(o).ok())
+                    .ok_or(ElfError::RangeNotMapped { start, end })?;
+                let to = s
+                    .offset
+                    .checked_add(end - s.addr)
+                    .and_then(|o| usize::try_from(o).ok())
+                    .ok_or(ElfError::RangeNotMapped { start, end })?;
                 return self
                     .data
                     .get(from..to)
@@ -219,17 +255,7 @@ impl Elf {
     /// finding: a payload whose window symbols are gone cannot have its count
     /// verified, and must not be quietly skipped.
     pub fn window(&self, name: &str) -> Result<(u64, &[u8]), ElfError> {
-        let sym = name.replace('-', "_");
-        let start = self.symbol(&format!("__win_{sym}_start"))?;
-        let end = self.symbol(&format!("__win_{sym}_end"))?;
-        if end <= start {
-            return Err(ElfError::BackwardsWindow {
-                name: name.to_string(),
-                start,
-                end,
-            });
-        }
-        Ok((start, self.bytes(start, end)?))
+        self.bracketed("__win", name)
     }
 
     /// The bytes of a `[__vec_<name>_start, __vec_<name>_end)` handler region.
@@ -237,9 +263,14 @@ impl Elf {
     /// # Errors
     /// As [`Elf::window`].
     pub fn handler(&self, name: &str) -> Result<(u64, &[u8]), ElfError> {
+        self.bracketed("__vec", name)
+    }
+
+    /// The bytes between a `<prefix>_<name>_start` / `_end` symbol pair.
+    fn bracketed(&self, prefix: &str, name: &str) -> Result<(u64, &[u8]), ElfError> {
         let sym = name.replace('-', "_");
-        let start = self.symbol(&format!("__vec_{sym}_start"))?;
-        let end = self.symbol(&format!("__vec_{sym}_end"))?;
+        let start = self.symbol(&format!("{prefix}_{sym}_start"))?;
+        let end = self.symbol(&format!("{prefix}_{sym}_end"))?;
         if end <= start {
             return Err(ElfError::BackwardsWindow {
                 name: name.to_string(),
@@ -250,25 +281,239 @@ impl Elf {
         Ok((start, self.bytes(start, end)?))
     }
 
-    /// Every file-backed, non-empty section's `(addr, bytes)` — the whole-image
-    /// scan surface for AA-4's exclusives scan and AA-5's counter-read scan.
+    /// The image's loadable segments, resolved to their file bytes — what the KVM
+    /// harness copies into guest RAM.
     #[must_use]
-    pub fn loadable_ranges(&self) -> Vec<(u64, &[u8])> {
-        self.sections
+    pub fn load_segments(&self) -> Vec<LoadSegment<'_>> {
+        self.segments
             .iter()
-            .filter(|s| !s.nobits && s.size > 0 && s.addr != 0)
             .filter_map(|s| {
-                let from = s.offset as usize;
-                let to = from.checked_add(s.size as usize)?;
-                Some((s.addr, self.data.get(from..to)?))
+                let from = usize::try_from(s.offset).ok()?;
+                let len = usize::try_from(s.file_size).ok()?;
+                let to = from.checked_add(len)?;
+                Some(LoadSegment {
+                    vaddr: s.vaddr,
+                    mem_size: usize::try_from(s.mem_size).ok()?,
+                    bytes: self.data.get(from..to)?,
+                })
             })
             .collect()
     }
+
+    /// Every **executable** byte range of the image, in address order — the whole-image
+    /// scan surface for AA-4's exclusives scan and AA-5's counter-read scan.
+    ///
+    /// Program headers first: a stripped image (no section table, executable
+    /// `PT_LOAD` segments only — which real distro and vendor kernel images routinely
+    /// are) still has a scan surface, and it is exactly this one. Sections are the
+    /// refinement used when the image has them and no loadable segments (a relocatable
+    /// object, which is what an unlinked payload is).
+    ///
+    /// # Errors
+    /// [`ElfError::NoExecutableSurface`] when the image yields no executable bytes at
+    /// all. That is the fail-closed half: a scan of nothing may never be reported as
+    /// a clean scan.
+    pub fn executable_ranges(&self) -> Result<Vec<(u64, &[u8])>, ElfError> {
+        let mut ranges: Vec<(u64, &[u8])> = self
+            .segments
+            .iter()
+            .filter(|s| s.executable && s.file_size > 0)
+            .filter_map(|s| {
+                let from = usize::try_from(s.offset).ok()?;
+                let len = usize::try_from(s.file_size).ok()?;
+                let to = from.checked_add(len)?;
+                Some((s.vaddr, self.data.get(from..to)?))
+            })
+            .collect();
+
+        if ranges.is_empty() {
+            ranges = self
+                .sections
+                .iter()
+                .filter(|s| s.executable && !s.nobits && s.size > 0)
+                .filter_map(|s| {
+                    let from = usize::try_from(s.offset).ok()?;
+                    let len = usize::try_from(s.size).ok()?;
+                    let to = from.checked_add(len)?;
+                    Some((s.addr, self.data.get(from..to)?))
+                })
+                .collect();
+        }
+
+        if ranges.is_empty() {
+            return Err(ElfError::NoExecutableSurface);
+        }
+        ranges.sort_by_key(|&(addr, _)| addr);
+        Ok(ranges)
+    }
+}
+
+/// Parse the program headers: the `PT_LOAD` segments.
+fn parse_segments(data: &[u8]) -> Result<Vec<Segment>, ElfError> {
+    const PT_LOAD: u32 = 1;
+    const PF_X: u32 = 1;
+
+    let phoff = u64_at(data, 0x20).ok_or(ElfError::Truncated("e_phoff"))?;
+    let phentsize = u16_at(data, 0x36).ok_or(ElfError::Truncated("e_phentsize"))? as usize;
+    let phnum = u16_at(data, 0x38).ok_or(ElfError::Truncated("e_phnum"))? as usize;
+    if phoff == 0 || phnum == 0 {
+        return Ok(Vec::new());
+    }
+    let phoff = offset(phoff, "e_phoff")?;
+
+    let mut segments = Vec::with_capacity(phnum);
+    for i in 0..phnum {
+        // Elf64_Phdr: p_type(0), p_flags(4), p_offset(8), p_vaddr(0x10),
+        // p_paddr(0x18), p_filesz(0x20), p_memsz(0x28).
+        let base = at(
+            phoff,
+            i.checked_mul(phentsize)
+                .ok_or(ElfError::Truncated("phdr index"))?,
+        )?;
+        let p_type = u32_at(data, base).ok_or(ElfError::Truncated("p_type"))?;
+        let p_flags = u32_at(data, at(base, 4)?).ok_or(ElfError::Truncated("p_flags"))?;
+        let p_offset = u64_at(data, at(base, 8)?).ok_or(ElfError::Truncated("p_offset"))?;
+        let p_vaddr = u64_at(data, at(base, 0x10)?).ok_or(ElfError::Truncated("p_vaddr"))?;
+        let p_filesz = u64_at(data, at(base, 0x20)?).ok_or(ElfError::Truncated("p_filesz"))?;
+        let p_memsz = u64_at(data, at(base, 0x28)?).ok_or(ElfError::Truncated("p_memsz"))?;
+
+        if p_type != PT_LOAD {
+            continue;
+        }
+        segments.push(Segment {
+            vaddr: p_vaddr,
+            offset: p_offset,
+            file_size: p_filesz,
+            mem_size: p_memsz,
+            executable: p_flags & PF_X != 0,
+        });
+    }
+    Ok(segments)
+}
+
+/// Parse the section headers and the symbol table.
+type Sections = (Vec<Section>, BTreeMap<String, u64>);
+
+fn parse_sections(data: &[u8]) -> Result<Sections, ElfError> {
+    const SHT_SYMTAB: u32 = 2;
+    const SHT_NOBITS: u32 = 8;
+    const SHF_EXECINSTR: u64 = 0x4;
+
+    let shoff = u64_at(data, 0x28).ok_or(ElfError::Truncated("e_shoff"))?;
+    let shentsize = u16_at(data, 0x3A).ok_or(ElfError::Truncated("e_shentsize"))? as usize;
+    let shnum = u16_at(data, 0x3C).ok_or(ElfError::Truncated("e_shnum"))? as usize;
+    if shoff == 0 || shnum == 0 {
+        // A stripped image. Not an error here — `executable_ranges` is what decides
+        // whether the image is scannable, and it reads the program headers.
+        return Ok((Vec::new(), BTreeMap::new()));
+    }
+    let shoff = offset(shoff, "e_shoff")?;
+
+    let mut sections = Vec::with_capacity(shnum);
+    // (sh_type, sh_offset, sh_size, sh_link) of every section, for the symtab pass.
+    let mut raw = Vec::with_capacity(shnum);
+    for i in 0..shnum {
+        // Elf64_Shdr: sh_name(0), sh_type(4), sh_flags(8), sh_addr(0x10),
+        // sh_offset(0x18), sh_size(0x20), sh_link(0x28).
+        let base = at(
+            shoff,
+            i.checked_mul(shentsize)
+                .ok_or(ElfError::Truncated("shdr index"))?,
+        )?;
+        let sh_type = u32_at(data, at(base, 4)?).ok_or(ElfError::Truncated("sh_type"))?;
+        let sh_flags = u64_at(data, at(base, 8)?).ok_or(ElfError::Truncated("sh_flags"))?;
+        let addr = u64_at(data, at(base, 0x10)?).ok_or(ElfError::Truncated("sh_addr"))?;
+        let offset = u64_at(data, at(base, 0x18)?).ok_or(ElfError::Truncated("sh_offset"))?;
+        let size = u64_at(data, at(base, 0x20)?).ok_or(ElfError::Truncated("sh_size"))?;
+        let link = u32_at(data, at(base, 0x28)?).ok_or(ElfError::Truncated("sh_link"))?;
+
+        sections.push(Section {
+            addr,
+            offset,
+            size,
+            executable: sh_flags & SHF_EXECINSTR != 0,
+            nobits: sh_type == SHT_NOBITS,
+        });
+        raw.push((sh_type, offset, size, link));
+    }
+
+    // Symbols: the .symtab section; its sh_link names the string table.
+    let mut symbols = BTreeMap::new();
+    for &(sh_type, sym_off, size, link) in &raw {
+        if sh_type != SHT_SYMTAB {
+            continue;
+        }
+        let strtab = raw
+            .get(link as usize)
+            .ok_or(ElfError::Truncated("symtab sh_link"))?;
+        let stroff = offset(strtab.1, "strtab sh_offset")?;
+        let sym_off = offset(sym_off, "symtab sh_offset")?;
+
+        // Elf64_Sym is 24 bytes: st_name(u32), st_info(u8), st_other(u8),
+        // st_shndx(u16), st_value(u64), st_size(u64).
+        let count = usize::try_from(size / 24).map_err(|_| ElfError::Truncated("symtab size"))?;
+        for i in 0..count {
+            let base = at(
+                sym_off,
+                i.checked_mul(24)
+                    .ok_or(ElfError::Truncated("symbol index"))?,
+            )?;
+            let name_off = u32_at(data, base).ok_or(ElfError::Truncated("st_name"))? as usize;
+            let value = u64_at(data, at(base, 8)?).ok_or(ElfError::Truncated("st_value"))?;
+            if name_off == 0 {
+                continue;
+            }
+            if let Some(name) = str_at(data, at(stroff, name_off)?) {
+                symbols.insert(name, value);
+            }
+        }
+    }
+
+    Ok((sections, symbols))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minimal, valid aarch64 ELF64 header with the given `e_shoff`/`e_phoff`
+    /// fields — the shape an adversarial (or merely corrupt) image has.
+    fn header(shoff: u64, shnum: u16, phoff: u64, phnum: u16) -> Vec<u8> {
+        let mut d = vec![0u8; 64];
+        d[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        d[4] = 2; // ELFCLASS64
+        d[5] = 1; // ELFDATA2LSB
+        d[16..18].copy_from_slice(&2u16.to_le_bytes()); // e_type = ET_EXEC
+        d[18..20].copy_from_slice(&183u16.to_le_bytes()); // EM_AARCH64
+        d[0x18..0x20].copy_from_slice(&0x4008_0000u64.to_le_bytes()); // e_entry
+        d[0x20..0x28].copy_from_slice(&phoff.to_le_bytes()); // e_phoff
+        d[0x28..0x30].copy_from_slice(&shoff.to_le_bytes()); // e_shoff
+        d[0x36..0x38].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        d[0x38..0x3A].copy_from_slice(&phnum.to_le_bytes()); // e_phnum
+        d[0x3A..0x3C].copy_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        d[0x3C..0x3E].copy_from_slice(&shnum.to_le_bytes()); // e_shnum
+        d
+    }
+
+    /// A stripped image: program headers only, no section table — one executable
+    /// `PT_LOAD` segment carrying `code`.
+    fn stripped_image(code: &[u8], executable: bool) -> Vec<u8> {
+        const PHOFF: u64 = 64;
+        const CODE_OFF: u64 = 64 + 56;
+        let mut d = header(0, 0, PHOFF, 1);
+        let mut ph = vec![0u8; 56];
+        ph[0..4].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
+        // p_flags: PF_R(4) | PF_X(1).
+        let flags: u32 = if executable { 4 | 1 } else { 4 };
+        ph[4..8].copy_from_slice(&flags.to_le_bytes());
+        ph[8..16].copy_from_slice(&CODE_OFF.to_le_bytes()); // p_offset
+        ph[16..24].copy_from_slice(&0x4008_0000u64.to_le_bytes()); // p_vaddr
+        ph[32..40].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_filesz
+        ph[40..48].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_memsz
+        d.extend_from_slice(&ph);
+        d.extend_from_slice(code);
+        d
+    }
 
     #[test]
     fn rejects_non_elf_input_without_panicking() {
@@ -294,5 +539,73 @@ mod tests {
         d[4] = 2;
         d[5] = 1;
         assert!(Elf::parse(d).is_err());
+    }
+
+    #[test]
+    fn an_absurd_section_offset_is_an_error_not_an_overflow_panic() {
+        // The repro from the review: `e_shoff = u64::MAX` with a plausible header
+        // reached `base + 4` and panicked with "attempt to add with overflow" in
+        // debug — and in release it wrapped and parsed garbage as section headers.
+        let d = header(u64::MAX, 1, 0, 0);
+        assert!(matches!(Elf::parse(d), Err(ElfError::Truncated(_))));
+
+        // The same shape one field over: a huge-but-not-maximal offset must land as
+        // a bounds failure, not a wrap.
+        let d = header(u64::MAX - 8, 4, 0, 0);
+        assert!(matches!(Elf::parse(d), Err(ElfError::Truncated(_))));
+    }
+
+    #[test]
+    fn an_absurd_program_header_offset_is_an_error_too() {
+        let d = header(0, 0, u64::MAX, 3);
+        assert!(matches!(Elf::parse(d), Err(ElfError::Truncated(_))));
+    }
+
+    #[test]
+    fn a_section_count_that_overruns_the_file_is_an_error() {
+        // shoff is inside the file, but 4096 sections of 64 bytes are not.
+        let d = header(64, 4096, 0, 0);
+        assert!(matches!(Elf::parse(d), Err(ElfError::Truncated(_))));
+    }
+
+    #[test]
+    fn a_stripped_image_still_has_a_scan_surface() {
+        // The AA-5 hole: a stripped image (no section table) used to yield an empty
+        // `loadable_ranges()`, and `arm-scan counter-reads` then printed "found 0"
+        // and exited 0 — a clean bill of health for an image it had not read.
+        // `ret; nop`
+        let code = [0xC0, 0x03, 0x5F, 0xD6, 0x1F, 0x20, 0x03, 0xD5];
+        let elf = Elf::parse(stripped_image(&code, true)).expect("valid stripped ELF");
+        assert!(elf.sections.is_empty(), "this fixture has no sections");
+
+        let ranges = elf
+            .executable_ranges()
+            .expect("a stripped image is scannable");
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].0, 0x4008_0000);
+        assert_eq!(ranges[0].1, &code);
+    }
+
+    #[test]
+    fn an_image_with_no_executable_surface_fails_closed() {
+        // A PT_LOAD that is not executable, and no sections: there is nothing to
+        // scan, and "nothing" must never be reported as "clean".
+        let elf = Elf::parse(stripped_image(&[0; 8], false)).expect("valid ELF");
+        assert!(matches!(
+            elf.executable_ranges(),
+            Err(ElfError::NoExecutableSurface)
+        ));
+    }
+
+    #[test]
+    fn load_segments_resolve_to_their_bytes() {
+        let code = [0xC0, 0x03, 0x5F, 0xD6];
+        let elf = Elf::parse(stripped_image(&code, true)).expect("valid ELF");
+        let segs = elf.load_segments();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].vaddr, 0x4008_0000);
+        assert_eq!(segs[0].bytes, &code);
+        assert_eq!(segs[0].mem_size, code.len());
+        assert_eq!(elf.entry(), 0x4008_0000);
     }
 }
