@@ -83,9 +83,9 @@
       ]
     },
     "attempted": {
-      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6).",
+      "description": "How many samples were ATTEMPTED. Every one of them must appear in `records.jsonl` with a `sample_id` in `0..attempted`, exactly once \u2014 a missing sample is a failure to account, not a pass (\u00a7Evidence integrity #6). At least 1: a run-set that attempted nothing measures nothing and must not pass vacuously.",
       "type": "integer",
-      "minimum": 0
+      "minimum": 1
     },
     "records_file": {
       "description": "The records file, relative to this manifest. Conventionally `records.jsonl`.",

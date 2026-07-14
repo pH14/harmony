@@ -38,9 +38,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
-use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage};
+use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage, StepTransition};
 use arm_harness::sys::BR_RETIRED_RAW;
-use oracle_model::{ALL_PAYLOADS, Expectation, Payload, Scale, Weights, expected};
+use oracle_model::{ALL_PAYLOADS, Expectation, Payload, Scale, Weights, expected, trips};
+
+/// A ceiling on the cumulative per-trip oracle work one `check_counts` may simulate.
+/// `branch-dense`'s oracle iterates once per trip (~10⁸ at scale 1e8); a real AA-1 run
+/// has a few distinct such inputs (~10⁹ trips total). Far above that, this exists only so
+/// a hostile `records.jsonl` of many distinct large-scale `branch-dense` seeds cannot turn
+/// grading into a multi-hour hang: over the ceiling, the checker fails CLOSED, not hung —
+/// the same discipline as [`check_totality`]'s `attempted: u64::MAX` guard.
+const MAX_ORACLE_TRIPS: u64 = 20_000_000_000;
 use sha2::{Digest, Sha256};
 
 use crate::error::LoadError;
@@ -391,19 +399,22 @@ fn check_condition_consistency(run_set: &RunSet, records: &[RunRecord], out: &mu
 /// on its own (every per-record floor, and its own rep floor), and the armed-overflow
 /// floor is then applied ONCE over the union: a million `pinned-solo` overflows can no
 /// longer pass while the contamination conditions went unmeasured, and several smaller
-/// condition sets that together exceed the floor now can. A single directory falls
-/// straight through to [`check_run_set`].
+/// condition sets that together exceed the floor now can.
+///
+/// A **single** directory goes through the same path — NOT a shortcut to
+/// [`check_run_set`] — precisely so a lone normative AA-1 run (a million `pinned-solo`
+/// overflows in one directory) still meets the condition-matrix requirement rather than
+/// bypassing it. This is the checker's acceptance entry point; the matrix is inherently
+/// multi-condition, so a single condition can never satisfy it.
 ///
 /// # Errors
 /// [`LoadError`] if any directory's evidence is unreadable.
 pub fn check_run_sets(dirs: &[&Path], floors: &Floors) -> Result<CheckReport, LoadError> {
-    match dirs {
-        [] => return check_run_set(Path::new("."), floors), // no dirs: let the loader fail cleanly
-        [only] => return check_run_set(only, floors),
-        _ => {}
+    if dirs.is_empty() {
+        // No directories: let the loader fail cleanly on a missing manifest.
+        return check_run_set(Path::new("."), floors);
     }
-
-    // Load every run-set up front; a single unreadable one fails the whole matrix.
+    // Load every run-set up front; a single unreadable one fails the whole run.
     let mut loaded: Vec<(RunSet, Vec<RunRecord>, Vec<u8>)> = Vec::new();
     for dir in dirs {
         loaded.push(load_run_set(dir)?);
@@ -431,7 +442,7 @@ fn aggregate(loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)], floors: &Floors) -> C
     let mut outcomes = Vec::new();
 
     check_aggregation(loaded, stage, &mut outcomes);
-    check_aa1_condition_matrix(loaded, stage, &mut outcomes);
+    check_aa1_condition_matrix(loaded, stage, floors, &mut outcomes);
 
     // Every per-set check runs on each set (its records, its rep floor, its own
     // record-vs-manifest condition consistency). The armed floor is deferred to the
@@ -444,12 +455,17 @@ fn aggregate(loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)], floors: &Floors) -> C
     let total_armed: u64 = loaded.iter().map(|(_, r, _)| count_armed(r)).sum();
     check_armed_floor(stage, floors, total_armed, &mut outcomes);
 
-    let ids: Vec<&str> = loaded
-        .iter()
-        .map(|(rs, _, _)| rs.run_set_id.as_str())
-        .collect();
+    let run_set_id = if let [(rs, _, _)] = loaded {
+        rs.run_set_id.clone()
+    } else {
+        let ids: Vec<&str> = loaded
+            .iter()
+            .map(|(rs, _, _)| rs.run_set_id.as_str())
+            .collect();
+        format!("aggregate[{}]", ids.join(" + "))
+    };
     CheckReport {
-        run_set_id: format!("aggregate[{}]", ids.join(" + ")),
+        run_set_id,
         stage,
         outcomes,
     }
@@ -475,7 +491,7 @@ fn check_aggregation(
         }
     }
     let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
-    let mut seen_hashes: BTreeSet<&str> = BTreeSet::new();
+    let mut seen_hashes: BTreeSet<String> = BTreeSet::new();
     for (rs, _, _) in loaded {
         if !seen_ids.insert(rs.run_set_id.as_str()) {
             problems.push(format!(
@@ -484,11 +500,17 @@ fn check_aggregation(
                 rs.run_set_id
             ));
         }
-        if !seen_hashes.insert(rs.records_sha256.as_str()) {
+        // Deduplicate on the SAME normalized hash `check_records_sha256` verifies against
+        // (`sha256:` prefix dropped, lowercased), or the same records supplied twice —
+        // once as `<hex>`, once as `sha256:<hex>` — would each verify yet count as
+        // distinct evidence and double the cumulative floor. Truncate the preview
+        // char-safely: `records_sha256` is untrusted, and a byte index mid-code-point
+        // would panic before the well-formed check can reject the malformed hash.
+        if !seen_hashes.insert(normalise_hash(&rs.records_sha256)) {
             problems.push(format!(
                 "two run-sets carry identical records (records_sha256 {}…) — the same overflows \
                  counted twice",
-                &rs.records_sha256[..rs.records_sha256.len().min(16)]
+                rs.records_sha256.chars().take(16).collect::<String>()
             ));
         }
     }
@@ -500,50 +522,75 @@ fn check_aggregation(
     );
 }
 
-/// At AA-1, the cumulative run must cover the required distinct contamination conditions
-/// ([`REQUIRED_AA1_CONDITIONS`]). Only fires at AA-1 (the contamination matrix is AA-1's);
-/// other stages' aggregations do not carry this requirement.
+/// At AA-1, an **armed** cumulative run must cover the required distinct contamination
+/// conditions ([`REQUIRED_AA1_CONDITIONS`]) — the ≥10⁶ armed-overflow floor is over the
+/// matrix, so a single condition (even a million overflows of it) does not certify count
+/// invariance under contamination. Fires only at AA-1 and only when overflows were armed:
+/// AA-1(b) counting mode has no armed floor and so no matrix requirement.
+///
+/// Coverage is by **measurement, not by label**. Requiring only that each condition's
+/// name appears would let a million-overflow `pinned-solo` set ride beside three
+/// *counting-mode* (zero-armed) run-sets carrying the other labels: the labels are all
+/// present, the cumulative armed floor is met by `pinned-solo` alone, yet the three
+/// contamination conditions were never actually exercised under armed overflow. So each
+/// required condition must contribute a NONZERO armed count, and — for a normative run —
+/// at least its equal share of the requested floor.
 fn check_aa1_condition_matrix(
     loaded: &[(RunSet, Vec<RunRecord>, Vec<u8>)],
     stage: Stage,
+    floors: &Floors,
     out: &mut Vec<Outcome>,
 ) {
     if stage != Stage::Aa1 {
         return;
     }
-    let present: BTreeSet<&str> = loaded
-        .iter()
-        .map(|(rs, _, _)| rs.condition.as_str())
-        .collect();
-    let missing: Vec<&str> = REQUIRED_AA1_CONDITIONS
-        .iter()
-        .copied()
-        .filter(|c| !present.contains(c))
-        .collect();
-    if missing.is_empty() {
-        out.push(pass(
-            CheckId::ConditionMatrix,
-            format!(
-                "the AA-1 contamination matrix is covered: {}",
-                REQUIRED_AA1_CONDITIONS.join(", ")
-            ),
-        ));
-    } else {
-        out.push(fail(
-            CheckId::ConditionMatrix,
-            format!(
-                "AA-1's cumulative floor is over the contamination matrix, but these required \
-                 conditions are absent from the run: {}. A million overflows under {} does not \
-                 certify count invariance under contamination — supply one run-set per condition.",
-                missing.join(", "),
-                if present.len() == 1 {
-                    present.iter().next().copied().unwrap_or("one condition")
-                } else {
-                    "the conditions present"
-                }
-            ),
-        ));
+    // Armed overflows contributed under each condition (summed across its run-sets).
+    let mut armed_by_condition: BTreeMap<&str, u64> = BTreeMap::new();
+    for (rs, records, _) in loaded {
+        *armed_by_condition.entry(rs.condition.as_str()).or_default() += count_armed(records);
     }
+    let total_armed: u64 = armed_by_condition.values().sum();
+    if total_armed == 0 {
+        // AA-1(b) counting mode: no armed floor, so no contamination-matrix requirement.
+        return;
+    }
+
+    // The per-condition share of the requested floor, enforced only for a normative run
+    // (a --sub-normative test floor relaxes the magnitude, as it does for the floors
+    // themselves — but every required condition must still be measured at all).
+    let n = REQUIRED_AA1_CONDITIONS.len() as u64;
+    let share = if floors.sub_normative {
+        0
+    } else {
+        floors.min_armed_overflows.unwrap_or(0) / n
+    };
+
+    let mut problems: Vec<String> = Vec::new();
+    for &cond in REQUIRED_AA1_CONDITIONS {
+        let armed = armed_by_condition.get(cond).copied().unwrap_or(0);
+        if armed == 0 {
+            problems.push(format!(
+                "condition {cond} contributed 0 armed overflows (absent, or a counting-mode run): \
+                 count invariance under it was never measured — the cumulative floor is met by the \
+                 other conditions, which is exactly what the matrix forbids"
+            ));
+        } else if armed < share {
+            problems.push(format!(
+                "condition {cond} contributed only {armed} armed overflows, below its {share} \
+                 share of the {} normative floor (pass --sub-normative for a reduced-scope run)",
+                floors.min_armed_overflows.unwrap_or(0)
+            ));
+        }
+    }
+    verdict(
+        CheckId::ConditionMatrix,
+        &problems,
+        format!(
+            "the AA-1 contamination matrix is covered and each condition measured: {}",
+            REQUIRED_AA1_CONDITIONS.join(", ")
+        ),
+        out,
+    );
 }
 
 /// Load one run-set (manifest + records + raw record bytes) from a directory.
@@ -758,6 +805,19 @@ fn check_records_sha256(run_set: &RunSet, records_bytes: &[u8], out: &mut Vec<Ou
 
 fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let attempted = run_set.attempted;
+    // A run-set that attempted NOTHING measures nothing. With `attempted: 0` and an
+    // empty (correctly hashed) records file, every per-record and totality check passes
+    // vacuously — the checker would certify a run that never happened. The harness
+    // already refuses an empty plan (`--reps 0`); the checker refuses it independently,
+    // and the schema pins `attempted` ≥ 1 (`run-set.schema.json`).
+    if attempted == 0 {
+        out.push(fail(
+            CheckId::Totality,
+            "the run-set attempted 0 samples: an empty plan measures nothing, and a verdict \
+             over it certifies a run that never happened",
+        ));
+        return;
+    }
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut duplicates: BTreeSet<u64> = BTreeSet::new();
     let mut out_of_range: BTreeSet<u64> = BTreeSet::new();
@@ -902,6 +962,9 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
     // reach an output. (The oracle is a pure function of the key, so caching is exact.)
     type OracleKey = (Payload, Scale, u64);
     let mut oracle: BTreeMap<OracleKey, Expectation> = BTreeMap::new();
+    // Cumulative per-trip work of the NEW (non-memoized) oracle computations, bounded so
+    // untrusted records cannot force an unbounded simulation (`MAX_ORACLE_TRIPS`).
+    let mut oracle_trips: u64 = 0;
 
     for r in records {
         // Recompute the measured count from the two window endpoints, and fail the
@@ -923,9 +986,29 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
             continue;
         }
 
-        let e = *oracle
-            .entry((r.payload, r.scale, r.seed))
-            .or_insert_with(|| expected(r.payload, r.scale, r.seed));
+        let key = (r.payload, r.scale, r.seed);
+        let e = if let Some(e) = oracle.get(&key) {
+            *e
+        } else {
+            // A NEW oracle computation. `branch-dense` iterates once per trip; every
+            // other payload is O(1). Bound the CUMULATIVE trips of the distinct inputs so
+            // a hostile records file of many large-scale `branch-dense` seeds fails closed
+            // rather than hanging the checker for hours.
+            if r.payload == Payload::BranchDense {
+                oracle_trips = oracle_trips.saturating_add(trips(r.payload, r.scale));
+                if oracle_trips > MAX_ORACLE_TRIPS {
+                    problems.push(format!(
+                        "grading these records would force the oracle to simulate over \
+                         {MAX_ORACLE_TRIPS} branch-dense trips — a records file with many distinct \
+                         large-scale seeds. Refusing to grade unboundedly: fail closed, not hung"
+                    ));
+                    break;
+                }
+            }
+            let e = expected(r.payload, r.scale, r.seed);
+            oracle.insert(key, e);
+            e
+        };
 
         // A payload with no reported term may not report retries: a nonzero value
         // would silently inflate the prediction to match a corrupt measurement.
@@ -1701,9 +1784,11 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
     }
 
     let mut bad: Vec<String> = Vec::new();
+    let mut covered: BTreeSet<StepTransition> = BTreeSet::new();
     for r in &stepped {
         // `stepped` only holds records whose `step` is Some.
         let s = r.step.as_ref().expect("filtered to Some");
+        covered.insert(s.transition);
         if s.pc_after == s.pc_before {
             bad.push(format!(
                 "sample {}: step did not advance the PC (pc_before == pc_after == {:#x})",
@@ -1717,39 +1802,62 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
                 r.sample_id, s.insn_retired
             ));
         }
-        // The AA-2 requirement is precisely that BR_RETIRED increments once for a TAKEN
-        // branch and not otherwise — the property the whole work clock rests on. On
-        // aarch64 (4-byte instructions) a step that lands at `pc_before + 4` fell through
-        // sequentially (no taken branch → delta 0); a step that lands anywhere else took
-        // a branch (delta 1). A record with `br_retired_delta == 99` (or 0 on a taken
-        // branch, or 1 on a fall-through) is not a valid single-step measurement, and
-        // without checking it the gate proves nothing about the counter's per-branch
-        // behaviour.
-        let took_branch = s.pc_after != s.pc_before.wrapping_add(4);
-        let expected_delta = u64::from(took_branch);
-        if s.br_retired_delta != expected_delta {
-            bad.push(format!(
-                "sample {}: br_retired_delta {} but the step {} (PC {:#x}→{:#x}), so BR_RETIRED \
-                 must increment by {expected_delta} — AA-2 requires it count taken branches \
-                 exactly once and nothing else",
-                r.sample_id,
-                s.br_retired_delta,
-                if took_branch {
-                    "took a branch"
-                } else {
-                    "fell through"
-                },
-                s.pc_before,
-                s.pc_after
-            ));
+        // Validate BR_RETIRED against the transition CLASS the harness recorded from the
+        // stepped opcode — NOT from PC arithmetic. `pc_after != pc_before + 4` does not
+        // imply a retired branch: an SVC, an abort, an injected IRQ, or an `ERET` all move
+        // the PC without a branch INSTRUCTION retiring, and BR_RETIRED counts the branch,
+        // not the transfer. So `delta == 1` is forced only where the architecture
+        // guarantees a retired branch; the exception/WFI/injection classes are where AA-2
+        // *measures* the weight (e.g. ERET's is unknown by construction), bounded only by
+        // "a single step retires at most one taken branch".
+        match s.transition {
+            StepTransition::Sequential if s.br_retired_delta != 0 => bad.push(format!(
+                "sample {}: a sequential step must not move BR_RETIRED, but delta is {}",
+                r.sample_id, s.br_retired_delta
+            )),
+            StepTransition::TakenBranch if s.br_retired_delta != 1 => bad.push(format!(
+                "sample {}: a taken branch must increment BR_RETIRED by exactly 1, but delta is {}",
+                r.sample_id, s.br_retired_delta
+            )),
+            StepTransition::ExceptionEntry
+            | StepTransition::ExceptionReturn
+            | StepTransition::Wfi
+            | StepTransition::Injection
+                if s.br_retired_delta > 1 =>
+            {
+                bad.push(format!(
+                    "sample {}: a single {:?} step cannot retire more than one BR_RETIRED, but \
+                     delta is {}",
+                    r.sample_id, s.transition, s.br_retired_delta
+                ));
+            }
+            _ => {}
         }
     }
+
+    // COVERAGE. AA-2 characterizes single-stepping ACROSS THE MATRIX — every transition
+    // class, not one. One valid sequential step beside seven `step: null` records is not
+    // AA-2; a partial set that graded clean would be exactly the "green on absent
+    // evidence" vacuity. So the required transitions must ALL be covered.
+    let missing: Vec<StepTransition> = REQUIRED_AA2_TRANSITIONS
+        .iter()
+        .copied()
+        .filter(|t| !covered.contains(t))
+        .collect();
+    if !missing.is_empty() {
+        bad.push(format!(
+            "the AA-2 step matrix is incomplete: no step covers {missing:?} — the stage requires \
+             stepping every transition class (sequential, taken branch, exception entry, ERET, \
+             WFI, injection), not merely a nonempty subset"
+        ));
+    }
+
     if bad.is_empty() {
         out.push(pass(
             CheckId::DebugEvidence,
             format!(
-                "{} record(s) carry a valid single-step measurement — PC advanced, one \
-                 instruction retired (AA-2)",
+                "{} record(s) cover the full AA-2 step matrix, each a valid single step with a \
+                 BR_RETIRED delta consistent with its transition class",
                 stepped.len()
             ),
         ));
@@ -1757,13 +1865,24 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
         out.push(fail(
             CheckId::DebugEvidence,
             format!(
-                "{} AA-2 step measurement(s) are not a valid single step: {}",
+                "{} AA-2 step problem(s): {}",
                 bad.len(),
                 join_problems(&bad)
             ),
         ));
     }
 }
+
+/// The transition classes an AA-2 run must step across — the coverage matrix. Fewer than
+/// all of these is a partial characterization, not AA-2's.
+const REQUIRED_AA2_TRANSITIONS: &[StepTransition] = &[
+    StepTransition::Sequential,
+    StepTransition::TakenBranch,
+    StepTransition::ExceptionEntry,
+    StepTransition::ExceptionReturn,
+    StepTransition::Wfi,
+    StepTransition::Injection,
+];
 
 /// The payloads AA-6's determinism matrix must cover — every payload with a counting
 /// window. The `ident` capability report has no window and no measured count, so it is
@@ -2721,6 +2840,51 @@ mod tests {
     }
 
     #[test]
+    fn aa1_matrix_needs_each_condition_measured_not_merely_labelled() {
+        // The self-sweep gap: all four condition LABELS are present, but only pinned-solo
+        // carries armed overflows — the other three are counting-mode (0 armed) run-sets.
+        // The cumulative floor is met by pinned-solo alone, yet count invariance under the
+        // three contamination conditions was never measured. Label presence is not enough.
+        let unarmed = |id: &str, cond: &str, hash: &str| -> (RunSet, Vec<RunRecord>, Vec<u8>) {
+            let mut set = a_loaded_set(Stage::Aa1, id, cond, hash, 2);
+            for r in &mut set.1 {
+                r.overflow = None; // counting mode: no armed overflow
+            }
+            set
+        };
+        let mislabelled = [
+            a_loaded_set(Stage::Aa1, "solo", "pinned-solo", &"a".repeat(64), 4),
+            unarmed("other", "co-tenant-other-core", &"b".repeat(64)),
+            unarmed("same", "co-tenant-same-core", &"c".repeat(64)),
+            unarmed("mem", "memory-pressure", &"d".repeat(64)),
+        ];
+        let floors = Floors {
+            min_armed_overflows: Some(4),
+            min_reps: None,
+            sub_normative: true,
+        };
+        assert_eq!(
+            status(
+                &aggregate(&mislabelled, &floors).outcomes,
+                CheckId::ConditionMatrix
+            ),
+            Some(Status::Fail),
+            "a condition present in name but with zero armed overflows was never measured"
+        );
+    }
+
+    #[test]
+    fn a_zero_attempt_run_set_is_refused_not_vacuously_passed() {
+        // `attempted: 0` with an empty records file passes totality and every per-record
+        // check vacuously — a verdict over a run that never happened. It must fail closed.
+        let mut rs = a_run_set();
+        rs.attempted = 0;
+        let mut out = Vec::new();
+        check_totality(&rs, &[], &mut out);
+        assert_eq!(status(&out, CheckId::Totality), Some(Status::Fail));
+    }
+
+    #[test]
     fn a_record_whose_condition_contradicts_its_manifest_is_caught() {
         let rs = a_run_set(); // manifest condition = pinned-solo
         let mut r = a_record(0);
@@ -2904,96 +3068,100 @@ mod tests {
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::NotRequested));
     }
 
+    /// A record carrying one stepped measurement.
+    fn a_step(id: u64, pc_after: u64, delta: u64, transition: StepTransition) -> RunRecord {
+        let mut r = a_record(id);
+        r.step = Some(StepRecord {
+            pc_before: 0x8000,
+            pc_after,
+            insn_retired: 1,
+            br_retired_delta: delta,
+            transition,
+        });
+        r
+    }
+
+    /// One valid step of each required transition class — a complete AA-2 matrix.
+    fn full_step_matrix() -> Vec<RunRecord> {
+        vec![
+            a_step(0, 0x8004, 0, StepTransition::Sequential),
+            a_step(1, 0x9000, 1, StepTransition::TakenBranch),
+            a_step(2, 0xA000, 0, StepTransition::ExceptionEntry),
+            a_step(3, 0xB000, 0, StepTransition::ExceptionReturn),
+            a_step(4, 0xC000, 0, StepTransition::Wfi),
+            a_step(5, 0xD000, 0, StepTransition::Injection),
+        ]
+    }
+
     #[test]
     fn aa2_requires_a_valid_step_measurement_not_a_debug_label() {
-        // The vacuity: an AA-2 run of ordinary records observed no single step, but
-        // nothing graded that — the floor could report PASS. It must read NOT-REQUESTED
-        // (the single-step run path is arrival-day), never PASS.
+        // No steps → NOT-REQUESTED (the run path is arrival-day), never a silent PASS.
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa2, &[a_record(0)], &mut out);
         assert_eq!(
             status(&out, CheckId::DebugEvidence),
-            Some(Status::NotRequested),
-            "AA-2 with no step measurement must not pass silently"
+            Some(Status::NotRequested)
         );
 
-        // The forgery the r6 check let through: flipping the exit_reason enum to Debug is
-        // NOT step evidence. Without a StepRecord it still reads NOT-REQUESTED.
+        // A bare exit_reason=debug is not a step measurement — still NOT-REQUESTED.
         let mut labelled = a_record(0);
         labelled.exit_reason = ExitReason::Debug;
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa2, &[labelled], &mut out);
         assert_eq!(
             status(&out, CheckId::DebugEvidence),
-            Some(Status::NotRequested),
-            "a bare exit_reason=debug is not a single-step measurement"
+            Some(Status::NotRequested)
         );
 
-        // A step measurement that does not advance the PC or retires ≠1 instruction is
-        // not a valid single step — it FAILS, it is not accepted.
-        let mut bad_step = a_record(0);
-        bad_step.step = Some(StepRecord {
-            pc_before: 0x8000,
-            pc_after: 0x8000, // did not advance
-            insn_retired: 3,  // not one instruction
-            br_retired_delta: 0,
-        });
+        // A single valid step is NOT the AA-2 matrix — the coverage requirement (r10) fails
+        // a partial set even when the one step it has is well-formed.
         let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[bad_step], &mut out);
-        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
+        check_debug_evidence(
+            Stage::Aa2,
+            &[a_step(0, 0x8004, 0, StepTransition::Sequential)],
+            &mut out,
+        );
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "one step is not stepping across the whole matrix"
+        );
 
-        // A step that fell through sequentially (pc + 4) but claims an arbitrary
-        // BR_RETIRED delta (99) is not a valid measurement — the branch delta must match
-        // the branch outcome, and this is the exact forgery the r9 review flagged.
-        let mut wrong_delta = a_record(0);
-        wrong_delta.step = Some(StepRecord {
-            pc_before: 0x8000,
-            pc_after: 0x8004, // sequential: no taken branch, so delta must be 0
-            insn_retired: 1,
-            br_retired_delta: 99,
-        });
+        // The FULL matrix, each step valid → PASS.
         let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[wrong_delta], &mut out);
-        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
-
-        // A taken branch (PC did not advance sequentially) must carry delta 1, not 0.
-        let mut branch_no_count = a_record(0);
-        branch_no_count.step = Some(StepRecord {
-            pc_before: 0x8000,
-            pc_after: 0x9000, // a control transfer: BR_RETIRED must increment
-            insn_retired: 1,
-            br_retired_delta: 0,
-        });
-        let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[branch_no_count], &mut out);
-        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
-
-        // A valid single step: fell through by 4 bytes, one instruction retired, no
-        // taken branch, so BR_RETIRED did not move.
-        let mut good_fallthrough = a_record(0);
-        good_fallthrough.step = Some(StepRecord {
-            pc_before: 0x8000,
-            pc_after: 0x8004,
-            insn_retired: 1,
-            br_retired_delta: 0,
-        });
-        let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[good_fallthrough], &mut out);
+        check_debug_evidence(Stage::Aa2, &full_step_matrix(), &mut out);
         assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Pass));
 
-        // A valid taken-branch step: PC transferred, BR_RETIRED incremented once.
-        let mut good_branch = a_record(0);
-        good_branch.step = Some(StepRecord {
-            pc_before: 0x8000,
-            pc_after: 0x9000,
-            insn_retired: 1,
-            br_retired_delta: 1,
-        });
+        // Now corrupt one class in the otherwise-complete matrix and confirm each is
+        // caught. (a) a sequential step must not move BR_RETIRED.
+        let mut m = full_step_matrix();
+        m[0] = a_step(0, 0x8004, 99, StepTransition::Sequential);
         let mut out = Vec::new();
-        check_debug_evidence(Stage::Aa2, &[good_branch], &mut out);
-        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Pass));
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
 
-        // The check does not fire outside AA-2, where single-stepping is not the subject.
+        // (b) a taken branch MUST increment BR_RETIRED by exactly 1.
+        let mut m = full_step_matrix();
+        m[1] = a_step(1, 0x9000, 0, StepTransition::TakenBranch);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(status(&out, CheckId::DebugEvidence), Some(Status::Fail));
+
+        // (c) an exception transition is classified from the OPCODE, not PC arithmetic:
+        // its PC moves far (pc != pc+4) but that is NOT forced to be a retired branch —
+        // the delta is measured (0 here), and the matrix passes. This is the r10 point:
+        // an ERET / SVC / injected IRQ must not be forced to delta 1 by PC movement alone.
+        let mut m = full_step_matrix();
+        m[3] = a_step(3, 0xFFFF_0000, 0, StepTransition::ExceptionReturn);
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &m, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Pass),
+            "an exception transition with a far PC move and delta 0 is valid — not a forced branch"
+        );
+
+        // The check does not fire outside AA-2.
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa3, &[a_record(0)], &mut out);
         assert!(out.is_empty());

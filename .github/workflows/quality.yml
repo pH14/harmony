@@ -221,6 +221,24 @@ jobs:
           # every payload's window is disassembled out of the built ELF and its branch
           # sequence must equal the oracle model's. RC propagates.
           cargo run --quiet --bin arm-scan -- windows ../payloads/target/aarch64-unknown-none/release
+      - name: kernel patch — format + parse gate
+        # The FULL patch gate (`host/verify.sh`: apply onto pristine 6.18.35 + compile
+        # against the KVM tree) needs a native-aarch64 builder with the pinned kernel
+        # tree (`host/BUILD.md`) — it cannot run on this x86 runner, and is run there.
+        # What CI CAN and now DOES cover is the most likely regression: a later edit that
+        # corrupts, truncates, or malforms the patch so it stops applying. Each patch is
+        # validated as a well-formed git mail-format patch whose diff parses — a mangled
+        # patch fails here instead of merging green. RC propagates (`set -e`).
+        run: |
+          set -e
+          cd "$SPIKE/host"
+          test -d patches && ls patches/*.patch >/dev/null
+          for p in patches/*.patch; do
+            test -s "$p"                                   # present and non-empty
+            git mailinfo /tmp/msg /tmp/patch < "$p" >/dev/null  # valid mail-format patch
+            git apply --stat /tmp/patch >/dev/null         # the diff parses (hunks well-formed)
+          done
+          echo "patch format + parse OK; the apply-onto-6.18.35 + compile gate runs on the aarch64 builder (host/BUILD.md §0)"
       # arm-harness is the crate with `unsafe` (the perf/KVM syscall seam), so the
       # repo's unsafe⇒Miri bar applies to it. floor-check is deliberately NOT here:
       # it contains no `unsafe`, its fixture tests are filesystem reads Miri's

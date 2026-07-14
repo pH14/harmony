@@ -695,6 +695,68 @@ Four P1/P2 fixes plus one ruled doc-only change. The Miri finding stays adjudica
 
 Fixtures: 24, unchanged. Miri runs arm-harness (83) plus oracle-model (24).
 
+## Round-10 review fixes (PR #108, cross-model pass r10)
+
+Seven P1 + two P2, all fresh surface, plus a **self-sweep** the foreman asked for — an
+independent audit of the whole floor-check/harness surface for the two patterns these
+rounds keep hitting (vacuous-pass on absent/partial evidence; panic-on-untrusted-input) —
+which surfaced two more, both fixed here.
+
+- **Hash-normalized dedup + char-safe truncation.** The r9 duplicate-dedup compared raw
+  `records_sha256` strings, so the same records once as `<hex>` and once as `sha256:<hex>`
+  (both schema-valid) counted as distinct and doubled the floor. Dedup now uses the same
+  `normalise_hash` verification uses. And the diagnostic's `&hash[..16]` byte-slice would
+  panic on a malformed multi-byte hash before the well-formed check could reject it; it is
+  now `chars().take(16)`.
+- **Single-directory AA-1 goes through the matrix.** The r9 aggregation shortcut let a lone
+  normative `pinned-solo` million-overflow directory `RESULT: PASS` without the
+  contamination matrix. `check_run_sets` no longer shortcuts a single directory — every CLI
+  run goes through the same aggregate path, so the matrix requirement applies.
+- **Zero-attempt run-sets refused.** `attempted: 0` with an empty (correctly hashed) records
+  file passed totality and every per-record check vacuously. `check_totality` now fails
+  closed on it, and the schema pins `attempted` ≥ 1.
+- **AA-2 step-coverage matrix + opcode-based classification.** Two coupled fixes. (a) One
+  valid `StepRecord` beside seven `step: null` records passed — a partial characterization.
+  The check now requires the FULL transition matrix (sequential, taken-branch, exception
+  entry, ERET, WFI, injection). (b) The r9 delta check inferred "taken branch" from
+  `pc_after != pc_before + 4`, which misclassifies an SVC/ERET/injected-IRQ *exception*
+  transfer as a retired branch and wrongly forces `delta == 1`. `StepRecord` now carries a
+  `StepTransition` recorded from the stepped opcode, and the delta is validated against the
+  class: forced only where the architecture guarantees a retired branch, measured (0-or-1)
+  for the exception/WFI/injection classes AA-2 characterizes.
+- **Migration-probe CLI mode.** `execute` always hard-pinned and recorded
+  `migration_probe: false`, so AA-1's required bounded migration probe could not be run
+  honestly. Added `--migration-probe`: it skips pinning and records `pinned: false,
+  migration_probe: true` — the posture the checker already accepts only for that sanctioned
+  probe.
+- **`plan` bounds reps (P2).** `--reps 18446744073709551615` saturated `matrix.len() * reps`
+  to `usize::MAX` and panicked in `Vec::with_capacity`. `plan` now returns `Result` and
+  refuses a total over `MAX_PLANNED_SAMPLES` (or an overflow) with a normal error.
+- **`host/verify.sh` — CI patch format/parse gate (P2).** The full apply-onto-6.18.35 +
+  compile gate needs a native-aarch64 builder with the pinned kernel tree and cannot run on
+  the x86 runner. CI now validates each patch is a well-formed git mail-format patch whose
+  diff parses (`git mailinfo` + `git apply --stat`), so the most likely regression — a
+  corrupted/truncated patch that stops applying — fails CI instead of merging green; the
+  full compile gate is documented as the builder's (`host/BUILD.md`).
+
+**Self-sweep findings (found and fixed proactively):**
+
+- **AA-1 matrix was satisfied by labels, not measurement.** The r9/r10 matrix required each
+  condition's *name* to appear, so a million-overflow `pinned-solo` set beside three
+  counting-mode (zero-armed) run-sets carrying the other labels passed — the cumulative
+  floor met by `pinned-solo` alone, the contamination conditions never actually measured.
+  Now each required condition must contribute a NONZERO armed count, and (for a normative
+  run) at least its equal share of the floor.
+- **Unbounded oracle work on hostile records.** `check_counts` memoizes `expected` by
+  `(payload, scale, seed)`, but a records file of many DISTINCT large-scale `branch-dense`
+  seeds forces a fresh ~10⁸-iteration simulation each — a multi-hour hang, violating the
+  checker's own "fail closed, not hung" discipline. The cumulative simulated trips are now
+  bounded (`MAX_ORACLE_TRIPS`); over the ceiling it fails closed.
+
+Fixtures: 24, unchanged (step records are still `null`; `attempted` ≥ 8). Schema v3 (the
+step-record gains `transition`, an unproduced sub-schema). Miri runs arm-harness (84) plus
+oracle-model (24).
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

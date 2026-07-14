@@ -266,13 +266,45 @@ pub struct OverflowRecord {
     pub landed_digest: String,
 }
 
+/// What kind of transition a single step made — recorded from the **stepped opcode /
+/// trap syndrome**, not inferred from PC arithmetic.
+///
+/// This matters because `pc_after != pc_before + 4` alone cannot tell a retired taken
+/// branch from an *exception* transition (an `SVC`, an abort, an injected IRQ, an
+/// `ERET`), and `BR_RETIRED` counts the former but not the latter. AA-2 measures the
+/// per-class `BR_RETIRED` behaviour; the class is evidence the harness records at step
+/// time (from the instruction it stepped and the exit it took), and the checker validates
+/// the delta against it — forcing `delta == 1` only where the architecture guarantees a
+/// retired branch, and letting AA-2 *measure* it where it does not.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StepTransition {
+    /// Fell through to `pc + 4`: a non-branch, or a not-taken conditional. `BR_RETIRED`
+    /// must not move.
+    Sequential,
+    /// An architectural **taken** branch (`B`/`B.cond`/`CBZ`/`TBZ`/`BL`/`BR`/`RET`/…).
+    /// `BR_RETIRED` must increment by exactly 1.
+    TakenBranch,
+    /// Synchronous **exception entry** — `SVC`, or a data/instruction abort. Not a
+    /// retired branch instruction; the `BR_RETIRED` delta is AA-2's to measure.
+    ExceptionEntry,
+    /// **`ERET`** — exception return. Its `BR_RETIRED` weight is unknown by construction
+    /// (the oracle model's ambiguity term); AA-2 measures it.
+    ExceptionReturn,
+    /// **`WFI`** — waited and was resumed by an interrupt. Measured.
+    Wfi,
+    /// An **injected interrupt** boundary (asynchronous IRQ, AA-6's mechanism). Measured.
+    Injection,
+}
+
 /// One single-step measurement (AA-2).
 ///
 /// AA-2 exists to *characterize single-stepping*: does one step retire exactly one
-/// instruction, and what is its `BR_RETIRED` weight. The evidence is not the enum label
-/// `exit_reason: debug` — that a rehashed run-set can flip in one byte — but these
-/// measured numbers. The AA-2 floor validates them: a step must advance the PC
-/// (`pc_after != pc_before`) and retire exactly one instruction (`insn_retired == 1`).
+/// instruction, and what is each class's `BR_RETIRED` weight. The evidence is not the
+/// enum label `exit_reason: debug` — that a rehashed run-set can flip in one byte — but
+/// these measured numbers plus the [`StepTransition`] class recorded from the stepped
+/// opcode. The AA-2 floor validates them: a step must advance the PC and retire exactly
+/// one instruction, and its `br_retired_delta` must agree with its transition class.
 ///
 /// **Untested on silicon and unproduced pre-silicon:** the single-step *run path*
 /// (`KVM_SET_GUEST_DEBUG` + the stepping loop) is arrival-day work, so no current run
@@ -286,9 +318,12 @@ pub struct StepRecord {
     pub pc_after: u64,
     /// Instructions retired by the step. AA-2's single-step semantics require exactly 1.
     pub insn_retired: u64,
-    /// `BR_RETIRED` delta across the step: 0 for a non-branch, 1 for a taken branch —
-    /// the per-instruction work-clock weight AA-2 characterizes.
+    /// `BR_RETIRED` delta across the step. Validated against [`StepRecord::transition`]:
+    /// 0 for [`StepTransition::Sequential`], 1 for [`StepTransition::TakenBranch`], and a
+    /// measured 0-or-1 for the exception/WFI/injection classes AA-2 characterizes.
     pub br_retired_delta: u64,
+    /// What kind of transition the step made, from the stepped opcode and the exit taken.
+    pub transition: StepTransition,
 }
 
 /// One attempted sample.

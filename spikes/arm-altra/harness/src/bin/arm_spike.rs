@@ -110,6 +110,15 @@ struct RunOpts {
     /// this lineage (rr #3607), not hygiene.
     #[arg(long)]
     core: u32,
+    /// Run AA-1's **bounded migration probe**: deliberately do NOT pin the thread, so it
+    /// is free to migrate across cores under armed overflow, to observe the rr #3607
+    /// failure mode (lost PMI → hang vs delayed) on this exact kernel/silicon. The
+    /// evidence records `pinned: false, migration_probe: true` — the honest posture — so
+    /// the checker accepts the missing pin only for this sanctioned probe, never as a
+    /// normal run. Re-pin permanently after; this turns the standing pinning condition
+    /// into evidence (`docs/ARM-ALTRA.md` §AA-1 migration probe).
+    #[arg(long)]
+    migration_probe: bool,
     /// The stage this run-set belongs to.
     #[arg(long)]
     stage: StageArg,
@@ -250,7 +259,8 @@ fn emit_plan(seed: u64, reps: u64, with_targets: bool) -> Result<(), String> {
         with_targets,
         vec![Scale::Smoke],
         "pinned-solo",
-    ));
+    ))
+    .map_err(|e| e.to_string())?;
     let json =
         serde_json::to_string_pretty(&samples).map_err(|e| format!("serialize plan: {e}"))?;
     println!("{json}");
@@ -364,6 +374,7 @@ struct RunArgs {
     host_kernel_image: PathBuf,
     host_kernel_sha256: String,
     core: u32,
+    migration_probe: bool,
     stage: Stage,
     mechanism: MechanismArg,
     scales: Vec<Scale>,
@@ -468,9 +479,14 @@ fn execute(args: RunArgs) -> Result<(), String> {
     use std::collections::BTreeMap;
 
     // Pin first, and pin the thread that will call KVM_RUN: the perf context follows
-    // the thread, and on this lineage an unpinned sample is not a slower sample, it
-    // is an untrusted one (rr #3607).
-    pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
+    // the thread, and on this lineage an unpinned sample is not a slower sample, it is an
+    // untrusted one (rr #3607). The ONE sanctioned exception is AA-1's bounded migration
+    // probe: it deliberately leaves the thread unpinned to observe the #3607 failure mode,
+    // and records that honestly (`pinned: false, migration_probe: true`) so the evidence
+    // says what it did rather than claiming a pin it never took.
+    if !args.migration_probe {
+        pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
+    }
 
     // Content-verify the host kernel against its TRUSTED expected pin: hash the image
     // and compare to the sha256 the operator vouched is the running kernel. A mismatch
@@ -515,7 +531,8 @@ fn execute(args: RunArgs) -> Result<(), String> {
         args.with_targets,
         scales,
         &args.condition,
-    ));
+    ))
+    .map_err(|e| e.to_string())?;
     let attempted = samples.len() as u64;
     // An empty plan measures nothing. `--reps 0` (or no payloads/scales) would
     // otherwise write an empty, all-passing run-set — a green verdict over zero
@@ -646,11 +663,17 @@ fn execute(args: RunArgs) -> Result<(), String> {
                 cfg
             },
             pinning: Pinning {
-                pinned: true,
-                core: Some(args.core),
+                // The migration probe is deliberately unpinned; every other run is pinned.
+                pinned: !args.migration_probe,
+                core: if args.migration_probe {
+                    None
+                } else {
+                    Some(args.core)
+                },
                 // The governor of the core the vCPU is PINNED to, not CPU 0's —
                 // frequency policy can differ per core, and the retained posture must
-                // describe the core that actually ran.
+                // describe the core that actually ran. For the (unpinned) migration probe
+                // it is the nominal starting core's, recorded for reference.
                 governor: std::fs::read_to_string(format!(
                     "/sys/devices/system/cpu/cpu{}/cpufreq/scaling_governor",
                     args.core
@@ -658,7 +681,7 @@ fn execute(args: RunArgs) -> Result<(), String> {
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
-                migration_probe: false,
+                migration_probe: args.migration_probe,
             },
             condition: args.condition,
             weights: args.weights,
@@ -736,6 +759,7 @@ fn run() -> Result<(), String> {
                 host_kernel_image: opts.host_kernel_image,
                 host_kernel_sha256: opts.host_kernel_sha256,
                 core: opts.core,
+                migration_probe: opts.migration_probe,
                 stage: opts.stage.into(),
                 mechanism: opts.mechanism,
                 scales: opts.scales.iter().copied().map(Scale::from).collect(),

@@ -218,7 +218,8 @@
         "pc_before",
         "pc_after",
         "insn_retired",
-        "br_retired_delta"
+        "br_retired_delta",
+        "transition"
       ],
       "properties": {
         "pc_before": {
@@ -237,11 +238,26 @@
           "minimum": 0
         },
         "br_retired_delta": {
-          "description": "BR_RETIRED delta across the step: 0 for a non-branch, 1 for a taken branch \u2014 the per-instruction work-clock weight AA-2 characterizes.",
+          "description": "BR_RETIRED delta across the step, validated against `transition`: 0 for sequential, 1 for a taken branch, and a measured 0-or-1 for the exception/WFI/injection classes AA-2 characterizes.",
           "type": "integer",
           "minimum": 0
+        },
+        "transition": {
+          "$ref": "#/$defs/step-transition"
         }
       }
+    },
+    "step-transition": {
+      "description": "What kind of transition a single step made (`arm_harness::evidence::StepTransition`), recorded from the stepped opcode/trap syndrome rather than inferred from PC arithmetic \u2014 because `pc_after != pc_before + 4` cannot tell a retired taken branch from an exception transfer, and BR_RETIRED counts the former, not the latter. The AA-2 floor validates the delta against the class and requires the full matrix to be covered.",
+      "type": "string",
+      "enum": [
+        "sequential",
+        "taken-branch",
+        "exception-entry",
+        "exception-return",
+        "wfi",
+        "injection"
+      ]
     }
   }
 }
