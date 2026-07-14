@@ -55,9 +55,12 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   moves (`vendor::x86::bringup`, vendor-neutral `Vmm` error — engine names no vendor, swept);
   round-2's snapshot-state P1/P2 **ruled acknowledged-and-deferred** per the pre-build ruling
   and documented where it binds (trait hooks + ARCH-BOUNDARY §D; flagged for Paul's veto).
-  Gates: 1692/1692, clippy ×3 targets, Miri ×4 crates. **Parked awaiting box gates** in the
-  post-re-cert window (readiness table in IMPLEMENTATION-task108.md); merge then unblocks
-  `hm-rk5` / `hm-cbt` / `hm-0nf`.
+  Gates: 1692/1692, clippy ×3 targets, Miri ×4 crates. **BOX GATES GREEN-FOR-PR
+  (2026-07-14 ~10:45)**: 6/8 outright; the 2 failures proven PRE-EXISTING by a controlled
+  main-baseline differential (hm-xdp postgres-image family) — the only on-box tree
+  difference was the predicted +2-byte vm-state v2 header, all hashes bit-identical.
+  **MERGE-READY, awaiting Paul** (session classifier requires human merge sign-off);
+  merge unblocks `hm-rk5` / `hm-cbt` / `hm-0nf`.
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round-1 review POSTED** (PR #108,
   2026-07-14: 8 verified blocking threads — wrong perf_event_attr bits, probe-RC discards,
   the missing KVM_RUN loop vs spec deliverable 2, floor-checker stage-blindness incl. a
