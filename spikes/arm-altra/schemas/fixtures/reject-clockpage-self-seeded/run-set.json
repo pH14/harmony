@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "stage": "aa1",
-  "run_set_id": "fixture-aa1",
+  "stage": "aa5",
+  "run_set_id": "fixture-aa5",
   "environment": {
     "midr": 1094701248,
     "soc": "Ampere Altra Q80-30 (synthetic)",
@@ -13,10 +13,10 @@
     "kvm_mode": "vhe"
   },
   "mechanism": {
-    "kvm_patched": false,
-    "host_kernel_sha256": "df81fdddf97e7aee3cc87cd96ea9ca1a61c9cc7309a3db9f4a12f724344a902b",
-    "expected_exit_reason": "signal-kick",
-    "patch_marker_observed": false
+    "kvm_patched": true,
+    "host_kernel_sha256": "2f0cdcbd2886e5830910d44d4e3bb68fdd2194cc9f75d83c4f64e2938cf64989",
+    "expected_exit_reason": "preempt",
+    "patch_marker_observed": true
   },
   "images": [
     {
@@ -57,5 +57,5 @@
   "skid_margin": 64,
   "attempted": 8,
   "records_file": "records.jsonl",
-  "records_sha256": "7361f0cf97944d8989a2db2750b0641d1fae68f2c38c5214e5b41679102ad0b6"
+  "records_sha256": "6c6f5d42dda150147e6c9d05c370218ceaaa0626da5f93cf3dc7934cc3af286e"
 }

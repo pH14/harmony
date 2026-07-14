@@ -20,7 +20,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 clap.workspace = true
 sha2.workspace = true
-arm-harness = { path = "../../harness" }
+arm-harness = { path = "../../harness", version = "0.1.0" }
 
 [lints]
 workspace = true

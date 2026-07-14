@@ -25,9 +25,9 @@ whose records the checker accepts, under an explicit floor, has.
 | --- | --- |
 | `run-set.schema.json` | The `run-set.json` **manifest**: environment, mechanism attestation, image pins, perf config, pinning, the measured weights + skid margin, and the *attempted* sample count. Mirrors `arm_harness::evidence::RunSet` field-for-field. Carries **no** result totals by design. |
 | `run-record.schema.json` | One line of `records.jsonl`: one attempted sample. Mirrors `arm_harness::evidence::RunRecord`. Every attempted sample gets a record — a missing sample is a failure to account, not a pass. |
-| `truth-table.schema.json` | The AA-0 capability truth table: MIDR/SoC/core count, the standing core-assignment topology, and expect-vs-found rows (ECV **expect absent**, LSE **expect present**, PMUVer, SVE **expect absent**, BR_RETIRED-in-`PMCEID0` **expect present**, `/dev/kvm`, VHE-vs-nVHE, `KVM_CAP_SET_GUEST_DEBUG`, vGICv3 creatable). Deviations must carry an explicit recorded disposition, including a *favourable* one. |
+| `truth-table.schema.json` | The AA-0 capability truth table: MIDR/SoC/core count, the standing core-assignment topology, and **thirteen mandatory** expect-vs-found rows (ECV **expect absent**, LSE **expect present**, PMUVer, SVE **expect absent**, BR_RETIRED-in-`PMCEID0`, **`perf_event_open` of raw 0x21 pinned SUCCEEDS**, **a host-side overflow test DELIVERS**, `/dev/kvm`, VHE-vs-nVHE, `KVM_CAP_SET_GUEST_DEBUG`, vGICv3 creatable, **the writable-ID-register surface**). The two work-clock rows are existential: AA-1 — the whole point of AA-0 — rests on them, so a schema-valid table cannot leave them unmeasured. Deviations must carry an explicit recorded disposition, including a *favourable* one. |
 | `floor-check/` | The Rust crate: the `floor-check` binary (the checker), the `gen-fixtures` binary (regenerates the fixtures from the model), and the accept/reject integration tests. |
-| `fixtures/` | Thirteen checked-in run-sets — one the checker must accept, twelve it must reject (one per failure mode). Generated from the oracle model by `gen-fixtures`; committed as files because they are the evidence the tests read. |
+| `fixtures/` | Eighteen checked-in run-sets — one the checker must accept, seventeen it must reject (one per failure mode). Generated from the oracle model by `gen-fixtures`; committed as files because they are the evidence the tests read. |
 
 The schemas are JSON Schema **draft 2020-12**, hand-written, no codegen. They match
 `spikes/arm-altra/harness/src/evidence.rs` field-for-field: every generated fixture
@@ -115,12 +115,31 @@ check (not merely that something failed):
 | `reject-no-weights` | `weights-present` | no-invented-constants — `weights: null`, so counts are *refused*, not defaulted |
 | `reject-tampered-records` | `records-sha256` | the `records.jsonl` sha256 does not match the manifest |
 | `reject-self-seeded-params` | `params-mode` | in-band attestation — a record ran `self-seeded`, not `managed` |
+| `reject-aa3-claims-stock` | `mechanism-attestation` | #4, the *self-consistent* form: an AA-3 run-set declaring `kvm_patched: false` + `signal-kick`, with matching records. Everything agrees; what they agree on is AA-3's forbidden fallback. The **stage tuple** — not the internal consistency — is what refuses it |
+| `reject-migration-probe-outside-aa1` | `pinning` | one manifest field exempting an *unpinned AA-3 landing run* from a correctness condition. The bounded migration probe is AA-1's alone (rr #3607) |
+| `reject-perf-attrs` | `perf-config` | the recorded event is not the work clock: wrong raw event, host-inclusive, guest-EXCLUDING, unpinned (so multiplexed, so scaled) |
+| `reject-clockpage-self-seeded` | `clockpage-mode` | an AA-5 run whose guests published their own static clock page — the fallback, not the harness-maintained work-derived page AA-5 certifies |
+| `reject-divergent-digests` | `replay-identity` | two repetitions of the same input that landed on **different** `state_digest`s. Every count matches and any rep floor is met — because a rep floor counts rows. This is the axis it exists for |
 
-Beyond the twelve fixtured modes, the checker also recomputes each record's
+### A floor nobody asked for is not a floor that passed
+
+The checker's output *is* retained evidence (§Evidence integrity #2), so a verdict
+that is **silent** about a floor the evidence needs cannot be read as accepting one.
+A third status exists for exactly that: `NOT-REQUESTED`. Check an overflow-bearing
+run-set without `--min-armed-overflows`, or an AA-6 run-set without `--min-reps`, and
+the verdict says `RESULT: INCOMPLETE`, names the floor, and **exits nonzero**. The
+no-invented-numbers philosophy is intact: the checker demands the *presence* of an
+explicit floor, and never supplies its value.
+
+Beyond the fixtured modes, the checker also recomputes each record's
 `measured_taken` from `work_end - work_begin` and fails a record whose own field
 disagrees; refuses a `skid` it cannot bound (missing `skid_margin`); enforces
-`payload_status == 0`; and demands the vCPU was pinned unless the run is flagged as
-AA-1's one sanctioned migration probe (`pinning`). `count-exactness` uses
+`payload_status == 0`; validates that the manifest's `perf` block describes the work
+clock (raw `0x21`, `exclude_host`, `!exclude_guest`, `pinned`, and a `sample_period`
+consistent with whether the records armed anything); requires every record to carry a
+non-empty `state_digest` (an empty one compares equal to every other empty one, which
+would make the determinism floors vacuous); and demands the vCPU was pinned unless the
+run is AA-1's one sanctioned migration probe. `count-exactness` uses
 `oracle_model::expected(payload, scale, seed).total(&weights, reported_taken)` — the
 **analytical** oracle (§Evidence integrity #5), never PMU-vs-PMU, which would be
 circular.
@@ -164,7 +183,7 @@ canonical shapes) and on `oracle-model` for the independent count oracle.
 | Validated offline, here | Only silicon can say |
 | --- | --- |
 | The schemas are valid draft-2020-12 and match `evidence.rs` field-for-field (every fixture validates). | Whether any real run-set's `BR_RETIRED` counts are bit-deterministic. |
-| The checker catches all twelve failure modes, and *which* check catches each. | Whether armed overflows are actually delivered exactly once on N1. |
+| The checker catches all seventeen failure modes, and *which* check catches each. | Whether armed overflows are actually delivered exactly once on N1. |
 | Counts in the fixtures are exactly what the oracle predicts under the synthetic weights. | The **measured** weights (count offsets) and `skid_margin` — AA-1's to produce. |
 | The checker refuses missing weights / skid margin rather than defaulting. | Whether the patched `Preempt` exit is deterministic (AA-3). |
 

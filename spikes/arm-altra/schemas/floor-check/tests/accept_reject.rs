@@ -1,3 +1,10 @@
+// Every test here reads a committed fixture off disk, and Miri's isolation forbids
+// `open`. The crate has no `unsafe`, so the interpreter has nothing to say about it
+// anyway — and disabling isolation to satisfy a file-reading test is exactly the
+// wrong trade (the repo's Miri jobs run with `-Zmiri-permissive-provenance` only).
+// So the target steps aside under Miri rather than the flag being loosened for it.
+#![cfg(not(miri))]
+
 //! Accept/reject integration tests over the committed fixtures.
 //!
 //! Each test loads a checked-in fixture from `schemas/fixtures/<case>/` and runs
@@ -161,6 +168,82 @@ fn reject_self_seeded_params() {
         no_floors(),
         CheckId::ParamsMode,
     );
+}
+
+#[test]
+fn reject_aa3_claims_stock() {
+    // The evasion a per-record exit-reason check cannot see: an AA-3 run-set that
+    // declares the stock mechanism AND whose records all carry the stock signal-kick.
+    // Everything agrees with everything; what they agree on is AA-3's forbidden
+    // fallback. The stage tuple is what refuses it — self-consistency is not
+    // attestation.
+    assert_single_failure(
+        "reject-aa3-claims-stock",
+        no_floors(),
+        CheckId::MechanismAttestation,
+    );
+}
+
+#[test]
+fn reject_migration_probe_outside_aa1() {
+    // One manifest field must not exempt an unpinned AA-3 landing run from a
+    // correctness condition (rr #3607). The bounded probe is AA-1's alone.
+    assert_single_failure(
+        "reject-migration-probe-outside-aa1",
+        no_floors(),
+        CheckId::Pinning,
+    );
+}
+
+#[test]
+fn reject_perf_attrs() {
+    // A run-set whose perf block records an event that is not the work clock:
+    // wrong raw event, host-inclusive, guest-EXCLUDING, unpinned (so multiplexed,
+    // so scaled). Such evidence cannot establish what the run-set claims.
+    assert_single_failure("reject-perf-attrs", no_floors(), CheckId::PerfConfig);
+}
+
+#[test]
+fn reject_clockpage_self_seeded() {
+    // An AA-5 run whose guests published their own static clock page: it exercised
+    // the fallback, not the harness-maintained work-derived page AA-5 certifies.
+    assert_single_failure(
+        "reject-clockpage-self-seeded",
+        no_floors(),
+        CheckId::ClockPageMode,
+    );
+}
+
+#[test]
+fn reject_divergent_digests() {
+    // Two repetitions of the same input that landed on different states. Every count
+    // matches, every overflow was delivered exactly once, and any rep floor you care
+    // to name is met — because a rep floor counts rows. This is the axis it exists
+    // for, and the replay-identity check is what actually reads it.
+    let floors = Floors {
+        min_armed_overflows: None,
+        min_reps: Some(2),
+    };
+    assert_single_failure("reject-divergent-digests", floors, CheckId::ReplayIdentity);
+}
+
+#[test]
+fn an_unrequested_floor_is_not_an_accepted_one() {
+    // §Evidence integrity #2: the checker's output IS retained evidence. Checking an
+    // overflow-bearing run-set with no --min-armed-overflows must not read as full
+    // acceptance — the omission is on the face of the verdict, and the RC is nonzero.
+    let report = check("accept", no_floors());
+    assert!(
+        !report.passed(),
+        "a floor nobody asked for is not a floor that passed"
+    );
+    assert_eq!(report.failed(), Vec::new(), "nothing actually FAILED");
+    assert_eq!(
+        report.not_requested(),
+        vec![CheckId::ArmedOverflowFloor],
+        "the unrequested floor is named in the retained verdict"
+    );
+    assert_ne!(report.exit_code(), 0);
 }
 
 /// The committed fixture files must byte-match what the generator emits today. If

@@ -1,6 +1,6 @@
 //! The fixture generator.
 //!
-//! Twelve synthetic run-sets the checker must reject (one per failure mode) and
+//! Seventeen synthetic run-sets the checker must reject (one per failure mode) and
 //! one it must accept. They are **generated from the oracle model**, not hand
 //! written: the accept fixture's counts are the exact values
 //! [`oracle_model::expected`] predicts under a chosen (synthetic) weights pack, so
@@ -25,7 +25,7 @@
 
 use arm_harness::evidence::{
     Environment, ExitReason, ImagePin, Mechanism, OverflowRecord, PerfConfig, Pinning, RunRecord,
-    RunSet, SCHEMA_VERSION, Stage,
+    RunSet, SCHEMA_VERSION, Stage, hex_lower,
 };
 use oracle_model::{DEFAULT_SEED, Payload, Scale, Weights, expected};
 use sha2::{Digest, Sha256};
@@ -68,15 +68,6 @@ const WINDOWED: [Payload; 8] = [
     Payload::LseAtomics,
     Payload::ClockPage,
 ];
-
-/// Lowercase-hex a byte slice.
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
 
 /// A deterministic synthetic sha256 (64 hex) from a label.
 fn synth_sha256(label: &str) -> String {
@@ -174,8 +165,12 @@ fn generate_record(sample_id: u64, payload: Payload, exit: ExitReason) -> RunRec
     let measured_taken = e.total(&synthetic_weights(), reported_taken);
     let work_begin = 1_000;
     let work_end = work_begin + measured_taken;
+    // The token the guest actually prints when the harness published the page
+    // (`payloads/runtime/src/pvclock.rs`): `managed`, versus `self-seeded` for the
+    // payload's own static fallback. The AA-5 check reads this field, so a fixture
+    // that invented a third token would be testing a string no guest can emit.
     let clockpage_mode = if payload == Payload::ClockPage {
-        Some("materialized".to_string())
+        Some("managed".to_string())
     } else {
         None
     };
@@ -289,7 +284,7 @@ fn accept() -> Fixture {
     fixture("accept", &run_set, &records)
 }
 
-/// Generate all thirteen fixtures.
+/// Generate all eighteen fixtures.
 #[must_use]
 pub fn all_fixtures() -> Vec<Fixture> {
     let mut fixtures = vec![accept()];
@@ -442,6 +437,82 @@ pub fn all_fixtures() -> Vec<Fixture> {
         },
     ));
 
+    // 13. reject-aa3-claims-stock — the most PR-98-shaped evasion the checker exists
+    //     to stop, and the one a per-record exit-reason check alone cannot see: an
+    //     AA-3 run-set that declares the STOCK mechanism (kvm_patched: false,
+    //     signal-kick) and whose records all carry signal-kick. Everything agrees
+    //     with everything; what they agree on is AA-3's forbidden fallback. Stage
+    //     AA-3 rides the patched force-exit, so the tuple — not the consistency — is
+    //     what decides.
+    {
+        let records = base_records(ExitReason::SignalKick);
+        let run_set = build_run_set(Stage::Aa3, stock_mechanism(), &records);
+        fixtures.push(fixture("reject-aa3-claims-stock", &run_set, &records));
+    }
+
+    // 14. reject-migration-probe-outside-aa1 — an unpinned AA-3 landing run that
+    //     exempts itself from pinning by setting one manifest field. The bounded
+    //     migration probe is AA-1's alone (docs/ARM-ALTRA.md §AA-1); pinning is a
+    //     correctness condition on this lineage (rr #3607), not hygiene.
+    {
+        let records = base_records(ExitReason::Preempt);
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        run_set.pinning.pinned = false;
+        run_set.pinning.migration_probe = true;
+        run_set.pinning.core = None;
+        fixtures.push(fixture(
+            "reject-migration-probe-outside-aa1",
+            &run_set,
+            &records,
+        ));
+    }
+
+    // 15. reject-perf-attrs — the manifest's perf block records an event that is not
+    //     the work clock: a different raw event, host-inclusive, guest-EXCLUDING, and
+    //     unpinned (so multiplexed, so scaled). Evidence that cannot establish what
+    //     the run-set claims, and which nothing used to check.
+    {
+        let records = base_records(ExitReason::Preempt);
+        let mut run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        run_set.perf = PerfConfig {
+            raw_event: 0,
+            exclude_host: false,
+            exclude_guest: true,
+            exclude_hv: false,
+            pinned: false,
+            sample_period: Some(1_000_000),
+        };
+        fixtures.push(fixture("reject-perf-attrs", &run_set, &records));
+    }
+
+    // 16. reject-clockpage-self-seeded — an AA-5 run whose guests all published their
+    //     OWN static clock page, because the harness never published one. That run
+    //     exercised the fallback, not the harness-maintained work-derived page AA-5
+    //     exists to certify.
+    {
+        let mut records = base_records(ExitReason::Preempt);
+        for r in &mut records {
+            r.clockpage_mode = Some("self-seeded".to_string());
+        }
+        let run_set = build_run_set(Stage::Aa5, patched_mechanism(), &records);
+        fixtures.push(fixture("reject-clockpage-self-seeded", &run_set, &records));
+    }
+
+    // 17. reject-divergent-digests — two repetitions of the SAME (payload, scale,
+    //     seed, condition, target) that landed on different state digests. Every
+    //     count matches, every overflow was delivered exactly once, the sample count
+    //     meets any rep floor you like — and the two runs did different things. This
+    //     is the vacuity the rep floor had: it counted rows and never compared them.
+    {
+        let mut a = generate_record(0, Payload::StraightLine, ExitReason::Preempt);
+        let mut b = generate_record(1, Payload::StraightLine, ExitReason::Preempt);
+        a.state_digest = format!("sha256:{}", synth_sha256("state-rep-a"));
+        b.state_digest = format!("sha256:{}", synth_sha256("state-rep-b"));
+        let records = vec![a, b];
+        let run_set = build_run_set(Stage::Aa3, patched_mechanism(), &records);
+        fixtures.push(fixture("reject-divergent-digests", &run_set, &records));
+    }
+
     fixtures
 }
 
@@ -466,13 +537,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn there_are_thirteen_fixtures_with_unique_names() {
+    fn there_are_eighteen_fixtures_with_unique_names() {
         let fixtures = all_fixtures();
-        assert_eq!(fixtures.len(), 13);
+        assert_eq!(fixtures.len(), 18);
         let mut names: Vec<&str> = fixtures.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), 13, "fixture names must be unique");
+        assert_eq!(names.len(), 18, "fixture names must be unique");
     }
 
     #[test]

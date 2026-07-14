@@ -66,30 +66,62 @@ fn main() -> ExitCode {
         println!("  [{}] {}", o.status, o.id);
     }
 
-    // stderr: the detail behind every failure.
+    // stderr: the detail behind every failure, and behind every floor the evidence
+    // needed but nobody named.
     for o in &report.outcomes {
-        if o.status == Status::Fail {
-            eprintln!("FAIL {}: {}", o.id, o.detail);
+        match o.status {
+            Status::Fail => eprintln!("FAIL {}: {}", o.id, o.detail),
+            Status::NotRequested => eprintln!("NOT-REQUESTED {}: {}", o.id, o.detail),
+            Status::Pass => {}
         }
     }
 
     let failed = report.failed();
-    if failed.is_empty() {
+    let not_requested = report.not_requested();
+
+    if failed.is_empty() && not_requested.is_empty() {
         println!("RESULT: PASS ({} checks)", report.outcomes.len());
-        ExitCode::SUCCESS
-    } else {
-        println!(
-            "RESULT: FAIL ({} of {} checks failed: {})",
-            failed.len(),
-            report.outcomes.len(),
-            failed
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        ExitCode::FAILURE
+        return ExitCode::SUCCESS;
     }
+
+    if failed.is_empty() {
+        // Nothing failed — but the verdict is silent about a floor the evidence
+        // needs, and a silent verdict is not an accepting one. Exit nonzero: a
+        // disposition may not rest on this.
+        println!(
+            "RESULT: INCOMPLETE ({} of {} checks could not run: {}). No check FAILED, but this \
+             verdict does not accept the run-set: name the floor(s) explicitly and re-run.",
+            not_requested.len(),
+            report.outcomes.len(),
+            names(&not_requested)
+        );
+        return ExitCode::FAILURE;
+    }
+
+    println!(
+        "RESULT: FAIL ({} of {} checks failed: {}){}",
+        failed.len(),
+        report.outcomes.len(),
+        names(&failed),
+        if not_requested.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; {} not requested: {}",
+                not_requested.len(),
+                names(&not_requested)
+            )
+        }
+    );
+    ExitCode::FAILURE
+}
+
+/// Render a list of check ids for the verdict line.
+fn names(ids: &[floor_check::CheckId]) -> String {
+    ids.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn stage_slug(stage: arm_harness::evidence::Stage) -> &'static str {

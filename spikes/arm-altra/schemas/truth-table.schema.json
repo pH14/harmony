@@ -14,9 +14,9 @@
     "identity": { "$ref": "#/$defs/identity" },
     "topology": { "$ref": "#/$defs/topology" },
     "rows": {
-      "description": "The expect-vs-found rows. Every mandatory row below must be present; extra rows are welcome (an unlisted capability that turned out to matter is a finding, not a schema error).",
+      "description": "The expect-vs-found rows. Every mandatory row below must be present; extra rows are welcome (an unlisted capability that turned out to matter is a finding, not a schema error). The thirteen mandatory ids are exactly the facts docs/ARM-ALTRA.md §AA-0 requires — INCLUDING the two existential work-clock rows (`perf_event_open` of raw 0x21 as a pinned, non-multiplexed event SUCCEEDS; a trivial host-side overflow test DELIVERS a sample/signal) and the writable-ID-register surface. Those three were once absent from this list, which meant a schema-valid truth table could leave the PMU-open, overflow-delivery and writable-ID facts unmeasured — and AA-1, the whole point of AA-0, rests on the first two.",
       "type": "array",
-      "minItems": 10,
+      "minItems": 13,
       "items": { "$ref": "#/$defs/row" },
       "allOf": [
         { "contains": { "properties": { "id": { "const": "ecv" } }, "required": ["id"] } },
@@ -25,10 +25,13 @@
         { "contains": { "properties": { "id": { "const": "sve" } }, "required": ["id"] } },
         { "contains": { "properties": { "id": { "const": "nested-virt" } }, "required": ["id"] } },
         { "contains": { "properties": { "id": { "const": "br-retired-pmceid0" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "perf-raw-0x21-pinned" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "host-overflow-delivers" } }, "required": ["id"] } },
         { "contains": { "properties": { "id": { "const": "dev-kvm" } }, "required": ["id"] } },
         { "contains": { "properties": { "id": { "const": "kvm-mode" } }, "required": ["id"] } },
         { "contains": { "properties": { "id": { "const": "kvm-cap-set-guest-debug" } }, "required": ["id"] } },
-        { "contains": { "properties": { "id": { "const": "vgicv3-creatable" } }, "required": ["id"] } }
+        { "contains": { "properties": { "id": { "const": "vgicv3-creatable" } }, "required": ["id"] } },
+        { "contains": { "properties": { "id": { "const": "writable-id-registers" } }, "required": ["id"] } }
       ]
     }
   },

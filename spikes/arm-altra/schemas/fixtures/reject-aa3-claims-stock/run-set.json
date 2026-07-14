@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "stage": "aa1",
-  "run_set_id": "fixture-aa1",
+  "stage": "aa3",
+  "run_set_id": "fixture-aa3",
   "environment": {
     "midr": 1094701248,
     "soc": "Ampere Altra Q80-30 (synthetic)",
@@ -57,5 +57,5 @@
   "skid_margin": 64,
   "attempted": 8,
   "records_file": "records.jsonl",
-  "records_sha256": "7361f0cf97944d8989a2db2750b0641d1fae68f2c38c5214e5b41679102ad0b6"
+  "records_sha256": "48ca380413aff6bfde4ad9350381234c32d3341d839008ce84c7c5f6cf22960c"
 }

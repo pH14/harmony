@@ -7,12 +7,38 @@
 //! own output is itself retained evidence: `docs/ARM-ALTRA.md` §Evidence integrity
 //! requires it to be reproducible, so no wall-clock, no iteration-order, and no
 //! hashing of a `HashMap` may reach a byte of it.
+//!
+//! # The checker knows what stage it is grading
+//!
+//! Several checks are **stage-conditional**, and that is the point: a manifest field
+//! may not exempt a run from a rule the stage exists to enforce.
+//!
+//! - The stages whose acceptance rides the patched force-exit (AA-3, AA-4, AA-6)
+//!   must *be* on the patched mechanism — an AA-3 run-set that declares
+//!   `kvm_patched: false` and `signal-kick` consistently is not a clean run-set, it
+//!   is the forbidden fallback, self-consistently described.
+//! - The unpinned migration probe belongs to AA-1 alone (bounded, once); at any
+//!   other stage `migration_probe: true` is one field exempting a landing run from a
+//!   correctness condition (rr #3607).
+//! - AA-5's records must attest the *harness-maintained* clock page, not the
+//!   payload's static self-seeded fallback — which is precisely the mechanism AA-5
+//!   certifies.
+//!
+//! # A floor nobody asked for is not a floor that passed
+//!
+//! [`Status::NotRequested`] exists because the checker's verdict is retained
+//! evidence. `RESULT: PASS (N checks)` over an overflow-bearing run-set with no
+//! `--min-armed-overflows` on the command line reads as full acceptance, and it
+//! isn't one. So the omission is *visible on its face* and the exit status is
+//! nonzero. The no-invented-numbers philosophy is intact: the checker demands the
+//! **presence** of an explicit floor; it never supplies one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
 use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage};
+use arm_harness::sys::BR_RETIRED_RAW;
 use oracle_model::{Weights, expected};
 use sha2::{Digest, Sha256};
 
@@ -21,14 +47,19 @@ use crate::error::LoadError;
 /// The conventional manifest file name inside a run-set directory.
 pub const MANIFEST_FILE: &str = "run-set.json";
 
+/// The `CLOCKPAGE mode=` token a harness-maintained (work-derived) clock page makes
+/// the guest print. The alternative, `self-seeded`, means the payload published its
+/// own static page because the harness never did — the static fallback, not the
+/// mechanism AA-5 exists to validate (`payloads/runtime/src/pvclock.rs`).
+const MANAGED_CLOCKPAGE: &str = "managed";
+
 /// Which floors the caller asked the checker to enforce.
 ///
-/// Absent means "not requested" — a floor the caller did not name is not a
-/// silent pass of an unmet requirement, it is simply not part of *this*
-/// invocation's question. The real acceptance floors (≥10⁶ armed overflows for
-/// AA-1/AA-3, ≥1,000 reps for AA-6) are passed explicitly on the command line so
-/// the number a disposition rests on is visible in the command that produced the
-/// verdict, never buried as a default.
+/// Absent means "not requested" — and for a floor the evidence *needs*, that absence
+/// is itself reported ([`Status::NotRequested`]), never silently passed. The real
+/// acceptance floors (≥10⁶ armed overflows for AA-1/AA-3, ≥1,000 reps for AA-6) are
+/// passed explicitly on the command line so the number a disposition rests on is
+/// visible in the command that produced the verdict, never buried as a default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Floors {
     /// `--min-armed-overflows`: the run-set must contain at least this many armed
@@ -59,15 +90,21 @@ pub enum CheckId {
     SkidMarginPresent,
     /// No landing overshot; every skid is within margin; AA-3 landings are exact.
     Skid,
-    /// Every record's exit reason matches the claimed mechanism, and a patched
-    /// claim was positively observed.
+    /// Every record's exit reason matches the claimed mechanism, the claim is
+    /// coherent, and the stage's required mechanism is the one that ran.
     MechanismAttestation,
+    /// The work counter was armed as the work clock: raw 0x21, guest-only, pinned.
+    PerfConfig,
     /// Every boot artifact was content-verified immediately before use.
     ImagePins,
     /// The vCPU was pinned (unless this is AA-1's sanctioned migration probe).
     Pinning,
     /// Every record attests the guest ran in `managed` params mode.
     ParamsMode,
+    /// AA-5's records attest the harness-maintained clock page.
+    ClockPageMode,
+    /// Same-input repetitions landed on bit-identical state digests.
+    ReplayIdentity,
     /// Every payload's in-guest self-checks passed (`payload_status == 0`).
     PayloadStatus,
     /// The armed-overflow count meets `--min-armed-overflows`.
@@ -91,9 +128,12 @@ impl CheckId {
             CheckId::SkidMarginPresent => "skid-margin-present",
             CheckId::Skid => "skid",
             CheckId::MechanismAttestation => "mechanism-attestation",
+            CheckId::PerfConfig => "perf-config",
             CheckId::ImagePins => "image-pins",
             CheckId::Pinning => "pinning",
             CheckId::ParamsMode => "params-mode",
+            CheckId::ClockPageMode => "clockpage-mode",
+            CheckId::ReplayIdentity => "replay-identity",
             CheckId::PayloadStatus => "payload-status",
             CheckId::ArmedOverflowFloor => "armed-overflow-floor",
             CheckId::RepFloor => "rep-floor",
@@ -114,6 +154,10 @@ pub enum Status {
     Pass,
     /// The check failed — the run-set may not be dispositioned on.
     Fail,
+    /// The check *could not run* because the caller did not name the floor it
+    /// enforces, and the evidence needs it. Not a pass: the run-set may not be
+    /// dispositioned on this verdict either, and the exit status says so.
+    NotRequested,
 }
 
 impl fmt::Display for Status {
@@ -121,6 +165,7 @@ impl fmt::Display for Status {
         match self {
             Status::Pass => f.write_str("PASS"),
             Status::Fail => f.write_str("FAIL"),
+            Status::NotRequested => f.write_str("NOT-REQUESTED"),
         }
     }
 }
@@ -149,7 +194,8 @@ pub struct CheckReport {
 }
 
 impl CheckReport {
-    /// Whether every check passed. The checker exits 0 exactly when this is true.
+    /// Whether every check passed. The checker exits 0 exactly when this is true —
+    /// so an unrequested-but-needed floor is not a pass.
     #[must_use]
     pub fn passed(&self) -> bool {
         self.outcomes.iter().all(|o| o.status == Status::Pass)
@@ -161,8 +207,7 @@ impl CheckReport {
         i32::from(!self.passed())
     }
 
-    /// The status of a given check, if it ran in this invocation. Floors that were
-    /// not requested (`--min-*` absent) do not appear.
+    /// The status of a given check, if it ran in this invocation.
     #[must_use]
     pub fn status_of(&self, id: CheckId) -> Option<Status> {
         self.outcomes.iter().find(|o| o.id == id).map(|o| o.status)
@@ -171,12 +216,36 @@ impl CheckReport {
     /// The ids of the checks that failed, in report order.
     #[must_use]
     pub fn failed(&self) -> Vec<CheckId> {
+        self.ids_with(Status::Fail)
+    }
+
+    /// The ids of the floors the evidence needed but the caller did not request.
+    #[must_use]
+    pub fn not_requested(&self) -> Vec<CheckId> {
+        self.ids_with(Status::NotRequested)
+    }
+
+    fn ids_with(&self, status: Status) -> Vec<CheckId> {
         self.outcomes
             .iter()
-            .filter(|o| o.status == Status::Fail)
+            .filter(|o| o.status == status)
             .map(|o| o.id)
             .collect()
     }
+}
+
+/// Whether a stage's acceptance rides the **patched** force-exit mechanism.
+///
+/// AA-3 builds and validates the 0004-analogue and lands on it; AA-4 injects through
+/// AA-3's machinery; AA-6's mini gate exercises the whole mechanism stack together.
+/// For those three, the stock signal-kick is not a legitimate alternative — it is the
+/// fallback the stage exists to replace (`docs/ARM-ALTRA.md` §AA-3: "the harness must
+/// be structurally unable to fall back to the AA-1 signal-kick and still pass").
+///
+/// AA-1 and AA-2 legitimately run pre-patch; AA-5 validates the clock page and does
+/// not certify the exit mechanism.
+const fn requires_patched_mechanism(stage: Stage) -> bool {
+    matches!(stage, Stage::Aa3 | Stage::Aa4 | Stage::Aa6)
 }
 
 /// Load a run-set from a directory and check it.
@@ -220,11 +289,14 @@ pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadErr
     check_weights_and_counts(&run_set, &records, &mut outcomes);
     check_skid(&run_set, &records, &mut outcomes);
     check_mechanism(&run_set, &records, &mut outcomes);
+    check_perf(&run_set, &records, &mut outcomes);
     check_image_pins(&run_set, &mut outcomes);
     check_pinning(&run_set, &mut outcomes);
     check_params_mode(&records, &mut outcomes);
+    check_clockpage_mode(&run_set, &records, &mut outcomes);
+    check_replay_identity(&records, &mut outcomes);
     check_payload_status(&records, &mut outcomes);
-    check_floors(floors, &records, &mut outcomes);
+    check_floors(&run_set, floors, &records, &mut outcomes);
 
     Ok(CheckReport {
         run_set_id: run_set.run_set_id,
@@ -271,6 +343,23 @@ fn fail(id: CheckId, detail: impl Into<String>) -> Outcome {
     }
 }
 
+fn not_requested(id: CheckId, detail: impl Into<String>) -> Outcome {
+    Outcome {
+        id,
+        status: Status::NotRequested,
+        detail: detail.into(),
+    }
+}
+
+/// Push a pass if there are no problems, or one failure carrying all of them.
+fn verdict(id: CheckId, problems: &[String], ok: impl Into<String>, out: &mut Vec<Outcome>) {
+    if problems.is_empty() {
+        out.push(pass(id, ok));
+    } else {
+        out.push(fail(id, join_problems(problems)));
+    }
+}
+
 fn check_schema_version(run_set: &RunSet, out: &mut Vec<Outcome>) {
     if run_set.schema_version == SCHEMA_VERSION {
         out.push(pass(
@@ -289,16 +378,6 @@ fn check_schema_version(run_set: &RunSet, out: &mut Vec<Outcome>) {
     }
 }
 
-/// Lowercase-hex-encode a byte slice. No `hex` crate is on the whitelist, and this
-/// is the only place one is needed.
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
 /// Normalise a recorded hash: drop an optional `sha256:` prefix and lowercase it.
 fn normalise_hash(h: &str) -> String {
     h.strip_prefix("sha256:").unwrap_or(h).to_ascii_lowercase()
@@ -307,7 +386,7 @@ fn normalise_hash(h: &str) -> String {
 fn check_records_sha256(run_set: &RunSet, records_bytes: &[u8], out: &mut Vec<Outcome>) {
     let mut hasher = Sha256::new();
     hasher.update(records_bytes);
-    let computed = hex_lower(&hasher.finalize());
+    let computed = arm_harness::evidence::hex_lower(&hasher.finalize());
     let claimed = normalise_hash(&run_set.records_sha256);
     if computed == claimed {
         out.push(pass(
@@ -340,10 +419,27 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
         }
     }
 
-    // The gaps are the ids in 0..attempted that never appeared.
-    let missing: Vec<u64> = (0..attempted).filter(|id| !seen.contains(id)).collect();
+    // How many of `0..attempted` never appeared — computed ARITHMETICALLY, not by
+    // walking the range. `attempted` comes from an untrusted manifest, and a corrupt
+    // one saying `u64::MAX` must fail the checker, not hang it: an arrival-day
+    // instrument that fails closed beats one that fails hung. (All checks run even
+    // when records-sha256 has already failed, so this is reachable with garbage.)
+    let in_range_seen = seen.iter().filter(|id| **id < attempted).count() as u64;
+    let missing_count = attempted.saturating_sub(in_range_seen);
+    // A bounded preview of the gaps: scan only as far as the first eight.
+    let mut missing_preview: Vec<u64> = Vec::new();
+    if missing_count > 0 {
+        for id in 0..attempted {
+            if !seen.contains(&id) {
+                missing_preview.push(id);
+                if missing_preview.len() == 8 {
+                    break;
+                }
+            }
+        }
+    }
 
-    if duplicates.is_empty() && out_of_range.is_empty() && missing.is_empty() {
+    if duplicates.is_empty() && out_of_range.is_empty() && missing_count == 0 {
         out.push(pass(
             CheckId::Totality,
             format!("all {attempted} attempted samples present exactly once"),
@@ -352,10 +448,11 @@ fn check_totality(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome
     }
 
     let mut problems = Vec::new();
-    if !missing.is_empty() {
+    if missing_count > 0 {
         problems.push(format!(
-            "missing sample ids {} (a missing sample is a failure to account, not a pass)",
-            preview(missing.iter().copied())
+            "{missing_count} missing sample id(s) {} (a missing sample is a failure to \
+             account, not a pass)",
+            preview_of(&missing_preview, missing_count)
         ));
     }
     if !duplicates.is_empty() {
@@ -491,17 +588,15 @@ fn check_counts(weights: &Weights, records: &[RunRecord], out: &mut Vec<Outcome>
         }
     }
 
-    if problems.is_empty() {
-        out.push(pass(
-            CheckId::CountExactness,
-            format!(
-                "all {} records match the oracle and are self-consistent",
-                records.len()
-            ),
-        ));
-    } else {
-        out.push(fail(CheckId::CountExactness, join_problems(&problems)));
-    }
+    verdict(
+        CheckId::CountExactness,
+        &problems,
+        format!(
+            "all {} records match the oracle and are self-consistent",
+            records.len()
+        ),
+        out,
+    );
 }
 
 /// Skid: never overshoot, always within margin, and — at AA-3 — land exactly.
@@ -529,6 +624,13 @@ fn check_skid(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     for r in records {
         let Some(o) = &r.overflow else { continue };
         if !o.armed {
+            continue;
+        }
+        // A record with no delivery has no landing: `landed` and `skid` describe
+        // nothing, and reading them would report a second, phantom failure for the
+        // same fact. The multiplicity check owns lost PMIs, and it has already
+        // failed this record.
+        if o.deliveries == 0 {
             continue;
         }
 
@@ -572,23 +674,37 @@ fn check_skid(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
         }
     }
 
-    if problems.is_empty() {
-        out.push(pass(
-            CheckId::Skid,
-            if exact_required {
-                "no overshoot; all landings within margin and exact (AA-3)"
-            } else {
-                "no overshoot; all landings within margin"
-            },
-        ));
-    } else {
-        out.push(fail(CheckId::Skid, join_problems(&problems)));
-    }
+    verdict(
+        CheckId::Skid,
+        &problems,
+        if exact_required {
+            "no overshoot; all landings within margin and exact (AA-3)"
+        } else {
+            "no overshoot; all landings within margin"
+        },
+        out,
+    );
 }
 
+/// Mechanism attestation — the PR-98 lesson, made mechanical.
+///
+/// Three layers, and the stage tuple is the one that closes the self-consistent
+/// evasion: a run-set may not *certify a stage on the mechanism that stage exists to
+/// replace*, however honestly it describes itself while doing so.
 fn check_mechanism(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
     let m = &run_set.mechanism;
+    let stage = run_set.stage;
     let mut problems: Vec<String> = Vec::new();
+
+    // The kernel's identity. On arm64 KVM is built in (`CONFIG_KVM=y`), so the kernel
+    // *is* the module identity: an unidentified kernel cannot attest anything.
+    if m.host_kernel_sha256.trim().is_empty() {
+        problems.push(
+            "the mechanism block carries no host_kernel_sha256: on arm64 the kernel is the \
+             module identity, and an unidentified kernel cannot attest a mechanism"
+                .to_string(),
+        );
+    }
 
     // A patched claim must have been positively observed, not assumed from a build.
     if m.kvm_patched && !m.patch_marker_observed {
@@ -599,9 +715,39 @@ fn check_mechanism(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcom
         );
     }
 
+    // A stock kernel cannot emit KVM_EXIT_PREEMPT — it does not exist there. A
+    // manifest claiming the patched exit reason on a stock kernel is incoherent.
+    if m.expected_exit_reason == ExitReason::Preempt && !m.kvm_patched {
+        problems.push(
+            "manifest expects the patched Preempt exit but declares kvm_patched: false: \
+             a stock kernel has no KVM_EXIT_PREEMPT to return"
+                .to_string(),
+        );
+    }
+
+    // The stage tuple. AA-3/AA-4/AA-6 rest on the patched force-exit; the stock
+    // signal-kick is AA-3's forbidden fallback, and a run-set that declares it
+    // *consistently* (kvm_patched: false + signal-kick records) is still the
+    // fallback — self-consistency is not attestation.
+    if requires_patched_mechanism(stage)
+        && (!m.kvm_patched
+            || !m.patch_marker_observed
+            || m.expected_exit_reason != ExitReason::Preempt)
+    {
+        problems.push(format!(
+            "stage {stage:?} rides the patched force-exit, so it requires \
+             kvm_patched=true, patch_marker_observed=true and expected_exit_reason=preempt — \
+             this run-set declares kvm_patched={}, patch_marker_observed={}, \
+             expected_exit_reason={:?}. The signal-kick is AA-3's forbidden fallback \
+             (docs/ARM-ALTRA.md §AA-3): a stage may not be certified on the mechanism it \
+             exists to replace",
+            m.kvm_patched, m.patch_marker_observed, m.expected_exit_reason
+        ));
+    }
+
     // Every record's exit reason must be the one the manifest claims. This is the
-    // PR-98 lesson: a run that silently exercised the stock signal-kick path while
-    // claiming the patched Preempt exit must fail here.
+    // other half: a run that silently exercised the stock signal-kick path while
+    // claiming the patched Preempt exit fails here.
     let mut mismatched: Vec<(u64, ExitReason)> = Vec::new();
     for r in records {
         if r.exit_reason != m.expected_exit_reason {
@@ -628,17 +774,83 @@ fn check_mechanism(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcom
         ));
     }
 
-    if problems.is_empty() {
-        out.push(pass(
-            CheckId::MechanismAttestation,
-            format!(
-                "all records carry the claimed {:?} exit; mechanism attested",
-                m.expected_exit_reason
-            ),
+    verdict(
+        CheckId::MechanismAttestation,
+        &problems,
+        format!(
+            "all records carry the claimed {:?} exit; mechanism attested",
+            m.expected_exit_reason
+        ),
+        out,
+    );
+}
+
+/// The work counter was armed as the *work clock*, and not as something else.
+///
+/// The manifest records the perf configuration; nothing used to check it, so a
+/// run-set with `raw_event: 0`, `exclude_host: false`, `exclude_guest: true`,
+/// `pinned: false` passed every check — evidence that cannot establish guest-only,
+/// non-multiplexed `BR_RETIRED` counting, sailing through the checker that exists to
+/// establish exactly that.
+fn check_perf(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let p = &run_set.perf;
+    let mut problems: Vec<String> = Vec::new();
+
+    if p.raw_event != BR_RETIRED_RAW {
+        problems.push(format!(
+            "perf.raw_event is {:#x}, not BR_RETIRED ({BR_RETIRED_RAW:#x}): this run counted a \
+             different event than the work clock is defined as (docs/ARM-PORT.md, \
+             docs/ARM-ALTRA.md §2)",
+            p.raw_event
         ));
-    } else {
-        out.push(fail(CheckId::MechanismAttestation, problems.join("; ")));
     }
+    if !p.exclude_host {
+        problems.push(
+            "perf.exclude_host is false: the count includes host execution, so it cannot \
+             establish guest-mode count exactness (AA-1(b) counts guest-only)"
+                .to_string(),
+        );
+    }
+    if p.exclude_guest {
+        problems.push(
+            "perf.exclude_guest is true: this event counted everything EXCEPT the guest — \
+             the inverse of the work clock"
+                .to_string(),
+        );
+    }
+    if !p.pinned {
+        problems.push(
+            "perf.pinned is false: an unpinned event can be multiplexed, and a multiplexed \
+             counter SCALES its count — every measurement in this run-set would be silently \
+             corrupt"
+                .to_string(),
+        );
+    }
+
+    // A sampling period is what arms an overflow. The manifest and the records must
+    // agree about whether this run armed any.
+    let armed = records
+        .iter()
+        .any(|r| r.overflow.as_ref().is_some_and(|o| o.armed));
+    match (p.sample_period, armed) {
+        (None, true) => problems.push(
+            "records arm overflows but perf.sample_period is null: an overflow cannot be armed \
+             without a period, so the manifest does not describe the run that happened"
+                .to_string(),
+        ),
+        (Some(period), false) => problems.push(format!(
+            "perf.sample_period is {period} but no record armed an overflow: the manifest \
+             describes a sampling run and the records are a counting one"
+        )),
+        _ => {}
+    }
+
+    verdict(
+        CheckId::PerfConfig,
+        &problems,
+        format!("raw {BR_RETIRED_RAW:#x} armed guest-only and pinned"),
+        out,
+    );
 }
 
 fn check_image_pins(run_set: &RunSet, out: &mut Vec<Outcome>) {
@@ -673,18 +885,41 @@ fn check_image_pins(run_set: &RunSet, out: &mut Vec<Outcome>) {
     }
 }
 
+/// Pinning — and the one stage allowed to be without it.
+///
+/// The migration probe is AA-1's alone (`docs/ARM-ALTRA.md` §AA-1: "The migration
+/// probe (bounded, once)"). Left ungated, `migration_probe: true` was a single
+/// manifest field that exempted an *unpinned AA-3 landing run* from a correctness
+/// condition — on this lineage a missed PMI on migration (rr #3607) can wedge
+/// `KVM_RUN`, and the probe exists to demonstrate that, not to license it.
 fn check_pinning(run_set: &RunSet, out: &mut Vec<Outcome>) {
     let p = &run_set.pinning;
-    if p.pinned || p.migration_probe {
-        let detail = if p.migration_probe {
-            "unpinned, but marked as AA-1's sanctioned migration probe".to_string()
-        } else {
-            match p.core {
-                Some(c) => format!("pinned to core {c}"),
-                None => "pinned (core unrecorded)".to_string(),
-            }
+    let stage = run_set.stage;
+
+    if p.migration_probe && stage != Stage::Aa1 {
+        out.push(fail(
+            CheckId::Pinning,
+            format!(
+                "migration_probe is set at stage {stage:?}, but the unpinned migration probe is \
+                 AA-1's alone (bounded, once — docs/ARM-ALTRA.md §AA-1). Pinning is a \
+                 correctness condition on this lineage (rr #3607); one manifest field may not \
+                 exempt another stage's run from it"
+            ),
+        ));
+        return;
+    }
+
+    if p.pinned {
+        let detail = match p.core {
+            Some(c) => format!("pinned to core {c}"),
+            None => "pinned (core unrecorded)".to_string(),
         };
         out.push(pass(CheckId::Pinning, detail));
+    } else if p.migration_probe {
+        out.push(pass(
+            CheckId::Pinning,
+            "unpinned, but marked as AA-1's sanctioned migration probe",
+        ));
     } else {
         out.push(fail(
             CheckId::Pinning,
@@ -719,6 +954,154 @@ fn check_params_mode(records: &[RunRecord], out: &mut Vec<Outcome>) {
     }
 }
 
+/// AA-5's records must attest the **harness-maintained** clock page.
+///
+/// `self-seeded` means the payload published its own static page because the harness
+/// never did — the fallback path, not the work-derived clock page whose determinism
+/// AA-5 exists to certify. An AA-5 run-set whose guests all printed `self-seeded`
+/// tested the fallback and would have been graded as if it had tested the mechanism.
+fn check_clockpage_mode(run_set: &RunSet, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    if run_set.stage != Stage::Aa5 {
+        return;
+    }
+
+    let mut bad: Vec<(u64, String)> = records
+        .iter()
+        .filter(|r| r.clockpage_mode.as_deref() != Some(MANAGED_CLOCKPAGE))
+        .map(|r| {
+            (
+                r.sample_id,
+                r.clockpage_mode
+                    .clone()
+                    .unwrap_or_else(|| "none".to_string()),
+            )
+        })
+        .collect();
+    bad.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if bad.is_empty() {
+        out.push(pass(
+            CheckId::ClockPageMode,
+            format!("every record attests the {MANAGED_CLOCKPAGE} clock page (AA-5)"),
+        ));
+    } else {
+        let shown: Vec<String> = bad
+            .iter()
+            .take(8)
+            .map(|(id, mode)| format!("sample {id}={mode}"))
+            .collect();
+        out.push(fail(
+            CheckId::ClockPageMode,
+            format!(
+                "{} AA-5 record(s) do not attest the harness-maintained clock page: {} \
+                 (`self-seeded` is the payload's own static page — the fallback, not the \
+                 work-derived mechanism AA-5 certifies)",
+                bad.len(),
+                shown.join(", ")
+            ),
+        ));
+    }
+}
+
+/// The key a repetition is *the same run* under: same payload, scale, seed,
+/// condition and target. Two records with this key must land on the same state.
+type RepKey = (String, String, u64, String, Option<u64>);
+
+fn rep_key(r: &RunRecord) -> RepKey {
+    (
+        r.payload.name().to_string(),
+        r.scale.name().to_string(),
+        r.seed,
+        r.condition.clone(),
+        r.overflow.as_ref().map(|o| o.target),
+    )
+}
+
+/// Repetitions of the same input must land on **bit-identical** state.
+///
+/// This is the axis the rep floor exists for, and nothing used to check it: 1,000
+/// same-seed reps with 1,000 *divergent* digests met a `--min-reps 1000` floor,
+/// though the floor's whole meaning is "repetitions bit-identical" (AA-6), and
+/// AA-3's replay-identity rides the same field. `state_digest` appeared only in
+/// fixture data — no check ever read it. Now one does, and an empty digest (which
+/// would compare equal to every other empty digest) is a failure in its own right.
+fn check_replay_identity(records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let mut problems: Vec<String> = Vec::new();
+
+    let mut blank: Vec<u64> = records
+        .iter()
+        .filter(|r| r.state_digest.trim().is_empty())
+        .map(|r| r.sample_id)
+        .collect();
+    blank.sort_unstable();
+    if !blank.is_empty() {
+        problems.push(format!(
+            "{} record(s) carry an empty state_digest: samples {} — a digest that cannot diverge \
+             satisfies every determinism comparison without measuring anything",
+            blank.len(),
+            preview(blank.iter().copied())
+        ));
+    }
+
+    // Group by the repetition key. BTreeMap, never HashMap: the report is evidence,
+    // and its bytes may not depend on iteration order.
+    let mut groups: BTreeMap<RepKey, BTreeMap<String, Vec<u64>>> = BTreeMap::new();
+    for r in records {
+        groups
+            .entry(rep_key(r))
+            .or_default()
+            .entry(r.state_digest.clone())
+            .or_default()
+            .push(r.sample_id);
+    }
+
+    let mut compared = 0usize;
+    for (key, digests) in &groups {
+        let reps: usize = digests.values().map(Vec::len).sum();
+        if reps < 2 {
+            continue;
+        }
+        compared += 1;
+        if digests.len() > 1 {
+            // Name the diverging samples: one representative id per distinct digest,
+            // in sorted-digest order, so the detail is reproducible.
+            let ids: Vec<String> = digests
+                .iter()
+                .take(8)
+                .map(|(d, ids)| {
+                    let short: String = d.chars().take(16).collect();
+                    format!("{short}…={:?}", ids.iter().take(4).collect::<Vec<_>>())
+                })
+                .collect();
+            problems.push(format!(
+                "payload {} scale {} seed {} condition {} target {:?}: {} repetitions landed on \
+                 {} DIFFERENT state digests — same seed must mean bit-identical execution: {}",
+                key.0,
+                key.1,
+                key.2,
+                key.3,
+                key.4,
+                reps,
+                digests.len(),
+                ids.join(", ")
+            ));
+        }
+    }
+
+    verdict(
+        CheckId::ReplayIdentity,
+        &problems,
+        if compared == 0 {
+            "no repeated (payload, scale, seed, condition, target) group to compare; every \
+             record carries a digest"
+                .to_string()
+        } else {
+            format!("{compared} repeated group(s) landed on bit-identical state digests")
+        },
+        out,
+    );
+}
+
 fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
     let mut bad: Vec<(u64, i32)> = records
         .iter()
@@ -748,38 +1131,56 @@ fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
     }
 }
 
-fn check_floors(floors: &Floors, records: &[RunRecord], out: &mut Vec<Outcome>) {
-    if let Some(min) = floors.min_armed_overflows {
-        let armed = records
-            .iter()
-            .filter(|r| r.overflow.as_ref().is_some_and(|o| o.armed))
-            .count() as u64;
-        if armed >= min {
-            out.push(pass(
-                CheckId::ArmedOverflowFloor,
-                format!("{armed} armed overflows meets the floor of {min}"),
-            ));
-        } else {
-            out.push(fail(
-                CheckId::ArmedOverflowFloor,
-                format!("only {armed} armed overflows, below the floor of {min}"),
-            ));
-        }
+/// The numeric floors — and the floors the evidence needed but nobody asked for.
+///
+/// §Evidence integrity #2: the checker's output *is* retained evidence. So a verdict
+/// over an overflow-bearing run-set that never mentions the armed-overflow floor is
+/// not a clean verdict, it is a silent one — and silence, on the face of a document
+/// a disposition rests on, reads as acceptance. The checker therefore demands the
+/// *presence* of an explicit floor while never supplying its value.
+fn check_floors(run_set: &RunSet, floors: &Floors, records: &[RunRecord], out: &mut Vec<Outcome>) {
+    let armed = records
+        .iter()
+        .filter(|r| r.overflow.as_ref().is_some_and(|o| o.armed))
+        .count() as u64;
+
+    match floors.min_armed_overflows {
+        Some(min) if armed >= min => out.push(pass(
+            CheckId::ArmedOverflowFloor,
+            format!("{armed} armed overflows meets the floor of {min}"),
+        )),
+        Some(min) => out.push(fail(
+            CheckId::ArmedOverflowFloor,
+            format!("only {armed} armed overflows, below the floor of {min}"),
+        )),
+        None if armed > 0 => out.push(not_requested(
+            CheckId::ArmedOverflowFloor,
+            format!(
+                "the records carry {armed} armed overflow(s) but no --min-armed-overflows floor \
+                 was requested: this verdict cannot be read as accepting one. The AA-1/AA-3 \
+                 acceptance floor is 1000000 cumulative — pass it explicitly, so the number the \
+                 disposition rests on is visible in the command that produced it"
+            ),
+        )),
+        None => {}
     }
 
-    if let Some(min) = floors.min_reps {
-        let reps = records.len() as u64;
-        if reps >= min {
-            out.push(pass(
-                CheckId::RepFloor,
-                format!("{reps} samples meets the rep floor of {min}"),
-            ));
-        } else {
-            out.push(fail(
-                CheckId::RepFloor,
-                format!("only {reps} samples, below the rep floor of {min}"),
-            ));
-        }
+    let reps = records.len() as u64;
+    match floors.min_reps {
+        Some(min) if reps >= min => out.push(pass(
+            CheckId::RepFloor,
+            format!("{reps} samples meets the rep floor of {min}"),
+        )),
+        Some(min) => out.push(fail(
+            CheckId::RepFloor,
+            format!("only {reps} samples, below the rep floor of {min}"),
+        )),
+        None if run_set.stage == Stage::Aa6 => out.push(not_requested(
+            CheckId::RepFloor,
+            "AA-6's mini determinism gate rests on ≥1000 same-seed repetitions, but no \
+             --min-reps floor was requested: this verdict cannot be read as accepting one",
+        )),
+        None => {}
     }
 }
 
@@ -787,11 +1188,22 @@ fn check_floors(floors: &Floors, records: &[RunRecord], out: &mut Vec<Outcome>) 
 /// stays bounded and deterministic on a run-set with many bad samples.
 fn preview(ids: impl Iterator<Item = u64>) -> String {
     let all: Vec<u64> = ids.collect();
-    let shown: Vec<String> = all.iter().take(8).map(u64::to_string).collect();
-    if all.len() > 8 {
-        format!("[{}, +{} more]", shown.join(", "), all.len() - 8)
+    let total = all.len() as u64;
+    preview_of(&all, total)
+}
+
+/// Render an already-bounded preview list, given the true total it was drawn from.
+fn preview_of(shown: &[u64], total: u64) -> String {
+    let rendered: Vec<String> = shown.iter().take(8).map(u64::to_string).collect();
+    let shown_len = rendered.len() as u64;
+    if total > shown_len {
+        format!(
+            "[{}, +{} more]",
+            rendered.join(", "),
+            total.saturating_sub(shown_len)
+        )
     } else {
-        format!("[{}]", shown.join(", "))
+        format!("[{}]", rendered.join(", "))
     }
 }
 
@@ -807,13 +1219,10 @@ fn join_problems(problems: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Unit coverage for the checks the twelve accept/reject fixtures do not
-    //! exercise on their own — the ones the task requires but that are not among
-    //! the fixtured failure modes: schema-version refusal, the skid-margin and
-    //! weights *refusals* (no invented constants), the pinning condition, the
-    //! payload-status gate, and the rep floor. Each is driven directly against a
-    //! minimal in-memory run-set so a regression here is caught without a
-    //! round-trip through disk.
+    //! Unit coverage for the checks the accept/reject fixtures do not exercise on
+    //! their own: the refusals (no weights, no margin — no invented constants), the
+    //! stage-conditional rules, the empty-digest and unbounded-`attempted` failure
+    //! modes, and the not-requested floors.
 
     use super::*;
     use arm_harness::evidence::{
@@ -942,13 +1351,197 @@ mod tests {
     }
 
     #[test]
-    fn the_sanctioned_migration_probe_may_be_unpinned() {
+    fn the_sanctioned_migration_probe_may_be_unpinned_at_aa1_only() {
+        // AA-1's bounded probe: legitimate.
         let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
         rs.pinning.pinned = false;
         rs.pinning.migration_probe = true;
         let mut out = Vec::new();
         check_pinning(&rs, &mut out);
         assert_eq!(status(&out, CheckId::Pinning), Some(Status::Pass));
+
+        // The same field at AA-3 is one manifest boolean exempting a landing run from
+        // a correctness condition. Refused — even if the run also claims to be pinned.
+        for pinned in [false, true] {
+            let mut rs = a_run_set();
+            rs.stage = Stage::Aa3;
+            rs.pinning.pinned = pinned;
+            rs.pinning.migration_probe = true;
+            let mut out = Vec::new();
+            check_pinning(&rs, &mut out);
+            assert_eq!(
+                status(&out, CheckId::Pinning),
+                Some(Status::Fail),
+                "migration_probe outside AA-1 must fail (pinned={pinned})"
+            );
+        }
+    }
+
+    #[test]
+    fn an_aa3_run_set_on_the_stock_mechanism_is_refused_however_consistent() {
+        // The most PR-98-shaped evasion there is: everything agrees with everything,
+        // and what it all agrees on is the forbidden fallback.
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa3;
+        rs.mechanism = Mechanism {
+            kvm_patched: false,
+            host_kernel_sha256: "0".repeat(64),
+            expected_exit_reason: ExitReason::SignalKick,
+            patch_marker_observed: false,
+        };
+        let mut r = a_record(0);
+        r.exit_reason = ExitReason::SignalKick;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail)
+        );
+    }
+
+    #[test]
+    fn the_stock_mechanism_stays_legitimate_at_aa1() {
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
+        rs.mechanism = Mechanism {
+            kvm_patched: false,
+            host_kernel_sha256: "0".repeat(64),
+            expected_exit_reason: ExitReason::SignalKick,
+            patch_marker_observed: false,
+        };
+        let mut r = a_record(0);
+        r.exit_reason = ExitReason::SignalKick;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[r], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Pass),
+            "AA-1(c)'s pre-patch signal kick is the stage's own mechanism"
+        );
+    }
+
+    #[test]
+    fn a_stock_kernel_may_not_claim_the_patched_exit() {
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa1;
+        rs.mechanism.kvm_patched = false;
+        rs.mechanism.patch_marker_observed = false;
+        rs.mechanism.expected_exit_reason = ExitReason::Preempt;
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail)
+        );
+    }
+
+    #[test]
+    fn an_unidentified_host_kernel_cannot_attest_a_mechanism() {
+        let mut rs = a_run_set();
+        rs.mechanism.host_kernel_sha256 = String::new();
+        let mut out = Vec::new();
+        check_mechanism(&rs, &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::MechanismAttestation),
+            Some(Status::Fail)
+        );
+    }
+
+    #[test]
+    fn a_perf_event_that_is_not_the_work_clock_is_refused() {
+        // Every one of these alone is fatal to the evidence.
+        for mutate in [
+            (|p: &mut PerfConfig| p.raw_event = 0) as fn(&mut PerfConfig),
+            |p: &mut PerfConfig| p.exclude_host = false,
+            |p: &mut PerfConfig| p.exclude_guest = true,
+            |p: &mut PerfConfig| p.pinned = false,
+        ] {
+            let mut rs = a_run_set();
+            mutate(&mut rs.perf);
+            let mut out = Vec::new();
+            check_perf(&rs, &[a_record(0)], &mut out);
+            assert_eq!(status(&out, CheckId::PerfConfig), Some(Status::Fail));
+        }
+    }
+
+    #[test]
+    fn the_sample_period_must_agree_with_whether_overflows_were_armed() {
+        // Armed records, no period: the manifest does not describe the run.
+        let mut rs = a_run_set();
+        rs.perf.sample_period = None;
+        let mut out = Vec::new();
+        check_perf(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::PerfConfig), Some(Status::Fail));
+
+        // A period, but a pure counting run: likewise.
+        let rs = a_run_set();
+        let mut r = a_record(0);
+        r.overflow = None;
+        let mut out = Vec::new();
+        check_perf(&rs, &[r], &mut out);
+        assert_eq!(status(&out, CheckId::PerfConfig), Some(Status::Fail));
+    }
+
+    #[test]
+    fn aa5_records_must_attest_the_managed_clock_page() {
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa5;
+
+        // The self-seeded fallback: the payload published its own static page.
+        let mut r = a_record(0);
+        r.clockpage_mode = Some("self-seeded".into());
+        let mut out = Vec::new();
+        check_clockpage_mode(&rs, &[r], &mut out);
+        assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Fail));
+
+        // No attestation at all is not better than the wrong one.
+        let mut out = Vec::new();
+        check_clockpage_mode(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Fail));
+
+        // The managed page: what AA-5 exists to certify.
+        let mut r = a_record(0);
+        r.clockpage_mode = Some("managed".into());
+        let mut out = Vec::new();
+        check_clockpage_mode(&rs, &[r], &mut out);
+        assert_eq!(status(&out, CheckId::ClockPageMode), Some(Status::Pass));
+
+        // And the check does not fire outside AA-5, where the page is not the subject.
+        let rs = a_run_set();
+        let mut out = Vec::new();
+        check_clockpage_mode(&rs, &[a_record(0)], &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn divergent_digests_fail_the_replay_identity_check() {
+        // The vacuity this closes: two reps of the same input, two different states —
+        // which a rep floor counting rows would have accepted.
+        let mut a = a_record(0);
+        let mut b = a_record(1);
+        a.state_digest = "sha256:aaaa".into();
+        b.state_digest = "sha256:bbbb".into();
+        let mut out = Vec::new();
+        check_replay_identity(&[a, b], &mut out);
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
+    }
+
+    #[test]
+    fn identical_digests_pass_and_a_blank_one_does_not() {
+        let a = a_record(0);
+        let b = a_record(1);
+        let mut out = Vec::new();
+        check_replay_identity(&[a, b], &mut out);
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
+
+        // An empty digest compares equal to every other empty digest: it would make
+        // the whole check — and the AA-6 floor above it — vacuous.
+        let mut a = a_record(0);
+        a.state_digest = String::new();
+        let mut out = Vec::new();
+        check_replay_identity(&[a], &mut out);
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
     }
 
     #[test]
@@ -967,8 +1560,54 @@ mod tests {
             min_reps: Some(1_000),
         };
         let mut out = Vec::new();
-        check_floors(&floors, &[a_record(0)], &mut out);
+        check_floors(&a_run_set(), &floors, &[a_record(0)], &mut out);
         assert_eq!(status(&out, CheckId::RepFloor), Some(Status::Fail));
+    }
+
+    #[test]
+    fn an_unrequested_armed_overflow_floor_is_visible_in_the_verdict() {
+        // The records carry armed overflows; nobody named a floor. That verdict may
+        // not read as acceptance — it is NOT-REQUESTED, and it is not a pass.
+        let mut out = Vec::new();
+        check_floors(&a_run_set(), &Floors::default(), &[a_record(0)], &mut out);
+        assert_eq!(
+            status(&out, CheckId::ArmedOverflowFloor),
+            Some(Status::NotRequested)
+        );
+
+        // With no armed overflows there is no floor to be silent about.
+        let mut r = a_record(0);
+        r.overflow = None;
+        let mut out = Vec::new();
+        check_floors(&a_run_set(), &Floors::default(), &[r], &mut out);
+        assert_eq!(status(&out, CheckId::ArmedOverflowFloor), None);
+    }
+
+    #[test]
+    fn an_aa6_run_set_checked_without_a_rep_floor_says_so() {
+        let mut rs = a_run_set();
+        rs.stage = Stage::Aa6;
+        let mut out = Vec::new();
+        check_floors(&rs, &Floors::default(), &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::RepFloor), Some(Status::NotRequested));
+    }
+
+    #[test]
+    fn a_corrupt_attempted_count_fails_closed_rather_than_hanging() {
+        // `attempted: u64::MAX` from a corrupt manifest used to walk the whole range
+        // building a Vec of missing ids. Fail closed beats fail hung — the checker is
+        // an arrival-day instrument, and all checks run even when records-sha256 has
+        // already failed.
+        let mut rs = a_run_set();
+        rs.attempted = u64::MAX;
+        let mut out = Vec::new();
+        check_totality(&rs, &[a_record(0)], &mut out);
+        assert_eq!(status(&out, CheckId::Totality), Some(Status::Fail));
+        let detail = &out[0].detail;
+        assert!(
+            detail.contains(&format!("{} missing", u64::MAX - 1)),
+            "the count is arithmetic, not a walked range: {detail}"
+        );
     }
 
     #[test]
@@ -978,5 +1617,24 @@ mod tests {
         let mut out = Vec::new();
         check_counts(&Weights::measured(0, 0, 0, 0, 2), &[r], &mut out);
         assert_eq!(status(&out, CheckId::CountExactness), Some(Status::Fail));
+    }
+
+    #[test]
+    fn a_lost_pmi_is_multiplicitys_failure_and_not_also_skids() {
+        // A record with no delivery has no landing: its `landed`/`skid` describe
+        // nothing, and reporting them as a second failure would double-count one fact.
+        let mut r = a_record(0);
+        if let Some(o) = r.overflow.as_mut() {
+            o.deliveries = 0;
+            o.landed = 0;
+            o.skid = -(o.target as i64);
+        }
+        let mut out = Vec::new();
+        check_skid(&a_run_set(), &[r.clone()], &mut out);
+        assert_eq!(status(&out, CheckId::Skid), Some(Status::Pass));
+
+        let mut out = Vec::new();
+        check_multiplicity(&[r], &mut out);
+        assert_eq!(status(&out, CheckId::Multiplicity), Some(Status::Fail));
     }
 }
