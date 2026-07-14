@@ -607,7 +607,6 @@ pub fn vmm_core::vmm::Vmm<B>::pvclock_offered(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::pvclock_page(&self) -> core::option::Option<&[u8]>
 pub fn vmm_core::vmm::Vmm<B>::pvclock_refreshes(&self) -> &[(u64, u64, u64)]
 pub fn vmm_core::vmm::Vmm<B>::pvclock_registration(&self) -> core::option::Option<u64>
-pub fn vmm_core::vmm::Vmm<B>::pvclock_restore(&mut self, core::option::Option<&vmm_core::vmm::PvclockSnapshot>) -> core::result::Result<(), vmm_core::vmm::VmmError>
 pub fn vmm_core::vmm::Vmm<B>::pvclock_snapshot(&self) -> core::option::Option<vmm_core::vmm::PvclockSnapshot>
 pub fn vmm_core::vmm::Vmm<B>::ram_backing_is_snapshot(&self) -> bool
 pub fn vmm_core::vmm::Vmm<B>::report_stream(&self) -> &[u32]

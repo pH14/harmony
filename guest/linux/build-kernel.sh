@@ -16,11 +16,20 @@ require_linux_amd64
 require_tools cc make flex bison bc xz gzip
 extract_kernel
 
-# Task 110: apply the harmony guest-kernel source additions (the
-# CONFIG_HARMONY_PVCLOCK clocksource — the guest half of the paravirt
-# work-derived clock, docs/PARAVIRT-CLOCK.md §3.1). String-anchored and
-# idempotent; aborts loudly on a drifted tree (see patches/).
-python3 "$LINUX_DIR/patches/apply-guest-patches.py" "$KSRC"
+# Task 110: apply the harmony guest-kernel patch (the CONFIG_HARMONY_PVCLOCK
+# clocksource — the guest half of the paravirt work-derived clock,
+# docs/PARAVIRT-CLOCK.md §3.1), shipped as a kernel DIFF under patches/ (the
+# repo's GPL-2.0 kernel-patch licensing exception; see patches/README.md).
+# Idempotent: an exactly-applied tree passes the reverse dry-run and is
+# skipped; a drifted or partially-patched tree fails loudly (remove the
+# extracted tree under $BUILD_ROOT and rebuild — never a silent divergence).
+PVCLOCK_PATCH=$LINUX_DIR/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch
+if (cd "$KSRC" && patch -p1 -R --dry-run --force <"$PVCLOCK_PATCH") >/dev/null 2>&1; then
+    echo "== kernel: harmony pvclock patch already applied"
+else
+    echo "== kernel: applying harmony pvclock patch"
+    (cd "$KSRC" && patch -p1 --force <"$PVCLOCK_PATCH")
+fi
 
 mkdir -p "$KOBJ" "$ART_DIR"
 

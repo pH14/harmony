@@ -642,8 +642,13 @@ const DEVICE_BLOB_MAGIC: u32 = 0x3156_4544;
 /// `VM_STATE_VERSION`, since this lives inside the opaque device section).
 /// v2 added the ordered conformance `report_stream`; v3 added the **full
 /// `kvm_vcpu_events`** record (task 41 — non-quiescent capture, so an in-flight
-/// interrupt/exception injection round-trips instead of being fail-closed-rejected).
-const DEVICE_BLOB_VERSION: u16 = 3;
+/// interrupt/exception injection round-trips instead of being fail-closed-rejected);
+/// v4 added the **task-110 pvclock channel** record (offer + Δ + the one-shot
+/// registration), so the direct `save_vm_state`/`restore_snapshot` path carries
+/// the stamping obligation with the state it governs — a restored guest whose
+/// RAM contains an active clock page gets a VMM that keeps refreshing it
+/// (same-state ⇒ same-future), with no control-server side channel required.
+const DEVICE_BLOB_VERSION: u16 = 4;
 
 /// The 8250 UART residual state a snapshot carries: the serial capture buffer (so a
 /// restored continuation reproduces byte-identical console output), the eight
@@ -691,6 +696,14 @@ pub(crate) struct DeviceState {
     /// authoritative events on restore — it supersedes the reduced typed record, which
     /// `vm-state` still carries unchanged for task-39 codec compatibility.
     pub events: vmm_backend::VcpuEvents,
+    /// The task-110 pvclock channel configuration (v4): `None` = the page was
+    /// not offered on the sealing VM; `Some((delta_work, gpa))` = offered with
+    /// staleness bound Δ and, when `gpa` is `Some`, the guest's one-shot
+    /// registration. Validated symmetrically against the restore target's own
+    /// composition (offer/Δ/GPA/deterministic-backend) before any mutation and
+    /// committed with the rest of the restore — the engine's
+    /// `pvclock_validate_restore`/`pvclock_commit_restore` pair.
+    pub pvclock: Option<(u64, Option<u64>)>,
 }
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
@@ -795,9 +808,25 @@ pub(crate) fn encode_device_blob(d: &DeviceState) -> DeviceBlob {
         }
         None => out.push(0),
     }
-    // The full kvm_vcpu_events (task 41) — last, a fixed-width trailing record so the
+    // The full kvm_vcpu_events (task 41) — a fixed-width record so the
     // earlier field offsets are unchanged from v2.
     put_events(&mut out, &d.events);
+    // The pvclock channel record (task 110, v4) — trailing, so every earlier
+    // offset is unchanged from v3.
+    match &d.pvclock {
+        Some((delta_work, gpa)) => {
+            out.push(1);
+            put_u64(&mut out, *delta_work);
+            match gpa {
+                Some(g) => {
+                    out.push(1);
+                    put_u64(&mut out, *g);
+                }
+                None => out.push(0),
+            }
+        }
+        None => out.push(0),
+    }
     DeviceBlob(out)
 }
 
@@ -949,6 +978,19 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         _ => return Err(bad("bad legacy flag")),
     };
     let events = r.events().ok_or(bad("truncated vcpu events"))?;
+    let pvclock = match r.u8().ok_or(bad("truncated pvclock flag"))? {
+        0 => None,
+        1 => {
+            let delta_work = r.u64().ok_or(bad("truncated pvclock delta"))?;
+            let gpa = match r.u8().ok_or(bad("truncated pvclock gpa flag"))? {
+                0 => None,
+                1 => Some(r.u64().ok_or(bad("truncated pvclock gpa"))?),
+                _ => return Err(bad("bad pvclock gpa flag")),
+            };
+            Some((delta_work, gpa))
+        }
+        _ => return Err(bad("bad pvclock flag")),
+    };
     if r.pos != blob.len() {
         return Err(bad("trailing bytes"));
     }
@@ -964,6 +1006,7 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         lapic,
         legacy,
         events,
+        pvclock,
     })
 }
 
@@ -1255,6 +1298,8 @@ mod tests {
                 slave_imr: 0xFF,
             }),
             events: full_events(),
+            // A registered pvclock channel (task 110, v4).
+            pvclock: Some((10_000_000, Some(0x4000))),
         };
         let blob = encode_device_blob(&d);
         let decoded = decode_device_blob(&blob.0).unwrap();
@@ -1874,6 +1919,7 @@ mod tests {
             lapic: None,
             legacy: None,
             events: vmm_backend::VcpuEvents::default(),
+            pvclock: None,
         };
         let blob = encode_device_blob(&d);
         assert_eq!(decode_device_blob(&blob.0).unwrap(), d);

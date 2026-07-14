@@ -18,8 +18,8 @@
 //!   CPU-pinned per `docs/BOX-PINNING.md`:
 //!   `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored --test-threads=1`
 //! - **Kernel image**: the task-110 pvclock build —
-//!   `make -C guest fetch && make -C guest/linux kernel` (applies
-//!   `patches/apply-guest-patches.py`, runs the counter-opcode scan). Pinned
+//!   `make -C guest fetch && make -C guest/linux kernel` (applies the kernel
+//!   diff under `patches/`, runs the armed counter-opcode scan). Pinned
 //!   against `guest/linux/MANIFEST.sha256` (regenerate + commit via
 //!   `guest/linux/run-tests.sh` after the first box build); override
 //!   deliberately with `BZIMAGE_SHA256=<hex>` (hm-xdp: never a bare path).

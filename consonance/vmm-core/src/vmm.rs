@@ -667,9 +667,9 @@ pub struct NetSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PvclockSnapshot {
     /// The staleness bound Δ, in counted work units.
-    delta_work: u64,
+    pub(crate) delta_work: u64,
     /// The registered page GPA, if the guest had published one.
-    gpa: Option<u64>,
+    pub(crate) gpa: Option<u64>,
 }
 
 pub struct Vmm<B: Backend>
@@ -1512,15 +1512,12 @@ where
         // the #34/#55 stale-arm class, PR #51 round-3). `restore_snapshot` and every
         // in-place restore path funnel through here.
         self.arrival_deadline = None;
-        // Task 110: a pvclock registration is run-control state of the OLD
-        // timeline (the same stale-arm class as the arrival deadline) — a
-        // pre-registration snapshot restored into a post-registration VM must
-        // not keep stamping into a page the restored guest never published.
-        // Clear it (the offer + Δ are composition and stay); the snapshot's
-        // own channel state is re-established and cross-validated by the
-        // caller via `pvclock_restore` (the control server carries it
-        // alongside the SDK channel snapshot).
-        self.pvclock_clear_registration();
+        // (Task 110: the pvclock channel needs no reset here — the blob's own
+        // v4 record was validated in the vendor's `validate_restore` and
+        // committed in `commit_restore` above, replacing any stale-timeline
+        // registration with the sealed one — including clearing it when the
+        // sealed VM had none. The same-state ⇒ same-future contract holds for
+        // direct `restore_snapshot` callers with no side channel.)
         Ok(())
     }
 
@@ -2179,86 +2176,89 @@ where
         })
     }
 
-    /// Re-establish a snapshot's pvclock channel state on this (restored) VM,
-    /// **validating the composition symmetrically** first: the snapshot and
-    /// this VM must agree on whether the page is offered AND on Δ — either
-    /// mismatch means the restored timeline's future refresh schedule (or a
-    /// future registration) would diverge from the source's, so it fails loud
+    /// Validate a snapshot's pvclock channel record (the device-blob v4
+    /// `(delta_work, gpa)` carry) against **this** VM's composition,
+    /// **symmetrically and without mutating**: the snapshot and this VM must
+    /// agree on whether the page is offered AND on Δ — either mismatch means
+    /// the restored timeline's future refresh schedule (or a future
+    /// registration) would diverge from the sealed one, so it fails loud
     /// ([`VmmError::ContractViolation`], the LAPIC wiring-mismatch posture),
     /// never a silently different clock. A carried registration additionally
-    /// re-validates the GPA against **this** VM's RAM and requires the
-    /// deterministic-clock backend the original registration required. The
-    /// diagnostic refresh log resets (fresh evidence window, like the landing
-    /// traces).
+    /// re-validates the GPA against this VM's RAM and requires the
+    /// deterministic-clock backend the original registration required.
+    /// Runs in the vendor's `validate_restore` phase — before any commit —
+    /// so a rejected blob leaves the VM fully intact.
     ///
     /// # Errors
     /// [`VmmError::ContractViolation`] on any offer/Δ mismatch, a GPA that no
     /// longer validates, or a registration restored onto a backend with no
     /// deterministic work counter.
-    pub fn pvclock_restore(&mut self, snap: Option<&PvclockSnapshot>) -> Result<(), VmmError> {
-        match (snap, self.pvclock.as_ref()) {
+    pub(crate) fn pvclock_validate_restore(
+        &self,
+        rec: Option<&(u64, Option<u64>)>,
+    ) -> Result<(), VmmError> {
+        match (rec, self.pvclock.as_ref()) {
             (None, None) => Ok(()),
             (None, Some(_)) => Err(VmmError::ContractViolation(
-                "pvclock_restore: this VM offers the clock page but the snapshot's VM did not — \
-                 a guest registering here would fork the timeline off the sealed one; restore \
-                 into a VM composed like the snapshot source."
+                "restore_vm_state: this VM offers the pvclock page but the snapshot's VM did \
+                 not — a guest registering here would fork the timeline off the sealed one; \
+                 restore into a VM composed like the snapshot source."
                     .to_string(),
             )),
-            (Some(s), None) => Err(VmmError::ContractViolation(format!(
-                "pvclock_restore: snapshot carries a pvclock channel (Δ = {}, registration \
-                 {:#x?}) but this VM was composed without enable_pvclock — restore into a VM \
-                 composed like the snapshot source.",
-                s.delta_work, s.gpa
+            (Some((delta, gpa)), None) => Err(VmmError::ContractViolation(format!(
+                "restore_vm_state: snapshot carries a pvclock channel (Δ = {delta}, \
+                 registration {gpa:#x?}) but this VM was composed without enable_pvclock — \
+                 restore into a VM composed like the snapshot source."
             ))),
-            (Some(s), Some(pv)) => {
-                if s.delta_work != pv.delta_work {
+            (Some((delta, gpa)), Some(pv)) => {
+                if *delta != pv.delta_work {
                     return Err(VmmError::ContractViolation(format!(
-                        "pvclock_restore: staleness bound mismatch (snapshot Δ = {}, this VM's \
-                         Δ = {}) — the forced-refresh schedule would diverge from the sealed \
-                         timeline; restore into a VM composed like the snapshot source.",
-                        s.delta_work, pv.delta_work
+                        "restore_vm_state: pvclock staleness bound mismatch (snapshot Δ = \
+                         {delta}, this VM's Δ = {}) — the forced-refresh schedule would diverge \
+                         from the sealed timeline; restore into a VM composed like the snapshot \
+                         source.",
+                        pv.delta_work
                     )));
                 }
-                if let Some(gpa) = s.gpa {
+                if let Some(gpa) = gpa {
                     if !self.backend.capabilities().arch.deterministic_clock() {
                         return Err(VmmError::ContractViolation(format!(
-                            "pvclock_restore: snapshot carries a registered clock page \
+                            "restore_vm_state: snapshot carries a registered pvclock page \
                              ({gpa:#x}) but this backend has no deterministic work counter to \
                              stamp from — the original registration required one."
                         )));
                     }
-                    self.pvclock_validate_gpa(gpa).map_err(|reason| {
+                    self.pvclock_validate_gpa(*gpa).map_err(|reason| {
                         VmmError::ContractViolation(format!(
-                            "pvclock_restore: snapshot page GPA {gpa:#x} does not validate on \
-                             this VM ({reason}) — restore into a VM composed like the snapshot \
-                             source."
+                            "restore_vm_state: snapshot pvclock page GPA {gpa:#x} does not \
+                             validate on this VM ({reason}) — restore into a VM composed like \
+                             the snapshot source."
                         ))
                     })?;
                 }
-                let pv = self.pvclock.as_mut().expect("matched Some above");
-                pv.gpa = s.gpa;
-                // A restored VM's anchor is exactly 0 (the work counter
-                // restarts and `restore_vm_state` anchors there —
-                // synchronized by construction), so a restored registration
-                // arms the Δ refresh immediately: `0 + Δ` is strictly ahead
-                // of the re-baselined counter. No overdue hazard, unlike the
-                // live-registration path (see `first_advance_seen`).
-                pv.first_advance_seen = s.gpa.is_some();
-                pv.refreshes.clear();
                 Ok(())
             }
         }
     }
 
-    /// Drop any pvclock registration and its refresh log (the run-control
-    /// stale-arm reset [`restore_vm_state`](Self::restore_vm_state) performs;
-    /// the offer and Δ are composition, untouched). The caller re-establishes
-    /// the snapshot's own channel state via
-    /// [`pvclock_restore`](Self::pvclock_restore).
-    fn pvclock_clear_registration(&mut self) {
+    /// Commit a snapshot's (already-validated) pvclock channel record: the
+    /// blob's registration state replaces this VM's — a carried registration
+    /// resumes stamping into the restored RAM's page (the same-state ⇒
+    /// same-future half the direct `restore_snapshot` path owes its callers),
+    /// and an unregistered record clears any stale-timeline registration
+    /// this VM held (the arrival-deadline stale-arm class). Infallible, per
+    /// the restore commit phase's contract.
+    pub(crate) fn pvclock_commit_restore(&mut self, rec: Option<&(u64, Option<u64>)>) {
         if let Some(pv) = self.pvclock.as_mut() {
-            pv.gpa = None;
-            pv.first_advance_seen = false;
+            let gpa = rec.and_then(|(_, g)| *g);
+            pv.gpa = gpa;
+            // A restored VM's anchor is exactly 0 (the work counter restarts
+            // and `restore_vm_state` anchors there — synchronized by
+            // construction), so a restored registration arms the Δ refresh
+            // immediately: `0 + Δ` is strictly ahead of the re-baselined
+            // counter. No overdue hazard, unlike the live-registration path
+            // (see `first_advance_seen`).
+            pv.first_advance_seen = gpa.is_some();
             pv.refreshes.clear();
         }
     }
@@ -2753,7 +2753,27 @@ where
         }
         // The Event service (id 4, op 1): capture the `Moment`-stamped emission
         // and, for an assert violation / `setup_complete`, arm a stop.
+        //
+        // Gated on the SDK channel being wired (r3 — the PR-68 `SdkStop`
+        // lesson): the doorbell is serviced whenever ANY channel is enabled
+        // (SDK / Net / pvclock), so a pvclock-only or net-only composition
+        // can reach this arm. Without the gate an assert-violation Event
+        // would answer Ok and even surface `Step::SdkStop` into a session
+        // with no SDK channel; an unoffered service answers a clean
+        // `UnknownService` instead — never a fake success.
         if header.service == ServiceId::Event as u16 && header.opcode == 1 {
+            if self.sdk.is_none() {
+                let n = encode_response(
+                    ServiceId::Event,
+                    1,
+                    header.seq,
+                    Status::UnknownService,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
             if payload.len() < 4 {
                 let n = encode_response(
                     ServiceId::Event,
@@ -2806,7 +2826,24 @@ where
             return (n, stop);
         }
         // The SDK service (id 6, op 1): resolve a buggify decision.
+        //
+        // Gated on the SDK channel being wired (r3): without it,
+        // `decide_buggify` on an SDK-less VM would answer a fabricated
+        // nominal "don't fire" as a SUCCESS — a guest probing for buggify
+        // support must get `UnknownService` (the same posture as Net below).
         if header.service == ServiceId::Sdk as u16 && header.opcode == 1 {
+            if self.sdk.is_none() {
+                let n = encode_response(
+                    ServiceId::Sdk,
+                    1,
+                    header.seq,
+                    Status::UnknownService,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
             if payload.len() != 4 {
                 let n =
                     encode_response(ServiceId::Sdk, 1, header.seq, Status::BadRequest, &[], resp)
@@ -2875,6 +2912,24 @@ where
         // the request (a `u32` count, `1..=MAX_PAYLOAD`) and fills the buffer; fail
         // closed with a `BadRequest` if V-time — hence the stream — is unwired.
         if header.service == ServiceId::Entropy as u16 && header.opcode == 1 {
+            // Gated on an SDK or Net channel being wired (r3): entropy_fill
+            // is the cooperating-guest supply riding those channels, and a
+            // draw ADVANCES the one shared seeded stream RDRAND uses — a
+            // pvclock-only composition must not let a doorbell ring perturb
+            // the RNG stream of a run that never offered the service. Its
+            // pre-pvclock reachability was exactly (sdk || net); preserved.
+            if self.sdk.is_none() && self.net.is_none() {
+                let n = encode_response(
+                    ServiceId::Entropy,
+                    1,
+                    header.seq,
+                    Status::UnknownService,
+                    &[],
+                    resp,
+                )
+                .unwrap_or(0);
+                return (n, None);
+            }
             let mut buf = [0_u8; MAX_PAYLOAD];
             let (status, got) = match self.vtime.as_mut() {
                 Some(vt) => vt.draw_entropy(payload, &mut buf),
@@ -3434,7 +3489,14 @@ where
     pub(crate) fn on_deadline(&mut self, reached: Moment) -> Result<Step, VmmError> {
         // Trace the MEASURED landing work (diagnostic, not hashed) for the seed-dependence
         // gate — capped so a constantly-preempting guest can't grow it unbounded.
-        if self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
+        // ONLY when a timer/arrival deadline was actually due at the landing (r3
+        // P2): the pvclock staleness refresh rides the same `CommonExit::Deadline`,
+        // and recording its forced refreshes here would hand page-enabled gates
+        // bogus timer-preemption evidence. A pure refresh landing (nearer than
+        // both the timer and any staged arrival) is exactly NOT a preemption.
+        let timer_due = self.preemption_deadline().is_some_and(|p| reached.0 >= p.0);
+        let arrival_due = self.arrival_deadline.is_some_and(|a| reached.0 >= a.0);
+        if (timer_due || arrival_due) && self.preemption_landings.len() < PREEMPTION_TRACE_CAP {
             self.preemption_landings.push(reached.0);
         }
         match self.vtime.as_mut() {
@@ -9457,10 +9519,12 @@ mod tests {
         vmm.pvclock_check_oracle().unwrap();
     }
 
-    /// The r2 P1 fix, restore side: a restored registration arms the Δ
-    /// refresh immediately — the restored anchor is exactly 0 (the work
-    /// counter re-baselines), so `0 + Δ` is strictly ahead and there is no
-    /// stale-anchor window to wait out.
+    /// The r2 P1 fix (restore side) + the r3 direct-carry P1 in one: a plain
+    /// `restore_snapshot` — no control server, no side channel — reinstates
+    /// the sealed registration from the vm_state device blob (v4), and the
+    /// restored registration arms the Δ refresh immediately (the restored
+    /// anchor is exactly 0 against a re-baselined counter, so `0 + Δ` is
+    /// strictly ahead; no stale-anchor window to wait out).
     #[test]
     fn pvclock_restored_registration_arms_immediately() {
         let mut src = pvclock_vmm(
@@ -9472,26 +9536,27 @@ mod tests {
         src.step().unwrap();
         let vm_state = src.save_vm_state().unwrap();
         let image = src.guest_memory().to_vec();
-        let carried = src.pvclock_snapshot().unwrap();
 
         let mut b = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
         b.restore_snapshot(&image, &vm_state).unwrap();
         assert_eq!(
-            b.pvclock_refresh_deadline(),
-            None,
-            "no deadline while the registration is cleared"
+            b.pvclock_registration(),
+            Some(PV_GPA),
+            "the direct restore path must carry the registration (r3: same-state, same-future)"
         );
-        b.pvclock_restore(Some(&carried)).unwrap();
         assert!(
             b.pvclock_refresh_deadline().is_some(),
             "a restored registration arms off the exact post-restore anchor"
         );
+        b.pvclock_check_oracle()
+            .expect("restored page matches the restored clock");
     }
 
     /// §1.1: a seal re-stamps the page to canonical form (`seq = 0`) at the
     /// exact seal values, and a restored sibling continues byte-identically —
-    /// while `restore_vm_state` itself clears the (stale-timeline)
-    /// registration until the caller re-establishes it.
+    /// the sealed registration riding the vm_state device blob (v4)
+    /// authoritatively replaces whatever registration the target VM held
+    /// (r3: the direct restore path carries the channel with the state).
     #[test]
     fn pvclock_seal_canonicalizes_and_restore_carries_the_registration() {
         let mut a = pvclock_vmm(
@@ -9513,23 +9578,22 @@ mod tests {
         );
         let image = a.guest_memory().to_vec();
 
-        // Restore into a fresh, like-composed VM.
+        // Restore into a fresh, like-composed VM whose guest even registered a
+        // DIFFERENT page first: the blob's sealed registration is
+        // authoritative — the stale-timeline registration is replaced, not
+        // merely cleared (the arrival-deadline stale-arm class).
         let mut b = pvclock_vmm(
             vec![Exit::Arch(X86Exit::Rdtsc)],
             Box::new(ScriptedWork::new()),
             7,
         );
-        ring_pvclock_register(&mut b, PV_GPA);
-        // Capture the channel state the seal-time carry would (offer + Δ +
-        // registration), as the control server does at `snapshot()`.
-        let carried = a.pvclock_snapshot().expect("offered");
+        ring_pvclock_register(&mut b, PV_GPA + 0x1000);
         b.restore_snapshot(&image, &vm_state).unwrap();
-        // The restore cleared the stale-timeline registration...
-        assert_eq!(b.pvclock_registration(), None);
-        // ...and the caller (the control server, in production) re-establishes
-        // and cross-validates the snapshot's own channel state.
-        b.pvclock_restore(Some(&carried)).unwrap();
-        assert_eq!(b.pvclock_registration(), Some(PV_GPA));
+        assert_eq!(
+            b.pvclock_registration(),
+            Some(PV_GPA),
+            "the blob's sealed registration is authoritative after a direct restore"
+        );
         // The restored page is byte-identical to the sealed one, and the next
         // intercept stamps it exactly as a never-restored run would.
         assert_eq!(
@@ -9539,39 +9603,74 @@ mod tests {
         b.pvclock_check_oracle().unwrap();
     }
 
-    /// Composition mismatches fail loud, **symmetrically**: an offered
-    /// snapshot into an unoffered target (registered or not), an unoffered
-    /// snapshot into an offered target, a Δ mismatch, a GPA that no longer
-    /// validates, and a registration onto a non-deterministic-clock backend.
+    /// Composition mismatches fail loud, **symmetrically**, through the real
+    /// restore path (`restore_vm_state` validates the blob's v4 pvclock
+    /// record before mutating anything): an offered snapshot into an
+    /// unoffered target (registered or not), an unoffered snapshot into an
+    /// offered target, a Δ mismatch, a GPA that no longer validates, and a
+    /// registration onto a non-deterministic-clock backend. Every rejection
+    /// leaves the target VM intact (reject-before-mutation).
     #[test]
     fn pvclock_restore_mismatch_fails_loud() {
-        // Channel states as a like-composed source VM would seal them.
-        let registered = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
-        let offered_unregistered_snap = registered.pvclock_snapshot().expect("offered");
-        let mut src = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
-        ring_pvclock_register(&mut src, PV_GPA);
-        let registered_snap = src.pvclock_snapshot().expect("offered");
+        // Sealed states from differently-configured source VMs.
+        let seal = |register: bool| {
+            let mut src = pvclock_vmm(
+                vec![Exit::Arch(X86Exit::Rdtsc)],
+                Box::new(ScriptedWork::at(10)),
+                7,
+            );
+            if register {
+                ring_pvclock_register(&mut src, PV_GPA);
+            }
+            src.step().unwrap();
+            src.save_vm_state().unwrap()
+        };
+        let registered_state = seal(true);
+        let offered_unregistered_state = seal(false);
+        let unoffered_state = {
+            let mut src = vtime_vmm(
+                vec![Exit::Arch(X86Exit::Rdtsc)],
+                Box::new(ScriptedWork::at(10)),
+                7,
+            );
+            // vtime_vmm uses a small RAM; rebuild with TEST_RAM for image parity.
+            let _ = &mut src;
+            let mut src = Vmm::new(
+                configured_mock(vec![Exit::Arch(X86Exit::Rdtsc)]),
+                GuestRam::new(TEST_RAM).unwrap(),
+            );
+            src.wire_vtime(
+                VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::at(10)), 7)
+                    .unwrap(),
+            );
+            src.step().unwrap();
+            src.save_vm_state().unwrap()
+        };
+        let reject = |vmm: &mut Vmm<MockBackend>, s: &vm_state::VmState, why: &str| {
+            assert!(
+                matches!(vmm.restore_vm_state(s), Err(VmmError::ContractViolation(_))),
+                "expected loud rejection: {why}"
+            );
+        };
 
-        // Offered snapshot (even UNREGISTERED) → unoffered target: rejected.
-        let mut unoffered = vtime_vmm(vec![], Box::new(ScriptedWork::new()), 7);
-        assert!(matches!(
-            unoffered.pvclock_restore(Some(&offered_unregistered_snap)),
-            Err(VmmError::ContractViolation(_))
-        ));
-        assert!(matches!(
-            unoffered.pvclock_restore(Some(&registered_snap)),
-            Err(VmmError::ContractViolation(_))
-        ));
-        // Unoffered snapshot → unoffered target: fine.
-        unoffered.pvclock_restore(None).unwrap();
+        // Offered snapshot (even UNREGISTERED) -> unoffered target: rejected.
+        let mut unoffered = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        unoffered.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
+        );
+        reject(&mut unoffered, &registered_state, "registered -> unoffered");
+        reject(
+            &mut unoffered,
+            &offered_unregistered_state,
+            "offered-unregistered -> unoffered",
+        );
+        // Unoffered snapshot -> unoffered target: fine.
+        unoffered.restore_vm_state(&unoffered_state).unwrap();
 
-        // Unoffered snapshot → OFFERED target: rejected (a guest registering
+        // Unoffered snapshot -> OFFERED target: rejected (a guest registering
         // here would fork the timeline off the sealed one).
         let mut offered = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
-        assert!(matches!(
-            offered.pvclock_restore(None),
-            Err(VmmError::ContractViolation(_))
-        ));
+        reject(&mut offered, &unoffered_state, "unoffered -> offered");
 
         // Δ mismatch: rejected (the forced-refresh schedule would diverge).
         let mut other_delta = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -9579,10 +9678,7 @@ mod tests {
             VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
         );
         other_delta.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK + 1);
-        assert!(matches!(
-            other_delta.pvclock_restore(Some(&registered_snap)),
-            Err(VmmError::ContractViolation(_))
-        ));
+        reject(&mut other_delta, &registered_state, "Δ mismatch");
 
         // A GPA that no longer validates on the target (smaller RAM): rejected.
         let mut small = Vmm::new(configured_mock(vec![]), GuestRam::new(0x2000).unwrap());
@@ -9590,11 +9686,8 @@ mod tests {
             VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
         );
         small.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
-        assert!(matches!(
-            small.pvclock_restore(Some(&registered_snap)),
-            Err(VmmError::ContractViolation(_))
-        ));
-        assert_eq!(small.pvclock_registration(), None);
+        reject(&mut small, &registered_state, "GPA past the target's RAM");
+        assert_eq!(small.pvclock_registration(), None, "rejection mutated");
 
         // A registration onto a backend with no deterministic work counter:
         // rejected (the original registration required one).
@@ -9611,15 +9704,16 @@ mod tests {
             VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
         );
         no_det.enable_pvclock(PVCLOCK_DEFAULT_DELTA_WORK);
-        assert!(matches!(
-            no_det.pvclock_restore(Some(&registered_snap)),
-            Err(VmmError::ContractViolation(_))
-        ));
+        reject(
+            &mut no_det,
+            &registered_state,
+            "registration onto a non-deterministic-clock backend",
+        );
         // The same target accepts the UNREGISTERED channel state (no stamps
         // will ever be derived until a registration, which the doorbell gate
         // would itself refuse there).
         no_det
-            .pvclock_restore(Some(&offered_unregistered_snap))
+            .restore_vm_state(&offered_unregistered_state)
             .unwrap();
     }
 
@@ -9651,6 +9745,111 @@ mod tests {
         let (header, _) = decode(&vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
         assert_eq!(header.status, Status::BadRequest as u16);
         assert_eq!(vmm.pvclock_registration(), None);
+    }
+
+    /// r3 P1: per-service doorbell gating. A pvclock-ONLY composition
+    /// services the doorbell (the pvclock offer opens it) but every OTHER
+    /// service answers `UnknownService`: an assert-violation Event must not
+    /// answer Ok — and must NOT surface `Step::SdkStop` into a session with
+    /// no SDK channel (the PR-68 lesson); a buggify ask must not fabricate a
+    /// nominal answer; an entropy_fill must not advance the one shared seeded
+    /// stream of a run that never offered the service.
+    #[test]
+    fn pvclock_only_composition_rejects_unoffered_doorbell_services() {
+        let mut vmm = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
+        let entropy_before = vmm.entropy_state();
+
+        let ring = |vmm: &mut Vmm<MockBackend>, frame: &[u8]| -> (Step, u16) {
+            vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + frame.len()].copy_from_slice(frame);
+            let step = vmm.service_doorbell(frame.len() as u32).unwrap();
+            let (header, _) = decode(&vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
+            (step, header.status)
+        };
+
+        // An Event frame shaped like an ASSERT VIOLATION (the SdkStop shape).
+        let mut frame = [0_u8; 128];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x0001_0001u32.to_le_bytes()); // an event id
+        payload.extend_from_slice(b"assert detail bytes");
+        let n =
+            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut frame).unwrap();
+        let (step, status) = ring(&mut vmm, &frame[..n]);
+        assert_eq!(
+            status,
+            Status::UnknownService as u16,
+            "Event must be unoffered"
+        );
+        assert_eq!(step, Step::Continued, "no SdkStop without an SDK channel");
+
+        // A buggify ask.
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 1, 2, &7u32.to_le_bytes(), &mut frame)
+                .unwrap();
+        let (step, status) = ring(&mut vmm, &frame[..n]);
+        assert_eq!(
+            status,
+            Status::UnknownService as u16,
+            "Sdk must be unoffered"
+        );
+        assert_eq!(step, Step::Continued);
+
+        // An entropy_fill for 8 bytes.
+        let n = hypercall_proto::encode_request(
+            ServiceId::Entropy,
+            1,
+            3,
+            &8u32.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let (step, status) = ring(&mut vmm, &frame[..n]);
+        assert_eq!(
+            status,
+            Status::UnknownService as u16,
+            "Entropy must be unoffered"
+        );
+        assert_eq!(step, Step::Continued);
+        assert_eq!(
+            vmm.entropy_state(),
+            entropy_before,
+            "an unoffered entropy ask advanced the shared seeded stream"
+        );
+
+        // The pvclock service itself still works on the same composition.
+        let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
+        assert_eq!(status, Status::Ok as u16);
+    }
+
+    /// r3 P2: a pvclock forced-refresh `Deadline` is NOT a timer preemption —
+    /// it must not enter `preemption_landings` (the task-47 seed-dependence
+    /// evidence). A landing at a due TIMER deadline still records.
+    #[test]
+    fn pvclock_forced_refresh_is_not_a_preemption_landing() {
+        const DELTA: u64 = 1_000;
+        let mut vmm = Vmm::new(
+            configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
+                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+                Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
+            ]),
+            GuestRam::new(TEST_RAM).unwrap(),
+        );
+        vmm.wire_vtime(
+            VtimeWiring::new(contract_vclock_config(), Box::new(ScriptedWork::new()), 7).unwrap(),
+        );
+        vmm.enable_pvclock(DELTA);
+        ring_pvclock_register(&mut vmm, PV_GPA);
+        vmm.step().unwrap(); // Rdtsc: arms the Δ refresh
+        // Two pure forced refreshes (no timer, no arrival armed).
+        vmm.step().unwrap();
+        vmm.step().unwrap();
+        assert!(
+            vmm.preemption_landings().is_empty(),
+            "pvclock forced refreshes polluted the timer-preemption evidence: {:?}",
+            vmm.preemption_landings()
+        );
+        // The refreshes themselves DID happen (the page advanced).
+        assert_eq!(vmm.pvclock_refreshes().len(), 2);
     }
 
     /// The mock's default capabilities, named so the no-deterministic-clock

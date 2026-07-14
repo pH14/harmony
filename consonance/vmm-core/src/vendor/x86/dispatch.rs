@@ -687,6 +687,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
             // `KVM_SET_VCPU_EVENTS` corrupts the resumed guest. All-zero at a quiescent
             // point, so M1/M2/corpus blobs are unchanged.
             events: records::canonical_events(&vcpu.events),
+            // The task-110 pvclock channel (v4): offer + Δ + the one-shot
+            // registration, so the direct restore path carries the stamping
+            // obligation with the state it governs (same-state ⇒ same-future).
+            pvclock: self.pvclock_snapshot().map(|s| (s.delta_work, s.gpa)),
         };
         s.devices = records::encode_device_blob(&dev);
         s.contract_hash = contract::contract_hash();
@@ -751,6 +755,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
                     .to_string(),
             ));
         }
+        // The task-110 pvclock channel record must validate symmetrically
+        // against this VM's composition (offer/Δ/GPA/deterministic backend) —
+        // still committing nothing (reject-before-mutation).
+        self.pvclock_validate_restore(dev.pvclock.as_ref())?;
         // Build the vCPU state (pure). The typed records yield the reduced `vm_state`
         // event subset; overwrite `events` with the device blob's **full**
         // `kvm_vcpu_events` (task 41) so an in-flight interrupt/exception injection is
@@ -787,8 +795,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     /// The x86 half of the restore **commit** (all infallible): install the prepared
-    /// xAPIC, the legacy-platform latches, the UART residual state, and the restored
-    /// guest-observable report stream.
+    /// xAPIC, the legacy-platform latches, the UART residual state, the restored
+    /// guest-observable report stream, and the task-110 pvclock channel state
+    /// (the sealed registration resumes stamping into the restored RAM's page;
+    /// a sealed-unregistered record clears any stale-timeline registration).
     pub(crate) fn commit_restore_x86(&mut self, prep: X86RestorePrep) {
         let X86RestorePrep { lapic, dev } = prep;
         if let Some(l) = lapic {
@@ -800,6 +810,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         self.devices
             .uart
             .restore(dev.uart.capture, dev.uart.regs, dev.uart.dlab, dev.uart.dlm);
+        self.pvclock_commit_restore(dev.pvclock.as_ref());
         self.report_stream = dev.report_stream;
     }
 }

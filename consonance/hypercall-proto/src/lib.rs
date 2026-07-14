@@ -1542,6 +1542,14 @@ mod host {
             if payload.len() != 8 {
                 return (Status::BadRequest, 0);
             }
+            // One-shot (the frozen ABI, mirroring the production host): the
+            // first accepted registration pins the target for the machine's
+            // life; ANY second register — same GPA or not — is a guest fault,
+            // rejected before the range check exactly as production orders it,
+            // so loopback tests exercise the semantics real guests will hit.
+            if self.registered.is_some() {
+                return (Status::BadRequest, 0);
+            }
             // Page-aligned and wholly inside guest RAM, else OutOfRange.
             if gpa % 4096 != 0 || gpa.checked_add(4096).is_none_or(|end| end > self.ram_len) {
                 return (Status::OutOfRange, 0);

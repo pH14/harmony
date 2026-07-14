@@ -41,6 +41,35 @@ fault (`BadRequest`, touches nothing, the stamping target is pinned for the
 machine's life); `docs/PARAVIRT-CLOCK.md` §1's "fixed, contract-reserved GPA"
 wording is amended in this PR per the ruling.
 
+**Review round 3 folded in** (cross-model r3: 5 P1 + 2 P2 with foreman
+dispositions): (a) **licensing** — the clocksource ships as a **kernel diff**
+(`guest/linux/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch`;
+the standalone `.c` and the anchor-applier are gone; `patches/README.md`
+states the GPL-2.0 kernel-diff exception and the regeneration workflow;
+`build-kernel.sh` applies the diff with a reverse-dry-run idempotence guard).
+(b) **per-service doorbell gating** — Event and Sdk require the SDK channel,
+Entropy requires SDK-or-Net (its exact pre-pvclock reachability); an unoffered
+service answers `UnknownService`, never a fake success, a fabricated buggify
+answer, a seeded-stream draw, or a `Step::SdkStop` into a session with no SDK
+channel (the PR-68 lesson). (c) **post-registration liveness** — the reference
+guest executes a second deliberate `rdtsc` right after the doorbell exchange,
+before selecting the page clocksource: a trapping intercept at a point where
+the registration exists, so the Δ refresh is armed before any kernel path
+reads page time. (d) **direct-restore carry** — the pvclock channel record
+(offer + Δ + registration) rides the vm_state **device blob (v4)**: validated
+symmetrically in the vendor's validate phase (reject-before-mutation) and
+committed with the restore, so the public `save_vm_state`/`restore_snapshot`
+path preserves same-state ⇒ same-future with **no control-server side
+channel** (the control server's `pvclock_snaps` table is gone; a mismatched
+factory now surfaces as the recoverable `RestoreFailed`, the LAPIC-mismatch
+class; `Vmm::pvclock_restore` is removed from the public API). (e)
+**MANIFEST** — regenerated via the container `run-tests.sh` (reproducibility
+double-build + QEMU boot) and committed. (f) P2s: pvclock forced-refresh
+`Deadline`s no longer pollute `preemption_landings` (recorded only when a
+timer/arrival deadline was actually due), and the reference
+`PvclockRegistrar` enforces the one-shot exactly like production
+(`BadRequest` on any second register, ordered before the range check).
+
 ## What landed (by deliverable)
 
 1. **Rename ride-along** — already fully landed by tasks/108 (`guest_hz`/
@@ -81,20 +110,32 @@ wording is amended in this PR per the ruling.
    path shares that chokepoint, so sealed RAM images always carry the
    canonical page (seq 0, exact seal work count, zeroed tail). No new vm-state
    section, no `VM_STATE_VERSION` bump. The full channel configuration
-   (offer + Δ + registration, `PvclockSnapshot`) rides the control server
-   beside the SDK channel snapshots and is cross-validated **symmetrically**
-   on restore (offer/Δ/GPA/deterministic-backend mismatches all fail loud);
-   the configuration also folds into `state_blob` as the `PVCK` chunk when
-   offered (state identity — the SDK fault-policy precedent; un-offered blobs
-   are byte-for-byte unchanged).
-5. **Guest kernel clocksource** — `guest/linux/patches/harmony_pvclock.c`
-   (+ `apply-guest-patches.py`, the kernel's first source patch; Kconfig/
-   Makefile string-anchored), `CONFIG_HARMONY_PVCLOCK=y` in `config-fragment`
-   + `assert_y`. Clocksource `.read()` = the §1 seqlock page load (vns,
-   ns-native, registered at 1 GHz, rating 450); sched_clock routed through the
-   same read (`paravirt_set_sched_clock`); `mark_tsc_unstable` makes the TSC
-   unselectable for timekeeping once the page is live. Runtime-gated on the
+   (offer + Δ + registration) rides the sealed vm_state's **device blob (v4,
+   r3)** — validated symmetrically in the restore's validate phase
+   (offer/Δ/GPA/deterministic-backend mismatches all fail loud, before any
+   mutation) and committed with the restore, so the direct
+   `save_vm_state`/`restore_snapshot` path preserves same-state ⇒ same-future
+   with no control-server side channel; the configuration also folds into
+   `state_blob` as the `PVCK` chunk when offered (state identity — the SDK
+   fault-policy precedent; un-offered blobs are byte-for-byte unchanged).
+5. **Guest kernel clocksource** — the kernel's first source change, shipped
+   as a **kernel diff** (r3 licensing form):
+   `guest/linux/patches/0001-x86-harmony-pvclock-work-derived-clocksource.patch`
+   (new file + Kconfig + Makefile hunks generated against the pristine
+   pinned tree; `patches/README.md` states the GPL-2.0 kernel-diff exception
+   and the regeneration workflow; applied by `build-kernel.sh` with a
+   reverse-dry-run idempotence guard), `CONFIG_HARMONY_PVCLOCK=y` in
+   `config-fragment` + `assert_y`. Clocksource `.read()` = the §1 seqlock
+   page load (vns, ns-native, registered at 1 GHz, rating 450); sched_clock
+   routed through the same read (`paravirt_set_sched_clock`);
+   `mark_tsc_unstable` makes the TSC unselectable for timekeeping once the
+   page is live; registration bracketed by the two deliberate `rdtsc` traps
+   (fresh initial stamp; the post-registration clock advance that arms the Δ
+   refresh before the clocksource is selected). Runtime-gated on the
    `harmony_pvclock` parameter → one image is both measurement arms.
+   **Compiles and boots proven portably**: the full linux/amd64 container
+   build produces bzImage and passes the reproducibility + QEMU-boot gates
+   (`run-tests.sh`), whose regenerated `MANIFEST.sha256` is committed.
 6. **Reachability gate, x86 half** — `guest/linux/scan-counter-opcodes.sh`
    wired into `build-kernel.sh`: symbol-attributed objdump scan for
    rdtsc/rdtscp vs the reviewed `rdtsc-allowlist.txt`, accounting **per
@@ -170,13 +211,11 @@ Doc and code agree at ABI freeze.
 
 ## Known limitations / box-verify items
 
-- **The kernel patch has never been compiled** (kernel builds are Linux-only;
-  the applier's mechanics were validated on a synthetic tree). Box-verify:
-  (a) the two anchors (`kvmclock.o` Makefile line, `config KVM_GUEST` Kconfig
-  block) hold on real 6.18.35; (b) `paravirt_set_sched_clock`'s 6.18 signature
-  (`u64 (*)(void)` expected); (c) `linux/unaligned.h` include path; (d)
-  memremap of the (X86_RESERVE_LOW-reserved) doorbell pages at early_initcall.
-  Any failure is loud at build/boot; fixes are one-file.
+- **The kernel patch compiles and QEMU-boots, proven portably** (r2/r3: the
+  full linux/amd64 container build + `run-tests.sh`); what remains
+  box-verified is the LIVE half — the doorbell registration against the real
+  patched-KVM host (memremap of the X86_RESERVE_LOW-reserved doorbell pages
+  at early_initcall, page clocksource selection, G0–G3/perf).
 - **The rdtsc allowlist baseline is container-captured** (r2): reviewed and
   committed from the linux/amd64 container build (debian:stable gcc). The
   box's compiler version may inline differently and shift a per-function
@@ -185,11 +224,14 @@ Doc and code agree at ABI freeze.
   against the box capture and commit the delta (the `GATE-UNARMED` marker
   exists for full re-baselines, e.g. a kernel version bump, and FAILS builds
   while present).
-- **MANIFEST.sha256 still pins the pre-pvclock kernel**: after the first box
-  build, `guest/linux/run-tests.sh` regenerates it (reproducibility
-  double-build + QEMU boot) — commit that alongside the allowlist. The live
-  gates refuse to run against unpinned images (deliberate `*_SHA256` env
-  overrides exist for the window itself).
+- **MANIFEST.sha256 is regenerated and committed** (r3): the container
+  `run-tests.sh` run (reproducibility double-build + QEMU boot of the
+  manifested bytes) produced it against the pvclock kernel, so the live gates
+  pin against a committed hash out of the box. The box's own build should
+  reproduce it bit-for-bit (the levers pin timestamp/user/host/path); a
+  toolchain-version difference would surface as a pin mismatch — rebuild and
+  re-commit from the box in that case (deliberate `*_SHA256` env overrides
+  exist for the window itself).
 - **`pvclock_refreshes` is capped** at `PVCLOCK_REFRESH_TRACE_CAP` (4096, the
   landing-trace cap); windowed gates re-arm it via `pvclock_clear_refreshes`
   and treat a saturated window as a measurement failure (the r1 G3 fix).
@@ -207,12 +249,13 @@ Doc and code agree at ABI freeze.
 All from the repo on the box, pinned per `docs/BOX-PINNING.md`:
 
 1. `make -C guest fetch && make -C guest/linux kernel`
-   → the armed counter-opcode scan should pass against the committed
-   container-captured baseline; if the box compiler shifts an inlined count,
-   re-review the drifted entries against the box capture and commit the
-   delta (see Known limitations). Then `guest/linux/run-tests.sh` → commit
-   the regenerated `MANIFEST.sha256`. (`make -C guest/linux exec-image` for
-   G3; note its sha256 for `INITRAMFS_EXEC_SHA256`.)
+   → expected green against the committed baseline AND the committed
+   `MANIFEST.sha256` (both produced portably in the container). If the box
+   toolchain differs: an inlined-count drift fails the armed scan
+   (re-review + commit the delta) and a byte drift fails the manifest pin
+   (rebuild + re-commit from the box) — both loud, neither silent.
+   (`make -C guest/linux exec-image` for G3; note its sha256 for
+   `INITRAMFS_EXEC_SHA256`.)
 2. **Smoke-fire-once** (minutes, before any budget):
    `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored g0_smoke --test-threads=1`
    Report before continuing (per the task's box discipline).

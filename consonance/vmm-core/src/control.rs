@@ -116,9 +116,7 @@ use crate::vendor::{InterruptReject, Vendor};
 
 use crate::exec::ExecSession;
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{
-    NetSnapshot, PvclockSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError,
-};
+use crate::vmm::{NetSnapshot, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 /// Boots a fresh, equivalently-composed VM — the restore target for every
 /// `branch`/`replay` (see the module doc's fresh-VM discipline). On the box
@@ -313,16 +311,6 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     /// prefix) so a fork's `net_decide` answers do not diverge from the sequential
     /// run. Ephemeral, removed with its snapshot on `drop`.
     net_snaps: BTreeMap<u64, NetSnap>,
-    /// Per-snapshot pvclock channel state (task 110), same discipline as the
-    /// channel snapshots: present iff the sealed VM **offered** the page,
-    /// carrying Δ and the guest's registration. The page *bytes* ride the RAM
-    /// image; this is the host-side configuration a `branch`/`replay`
-    /// re-establishes AND cross-validates via [`Vmm::pvclock_restore`] —
-    /// without it a restored guest that already registered would read a
-    /// frozen page and hang on its first busy-wait, and an offer/Δ
-    /// composition mismatch would silently fork the timeline's future refresh
-    /// schedule. Ephemeral, removed with its snapshot on `drop`.
-    pvclock_snaps: BTreeMap<u64, PvclockSnapshot>,
     /// **The lineage taint bit** for the *current live timeline* (task 81). Set the
     /// instant an [`Request::Exec`] improvisation is issued (conservatively, before
     /// it runs — so no failure mode leaves an improvised timeline looking clean),
@@ -425,7 +413,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
             net_snaps: BTreeMap::new(),
-            pvclock_snaps: BTreeMap::new(),
             // A fresh session's live timeline is untainted; no snapshots exist yet.
             timeline_tainted: false,
             tainted_snaps: BTreeSet::new(),
@@ -940,11 +927,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         // Task 61: capture the Net channel's flow-policy stream position + decision
         // log the same way (owned, so the borrow ends before touching self).
         let net_channel = vmm.net_snapshot();
-        // Task 110: capture the pvclock channel state in force at the seal —
-        // the offer + Δ + registration (the page bytes themselves ride the
-        // just-sealed RAM image, canonical per §1.1 — `save_vm_state`
-        // re-stamped them above).
-        let pvclock_snap = vmm.pvclock_snapshot();
+        // (Task 110: the pvclock channel — offer + Δ + registration — rides the
+        // sealed vm_state's device blob itself (v4), so there is no side
+        // table to capture here; the restore path validates and commits it
+        // with the blob.)
         let id = self.next_snap;
         self.next_snap += 1;
         self.snaps.insert(id, store_id);
@@ -959,9 +945,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             // the seal-time policy must be restored before the Net env materializes.
             let policy = self.recorded.policy().clone();
             self.net_snaps.insert(id, NetSnap { channel, policy });
-        }
-        if let Some(pv) = pvclock_snap {
-            self.pvclock_snaps.insert(id, pv);
         }
         // Task 81: a snapshot inherits the live timeline's taint. If the timeline
         // was tainted by an `exec` improvisation, record the handle (so any
@@ -989,8 +972,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.sdk_snaps.remove(&snap.0);
         // Task 61: drop the Net channel snapshot with its handle too.
         self.net_snaps.remove(&snap.0);
-        // Task 110: drop the pvclock registration note with its handle too.
-        self.pvclock_snaps.remove(&snap.0);
         // Task 81: drop its taint record with the handle. (The `SnapId` is
         // monotonic — [`next_snap`] never reuses a number — so a later snapshot can
         // never inherit this one's taint by handle reuse.)
@@ -1312,20 +1293,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
             vmm.net_restore(&n.channel);
         }
-        // Task 110: re-establish the snapshot's pvclock channel state (the
-        // restore cleared the registration — the stale-arm class), so the
-        // restored guest's already-registered page keeps being stamped and
-        // its first busy-wait does not hang on a frozen clock. The page bytes
-        // were restored with the RAM image; this carries + cross-validates
-        // the configuration (offer, Δ, registration) symmetrically. Any
-        // composition mismatch (the factory offers when the snapshot's VM did
-        // not, or vice versa, or a different Δ) fails loud as substrate
-        // breakage — never a silently forked refresh schedule.
-        {
-            let pv = self.pvclock_snaps.get(&snap.0);
-            let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-            vmm.pvclock_restore(pv).map_err(ServeError::from)?;
-        }
+        // (Task 110: the pvclock channel state rode the restored vm_state's
+        // device blob — `restore_vm_state`/`restore_snapshot` validated it
+        // symmetrically against the fresh VM's composition and committed it;
+        // a mismatched factory surfaces as the recoverable `RestoreFailed`
+        // above, exactly like a LAPIC wiring mismatch.)
         for (m, fault) in host {
             self.schedule.insert(m, fault);
         }
@@ -6759,8 +6731,9 @@ mod tests {
     }
 
     /// A factory that does NOT offer the pvclock cannot restore a snapshot
-    /// whose VM had a registered page: the composition mismatch is substrate
-    /// breakage (a `ServeError`), never a silent frozen clock.
+    /// whose VM had a registered page: the blob's v4 pvclock record fails the
+    /// validate phase before any mutation — the recoverable `RestoreFailed`,
+    /// never a silent frozen clock.
     #[test]
     #[cfg_attr(
         miri,
@@ -6822,15 +6795,20 @@ mod tests {
         let mut s = ControlServer::new(live, factory);
         hello(&mut s);
         let base = snap(&mut s);
-        assert!(
-            matches!(
-                s.handle(&Request::Branch {
-                    snap: base,
-                    env: seeded_env(7),
-                }),
-                Err(ServeError::Vmm(_))
-            ),
-            "a pvclock composition mismatch tears the session down loudly"
+        // The blob's v4 pvclock record fails the fresh VM's validate phase
+        // BEFORE any mutation, so the branch answers the recoverable
+        // `RestoreFailed` (the LAPIC-wiring-mismatch class) and the session
+        // stays alive on a fresh boot — loud, never a silently frozen clock.
+        assert_eq!(
+            s.handle(&Request::Branch {
+                snap: base,
+                env: seeded_env(7),
+            })
+            .unwrap(),
+            Err(ControlError::RestoreFailed),
+            "a pvclock composition mismatch rejects the restore loudly"
         );
+        // The session survived (fresh boot) — still hashable.
+        let _ = hash(&mut s);
     }
 }

@@ -55,7 +55,7 @@ ecmd_submit_sync 2                           # [iommu]
 entropy_timer 1                              # [rng]
 ext4_mb_generate_buddy 2                     # [fs]
 extract_entropy.constprop.0 1                # [rng]
-harmony_pvclock_init 1                       # [harmony] deliberate (see patch)
+harmony_pvclock_init 2                       # [harmony] the two deliberate reads (pre-ring anchor freshener + post-registration clock advance; see patches/README.md)
 hpet_enable 2                                # [time] calibration (hpet off at runtime)
 iommu_disable_irq_remapping.part.0 2         # [iommu]
 iommu_disable_protect_mem_regions.part.0 2   # [iommu]
