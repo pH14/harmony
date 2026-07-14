@@ -127,6 +127,7 @@ its module doc):
 | `Event`   | 4 | `1` = emit `(event_id, bytes)` — fire-and-forget (the link-tier SDK stream) |
 | `Net`     | 5 | `1` = `net_decide` — round-trips a per-flow policy answer (task 61) |
 | `Sdk`     | 6 | `1` = `buggify_decide` — round-trips a one-byte fire / no-fire answer |
+| `Pvclock` | 7 | `1` = `pvclock_register` — publishes the guest clock-page GPA (task 110) |
 
 - **`Net = 5` (task 61).** The guest flow agent's `net_decide` verb asks the host what to do with a
   flow — **once per flow/connection, never per frame** (the host is on the control path only). One
@@ -143,6 +144,13 @@ its module doc):
   the host resolves through its `Environment::decide` seam and records at the surfacing `Moment` (so a
   replay reproduces it). Id **5** is the `Net` vertical, so the SDK control service is **6** — the
   numbering never moves (a released wire ABI).
+- **`Pvclock = 7` (task 110, `docs/PARAVIRT-CLOCK.md`).** The guest publishes the guest-physical
+  address of its 4 KiB paravirt work-derived clock page (one 8-byte little-endian page-aligned GPA);
+  the host validates it (page-aligned, wholly inside guest RAM, clear of the doorbell frame pages),
+  records it, stamps the page from the V-time clock, and answers the 4-byte little-endian page-layout
+  ABI version (`HARMONY_PVCLOCK_ABI = 1`). A host not composed with the clock page — or one without a
+  deterministic work counter to derive stamps from — answers `Status::UnknownService`, and the guest
+  keeps its trap-backstopped time paths (the page is pure opt-in on both sides).
 - An unregistered service id is `Status::UnknownService`; an opcode a service does not implement is
   `Status::UnknownOpcode` — never a silent drop.
 

@@ -645,3 +645,76 @@ proptest! {
         prop_assert_eq!(&out[..n], &answer[..]);
     }
 }
+
+/// The task-110 pvclock registration round-trip: the guest
+/// `pvclock_register(gpa)` reaches the [`PvclockRegistrar`] service (id 7,
+/// op 1), which validates the page-aligned in-RAM GPA, records it, and answers
+/// the ABI version; a bad GPA is a clean status, never a silent accept.
+#[test]
+fn pvclock_register_round_trips_the_abi_version() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(
+        ServiceId::Pvclock,
+        Box::new(PvclockRegistrar::new(1 << 20, 1)),
+    );
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+
+    assert_eq!(client.pvclock_register(0x5000).unwrap(), 1);
+    // Misaligned and out-of-range GPAs are clean OutOfRange statuses.
+    assert_eq!(
+        client.pvclock_register(0x5001),
+        Err(ClientError::Status(Status::OutOfRange))
+    );
+    assert_eq!(
+        client.pvclock_register(1 << 20),
+        Err(ClientError::Status(Status::OutOfRange))
+    );
+    // The last page of RAM is in range.
+    assert_eq!(client.pvclock_register((1 << 20) - 4096).unwrap(), 1);
+}
+
+/// A host with no pvclock service answers `UnknownService`, so a guest probing
+/// for the clock page gets a clean "not offered", never a panic — the pure
+/// opt-in posture of `docs/PARAVIRT-CLOCK.md`.
+#[test]
+fn pvclock_register_without_service_is_a_clean_status() {
+    let mut dispatcher = Dispatcher::new();
+    dispatcher.register(ServiceId::Event, Box::new(EventSink::new()));
+    let mut client = Client::new(DispatcherLoopback(dispatcher));
+    assert_eq!(
+        client.pvclock_register(0x5000),
+        Err(ClientError::Status(Status::UnknownService))
+    );
+}
+
+/// `PvclockRegistrar` snapshots and restores its registration, like the other
+/// reference services.
+#[test]
+fn pvclock_registrar_state_round_trips() {
+    let mut svc = PvclockRegistrar::new(1 << 20, 1);
+    let mut out = [0_u8; 4];
+    let (status, n) = svc.handle(1, &0x7000u64.to_le_bytes(), &mut out);
+    assert_eq!((status, n), (Status::Ok, 4));
+    assert_eq!(svc.registered(), Some(0x7000));
+    let saved = svc.save_state();
+    let mut restored = PvclockRegistrar::new(0, 0);
+    restored.restore_state(&saved).unwrap();
+    assert_eq!(restored.registered(), Some(0x7000));
+    // A truncated blob is rejected, never a partial restore.
+    assert_eq!(
+        restored.restore_state(&saved[..saved.len() - 1]),
+        Err(ProtoError::BadState)
+    );
+    assert_eq!(restored.registered(), Some(0x7000));
+}
+
+/// An unknown pvclock opcode and a malformed payload are clean statuses.
+#[test]
+fn pvclock_registrar_rejects_bad_frames() {
+    let mut svc = PvclockRegistrar::new(1 << 20, 1);
+    let mut out = [0_u8; 4];
+    assert_eq!(svc.handle(2, &[], &mut out).0, Status::UnknownOpcode);
+    assert_eq!(svc.handle(1, &[0; 7], &mut out).0, Status::BadRequest);
+    assert_eq!(svc.handle(1, &[0; 9], &mut out).0, Status::BadRequest);
+    assert_eq!(svc.registered(), None, "no registration on any rejection");
+}
