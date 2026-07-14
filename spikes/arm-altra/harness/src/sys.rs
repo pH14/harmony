@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The syscall seam: `perf_event_open` and the KVM ioctls.
 //!
 //! This is the whole crate's `unsafe`, and the syscalls are Linux-only by
@@ -225,10 +226,44 @@ pub mod kvm {
     pub const ARM_PREFERRED_TARGET: u64 = 0x8020_AEAF;
     /// `KVM_GET_REG_LIST` — `_IOWR(KVMIO, 0xb0, struct kvm_reg_list)`.
     pub const GET_REG_LIST: u64 = 0xC008_AEB0;
+    /// `KVM_ENABLE_CAP` — `_IOW(KVMIO, 0xa3, struct kvm_enable_cap)`.
+    ///
+    /// Checking that a capability is *advertised* is not the same as *enabling* it.
+    /// The 0004-analogue patch gates `KVM_ARM_PREEMPT_EXIT` on
+    /// `KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS`, which is set only through this
+    /// ioctl — so without it every arm returns `EINVAL`, on the patched kernel.
+    pub const ENABLE_CAP: u64 = 0x4068_AEA3;
+    /// `KVM_CREATE_DEVICE` — `_IOWR(KVMIO, 0xe0, struct kvm_create_device)`.
+    pub const CREATE_DEVICE: u64 = 0xC00C_AEE0;
+    /// `KVM_SET_DEVICE_ATTR` — `_IOW(KVMIO, 0xe1, struct kvm_device_attr)`.
+    pub const SET_DEVICE_ATTR: u64 = 0x4018_AEE1;
     /// `KVM_ARM_PREEMPT_EXIT` — `_IO(KVMIO, 0xe4)`, **added by the 0004-analogue
     /// patch draft** (`host/patches/0001-…`): arms the one-shot in-kernel
     /// force-exit. Absent from a stock kernel, which is the point.
     pub const ARM_PREEMPT_EXIT: u64 = 0xAEE4;
+
+    /// `KVM_DEV_TYPE_ARM_VGIC_V3` — the in-kernel GICv3 the guest needs to exist at
+    /// all. The payload runtime programs the distributor at `0x0800_0000` before it
+    /// prints a byte; with no vGIC those stores are MMIO exits to userspace, which
+    /// the measurement loop (rightly) refuses as non-console traffic. Nothing boots
+    /// without this device.
+    pub const DEV_TYPE_ARM_VGIC_V3: u32 = 7;
+    /// `KVM_DEV_ARM_VGIC_GRP_ADDR`.
+    pub const DEV_ARM_VGIC_GRP_ADDR: u32 = 0;
+    /// `KVM_DEV_ARM_VGIC_GRP_CTRL`.
+    pub const DEV_ARM_VGIC_GRP_CTRL: u32 = 4;
+    /// `KVM_DEV_ARM_VGIC_CTRL_INIT`.
+    pub const DEV_ARM_VGIC_CTRL_INIT: u64 = 0;
+    /// `KVM_VGIC_V3_ADDR_TYPE_DIST`.
+    pub const VGIC_V3_ADDR_TYPE_DIST: u64 = 2;
+    /// `KVM_VGIC_V3_ADDR_TYPE_REDIST`.
+    pub const VGIC_V3_ADDR_TYPE_REDIST: u64 = 3;
+
+    /// The GICv3 distributor base the payload runtime programs
+    /// (`payloads/runtime/src/gic.rs`, the QEMU `virt` map).
+    pub const GICD_BASE: u64 = 0x0800_0000;
+    /// The GICv3 redistributor base (one 128 KiB frame pair per vCPU).
+    pub const GICR_BASE: u64 = 0x080A_0000;
 
     /// `KVM_CAP_SET_GUEST_DEBUG` — the single-step capability AA-2 rests on.
     pub const CAP_SET_GUEST_DEBUG: u64 = 23;
@@ -253,9 +288,23 @@ pub mod kvm {
     /// `KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE` — the prefix of the
     /// core-register ids (`user_pt_regs`), whose `pc` this harness sets.
     pub const REG_ARM64_CORE_U64: u64 = 0x6030_0000_0010_0000;
-    /// Offset of `pc` within `struct kvm_regs`, in 32-bit words: `user_pt_regs` is
-    /// `regs[31]`, `sp`, `pc`, … so `pc` is at byte 0x110 → word index 0x44.
-    pub const REG_CORE_PC: u64 = 0x0044;
+
+    /// Byte offset of `pc` within `struct kvm_regs`.
+    ///
+    /// `struct kvm_regs` opens with `struct user_pt_regs { __u64 regs[31]; __u64 sp;
+    /// __u64 pc; __u64 pstate; }`, so: `regs[31]` fills `0x00..0xF8`, `sp` sits at
+    /// `0xF8`, and **`pc` is at `0x100`**. The next field, `sp_el1`, is at `0x110`.
+    pub const REG_CORE_PC_OFFSET: u64 = 0x100;
+
+    /// `KVM_REG_ARM_CORE_REG(regs.pc)` — the register index, which the macro defines
+    /// as the byte offset divided by four: `0x100 / 4 == 0x40`.
+    ///
+    /// This was `0x44` — the index of the field at byte `0x110`, which is `sp_el1`.
+    /// Setting the entry point therefore wrote the EL1 stack pointer and left `PC` at
+    /// its reset value, so the guest never entered the payload at all. The constant is
+    /// now *derived* from the offset and pinned by a test, because an off-by-one in a
+    /// register index does not fail loudly — it writes a different register.
+    pub const REG_CORE_PC: u64 = REG_CORE_PC_OFFSET / 4;
     /// The size field of a register id (`KVM_REG_SIZE_MASK`).
     pub const REG_SIZE_MASK: u64 = 0x00F0_0000_0000_0000;
     /// Shift of the size field.
@@ -683,10 +732,56 @@ mod tests {
         assert_eq!(kvm::ARM_VCPU_INIT, iow(0xae, 32));
         assert_eq!(kvm::ARM_PREFERRED_TARGET, ior(0xaf, 32));
         assert_eq!(kvm::GET_REG_LIST, iowr(0xb0, 8));
+        // struct kvm_enable_cap is 104 bytes; kvm_create_device 12; kvm_device_attr 24.
+        assert_eq!(kvm::ENABLE_CAP, iow(0xa3, 104));
+        assert_eq!(kvm::CREATE_DEVICE, iowr(0xe0, 12));
+        assert_eq!(kvm::SET_DEVICE_ATTR, iow(0xe1, 24));
         // The patch draft's two additions (host/patches/0001-…).
         assert_eq!(kvm::ARM_PREEMPT_EXIT, io(0xe4));
         assert_eq!(kvm::EXIT_PREEMPT, 42);
         assert_eq!(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS, 245);
+    }
+
+    #[test]
+    fn the_pc_core_register_index_is_the_one_that_names_pc() {
+        // The bug this pins: 0x44 is `sp_el1`, not `pc`. Writing it set the EL1 stack
+        // pointer and left PC at reset, so the guest never entered the payload — and
+        // nothing failed loudly, because writing a different register succeeds.
+        //
+        // Derive the index the way the kernel's macro does, from the field layout of
+        // `struct kvm_regs`, rather than asserting a number against itself.
+        const U64: u64 = 8;
+        const N_GP: u64 = 31; // user_pt_regs.regs[31]
+        let sp_offset = N_GP * U64; // 0xF8
+        let pc_offset = sp_offset + U64; // 0x100
+        let pstate_offset = pc_offset + U64; // 0x108
+        let sp_el1_offset = pstate_offset + U64; // 0x110 — the field that was written
+
+        assert_eq!(pc_offset, 0x100);
+        assert_eq!(kvm::REG_CORE_PC_OFFSET, pc_offset);
+        // KVM_REG_ARM_CORE_REG(name) == offsetof(struct kvm_regs, name) / sizeof(u32).
+        assert_eq!(kvm::REG_CORE_PC, pc_offset / 4);
+        assert_eq!(kvm::REG_CORE_PC, 0x40);
+        assert_ne!(
+            kvm::REG_CORE_PC,
+            sp_el1_offset / 4,
+            "0x44 names sp_el1; setting it is not setting the entry point"
+        );
+
+        // And the full register id the harness sends.
+        assert_eq!(
+            kvm::REG_ARM64_CORE_U64 | kvm::REG_CORE_PC,
+            0x6030_0000_0010_0040
+        );
+    }
+
+    #[test]
+    fn the_vgic_addresses_are_the_ones_the_payload_runtime_programs() {
+        // If these drift from `payloads/runtime/src/gic.rs`, the guest's GIC stores
+        // become MMIO exits the measurement loop refuses — and no payload boots.
+        assert_eq!(kvm::GICD_BASE, 0x0800_0000);
+        assert_eq!(kvm::GICR_BASE, 0x080A_0000);
+        assert_eq!(kvm::DEV_TYPE_ARM_VGIC_V3, 7);
     }
 
     #[test]

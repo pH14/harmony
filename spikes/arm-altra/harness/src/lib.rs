@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The host-side ARM spike harness.
 //!
 //! The minimal ioctl-level KVM harness (single vCPU, pinned, raw `BR_RETIRED`

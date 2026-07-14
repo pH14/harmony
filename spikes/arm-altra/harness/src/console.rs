@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The PL011 console decoder — the harness's view of the guest's one MMIO window.
 //!
 //! Under KVM every guest store to the PL011 data register is an MMIO exit, and the

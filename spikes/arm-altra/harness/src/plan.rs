@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Run-set planning: what samples to take, in what order, under what conditions.
 //!
 //! Deterministic by construction, and it has to be — a spike whose own experiment
@@ -55,38 +56,58 @@ pub struct PlanSpec {
 /// The iteration order is fixed (reps, then condition, then scale, then payload)
 /// and the draws come from one seeded stream, so the same [`PlanSpec`] always
 /// yields the same plan — including the same targets, in the same order.
+///
+/// # A repetition repeats the *input*
+///
+/// The matrix is drawn **once**, and `reps` replays it. That is not a detail: a
+/// repetition whose seed and target were re-drawn is not a repetition at all, it is
+/// a different experiment — and the determinism gates are built on comparing
+/// same-input runs. Advancing the RNG per rep (which this used to do) gave every
+/// repetition a fresh seed, so no two records ever shared a
+/// `(payload, scale, seed, condition, target)` key: the replay-identity check found
+/// no group to compare and passed, and `--min-reps` counted rows. AA-6's
+/// ≥1,000-same-seed-repetitions gate could then go green without two identical
+/// executions ever being compared. The draw happens here, above the rep loop, so
+/// that cannot recur.
 #[must_use]
 pub fn plan(spec: &PlanSpec) -> Vec<PlannedSample> {
     let mut rng = XorShift64Star::new(spec.seed);
-    let mut out = Vec::new();
-    let mut sample_id = 0u64;
 
-    for _ in 0..spec.reps {
-        for condition in &spec.conditions {
-            for &scale in &spec.scales {
-                for &payload in &spec.payloads {
-                    // Draw for every sample whether or not the stage uses a target,
-                    // so that adding a target range does not shift the seed stream
-                    // and silently change which samples got which seeds.
-                    let draw = rng.next_u64();
-                    let target_delta = spec.target_delta_range.map(|(lo, hi)| {
-                        if hi <= lo {
-                            lo
-                        } else {
-                            lo + draw % (hi - lo + 1)
-                        }
-                    });
-                    out.push(PlannedSample {
-                        sample_id,
-                        payload,
-                        scale,
-                        seed: rng.next_u64(),
-                        target_delta,
-                        condition: condition.clone(),
-                    });
-                    sample_id += 1;
-                }
+    // The matrix: one draw per (condition, scale, payload) cell, before any rep.
+    let mut matrix: Vec<(Payload, Scale, String, u64, Option<u64>)> = Vec::new();
+    for condition in &spec.conditions {
+        for &scale in &spec.scales {
+            for &payload in &spec.payloads {
+                // Draw for every cell whether or not the stage uses a target, so
+                // that adding a target range does not shift the seed stream and
+                // silently change which samples got which seeds.
+                let draw = rng.next_u64();
+                let target_delta = spec.target_delta_range.map(|(lo, hi)| {
+                    if hi <= lo {
+                        lo
+                    } else {
+                        lo + draw % (hi - lo + 1)
+                    }
+                });
+                let seed = rng.next_u64();
+                matrix.push((payload, scale, condition.clone(), seed, target_delta));
             }
+        }
+    }
+
+    let mut out = Vec::with_capacity(matrix.len().saturating_mul(spec.reps as usize));
+    let mut sample_id = 0u64;
+    for _ in 0..spec.reps {
+        for (payload, scale, condition, seed, target_delta) in &matrix {
+            out.push(PlannedSample {
+                sample_id,
+                payload: *payload,
+                scale: *scale,
+                seed: *seed,
+                target_delta: *target_delta,
+                condition: condition.clone(),
+            });
+            sample_id += 1;
         }
     }
     out
@@ -121,6 +142,55 @@ mod tests {
     #[test]
     fn the_plan_is_a_pure_function_of_its_spec() {
         assert_eq!(plan(&spec()), plan(&spec()));
+    }
+
+    #[test]
+    fn a_repetition_repeats_the_input_it_does_not_redraw_it() {
+        // The bug this pins: `reps` used to advance the RNG, so every repetition got
+        // a fresh seed and target. No two samples then shared a
+        // (payload, scale, seed, condition, target) key — the replay-identity check
+        // found nothing to compare and passed, and --min-reps counted rows. AA-6's
+        // "≥1,000 same-seed repetitions bit-identical" gate could go green without a
+        // single pair of identical executions being compared.
+        let mut s = spec();
+        s.reps = 3;
+        let p = plan(&s);
+        let cells = s.payloads.len() * s.scales.len() * s.conditions.len();
+        assert_eq!(p.len(), cells * 3);
+
+        for (i, sample) in p.iter().enumerate() {
+            let first = &p[i % cells];
+            assert_eq!(sample.payload, first.payload);
+            assert_eq!(sample.scale, first.scale);
+            assert_eq!(sample.condition, first.condition);
+            assert_eq!(
+                sample.seed,
+                first.seed,
+                "repetition {} of cell {} must carry the SAME seed",
+                i / cells,
+                i % cells
+            );
+            assert_eq!(
+                sample.target_delta, first.target_delta,
+                "and the same target: a re-drawn deadline is a different experiment"
+            );
+        }
+
+        // And the matrix itself is still varied — the fix must not collapse every
+        // cell onto one seed.
+        let distinct: std::collections::BTreeSet<u64> =
+            p.iter().take(cells).map(|s| s.seed).collect();
+        assert_eq!(distinct.len(), cells, "each cell draws its own seed");
+    }
+
+    #[test]
+    fn reps_extend_the_sample_ids_densely() {
+        let mut s = spec();
+        s.reps = 3;
+        let p = plan(&s);
+        for (i, sample) in p.iter().enumerate() {
+            assert_eq!(sample.sample_id, i as u64);
+        }
     }
 
     #[test]

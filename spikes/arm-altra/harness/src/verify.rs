@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Window verification: does the built payload contain the branches the oracle
 //! says it contains?
 //!

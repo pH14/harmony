@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Generator test for the committed expected-count manifest.
 //!
 //! Deliverable 1 requires the expected-count manifest to be *generator-tested*:

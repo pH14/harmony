@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The canonical evidence formats.
 //!
 //! Everything a stage retains is written by the harness, in stable JSON with
@@ -45,7 +46,16 @@ use std::collections::BTreeMap;
 
 /// Bump when a field's meaning changes. A checker refuses a version it does not
 /// know, rather than silently misreading it.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// **v2** added [`OverflowRecord::advisory_exits`] and [`OverflowRecord::landed_digest`].
+/// Both exist because of the patch's own arm64 arch-difference: the PMU overflow is
+/// an ordinary maskable IRQ there, so an armed vCPU takes `KVM_EXIT_PREEMPT` on *any*
+/// host IRQ, and the exit is **advisory** — the harness must re-read the counter and
+/// decide whether the deadline was actually reached. Those advisory exits are a real,
+/// per-sample fact about the mechanism, so they are recorded rather than silently
+/// absorbed; and the state that AA-3's replay identity is *about* is the state at the
+/// landing, not at the payload's eventual exit.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Which stage produced a run-set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -202,14 +212,31 @@ pub struct Environment {
 /// from totals. [`OverflowRecord::deliveries`] is that per-record multiplicity: a
 /// checker sums nothing to establish it, it looks at every record and demands
 /// exactly 1.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OverflowRecord {
     /// Whether an overflow was armed for this sample.
     pub armed: bool,
     /// How many times the armed overflow was delivered. Must be exactly 1 — 0 is a
     /// lost PMI, >1 is a duplicate, and both are blocking.
+    ///
+    /// A *delivery* is an exit at which the work counter had actually reached the
+    /// target. It is emphatically not "an exit happened": see
+    /// [`OverflowRecord::advisory_exits`].
     pub deliveries: u64,
+    /// Exits that left `KVM_RUN` while armed but **before the counter reached the
+    /// target** — and were therefore not the overflow.
+    ///
+    /// On arm64 the PMU overflow is an ordinary maskable IRQ, so the patch's armed
+    /// vCPU exits on *any* host IRQ (the host timer tick included); the patch's own
+    /// commit message says to treat every `KVM_EXIT_PREEMPT` as **advisory** and
+    /// re-arm if the target has not been reached. A harness that counted those exits
+    /// as deliveries would record an early timer tick as an exactly-once PMI, at a
+    /// count that is not the target, and the real overflow would never be seen. So
+    /// the harness re-reads the counter, re-arms, re-enters — and records how often
+    /// that happened, because "the mechanism fires on unrelated IRQs" is a measured
+    /// property of this silicon (AA-3's residual), not noise to hide.
+    pub advisory_exits: u64,
     /// The work target the deadline was set for.
     pub target: u64,
     /// The work count actually landed on.
@@ -218,6 +245,15 @@ pub struct OverflowRecord {
     /// margin, which is the design); positive means it **overshot**, which the
     /// late-only-stop contract forbids outright.
     pub skid: i64,
+    /// Digest of the guest state **at the landing** — sampled when the mechanism
+    /// exit was taken, before the guest was resumed.
+    ///
+    /// This, not [`RunRecord::state_digest`], is what AA-3's replay-identity claim is
+    /// about: two runs of the same seed must be in the same state *at the same
+    /// Moment*. A digest taken after the guest resumed and ran to its exit sentinel
+    /// can converge — two different landed states can produce the same final state —
+    /// so it cannot establish landing identity. Empty when nothing was delivered.
+    pub landed_digest: String,
 }
 
 /// One attempted sample.
@@ -449,9 +485,11 @@ mod tests {
             overflow: Some(OverflowRecord {
                 armed: true,
                 deliveries: 1,
+                advisory_exits: 0,
                 target: 999_999,
                 landed: 999_999,
                 skid: 0,
+                landed_digest: "sha256:aa".into(),
             }),
             state_digest: "sha256:00".into(),
             params_mode: "managed".into(),

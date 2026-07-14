@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! A minimal ELF64 reader: just enough to find a symbol, read the bytes between two
 //! of them, load an image into guest RAM, and enumerate an image's executable code.
 //!
@@ -300,6 +301,54 @@ impl Elf {
             .collect()
     }
 
+    /// Copy the image's loadable segments into a guest-RAM buffer whose physical base
+    /// is `ram_base`, zeroing each segment's `.bss`-style tail.
+    ///
+    /// This is the **memory-safety-critical** half of loading a payload, and it lives
+    /// here — in safe, portable, Miri-reachable code operating on a `&mut [u8]` — on
+    /// purpose. The KVM harness (`sys::machine`) is Linux-only and its mmap/ioctl
+    /// paths cannot run under the interpreter, so the bounds arithmetic that decides
+    /// whether a copy stays in range is factored out to where Miri *can* check it: it
+    /// drives this against an in-process `Vec` instead of an mmap. A malformed ELF
+    /// with `p_filesz > p_memsz` is the reason the span below takes the **max** of the
+    /// file and memory sizes — bounding only by `mem_size` would let the
+    /// `copy_from_slice` write `bytes.len()` past the end.
+    ///
+    /// Every write is a checked slice operation, so there is no `unsafe` and no way to
+    /// write out of bounds: an over-range segment returns [`ElfError::RangeNotMapped`]
+    /// rather than corrupting memory.
+    ///
+    /// # Errors
+    /// [`ElfError::RangeNotMapped`] if any segment falls below `ram_base` or its span
+    /// does not fit in `dst`.
+    pub fn load_into(&self, dst: &mut [u8], ram_base: u64) -> Result<(), ElfError> {
+        for seg in self.load_segments() {
+            let offset = seg
+                .vaddr
+                .checked_sub(ram_base)
+                .and_then(|o| usize::try_from(o).ok())
+                .ok_or(ElfError::RangeNotMapped {
+                    start: seg.vaddr,
+                    end: seg.vaddr,
+                })?;
+            // Bound by the bytes actually WRITTEN: the file-bytes copy is `bytes.len()`,
+            // the zeroed tail extends to `mem_size`. `p_filesz > p_memsz` is legal in a
+            // malformed ELF, so take the larger of the two.
+            let span = seg.mem_size.max(seg.bytes.len());
+            let end = offset
+                .checked_add(span)
+                .filter(|end| *end <= dst.len())
+                .ok_or(ElfError::RangeNotMapped {
+                    start: seg.vaddr,
+                    end: seg.vaddr.saturating_add(span as u64),
+                })?;
+            let file_end = offset + seg.bytes.len();
+            dst[offset..file_end].copy_from_slice(seg.bytes);
+            dst[file_end..end].fill(0);
+        }
+        Ok(())
+    }
+
     /// Every **executable** byte range of the image, in address order — the whole-image
     /// scan surface for AA-4's exclusives scan and AA-5's counter-read scan.
     ///
@@ -498,18 +547,36 @@ mod tests {
     /// A stripped image: program headers only, no section table — one executable
     /// `PT_LOAD` segment carrying `code`.
     fn stripped_image(code: &[u8], executable: bool) -> Vec<u8> {
+        one_segment_image(
+            0x4008_0000,
+            code,
+            code.len() as u64,
+            code.len() as u64,
+            executable,
+        )
+    }
+
+    /// A stripped image with a single `PT_LOAD` segment, with fully controllable
+    /// `p_vaddr`, file bytes, `p_filesz` and `p_memsz` — so a malformed
+    /// `p_filesz > p_memsz` (or an out-of-range vaddr) can be constructed on purpose.
+    fn one_segment_image(
+        vaddr: u64,
+        code: &[u8],
+        p_filesz: u64,
+        p_memsz: u64,
+        executable: bool,
+    ) -> Vec<u8> {
         const PHOFF: u64 = 64;
         const CODE_OFF: u64 = 64 + 56;
         let mut d = header(0, 0, PHOFF, 1);
         let mut ph = vec![0u8; 56];
         ph[0..4].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
-        // p_flags: PF_R(4) | PF_X(1).
         let flags: u32 = if executable { 4 | 1 } else { 4 };
         ph[4..8].copy_from_slice(&flags.to_le_bytes());
         ph[8..16].copy_from_slice(&CODE_OFF.to_le_bytes()); // p_offset
-        ph[16..24].copy_from_slice(&0x4008_0000u64.to_le_bytes()); // p_vaddr
-        ph[32..40].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_filesz
-        ph[40..48].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_memsz
+        ph[16..24].copy_from_slice(&vaddr.to_le_bytes()); // p_vaddr
+        ph[32..40].copy_from_slice(&p_filesz.to_le_bytes()); // p_filesz
+        ph[40..48].copy_from_slice(&p_memsz.to_le_bytes()); // p_memsz
         d.extend_from_slice(&ph);
         d.extend_from_slice(code);
         d
@@ -607,5 +674,70 @@ mod tests {
         assert_eq!(segs[0].bytes, &code);
         assert_eq!(segs[0].mem_size, code.len());
         assert_eq!(elf.entry(), 0x4008_0000);
+    }
+
+    // `load_into` is the memory-safety-critical copy, factored out of the KVM harness
+    // (whose mmap/ioctl paths Miri can't run) into safe code the interpreter CAN run.
+    // These tests are the Miri-reachable seam the unsafe⇒Miri contract wants.
+
+    #[test]
+    fn load_into_places_a_segment_at_its_offset_and_zeroes_the_bss_tail() {
+        let base = 0x4000_0000u64;
+        // vaddr 0x40080000 → offset 0x80000; 4 code bytes, mem_size 8 → 4-byte tail.
+        let code = [0xAA, 0xBB, 0xCC, 0xDD];
+        let img = one_segment_image(0x4008_0000, &code, 4, 8, true);
+        let elf = Elf::parse(img).expect("valid ELF");
+
+        let mut ram = vec![0xFFu8; 0x0009_0000];
+        elf.load_into(&mut ram, base).expect("fits");
+        assert_eq!(&ram[0x80000..0x80004], &code, "file bytes copied");
+        assert_eq!(&ram[0x80004..0x80008], &[0, 0, 0, 0], "bss tail zeroed");
+        assert_eq!(ram[0x80008], 0xFF, "nothing written past the segment");
+    }
+
+    #[test]
+    fn load_into_refuses_a_segment_below_ram_base() {
+        // vaddr below the base underflows: it must error, not wrap to a huge offset.
+        let img = one_segment_image(0x1000, &[0; 4], 4, 4, true);
+        let elf = Elf::parse(img).expect("valid ELF");
+        let mut ram = vec![0u8; 0x1000];
+        assert!(matches!(
+            elf.load_into(&mut ram, 0x4000_0000),
+            Err(ElfError::RangeNotMapped { .. })
+        ));
+    }
+
+    #[test]
+    fn load_into_refuses_a_segment_that_overruns_the_buffer() {
+        let img = one_segment_image(0x4000_0000, &[0; 16], 16, 16, true);
+        let elf = Elf::parse(img).expect("valid ELF");
+        let mut ram = vec![0u8; 8]; // too small for a 16-byte segment
+        assert!(matches!(
+            elf.load_into(&mut ram, 0x4000_0000),
+            Err(ElfError::RangeNotMapped { .. })
+        ));
+    }
+
+    #[test]
+    fn a_malformed_p_filesz_greater_than_p_memsz_cannot_write_out_of_bounds() {
+        // The P1 the review found: `p_filesz > p_memsz`. Bounding the copy by
+        // `p_memsz` alone would let `copy_from_slice(bytes)` — which writes
+        // `p_filesz` bytes — run past a destination the check thought was in range.
+        // Placed at the very end of the buffer so any over-write is a real OOB that
+        // Miri (and the checked slice op) would catch.
+        let code = vec![0x42u8; 16]; // p_filesz = 16
+        // mem_size claims only 4 bytes; the segment sits so its 4-byte mem span ends
+        // exactly at the buffer end, but the 16 file bytes would overrun it.
+        let ram_len = 0x8010usize;
+        let vaddr = 0x4000_0000 + (ram_len as u64 - 4);
+        let img = one_segment_image(vaddr, &code, 16, 4, true);
+        let elf = Elf::parse(img).expect("valid ELF");
+        let mut ram = vec![0u8; ram_len];
+        // It must be refused (the span is bounded by max(file, mem) = 16, which does
+        // not fit), NOT panic and NOT write past the buffer.
+        assert!(matches!(
+            elf.load_into(&mut ram, 0x4000_0000),
+            Err(ElfError::RangeNotMapped { .. })
+        ));
     }
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `arm-scan` — the offline verification gate.
 //!
 //! Three modes, all pure-logic and all runnable on the development Mac:

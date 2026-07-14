@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The single-vCPU KVM machine and the raw `BR_RETIRED` counter: the Linux half of
 //! the seam that [`crate::run`] programs against.
 //!
@@ -101,6 +102,46 @@ struct KvmOneReg {
     addr: u64,
 }
 
+/// `struct kvm_enable_cap` (104 bytes: `cap`, `flags`, `args[4]`, `pad[64]`).
+#[repr(C)]
+struct KvmEnableCap {
+    cap: u32,
+    flags: u32,
+    args: [u64; 4],
+    pad: [u8; 64],
+}
+
+impl Default for KvmEnableCap {
+    fn default() -> KvmEnableCap {
+        // `[u8; 64]` has no derivable Default; the struct is all-zero otherwise.
+        KvmEnableCap {
+            cap: 0,
+            flags: 0,
+            args: [0; 4],
+            pad: [0; 64],
+        }
+    }
+}
+
+/// `struct kvm_create_device`.
+#[repr(C)]
+#[derive(Default)]
+struct KvmCreateDevice {
+    type_: u32,
+    fd: u32,
+    flags: u32,
+}
+
+/// `struct kvm_device_attr`.
+#[repr(C)]
+#[derive(Default)]
+struct KvmDeviceAttr {
+    flags: u32,
+    group: u32,
+    attr: u64,
+    addr: u64,
+}
+
 fn errno() -> i32 {
     // SAFETY: `__errno_location` returns a valid pointer to this thread's errno.
     unsafe { *libc::__errno_location() }
@@ -133,7 +174,18 @@ fn seam(context: &'static str, e: SysError) -> RunError {
 /// # Errors
 /// [`SysError::Errno`] if `sched_setaffinity` failed.
 pub fn pin_to_core(core: u32) -> Result<(), SysError> {
-    // SAFETY: a zeroed cpu_set_t is a valid empty set; CPU_SET writes one bit of it.
+    // The core number is CLI input, and `CPU_SET` indexes a fixed-size bit array —
+    // libc's Rust `CPU_SET` panics on an index at or past `CPU_SETSIZE` rather than
+    // returning an error. Library code must not panic on untrusted input, so bound it
+    // here and return a clean error instead.
+    let cpu_setsize = core::mem::size_of::<libc::cpu_set_t>() * 8;
+    if (core as usize) >= cpu_setsize {
+        return Err(SysError::Protocol(format!(
+            "core {core} is at or past CPU_SETSIZE ({cpu_setsize}): out of range for an affinity mask"
+        )));
+    }
+    // SAFETY: a zeroed cpu_set_t is a valid empty set; CPU_SET writes one bit of it,
+    // and `core` is now proven in range.
     unsafe {
         let mut set: libc::cpu_set_t = core::mem::zeroed();
         libc::CPU_SET(core as usize, &mut set);
@@ -176,6 +228,7 @@ pub struct Machine {
     kvm_fd: i32,
     vm_fd: i32,
     vcpu_fd: i32,
+    vgic_fd: i32,
     run: *mut KvmRun,
     run_size: usize,
     mem: *mut u8,
@@ -202,6 +255,7 @@ impl Machine {
             kvm_fd,
             vm_fd: -1,
             vcpu_fd: -1,
+            vgic_fd: -1,
             run: core::ptr::null_mut(),
             run_size: 0,
             mem: core::ptr::null_mut(),
@@ -325,51 +379,138 @@ impl Machine {
             return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
         }
 
+        // The in-kernel vGICv3. The payload runtime programs the GIC distributor at
+        // 0x0800_0000 before it prints a byte; with no vGIC those accesses are MMIO
+        // exits to userspace, which the measurement loop refuses as non-console — so
+        // NO payload boots without this. Created after VCPU_INIT (the vGIC needs the
+        // vCPU to exist) and before the guest runs.
+        self.create_vgic()?;
+
         self.load_image(image)?;
         self.write_params(params);
         self.set_pc(image.entry())?;
         Ok(())
     }
 
-    /// Copy the image's loadable segments into guest RAM at their link addresses.
-    fn load_image(&mut self, image: &crate::elf::Elf) -> Result<(), SysError> {
-        for seg in image.load_segments() {
-            let offset = seg
-                .vaddr
-                .checked_sub(RAM_BASE)
-                .and_then(|o| usize::try_from(o).ok())
-                .ok_or_else(|| {
-                    SysError::Protocol(format!(
-                        "segment at {:#x} is below guest RAM base {RAM_BASE:#x}",
-                        seg.vaddr
-                    ))
-                })?;
-            let end = offset
-                .checked_add(seg.mem_size)
-                .filter(|end| *end <= self.mem_size)
-                .ok_or_else(|| {
-                    SysError::Protocol(format!(
-                        "segment at {:#x} (+{} bytes) does not fit in {} bytes of guest RAM",
-                        seg.vaddr, seg.mem_size, self.mem_size
-                    ))
-                })?;
-            let _ = end;
-            // SAFETY: `self.mem` is a live RW mapping of `self.mem_size` bytes, and
-            // the bounds check above proved `offset + seg.mem_size` is inside it.
-            // The destination is uniquely owned here (the vCPU is not running).
-            unsafe {
-                let dst = self.mem.add(offset);
-                core::ptr::copy_nonoverlapping(seg.bytes.as_ptr(), dst, seg.bytes.len());
-                // .bss and friends: the rest of the segment is zero, and RAM from a
-                // fresh anonymous mapping already is — but a Machine may be reused,
-                // so zero it explicitly rather than relying on that.
-                let tail = seg.mem_size.saturating_sub(seg.bytes.len());
-                if tail > 0 {
-                    core::ptr::write_bytes(dst.add(seg.bytes.len()), 0, tail);
-                }
+    /// Create and initialise the in-kernel GICv3: the device, its distributor and
+    /// redistributor MMIO windows (at the addresses `payloads/runtime/src/gic.rs`
+    /// expects), then `KVM_DEV_ARM_VGIC_CTRL_INIT`.
+    fn create_vgic(&mut self) -> Result<(), SysError> {
+        let mut dev = KvmCreateDevice {
+            type_: kvm::DEV_TYPE_ARM_VGIC_V3,
+            fd: 0,
+            flags: 0,
+        };
+        // SAFETY: `vm_fd` is valid; KVM_CREATE_DEVICE fills `dev.fd` with the new
+        // device descriptor.
+        if unsafe {
+            libc::ioctl(
+                self.vm_fd,
+                kvm::CREATE_DEVICE as libc::c_ulong,
+                &raw mut dev,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_CREATE_DEVICE, vGICv3)"));
+        }
+        let vgic_fd = dev.fd as i32;
+        self.vgic_fd = vgic_fd;
+
+        let set_addr = |group: u32, attr: u64, value: &u64| -> Result<(), SysError> {
+            let da = KvmDeviceAttr {
+                flags: 0,
+                group,
+                attr,
+                addr: (value as *const u64) as u64,
+            };
+            // SAFETY: `vgic_fd` is valid; `da.addr` points at a live u64 on the
+            // caller's frame, which is what KVM_SET_DEVICE_ATTR's ADDR group reads.
+            if unsafe {
+                libc::ioctl(
+                    vgic_fd,
+                    kvm::SET_DEVICE_ATTR as libc::c_ulong,
+                    &raw const da,
+                )
+            } < 0
+            {
+                return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC addr)"));
             }
+            Ok(())
+        };
+
+        let dist = kvm::GICD_BASE;
+        let redist = kvm::GICR_BASE;
+        set_addr(
+            kvm::DEV_ARM_VGIC_GRP_ADDR,
+            kvm::VGIC_V3_ADDR_TYPE_DIST,
+            &dist,
+        )?;
+        set_addr(
+            kvm::DEV_ARM_VGIC_GRP_ADDR,
+            kvm::VGIC_V3_ADDR_TYPE_REDIST,
+            &redist,
+        )?;
+
+        // KVM_DEV_ARM_VGIC_CTRL_INIT finalises the distributor.
+        let init = KvmDeviceAttr {
+            flags: 0,
+            group: kvm::DEV_ARM_VGIC_GRP_CTRL,
+            attr: kvm::DEV_ARM_VGIC_CTRL_INIT,
+            addr: 0,
+        };
+        // SAFETY: `vgic_fd` is valid; the CTRL/INIT attr takes no address argument.
+        if unsafe {
+            libc::ioctl(
+                vgic_fd,
+                kvm::SET_DEVICE_ATTR as libc::c_ulong,
+                &raw const init,
+            )
+        } < 0
+        {
+            return Err(err("ioctl(KVM_SET_DEVICE_ATTR, vGIC CTRL_INIT)"));
         }
         Ok(())
+    }
+
+    /// Enable the 0004-analogue determinism opt-in on this VM.
+    ///
+    /// The patch gates `KVM_ARM_PREEMPT_EXIT` on `KVM_ARCH_FLAG_DETERMINISTIC_INTERCEPTS`,
+    /// which is set only by `KVM_ENABLE_CAP(KVM_CAP_ARM_DETERMINISTIC_INTERCEPTS)`.
+    /// Advertising the capability (which `patch_marker_observed` checks) is not the
+    /// same as enabling it: without this call every arm returns `EINVAL`, even on the
+    /// patched kernel. Called only for the patched mechanism.
+    ///
+    /// # Errors
+    /// [`SysError`] if the capability could not be enabled.
+    pub fn enable_deterministic_intercepts(&self) -> Result<(), SysError> {
+        let cap = KvmEnableCap {
+            cap: kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS as u32,
+            ..Default::default()
+        };
+        // SAFETY: `vm_fd` is valid; `cap` is a fully initialised kvm_enable_cap on
+        // this frame.
+        if unsafe { libc::ioctl(self.vm_fd, kvm::ENABLE_CAP as libc::c_ulong, &raw const cap) } < 0
+        {
+            return Err(err("ioctl(KVM_ENABLE_CAP, DETERMINISTIC_INTERCEPTS)"));
+        }
+        Ok(())
+    }
+
+    /// Copy the image's loadable segments into guest RAM at their link addresses.
+    ///
+    /// The bounds-checked copy itself lives in [`crate::elf::Elf::load_into`], which
+    /// operates on a `&mut [u8]` in **safe, Miri-checkable** code — so the memory
+    /// safety of loading an untrusted image is verified by the interpreter, not
+    /// asserted here. This function's only job is to hand that method a slice over the
+    /// guest mapping; the one `unsafe` is forming the slice.
+    fn load_image(&mut self, image: &crate::elf::Elf) -> Result<(), SysError> {
+        // SAFETY: `self.mem` is a live RW mapping of exactly `self.mem_size` bytes,
+        // and the vCPU is not running (we are in construction), so nothing else
+        // aliases it. `load_into` never writes outside the slice it is given.
+        let dst = unsafe { core::slice::from_raw_parts_mut(self.mem, self.mem_size) };
+        image
+            .load_into(dst, RAM_BASE)
+            .map_err(|e| SysError::Protocol(format!("load payload image: {e}")))
     }
 
     /// Publish the params page, so the guest runs the scale and seed the plan asked
@@ -444,7 +585,7 @@ impl Drop for Machine {
             if !self.mem.is_null() {
                 libc::munmap(self.mem.cast::<libc::c_void>(), self.mem_size);
             }
-            for fd in [self.vcpu_fd, self.vm_fd, self.kvm_fd] {
+            for fd in [self.vgic_fd, self.vcpu_fd, self.vm_fd, self.kvm_fd] {
                 if fd >= 0 {
                     libc::close(fd);
                 }
@@ -649,6 +790,10 @@ pub struct PerfCounter {
     fd: i32,
     vcpu_fd: i32,
     mechanism: Mechanism,
+    /// The perf configuration the manifest reports — carries the intended
+    /// `sample_period` so the evidence says "this was a sampling run". The perf fd
+    /// itself is opened in *counting* mode and only converted to sampling at the
+    /// window mark; see [`PerfCounter::open`].
     attr: PerfEventAttr,
 }
 
@@ -680,11 +825,24 @@ impl PerfCounter {
             ));
         }
 
-        let attr = br_retired_attr(sample_period);
-        // SAFETY: `attr` is a fully initialised perf_event_attr on this frame.
+        if mechanism == Mechanism::Preempt {
+            // Advertising the cap is not enabling it: the patch gates
+            // KVM_ARM_PREEMPT_EXIT on a per-VM flag that only KVM_ENABLE_CAP sets.
+            // Without this, every later arm returns EINVAL on the patched kernel.
+            machine.enable_deterministic_intercepts()?;
+        }
+
+        // Open the fd in COUNTING mode — no period. The event must count across the
+        // whole window (so `work_end - work_begin` is real), but the overflow must
+        // NOT be armed until MARK_BEGIN: an event opened with a small period and
+        // enabled at construction overflows during the guest's boot, and that kick
+        // arrives before anything is armed (`run_sample` rejects it). The period is
+        // programmed at `arm_overflow`, which the loop calls at the mark.
+        let open_attr = br_retired_attr(None);
+        // SAFETY: `open_attr` is a fully initialised perf_event_attr on this frame.
         // Counting the calling thread (pid 0) wherever it runs (-1) — the thread is
         // pinned, so "wherever" is the one core.
-        let fd = unsafe { super::imp::perf_event_open(&raw const attr, 0, -1, -1, 0) };
+        let fd = unsafe { super::imp::perf_event_open(&raw const open_attr, 0, -1, -1, 0) };
         if fd < 0 {
             return Err(err("perf_event_open(BR_RETIRED)"));
         }
@@ -694,13 +852,16 @@ impl PerfCounter {
             fd,
             vcpu_fd: machine.vcpu_fd(),
             mechanism,
-            attr,
+            // The manifest still reports the intended sampling configuration: the run
+            // DOES arm overflows, at the mark. Reporting `None` here would make the
+            // checker's perf/records cross-check disagree with the records.
+            attr: br_retired_attr(sample_period),
         };
         counter.setup()?;
         Ok(counter)
     }
 
-    /// Signal plumbing (stock mechanism only) and enable.
+    /// Signal plumbing (stock mechanism only) and enable counting.
     fn setup(&self) -> Result<(), SysError> {
         if self.mechanism == Mechanism::SignalKick {
             install_kick_signal()?;
@@ -726,11 +887,41 @@ impl PerfCounter {
         Ok(())
     }
 
+    /// A perf ioctl whose argument is an **integer** (ENABLE, RESET, REFRESH).
     fn ioctl(&self, request: u64, arg: u64, call: &'static str) -> Result<(), SysError> {
-        // SAFETY: `self.fd` is a valid perf event descriptor; every request used
-        // here takes an integer argument.
+        // SAFETY: `self.fd` is a valid perf event descriptor; the requests used here
+        // take an integer argument.
         if unsafe { libc::ioctl(self.fd, request as libc::c_ulong, arg) } < 0 {
             return Err(err(call));
+        }
+        Ok(())
+    }
+
+    /// Program the sampling period. `PERF_EVENT_IOC_PERIOD` is an `_IOW` whose third
+    /// argument must **point at** a `u64`; passing the value directly makes the
+    /// kernel treat the deadline as a userspace address and return `EFAULT`, so no
+    /// overflow is ever armed.
+    fn set_period(&self, period: u64) -> Result<(), SysError> {
+        // SAFETY: `self.fd` is valid; `&period` points at a live u64 for the call,
+        // which is exactly what PERF_EVENT_IOC_PERIOD's contract requires.
+        if unsafe { libc::ioctl(self.fd, PERF_IOC_PERIOD as libc::c_ulong, &raw const period) } < 0
+        {
+            return Err(err("PERF_EVENT_IOC_PERIOD"));
+        }
+        Ok(())
+    }
+
+    /// Re-issue the patch's one-shot vCPU force-exit. The kernel clears
+    /// `preempt_armed` when it fires (on any IRQ), so an advisory exit leaves it
+    /// disarmed even though the perf overflow has not happened yet.
+    fn arm_preempt_exit(&self) -> Result<(), RunError> {
+        // SAFETY: `vcpu_fd` is the borrowed machine's valid vCPU descriptor;
+        // KVM_ARM_PREEMPT_EXIT takes no argument.
+        if unsafe { libc::ioctl(self.vcpu_fd, kvm::ARM_PREEMPT_EXIT as libc::c_ulong, 0_u64) } < 0 {
+            return Err(seam(
+                "ioctl(KVM_ARM_PREEMPT_EXIT)",
+                err("ioctl(KVM_ARM_PREEMPT_EXIT)"),
+            ));
         }
         Ok(())
     }
@@ -768,32 +959,53 @@ impl WorkCounter for PerfCounter {
         Ok(u64::from_le_bytes(buf))
     }
 
-    /// Arm a one-shot overflow `delta` events from now, through the mechanism this
-    /// counter was opened for — and only that one.
+    /// Arm a one-shot overflow `delta` events from now (i.e. from `MARK_BEGIN`),
+    /// through the mechanism this counter was opened for — and only that one.
     fn arm_overflow(&mut self, delta: u64) -> Result<(), RunError> {
-        self.ioctl(PERF_IOC_PERIOD, delta, "PERF_EVENT_IOC_PERIOD")
+        // Program the deadline (by pointer), then REFRESH(1): exactly one overflow,
+        // after which the event disables itself. A free-running overflow would
+        // deliver an unbounded number of kicks and make per-record multiplicity
+        // meaningless.
+        self.set_period(delta)
             .map_err(|e| seam("PERF_EVENT_IOC_PERIOD", e))?;
-        // REFRESH(1): exactly one overflow, then the event disables itself. A
-        // free-running overflow would deliver an unbounded number of kicks and make
-        // per-record multiplicity meaningless.
         self.ioctl(PERF_IOC_REFRESH, 1, "PERF_EVENT_IOC_REFRESH")
             .map_err(|e| seam("PERF_EVENT_IOC_REFRESH", e))?;
 
         if self.mechanism == Mechanism::Preempt {
-            // Arm the patch's one-shot in-kernel force-exit. Without this the
-            // overflow IRQ is handled and the guest is re-entered — the exit simply
-            // never comes.
-            // SAFETY: `vcpu_fd` is the borrowed machine's valid vCPU descriptor;
-            // KVM_ARM_PREEMPT_EXIT takes no argument.
-            if unsafe { libc::ioctl(self.vcpu_fd, kvm::ARM_PREEMPT_EXIT as libc::c_ulong, 0_u64) }
-                < 0
-            {
-                return Err(seam(
-                    "ioctl(KVM_ARM_PREEMPT_EXIT)",
-                    err("ioctl(KVM_ARM_PREEMPT_EXIT)"),
-                ));
-            }
+            // Arm the patch's one-shot in-kernel force-exit. Without this the overflow
+            // IRQ is handled and the guest is re-entered — the exit never comes.
+            self.arm_preempt_exit()?;
         }
+        Ok(())
+    }
+
+    /// Re-arm after an advisory exit — one that fired before the counter reached the
+    /// target (the arm64 "any IRQ" behaviour).
+    ///
+    /// The perf one-shot is untouched (it only counts real overflows, and no overflow
+    /// happened), so this re-arms only what the kernel cleared: the patch's
+    /// `preempt_armed` flag. For the stock signal path there is nothing to re-arm —
+    /// the perf event is still armed and the next real overflow will signal.
+    fn rearm(&mut self) -> Result<(), RunError> {
+        if self.mechanism == Mechanism::Preempt {
+            self.arm_preempt_exit()?;
+        }
+        Ok(())
+    }
+
+    /// Resume plain counting after a delivery, so the counter advances to `MARK_END`
+    /// and `work_end` is the window's true end rather than the landing.
+    ///
+    /// The one-shot REFRESH disabled the event when it overflowed. The period cannot
+    /// be set to zero (the kernel rejects it), so it is set beyond any window's reach
+    /// — the count keeps advancing, and no further overflow fires before `MARK_END`,
+    /// which is what stops a post-landing tick from being recorded as a second
+    /// delivery.
+    fn resume_counting(&mut self) -> Result<(), RunError> {
+        self.set_period(u64::MAX)
+            .map_err(|e| seam("PERF_EVENT_IOC_PERIOD (resume)", e))?;
+        self.ioctl(PERF_IOC_ENABLE, 0, "PERF_EVENT_IOC_ENABLE (resume)")
+            .map_err(|e| seam("PERF_EVENT_IOC_ENABLE (resume)", e))?;
         Ok(())
     }
 }

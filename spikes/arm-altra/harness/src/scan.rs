@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The aarch64 opcode scanner.
 //!
 //! One decoder, three jobs, all of them load-bearing:

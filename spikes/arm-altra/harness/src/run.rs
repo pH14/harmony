@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The `KVM_RUN` measurement loop: arm the work counter, run a single vCPU to its
 //! window marks, sample `BR_RETIRED`, assemble a [`RunRecord`].
 //!
@@ -152,6 +153,22 @@ pub enum RunError {
         "the seam produced an empty state digest: a digest that cannot diverge is not evidence"
     )]
     EmptyStateDigest,
+    /// The vCPU kept exiting on unrelated host IRQs without the work counter ever
+    /// reaching the target. Expected in small numbers (the host timer ticks); an
+    /// unbounded stream of them with no progress means the guest is not advancing,
+    /// and a measurement loop that spins forever is worse than one that fails.
+    #[error(
+        "{exits} advisory exits with no progress: the work counter is at {work}, target {target}. \
+         The guest is not advancing"
+    )]
+    AdvisoryExitStorm {
+        /// How many advisory exits were taken.
+        exits: u64,
+        /// Where the counter had reached.
+        work: u64,
+        /// Where it needed to reach.
+        target: u64,
+    },
 }
 
 /// A single vCPU, as this loop needs it.
@@ -168,8 +185,11 @@ pub trait Vcpu {
     /// A digest of the guest's architectural state — the registers and memory that
     /// AA-3's replay-identity and AA-6's bit-identity floors compare.
     ///
-    /// Sampled once, after the guest has reached its exit sentinel, so two runs of
-    /// the same seed are compared at the same point in their lives.
+    /// Sampled **at the landing** (for armed runs) and again at the exit sentinel.
+    /// The landing one is the one AA-3's claim is about: two runs of the same seed
+    /// must be in the same state at the same Moment, and a digest taken after the
+    /// guest resumed can converge — two different landed states can reach the same
+    /// final state — so it cannot establish landing identity.
     ///
     /// # Errors
     /// [`RunError::Seam`] if the state could not be read. A sample whose state could
@@ -186,12 +206,49 @@ pub trait WorkCounter {
     /// [`RunError::Seam`] if the counter could not be read.
     fn read(&mut self) -> Result<u64, RunError>;
 
-    /// Arm a one-shot overflow `delta` events from now.
+    /// Arm a one-shot overflow `delta` events from now, and start counting.
+    ///
+    /// Called **at `MARK_BEGIN`**, never before: the counting window opens at the
+    /// mark, and a deadline armed at open time would count the guest's whole boot
+    /// against it — a small delta (the plan draws from 1) would then overflow during
+    /// boot, and the kick would arrive before anything was armed.
     ///
     /// # Errors
-    /// [`RunError::Seam`] if the event could not be re-armed.
+    /// [`RunError::Seam`] if the event could not be armed.
     fn arm_overflow(&mut self, delta: u64) -> Result<(), RunError>;
+
+    /// Re-arm the one-shot after an **advisory** exit — one that left `KVM_RUN` while
+    /// armed but before the counter reached the target.
+    ///
+    /// The patch's arm64 arch-difference makes this necessary: the PMU overflow is an
+    /// ordinary maskable IRQ there, so the armed vCPU exits on *any* host IRQ and the
+    /// kernel clears its one-shot flag on the way out. Without a re-arm the real
+    /// overflow, when it comes, would find nothing armed and pass straight through.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the one-shot could not be re-armed.
+    fn rearm(&mut self) -> Result<(), RunError>;
+
+    /// Put the counter back into free-running counting mode after the deadline has
+    /// been delivered.
+    ///
+    /// The one-shot **disables the event** when it overflows. Without this the
+    /// counter would freeze at the landing, `work_end` would read the landing value
+    /// rather than the window's true end, and every armed record's count would
+    /// disagree with the oracle — which grades the *whole window*.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the counter could not be resumed.
+    fn resume_counting(&mut self) -> Result<(), RunError>;
 }
+
+/// How many advisory exits one sample may take before the harness gives up.
+///
+/// Advisory exits are expected (the host timer ticks), but an unbounded stream of
+/// them with no progress means the guest is not advancing — and a measurement loop
+/// that spins forever is worse than one that fails. The bound is generous: a 1e8-branch
+/// window at a 1 kHz tick produces on the order of a thousand.
+const MAX_ADVISORY_EXITS: u64 = 100_000;
 
 /// What one sample is asked to be: which payload, at what scale and seed, and — if
 /// this is an overflow run — how far past the window's opening to arm the deadline.
@@ -240,7 +297,9 @@ pub fn run_sample(
     // Overflow bookkeeping, per record (§Evidence integrity #6).
     let mut target: Option<u64> = None;
     let mut deliveries: u64 = 0;
+    let mut advisory_exits: u64 = 0;
     let mut landed: Option<u64> = None;
+    let mut landed_digest: Option<String> = None;
     let mut mechanism_exit: Option<ExitReason> = None;
 
     'run: while status.is_none() {
@@ -308,26 +367,59 @@ pub fn run_sample(
             // overflow delivery, which is two mechanisms wearing one name.
             VcpuExit::Debug => return Err(RunError::UnexpectedDebugExit),
 
-            // A mechanism exit: the armed overflow left KVM_RUN. Record the landing
-            // and re-enter — the guest still has to finish and print its sentinel.
+            // A mechanism exit. It is NOT automatically a delivery: on arm64 the PMU
+            // overflow is an ordinary maskable IRQ, so the patch's armed vCPU exits on
+            // ANY host IRQ (the timer tick included) and the patch's own commit
+            // message says to treat every KVM_EXIT_PREEMPT as ADVISORY — re-read the
+            // work counter, and re-arm if the target has not been reached.
+            //
+            // Counting these exits as deliveries would record an early timer tick as
+            // an exactly-once PMI, landed at a count that is not the target, while the
+            // real overflow was never surfaced. So the counter decides, not the exit.
             exit @ (VcpuExit::Preempt | VcpuExit::SignalKick) => {
                 let reason = if exit == VcpuExit::Preempt {
                     ExitReason::Preempt
                 } else {
                     ExitReason::SignalKick
                 };
-                if target.is_none() {
+                let Some(target) = target else {
                     // Nothing was armed, so nothing should have kicked. An
                     // unexplained kick is never absorbed into a clean record.
                     return Err(RunError::UnexpectedMechanismExit(reason));
+                };
+
+                let work = counter.read()?;
+                if work < target {
+                    // Advisory: something other than the deadline kicked us out. The
+                    // kernel cleared its one-shot on the way out, so re-arm it or the
+                    // real overflow will pass straight through.
+                    advisory_exits += 1;
+                    if advisory_exits > MAX_ADVISORY_EXITS {
+                        return Err(RunError::AdvisoryExitStorm {
+                            exits: advisory_exits,
+                            work,
+                            target,
+                        });
+                    }
+                    counter.rearm()?;
+                    continue;
                 }
+
                 deliveries += 1;
                 // The FIRST landing is the one the contract is about; a second is a
-                // duplicate delivery, and it is `deliveries` — not this field — that
+                // duplicate delivery, and it is `deliveries` — not these fields — that
                 // makes it visible.
                 if landed.is_none() {
-                    landed = Some(counter.read()?);
+                    landed = Some(work);
                     mechanism_exit = Some(reason);
+                    // Digest the state HERE — at the landing, before the guest is
+                    // resumed. This is the state AA-3's replay identity is about; the
+                    // one at the exit sentinel can converge from different landings.
+                    landed_digest = Some(vcpu.state_digest()?);
+                    // The one-shot disabled the counter when it overflowed. Resume it,
+                    // or `work_end` freezes at the landing and the record's count is of
+                    // a fraction of the window while the oracle grades the whole of it.
+                    counter.resume_counting()?;
                 }
             }
 
@@ -357,9 +449,11 @@ pub fn run_sample(
         OverflowRecord {
             armed: true,
             deliveries,
+            advisory_exits,
             target,
             landed,
             skid: i64::try_from(i128::from(landed) - i128::from(target)).unwrap_or(i64::MIN),
+            landed_digest: landed_digest.unwrap_or_default(),
         }
     });
 
@@ -475,10 +569,14 @@ mod tests {
         }
     }
 
-    /// A scripted counter: hands out a programmed sequence of readings.
+    /// A scripted counter: hands out a programmed sequence of readings, and records
+    /// what the loop asked of it — which is how the re-arm and resume contracts are
+    /// tested without a kernel.
     struct ScriptedCounter {
         readings: std::collections::VecDeque<u64>,
         armed: Vec<u64>,
+        rearms: u64,
+        resumes: u64,
     }
 
     impl ScriptedCounter {
@@ -486,6 +584,8 @@ mod tests {
             ScriptedCounter {
                 readings: readings.iter().copied().collect(),
                 armed: Vec::new(),
+                rearms: 0,
+                resumes: 0,
             }
         }
     }
@@ -499,6 +599,14 @@ mod tests {
         }
         fn arm_overflow(&mut self, delta: u64) -> Result<(), RunError> {
             self.armed.push(delta);
+            Ok(())
+        }
+        fn rearm(&mut self) -> Result<(), RunError> {
+            self.rearms += 1;
+            Ok(())
+        }
+        fn resume_counting(&mut self) -> Result<(), RunError> {
+            self.resumes += 1;
             Ok(())
         }
     }
@@ -570,12 +678,88 @@ mod tests {
         let o = record.overflow.expect("armed");
         assert!(o.armed);
         assert_eq!(o.deliveries, 1, "exactly-once, shown per record");
+        assert_eq!(o.advisory_exits, 0, "the deadline was the first exit");
         assert_eq!(
             o.target, 1_500,
             "target is measured from the window's opening"
         );
         assert_eq!(o.landed, 1_500);
         assert_eq!(o.skid, 0);
+        // The digest is taken AT the landing, before the guest resumes — that is the
+        // state AA-3's replay identity is about.
+        assert_eq!(o.landed_digest, "sha256:1234");
+        // The one-shot disables the counter on overflow; the loop resumed it so the
+        // window's true end is measured, not the landing.
+        assert_eq!(
+            counter.resumes, 1,
+            "the counter was resumed after the landing"
+        );
+        assert_eq!(counter.rearms, 0, "no advisory exit, so no re-arm");
+    }
+
+    #[test]
+    fn an_advisory_exit_before_the_target_is_not_a_delivery_and_rearms() {
+        // The patch's arm64 arch-difference: the armed vCPU exits on ANY host IRQ, so
+        // an early timer tick produces a Preempt exit BEFORE the counter reached the
+        // target. Counting it as a delivery would record a landing that is not the
+        // target and let the real overflow pass unseen. The counter, not the exit,
+        // decides.
+        let bytes = transcript();
+        let mark_at = bytes
+            .iter()
+            .position(|&b| b == MARK_BEGIN)
+            .expect("mark present");
+        let mut vcpu = ScriptedVcpu::printing(
+            &bytes,
+            &[
+                (mark_at, VcpuExit::Preempt), // advisory: counter still short of target
+                (mark_at, VcpuExit::Preempt), // the real deadline
+            ],
+        );
+        // begin=1000, target=1500; first exit reads 1200 (< target => advisory), the
+        // real overflow reads 1500, end reads 2001.
+        let mut counter = ScriptedCounter::new(&[1_000, 1_200, 1_500, 2_001]);
+        let record = run_sample(&mut vcpu, &mut counter, &spec(Some(500))).expect("measured");
+        let o = record.overflow.expect("armed");
+        assert_eq!(o.deliveries, 1, "exactly one real delivery");
+        assert_eq!(
+            o.advisory_exits, 1,
+            "the early tick is recorded, not hidden"
+        );
+        assert_eq!(o.landed, 1_500, "landed at the target, not the early tick");
+        assert_eq!(counter.rearms, 1, "the cleared one-shot was re-armed");
+        assert_eq!(counter.resumes, 1);
+    }
+
+    // Ignored under Miri: it drives MAX_ADVISORY_EXITS+1 (100_001) scripted exits
+    // through the loop, which the interpreter runs ~100x slower — minutes for a bound
+    // check whose logic (a `>` comparison) has no unsafe and nothing for Miri to
+    // verify. Convention: keep the interpreted suite quick.
+    #[cfg_attr(miri, ignore = "100k scripted iterations; a plain bound check, no unsafe")]
+    #[test]
+    fn an_advisory_storm_with_no_progress_is_refused_not_spun_on() {
+        // If the guest never advances, an unbounded stream of advisory exits would
+        // spin forever. A measurement loop that hangs is worse than one that fails.
+        let bytes = transcript();
+        let mark_at = bytes
+            .iter()
+            .position(|&b| b == MARK_BEGIN)
+            .expect("mark present");
+        let injected: Vec<(usize, VcpuExit)> = (0..MAX_ADVISORY_EXITS + 1)
+            .map(|_| (mark_at, VcpuExit::Preempt))
+            .collect();
+        let mut vcpu = ScriptedVcpu::printing(&bytes, &injected);
+        // begin, then an endless supply of below-target reads.
+        let mut readings = vec![1_000u64];
+        readings.extend(std::iter::repeat_n(
+            1_100u64,
+            (MAX_ADVISORY_EXITS + 2) as usize,
+        ));
+        let mut counter = ScriptedCounter::new(&readings);
+        assert!(matches!(
+            run_sample(&mut vcpu, &mut counter, &spec(Some(500))),
+            Err(RunError::AdvisoryExitStorm { .. })
+        ));
     }
 
     #[test]
@@ -604,7 +788,9 @@ mod tests {
                 (mark_at, VcpuExit::Preempt), // the same PMI delivered twice
             ],
         );
-        let mut counter = ScriptedCounter::new(&[1_000, 1_500, 2_001]);
+        // begin(1000), preempt1(1500)=delivery, preempt2(1500)=delivery, end(2001).
+        // The loop reads the counter on EVERY mechanism exit now, to classify it.
+        let mut counter = ScriptedCounter::new(&[1_000, 1_500, 1_500, 2_001]);
         let record = run_sample(&mut vcpu, &mut counter, &spec(Some(500))).expect("measured");
         assert_eq!(record.overflow.expect("armed").deliveries, 2);
     }
