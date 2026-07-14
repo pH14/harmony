@@ -7,10 +7,11 @@
 //! can hold a `Box<dyn Backend>` and inject `KvmBackend` vs `PatchedKvmBackend`
 //! at `fn main` — no generic methods, no `Self`-by-value returns.
 
-use crate::config::{CpuidModel, MsrFilter};
+use crate::arch::x86::Injection;
+use crate::arch::x86::VcpuState;
+use crate::arch::x86::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
-use crate::state::VcpuState;
+use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::types::{Gpa, Moment};
 
 /// The trap apparatus, decoupled from the deterministic VMM above it.

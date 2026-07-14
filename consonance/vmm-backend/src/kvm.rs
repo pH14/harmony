@@ -4,7 +4,7 @@
 //!
 //! Everything here issues **no syscall**: the `kvm_run` ⇄ `Exit`/completion
 //! translation (`RunPage` + `decode_*`/`apply_*`), the `kvm_bindings` ⇄
-//! [`crate::state::VcpuState`] conversions, and the snapshot-shape / CPUID-table /
+//! [`crate::arch::x86::VcpuState`] conversions, and the snapshot-shape / CPUID-table /
 //! MSR-count / capability helpers. It is driven by **non-`#[ignore]` unit tests
 //! with synthetic `kvm_run`/`kvm_*` structs** (`#[cfg(test)] mod tests`), so the
 //! Linux CI runner exercises it under `nextest`/`llvm-cov`/`mutants` and Miri
@@ -49,14 +49,14 @@ use kvm_bindings::{
     kvm_xsave,
 };
 
-use crate::config::{CpuidModel, MsrFilter};
+use crate::arch::x86::{CpuidModel, MsrFilter};
+use crate::arch::x86::{
+    DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
+};
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, Exit};
 use crate::run_buf::RunBuf;
-use crate::state::{
-    DebugRegs, DescriptorTable, MpState, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
-};
-use crate::types::Gpa;
+use crate::types::{Gpa, MpState};
 
 /// Map a `kvm-ioctls`/`vmm-sys-util` errno into a portable [`BackendError`].
 pub(crate) fn kvm_err(e: kvm_ioctls::Error) -> BackendError {

@@ -14,11 +14,10 @@
 //! with the trait + types only. One impl per substrate; the binary's composition
 //! root is the one place a concrete backend is named.
 
+mod arch;
 mod backend;
-mod config;
 mod error;
 mod exit;
-mod state;
 mod types;
 
 // The two pointer seams (`region` slot table + GPA copies, `run_buf` kvm_run
@@ -69,14 +68,14 @@ mod pmu_sys;
 #[cfg(target_os = "linux")]
 mod patched_kvm;
 
-pub use backend::Backend;
-pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
-pub use error::{BackendError, Result};
-pub use exit::{Capabilities, Exit, ExitCounts, ExitReason, HypercallFrame, Injection};
-pub use state::{
-    DebugRegs, DescriptorTable, MpState, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
+pub use arch::x86::{
+    CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,
+    VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
 };
-pub use types::{Gpa, Moment};
+pub use backend::Backend;
+pub use error::{BackendError, Result};
+pub use exit::{Capabilities, Exit, ExitCounts, ExitReason, HypercallFrame};
+pub use types::{Gpa, Moment, MpState};
 
 #[cfg(feature = "mock")]
 pub use mock::{Completion, MockBackend};

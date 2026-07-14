@@ -32,13 +32,14 @@
 //! exercised on macOS via a scripted [`crate::MockBackend`] determinism exit
 //! plus vmm-core's completion path.
 
+use crate::arch::x86::Injection;
+use crate::arch::x86::VcpuState;
+use crate::arch::x86::{CpuidModel, MsrFilter};
 use crate::backend::Backend;
-use crate::config::{CpuidModel, MsrFilter};
 use crate::error::Result;
-use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
+use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::kvm::patched_capabilities;
 use crate::kvm_sys::KvmBackend;
-use crate::state::VcpuState;
 use crate::types::{Gpa, Moment};
 
 /// The patched-KVM determinism backend (R-Backend baseline). Wraps an inner

@@ -17,10 +17,11 @@ use kvm_bindings::{
 };
 
 use super::*;
-use crate::config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
+use crate::arch::x86::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
+use crate::arch::x86::{DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs};
 use crate::exit::Exit;
-use crate::state::{DebugRegs, DescriptorTable, MpState, Segment, VcpuEvents, VcpuRegs, VcpuSregs};
 use crate::types::Gpa;
+use crate::types::MpState;
 
 // ---------------------------------------------------------------------------
 // decode_* / apply_* over a synthetic kvm_run buffer.

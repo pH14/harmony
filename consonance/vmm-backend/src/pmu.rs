@@ -19,9 +19,6 @@
 
 /// `PERF_TYPE_RAW`.
 pub(crate) const PERF_TYPE_RAW: u32 = 4;
-/// `BR_INST_RETIRED.CONDITIONAL` (event `0xC4`, umask `0x01`), Coffee Lake-S
-/// (i9-9900K) — the exact event task 07 validated, identical to `work_perf`.
-pub(crate) const RAW_BR_COND: u64 = 0x1c4;
 /// `perf_event_attr` version-5 size (112 bytes).
 pub(crate) const ATTR_SIZE_VER5: u32 = 112;
 
@@ -129,7 +126,7 @@ pub(crate) fn branch_counter_attr() -> PerfEventAttr {
     PerfEventAttr {
         type_: PERF_TYPE_RAW,
         size: ATTR_SIZE_VER5,
-        config: RAW_BR_COND,
+        config: crate::arch::x86::RAW_BR_COND,
         // Sampling mode (non-zero period) so the counter can overflow; disarmed far
         // out until `arm_overflow` sets the real period.
         sample_period: DISARM_PERIOD,
@@ -153,7 +150,7 @@ mod tests {
     #[test]
     fn bit_constants_are_the_exact_uapi_values() {
         assert_eq!(PERF_TYPE_RAW, 4);
-        assert_eq!(RAW_BR_COND, 0x1c4);
+        assert_eq!(crate::arch::x86::RAW_BR_COND, 0x1c4);
         assert_eq!(ATTR_SIZE_VER5, 112);
         assert_eq!(F_DISABLED, 0x1); // bit 0
         assert_eq!(F_PINNED, 0x4); // bit 2

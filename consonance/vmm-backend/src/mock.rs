@@ -19,11 +19,12 @@
 
 use std::collections::VecDeque;
 
+use crate::arch::x86::Injection;
+use crate::arch::x86::VcpuState;
+use crate::arch::x86::{CpuidModel, MsrFilter};
 use crate::backend::Backend;
-use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
-use crate::state::VcpuState;
+use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::types::{Gpa, Moment};
 
 /// A completion the VMM applied to a pending exit, recorded for test assertions.

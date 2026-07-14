@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The observable-exit surface: `Exit`, the events the VMM injects, and the
-//! per-reason trap counters.
+//! The observable-exit surface: `Exit` and the per-reason trap counters.
 //!
 //! `Exit` **is** the CPU/MSR contract's trapped surface. Default-deny is
 //! structural: an operation not represented here either never exits (the backend
@@ -120,20 +119,6 @@ impl Exit {
             Exit::Deadline { .. } => ExitReason::Deadline,
         }
     }
-}
-
-/// An event the VMM injects at a V-time-chosen boundary. Aligned to R1's roster:
-/// under `KVM_IRQCHIP_NONE` maskable IRQs come only from the `KVM_INTERRUPT`
-/// queue and NMIs via `KVM_NMI` — no other producer exists.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Injection {
-    /// A maskable interrupt vector (`KVM_INTERRUPT`).
-    Interrupt {
-        /// The 8-bit interrupt vector.
-        vector: u8,
-    },
-    /// A non-maskable interrupt (`KVM_NMI`).
-    Nmi,
 }
 
 /// The hypercall argument frame (INTEGRATION.md §1): four guest argument slots

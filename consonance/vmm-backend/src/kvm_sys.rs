@@ -36,10 +36,12 @@ use kvm_bindings::{
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 use vtime::{CpuBackend, InjectionPlanner, PlannerConfig};
 
+use crate::arch::x86::Injection;
+use crate::arch::x86::VcpuState;
+use crate::arch::x86::{CpuidModel, MsrFilter};
 use crate::backend::Backend;
-use crate::config::{CpuidModel, MsrFilter};
 use crate::error::{BackendError, Result};
-use crate::exit::{Capabilities, Exit, ExitCounts, Injection};
+use crate::exit::{Capabilities, Exit, ExitCounts};
 use crate::kvm::*;
 use crate::pmu_sys::PmuBranchCounter;
 use crate::region::{MemRegions, split_around_hole};
@@ -47,7 +49,6 @@ use crate::run_until::{
     ExitPoison, FirstEntryReset, PreemptCpu, RunUntilStart, SKID_MARGIN, classify_run_until,
     drive_run_until, free_run_decision,
 };
-use crate::state::VcpuState;
 use crate::types::{Gpa, Moment};
 
 /// `KVM_MSR_FILTER_READ | KVM_MSR_FILTER_WRITE` — apply the in-kernel allow to
