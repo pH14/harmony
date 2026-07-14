@@ -127,28 +127,40 @@ for P in "$RS/qemu-src.pid" "$RS/qemu-dst.pid"; do
 done
 wait "$SRC" "$DST" 2>/dev/null || true
 
-# --- verdict: which console must the gate have finished green on?
-#   completed        -> the DESTINATION carries the guest; it must be green
-#   failed/cancelled -> fail-closed path; the SOURCE must be green
+# --- verdict. The guest's serial stream SPLITS at the migration point (e.g.
+# --- GATE_BEGIN lands on the source console, GATE_RC + L1_DONE on the
+# --- destination), so gate accounting is evaluated over the CONCATENATED
+# --- consoles; where the guest FINISHED (L1_DONE) must match the recorded
+# --- migration status:
+#   completed        -> L1_DONE on the DESTINATION + combined gates green
+#   failed/cancelled -> fail-closed path: L1_DONE on the SOURCE + combined green
 #   unknown          -> the rehearsal did not produce a status: fail
-gates_green() { # gates_green <console> — L1_DONE + >=1 gate + all RCs 0 + summary line
+COMBINED="$RS/console-combined.log"
+cat "$RS/console-src.log" "$RS/console-dst.log" > "$COMBINED" 2>/dev/null || true
+
+gates_green() { # gates_green <combined-console> — >=1 gate + RC-per-BEGIN, all 0 + summary
   local c=$1
   grep -q "NESTED_X86_L1_DONE" "$c" 2>/dev/null || return 1
-  local began fails summ
+  local began rcs fails summ
   began=$(grep -c "NESTED_X86_GATE_BEGIN" "$c" 2>/dev/null || true)
+  rcs=$(grep -c "NESTED_X86_GATE_RC " "$c" 2>/dev/null || true)
   fails=$(grep -c "NESTED_X86_GATE_RC .* rc=[1-9]" "$c" 2>/dev/null || true)
   summ=$(grep -c 'N3JSON {"event":"summary"' "$c" 2>/dev/null || true)
-  [ "$began" -gt 0 ] && [ "$fails" -eq 0 ] && [ "$summ" -gt 0 ]
+  [ "$began" -gt 0 ] && [ "$rcs" -eq "$began" ] && [ "$fails" -eq 0 ] && [ "$summ" -gt 0 ]
 }
 
 rc=1
 FINISHED_ON=none
 case "$MIG_STATUS" in
   completed)
-    if gates_green "$RS/console-dst.log"; then rc=0; FINISHED_ON=destination; fi ;;
+    if grep -q "NESTED_X86_L1_DONE" "$RS/console-dst.log" 2>/dev/null && gates_green "$COMBINED"; then
+      rc=0; FINISHED_ON=destination
+    fi ;;
   failed|cancelled)
     # fail-closed: migration refused/aborted, guest must have continued on source
-    if gates_green "$RS/console-src.log"; then rc=0; FINISHED_ON=source; fi ;;
+    if grep -q "NESTED_X86_L1_DONE" "$RS/console-src.log" 2>/dev/null && gates_green "$COMBINED"; then
+      rc=0; FINISHED_ON=source
+    fi ;;
   *)
     rc=1 ;;
 esac
