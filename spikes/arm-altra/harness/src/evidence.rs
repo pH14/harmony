@@ -26,11 +26,21 @@
 //! from `records.jsonl`, whose sha256 the manifest pins so a swapped record file
 //! cannot go unnoticed.
 //!
+//! # The loader enforces what the schema promises
+//!
+//! The canonical schemas under `schemas/` declare `additionalProperties: false`.
+//! Plain serde would happily accept a manifest with extra keys — and, worse, a
+//! *misspelled* optional field would silently deserialize to `None`, turning
+//! "weights I measured" into "weights I refuse to check" with no complaint. Every
+//! shape here is therefore `deny_unknown_fields`, so the Rust loader and the JSON
+//! schema agree about what a valid run-set is.
+//!
 //! **Untested on silicon.** These records have never been produced by real
 //! hardware; the shapes are what AA-0..AA-6 will fill.
 
 use oracle_model::{Payload, Scale, Weights};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// Bump when a field's meaning changes. A checker refuses a version it does not
@@ -66,6 +76,7 @@ pub enum Stage {
 /// the checker rejects a run whose per-record exit reasons do not match the
 /// mechanism the manifest claims.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Mechanism {
     /// `true` when the host kernel carries the 0004-analogue patch
     /// (`host/patches/`). `false` means stock KVM — which is a legitimate thing to
@@ -111,6 +122,7 @@ pub enum ExitReason {
 /// — the checker rejects any run-set with an unverified pin, so a hash that was
 /// merely written down cannot pass for one that was checked.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImagePin {
     /// Path the artifact was loaded from. Never trusted — the hash is the identity.
     pub path: String,
@@ -125,6 +137,7 @@ pub struct ImagePin {
 
 /// The perf event configuration behind the work clock.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PerfConfig {
     /// The raw event. `BR_RETIRED` is `0x21` — retired *taken* branches
     /// (`docs/ARM-PORT.md`, `docs/ARM-ALTRA.md` §2). Recorded rather than assumed,
@@ -153,6 +166,7 @@ pub struct PerfConfig {
 /// bounded migration probe, which is why [`Pinning::pinned`] can legitimately be
 /// `false` — and why the checker demands it be `true` everywhere else.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Pinning {
     /// Whether the vCPU thread and its perf context were hard-pinned.
     pub pinned: bool,
@@ -167,6 +181,7 @@ pub struct Pinning {
 
 /// The machine, as found.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Environment {
     /// `MIDR_EL1`.
     pub midr: u64,
@@ -188,6 +203,7 @@ pub struct Environment {
 /// checker sums nothing to establish it, it looks at every record and demands
 /// exactly 1.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverflowRecord {
     /// Whether an overflow was armed for this sample.
     pub armed: bool,
@@ -211,6 +227,7 @@ pub struct OverflowRecord {
 /// no way to express "this sample didn't work out" by omitting it; omission is
 /// what the totality check catches.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunRecord {
     /// Dense index into the attempted samples, `0..attempted`. The totality check
     /// is exactly: these are present, once each, with no gaps.
@@ -258,6 +275,7 @@ pub struct RunRecord {
 /// Carries **no result totals** — see the module docs. It says what was attempted
 /// and under what conditions; the records say what happened.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunSet {
     /// [`SCHEMA_VERSION`].
     pub schema_version: u32,
@@ -295,6 +313,106 @@ pub struct RunSet {
     pub records_file: String,
     /// sha256 of the records file, so a swapped or truncated one is caught.
     pub records_sha256: String,
+}
+
+/// Everything a run-set manifest needs that cannot be derived from the records.
+///
+/// The split is the point: what the harness *can* derive it derives (the records'
+/// sha256, the perf block from the armed `perf_event_attr`, the pinned core), and
+/// what it cannot know it must be *given* — the machine's identity, the measured
+/// weights, the measured skid margin. There is no field here the harness fills with
+/// a plausible default, because a plausible default is how an unmeasured constant
+/// becomes a published one.
+#[derive(Clone, Debug)]
+pub struct RunSetContext {
+    /// The stage this run-set belongs to.
+    pub stage: Stage,
+    /// Identifier for this run-set.
+    pub run_set_id: String,
+    /// The machine, from AA-0's capture.
+    pub environment: Environment,
+    /// The mechanism claimed, and its proof.
+    pub mechanism: Mechanism,
+    /// The boot artifacts, pinned and verified.
+    pub images: Vec<ImagePin>,
+    /// The work counter's configuration, as armed.
+    pub perf: PerfConfig,
+    /// Core pinning and frequency posture.
+    pub pinning: Pinning,
+    /// The experimental condition swept.
+    pub condition: String,
+    /// The measured weights (AA-1). `None` until they exist.
+    pub weights: Option<Weights>,
+    /// The measured skid margin (AA-1). `None` until it exists.
+    pub skid_margin: Option<u64>,
+    /// How many samples were **attempted** — the plan's length, not the records'.
+    pub attempted: u64,
+}
+
+/// Assemble a run-set: serialize the records, pin their real sha256, emit the
+/// manifest.
+///
+/// Two properties, both load-bearing:
+///
+/// - **The records' hash is of the bytes actually written.** A manifest cannot pin a
+///   hash of records that were never emitted.
+/// - **`attempted` comes from the plan, not from `records.len()`.** A run that died
+///   after 300 of 1,000 samples writes a manifest saying 1,000 attempted and 300
+///   records — evidence that indicts itself, which the totality check then catches.
+///   Deriving `attempted` from the records would let a truncated run look complete,
+///   and *that* is how a missing sample becomes a pass.
+///
+/// # Errors
+/// The underlying `serde_json` error if a record or the manifest cannot be
+/// serialized.
+pub fn assemble_run_set(
+    ctx: RunSetContext,
+    records: &[RunRecord],
+) -> Result<(String, String), serde_json::Error> {
+    let mut jsonl = String::new();
+    for r in records {
+        jsonl.push_str(&serde_json::to_string(r)?);
+        jsonl.push('\n');
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(jsonl.as_bytes());
+    let records_sha256 = hex_lower(&hasher.finalize());
+
+    let run_set = RunSet {
+        schema_version: SCHEMA_VERSION,
+        stage: ctx.stage,
+        run_set_id: ctx.run_set_id,
+        environment: ctx.environment,
+        mechanism: ctx.mechanism,
+        images: ctx.images,
+        perf: ctx.perf,
+        pinning: ctx.pinning,
+        condition: ctx.condition,
+        weights: ctx.weights,
+        skid_margin: ctx.skid_margin,
+        attempted: ctx.attempted,
+        records_file: "records.jsonl".to_string(),
+        records_sha256,
+    };
+    Ok((to_stable_json(&run_set)?, jsonl))
+}
+
+/// Lowercase-hex-encode a byte slice.
+///
+/// No `hex` crate is on the dependency whitelist, and hashes reach evidence from
+/// three places (the state digest, the records pin, the fixture generator) — so the
+/// encoding lives once, here, rather than three times.
+#[must_use]
+pub fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        // Writing to a String is infallible; the Result exists only to satisfy the
+        // `Write` trait.
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 /// Serialize to stable JSON: sorted keys, deterministic bytes.
@@ -359,6 +477,30 @@ mod tests {
             to_stable_json(&r).expect("serializable"),
             to_stable_json(&r).expect("serializable")
         );
+    }
+
+    #[test]
+    fn an_unknown_field_is_refused_not_ignored() {
+        // The schemas say `additionalProperties: false`; the loader must agree. The
+        // dangerous half of this is not the extra key — it is the MISSPELLED one: a
+        // manifest carrying `skid_margins` would otherwise deserialize with
+        // `skid_margin: None`, and the checker would dutifully report "no measured
+        // margin" for evidence that had one.
+        let json = to_stable_json(&a_record()).expect("serializable");
+        let with_extra = json.replace(
+            "\"sample_id\": 0,",
+            "\"sample_id\": 0,\n  \"surprise\": true,",
+        );
+        assert!(
+            serde_json::from_str::<RunRecord>(&with_extra).is_err(),
+            "an unknown field must be refused, not silently ignored"
+        );
+    }
+
+    #[test]
+    fn hex_is_lowercase_and_zero_padded() {
+        assert_eq!(hex_lower(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_lower(&[]), "");
     }
 
     #[test]

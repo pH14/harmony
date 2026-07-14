@@ -9,11 +9,17 @@
 //!
 //! Almost all of this is pure logic — no syscalls, no `unsafe` — and so it is
 //! fully testable on the development Mac (which is itself aarch64, so even the
-//! opcode fixtures are native). The one exception is [`sys`], the perf/KVM syscall
-//! seam, which is Linux-only and **has never run**: the Altra box is not yet in
-//! hand. The seam is deliberately thin, so that logic is testable and the syscall
-//! layer is small, and so that a silent fallback cannot masquerade as the
-//! mechanism under test (`docs/ARM-ALTRA.md` §Evidence integrity #4).
+//! opcode fixtures are native). That includes the `KVM_RUN` measurement loop
+//! ([`run`]): it programs against two narrow seams rather than against ioctls, so
+//! window-mark decode, counter bookkeeping, overflow multiplicity and record
+//! assembly are all driven natively against a scripted vCPU. The one exception is
+//! [`sys`], the perf/KVM syscall seam, which is Linux-only and **has never run**:
+//! the Altra box is not yet in hand. The seam is deliberately thin, so that logic is
+//! testable and the syscall layer is small, and so that a silent fallback cannot
+//! masquerade as the mechanism under test (`docs/ARM-ALTRA.md` §Evidence integrity
+//! #4). Its ABI half — the `perf_event_attr` flag bits, the ioctl numbers, the
+//! `kvm_run` offsets — is portable data and is unit-tested here too, because a flag
+//! on the wrong bit arms a different event and reports it green.
 //!
 //! **This whole crate is untested on silicon.** It is apparatus, built so that
 //! arrival day is spent measuring, not scaffolding.
@@ -29,6 +35,7 @@ pub mod console;
 pub mod elf;
 pub mod evidence;
 pub mod plan;
+pub mod run;
 pub mod scan;
 pub mod verify;
 
