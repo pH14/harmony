@@ -213,6 +213,13 @@ pub enum Payload {
     /// Seqlock reads of the work-derived clock page — AA-5's payload. Reads a
     /// materialized value; performs no counter arithmetic (`docs/PARAVIRT-CLOCK.md` §0).
     ClockPage,
+    /// The **AA-5 Linux guest** determinism class — a full Linux VM, not a bare-metal
+    /// oracle payload. It has no counting window and no by-construction count; it exists
+    /// so the AA-6 determinism matrix can *represent and require* the Linux guest the
+    /// binding matrix names (`docs/ARM-ALTRA.md` §AA-6). It is deliberately **not** in
+    /// [`ALL_PAYLOADS`] (nothing here builds or smokes a Linux kernel); no run produces
+    /// one pre-silicon, so requiring it keeps AA-6 honestly unfulfilled until arrival day.
+    LinuxGuest,
 }
 
 /// Every payload, in a stable order. The manifest generator and the smoke script
@@ -244,6 +251,7 @@ impl Payload {
             Payload::LlscAtomics => "llsc-atomics",
             Payload::LseAtomics => "lse-atomics",
             Payload::ClockPage => "clock-page",
+            Payload::LinuxGuest => "linux-guest",
         }
     }
 
@@ -253,10 +261,22 @@ impl Payload {
         ALL_PAYLOADS.iter().copied().find(|p| p.name() == name)
     }
 
-    /// Whether the payload has a counting window at all. [`Payload::Ident`] does not.
+    /// Whether the payload has a counting window at all. [`Payload::Ident`] (the
+    /// capability report) and [`Payload::LinuxGuest`] (a full VM) do not.
     #[must_use]
     pub const fn has_window(self) -> bool {
-        !matches!(self, Payload::Ident)
+        !matches!(self, Payload::Ident | Payload::LinuxGuest)
+    }
+
+    /// Whether the payload's count includes an **in-band runtime term** it reports itself
+    /// (`STXR` retries for [`Payload::LlscAtomics`], seqlock retries for
+    /// [`Payload::ClockPage`]) — a data-dependent count the oracle cannot derive and the
+    /// guest must print. The run loop refuses a record from such a payload that never
+    /// supplied the term: a defaulted 0 would let the record claim a reported count it
+    /// never made. Mirrors [`Expectation::has_reported_term`].
+    #[must_use]
+    pub const fn has_reported_term(self) -> bool {
+        matches!(self, Payload::LlscAtomics | Payload::ClockPage)
     }
 }
 
@@ -888,7 +908,10 @@ pub fn expected(payload: Payload, scale: Scale, seed: u64) -> Expectation {
     };
 
     match payload {
-        Payload::Ident => {
+        // No counting window: the capability report, and the AA-5 Linux guest class (a
+        // full VM whose determinism the AA-6 matrix requires, not a bare-metal payload
+        // with a by-construction count).
+        Payload::Ident | Payload::LinuxGuest => {
             e.certain_taken = 0;
         }
         Payload::StraightLine => {

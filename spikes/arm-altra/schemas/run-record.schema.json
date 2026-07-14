@@ -127,7 +127,7 @@
   },
   "$defs": {
     "payload": {
-      "description": "The oracle payload class (`oracle_model::Payload`). `ident` has no counting window.",
+      "description": "The oracle payload class (`oracle_model::Payload`). `ident` and `linux-guest` have no counting window; `linux-guest` is the AA-5 Linux VM the AA-6 determinism matrix requires (a full guest, not a bare-metal payload).",
       "type": "string",
       "enum": [
         "ident",
@@ -138,7 +138,8 @@
         "wfi-idle",
         "llsc-atomics",
         "lse-atomics",
-        "clock-page"
+        "clock-page",
+        "linux-guest"
       ]
     },
     "scale": {
@@ -219,7 +220,8 @@
         "pc_after",
         "insn_retired",
         "br_retired_delta",
-        "transition"
+        "transition",
+        "step_digest"
       ],
       "properties": {
         "pc_before": {
@@ -244,11 +246,16 @@
         },
         "transition": {
           "$ref": "#/$defs/step-transition"
+        },
+        "step_digest": {
+          "description": "Digest of the guest state AT THE STEP MOMENT (not the exit sentinel). AA-2's acceptance is replay-identical stepped states across repeated inputs; replay identity compares this, because the final state_digest can converge.",
+          "type": "string",
+          "minLength": 1
         }
       }
     },
     "step-transition": {
-      "description": "What kind of transition a single step made (`arm_harness::evidence::StepTransition`), recorded from the stepped opcode/trap syndrome rather than inferred from PC arithmetic \u2014 because `pc_after != pc_before + 4` cannot tell a retired taken branch from an exception transfer, and BR_RETIRED counts the former, not the latter. The AA-2 floor validates the delta against the class and requires the full matrix to be covered.",
+      "description": "What kind of transition a single step made (`arm_harness::evidence::StepTransition`), recorded from the stepped opcode/trap syndrome rather than inferred from PC arithmetic \u2014 because `pc_after != pc_before + 4` cannot tell a retired taken branch from an exception transfer, and BR_RETIRED counts the former, not the latter. The AA-2 floor validates the delta against the class and requires the full matrix (including an LL/SC exclusive) to be covered.",
       "type": "string",
       "enum": [
         "sequential",
@@ -256,7 +263,8 @@
         "exception-entry",
         "exception-return",
         "wfi",
-        "injection"
+        "injection",
+        "llsc-exclusive"
       ]
     }
   }

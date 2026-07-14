@@ -295,6 +295,10 @@ pub enum StepTransition {
     Wfi,
     /// An **injected interrupt** boundary (asynchronous IRQ, AA-6's mechanism). Measured.
     Injection,
+    /// Stepping an **LL/SC exclusive** (`LDXR`/`STXR`) sequence — the monitor-clearing /
+    /// livelock behaviour AA-2 must characterize for AA-4's LSE-only contract. Required
+    /// coverage: an AA-2 run that never stepped an exclusive has not measured it.
+    LlscExclusive,
 }
 
 /// One single-step measurement (AA-2).
@@ -309,7 +313,7 @@ pub enum StepTransition {
 /// **Untested on silicon and unproduced pre-silicon:** the single-step *run path*
 /// (`KVM_SET_GUEST_DEBUG` + the stepping loop) is arrival-day work, so no current run
 /// emits this. The field exists so the AA-2 floor is non-forgeable now and ready then.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepRecord {
     /// The PC before the step.
@@ -324,6 +328,11 @@ pub struct StepRecord {
     pub br_retired_delta: u64,
     /// What kind of transition the step made, from the stepped opcode and the exit taken.
     pub transition: StepTransition,
+    /// Digest of the guest state **at the step Moment** — sampled at the single step, not
+    /// at the exit sentinel. AA-2's acceptance is replay-identical stepped states across
+    /// repeated inputs, and the final `state_digest` can converge (two divergent step
+    /// states running on to the same exit), so replay identity compares THIS.
+    pub step_digest: String,
 }
 
 /// One attempted sample.

@@ -757,6 +757,62 @@ Fixtures: 24, unchanged (step records are still `null`; `attempted` ≥ 8). Sche
 step-record gains `transition`, an unproduced sub-schema). Miri runs arm-harness (84) plus
 oracle-model (24).
 
+## Round-11 review fixes (PR #108, cross-model pass r11)
+
+Six P1 + one P2. The Miri item stays settled (bare-metal payloads cannot run under
+Miri; the portable logic is seamed into arm-harness/oracle-model, both of which Miri
+does run). The review's cadence question — the checker is being hardened ahead of the
+arrival-day evidence it grades — is escalated to Paul; work continued per the note.
+
+- **AA-0 probe fails closed on ANY absent OR unprobed mandatory row.** The host `probe`
+  command only asked four rows (`/dev/kvm`, raw 0x21 pinned, guest-debug, the patch
+  marker), so a host missing an *existential* mechanism the truth table lists mandatory
+  — `br-retired-pmceid0`, `host-overflow-delivers`, `vgicv3-creatable`,
+  `writable-id-registers` — probed green. Added those four as `Capability` variants with
+  real Linux probes: BR_RETIRED implemented-at-all (`perf_event_open` not `ENOENT`); a
+  host overflow actually *delivered* (arm a small sample period, run past it, confirm the
+  ring buffer's `data_head` advanced); vGICv3 `KVM_CREATE_DEVICE`-able; and an ID register
+  writable (`KVM_GET_ONE_REG` then `KVM_SET_ONE_REG` of the SAME value — a read-only
+  kernel rejects it with `EINVAL`, and writing back what was read cannot change a feature).
+  `Capability::mandatory_aa0()` is the single list `probe` iterates; every row absent or
+  unprobed is disqualifying (the patch marker alone stays expect-absent, reported
+  separately). Each new probe returns `Ok(false)` only on a clean "no" errno and `Err`
+  on any failure-to-probe — the same fail-closed discipline as the existing rows.
+- **Records that promise a `retries=` term that never printed are refused.** `run`
+  defaulted the reported term to `0` when the guest never printed a `retries=`/`RETRIES`
+  line, so a payload whose count model *includes* a reported term (`llsc-atomics`,
+  `clock-page`) could silently run with the term dropped and the checker would recompute
+  a too-low expected count and pass it. The parser now holds `Option<u64>`; at record
+  assembly a payload with `has_reported_term()` that produced no line is a hard
+  `RunError::MissingReportedTerm`, while a payload with no reported term keeps `0`.
+- **AA-2 step-moment replay identity + explicit LL/SC stepping coverage.** Two coupled
+  fixes. (a) Replay identity compared the final `state_digest`, which can *converge* (two
+  different stepped states reach the same exit sentinel), so divergent single-step
+  behaviour across repeated inputs could pass. `StepRecord` now carries a `step_digest`
+  taken at the step moment, and AA-2/AA-3/AA-6 replay identity compares THAT across every
+  repeated `(payload, scale, seed, condition)` group. (b) The required step matrix had no
+  exclusive-monitor case, so LL/SC stepping — the one AA-2 most needs characterized — was
+  uncovered; added `StepTransition::LlscExclusive` to the enum, the required-transition
+  set, and the delta validation (measured 0-or-1, like the other non-branch classes).
+- **AA-6 determinism matrix includes the AA-5 Linux guest class.** The matrix required
+  only the windowed bare-metal payloads, so a determinism run could omit the full Linux
+  VM (AA-5) entirely. Added `Payload::LinuxGuest` (a guest *class*, deliberately NOT in
+  `ALL_PAYLOADS` — it is not a buildable bare-metal payload) and made
+  `required_aa6_classes` the windowed payloads plus it; `check_aa6_matrix` now demands the
+  Linux class appear.
+- **AA-4 dropped from the million-overflow normative floor.** `normative_armed_floor`
+  applied the ≥10⁶ cumulative-armed floor to AA-4 too, but `docs/ARM-ALTRA.md` scopes that
+  floor to AA-1 (skid/count invariance) and AA-3 (exact landing); AA-4 is the LSE-only
+  contract, whose evidence is not a million overflows. The floor is now `Aa1 | Aa3`.
+
+The schema mirrors the code: `run-record.schema.json`'s step-record gains `step_digest`
+(minLength 1) and the step-transition enum gains `llsc-exclusive`; the payload enum gains
+`linux-guest`. Fixtures: 24 (the AA-6 accept fixture and the RepFloor reject fixture each
+gained a `linux-guest` record so the newly-required class is present; no new fixture
+files). Gates re-run green: harness 86 tests, floor-check 39 + 27 + 3, oracle-model 22 +
+2, both clippy targets and all three `cargo deny` clean, the window-vs-oracle scan and TCG
+smoke pass, and Miri runs arm-harness (85) plus oracle-model.
+
 ## Notes for the integrator
 
 - **`.gitignore` change (one line, root).** `spikes/*` was gitignored wholesale;

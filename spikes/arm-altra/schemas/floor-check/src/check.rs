@@ -1601,13 +1601,16 @@ fn rep_key(r: &RunRecord) -> RepKey {
 
 /// The digest a repetition is compared on.
 ///
-/// For an armed AA-3 landing, that is the **landed** digest — the state at the
-/// Moment the deadline was hit, sampled before the guest resumed. The final
-/// `state_digest`, taken at the exit sentinel, can converge: two different landed
-/// states can run on to the same final state, so it cannot establish landing
-/// identity. For an unarmed counting run there is no landing, and the final state is
-/// the thing to compare.
+/// For a stepped AA-2 record, that is the **step-moment** digest — the state at the
+/// Moment the single step landed. AA-2's acceptance is replay-identical *stepped* states,
+/// and the final `state_digest` (taken at the exit sentinel) can converge: two divergent
+/// step states can run on to the same final state, so it cannot establish step identity.
+/// For an armed AA-3 landing it is the **landed** digest, for the same reason; for an
+/// unarmed counting run there is no landing and the final state is the thing to compare.
 fn comparison_digest(r: &RunRecord) -> &str {
+    if let Some(s) = &r.step {
+        return s.step_digest.trim();
+    }
     match &r.overflow {
         Some(o) if o.armed && o.deliveries >= 1 => o.landed_digest.trim(),
         _ => r.state_digest.trim(),
@@ -1742,11 +1745,13 @@ fn check_replay_identity(stage: Stage, records: &[RunRecord], out: &mut Vec<Outc
     }
 }
 
-/// Whether a stage's acceptance **is** replay identity: AA-3 (replay-identical landed
-/// state) and AA-6 (≥1,000 same-input bit-identical). At those, comparing zero
-/// digests is not a pass. AA-1/AA-2/AA-4/AA-5 do not rest on it.
+/// Whether a stage's acceptance **is** replay identity: AA-2 (replay-identical *stepped*
+/// state — the step-moment digest, [`comparison_digest`]), AA-3 (replay-identical landed
+/// state) and AA-6 (≥1,000 same-input bit-identical). At those, comparing zero digests is
+/// not a pass, so a run with no repeated group reads NOT-REQUESTED. AA-1/AA-4/AA-5 do not
+/// rest on it.
 const fn requires_replay_identity(stage: Stage) -> bool {
-    matches!(stage, Stage::Aa3 | Stage::Aa6)
+    matches!(stage, Stage::Aa2 | Stage::Aa3 | Stage::Aa6)
 }
 
 /// AA-2 exists to *characterize single-stepping* — does one step retire exactly one
@@ -1823,6 +1828,7 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
             | StepTransition::ExceptionReturn
             | StepTransition::Wfi
             | StepTransition::Injection
+            | StepTransition::LlscExclusive
                 if s.br_retired_delta > 1 =>
             {
                 bad.push(format!(
@@ -1874,7 +1880,10 @@ fn check_debug_evidence(stage: Stage, records: &[RunRecord], out: &mut Vec<Outco
 }
 
 /// The transition classes an AA-2 run must step across — the coverage matrix. Fewer than
-/// all of these is a partial characterization, not AA-2's.
+/// all of these is a partial characterization, not AA-2's. The LL/SC exclusive is
+/// explicit: AA-2 must step an `LDXR`/`STXR` sequence to characterize the
+/// monitor-clearing/livelock behaviour AA-4's LSE-only contract rests on, and a run that
+/// stepped every OTHER class but no exclusive has not measured it.
 const REQUIRED_AA2_TRANSITIONS: &[StepTransition] = &[
     StepTransition::Sequential,
     StepTransition::TakenBranch,
@@ -1882,35 +1891,39 @@ const REQUIRED_AA2_TRANSITIONS: &[StepTransition] = &[
     StepTransition::ExceptionReturn,
     StepTransition::Wfi,
     StepTransition::Injection,
+    StepTransition::LlscExclusive,
 ];
 
-/// The payloads AA-6's determinism matrix must cover — every payload with a counting
-/// window. The `ident` capability report has no window and no measured count, so it is
-/// not part of the rep matrix.
-fn required_aa6_payloads() -> Vec<Payload> {
-    ALL_PAYLOADS
+/// The classes AA-6's determinism matrix must cover: every payload with a counting window
+/// PLUS the AA-5 Linux guest ([`Payload::LinuxGuest`]). The binding AA-6 matrix is "the
+/// payload matrix plus the AA-5 Linux guest" (`docs/ARM-ALTRA.md` §AA-6), so a run of the
+/// eight bare-metal payloads alone — however many reps — is not AA-6. The `ident`
+/// capability report has no measured count and is not part of the rep matrix.
+fn required_aa6_classes() -> Vec<Payload> {
+    let mut classes: Vec<Payload> = ALL_PAYLOADS
         .iter()
         .copied()
         .filter(|p| p.has_window())
-        .collect()
+        .collect();
+    classes.push(Payload::LinuxGuest);
+    classes
 }
 
-/// AA-6's mini determinism gate is over a **matrix** of payloads, not one input. The
+/// AA-6's mini determinism gate is over a **matrix** of classes, not one input. The
 /// rep floor ([`check_floors`]) only grades inputs that are *present*, so 1,000 copies
 /// of a single `straight-line` record satisfies `--min-reps 1000` while every other
-/// required payload is silently absent. This verifies the matrix is complete *before*
+/// required class is silently absent. This verifies the matrix is complete *before*
 /// the rep floor's per-group count means anything.
 ///
-/// Scope: the payloads the spike can produce pre-silicon. The full-system AA-6 coverage
-/// the spec also names — the AA-5 Linux guest, the AA-0 truth-table cross-check — needs
-/// artifacts that do not exist until arrival day; those remain silicon-day matrix items
-/// (`docs/ARM-ALTRA.md` AA-6), not something this checker can synthesize.
+/// The matrix includes the **AA-5 Linux guest** ([`Payload::LinuxGuest`]): no run produces
+/// one pre-silicon, so requiring it keeps AA-6 honestly unfulfilled until arrival day
+/// rather than letting 1,000 reps of the eight bare-metal payloads report a passing AA-6.
 fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>) {
     if stage != Stage::Aa6 {
         return;
     }
     let present: BTreeSet<Payload> = records.iter().map(|r| r.payload).collect();
-    let required = required_aa6_payloads();
+    let required = required_aa6_classes();
     let missing: Vec<Payload> = required
         .iter()
         .copied()
@@ -1920,7 +1933,8 @@ fn check_aa6_matrix(stage: Stage, records: &[RunRecord], out: &mut Vec<Outcome>)
         out.push(pass(
             CheckId::Aa6Matrix,
             format!(
-                "all {} required payloads present in the AA-6 determinism matrix",
+                "all {} required classes present in the AA-6 determinism matrix (payloads + \
+                 the AA-5 Linux guest)",
                 required.len()
             ),
         ));
@@ -1982,10 +1996,14 @@ fn check_payload_status(records: &[RunRecord], out: &mut Vec<Outcome>) {
 const NORMATIVE_ARMED_FLOOR: u64 = 1_000_000;
 const NORMATIVE_REP_FLOOR: u64 = 1_000;
 
-/// The stage's normative armed-overflow minimum, if it has one.
+/// The stage's normative armed-overflow minimum, if it has one. The binding document
+/// defines the ≥1,000,000 floor for **AA-1 and AA-3 only**; AA-4 (the LSE-only contract)
+/// rides AA-3's machinery but is not itself held to the million-overflow floor, so
+/// including it would reject contract-valid AA-4 evidence unless it were mislabelled
+/// SUB-NORMATIVE.
 const fn normative_armed_floor(stage: Stage) -> Option<u64> {
     match stage {
-        Stage::Aa1 | Stage::Aa3 | Stage::Aa4 => Some(NORMATIVE_ARMED_FLOOR),
+        Stage::Aa1 | Stage::Aa3 => Some(NORMATIVE_ARMED_FLOOR),
         _ => None,
     }
 }
@@ -3077,6 +3095,7 @@ mod tests {
             insn_retired: 1,
             br_retired_delta: delta,
             transition,
+            step_digest: format!("sha256:step-{transition:?}"),
         });
         r
     }
@@ -3090,6 +3109,7 @@ mod tests {
             a_step(3, 0xB000, 0, StepTransition::ExceptionReturn),
             a_step(4, 0xC000, 0, StepTransition::Wfi),
             a_step(5, 0xD000, 0, StepTransition::Injection),
+            a_step(6, 0xE000, 0, StepTransition::LlscExclusive),
         ]
     }
 
@@ -3161,10 +3181,86 @@ mod tests {
             "an exception transition with a far PC move and delta 0 is valid — not a forced branch"
         );
 
+        // (d) a matrix that covers every OTHER class but no LL/SC exclusive is not AA-2:
+        // the monitor-clearing/livelock characterization AA-4 needs was never stepped.
+        let without_llsc: Vec<RunRecord> = full_step_matrix()
+            .into_iter()
+            .filter(|r| {
+                r.step.as_ref().map(|s| s.transition) != Some(StepTransition::LlscExclusive)
+            })
+            .collect();
+        let mut out = Vec::new();
+        check_debug_evidence(Stage::Aa2, &without_llsc, &mut out);
+        assert_eq!(
+            status(&out, CheckId::DebugEvidence),
+            Some(Status::Fail),
+            "an AA-2 run that never stepped an LL/SC exclusive is incomplete"
+        );
+
         // The check does not fire outside AA-2.
         let mut out = Vec::new();
         check_debug_evidence(Stage::Aa3, &[a_record(0)], &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn aa2_replay_identity_compares_step_moment_digests_across_repeats() {
+        // A step record for a chosen input seed and step-moment digest.
+        let step_of = |id: u64, seed: u64, digest: &str| {
+            let mut r = a_record_seeded(id, seed);
+            r.step = Some(StepRecord {
+                pc_before: 0x8000,
+                pc_after: 0x8004,
+                insn_retired: 1,
+                br_retired_delta: 0,
+                transition: StepTransition::Sequential,
+                step_digest: digest.into(),
+            });
+            r
+        };
+
+        // AA-2's acceptance is replay-identical STEPPED states. requires_replay_identity
+        // now includes AA-2, so DISTINCT inputs (no repeated group) read NOT-REQUESTED.
+        let distinct = [step_of(0, 1, "sha256:a"), step_of(1, 2, "sha256:b")];
+        let mut out = Vec::new();
+        check_replay_identity(Stage::Aa2, &distinct, &mut out);
+        assert_eq!(
+            status(&out, CheckId::ReplayIdentity),
+            Some(Status::NotRequested),
+            "distinct inputs have no repeated group to replay"
+        );
+
+        // Two reps of the SAME stepped input (same RepKey) with the SAME step_digest →
+        // replay identity holds.
+        let mk = |id: u64, digest: &str| {
+            let mut r = a_record_seeded(id, 7);
+            r.step = Some(StepRecord {
+                pc_before: 0x8000,
+                pc_after: 0x8004,
+                insn_retired: 1,
+                br_retired_delta: 0,
+                transition: StepTransition::Sequential,
+                step_digest: digest.into(),
+            });
+            r
+        };
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa2,
+            &[mk(0, "sha256:same"), mk(1, "sha256:same")],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Pass));
+
+        // Divergent step-moment states that would CONVERGE by the exit (same
+        // state_digest) are caught because the STEP digest, not the final one, is compared.
+        let mut out = Vec::new();
+        check_replay_identity(
+            Stage::Aa2,
+            &[mk(0, "sha256:diverged-a"), mk(1, "sha256:diverged-b")],
+            &mut out,
+        );
+        assert_eq!(status(&out, CheckId::ReplayIdentity), Some(Status::Fail));
     }
 
     #[test]

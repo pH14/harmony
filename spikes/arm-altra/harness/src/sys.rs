@@ -332,6 +332,20 @@ pub mod kvm {
     pub const REG_SIZE_MASK: u64 = 0x00F0_0000_0000_0000;
     /// Shift of the size field.
     pub const REG_SIZE_SHIFT: u32 = 52;
+
+    /// `ID_AA64PFR0_EL1` as a `KVM_GET/SET_ONE_REG` id.
+    ///
+    /// `KVM_REG_ARM64 (0x6…) | KVM_REG_SIZE_U64 (0x…30…) | KVM_REG_ARM64_SYSREG | enc`.
+    /// The SYSREG selector is `0x0013 << KVM_REG_ARM_COPROC_SHIFT(16)`; `enc` packs the
+    /// architected `(op0,op1,crn,crm,op2) = (3,0,0,4,0)` of `ID_AA64PFR0_EL1` by the
+    /// KVM shifts (`op0<<14 | op1<<11 | crn<<7 | crm<<3 | op2<<0`), which is
+    /// `(3<<14)|(4<<3) = 0xC020`. The AA-0 `writable-id-registers` probe reads this
+    /// register and writes the same value back: a kernel that pins ID registers
+    /// read-only fails the `SET` with `EINVAL`, and that failure *is* the (absent) row —
+    /// so the value is derived here and pinned by a test rather than typed as a magic
+    /// literal, since a wrong id would `SET` a *different* register and read green.
+    pub const REG_ID_AA64PFR0_EL1: u64 =
+        0x6000_0000_0000_0000 | 0x0030_0000_0000_0000 | (0x0013 << 16) | (3 << 14) | (4 << 3);
 }
 
 /// `struct kvm_run`, through the MMIO arm of its exit union.
@@ -538,6 +552,22 @@ pub enum Capability {
     PerfBrRetired,
     /// `KVM_CAP_SET_GUEST_DEBUG` (single-step) is advertised.
     GuestDebug,
+    /// `BR_RETIRED` (event 0x21) is an **implemented** PMU event — `perf_event_open` of
+    /// the raw event does not return `ENOENT`. The truth table's `br-retired-pmceid0` row:
+    /// the whole work-clock bet rests on this event existing on N1's PMU.
+    Pmceid,
+    /// A **host-side overflow actually delivers**: arm a small `BR_RETIRED` sample period,
+    /// run a branchy loop past it, and confirm the kernel wrote an overflow sample. AA-1's
+    /// existential row — a counter that increments but never *overflows a sample* cannot
+    /// arm a deadline.
+    HostOverflowDelivers,
+    /// The in-kernel **GICv3 is creatable** (`KVM_CREATE_DEVICE`, `KVM_DEV_TYPE_ARM_VGIC_V3`).
+    /// No payload boots without it; its absence is existential for every stage.
+    Vgicv3Creatable,
+    /// The guest's **ID registers are writable** (`KVM_SET_ONE_REG` on an `ID_AA64*`).
+    /// AA-6(a) installs a synthetic ID-register model, so a kernel that rejects the write
+    /// makes that verification impossible.
+    WritableIdRegisters,
     /// The 0004-analogue determinism capability (`host/patches/`) is advertised —
     /// the positive probe that the patched kernel is actually running.
     DeterministicIntercepts,
@@ -551,8 +581,31 @@ impl Capability {
             Capability::DevKvm => "dev-kvm",
             Capability::PerfBrRetired => "perf-raw-0x21-pinned",
             Capability::GuestDebug => "kvm-cap-set-guest-debug",
+            Capability::Pmceid => "br-retired-pmceid0",
+            Capability::HostOverflowDelivers => "host-overflow-delivers",
+            Capability::Vgicv3Creatable => "vgicv3-creatable",
+            Capability::WritableIdRegisters => "writable-id-registers",
             Capability::DeterministicIntercepts => "kvm-cap-arm-deterministic-intercepts",
         }
+    }
+
+    /// The mandatory AA-0 rows the host-side `arm-spike probe` command must confirm — the
+    /// truth-table rows probed on the host (as opposed to the guest ID-register facts the
+    /// `ident` payload reads). Every one must be `Present` or the probe exits nonzero; a
+    /// row absent or unprobed is a host missing an existential mechanism, not a pass.
+    /// [`Capability::DeterministicIntercepts`] is NOT here — it is the expect-*absent*
+    /// patch marker, reported separately.
+    #[must_use]
+    pub const fn mandatory_aa0() -> &'static [Capability] {
+        &[
+            Capability::DevKvm,
+            Capability::PerfBrRetired,
+            Capability::GuestDebug,
+            Capability::Pmceid,
+            Capability::HostOverflowDelivers,
+            Capability::Vgicv3Creatable,
+            Capability::WritableIdRegisters,
+        ]
     }
 
     /// Whether `docs/ARM-ALTRA.md` §AA-0 expects this capability **present**.
@@ -745,6 +798,108 @@ mod imp {
         Ok(scheduled)
     }
 
+    /// The truth-table `br-retired-pmceid0` row: is raw `BR_RETIRED` (0x21) an
+    /// **implemented** PMU event at all? `perf_event_open` returns `ENOENT`/`EOPNOTSUPP`
+    /// for an event the PMU does not implement; any clean open means it exists (this is
+    /// the weaker "implemented" row — [`probe_br_retired`] then checks it can be
+    /// *scheduled* pinned and non-multiplexed).
+    fn probe_br_retired_implemented() -> Result<bool, SysError> {
+        let mut attr = br_retired_attr(None);
+        attr.flags &= !perf_flags::EXCLUDE_HOST;
+        attr.flags |= perf_flags::EXCLUDE_KERNEL;
+        // SAFETY: `attr` is fully initialized; count this thread (pid 0), any cpu, no group.
+        let fd = unsafe { perf_event_open(&raw const attr, 0, -1, -1, 0) };
+        if fd < 0 {
+            let e = errno();
+            if e == libc::ENOENT || e == libc::EOPNOTSUPP {
+                return Ok(false);
+            }
+            return Err(SysError::Errno {
+                call: "perf_event_open(BR_RETIRED pmceid)",
+                errno: e,
+            });
+        }
+        // SAFETY: `fd` is a valid descriptor this function owns.
+        unsafe { libc::close(fd as i32) };
+        Ok(true)
+    }
+
+    /// The truth-table `host-overflow-delivers` row: arm a small `BR_RETIRED` sample
+    /// period, run a branchy loop well past it, and confirm the kernel **delivered** an
+    /// overflow sample into the ring buffer. A counter that increments but never
+    /// overflows a sample cannot arm a deadline — AA-1's existential row, and not
+    /// something [`probe_br_retired`]'s counting check establishes.
+    fn probe_host_overflow_delivers() -> Result<bool, SysError> {
+        const PERIOD: u64 = 1_000;
+        let mut attr = br_retired_attr(Some(PERIOD));
+        attr.flags &= !perf_flags::EXCLUDE_HOST;
+        attr.flags |= perf_flags::EXCLUDE_KERNEL;
+        // SAFETY: `attr` is fully initialized; count this thread, any cpu, no group.
+        let fd = unsafe { perf_event_open(&raw const attr, 0, -1, -1, 0) };
+        if fd < 0 {
+            let e = errno();
+            if e == libc::ENOENT || e == libc::EOPNOTSUPP {
+                return Ok(false);
+            }
+            return Err(SysError::Errno {
+                call: "perf_event_open(overflow probe)",
+                errno: e,
+            });
+        }
+        let fd = fd as i32;
+
+        // A perf ring buffer: one metadata page + a power-of-two count of data pages.
+        let page = 4096usize;
+        let len = page * (1 + 8);
+        // SAFETY: mmap a MAP_SHARED perf ring over the event fd, as the perf ABI requires.
+        let map = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        if map == libc::MAP_FAILED {
+            let e = err("mmap(perf ring)");
+            // SAFETY: `fd` is valid and owned here.
+            unsafe { libc::close(fd) };
+            return Err(e);
+        }
+
+        const PERF_IOC_ENABLE: libc::c_ulong = 0x2400;
+        const PERF_IOC_RESET: libc::c_ulong = 0x2403;
+        // `data_head` sits at offset 1024 in `struct perf_event_mmap_page` (stable ABI);
+        // it advances when the kernel writes an overflow sample.
+        const DATA_HEAD_OFFSET: usize = 1024;
+        // SAFETY: `fd` is valid and `map` is a live mapping of `len` bytes; the ioctls take
+        // integer args, the loop retires branches past the period, and `data_head` is read
+        // volatilely from its ABI offset within the mapped header page.
+        let delivered = unsafe {
+            libc::ioctl(fd, PERF_IOC_RESET, 0_u64);
+            if libc::ioctl(fd, PERF_IOC_ENABLE, 0_u64) < 0 {
+                let e = err("PERF_EVENT_IOC_ENABLE(overflow probe)");
+                libc::munmap(map, len);
+                libc::close(fd);
+                return Err(e);
+            }
+            let mut acc: u64 = 0;
+            for i in 0..1_000_000u64 {
+                acc = core::hint::black_box(acc.wrapping_add(i));
+            }
+            core::hint::black_box(acc);
+            let data_head =
+                core::ptr::read_volatile((map.cast::<u8>()).add(DATA_HEAD_OFFSET).cast::<u64>());
+            libc::munmap(map, len);
+            libc::close(fd);
+            // A nonzero data_head means the kernel wrote at least one overflow sample.
+            data_head > 0
+        };
+        Ok(delivered)
+    }
+
     /// Open `/dev/kvm`.
     fn open_kvm() -> Result<i32, SysError> {
         let path = c"/dev/kvm";
@@ -816,6 +971,10 @@ mod imp {
             Capability::DevKvm => probe_dev_kvm(),
             Capability::PerfBrRetired => probe_br_retired(),
             Capability::GuestDebug => probe_vm_capability(kvm::CAP_SET_GUEST_DEBUG),
+            Capability::Pmceid => probe_br_retired_implemented(),
+            Capability::HostOverflowDelivers => probe_host_overflow_delivers(),
+            Capability::Vgicv3Creatable => super::machine::probe_vgicv3_creatable(),
+            Capability::WritableIdRegisters => super::machine::probe_writable_id_registers(),
             Capability::DeterministicIntercepts => {
                 probe_vm_capability(kvm::CAP_ARM_DETERMINISTIC_INTERCEPTS)
             }
@@ -1226,6 +1385,27 @@ mod tests {
     }
 
     #[test]
+    fn the_id_register_id_names_id_aa64pfr0_el1() {
+        // The writable-id-registers probe SETs this register; a wrong id would SET a
+        // different register and read the row green. Derive it the way the kernel's
+        // KVM_REG_ARM64_SYSREG macro does, from the architected (op0,op1,crn,crm,op2)
+        // of ID_AA64PFR0_EL1 = (3,0,0,4,0), rather than asserting a literal.
+        const ARM64: u64 = 0x6000_0000_0000_0000;
+        const SIZE_U64: u64 = 0x0030_0000_0000_0000;
+        const SYSREG: u64 = 0x0013 << 16; // KVM_REG_ARM_COPROC_SHIFT == 16
+        let (op0, op1, crn, crm, op2) = (3u64, 0u64, 0u64, 4u64, 0u64);
+        let enc = (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2;
+        assert_eq!(enc, 0xC020);
+        assert_eq!(kvm::REG_ID_AA64PFR0_EL1, ARM64 | SIZE_U64 | SYSREG | enc);
+        assert_eq!(kvm::REG_ID_AA64PFR0_EL1, 0x6030_0000_0013_C020);
+        // It is a U64-sized register, like the core regs the harness already sets.
+        assert_eq!(
+            kvm::REG_ID_AA64PFR0_EL1 & kvm::REG_SIZE_MASK,
+            kvm::REG_ARM64_CORE_U64 & kvm::REG_SIZE_MASK
+        );
+    }
+
+    #[test]
     fn the_vgic_addresses_are_the_ones_the_payload_runtime_programs() {
         // If these drift from `payloads/runtime/src/gic.rs`, the guest's GIC stores
         // become MMIO exits the measurement loop refuses — and no payload boots.
@@ -1236,11 +1416,27 @@ mod tests {
 
     #[test]
     fn only_the_patch_row_is_expected_absent() {
-        // AA-0's expect column: three rows must be present on any usable box; the
-        // determinism cap appears only once the patched kernel boots (AA-3).
+        // AA-0's expect column: every mandatory row must be present on any usable box;
+        // the determinism cap appears only once the patched kernel boots (AA-3), so it
+        // is the one row expected absent — and it is NOT in the mandatory set.
+        for cap in Capability::mandatory_aa0() {
+            assert!(
+                cap.expect_present(),
+                "{} is mandatory, so it must be expect-present",
+                cap.name()
+            );
+            assert!(
+                !matches!(cap, Capability::DeterministicIntercepts),
+                "the expect-absent patch marker must not be in the mandatory set"
+            );
+        }
+        // The seven host-probeable mandatory rows, exactly.
+        assert_eq!(Capability::mandatory_aa0().len(), 7);
         assert!(Capability::DevKvm.expect_present());
-        assert!(Capability::PerfBrRetired.expect_present());
-        assert!(Capability::GuestDebug.expect_present());
+        assert!(Capability::Pmceid.expect_present());
+        assert!(Capability::HostOverflowDelivers.expect_present());
+        assert!(Capability::Vgicv3Creatable.expect_present());
+        assert!(Capability::WritableIdRegisters.expect_present());
         assert!(!Capability::DeterministicIntercepts.expect_present());
     }
 
@@ -1252,6 +1448,10 @@ mod tests {
             Capability::DevKvm,
             Capability::PerfBrRetired,
             Capability::GuestDebug,
+            Capability::Pmceid,
+            Capability::HostOverflowDelivers,
+            Capability::Vgicv3Creatable,
+            Capability::WritableIdRegisters,
             Capability::DeterministicIntercepts,
         ] {
             assert!(matches!(probe(cap), Err(SysError::Unsupported)));

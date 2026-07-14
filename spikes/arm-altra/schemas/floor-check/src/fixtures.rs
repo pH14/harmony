@@ -394,8 +394,9 @@ fn aa6_reps_of(payload: Payload, first_id: u64) -> Vec<RunRecord> {
 /// payload repeated N times would satisfy the per-input rep floor yet fail the matrix
 /// check; a real AA-6 gate covers the whole matrix, and this is that in miniature.
 fn accept_aa6_gate() -> Fixture {
+    // The full matrix: every windowed payload PLUS the AA-5 Linux guest.
     let mut records = Vec::new();
-    for &p in &WINDOWED {
+    for &p in WINDOWED.iter().chain(std::iter::once(&Payload::LinuxGuest)) {
         let first = records.len() as u64;
         records.extend(aa6_reps_of(p, first));
     }
@@ -408,7 +409,17 @@ fn accept_aa6_gate() -> Fixture {
 /// twice. A total-count floor passed this; the per-input floor does not — AA-6 needs
 /// N reps of the SAME input, not N distinct inputs once each.
 fn reject_aa6_rep_floor() -> Fixture {
-    let records = base_records(ExitReason::Preempt);
+    // The eight windowed payloads (one rep each) PLUS a Linux-guest record, so the AA-6
+    // MATRIX is complete and the sole remaining failure is the per-input rep floor — the
+    // evasion this fixture isolates (many distinct inputs, none repeated).
+    let mut records = base_records(ExitReason::Preempt);
+    let mut lg = generate_record(
+        records.len() as u64,
+        Payload::LinuxGuest,
+        ExitReason::Preempt,
+    );
+    lg.condition = "pinned-solo".to_string();
+    records.push(lg);
     let run_set = build_run_set(Stage::Aa6, patched_mechanism(), &records);
     fixture("reject-aa6-rep-floor", &run_set, &records)
 }

@@ -159,6 +159,14 @@ pub enum RunError {
     /// params mode is exactly how a smoke-scale run masquerades as a 1e8 one.
     #[error("the guest never attested its params mode (no `PARAMS mode=` line)")]
     NoParamsMode,
+    /// A payload whose count includes an in-band runtime term (`STXR`/seqlock retries)
+    /// never printed its `retries=` line. The reported count is unaccountable — a
+    /// defaulted 0 would let the record claim a term it never made.
+    #[error(
+        "payload {0:?} has a reported retry term but never printed a `retries=` line: the \
+         count is unaccountable, and a defaulted 0 would be a fabricated report"
+    )]
+    MissingReportedTerm(Payload),
     /// The guest never reached `PAYLOAD EXIT`.
     #[error("the guest never reached its exit sentinel")]
     NoExitSentinel,
@@ -344,7 +352,10 @@ pub fn run_sample(
     let mut work_end: Option<u64> = None;
     let mut params_mode: Option<String> = None;
     let mut clockpage_mode: Option<String> = None;
-    let mut reported_taken: u64 = 0;
+    // `None` until the guest prints its `retries=` term. A payload with a reported term
+    // that never supplied one is refused below — a defaulted 0 would let the record claim
+    // an in-band count that was never observed.
+    let mut reported: Option<u64> = None;
     let mut status: Option<u8> = None;
 
     // Overflow bookkeeping, per record (§Evidence integrity #6).
@@ -422,12 +433,7 @@ pub fn run_sample(
                         work_end = Some(counter.read()?);
                     }
                     Some(Event::Line(line)) => {
-                        absorb_line(
-                            &line,
-                            &mut params_mode,
-                            &mut clockpage_mode,
-                            &mut reported_taken,
-                        );
+                        absorb_line(&line, &mut params_mode, &mut clockpage_mode, &mut reported);
                     }
                     Some(Event::Exit(code)) => {
                         status = Some(code);
@@ -510,6 +516,17 @@ pub fn run_sample(
     }
     let params_mode = params_mode.ok_or(RunError::NoParamsMode)?;
 
+    // A payload whose count includes an in-band runtime term (`STXR`/seqlock retries)
+    // MUST have printed it. If it did not, the count is unaccountable — defaulting to 0
+    // would let the record match the oracle while claiming a reported term it never made,
+    // and pass the floor checker on a fabricated zero. A payload with no reported term
+    // that printed no retries legitimately reports 0.
+    let reported_taken = if spec.payload.has_reported_term() {
+        reported.ok_or(RunError::MissingReportedTerm(spec.payload))?
+    } else {
+        reported.unwrap_or(0)
+    };
+
     // The landed state, digested at the sentinel — the thing AA-3's replay identity
     // and AA-6's rep floor actually compare. Read from the seam, never synthesised.
     let state_digest = vcpu.state_digest()?;
@@ -568,7 +585,7 @@ fn absorb_line(
     line: &str,
     params_mode: &mut Option<String>,
     clockpage_mode: &mut Option<String>,
-    reported_taken: &mut u64,
+    reported: &mut Option<u64>,
 ) {
     if let Some(rest) = line.strip_prefix("PARAMS ") {
         if let Some(mode) = field(rest, "mode") {
@@ -579,12 +596,12 @@ fn absorb_line(
             *clockpage_mode = Some(mode.to_string());
         }
         if let Some(n) = field(rest, "retries").and_then(|v| v.parse::<u64>().ok()) {
-            *reported_taken = n;
+            *reported = Some(n);
         }
     } else if let Some(rest) = line.strip_prefix("LLSC ")
         && let Some(n) = field(rest, "retries").and_then(|v| v.parse::<u64>().ok())
     {
-        *reported_taken = n;
+        *reported = Some(n);
     }
 }
 
@@ -961,6 +978,41 @@ mod tests {
         let mut counter = ScriptedCounter::new(&[10, 20]);
         let record = run_sample(&mut vcpu, &mut counter, &spec(None)).expect("measured");
         assert_eq!(record.reported_taken, 17);
+    }
+
+    #[test]
+    fn a_reported_term_payload_that_never_printed_retries_is_refused() {
+        // llsc-atomics' count includes an in-band `STXR` retry term. If the guest omits
+        // the `retries=` line while the true count is 0, a defaulted 0 would let the
+        // record match the oracle and pass — claiming a report it never made. The sample
+        // is refused instead.
+        let mut llsc = spec(None);
+        llsc.payload = Payload::LlscAtomics;
+
+        // No retries= line at all → refused.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.push(MARK_BEGIN);
+        bytes.push(MARK_END);
+        bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");
+        let mut vcpu = ScriptedVcpu::printing(&bytes, &[]);
+        let mut counter = ScriptedCounter::new(&[10, 20]);
+        assert!(matches!(
+            run_sample(&mut vcpu, &mut counter, &llsc),
+            Err(RunError::MissingReportedTerm(Payload::LlscAtomics))
+        ));
+
+        // With the line — even `retries=0` — it is accepted: 0 REPORTED is not 0 DEFAULTED.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"PARAMS mode=managed scale=smoke seed=0x1\n");
+        bytes.push(MARK_BEGIN);
+        bytes.push(MARK_END);
+        bytes.extend_from_slice(b"LLSC retries=0 final=1000\n");
+        bytes.extend_from_slice(b"PAYLOAD EXIT 0\n");
+        let mut vcpu = ScriptedVcpu::printing(&bytes, &[]);
+        let mut counter = ScriptedCounter::new(&[10, 20]);
+        let record = run_sample(&mut vcpu, &mut counter, &llsc).expect("measured");
+        assert_eq!(record.reported_taken, 0);
     }
 
     #[test]

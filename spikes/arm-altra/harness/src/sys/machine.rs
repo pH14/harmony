@@ -1333,3 +1333,166 @@ fn open_kvm() -> Result<i32, SysError> {
     }
     Ok(fd)
 }
+
+/// AA-0 `vgicv3-creatable`: can an in-kernel GICv3 be created on this host?
+///
+/// A fresh VM and `KVM_CREATE_DEVICE(KVM_DEV_TYPE_ARM_VGIC_V3)` is the direct truth of
+/// the row — the very device [`Machine::create_vgic`] needs, without which no payload
+/// boots (its GIC stores become MMIO exits the measurement loop refuses). A kernel or
+/// CPU without GICv3 support fails the creation with `ENODEV`/`EINVAL`/`EOPNOTSUPP` (a
+/// clean "no"); any other errno is a failure to *probe*, not a "no", and must not be
+/// flattened into one.
+///
+/// **Untested on silicon.**
+///
+/// # Errors
+/// [`SysError`] if the probe could not be issued.
+pub fn probe_vgicv3_creatable() -> Result<bool, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: `kvm_fd` is a valid /dev/kvm descriptor; KVM_CREATE_VM takes a machine
+    // type (0 = default) and returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+    let mut dev = KvmCreateDevice {
+        type_: kvm::DEV_TYPE_ARM_VGIC_V3,
+        fd: 0,
+        flags: 0,
+    };
+    // SAFETY: `vm_fd` is valid; KVM_CREATE_DEVICE fills `dev.fd` on success.
+    let rc = unsafe { libc::ioctl(vm_fd, kvm::CREATE_DEVICE as libc::c_ulong, &raw mut dev) };
+    let out = if rc < 0 {
+        let e = errno();
+        if e == libc::ENODEV || e == libc::EINVAL || e == libc::EOPNOTSUPP {
+            Ok(false)
+        } else {
+            Err(err("ioctl(KVM_CREATE_DEVICE, vGICv3)"))
+        }
+    } else {
+        // SAFETY: the device fd the kernel returned is valid and owned here.
+        unsafe { libc::close(dev.fd as i32) };
+        Ok(true)
+    };
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+/// AA-0 `writable-id-registers`: will the kernel accept a write to a guest ID register?
+///
+/// The determinism model needs the guest's feature ID registers pinned to a controlled
+/// value (AA-6(a) installs a synthetic ID-register model); a kernel that treats them as
+/// strictly read-only cannot do that. The probe creates a VM + vCPU, `KVM_ARM_VCPU_INIT`s
+/// it, reads `ID_AA64PFR0_EL1` with `KVM_GET_ONE_REG`, then writes the **same** value
+/// back with `KVM_SET_ONE_REG`: a writable-ID kernel accepts the identity write, a
+/// read-only one fails it with `EINVAL`. Writing back the value just read cannot change
+/// any guest-visible feature, so the probe tests *writability* only — it does not smuggle
+/// in a feature change.
+///
+/// **Untested on silicon.**
+///
+/// # Errors
+/// [`SysError`] if the probe could not be issued.
+pub fn probe_writable_id_registers() -> Result<bool, SysError> {
+    let kvm_fd = open_kvm()?;
+    // SAFETY: valid /dev/kvm fd; KVM_CREATE_VM returns a VM fd.
+    let vm_fd = unsafe { libc::ioctl(kvm_fd, kvm::CREATE_VM as libc::c_ulong, 0_u64) };
+    if vm_fd < 0 {
+        let e = err("ioctl(KVM_CREATE_VM)");
+        // SAFETY: `kvm_fd` is valid and owned here.
+        unsafe { libc::close(kvm_fd) };
+        return Err(e);
+    }
+
+    // Run the fd-owning body, then close the VM and /dev/kvm fds on every path.
+    let out = probe_writable_id_registers_on_vm(vm_fd);
+    // SAFETY: both descriptors are valid and owned here.
+    unsafe {
+        libc::close(vm_fd);
+        libc::close(kvm_fd);
+    }
+    out
+}
+
+/// The vCPU-owning body of [`probe_writable_id_registers`], split out so the vCPU fd is
+/// closed on every exit path while the caller owns the VM/`/dev/kvm` fds.
+fn probe_writable_id_registers_on_vm(vm_fd: libc::c_int) -> Result<bool, SysError> {
+    // SAFETY: `vm_fd` is valid; KVM_CREATE_VCPU takes a vcpu index and returns a fd.
+    let vcpu_fd = unsafe { libc::ioctl(vm_fd, kvm::CREATE_VCPU as libc::c_ulong, 0_u64) };
+    if vcpu_fd < 0 {
+        return Err(err("ioctl(KVM_CREATE_VCPU)"));
+    }
+    let out = probe_writable_id_registers_on_vcpu(vm_fd, vcpu_fd);
+    // SAFETY: `vcpu_fd` is valid and owned here.
+    unsafe { libc::close(vcpu_fd) };
+    out
+}
+
+fn probe_writable_id_registers_on_vcpu(
+    vm_fd: libc::c_int,
+    vcpu_fd: libc::c_int,
+) -> Result<bool, SysError> {
+    // arm64 requires the vCPU be initialised against the host's preferred target before
+    // any register can be read or written.
+    let mut init = KvmVcpuInit::default();
+    // SAFETY: `vm_fd` is valid; KVM_ARM_PREFERRED_TARGET fills `init`.
+    if unsafe {
+        libc::ioctl(
+            vm_fd,
+            kvm::ARM_PREFERRED_TARGET as libc::c_ulong,
+            &raw mut init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_PREFERRED_TARGET)"));
+    }
+    // SAFETY: `vcpu_fd` is valid; `init` is fully initialised by the call above.
+    if unsafe {
+        libc::ioctl(
+            vcpu_fd,
+            kvm::ARM_VCPU_INIT as libc::c_ulong,
+            &raw const init,
+        )
+    } < 0
+    {
+        return Err(err("ioctl(KVM_ARM_VCPU_INIT)"));
+    }
+
+    // Read the current ID_AA64PFR0_EL1.
+    let mut value: u64 = 0;
+    let get = KvmOneReg {
+        id: kvm::REG_ID_AA64PFR0_EL1,
+        addr: (&raw mut value) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `get.addr` points at a live u64 the kernel writes.
+    if unsafe { libc::ioctl(vcpu_fd, kvm::GET_ONE_REG as libc::c_ulong, &raw const get) } < 0 {
+        return Err(err("ioctl(KVM_GET_ONE_REG, ID_AA64PFR0_EL1)"));
+    }
+
+    // Write the same value back: the row is "yes" iff the SET is accepted.
+    let set = KvmOneReg {
+        id: kvm::REG_ID_AA64PFR0_EL1,
+        addr: (&raw const value) as u64,
+    };
+    // SAFETY: `vcpu_fd` is valid; `set.addr` points at a live u64 the kernel reads.
+    let rc = unsafe { libc::ioctl(vcpu_fd, kvm::SET_ONE_REG as libc::c_ulong, &raw const set) };
+    if rc < 0 {
+        let e = errno();
+        // A read-only ID register is rejected with EINVAL (or EPERM/ENOENT on some
+        // kernels): a clean "no". Any other errno is a failure to probe.
+        if e == libc::EINVAL || e == libc::EPERM || e == libc::ENOENT {
+            Ok(false)
+        } else {
+            Err(err("ioctl(KVM_SET_ONE_REG, ID_AA64PFR0_EL1)"))
+        }
+    } else {
+        Ok(true)
+    }
+}

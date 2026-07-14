@@ -310,18 +310,24 @@ fn probe() -> Result<(), String> {
     let mut unprobed: Vec<&str> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
 
-    for cap in [
-        Capability::DevKvm,
-        Capability::PerfBrRetired,
-        Capability::GuestDebug,
-        Capability::DeterministicIntercepts,
-    ] {
-        match report(cap) {
+    // Every mandatory host-side row (`Capability::mandatory_aa0`): `/dev/kvm`, raw 0x21
+    // pinned, guest-debug, BR_RETIRED implemented, host-overflow-delivers,
+    // vGICv3-creatable, writable-ID-registers. A row absent OR unprobed is disqualifying —
+    // dispatch may not proceed on a host missing an existential mechanism, nor on one we
+    // could not ask.
+    for cap in Capability::mandatory_aa0() {
+        match report(*cap) {
             Row::Present => {}
             Row::Absent if cap.expect_present() => missing.push(cap.name()),
             Row::Absent => {}
             Row::Unprobed => unprobed.push(cap.name()),
         }
+    }
+    // The patch marker is reported separately: it is expect-*absent* on a stock kernel, so
+    // its absence is a finding (not a failure) and its presence attests the patched kernel.
+    // Only an *unprobed* result here is disqualifying.
+    if let Row::Unprobed = report(Capability::DeterministicIntercepts) {
+        unprobed.push(Capability::DeterministicIntercepts.name());
     }
 
     let mut problems = Vec::new();
