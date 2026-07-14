@@ -1,22 +1,23 @@
 # x86 nested-virtualization backend — feasibility spike
 
-> **⚠ DISPOSITIONS UNDER RE-CERTIFICATION (2026-07-12).** The PR #98
-> evidence-integrity review (foreman round 1 + blind GPT-5.6 Sol pass) found the
-> recorded ALL-GO dispositions **not supported by the retained evidence as
-> written**: the N-2 hammer ran the *stock* backend (`KvmBackend::new()`, not
-> `PatchedKvmBackend` — patches 0004/0005 were not the mechanism hammered), the
-> appliance harness could report green on failed gates, the N-3 rep floors were
-> not met for several conditions, and the tested appliance image has no committed
-> build manifest. Paul ratified a re-certification program 2026-07-12 (beads
-> hm-b5b → hm-dbh ∥ hm-jpu → hm-60k): harness-integrity fixes, then N-2 re-run on
-> the patched mechanism with per-record overflow accounting and an independent
-> guest work oracle, then N-3 at its stated floors. **Until that completes, every
-> stage disposition recorded below is historical and carries no certification
-> weight**; what stands is the *mechanism demonstration* (the appliance boots
-> nested, the determinism ABI round-trips, retained conditions show bit-identical
-> hashes). The runset-validity audit is
-> `spikes/nested-x86/results/AUDIT-2026-07-12.md`. Re-certified dispositions will
-> be re-recorded from new evidence only.
+> **✅ RE-CERTIFIED (2026-07-14).** The PR #98 evidence-integrity review
+> (2026-07-12) voided the original ALL-GO record (stock backend in the N-2
+> hammer, green-on-fail harness, unmet N-3 floors, unpinned appliance
+> provenance — see `spikes/nested-x86/results/AUDIT-2026-07-12.md`). Paul
+> ratified a re-certification program (beads hm-b5b → hm-dbh ∥ hm-jpu →
+> hm-60k); it completed 2026-07-14 with the fixed instruments: gate-RC-checked
+> green, pre-boot pin verification, per-runset build manifests,
+> `PatchedKvmBackend` enforced in the hammer, an independent guest-memory work
+> oracle, per-record PMI accounting, confirmed-only pause counting at a
+> recorded cadence, and a split-console-aware migration verdict. **Every floor
+> and threshold is machine-checked against the retained evidence** by
+> `spikes/nested-x86/harness/check-recert-floors.sh` (ALL PASS). The N-2 and
+> N-3 dispositions below are **re-recorded from the new evidence only**
+> (`*-recert-*` runsets); the audited-invalid historical runsets remain marked
+> in the audit note and carry no weight. N-0/N-1/N-5 stand on their
+> audited-VALID original runsets (unchanged mechanism, re-exercised by every
+> recert boot); N-4's characterization stands with one figure corrected from
+> new data (see its note).
 
 Status: **research spike (2026-07-09).** This document is a de-risking program, not a claim
 that the backend is feasible. It is the x86 sibling of `docs/APPLE-SILICON.md`: the same
@@ -341,6 +342,29 @@ supported mechanism actually enforces that condition and is itself probeable at 
 > **10,000/10,000 exact** with `final_work` bit-equal to the same-config bare-metal run
 > (175286435), and the repeat gate reproduced the reference hash 100/100
 > (`results/n3/post-reboot-001/`).
+>
+> **Disposition VOIDED (2026-07-12) and RE-CERTIFIED: GO (2026-07-14).** The
+> review found the original evidence ran the *stock* backend (see the header
+> banner and the audit note); it was reclassified characterization-only. The
+> re-run (bead hm-dbh, `results/n2/*-recert-001`) used the fixed instruments —
+> `PatchedKvmBackend` enforced (every runset's start line records the backend;
+> the constructor fails loudly without patches 0004/0005), an **independent
+> guest-memory work oracle** (the spin loop increments a guest-RAM dword per
+> counted branch; every landing must satisfy `counter == target mod 2^32`), and
+> **per-record PMI accounting** (perf-ring records parsed and counted:
+> `PmuOverflowStats`). Result: **1,062,000 armed deadlines cumulative →
+> 1,062,000 exact landings, oracle-agreed on every landing, 0 LOST records,
+> 0 THROTTLE records, 0 record-count violations** across the matrix — idle
+> 400k · other-core stress 200k · same-core stress 150k · memory pressure
+> 100k · same-core timer storm 100k · vCPU migration 100k (2,323 forced
+> cross-pCPU migrations) · 10k idle control · 2k smoke; distinct high-spaced
+> seeds (the historical `seed|1` collapse avoided). The production
+> `skid_margin = 256` held on every landing (an over-margin skid surfaces as a
+> loud `SkidExceeded`). Cross-substrate exactness on the patched mechanism:
+> nested `final_work` **bit-equal to bare metal** at both shared seeds
+> (34146909 at the smoke seed; 175379628 at the 10k control seed), with
+> identical per-run record counts (1101 and 5504 SAMPLE records respectively).
+> All thresholds machine-checked by `check-recert-floors.sh`.
 
 ### N-3 — full-stack determinism gates nested + adversarial L0 + the portability gate
 
@@ -396,6 +420,32 @@ the standard corpus. Every sample accounted for.
 > metal; plus the 6/6 corpus digest equality (N-2). Postgres-workload reps beyond N-1's
 > gates were not mass-repeated (owner ruling); the corpus-item form carried the ≥1000-rep
 > load.
+>
+> **Disposition VOIDED in part (2026-07-12) and RE-CERTIFIED: GO (2026-07-14).**
+> The review found the floors unmet for several conditions and the same-core
+> condition without any valid runset (see the audit note). The re-run (bead
+> hm-jpu, `results/n3/*-recert-*`) met **every binding floor** on the
+> RC-checked, pin-verified harness, and every repetition of every condition
+> reproduced ONE reference pair — `state_hash 6163f1109b5677de…` /
+> `observable_digest 0fe06bf4…`, identical to the historical reference:
+> **(1) solo** 1000/1000; **(2) co-tenant stress** other-core 1000/1000 +
+> same-core 1000/1000 (6.9 h under shared-vCPU-core stress — the condition
+> previously without valid evidence); **(3) vCPU migration** 1000/1000 under
+> **23,218** forced cross-pCPU thread migrations; **(4) pause/resume** SIGSTOP
+> 1000/1000 + QMP 1000/1000, co-run on disjoint pinned cores (task-69 M2
+> co-tenancy principle), each with 417 **confirmed** pauses / 0 failed at the
+> **recorded** 2 s-per-30 s cadence (the historical wedge cadence stays a named
+> hazard; the committed default is the accepted cadence). **(5) live-migration
+> rehearsal**: migration `completed` and the gate finished green **on the
+> destination** 250/250 bit-identical — determinism held outright, exceeding
+> the fail-closed bar (runset `-recert-002`; `-recert-001` is a green guest run
+> retained as the split-console verdict-bug record). **(6) portability gate**:
+> metal reference re-collected with the now-committed
+> `run-metal-reference-recert.sh` at floor strength — metal repeat 1000/1000 at
+> the same reference hash, plus the N-2 cross-substrate `final_work` equalities.
+> Every floor machine-checked by `check-recert-floors.sh` (ALL PASS). L0
+> swap/restore for the metal session was Paul-authorized, recorded, and
+> restore-verified (`RESTORE_VERIFIED_IDENTICAL` against the window manifest).
 
 ### N-4 — performance envelope + exit-budget memo
 
@@ -427,6 +477,14 @@ input only, no implementation in this spike.
 > **Named gaps (not run, out of prioritization ruling):** task-95 snapshot/dirty-log benches
 > nested; a standalone RDTSC-exit-rate-per-virtual-second measurement; boot-to-userspace
 > ratio (nested L1 boot ≈ 7 s to init, no metal-equivalent single number captured).
+>
+> **Re-certification correction (2026-07-14):** the original "~5.4× per armed
+> deadline" figure compared stock-vs-stock hammers (audit note). On the
+> **patched** mechanism the re-run gives: metal 10k deadlines in 25 s vs the
+> nested 10k control runset in 117 s including ~15–20 s of L1 boot — an
+> exact-landing tax of **≈4× (≤4.7× upper bound)** per armed deadline nested.
+> The workload-level ratios (1.01–1.08×) are unaffected (they compare full gate
+> suites, not the hammer hot path).
 
 ### N-5 — appliance packaging rehearsal (only after N-3 GO)
 

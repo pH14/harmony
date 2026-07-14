@@ -3,24 +3,21 @@
 Program: `../../docs/NESTED-X86.md` (binding — dispositions live there).
 Evidence formats: `schemas/README.md`. Box side lives under `/root/nested-x86-spike/`.
 
-## Dispositions (running)
+## Dispositions
 
-> **⚠ UNDER RE-CERTIFICATION (2026-07-12)** — the PR #98 evidence-integrity
-> review invalidated the ALL-GO record as written (stock backend in the N-2
-> hammer, green-on-fail harness, unmet N-3 floors, unpinned appliance
-> provenance). See the header of `docs/NESTED-X86.md` and
-> `results/AUDIT-2026-07-12.md`. The table below is the HISTORICAL record and
-> carries no certification weight until the re-run (beads hm-dbh / hm-jpu)
-> re-records it from new evidence.
+> **✅ RE-CERTIFIED 2026-07-14** (program: beads hm-b5b/hm-dbh/hm-jpu; audit:
+> `results/AUDIT-2026-07-12.md`). N-2/N-3 re-recorded from `*-recert-*`
+> evidence on the fixed instruments; floors machine-checked by
+> `harness/check-recert-floors.sh` (ALL PASS).
 
-| Stage | Historical disposition | Evidence |
+| Stage | Disposition | Evidence |
 |---|---|---|
-| N-0 capability truth table | GO (2026-07-10) | `results/n0/` runsets 001–005 (reboot identity closed) |
-| N-1 appliance runs nested | GO (2026-07-10) | `results/n1/` runset-002 |
-| N-2 existential trio | GO (2026-07-10) — **invalidated: stock backend** | `results/n2/` — see audit |
-| N-3 full-stack + adversarial L0 | GO (2026-07-10) — **floors unmet** | `results/n3/` — see audit |
-| N-4 perf envelope | GO (2026-07-10) | workloads 1.01–1.08×; exact-landing ~5.4×/deadline |
-| N-5 packaging rehearsal | GO (2026-07-10) | `results/n5/` — one-command fresh-tree demo PASS |
+| N-0 capability truth table | **GO** (2026-07-10, audited VALID) | `results/n0/` runsets 002–005 |
+| N-1 appliance runs nested | **GO** (2026-07-10, audited VALID) | `results/n1/` runset-002 |
+| N-2 existential trio | **GO re-certified** (2026-07-14) | `results/n2/*-recert-001` — 1,062,000/1,062,000 exact on PatchedKvmBackend, oracle-agreed, records clean |
+| N-3 full-stack + adversarial L0 | **GO re-certified** (2026-07-14) | `results/n3/*-recert-*` — six conditions ≥1000/1000, one hash; live-migration held on destination; metal 1000/1000 |
+| N-4 perf envelope | **GO** (figure corrected) | workloads 1.01–1.08×; exact-landing ≈4×/deadline on the patched mechanism |
+| N-5 packaging rehearsal | **GO** (2026-07-10, audited VALID) | `results/n5/` — one-command fresh-tree demo PASS |
 
 ## Commands (box)
 
