@@ -32,7 +32,7 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (2 active workers; 1 PR in foreman review)
+## In flight (2 active workers; 2 PRs in foreman review)
 
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
   AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
@@ -48,12 +48,13 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
   (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
   n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
-- **Paravirt work-derived clock, x86** (tasks/110, `hm-rk5`) — **SPAWNED 2026-07-14 midday**
-  (Fable 5, branch task/paravirt-clock-x86) off the freshly-merged Arch seam. Implementation
-  spec committed to main (a1ee416) binding docs/PARAVIRT-CLOCK.md: rename ride-along,
-  page stamping + 4-point refresh discipline, registration transport, seal canonical
-  re-stamp, guest clocksource, rdtsc opcode-scan gate, G1/G2/G3 + N-4 perf. Portable-first;
-  box only in a foreman-granted window (nested-x86 re-cert has priority).
+- **Paravirt work-derived clock, x86** (tasks/110, `hm-rk5`) — **portable side DONE,
+  PR #110 OPEN** (2026-07-14 ~14:05, 7 commits): vtime::pvclock ABI-v1 page + stamping,
+  hypercall Pvclock service, vmm-core refresh channel (anchor-derived + Δ forced-refresh +
+  seal canonical re-stamp + snapshot carry), guest CONFIG_HARMONY_PVCLOCK clocksource,
+  counter-opcode reachability gate, G0/G1/G2/G3 + perf harnesses. One flagged ruling for
+  review: skid-free-anchor stamping vs the doc's literal live work() read (ABI freezes
+  through this review). Box gates await a granted window. Foreman substantive review next.
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round 5 in flight** (PR #108).
   Rounds 1–4 each fixed-and-verified (r1's 8 evidence-integrity threads, r2's KVM machine
   layer, r3's semantic edges, r4's 8 fail-closed/accounting items incl. live-clock-filtered
