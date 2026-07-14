@@ -70,6 +70,42 @@ timer/arrival deadline was actually due), and the reference
 `PvclockRegistrar` enforces the one-shot exactly like production
 (`BadRequest` on any second register, ordered before the range check).
 
+**Review round 4 folded in** (cross-model r4: 3 P1 + 1 P2). (a) **Seal-time
+seqlock ABA** — a seal no longer canonicalizes the **live** page; the page is
+sealed **verbatim**. See "The seal ruling" below: this is a deliberate
+divergence from both `docs/PARAVIRT-CLOCK.md` §1.1 *and* the reviewer's
+suggested fix (canonicalize the snapshot copy), with the doc amended in this
+PR and the reasoning recorded — flagged for the foreman's and Paul's veto.
+`save_vm_state` is **`&self` again** (it mutates nothing), which *removes* the
+public-API change this PR previously carried. (b) **Device blob v3/v4** — the
+version is now the offer flag: a VM that never called `enable_pvclock` encodes
+the **v3 shape byte-for-byte** (no trailing record), so page-off blobs and the
+`VMST` hashes over them are identical to main's and main's v3 blobs still
+decode; only offered compositions encode v4. The task's "page off =
+byte-identical" clause is now true at the wire, not merely in intent, and a
+wire-level test pins it. (c) **G3 tick-refresh vacuity** — the 100 Hz guest tick
+already forces a `Deadline` (hence a refresh) every ~10 ms, which is *also* the
+default Δ, so `max_gap ≤ Δ` would have passed with the forced refresh deleted.
+G3 now runs at **Δ = tick/10** (a bound the tick cannot meet) **and** asserts the
+new `Vmm::pvclock_forced_landings()` — `Deadline` landings at which neither the
+timer nor an arrival was due — **dominate** the window. Deleting
+`pvclock_refresh_deadline` now fails G3 twice; a portable test proves a
+timer-caused landing is **not** counted (otherwise the attribution would be as
+vacuous as the bound). (d) **bzImage boot-artifact scan gap (P2)** — bzImage is
+three executable artifacts (real-mode `setup`, `decompressor`, kernel) and all
+three run; only `vmlinux` was scanned. All three are scanned now, with
+**artifact-qualified** allowlist entries (`artifact:function count`) so the same
+symbol in two artifacts cannot spend the other's budget (self-tested with a
+cross-artifact-alias fixture). **Result: `setup` and `decompressor` contain zero
+counter reads** — confirmed by symbol-attributed disassembly (4,846 and 5,988
+instructions actually scanned, not an empty-file zero) and, because the
+real-mode setup's 16-bit stream could decode differently under objdump, by a raw
+byte search of both executable images for `0F 31` / `0F 01 F9` (zero of each).
+Baseline re-captured from the same linux/amd64 container build; the armed scan
+was verified green **and** verified to fail on a planted unlisted site and on a
+stale `decompressor:` entry (proving the new artifacts are really in the
+comparison, not silently skipped).
+
 **ABI coordination (ruled on PR #108 r9, folded into r3):** ABI-v1 `flags`
 bit 1 = `WORK_DERIVED` — set by every real stamp (`vtime::pvclock` publishes
 `MATERIALIZED | WORK_DERIVED`; canonical re-stamps included; remaining bits
@@ -114,14 +150,17 @@ valid.
    default-deny it; the guest half degrades cleanly on any non-Ok status.
    GPA validation: page-aligned, wholly inside RAM, not a doorbell frame page;
    accepted only on the determinism-complete path (else `UnknownService`).
-4. **Canonical seal re-stamp** — inside `Vmm::save_vm_state` (now `&mut self`),
-   after **all** rejection paths (quiescence guards, the fallible vCPU read,
-   the sealability check — reject-before-mutation, the r1 P2 fix): every seal
-   path shares that chokepoint, so sealed RAM images always carry the
-   canonical page (seq 0, exact seal work count, zeroed tail). No new vm-state
-   section, no `VM_STATE_VERSION` bump. The full channel configuration
-   (offer + Δ + registration) rides the sealed vm_state's **device blob (v4,
-   r3)** — validated symmetrically in the restore's validate phase
+4. **Seal capture — VERBATIM, not canonical (r4; see "The seal ruling")**. The
+   deliverable as specced was a canonical seal re-stamp; it is **not
+   implementable safely** (the live-page ABA) and its copy-only variant breaks
+   the snapshot engine's image == live-RAM contract, so the page is sealed
+   exactly as the guest sees it and history-freedom comes from value-keyed
+   stamping instead. `save_vm_state` therefore mutates nothing and is `&self`
+   (main's signature — this PR no longer changes it). No new vm-state section,
+   no `VM_STATE_VERSION` bump. The full channel configuration
+   (offer + Δ + registration) rides the sealed vm_state's **device blob (v4 when
+   offered, v3 byte-identical to main when not — r4)** — validated symmetrically
+   in the restore's validate phase
    (offer/Δ/GPA/deterministic-backend mismatches all fail loud, before any
    mutation) and committed with the restore, so the direct
    `save_vm_state`/`restore_snapshot` path preserves same-state ⇒ same-future
@@ -169,6 +208,57 @@ valid.
    `consonance/vmm-core/tests/live_pvclock.rs` (runnable-from-the-repo;
    Environment section in the file header).
 
+## The seal ruling (r4 — diverges from the doc AND from the reviewer's fix; flagged for veto)
+
+`docs/PARAVIRT-CLOCK.md` §1.1 ruled that **at every seal the page is re-stamped
+to canonical form** (`seq = 0`, zeroed tail), and justified it as safe because
+"the guest only reads the page while running, never at the seal boundary (a seal
+is taken at an HLT quiescent Moment)". **That premise has been false since task
+41**: a seal is taken at *any* V-time-synchronized intercept, so a guest reader
+**can** be mid-seqlock-read across one. Resetting a live `seq` to a fixed epoch
+is then an **ABA** — a reader that sampled `seq = 0`, took an exit before its
+validating re-read, and resumed after a refresh-then-canonicalize sees `seq = 0`
+again, accepts the values it loaded *before* the refresh, and misses it.
+**Taking a snapshot would change the guest's future.** The doc's ruling, read
+literally, is unimplementable; §1.1 is amended in this PR with the reasoning.
+
+The reviewer's suggested fix — **canonicalize the snapshot copy** — is
+*also* rejected, for a reason the review could not see from the diff alone:
+
+- `ControlSession::seal_into_store` captures **live** `vmm.guest_memory()`, and
+  `snapshot_derive(parent, live_ram, dirty_gfns)` diffs live RAM against the
+  **parent image**. `control.rs`'s
+  `seal_derives_from_tracked_parent_and_reproduces_the_image` asserts, in as many
+  words, that the sealed image **reproduces live guest memory**.
+- A copy-only canonicalization breaks exactly that: the image would carry
+  `seq = 0` while live RAM carried `seq = K`. A parent that seals and **keeps
+  running** (the branching model — seal a Moment, spawn children, continue) would
+  then diverge, by exactly its `seq`, from a child restored from its own
+  snapshot — forever. That is a `same-state ⇒ same-future` break, and it would
+  land in `state_hash` (the page is hashed guest RAM).
+
+So the page is **sealed verbatim** — no seal touches guest RAM at all. What
+replaces canonicalization is the **value-keyed stamping already ruled at r1**: a
+stamp that publishes values the page already carries writes *nothing* and does
+not move the epoch, so `seq` advances only on **distinct-value** publications,
+whose stream is a pure function of the deterministic execution. The epoch is
+therefore reproducible **by construction**, a restored run inherits its parent's
+epoch and continues in lockstep, and the sealed image stays a faithful copy of
+the machine. The two fragilities §1.1 cited as its reason for not leaning on
+this are both closed by other rulings **in this same PR**: **skid** cannot reach
+the values (stamps use the skid-free `last_intercept_work` anchor — r1), and
+**Δ** is machine configuration carried in the sealed device blob and
+cross-validated on restore (r3) — a Δ mismatch is *rejected*, never silently
+divergent. Canonical form survives as the **registration** form (a fresh page,
+no reader possible, no prior epoch to alias), which is what gives the channel a
+known starting epoch and a zeroed tail whatever the guest's allocator left there.
+
+Pinned by tests in both crates: `canonical_reset_would_be_an_aba_on_a_live_page`
+(the hazard itself), `a_verbatim_sealed_page_keeps_restored_and_continued_runs_in_lockstep`,
+`pvclock_seal_never_touches_the_live_page`, and
+`pvclock_seal_is_verbatim_and_restore_carries_the_registration` (which now also
+asserts image == live RAM).
+
 ## The stamping ruling (RULED at review round 1; flagged for Paul's veto)
 
 `docs/PARAVIRT-CLOCK.md` §2.1 originally said the vmm stamps with "the current
@@ -197,9 +287,9 @@ Doc and code agree at ABI freeze.
 
 - **`seq = 0` always** (no epoch bumps): rejected — a reader straddling an
   exit/resume boundary could accept a torn (old-field, new-field) pair; the
-  epoch is what forces its retry. Mid-run epochs are deterministic anyway
-  (value-keyed stamping ⇒ pure function of the distinct-value stream) and
-  seals canonicalize to 0.
+  epoch is what forces its retry. Epochs are deterministic anyway (value-keyed
+  stamping ⇒ pure function of the distinct-value stream), which is exactly what
+  lets the seal preserve them rather than erase them (r4).
 - **Host-side "last stamped" cache** for the skip-if-unchanged: rejected in
   favor of reading the page itself — the page IS the cache, which makes
   restored-vs-continued runs align by construction (no cache to reconcile).
@@ -226,14 +316,23 @@ Doc and code agree at ABI freeze.
   box-verified is the LIVE half — the doorbell registration against the real
   patched-KVM host (memremap of the X86_RESERVE_LOW-reserved doorbell pages
   at early_initcall, page clocksource selection, G0–G3/perf).
-- **The rdtsc allowlist baseline is container-captured** (r2): reviewed and
+- **The rdtsc allowlist baseline is container-captured** (r2; re-captured at r4
+  as `artifact:function count` across all three boot artifacts): reviewed and
   committed from the linux/amd64 container build (debian:stable gcc). The
   box's compiler version may inline differently and shift a per-function
   count — if the first box build fails the armed scan with a count drift,
   that is the exact-accounting design working: re-review the drifted entries
   against the box capture and commit the delta (the `GATE-UNARMED` marker
   exists for full re-baselines, e.g. a kernel version bump, and FAILS builds
-  while present).
+  while present). The **setup/decompressor entries are empty on purpose** —
+  those artifacts contain no counter reads today, and the stale/unlisted checks
+  run in both directions, so the first one to appear fails the build.
+- **G3 runs at a non-default Δ** (r4): `PV_G3_DELTA_WORK`, default
+  `tick/10` ≈ 1 ms. This is deliberate and load-bearing — at the *default* Δ
+  (≈ 10 ms) the guest's own 100 Hz tick refreshes the page often enough to
+  satisfy `max_gap ≤ Δ` with the forced-refresh mechanism deleted, so the gate
+  would be vacuous. Every other gate (G1/G2/perf) still runs the documented
+  default Δ, which is what the kill-condition-3 perf numbers must be judged at.
 - **MANIFEST.sha256 is regenerated and committed** (r3): the container
   `run-tests.sh` run (reproducibility double-build + QEMU boot of the
   manifested bytes) produced it against the pvclock kernel, so the live gates
@@ -248,11 +347,18 @@ Doc and code agree at ABI freeze.
 - **Full-suite Miri for vmm-core** runs in the nightly job as before; the new
   pvclock tests were run under Miri here (11/11 clean, restore-path tests
   Miri-ignored with reasons, matching the crate's convention).
-- **`save_vm_state` is now `&mut self`** — a public-API change (snapshot
-  regenerated; callers in-tree all held `&mut` already). Sealing now
-  (canonically, value-preservingly) re-stamps one RAM page; a "probe" caller
-  that only tests sealability mutates the page's seq to 0 — deterministic,
-  restore-transparent, documented on the method.
+- **Public API** (snapshot regenerated on Linux, the box — the vmm-core
+  `public_api` test is Linux-frozen and skips on the Mac): the *only* additions
+  are the pvclock accessors, now including `pvclock_forced_landings()` (G3's
+  attribution evidence, r4). `save_vm_state` is **`&self`, unchanged from main**
+  — the r4 verbatim-seal ruling removed the `&mut self` this PR briefly carried.
+- **The page's `seq` is history-dependent by design (r4)** — it counts
+  distinct-value publications since registration. That is reproducible for any
+  same-seed run and across restore (the child inherits the parent's epoch), but
+  it means two *convergent* states reached by different paths need not have
+  byte-identical pages. Nothing in-tree depends on that (state dedup keys on the
+  whole memory image, which would differ anyway); noted because §1.1's original
+  canonicalization was partly aimed at it.
 
 ## Box runbook (the foreman-granted window)
 
