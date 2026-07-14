@@ -485,6 +485,7 @@ pub fn vmm_core::vendor::Vendor::has_pending_guest_interrupt<B: vmm_backend::bac
 pub fn vmm_core::vendor::Vendor::hash_device_chunks(&Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_core::vendor::Vendor::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_core::vendor::Vendor::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_core::vendor::Vendor::mmio_holes() -> &'static [(u64, u64)]
 pub fn vmm_core::vendor::Vendor::new_devices() -> Self::Devices
 pub fn vmm_core::vendor::Vendor::next_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
 pub fn vmm_core::vendor::Vendor::pending_deliverable_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
@@ -513,6 +514,7 @@ pub fn vmm_backend::arch::x86::X86::has_pending_guest_interrupt<B: vmm_backend::
 pub fn vmm_backend::arch::x86::X86::hash_device_chunks(&Self::Devices, &mut alloc::vec::Vec<u8>)
 pub fn vmm_backend::arch::x86::X86::inject_serial_input(&mut Self::Devices, &[u8])
 pub fn vmm_backend::arch::x86::X86::inject_wire_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>, u32) -> core::result::Result<(), vmm_core::vmm::VmmError>
+pub fn vmm_backend::arch::x86::X86::mmio_holes() -> &'static [(u64, u64)]
 pub fn vmm_backend::arch::x86::X86::new_devices() -> Self::Devices
 pub fn vmm_backend::arch::x86::X86::next_timer_deadline_vns<B: vmm_backend::backend::Backend<A = Self>>(&vmm_core::vmm::Vmm<B>) -> core::option::Option<u64>
 pub fn vmm_backend::arch::x86::X86::pending_deliverable_interrupt<B: vmm_backend::backend::Backend<A = Self>>(&mut vmm_core::vmm::Vmm<B>) -> core::result::Result<bool, vmm_core::vmm::VmmError>
