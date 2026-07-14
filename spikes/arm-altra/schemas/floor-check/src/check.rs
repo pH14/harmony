@@ -10,7 +10,10 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+/// The conventional manifest file name inside a run-set directory.
+pub const MANIFEST_FILE: &str = "run-set.json";
 
 use arm_harness::evidence::{ExitReason, RunRecord, RunSet, SCHEMA_VERSION, Stage};
 use oracle_model::{Weights, expected};
@@ -192,7 +195,7 @@ impl CheckReport {
 /// not an error; it is a [`CheckReport`] with failing outcomes and a nonzero
 /// [`CheckReport::exit_code`].
 pub fn check_run_set(dir: &Path, floors: &Floors) -> Result<CheckReport, LoadError> {
-    let manifest_path = dir.join("run-set.json");
+    let manifest_path = dir.join(MANIFEST_FILE);
     let manifest_bytes =
         std::fs::read(&manifest_path).map_err(|source| LoadError::ReadManifest {
             path: manifest_path.clone(),
@@ -803,18 +806,4 @@ fn join_problems(problems: &[String]) -> String {
     } else {
         shown.join("; ")
     }
-}
-
-/// The conventional records file name, exposed so tools agree on it.
-pub const RECORDS_FILE: &str = "records.jsonl";
-
-/// The conventional manifest file name.
-pub const MANIFEST_FILE: &str = "run-set.json";
-
-/// The default fixtures directory, relative to a run-set's parent — exposed for
-/// tests and tools that need to resolve it. Kept here so the one spelling is
-/// shared.
-#[must_use]
-pub fn manifest_path(dir: &Path) -> PathBuf {
-    dir.join(MANIFEST_FILE)
 }

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "stage": "aa3",
+  "run_set_id": "fixture-aa3",
+  "environment": {
+    "midr": 1094701248,
+    "soc": "Ampere Altra Q80-30 (synthetic)",
+    "firmware": {
+      "scp": "2.10.20221020",
+      "sys": "TianoCore-2.06.20230314"
+    },
+    "host_kernel": "6.18.35-arm64-det",
+    "kvm_mode": "vhe"
+  },
+  "mechanism": {
+    "kvm_patched": true,
+    "host_kernel_sha256": "2f0cdcbd2886e5830910d44d4e3bb68fdd2194cc9f75d83c4f64e2938cf64989",
+    "expected_exit_reason": "preempt",
+    "patch_marker_observed": true
+  },
+  "images": [
+    {
+      "path": "/boot/Image.det",
+      "sha256": "2f0cdcbd2886e5830910d44d4e3bb68fdd2194cc9f75d83c4f64e2938cf64989",
+      "md5": "2f0cdcbd2886e5830910d44d4e3bb68f",
+      "verified_before_boot": true
+    },
+    {
+      "path": "payloads/target/oracle.elf",
+      "sha256": "55b86282e4a51dbda505b02832e950e8f5a2ab2141a8d9523d71da743145218c",
+      "md5": "55b86282e4a51dbda505b02832e950e8",
+      "verified_before_boot": true
+    }
+  ],
+  "perf": {
+    "raw_event": 33,
+    "exclude_host": true,
+    "exclude_guest": false,
+    "exclude_hv": true,
+    "pinned": true,
+    "sample_period": 1000000
+  },
+  "pinning": {
+    "pinned": true,
+    "core": 2,
+    "governor": "performance",
+    "migration_probe": false
+  },
+  "condition": "pinned-solo",
+  "weights": null,
+  "skid_margin": 64,
+  "attempted": 8,
+  "records_file": "records.jsonl",
+  "records_sha256": "dfd516c7d6a65c6b70252d2bea5f562b52004979b0559f2a69e805bd8410eee5"
+}

@@ -156,6 +156,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "floor-check"
+version = "0.1.0"
+dependencies = [
+ "arm-harness",
+ "clap",
+ "oracle-model",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

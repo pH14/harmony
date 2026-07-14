@@ -37,10 +37,7 @@ extern "C" fn payload_main() -> ! {
     // golden requires `self-seeded`. Neither can masquerade as the other.
     let mode = pvclock::ensure();
     let (abi, flags) = pvclock::header();
-    println!(
-        "CLOCKPAGE mode={} abi={abi} flags={flags:#x}",
-        mode.token()
-    );
+    println!("CLOCKPAGE mode={} abi={abi} flags={flags:#x}", mode.token());
 
     if abi != PVCLOCK_ABI {
         // An ABI mismatch is a guest-side hard fault, never a silent reinterpret

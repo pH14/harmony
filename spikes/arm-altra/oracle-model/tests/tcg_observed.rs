@@ -21,7 +21,9 @@
 //! `BR_RETIRED` counter counts those branches. That is stage AA-1's question, and
 //! only Neoverse N1 silicon answers it.
 
-use oracle_model::{DEFAULT_SEED, Payload, Scale, branch_dense_accumulator, straight_line_accumulator, trips};
+use oracle_model::{
+    DEFAULT_SEED, Payload, Scale, branch_dense_accumulator, straight_line_accumulator, trips,
+};
 
 /// Observed: `branch-dense` printed `ACC value=0x4433` under TCG.
 const TCG_BRANCH_DENSE_ACC: u64 = 0x4433;
@@ -32,7 +34,10 @@ const TCG_STRAIGHT_LINE_ACC: u64 = 0xbed0_dc62_7afc_cfa5;
 #[test]
 fn branch_dense_accumulator_matches_the_executed_asm() {
     let n = trips(Payload::BranchDense, Scale::Smoke);
-    assert_eq!(branch_dense_accumulator(DEFAULT_SEED, n), TCG_BRANCH_DENSE_ACC);
+    assert_eq!(
+        branch_dense_accumulator(DEFAULT_SEED, n),
+        TCG_BRANCH_DENSE_ACC
+    );
 }
 
 #[test]
