@@ -9,32 +9,84 @@
 # read is survivable-by-trap, never a determinism hole). The armed scan fails
 # the kernel build on any drift, in either direction.
 #
-# GATE-UNARMED: baseline pending. While this marker line is present the scan
-# runs in CAPTURE mode — it prints every site found in the built image (in
-# paste-ready `function count` form) under a loud banner and exits 0, so the
-# kernel build and MANIFEST regeneration work before the baseline exists. The
-# first box build's capture output is reviewed entry-by-entry against the
-# criteria above, committed here, and this marker line REMOVED — from then on
-# the gate is armed. (The scan's self-test proves the armed mode can fail on
-# every invocation, marker or not.)
+# BASELINE: captured 2026-07-14 from the full linux-6.18.35 build in the
+# docs/BUILDING.md linux/amd64 container (debian:stable toolchain), reviewed
+# entry-by-entry against the extracted source. A different compiler version
+# (e.g. the box's) may inline differently and shift a per-function count —
+# such a drift fails the armed scan loudly; re-review the drifted entries
+# against that build's capture and commit the delta. For a FULL re-baseline
+# (a kernel version bump), add a line starting with `# GATE-UNARMED` — the
+# scan then prints the new capture and FAILS the build until the reviewed
+# baseline is committed and the marker removed (fail-closed; it can never
+# ship a silently-green scan).
 #
-# Candidate sites expected from the 6.18.35 source with this config
-# (COMMENTED — documentation to speed the review, not yet verified against
-# the built image; the capture output is authoritative):
+# Review classes (every entry below is one of these; all trap-backstopped):
+#   [alt]    runtime-patched alternatives section (rdtsc/rdtscp variants the
+#            kernel may splice in; each executes as a trap if reached)
+#   [iommu]  Intel DMAR/IOMMU busy-wait timeouts (IOMMU_WAIT_OP) — no IOMMU
+#            is exposed to the guest; unreachable in practice, trapped if not
+#   [rng]    random_get_entropy()/jitter-entropy timing — trapped, so timing
+#            "entropy" is itself work-derived and deterministic
+#   [time]   boot calibration / clocksource / sched_clock / delay paths —
+#            unselectable or backstopped once harmony_pvclock is active (the
+#            delay decision is recorded in IMPLEMENTATION-task110.md)
+#   [entry]  syscall/irqentry/fork kstack-offset randomization — trapped,
+#            deterministic offsets
+#   [perf]   the perf "msr" software event (tsc pseudo-event)
+#   [guest]  other-hypervisor guest support compiled in by the Kata base
+#            (kvmclock/vmware/vmclock) — never activates under harmony
+#            (leaves/MSRs hidden or deny-gp'd), trapped if reached
+#   [harmony] our own deliberate pre-registration anchor-freshening rdtsc
+#   [fs]     ext4 mballoc criteria timing (mb_stats path) — trapped
 #
-#   native_sched_clock        # arch/x86/kernel/tsc.c — sched_clock until the
-#                             # pvclock init routes it; trap-backstopped
-#   delay_tsc                 # arch/x86/lib/delay.c — udelay busy loop;
-#                             # trap-backstopped (see IMPLEMENTATION-task110.md
-#                             # on the deliberate delay-path decision)
-#   delay_halt_tpause         # arch/x86/lib/delay.c variants (config-dependent)
-#   delay_halt_mwaitx         # arch/x86/lib/delay.c variants (config-dependent)
-#   pit_calibrate_tsc         # arch/x86/kernel/tsc.c — boot calibration
-#   tsc_read_refs             # arch/x86/kernel/tsc.c — boot calibration
-#   quick_pit_calibrate       # arch/x86/kernel/tsc.c — boot calibration
-#   check_tsc_warp            # arch/x86/kernel/tsc_sync.c (SMP=n: may be absent)
-#   read_tsc                  # arch/x86/kernel/tsc.c — the tsc clocksource
-#                             # (unselectable once harmony_pvclock marks it
-#                             # unstable; reads trap meanwhile)
-#   pvclock_clocksource_read  # arch/x86/kernel/pvclock.c (KVM_GUEST=y pulls it
-#                             # in; kvmclock never activates — MSRs deny-gp'd)
+.altinstr_replacement 28                     # [alt]
+__dmar_enable_qi 2                           # [iommu]
+__iommu_flush_context 2                      # [iommu]
+__iommu_flush_iotlb 2                        # [iommu]
+add_device_randomness 1                      # [rng]
+add_interrupt_randomness 1                   # [rng]
+add_timer_randomness 1                       # [rng]
+check_tsc_warp 2                             # [time] tsc_sync
+delay_halt 2                                 # [time] delay backstop
+delay_tsc 3                                  # [time] delay backstop
+dmar_disable_qi 4                            # [iommu]
+do_syscall_64 1                              # [entry] kstack offset
+ecmd_submit_sync 2                           # [iommu]
+entropy_timer 1                              # [rng]
+ext4_mb_generate_buddy 2                     # [fs]
+extract_entropy.constprop.0 1                # [rng]
+harmony_pvclock_init 1                       # [harmony] deliberate (see patch)
+hpet_enable 2                                # [time] calibration (hpet off at runtime)
+iommu_disable_irq_remapping.part.0 2         # [iommu]
+iommu_disable_protect_mem_regions.part.0 2   # [iommu]
+iommu_disable_translation 2                  # [iommu]
+iommu_enable_irq_remapping 4                 # [iommu]
+iommu_enable_translation 2                   # [iommu]
+iommu_flush_write_buffer 2                   # [iommu]
+iommu_set_irq_remapping 2                    # [iommu]
+iommu_set_root_entry 2                       # [iommu]
+irqentry_exit_to_user_mode 1                 # [entry] kstack offset
+jent_get_nstime 1                            # [rng] jitter entropy
+lapic_cal_handler 1                          # [time] APIC calibration
+lapic_next_deadline 1                        # [time] TSC-deadline programming
+msr_event_add 1                              # [perf]
+msr_event_start 1                            # [perf]
+msr_event_update 1                           # [perf]
+native_sched_clock 1                         # [time] sched_clock until pvclock routes it
+pit_hpet_ptimer_calibrate_cpu 2              # [time] calibration
+pvclock_clocksource_read 1                   # [guest] kvmclock reader (inert)
+pvclock_clocksource_read_nowd 1              # [guest] kvmclock reader (inert)
+quick_pit_calibrate 4                        # [time] calibration
+random_init 1                                # [rng]
+read_current_timer 1                         # [time]
+read_tsc 1                                   # [time] the tsc clocksource (unselectable when active)
+ret_from_fork 1                              # [entry] kstack offset
+setup_boot_APIC_clock 2                      # [time] APIC calibration
+timer_irq_works 2                            # [time] boot check
+trace_clock_x86_tsc 1                        # [time] trace clock
+try_to_generate_entropy 3                    # [rng]
+tsc_enable_sched_clock 1                     # [time]
+tsc_read_refs 2                              # [time] calibration
+vmclock_get_crosststamp 2                    # [guest] vmclock PTP (inert)
+vmware_platform_setup 1                      # [guest] vmware detect (inert)
+vmware_sched_clock 1                         # [guest] vmware (inert)

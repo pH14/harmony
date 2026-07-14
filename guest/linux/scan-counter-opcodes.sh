@@ -16,14 +16,16 @@
 # transposed gate has an EMPTY allowlist by necessity; that discipline is
 # validated at spike stage AA-5, not here.)
 #
-# ARMING: while the allowlist carries a `# GATE-UNARMED` marker line (the
-# shipped state — the baseline cannot be reviewed before the first box build
-# exists), the scan runs in CAPTURE mode: it prints every found site in
-# paste-ready `function count` form under a loud UNARMED banner and exits 0,
-# so the kernel build (and MANIFEST regeneration) works while the baseline is
-# being reviewed. Removing the marker (with the reviewed baseline committed)
-# arms the gate; from then on any drift fails the build. The self-test proves
-# the ARMED mode can fail on every invocation regardless of the marker.
+# ARMING: while the allowlist carries a `# GATE-UNARMED` marker line, the
+# scan runs in CAPTURE mode — it prints every found site in paste-ready
+# `function count` form under a loud banner and then **FAILS the build**
+# (fail-closed, the PR #110 r2 disposition: a disarmed reachability gate must
+# never let a kernel build pass). The marker exists only for re-baselining
+# (e.g. a kernel version bump): capture the printed baseline in a linux/amd64
+# container or on the box, review it entry-by-entry, commit it, remove the
+# marker. The committed tree ships with the marker REMOVED and the reviewed
+# baseline present — the gate armed. The self-test proves the armed mode can
+# fail on every invocation regardless of the marker.
 #
 # RUNTIME HALF — SPECCED AND STUBBED (stated per the task-110 evidence bar,
 # not faked; accepted as such by the PR #110 foreman ruling): the §3.3
@@ -207,14 +209,14 @@ trap 'rm -f "$DIS"' EXIT
 objdump -d "$VMLINUX" > "$DIS"
 
 if unarmed "$ALLOWLIST"; then
-    echo "###############################################################################"
-    echo "# WARNING: counter-opcode gate UNARMED (baseline pending — '# GATE-UNARMED'"
-    echo "# marker present in $ALLOWLIST)."
-    echo "# Found sites, paste-ready after review (then REMOVE the marker to arm):"
-    echo "###############################################################################"
-    sites "$DIS" | sed 's/^/  /'
-    echo "ok: scan ran UNARMED — not a gate result; review + commit the baseline to arm"
-    exit 0
+    echo "###############################################################################" >&2
+    echo "# FAIL: counter-opcode gate UNARMED ('# GATE-UNARMED' marker present in" >&2
+    echo "# $ALLOWLIST) — a disarmed reachability gate never passes a build" >&2
+    echo "# (fail-closed). Captured baseline, paste-ready after entry-by-entry review" >&2
+    echo "# (commit it + REMOVE the marker to arm the gate):" >&2
+    echo "###############################################################################" >&2
+    sites "$DIS" | sed 's/^/  /' >&2
+    exit 1
 fi
 
 if scan "$DIS" "$ALLOWLIST"; then

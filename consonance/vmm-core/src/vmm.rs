@@ -585,8 +585,32 @@ pub(crate) struct PvclockChannel {
     delta_work: u64,
     /// The registered page GPA (page-aligned, wholly inside guest RAM, clear
     /// of the doorbell frame pages — validated at registration). `None` until
-    /// the guest publishes one.
+    /// the guest publishes one; **one-shot** — re-registration is rejected as
+    /// a guest fault and the stamping target never moves for the machine's
+    /// life (the PR #110 r2 GPA ruling).
     gpa: Option<u64>,
+    /// `true` once a **deterministic clock advance** (a V-time intercept, a
+    /// `Deadline` landing, or an idle warp — any step ending
+    /// `vtime_synchronized`) has occurred since the registration was
+    /// established. The Δ forced-refresh deadline arms **only** when this
+    /// holds (`Vmm::pvclock_refresh_deadline`): the registration itself
+    /// happens at a doorbell `OUT`, where the anchor may be arbitrarily stale
+    /// — arming `anchor + Δ` there could be *already overdue*, and the
+    /// backend's overdue zero-step reports a **live PMU count** that
+    /// `on_deadline` would promote into the anchor and thence into hashed
+    /// guest RAM (the r2 P1 determinism leak). Deferring the first arm to a
+    /// fresh anchor makes every armed pvclock target strictly ahead of the
+    /// guest at arming time, and — because a `run_until`-bounded entry can
+    /// never overshoot its armed target — no pvclock deadline is ever overdue
+    /// after that. Restore sets it `true` directly (a restored VM's anchor is
+    /// exactly 0 — synchronized by construction), and every *seal* implies it
+    /// (a seal's own step ended synchronized), so it needs no snapshot carry
+    /// and no hash fold. The reference guest kernel shrinks the not-yet-armed
+    /// window to a few branches by executing one `rdtsc` (a trapping V-time
+    /// intercept) immediately before ringing the doorbell; liveness inside
+    /// the window is otherwise bounded by the always-armed periodic tick on
+    /// the Linux path.
+    first_advance_seen: bool,
     /// Diagnostic refresh log (**not** hashed, like
     /// [`Vmm::preemption_landings`]): `(work anchor, vns, guest_clock)` for
     /// every *value-publishing* stamp, **read back from the page bytes** after
@@ -2122,6 +2146,7 @@ where
         self.pvclock = Some(PvclockChannel {
             delta_work: delta_work.max(1),
             gpa: None,
+            first_advance_seen: false,
             refreshes: Vec::new(),
         });
         self
@@ -2212,6 +2237,13 @@ where
                 }
                 let pv = self.pvclock.as_mut().expect("matched Some above");
                 pv.gpa = s.gpa;
+                // A restored VM's anchor is exactly 0 (the work counter
+                // restarts and `restore_vm_state` anchors there —
+                // synchronized by construction), so a restored registration
+                // arms the Δ refresh immediately: `0 + Δ` is strictly ahead
+                // of the re-baselined counter. No overdue hazard, unlike the
+                // live-registration path (see `first_advance_seen`).
+                pv.first_advance_seen = s.gpa.is_some();
                 pv.refreshes.clear();
                 Ok(())
             }
@@ -2226,6 +2258,7 @@ where
     fn pvclock_clear_registration(&mut self) {
         if let Some(pv) = self.pvclock.as_mut() {
             pv.gpa = None;
+            pv.first_advance_seen = false;
             pv.refreshes.clear();
         }
     }
@@ -2335,9 +2368,16 @@ where
     /// composition answers `UnknownService` ("not offered"), so a probing
     /// guest cleanly keeps its trap-backstopped time paths.
     ///
-    /// Re-registration is accepted and moves the stamping target (the guest
-    /// owns its page placement; guest-driven, so deterministic) — the old
-    /// page's bytes are left exactly as last stamped.
+    /// **One-shot** (the PR #110 r2 GPA ruling, Paul-veto-flagged): the first
+    /// accepted registration pins the page for the machine's life;
+    /// re-registration — same GPA or not — is a guest fault, rejected with
+    /// `BadRequest` and touching nothing. The stamping target never moves.
+    ///
+    /// The Δ forced refresh does not arm off this boundary: a doorbell `OUT`
+    /// is not a V-time intercept, so the anchor here may be stale, and an
+    /// `anchor + Δ` armed stale could be already overdue — whose zero-step
+    /// would adopt a live PMU count (the r2 P1). The first arm waits for a
+    /// deterministic clock advance ([`PvclockChannel::first_advance_seen`]).
     fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
         if self.pvclock.is_none()
             || self.vtime.is_none()
@@ -2345,10 +2385,17 @@ where
         {
             return (Status::UnknownService, None);
         }
+        if self.pvclock_registration().is_some() {
+            return (Status::BadRequest, None);
+        }
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
-        self.pvclock.as_mut().expect("checked above").gpa = Some(gpa);
+        {
+            let pv = self.pvclock.as_mut().expect("checked above");
+            pv.gpa = Some(gpa);
+            pv.first_advance_seen = false;
+        }
         // Canonical initial stamp (total function of the anchor values — never
         // of the guest's prior page content). The doorbell OUT is not a V-time
         // intercept, so the anchor may lag the live work here; the page then
@@ -2457,6 +2504,17 @@ where
     /// on the page is repaired at the next exit, not merely the next
     /// intercept.
     fn pvclock_refresh(&mut self) -> Result<(), VmmError> {
+        // A step that ended V-time-synchronized IS a deterministic clock
+        // advance — the anchor is exactly current here, so from the NEXT
+        // arming on, `anchor + Δ` is strictly ahead of the guest and the Δ
+        // deadline can never be born overdue (the r2 P1; see
+        // [`PvclockChannel::first_advance_seen`]).
+        if self.vtime_synchronized
+            && let Some(pv) = self.pvclock.as_mut()
+            && pv.gpa.is_some()
+        {
+            pv.first_advance_seen = true;
+        }
         self.pvclock_stamp(StampKind::Refresh)
     }
 
@@ -2466,9 +2524,27 @@ where
     /// that takes no natural exit (a busy-wait on the page clock) is forced
     /// out — and the page re-stamped — within Δ. `None` without a
     /// registration, so every existing path arms exactly as before.
+    ///
+    /// **Arms only from a fresh anchor** (the r2 P1 fix): `None` until a
+    /// deterministic clock advance has occurred since registration
+    /// ([`PvclockChannel::first_advance_seen`]). Armed off the registration's
+    /// possibly-stale anchor, `anchor + Δ` could be already overdue, and the
+    /// backend's overdue zero-step would report a live PMU count that
+    /// [`on_deadline`](Self::on_deadline) promotes into the anchor — a
+    /// nondeterministic value entering hashed guest RAM. Once armed from a
+    /// fresh anchor, every entry is `run_until`-bounded at or before this
+    /// target, and a bounded entry never overshoots its target — so no
+    /// pvclock deadline is ever overdue and the zero-step path is unreachable
+    /// for it. Liveness inside the brief not-yet-armed window is bounded by
+    /// the always-armed periodic tick on the Linux path, and the reference
+    /// guest shrinks the window to a few branches with a pre-registration
+    /// `rdtsc`.
     pub(crate) fn pvclock_refresh_deadline(&self) -> Option<Moment> {
         let pv = self.pvclock.as_ref()?;
         pv.gpa?;
+        if !pv.first_advance_seen {
+            return None;
+        }
         if !self.backend.capabilities().arch.deterministic_clock() {
             return None;
         }
@@ -9288,12 +9364,14 @@ mod tests {
     /// the run loop bounds every entry at `anchor + delta` (the staleness
     /// bound), the Deadline landing advances the anchor, and the page follows
     /// within delta — a busy-wait on the page clock cannot hang. Without a
-    /// registration the deadline is `None` (page-off arms exactly as before).
+    /// registration the deadline is `None` (page-off arms exactly as before),
+    /// and the FIRST arm waits for a deterministic clock advance (r2 P1).
     #[test]
     fn pvclock_forced_refresh_bounds_staleness_within_delta() {
         const DELTA: u64 = 1_000;
         let mut vmm = Vmm::new(
             configured_mock(vec![
+                Exit::Arch(X86Exit::Rdtsc),
                 Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
                 Exit::Common(CommonExit::Deadline { reached: Moment(0) }),
             ]),
@@ -9308,7 +9386,14 @@ mod tests {
         assert_eq!(vmm.run_until_deadline(), None);
         let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
         assert_eq!(status, Status::Ok as u16);
-        // Registered: the next entry is bounded at anchor + delta.
+        // Registered but no clock advance yet: the Δ deadline must NOT arm off
+        // the registration's possibly-stale anchor (r2 P1 — armed stale it
+        // could be born overdue, and the overdue zero-step adopts a live PMU
+        // count into the anchor).
+        assert_eq!(vmm.run_until_deadline(), None);
+        // The first deterministic clock advance (an RDTSC intercept) arms it.
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        // Registered + fresh anchor: the next entry is bounded at anchor + delta.
         assert_eq!(vmm.run_until_deadline(), Some(Moment(DELTA)));
         // The forced refresh lands exactly at the bound (the mock rewrites the
         // scripted Deadline to the requested one), advances the anchor, and the
@@ -9327,6 +9412,80 @@ mod tests {
         for pair in log.windows(2) {
             assert!(pair[1].0 - pair[0].0 <= DELTA, "staleness bound violated");
         }
+    }
+
+    /// The r2 GPA ruling: registration is **one-shot**. A second register —
+    /// same GPA or a different valid one — is a guest fault (`BadRequest`)
+    /// that touches nothing: the stamping target never moves, the original
+    /// page keeps tracking the oracle, and the first-arm state is undisturbed.
+    #[test]
+    fn pvclock_re_registration_is_rejected_one_shot() {
+        let mut vmm = pvclock_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(10)),
+            7,
+        );
+        let (status, _) = ring_pvclock_register(&mut vmm, PV_GPA);
+        assert_eq!(status, Status::Ok as u16);
+        vmm.step().unwrap(); // a clock advance: page stamped, Δ armed
+        let page_before = vmm.pvclock_page().unwrap().to_vec();
+        let deadline_before = vmm.pvclock_refresh_deadline();
+        assert!(deadline_before.is_some(), "armed after the advance");
+        // Same-GPA re-registration: rejected, nothing moves.
+        let (status, payload) = ring_pvclock_register(&mut vmm, PV_GPA);
+        assert_eq!(status, Status::BadRequest as u16);
+        assert!(payload.is_empty());
+        // Different (valid) GPA: rejected too — the target is pinned for the
+        // machine's life.
+        let other = PV_GPA + 0x1000;
+        let (status, _) = ring_pvclock_register(&mut vmm, other);
+        assert_eq!(status, Status::BadRequest as u16);
+        assert_eq!(vmm.pvclock_registration(), Some(PV_GPA), "target moved");
+        assert_eq!(
+            vmm.pvclock_page().unwrap(),
+            page_before.as_slice(),
+            "a rejected re-registration disturbed the page"
+        );
+        assert_eq!(vmm.pvclock_refresh_deadline(), deadline_before);
+        // The other page's bytes were never touched.
+        assert!(
+            vmm.guest_memory()[other as usize..other as usize + PVCLOCK_PAGE_LEN]
+                .iter()
+                .all(|&b| b == 0),
+            "a rejected registration stamped the requested page"
+        );
+        vmm.pvclock_check_oracle().unwrap();
+    }
+
+    /// The r2 P1 fix, restore side: a restored registration arms the Δ
+    /// refresh immediately — the restored anchor is exactly 0 (the work
+    /// counter re-baselines), so `0 + Δ` is strictly ahead and there is no
+    /// stale-anchor window to wait out.
+    #[test]
+    fn pvclock_restored_registration_arms_immediately() {
+        let mut src = pvclock_vmm(
+            vec![Exit::Arch(X86Exit::Rdtsc)],
+            Box::new(ScriptedWork::at(10)),
+            7,
+        );
+        ring_pvclock_register(&mut src, PV_GPA);
+        src.step().unwrap();
+        let vm_state = src.save_vm_state().unwrap();
+        let image = src.guest_memory().to_vec();
+        let carried = src.pvclock_snapshot().unwrap();
+
+        let mut b = pvclock_vmm(vec![], Box::new(ScriptedWork::new()), 7);
+        b.restore_snapshot(&image, &vm_state).unwrap();
+        assert_eq!(
+            b.pvclock_refresh_deadline(),
+            None,
+            "no deadline while the registration is cleared"
+        );
+        b.pvclock_restore(Some(&carried)).unwrap();
+        assert!(
+            b.pvclock_refresh_deadline().is_some(),
+            "a restored registration arms off the exact post-restore anchor"
+        );
     }
 
     /// §1.1: a seal re-stamps the page to canonical form (`seq = 0`) at the

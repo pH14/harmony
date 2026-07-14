@@ -38,6 +38,7 @@
 #include <linux/unaligned.h>
 
 #include <asm/io.h>
+#include <asm/msr.h>
 #include <asm/paravirt.h>
 #include <asm/tsc.h>
 
@@ -181,6 +182,18 @@ static int __init harmony_ring_register(phys_addr_t page_pa, u32 *abi)
 	req->payload_len = cpu_to_le32(8);
 	req->reserved = 0;
 	put_unaligned_le64(page_pa, (u8 *)req_page + HC_HEADER_LEN);
+
+	/*
+	 * One raw rdtsc immediately before ringing — deliberately: it traps to
+	 * the hypervisor (the retained backstop) as a V-time intercept, which
+	 * refreshes the host's skid-free anchor to within a few branches of
+	 * this point. The initial page stamp is then fresh, and the host's Δ
+	 * forced refresh arms off a current anchor at the first
+	 * post-registration clock advance (the host defers that first arm — a
+	 * stale-anchor arm could be born overdue). This is the one intentional
+	 * rdtsc in this file; the §3.3 opcode-scan allowlist records it.
+	 */
+	(void)rdtsc();
 
 	/* One OUT = the host services the whole exchange before we resume. */
 	virt_wmb();

@@ -90,10 +90,12 @@ def copy_file(name, dest):
 copy_file("harmony_pvclock.c", "arch/x86/kernel/harmony_pvclock.c")
 
 # ---- arch/x86/kernel/Makefile: build it under its config symbol -------------
-# Anchor: the kvmclock object line (the shape this clocksource borrows).
+# Anchor: the KVM_GUEST object line (the kvmclock line — the shape this
+# clocksource borrows). NOT a bare "kvmclock.o": 6.18.35 also carries a
+# `CFLAGS_REMOVE_kvmclock.o = -pg` line, so that substring is non-unique.
 insert_after_line(
     "arch/x86/kernel/Makefile",
-    "kvmclock.o",
+    "obj-$(CONFIG_KVM_GUEST)",
     "obj-$(CONFIG_HARMONY_PVCLOCK)\t+= harmony_pvclock.o\n",
 )
 

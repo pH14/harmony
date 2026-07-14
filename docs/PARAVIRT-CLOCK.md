@@ -58,11 +58,19 @@ busy-wait-on-time guest live.
 
 ## 1. Page layout (ABI `HARMONY_PVCLOCK_ABI = 1`)
 
-One 4 KiB guest page at a fixed, contract-reserved GPA, single-vCPU (this project is
-single-vCPU; the layout reserves a vCPU-index field for a future fan-out but pins it to 0). All
-fields little-endian, matching the codebase's wire discipline (`consonance/vm-state/src/
-types.rs:11`). Seqlock-versioned exactly as kvmclock, so a single-vCPU guest reader never sees a
-torn update:
+One 4 KiB page of guest RAM at a **guest-registered GPA**: the guest publishes the address
+**once** via the §3.1 transport, the vmm validates it (page-aligned, wholly inside guest RAM,
+clear of the transport's frame pages) and pins it for the machine's life — **re-registration
+is a guest fault, rejected**; the stamping target never moves. *(RULED at the task-110 review
+(foreman, 2026-07-14, flagged for Paul's veto, same window as the §2 stamping ruling): this
+section originally said "a fixed, contract-reserved GPA", contradicting §3.1's
+publish-and-validate transport; ABI v1 is the guest-registered one-shot GPA — the kvmclock
+precedent of an address-carrying registration, and what makes the guest's page placement a
+deterministic function of its own build rather than a contract row.)* Single-vCPU (this
+project is single-vCPU; the layout reserves a vCPU-index field for a future fan-out but pins
+it to 0). All fields little-endian, matching the codebase's wire discipline
+(`consonance/vm-state/src/types.rs:11`). Seqlock-versioned exactly as kvmclock, so a
+single-vCPU guest reader never sees a torn update:
 
 | Offset | Width | Field | Meaning |
 |---|---|---|---|

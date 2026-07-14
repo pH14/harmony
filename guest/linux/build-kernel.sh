@@ -99,9 +99,9 @@ echo "ok: $ART_DIR/bzImage"
 # half) — every rdtsc/rdtscp left in the image must match a reviewed,
 # trap-backstopped allowlist entry (function + exact instruction count). Scans
 # the uncompressed vmlinux (symbols); self-tests its own ability to fail
-# before scanning. While rdtsc-allowlist.txt carries its GATE-UNARMED marker
-# (baseline pending) the scan runs in capture mode — prints the found sites
-# and exits 0 — so this build works before the baseline review; removing the
-# marker arms the gate. See scan-counter-opcodes.sh for the full workflow.
+# before scanning. The gate ships ARMED (baseline reviewed + committed); a
+# GATE-UNARMED marker in the allowlist (re-baselining only, e.g. a kernel
+# version bump) makes the scan print the new capture and FAIL the build until
+# the reviewed baseline lands. See scan-counter-opcodes.sh for the workflow.
 echo "== kernel: counter-opcode scan (rdtsc/rdtscp reachability gate)"
 bash "$LINUX_DIR/scan-counter-opcodes.sh" "$KOBJ/vmlinux" "$LINUX_DIR/rdtsc-allowlist.txt"

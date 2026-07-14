@@ -18,10 +18,28 @@ ruling); the full channel configuration (offer + Δ + registration) is carried,
 cross-validated symmetrically on restore, and folded into state identity as
 the `PVCK` chunk; seals canonicalize only after all validation
 (reject-before-mutation); the opcode scan accounts per-function instruction
-COUNTS and ships marker-gated (UNARMED capture mode until the box baseline is
-reviewed — see below); G3 re-arms the refresh log at its window and fails on
-saturation. The W^X/rescan-on-exec follow-up is bead **hm-rfz** (ruling item
-3).
+COUNTS; G3 re-arms the refresh log at its window and fails on saturation. The
+W^X/rescan-on-exec follow-up is bead **hm-rfz** (ruling item 3).
+
+**Review round 2 folded in** (cross-model r2: 2 P1 + 1 P2 with foreman
+dispositions): (a) the **overdue-first-deadline** P1 — the Δ forced refresh
+now arms **only from a fresh anchor** (`first_advance_seen`: set at the first
+deterministic clock advance after registration, immediately on restore where
+the anchor is exactly 0, never at the doorbell `OUT` itself), so an armed
+pvclock target is always strictly ahead of the guest and — since a
+`run_until`-bounded entry can never overshoot its target — the overdue
+zero-step (whose report is a live PMU count) is unreachable for pvclock
+deadlines; the reference guest additionally executes one deliberate `rdtsc`
+before ringing (a trapping intercept that freshens the anchor to within a few
+branches). (b) the **opcode-gate** P1 — capture mode is now **fail-closed**
+(the marker prints the baseline and FAILS the build), and the baseline was
+produced portably in the documented linux/amd64 container, reviewed
+entry-by-entry, and committed with the marker removed — the gate ships
+ARMED (see below). (c) the **GPA** P2 — RULED (foreman, Paul-veto-flagged):
+ABI v1 is the guest-registered **one-shot** GPA; re-registration is a guest
+fault (`BadRequest`, touches nothing, the stamping target is pinned for the
+machine's life); `docs/PARAVIRT-CLOCK.md` §1's "fixed, contract-reserved GPA"
+wording is amended in this PR per the ruling.
 
 ## What landed (by deliverable)
 
@@ -84,13 +102,14 @@ saturation. The W^X/rescan-on-exec follow-up is bead **hm-rfz** (ruling item
    already-reviewed function moves its count — the r1 fix), exact in both
    directions, self-testing its ability to fail (planted-new,
    planted-inside-allowlisted, stale-entry, bare-entry fixtures) on every
-   invocation. Ships **marker-gated**: while the allowlist carries its
-   `GATE-UNARMED` line the scan runs in capture mode (prints the paste-ready
-   baseline, exits 0) so the kernel build works pre-baseline; removing the
-   marker arms it. **W^X/rescan-on-exec runtime half: specced and stubbed,
-   accepted as such by the PR ruling — follow-up bead `hm-rfz`**;
-   `CONFIG_MODULES` asserted off means no loadable code escapes the static
-   scan meanwhile.
+   invocation. **Ships ARMED** (r2): the reviewed baseline was captured from
+   a real 6.18.35 build in the documented linux/amd64 container and
+   committed; the `GATE-UNARMED` re-baselining marker, when present, prints
+   the captured baseline and **fails the build** (fail-closed — a disarmed
+   gate never passes anything). **W^X/rescan-on-exec runtime half: specced
+   and stubbed, accepted as such by the PR ruling — follow-up bead
+   `hm-rfz`**; `CONFIG_MODULES` asserted off means no loadable code escapes
+   the static scan meanwhile.
 7. **Gates** — portable G1/G2/G3 analogues + mandated deliberate-fault tests
    in `consonance/vmm-core/src/vmm.rs` (incl. the r1 additions: natural-exit
    repair, symmetric restore-mismatch matrix, `PVCK` state identity,
@@ -158,14 +177,14 @@ Doc and code agree at ABI freeze.
   (`u64 (*)(void)` expected); (c) `linux/unaligned.h` include path; (d)
   memremap of the (X86_RESERVE_LOW-reserved) doorbell pages at early_initcall.
   Any failure is loud at build/boot; fixes are one-file.
-- **The rdtsc allowlist baseline is uncaptured**: the allowlist ships with its
-  `GATE-UNARMED` marker, so the first box kernel build runs the scan in
-  CAPTURE mode (prints every real site as paste-ready `function count`
-  entries under a loud banner, exits 0 — the build and MANIFEST regeneration
-  work meanwhile). Review each captured site, commit the entries, REMOVE the
-  marker → the gate is armed (workflow in `rdtsc-allowlist.txt`; candidates
-  pre-listed as comments; the armed mode's falsifiability is self-tested on
-  every invocation regardless of the marker).
+- **The rdtsc allowlist baseline is container-captured** (r2): reviewed and
+  committed from the linux/amd64 container build (debian:stable gcc). The
+  box's compiler version may inline differently and shift a per-function
+  count — if the first box build fails the armed scan with a count drift,
+  that is the exact-accounting design working: re-review the drifted entries
+  against the box capture and commit the delta (the `GATE-UNARMED` marker
+  exists for full re-baselines, e.g. a kernel version bump, and FAILS builds
+  while present).
 - **MANIFEST.sha256 still pins the pre-pvclock kernel**: after the first box
   build, `guest/linux/run-tests.sh` regenerates it (reproducibility
   double-build + QEMU boot) — commit that alongside the allowlist. The live
@@ -188,13 +207,12 @@ Doc and code agree at ABI freeze.
 All from the repo on the box, pinned per `docs/BOX-PINNING.md`:
 
 1. `make -C guest fetch && make -C guest/linux kernel`
-   → the counter-opcode scan runs UNARMED (marker present) and prints the
-   captured baseline; review each site against `rdtsc-allowlist.txt`'s
-   criteria, commit the `function count` entries, REMOVE the `GATE-UNARMED`
-   marker, rebuild → the scan is armed and green. Then
-   `guest/linux/run-tests.sh` → commit the regenerated `MANIFEST.sha256`.
-   (`make -C guest/linux exec-image` for G3; note its sha256 for
-   `INITRAMFS_EXEC_SHA256`.)
+   → the armed counter-opcode scan should pass against the committed
+   container-captured baseline; if the box compiler shifts an inlined count,
+   re-review the drifted entries against the box capture and commit the
+   delta (see Known limitations). Then `guest/linux/run-tests.sh` → commit
+   the regenerated `MANIFEST.sha256`. (`make -C guest/linux exec-image` for
+   G3; note its sha256 for `INITRAMFS_EXEC_SHA256`.)
 2. **Smoke-fire-once** (minutes, before any budget):
    `taskset -c 2 cargo test -p vmm-core --release --test live_pvclock -- --ignored g0_smoke --test-threads=1`
    Report before continuing (per the task's box discipline).
