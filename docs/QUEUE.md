@@ -32,7 +32,7 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (1 active worker; 2 PRs in foreman review)
+## In flight (1 active worker; 1 PR in foreman review)
 
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
   AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
@@ -48,25 +48,14 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
   (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
   n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
-- **The ARCH-BOUNDARY restructure, steps 1–4** (tasks/108; PR #109, gate `hm-54m`) —
-  **PORTABLE SIDE APPROVED 2026-07-14 morning** (head 72468d5, two review rounds): round-1's
-  3 cross-model P1s fixed + foreman-verified (aarch64 seam check clean and CI-gated; vendor-
-  boundary interrupt admissibility; envcodec mask + 2000-seed test) plus both structural
-  moves (`vendor::x86::bringup`, vendor-neutral `Vmm` error — engine names no vendor, swept);
-  round-2's snapshot-state P1/P2 **ruled acknowledged-and-deferred** per the pre-build ruling
-  and documented where it binds (trait hooks + ARCH-BOUNDARY §D; flagged for Paul's veto).
-  Gates: 1692/1692, clippy ×3 targets, Miri ×4 crates. **BOX GATES GREEN-FOR-PR
-  (2026-07-14 ~10:45)**: 6/8 outright; the 2 failures proven PRE-EXISTING by a controlled
-  main-baseline differential (hm-xdp postgres-image family) — the only on-box tree
-  difference was the predicted +2-byte vm-state v2 header, all hashes bit-identical.
-  **MERGE-READY, awaiting Paul** (session classifier requires human merge sign-off);
-  merge unblocks `hm-rk5` / `hm-cbt` / `hm-0nf`.
-- **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round-1 review POSTED** (PR #108,
-  2026-07-14: 8 verified blocking threads — wrong perf_event_attr bits, probe-RC discards,
-  the missing KVM_RUN loop vs spec deliverable 2, floor-checker stage-blindness incl. a
-  vacuous state_digest rep floor, an elf.rs overflow panic + stripped-ELF vacuous scan,
-  truth-table schema −3 mandatory rows, deny/CI/Miri gates); fix worker respawned and
-  dispatched same iteration. Architecture itself is strong; one round expected.
+- **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round 5 in flight** (PR #108).
+  Rounds 1–4 each fixed-and-verified (r1's 8 evidence-integrity threads, r2's KVM machine
+  layer, r3's semantic edges, r4's 8 fail-closed/accounting items incl. live-clock-filtered
+  digests + SA_SIGINFO kick classification — foreman spot-checked all 8 in code). The r5
+  blind pass (head 19f0d90) returned 10 P1s of the same species; foreman independently
+  confirmed the two hardware-ABI ones (EXCLUDE_HOST makes the AA-0 host-loop probe
+  uncountable; no pvclock-page publication → AA-5 self-seeds unconditionally). Round 5
+  dispatched to the live worker (comment 4971638529).
 
 Landed since the midday refresh: **conductor full-suite Miri restoration MERGED**
 (tasks/104, PR #105 — 12× cut to ~11.5 min, foreman-confirmed, triple vacuity guard;
@@ -128,7 +117,7 @@ spawn these until that lane re-opens):
   paravirt work-derived clock x86-first `hm-rk5`, the ARM backend skeleton (D-list)
   `hm-cbt`, and the contract vendor column (AE-4's shape) `hm-0nf` — all three now ←
   **PR #109 merge gate `hm-54m`** (the keystone branch is done but unmerged; the
-  merge-window rule holds until it lands); AMD hammer variants + `svm.c` draft `hm-8v4`
+  merge-window rule holds until it lands — **cleared 2026-07-14 midday**); AMD hammer variants + `svm.c` draft `hm-8v4`
   ← spike-branch merge `hm-l2g` (the hammer source and the Intel box both free then).
 - **Differential migration epic** `hm-bbx`: SDK normalization `hm-bbx.1` and the lineage/evidence-
   cut/retention spike `hm-bbx.2` follow `hm-7zx`; explicit ratification `hm-bbx.5` follows the
@@ -162,6 +151,13 @@ spawn these until that lane re-opens):
 
 ## Recently done (this week)
 
+- **The ARCH-BOUNDARY restructure MERGED** (tasks/108, PR #109 squash, 2026-07-14 midday):
+  the keystone Arch trait + two-level Exit + engine/vendor split + vm-state v2 arch tag;
+  portable approved (2 rounds) + box gates green-for-PR (6/8, 2 failures proven
+  pre-existing via main-baseline differential). `hm-54m` closed; unblocks the vmm-core
+  churn lanes `hm-rk5` (paravirt clock) / `hm-cbt` (ARM backend skeleton) / `hm-0nf`
+  (vendor axis) — these now surface in `bd ready`; paravirt clock needs an implementation
+  task spec drafted before spawn.
 - **Cloud-vendor CLI moved out-of-band** (Paul, 2026-07-14): `hm-6ge` closed — the
   budget-gated machine-lease CLI is Paul's personal toolchain outside this repo's task
   queue; this repo just consumes it. Spec committed to main for reference
