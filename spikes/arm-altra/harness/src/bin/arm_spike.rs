@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! `arm-spike` — the AA-0 capability probe and the run orchestrator.
 //!
 //! Three subcommands:
@@ -81,21 +82,18 @@ enum Command {
 /// the other variants, and clap parses it straight into this shape.
 #[derive(clap::Args, Debug)]
 struct RunOpts {
-    /// The payload ELF to run.
+    /// Directory of built payload ELFs, one per class, named by
+    /// [`oracle_model::Payload::name`] (the same layout `arm-scan windows` reads).
+    /// Every planned sample boots the ELF that matches ITS payload — booting one ELF
+    /// under every class's label would produce mislabeled evidence.
     #[arg(long)]
-    payload: PathBuf,
-    /// Its expected sha256. Verified against the bytes actually loaded, immediately
-    /// before the vCPU runs — §Evidence integrity #3: recording a hash without
-    /// verifying it is the anti-pattern that rule exists to kill. Omitted, the
-    /// run-set records `verified_before_boot: false` and the floor checker refuses it.
+    payload_dir: PathBuf,
+    /// The running host kernel image (e.g. `/boot/Image`). It is read and hashed, and
+    /// that hash becomes both the mechanism block's `host_kernel_sha256` and a
+    /// verified image pin — so the kernel the run attests is content-verified, never
+    /// an operator-typed string the checker only checks is nonempty.
     #[arg(long)]
-    payload_sha256: Option<String>,
-    /// sha256 of the running host kernel image — the mechanism block's kernel
-    /// identity. arm64 KVM is built in (`CONFIG_KVM=y`), so the kernel *is* the module
-    /// identity and swapping it is a reboot; the harness cannot read it from the
-    /// running system, so the operator pins it from the booted artifact.
-    #[arg(long)]
-    host_kernel_sha256: String,
+    host_kernel_image: PathBuf,
     /// The core to hard-pin the vCPU thread to. Pinning is a correctness condition on
     /// this lineage (rr #3607), not hygiene.
     #[arg(long)]
@@ -106,6 +104,12 @@ struct RunOpts {
     /// Which overflow mechanism to arm.
     #[arg(long)]
     mechanism: MechanismArg,
+    /// The measurement scales to sweep, e.g. `--scale 1e6 --scale 1e7 --scale 1e8`
+    /// for the AA-1 differential. Defaults to `smoke` alone — enough to shake the
+    /// pipeline out, but NOT the AA-1 sweep, which the differencing argument needs
+    /// the larger scales for.
+    #[arg(long = "scale", value_name = "SCALE")]
+    scales: Vec<ScaleArg>,
     /// AA-0's environment block, as JSON (MIDR, SoC, firmware, host kernel, KVM mode).
     /// Required: the harness cannot read the machine's identity out of thin air, and
     /// inventing it would be fabricated evidence.
@@ -119,7 +123,9 @@ struct RunOpts {
     /// The measured skid margin (AA-1's deliverable). Absent for the same reason.
     #[arg(long)]
     skid_margin: Option<u64>,
-    /// The experimental condition (`pinned-solo`, `co-tenant-load`, …).
+    /// The experimental condition (`pinned-solo`, `co-tenant-load`, …). Threaded into
+    /// every planned sample AND the manifest, so the two cannot disagree about which
+    /// experiment ran.
     #[arg(long, default_value = "pinned-solo")]
     condition: String,
     /// Identifier for this run-set. Golden evidence is immutable; a rerun makes a new
@@ -138,6 +144,33 @@ struct RunOpts {
     /// Draw seeded-random target deltas over 1..=100000 (AA-3).
     #[arg(long)]
     with_targets: bool,
+}
+
+/// A measurement scale, on the command line.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, ValueEnum)]
+enum ScaleArg {
+    /// The TCG / smoke scale.
+    Smoke,
+    /// ~1e6 trips.
+    #[value(name = "1e6")]
+    S1e6,
+    /// ~1e7 trips.
+    #[value(name = "1e7")]
+    S1e7,
+    /// ~1e8 trips.
+    #[value(name = "1e8")]
+    S1e8,
+}
+
+impl From<ScaleArg> for Scale {
+    fn from(s: ScaleArg) -> Scale {
+        match s {
+            ScaleArg::Smoke => Scale::Smoke,
+            ScaleArg::S1e6 => Scale::S1e6,
+            ScaleArg::S1e7 => Scale::S1e7,
+            ScaleArg::S1e8 => Scale::S1e8,
+        }
+    }
 }
 
 /// The stage a run-set claims, on the command line.
@@ -173,15 +206,21 @@ impl From<StageArg> for Stage {
     }
 }
 
-fn plan_spec(seed: u64, reps: u64, with_targets: bool) -> PlanSpec {
+fn plan_spec(
+    seed: u64,
+    reps: u64,
+    with_targets: bool,
+    scales: Vec<Scale>,
+    condition: &str,
+) -> PlanSpec {
     PlanSpec {
         payloads: ALL_PAYLOADS
             .iter()
             .copied()
             .filter(|p| p.has_window())
             .collect(),
-        scales: vec![Scale::Smoke],
-        conditions: vec!["pinned-solo".into()],
+        scales,
+        conditions: vec![condition.to_string()],
         reps,
         seed,
         target_delta_range: with_targets.then_some((1, 100_000)),
@@ -189,7 +228,13 @@ fn plan_spec(seed: u64, reps: u64, with_targets: bool) -> PlanSpec {
 }
 
 fn emit_plan(seed: u64, reps: u64, with_targets: bool) -> Result<(), String> {
-    let samples = plan(&plan_spec(seed, reps, with_targets));
+    let samples = plan(&plan_spec(
+        seed,
+        reps,
+        with_targets,
+        vec![Scale::Smoke],
+        "pinned-solo",
+    ));
     let json =
         serde_json::to_string_pretty(&samples).map_err(|e| format!("serialize plan: {e}"))?;
     println!("{json}");
@@ -298,12 +343,12 @@ fn execute(_args: RunArgs) -> Result<(), String> {
 /// there is no `/dev/kvm` to hand them to.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct RunArgs {
-    payload: PathBuf,
-    payload_sha256: Option<String>,
-    host_kernel_sha256: String,
+    payload_dir: PathBuf,
+    host_kernel_image: PathBuf,
     core: u32,
     stage: Stage,
     mechanism: MechanismArg,
+    scales: Vec<Scale>,
     environment: Environment,
     weights: Option<Weights>,
     skid_margin: Option<u64>,
@@ -315,45 +360,80 @@ struct RunArgs {
     with_targets: bool,
 }
 
+/// A payload ELF loaded from the payload directory, with its verified content pin.
+#[cfg(target_os = "linux")]
+struct LoadedPayload {
+    image: arm_harness::elf::Elf,
+    sha256: String,
+}
+
+/// Read, hash, and parse the ELF for `payload` out of `dir`, keyed by the payload's
+/// canonical name. Loading one ELF for every class would run one payload under seven
+/// wrong labels — mislabeled evidence — so each class is loaded from its own file.
+#[cfg(target_os = "linux")]
+fn load_payload(
+    dir: &std::path::Path,
+    payload: oracle_model::Payload,
+) -> Result<LoadedPayload, String> {
+    use arm_harness::elf::Elf;
+    use arm_harness::evidence::hex_lower;
+    use sha2::{Digest, Sha256};
+
+    let path = dir.join(payload.name());
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    let sha256 = hex_lower(&h.finalize());
+    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", path.display()))?;
+    Ok(LoadedPayload { image, sha256 })
+}
+
 #[cfg(target_os = "linux")]
 fn execute(args: RunArgs) -> Result<(), String> {
-    use arm_harness::elf::Elf;
     use arm_harness::evidence::{
         ExitReason, ImagePin, Mechanism, Pinning, RunSetContext, assemble_run_set, hex_lower,
     };
     use arm_harness::run::{SampleSpec, run_sample};
     use arm_harness::sys::{self, Machine, ParamsPage, PerfCounter, perf_config, pin_to_core};
     use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
 
     // Pin first, and pin the thread that will call KVM_RUN: the perf context follows
     // the thread, and on this lineage an unpinned sample is not a slower sample, it
     // is an untrusted one (rr #3607).
     pin_to_core(args.core).map_err(|e| format!("pin to core {}: {e}", args.core))?;
 
-    // Content-verify the image against its pin, on the bytes we are about to load —
-    // not on a path we hope still holds them.
-    let bytes = std::fs::read(&args.payload)
-        .map_err(|e| format!("read {}: {e}", args.payload.display()))?;
-    let mut h = Sha256::new();
-    h.update(&bytes);
-    let digest = hex_lower(&h.finalize());
-    let verified = match &args.payload_sha256 {
-        Some(want) => {
-            let want = want.trim_start_matches("sha256:").to_ascii_lowercase();
-            if want != digest {
-                return Err(format!(
-                    "image pin mismatch: {} hashes to {digest}, but --payload-sha256 says {want}. \
-                     Refusing to boot an artifact that is not the one pinned",
-                    args.payload.display()
-                ));
-            }
-            true
-        }
-        None => false,
+    // Content-verify the running host kernel by hashing the image itself, rather than
+    // trusting an operator-typed string. That hash is the mechanism block's kernel
+    // identity AND a verified image pin, so §Evidence integrity #3's rule — which
+    // explicitly includes host kernels — actually covers it.
+    let host_kernel_bytes = std::fs::read(&args.host_kernel_image)
+        .map_err(|e| format!("read host kernel {}: {e}", args.host_kernel_image.display()))?;
+    let host_kernel_sha256 = {
+        let mut h = Sha256::new();
+        h.update(&host_kernel_bytes);
+        hex_lower(&h.finalize())
     };
 
-    let image = Elf::parse(bytes).map_err(|e| format!("parse {}: {e}", args.payload.display()))?;
-    let samples = plan(&plan_spec(args.seed, args.reps, args.with_targets));
+    // Load every payload class the plan will run, up front — one ELF per class, from
+    // its own file, each with its verified content pin.
+    let mut payloads: BTreeMap<String, LoadedPayload> = BTreeMap::new();
+    for p in ALL_PAYLOADS.iter().copied().filter(|p| p.has_window()) {
+        payloads.insert(p.name().to_string(), load_payload(&args.payload_dir, p)?);
+    }
+
+    let scales = if args.scales.is_empty() {
+        vec![Scale::Smoke]
+    } else {
+        args.scales.iter().copied().map(Scale::from).collect()
+    };
+    let samples = plan(&plan_spec(
+        args.seed,
+        args.reps,
+        args.with_targets,
+        scales,
+        &args.condition,
+    ));
     let attempted = samples.len() as u64;
 
     let mechanism_kind = match args.mechanism {
@@ -361,113 +441,144 @@ fn execute(args: RunArgs) -> Result<(), String> {
         MechanismArg::Patched => sys::Mechanism::Preempt,
     };
 
+    // Run the samples, gathering records. A sample that cannot be MEASURED stops the
+    // run — but the evidence gathered so far is still written, so the gap is visible
+    // to the totality checker (attempted counts the full plan). A reliability failure
+    // must not disappear when the operator reruns; it must be on the record.
     let mut records = Vec::new();
     let mut armed_attr = None;
     let mut patch_marker = false;
+    let mut failure: Option<String> = None;
 
     for (i, s) in samples.iter().enumerate() {
+        let loaded = match payloads.get(s.payload.name()) {
+            Some(l) => l,
+            None => {
+                failure = Some(format!(
+                    "sample {i}: no ELF for payload {}",
+                    s.payload.name()
+                ));
+                break;
+            }
+        };
         // A fresh VM per sample: the guest starts from the same state every time,
         // which is what makes two same-seed samples comparable at all.
         let params = ParamsPage {
             scale_index: s.scale.index(),
             seed: s.seed,
         };
-        let mut machine = Machine::new(&image, &params)
-            .map_err(|e| format!("sample {i}: create the machine: {e}"))?;
-        // The patch marker, probed on the VM actually running the sample — the
-        // positive proof of §Evidence integrity #4, not a build-time assumption.
-        patch_marker = machine
-            .patch_marker_observed()
-            .map_err(|e| format!("sample {i}: probe the patch marker: {e}"))?;
-
-        // Opening the counter for the patched mechanism on a kernel that lacks the
-        // capability FAILS here. There is no code path from the patched request to
-        // the stock kick, which is what makes the fallback structurally unable to
-        // masquerade as the mechanism under test.
-        let mut counter = PerfCounter::open(&machine, mechanism_kind, s.target_delta)
-            .map_err(|e| format!("sample {i}: open the work counter: {e}"))?;
-        armed_attr = Some(*counter.attr());
-
-        let spec = SampleSpec {
-            sample_id: s.sample_id,
-            payload: s.payload,
-            scale: s.scale,
-            seed: s.seed,
-            trips: oracle_model::trips(s.payload, s.scale),
-            condition: s.condition.clone(),
-            target_delta: s.target_delta,
-        };
-        // A sample that cannot be MEASURED does not quietly vanish from the evidence:
-        // the run fails here, and whatever records exist are short of `attempted` —
-        // which the totality check catches. A missing sample is a failure to account,
-        // not a pass.
-        let record = run_sample(&mut machine, &mut counter, &spec)
-            .map_err(|e| format!("sample {i} ({}): {e}", s.payload.name()))?;
-        records.push(record);
+        let result = (|| {
+            let mut machine = Machine::new(&loaded.image, &params)
+                .map_err(|e| format!("create the machine: {e}"))?;
+            // The patch marker, probed on the VM actually running the sample — the
+            // positive proof of §Evidence integrity #4, not a build-time assumption.
+            patch_marker = machine
+                .patch_marker_observed()
+                .map_err(|e| format!("probe the patch marker: {e}"))?;
+            // Opening the counter for the patched mechanism on a kernel that lacks the
+            // capability FAILS here. There is no code path from the patched request to
+            // the stock kick.
+            let mut counter = PerfCounter::open(&machine, mechanism_kind, s.target_delta)
+                .map_err(|e| format!("open the work counter: {e}"))?;
+            armed_attr = Some(*counter.attr());
+            let spec = SampleSpec {
+                sample_id: s.sample_id,
+                payload: s.payload,
+                scale: s.scale,
+                seed: s.seed,
+                trips: oracle_model::trips(s.payload, s.scale),
+                condition: s.condition.clone(),
+                target_delta: s.target_delta,
+            };
+            run_sample(&mut machine, &mut counter, &spec).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(record) => records.push(record),
+            Err(e) => {
+                failure = Some(format!("sample {i} ({}): {e}", s.payload.name()));
+                break;
+            }
+        }
     }
 
-    let attr = armed_attr.ok_or("the plan produced no samples: nothing was measured")?;
-    let context = RunSetContext {
-        stage: args.stage,
-        run_set_id: args.run_set_id,
-        environment: args.environment,
-        mechanism: Mechanism {
-            kvm_patched: patch_marker,
-            host_kernel_sha256: args.host_kernel_sha256,
-            expected_exit_reason: match args.mechanism {
-                MechanismArg::Stock => ExitReason::SignalKick,
-                MechanismArg::Patched => ExitReason::Preempt,
-            },
-            patch_marker_observed: patch_marker,
-        },
-        images: vec![ImagePin {
-            path: args.payload.display().to_string(),
-            sha256: digest,
-            // The md5 cross-reference is the operator's (no md5 crate is on the
-            // dependency whitelist); sha256 is the identity this harness verifies.
+    // Assemble and WRITE the evidence regardless of whether a sample failed. The perf
+    // block needs an armed attr; if not one sample got that far, there is nothing to
+    // write and the failure is the whole story.
+    if let Some(attr) = armed_attr {
+        let mut images = vec![ImagePin {
+            path: args.host_kernel_image.display().to_string(),
+            sha256: host_kernel_sha256.clone(),
             md5: String::new(),
-            verified_before_boot: verified,
-        }],
-        perf: perf_config(&attr),
-        pinning: Pinning {
-            pinned: true,
-            core: Some(args.core),
-            governor: std::fs::read_to_string(
-                "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
-            )
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-            migration_probe: false,
-        },
-        condition: args.condition,
-        weights: args.weights,
-        skid_margin: args.skid_margin,
-        attempted,
-    };
+            verified_before_boot: true,
+        }];
+        for (name, l) in &payloads {
+            images.push(ImagePin {
+                path: args.payload_dir.join(name).display().to_string(),
+                sha256: l.sha256.clone(),
+                md5: String::new(),
+                verified_before_boot: true,
+            });
+        }
+        let context = RunSetContext {
+            stage: args.stage,
+            run_set_id: args.run_set_id,
+            environment: args.environment,
+            mechanism: Mechanism {
+                kvm_patched: patch_marker,
+                host_kernel_sha256,
+                expected_exit_reason: match args.mechanism {
+                    MechanismArg::Stock => ExitReason::SignalKick,
+                    MechanismArg::Patched => ExitReason::Preempt,
+                },
+                patch_marker_observed: patch_marker,
+            },
+            images,
+            perf: perf_config(&attr),
+            pinning: Pinning {
+                pinned: true,
+                core: Some(args.core),
+                governor: std::fs::read_to_string(
+                    "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
+                )
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+                migration_probe: false,
+            },
+            condition: args.condition,
+            weights: args.weights,
+            skid_margin: args.skid_margin,
+            attempted,
+        };
+        let (manifest, records_jsonl) = assemble_run_set(context, &records)
+            .map_err(|e| format!("assemble the run-set: {e}"))?;
+        std::fs::create_dir_all(&args.out)
+            .map_err(|e| format!("create {}: {e}", args.out.display()))?;
+        std::fs::write(args.out.join("records.jsonl"), &records_jsonl)
+            .map_err(|e| format!("write records.jsonl: {e}"))?;
+        std::fs::write(args.out.join("run-set.json"), &manifest)
+            .map_err(|e| format!("write run-set.json: {e}"))?;
+        println!(
+            "wrote {} of {attempted} attempted records to {}",
+            records.len(),
+            args.out.display()
+        );
+        println!(
+            "NOTE: this harness's verdict is not a disposition. Run `floor-check {}` with the \
+             stage's floors; the checker's output is the evidence.",
+            args.out.display()
+        );
+    }
 
-    let (manifest, records_jsonl) =
-        assemble_run_set(context, &records).map_err(|e| format!("assemble the run-set: {e}"))?;
-
-    std::fs::create_dir_all(&args.out)
-        .map_err(|e| format!("create {}: {e}", args.out.display()))?;
-    std::fs::write(args.out.join("records.jsonl"), &records_jsonl)
-        .map_err(|e| format!("write records.jsonl: {e}"))?;
-    std::fs::write(args.out.join("run-set.json"), &manifest)
-        .map_err(|e| format!("write run-set.json: {e}"))?;
-
-    println!(
-        "wrote {} records to {} ({} attempted)",
-        records.len(),
-        args.out.display(),
-        attempted
-    );
-    println!(
-        "NOTE: this harness's verdict is not a disposition. Run `floor-check {}` with the \
-         stage's floors; the checker's output is the evidence.",
-        args.out.display()
-    );
-    Ok(())
+    // A failed sample is reported AFTER the partial evidence is on disk, so the gap is
+    // both persisted and surfaced.
+    match failure {
+        None => Ok(()),
+        Some(e) => Err(format!(
+            "{e} — {} record(s) of {attempted} were written; the gap is in the evidence",
+            records.len()
+        )),
+    }
 }
 
 fn run() -> Result<(), String> {
@@ -485,12 +596,12 @@ fn run() -> Result<(), String> {
                 None => None,
             };
             execute(RunArgs {
-                payload: opts.payload,
-                payload_sha256: opts.payload_sha256,
-                host_kernel_sha256: opts.host_kernel_sha256,
+                payload_dir: opts.payload_dir,
+                host_kernel_image: opts.host_kernel_image,
                 core: opts.core,
                 stage: opts.stage.into(),
                 mechanism: opts.mechanism,
+                scales: opts.scales.iter().copied().map(Scale::from).collect(),
                 environment,
                 weights,
                 skid_margin: opts.skid_margin,

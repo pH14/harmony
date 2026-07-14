@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Pins of values the *executed assembly* produced under emulation.
 //!
 //! These are not self-consistency checks — they are the model measured against

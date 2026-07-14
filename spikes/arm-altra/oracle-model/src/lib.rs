@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! The analytical taken-branch oracle for the arm64 spike payloads.
 //!
 //! `docs/ARM-ALTRA.md` §Evidence integrity #5 forbids judging count-exactness by
@@ -792,6 +793,25 @@ pub enum SolveError {
         /// The value derived.
         value: i128,
     },
+    /// A derived weight was **not an integer**: the measured count differs from the
+    /// model by an amount its trip count does not divide.
+    ///
+    /// This is the sharp end of the model. `BR_RETIRED` is a count of *events*, so a
+    /// per-occurrence weight is by definition a whole number; a remainder means the
+    /// measurement is not explained by "n occurrences of a fixed-cost class", and
+    /// the difference is exactly the unexplained count mismatch that
+    /// `docs/ARM-ALTRA.md` treats as **blocking**. Truncating it — which integer
+    /// division does silently — would bury the finding inside a plausible weight.
+    NonIntegralWeight {
+        /// The class whose weight did not come out whole.
+        class: Ambiguity,
+        /// The numerator: measured minus everything the model already explains.
+        numerator: i128,
+        /// The trip count that failed to divide it.
+        trips: i128,
+        /// What was left over.
+        remainder: i128,
+    },
     /// Trip counts differed where the solve needs them equal.
     UnequalTrips,
 }
@@ -802,10 +822,20 @@ pub enum SolveError {
 pub struct Solved {
     /// The derived weights.
     pub weights: Weights,
-    /// The `SVC`-class residual: measured minus predicted, after the solve. The
-    /// system is over-determined, so this being nonzero means the model is wrong
-    /// about this silicon — it is evidence, not noise.
+    /// The **worst residual over every supplied observation**: `measured - predicted`
+    /// for whichever row the solved weights explain least well (0 when they explain
+    /// all of them).
+    ///
+    /// This used to be recomputed from the `SVC` row alone — the very row `w_svc` was
+    /// derived from — so it was zero by construction and could report a clean solve
+    /// whose weights did not reproduce the other measurements. It is now checked
+    /// against *all* of them, including any extra classes or scales the caller
+    /// supplies beyond the five the solve needs, which is where the model's
+    /// over-determination actually lives. Nonzero means the model is wrong about this
+    /// silicon: evidence, not noise.
     pub residual: i128,
+    /// The payload whose row produced [`Solved::residual`].
+    pub worst: Payload,
 }
 
 /// Solve for the [`Weights`] from measurements of the payload set.
@@ -848,15 +878,7 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
         return Err(SolveError::UnequalTrips);
     }
     let pair = i128::from(ex.measured) - i128::from(ex.expectation.certain_taken) - offset;
-    if pair % n_ex != 0 {
-        // Not an integer per-occurrence weight: the model does not describe this
-        // silicon. Surface it as a negative/invalid weight rather than truncating.
-        return Err(SolveError::NegativeWeight {
-            class: Ambiguity::ExceptionEntry,
-            value: pair,
-        });
-    }
-    let pair_per = pair / n_ex;
+    let pair_per = exact_div(pair, n_ex, Ambiguity::ExceptionEntry)?;
     if pair_per < 0 {
         return Err(SolveError::NegativeWeight {
             class: Ambiguity::ExceptionEntry,
@@ -868,9 +890,11 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
     if sv.expectation.trips != ex.expectation.trips {
         return Err(SolveError::UnequalTrips);
     }
-    let w_svc = (i128::from(sv.measured) - i128::from(sv.expectation.certain_taken) - offset)
-        / n_ex
-        - pair_per;
+    let w_svc = exact_div(
+        i128::from(sv.measured) - i128::from(sv.expectation.certain_taken) - offset,
+        n_ex,
+        Ambiguity::SvcInstruction,
+    )? - pair_per;
     if w_svc < 0 {
         return Err(SolveError::NegativeWeight {
             class: Ambiguity::SvcInstruction,
@@ -882,9 +906,11 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
     if n_wf == 0 {
         return Err(SolveError::UnequalTrips);
     }
-    let w_wfi = (i128::from(wf.measured) - i128::from(wf.expectation.certain_taken) - offset)
-        / n_wf
-        - pair_per;
+    let w_wfi = exact_div(
+        i128::from(wf.measured) - i128::from(wf.expectation.certain_taken) - offset,
+        n_wf,
+        Ambiguity::WfiInstruction,
+    )? - pair_per;
     if w_wfi < 0 {
         return Err(SolveError::NegativeWeight {
             class: Ambiguity::WfiInstruction,
@@ -905,10 +931,50 @@ pub fn solve(observations: &[Observation]) -> Result<Solved, SolveError> {
         u64::try_from(offset.max(0)).unwrap_or(u64::MAX),
     );
 
-    let predicted = sv.expectation.total(&weights, sv.reported_taken);
-    let residual = i128::from(sv.measured) - i128::from(predicted);
+    // Check the solved weights against EVERY observation the caller supplied — not
+    // just the `SVC` row they were partly derived from, which reproduces itself by
+    // construction and so could report a clean solve over weights that explain
+    // nothing else. Extra classes and extra scales beyond the five the solve needs
+    // are where the over-determination actually lives, and this is what reads it.
+    let mut residual: i128 = 0;
+    let mut worst = sv.expectation.payload;
+    for o in observations {
+        let predicted = o.expectation.total(&weights, o.reported_taken);
+        let r = i128::from(o.measured) - i128::from(predicted);
+        if r.unsigned_abs() > residual.unsigned_abs() {
+            residual = r;
+            worst = o.expectation.payload;
+        }
+    }
 
-    Ok(Solved { weights, residual })
+    Ok(Solved {
+        weights,
+        residual,
+        worst,
+    })
+}
+
+/// Divide exactly, or refuse.
+///
+/// A per-occurrence `BR_RETIRED` weight is a count of events, so it is a whole
+/// number by definition. A remainder means the measurement is not explained by "n
+/// occurrences of a fixed-cost class" — the unexplained count mismatch the program
+/// treats as blocking. Integer division would truncate it into a plausible weight
+/// and lose the finding, which is precisely what this function exists to prevent.
+fn exact_div(numerator: i128, trips: i128, class: Ambiguity) -> Result<i128, SolveError> {
+    if trips == 0 {
+        return Err(SolveError::UnequalTrips);
+    }
+    let remainder = numerator % trips;
+    if remainder != 0 {
+        return Err(SolveError::NonIntegralWeight {
+            class,
+            numerator,
+            trips,
+            remainder,
+        });
+    }
+    Ok(numerator / trips)
 }
 
 #[cfg(test)]
@@ -1094,6 +1160,84 @@ mod tests {
     }
 
     #[test]
+    fn a_wfi_measurement_its_trips_do_not_divide_is_refused_not_truncated() {
+        // The failure this closes: `w_wfi = (measured - certain - offset) / trips`
+        // TRUNCATED a remainder, and the residual was recomputed from the SVC row —
+        // the very row `w_svc` came from — so it read zero. A WFI measurement the
+        // model could not explain therefore produced a clean solve with plausible
+        // weights. `BR_RETIRED` counts events: a per-occurrence weight is a whole
+        // number, so a remainder IS the unexplained mismatch the program calls
+        // blocking, and it must surface as one.
+        let truth = Weights::measured(0, 0, 0, 0, 2);
+        let mut obs = synthesize(&truth, Scale::S1e6);
+        for o in &mut obs {
+            if o.expectation.payload == Payload::WfiIdle {
+                // One extra taken branch across the whole run: not divisible by the
+                // trip count, so no integral per-WFI weight explains it.
+                o.measured += 1;
+            }
+        }
+        match solve(&obs) {
+            Err(SolveError::NonIntegralWeight {
+                class: Ambiguity::WfiInstruction,
+                remainder,
+                ..
+            }) => assert_eq!(remainder, 1),
+            other => panic!("a non-integral WFI weight must be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_non_integral_svc_weight_is_refused_too() {
+        let truth = Weights::measured(0, 0, 0, 0, 2);
+        let mut obs = synthesize(&truth, Scale::S1e6);
+        for o in &mut obs {
+            if o.expectation.payload == Payload::Svc {
+                o.measured += 3;
+            }
+        }
+        assert!(matches!(
+            solve(&obs),
+            Err(SolveError::NonIntegralWeight {
+                class: Ambiguity::SvcInstruction,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn the_residual_reads_every_observation_not_just_the_row_it_came_from() {
+        // An extra class the solve does not consume (lse-atomics) that the solved
+        // weights do NOT reproduce. The old residual — recomputed from SVC alone —
+        // was zero by construction and could not see this; the whole point of an
+        // over-determined system is that it can.
+        let truth = Weights::measured(0, 0, 0, 0, 2);
+        let five = synthesize(&truth, Scale::S1e6);
+        let lse = expected(Payload::LseAtomics, Scale::S1e6, DEFAULT_SEED);
+        let mut obs = [
+            five[0],
+            five[1],
+            five[2],
+            five[3],
+            five[4],
+            Observation {
+                expectation: lse,
+                // 7 taken branches the model cannot account for.
+                measured: lse.total(&truth, 0) + 7,
+                reported_taken: 0,
+            },
+        ];
+        let solved = solve(&obs).expect("the five solve rows are still consistent");
+        assert_eq!(solved.weights, truth);
+        assert_eq!(solved.residual, 7, "the unexplained row must be visible");
+        assert_eq!(solved.worst, Payload::LseAtomics);
+
+        // And with that row explained, the residual is zero again.
+        obs[5].measured = lse.total(&truth, 0);
+        assert_eq!(solve(&obs).expect("solvable").residual, 0);
+    }
+
+    #[test]
     fn solve_recovers_a_counterfactual_silicon() {
         // A silicon where exception entry *does* count and SVC counts as a branch.
         // The apparatus must be able to express and recover this, which is the
@@ -1131,13 +1275,17 @@ mod tests {
     fn solve_rejects_a_negative_weight() {
         let truth = Weights::measured(0, 0, 0, 0, 2);
         let mut obs = synthesize(&truth, Scale::S1e6);
-        // Make the exception class read *below* its certain count: no
-        // non-negative weight explains it.
+        // Make the exception class read *below* its certain count by exactly one
+        // per trip: the implied weight is a whole number, and it is -1. No
+        // non-negative weight explains it, and that is a different finding from a
+        // measurement no *integral* weight explains (which is NonIntegralWeight —
+        // the two must not be confused, because they say different things about the
+        // silicon).
         let ex = obs
             .iter_mut()
             .find(|o| o.expectation.payload == Payload::ExceptionAbort)
             .expect("present");
-        ex.measured = ex.expectation.certain_taken;
+        ex.measured -= ex.expectation.trips;
         assert!(matches!(
             solve(&obs),
             Err(SolveError::NegativeWeight { .. })
