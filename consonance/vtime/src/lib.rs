@@ -108,6 +108,7 @@ mod clock;
 mod error;
 mod idle;
 mod planner;
+pub mod pvclock;
 mod queue;
 pub mod sim;
 
