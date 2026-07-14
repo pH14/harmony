@@ -30,10 +30,7 @@
 
 use std::collections::BTreeMap;
 
-use sha2::{Digest, Sha256};
-
 use super::{KvmRun, PerfEventAttr, SysError, br_retired_attr, kvm};
-use crate::evidence::hex_lower;
 use crate::run::{RunError, Vcpu, VcpuExit, WorkCounter};
 
 /// Guest RAM base — the QEMU `virt` / Altra map the payload runtime is linked for
@@ -616,27 +613,36 @@ impl Vcpu for Machine {
             });
         }
 
+        // Snapshot the shared mapping once (volatile: the kernel is the external
+        // writer, though it has finished by the time KVM_RUN returned and the vCPU is
+        // stopped), then decode through the portable, Miri-tested seam. The pointer
+        // read is here; the field logic is `super::decode_kvm_run`.
         // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
-        // size_of::<KvmRun>() bytes (checked at construction); the kernel writes it
-        // and we only read. Volatile because the writer is outside this program.
-        let reason = unsafe { core::ptr::read_volatile(&raw const (*self.run).exit_reason) };
-        match reason {
-            kvm::EXIT_MMIO => {
-                // SAFETY: as above; the mmio arm is valid exactly when the exit
-                // reason says so, which is what this match established.
-                let mmio = unsafe { core::ptr::read_volatile(&raw const (*self.run).mmio) };
-                let len = (mmio.len as usize).min(mmio.data.len());
-                Ok(VcpuExit::Mmio {
-                    addr: mmio.phys_addr,
-                    data: mmio.data[..len].to_vec(),
-                    is_write: mmio.is_write != 0,
-                })
+        // size_of::<KvmRun>() bytes (checked at construction).
+        let snapshot = unsafe { core::ptr::read_volatile(self.run) };
+        Ok(super::decode_kvm_run(&snapshot))
+    }
+
+    /// Stage the value of an MMIO **read** into the shared `kvm_run.mmio.data`, so the
+    /// next `KVM_RUN` resumes the guest with it. The KVM MMIO-read protocol: on a read
+    /// exit the kernel expects userspace to fill the data buffer and re-enter.
+    ///
+    /// The bounded copy is `super::stage_mmio_read` — portable and Miri-tested; this
+    /// wrapper only supplies the mapped struct and writes it back volatilely.
+    fn complete_mmio_read(&mut self, data: &[u8]) -> Result<(), RunError> {
+        // SAFETY: `self.run` is a live MAP_SHARED mapping of at least
+        // size_of::<KvmRun>() bytes; snapshot it, stage the read into the snapshot via
+        // the portable seam, and write the mmio.data bytes back. Volatile: the kernel
+        // reads them on re-entry.
+        unsafe {
+            let mut snapshot = core::ptr::read_volatile(self.run);
+            super::stage_mmio_read(&mut snapshot, data);
+            let dst = (&raw mut (*self.run).mmio.data).cast::<u8>();
+            for (i, b) in snapshot.mmio.data.iter().enumerate() {
+                core::ptr::write_volatile(dst.add(i), *b);
             }
-            kvm::EXIT_PREEMPT => Ok(VcpuExit::Preempt),
-            kvm::EXIT_INTR => Ok(VcpuExit::SignalKick),
-            kvm::EXIT_DEBUG => Ok(VcpuExit::Debug),
-            other => Ok(VcpuExit::Other(other)),
         }
+        Ok(())
     }
 
     /// A digest of the landed state: every architectural register the kernel will
@@ -662,18 +668,11 @@ impl Vcpu for Machine {
             regs.insert(id, value);
         }
 
-        let mut h = Sha256::new();
-        h.update(b"arm-spike-state-v1");
-        for (id, value) in &regs {
-            h.update(id.to_le_bytes());
-            h.update(value);
-        }
         // SAFETY: `self.mem` is a live mapping of `self.mem_size` bytes and the vCPU
-        // is not running (we are between exits), so nothing else writes it.
+        // is not running (we are between exits), so nothing else writes it. The hashing
+        // and the sorted-order discipline are the portable, Miri-tested `digest_state`.
         let ram = unsafe { core::slice::from_raw_parts(self.mem, self.mem_size) };
-        h.update(ram);
-
-        Ok(format!("sha256:{}", hex_lower(&h.finalize())))
+        Ok(super::digest_state(&regs, ram))
     }
 }
 
@@ -695,12 +694,26 @@ impl Machine {
         if errno() != libc::E2BIG {
             return Err(err("ioctl(KVM_GET_REG_LIST, count)"));
         }
+        // `n` is a host-supplied length and therefore untrusted. A vCPU's register
+        // list is a few hundred entries; a value beyond a generous bound (or one whose
+        // `+ 1` would overflow `usize`) is a malformed kernel/ABI, refused rather than
+        // used to size an allocation that would abort the process.
+        const MAX_REGS: u64 = 65_536;
+        if n == 0 || n > MAX_REGS {
+            return Err(SysError::Protocol(format!(
+                "KVM_GET_REG_LIST reported {n} registers, outside the plausible bound \
+                 (1..={MAX_REGS}): refusing to size an allocation on an untrusted count"
+            )));
+        }
         let count = usize::try_from(n).map_err(|_| {
             SysError::Protocol("KVM_GET_REG_LIST returned an implausible register count".into())
         })?;
+        let buf_len = count
+            .checked_add(1)
+            .ok_or_else(|| SysError::Protocol("register count + 1 overflows usize".into()))?;
 
         // One u64 for `n`, then `count` ids.
-        let mut buf: Vec<u64> = vec![0; count + 1];
+        let mut buf: Vec<u64> = vec![0; buf_len];
         buf[0] = n;
         // SAFETY: `buf` is `count + 1` u64s long, exactly the layout kvm_reg_list
         // wants for this `n`; the kernel writes at most that many.

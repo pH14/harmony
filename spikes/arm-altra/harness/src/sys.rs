@@ -359,6 +359,73 @@ pub struct KvmRunMmio {
     pub padding: [u8; 3],
 }
 
+// -- The vCPU-exit pointer logic, portable and Miri-reachable --
+//
+// The KVM harness ([`machine`]) is Linux-only, so the interpreter — which runs on the
+// Mac — cannot execute its ioctls. The pointer/field logic those ioctls hand off to,
+// though, is pure: decoding a `kvm_run` snapshot into an exit, staging an MMIO read
+// value into the shared buffer, and hashing a state. Those live here, operate on
+// plain references, and are driven under Miri by [`tests`] against an in-process
+// `KvmRun` — the in-process loopback the unsafe⇒Miri contract asks for. `machine`
+// forms the references from its mapped pointer and calls straight through.
+
+/// Decode a `kvm_run` snapshot into a [`crate::run::VcpuExit`], with no interpretation
+/// beyond the exit-reason match — the mechanism a record attests is the one the kernel
+/// set (`docs/ARM-ALTRA.md` §Evidence integrity #4).
+///
+/// Pure and Miri-testable: the field reads and the bounded `data` slice are exactly
+/// the operations that would be unsafe against a live mapping, driven here against a
+/// value.
+#[must_use]
+pub fn decode_kvm_run(run: &KvmRun) -> crate::run::VcpuExit {
+    use crate::run::VcpuExit;
+    match run.exit_reason {
+        kvm::EXIT_MMIO => {
+            let len = (run.mmio.len as usize).min(run.mmio.data.len());
+            VcpuExit::Mmio {
+                addr: run.mmio.phys_addr,
+                data: run.mmio.data[..len].to_vec(),
+                is_write: run.mmio.is_write != 0,
+            }
+        }
+        kvm::EXIT_PREEMPT => VcpuExit::Preempt,
+        kvm::EXIT_INTR => VcpuExit::SignalKick,
+        kvm::EXIT_DEBUG => VcpuExit::Debug,
+        other => VcpuExit::Other(other),
+    }
+}
+
+/// Stage the value of an MMIO **read** into a `kvm_run`'s shared `mmio.data`, so the
+/// next `KVM_RUN` resumes the guest with it. Copies at most `data.len()` bytes, capped
+/// at the 8-byte buffer — the bounds check that keeps a wide read from writing past the
+/// field. Pure and Miri-testable.
+pub fn stage_mmio_read(run: &mut KvmRun, data: &[u8]) {
+    let n = data.len().min(run.mmio.data.len());
+    run.mmio.data[..n].copy_from_slice(&data[..n]);
+}
+
+/// Hash a landed guest state — every architectural register (in sorted id order) plus
+/// all of guest RAM — into the digest AA-3's replay-identity and AA-6's bit-identity
+/// floors compare.
+///
+/// Registers are a `BTreeMap` so iteration order (which reaches the hashed bytes) is
+/// the register id, never insertion order (Conventions rule 4). Pure and Miri-testable:
+/// `machine` reads the registers by ioctl and forms the RAM slice from its mapping,
+/// then hands both here — so the hashing itself, and the order discipline, are
+/// interpreter-checked.
+#[must_use]
+pub fn digest_state(regs: &std::collections::BTreeMap<u64, Vec<u8>>, ram: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"arm-spike-state-v1");
+    for (id, value) in regs {
+        h.update(id.to_le_bytes());
+        h.update(value);
+    }
+    h.update(ram);
+    format!("sha256:{}", crate::evidence::hex_lower(&h.finalize()))
+}
+
 /// A capability the running kernel either has or does not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capability {
@@ -702,6 +769,113 @@ mod tests {
         assert_eq!(core::mem::offset_of!(KvmRunMmio, data), 8);
         assert_eq!(core::mem::offset_of!(KvmRunMmio, len), 16);
         assert_eq!(core::mem::offset_of!(KvmRunMmio, is_write), 20);
+    }
+
+    /// A zeroed `KvmRun` to build exit snapshots from — the in-process loopback the
+    /// machine layer's pointer logic is driven against under Miri.
+    fn blank_kvm_run() -> KvmRun {
+        KvmRun {
+            request_interrupt_window: 0,
+            immediate_exit: 0,
+            padding1: [0; 6],
+            exit_reason: 0,
+            ready_for_interrupt_injection: 0,
+            if_flag: 0,
+            flags: 0,
+            cr8: 0,
+            apic_base: 0,
+            mmio: KvmRunMmio {
+                phys_addr: 0,
+                data: [0; 8],
+                len: 0,
+                is_write: 0,
+                padding: [0; 3],
+            },
+        }
+    }
+
+    #[test]
+    fn decode_kvm_run_maps_each_exit_reason() {
+        use crate::run::VcpuExit;
+
+        let mut run = blank_kvm_run();
+        run.exit_reason = kvm::EXIT_MMIO;
+        run.mmio.phys_addr = 0x0900_0000;
+        run.mmio.len = 1;
+        run.mmio.is_write = 1;
+        run.mmio.data = [0x42, 0, 0, 0, 0, 0, 0, 0];
+        match decode_kvm_run(&run) {
+            VcpuExit::Mmio {
+                addr,
+                data,
+                is_write,
+            } => {
+                assert_eq!(addr, 0x0900_0000);
+                assert_eq!(data, vec![0x42]); // bounded by len=1
+                assert!(is_write);
+            }
+            other => panic!("expected Mmio, got {other:?}"),
+        }
+
+        // A too-wide `len` must be clamped to the 8-byte buffer, never read past it.
+        run.mmio.len = 999;
+        if let VcpuExit::Mmio { data, .. } = decode_kvm_run(&run) {
+            assert_eq!(data.len(), 8, "len clamped to the data buffer");
+        } else {
+            panic!("expected Mmio");
+        }
+
+        for (reason, want) in [
+            (kvm::EXIT_PREEMPT, VcpuExit::Preempt),
+            (kvm::EXIT_INTR, VcpuExit::SignalKick),
+            (kvm::EXIT_DEBUG, VcpuExit::Debug),
+            (7777, VcpuExit::Other(7777)),
+        ] {
+            run.exit_reason = reason;
+            assert_eq!(decode_kvm_run(&run), want);
+        }
+    }
+
+    #[test]
+    fn stage_mmio_read_writes_the_bounded_value_into_the_shared_buffer() {
+        let mut run = blank_kvm_run();
+        stage_mmio_read(&mut run, &0u32.to_le_bytes());
+        assert_eq!(run.mmio.data, [0, 0, 0, 0, 0, 0, 0, 0]);
+
+        stage_mmio_read(&mut run, &[0xAA, 0xBB]);
+        assert_eq!(&run.mmio.data[..2], &[0xAA, 0xBB]);
+
+        // A value wider than the 8-byte buffer is clamped — no write past the field.
+        let wide = [1u8; 16];
+        stage_mmio_read(&mut run, &wide);
+        assert_eq!(run.mmio.data, [1; 8]);
+    }
+
+    #[test]
+    fn digest_state_is_order_stable_and_input_sensitive() {
+        use std::collections::BTreeMap;
+        let ram = vec![0u8; 64];
+
+        let mut a = BTreeMap::new();
+        a.insert(2u64, vec![0xAA]);
+        a.insert(1u64, vec![0xBB]);
+        // Insertion order differs; the BTreeMap makes the digest identical anyway.
+        let mut b = BTreeMap::new();
+        b.insert(1u64, vec![0xBB]);
+        b.insert(2u64, vec![0xAA]);
+        assert_eq!(digest_state(&a, &ram), digest_state(&b, &ram));
+
+        // Different RAM → different digest (the RAM really is hashed).
+        let mut other_ram = ram.clone();
+        other_ram[0] = 1;
+        assert_ne!(digest_state(&a, &ram), digest_state(&a, &other_ram));
+
+        // Different register value → different digest.
+        let mut c = a.clone();
+        c.insert(1u64, vec![0xCC]);
+        assert_ne!(digest_state(&a, &ram), digest_state(&c, &ram));
+
+        assert!(digest_state(&a, &ram).starts_with("sha256:"));
     }
 
     #[test]

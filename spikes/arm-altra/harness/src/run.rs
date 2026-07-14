@@ -52,9 +52,35 @@ use thiserror::Error;
 use crate::console::{Console, Event};
 use crate::evidence::{ExitReason, OverflowRecord, RunRecord};
 
-/// The PL011 data register, the guest's one MMIO door. Every byte the guest
-/// "prints" is a store here, and every store is a `KVM_EXIT_MMIO`.
+/// The PL011 data register, the guest's one MMIO door for *output*. Every byte the
+/// guest "prints" is a store here, and every store is a `KVM_EXIT_MMIO`.
 pub const PL011_DR: u64 = UART_BASE;
+
+/// The PL011 flag register (`UART_BASE + 0x18`). The guest **reads** this before
+/// every byte (`putb` waits on `TXFF`) and before opening a window (`drain` waits on
+/// `BUSY`). There is no in-kernel PL011, so those reads are MMIO exits the harness
+/// must answer — see [`PL011_FR_READY`].
+pub const PL011_FR: u64 = UART_BASE + 0x18;
+
+/// The value the harness returns for an [`PL011_FR`] read: **zero** — `TXFF` clear
+/// (the holding register can always take a byte) and `BUSY` clear (the transmitter
+/// is always drained). This makes the guest's `while FR & TXFF {}` and
+/// `while FR & BUSY {}` polls single-pass, exactly as QEMU's model does with the
+/// FIFO disabled, so the guest behaves identically under TCG and KVM. These polls
+/// live *outside* the counting window by construction (`payloads/runtime/src/uart.rs`),
+/// so answering them does not touch any counted branch.
+pub const PL011_FR_READY: u32 = 0;
+
+/// The PL011 register block is one 4 KiB page at [`UART_BASE`].
+const PL011_PAGE: u64 = 0x1000;
+
+/// Whether `addr` falls in the PL011 register page — the harness's one userspace
+/// MMIO device. The GIC is the in-kernel vGICv3 (KVM handles it), and the guest's
+/// RAM (params/pvclock pages included) is a real memory slot, so neither exits here.
+/// Anything outside this page is a genuine finding.
+fn is_pl011(addr: u64) -> bool {
+    (UART_BASE..UART_BASE + PL011_PAGE).contains(&addr)
+}
 
 /// How a `KVM_RUN` returned, as the seam reports it.
 ///
@@ -181,6 +207,16 @@ pub trait Vcpu {
     /// # Errors
     /// [`RunError::Seam`] if the ioctl itself failed.
     fn run(&mut self) -> Result<VcpuExit, RunError>;
+
+    /// Hand the value of an MMIO **read** back to the guest, so the next [`Vcpu::run`]
+    /// resumes with it (the KVM MMIO-read protocol: userspace fills the shared
+    /// `kvm_run.mmio.data` and re-enters). Called only after a read exit — the guest
+    /// polls the PL011 flag register before it can print, and with no in-kernel PL011
+    /// the harness is what answers.
+    ///
+    /// # Errors
+    /// [`RunError::Seam`] if the value could not be staged.
+    fn complete_mmio_read(&mut self, data: &[u8]) -> Result<(), RunError>;
 
     /// A digest of the guest's architectural state — the registers and memory that
     /// AA-3's replay-identity and AA-6's bit-identity floors compare.
@@ -309,16 +345,38 @@ pub fn run_sample(
                 data,
                 is_write,
             } => {
-                if addr != PL011_DR || !is_write {
-                    // The payloads touch exactly one MMIO address, and only to
-                    // write. Anything else is a finding, not something to skip past.
+                // The PL011 is the harness's one userspace MMIO device. A guest boots
+                // by writing the UART's config registers (CR/IBRD/FBRD/LCR_H) and polls
+                // its flag register before it can print a byte; with no in-kernel
+                // PL011, every one of those is an exit the harness must model, or the
+                // very first `runtime_init` write is rejected and no payload reaches
+                // MARK_BEGIN. Anything OUTSIDE the PL011 page, though, is a genuine
+                // finding (the GIC is the in-kernel vGIC; RAM is a real memory slot).
+                if !is_pl011(addr) {
                     return Err(RunError::UnexpectedMmio { addr });
                 }
-                // A PL011 data-register store carries its byte in the low lane,
-                // whatever the access width. A zero-length store is not a byte the
-                // guest printed — it is a malformed exit, and it is refused rather
-                // than skipped, because skipping it would silently drop console
-                // content the record's attestations are read out of.
+
+                if !is_write {
+                    // A register read — the guest is polling. Answer the flag register
+                    // as "ready" (see PL011_FR_READY) and re-enter; any other PL011
+                    // read (the payloads make none) also reads as zero. The value MUST
+                    // be handed back, or KVM_RUN resumes with stale data.
+                    let width = data.len().clamp(1, 8);
+                    vcpu.complete_mmio_read(&PL011_FR_READY.to_le_bytes()[..width.min(4)])?;
+                    continue 'run;
+                }
+
+                if addr != PL011_DR {
+                    // A config-register write (CR/IBRD/FBRD/LCR_H). The harness models
+                    // no baud/line state; the write is accepted and ignored. It is not
+                    // a finding — the guest must configure the UART before it prints.
+                    continue 'run;
+                }
+
+                // A data-register store carries its byte in the low lane, whatever the
+                // access width. A zero-length store is not a byte the guest printed —
+                // it is a malformed exit, refused rather than skipped, because skipping
+                // it would silently drop console content the attestations are read from.
                 let Some(&byte) = data.first() else {
                     return Err(RunError::UnexpectedMmio { addr });
                 };
@@ -529,10 +587,12 @@ mod tests {
     use oracle_model::{MARK_BEGIN, MARK_END};
 
     /// A scripted vCPU: a queue of exits, handed out one per `run()`, plus the state
-    /// digest the seam would report at the sentinel.
+    /// digest the seam would report at the sentinel and the last value the loop
+    /// handed back for an MMIO read.
     struct ScriptedVcpu {
         exits: std::collections::VecDeque<VcpuExit>,
         digest: String,
+        last_read_reply: Option<Vec<u8>>,
     }
 
     impl ScriptedVcpu {
@@ -555,6 +615,16 @@ mod tests {
             ScriptedVcpu {
                 exits,
                 digest: "sha256:1234".into(),
+                last_read_reply: None,
+            }
+        }
+
+        /// A vCPU that hands out exactly the given exits, in order.
+        fn from_exits(exits: Vec<VcpuExit>) -> ScriptedVcpu {
+            ScriptedVcpu {
+                exits: exits.into(),
+                digest: "sha256:1234".into(),
+                last_read_reply: None,
             }
         }
     }
@@ -562,6 +632,11 @@ mod tests {
     impl Vcpu for ScriptedVcpu {
         fn run(&mut self) -> Result<VcpuExit, RunError> {
             self.exits.pop_front().ok_or(RunError::NoExitSentinel)
+        }
+
+        fn complete_mmio_read(&mut self, data: &[u8]) -> Result<(), RunError> {
+            self.last_read_reply = Some(data.to_vec());
+            Ok(())
         }
 
         fn state_digest(&mut self) -> Result<String, RunError> {
@@ -1036,6 +1111,57 @@ mod tests {
             ),
             "a zero-length console store is malformed, not a byte to skip"
         );
+    }
+
+    #[test]
+    fn the_uart_config_writes_and_flag_reads_a_real_guest_makes_are_serviced() {
+        // The bug this pins: a real guest boots by writing the PL011 config registers
+        // (CR/IBRD/FBRD/LCR_H) and polling the flag register before every byte. With
+        // no in-kernel PL011 those are all MMIO exits; the round-2 loop accepted only
+        // DR writes and rejected the very first `runtime_init` write, so no payload
+        // reached MARK_BEGIN. Here the config writes and an FR read are spliced in
+        // ahead of the console stream, exactly as a booting guest emits them.
+        let mut exits = vec![
+            // CR=0, IBRD, FBRD, LCR_H, CR=UARTEN|TXE|RXE — config writes, no DR.
+            VcpuExit::Mmio {
+                addr: UART_BASE + 0x30,
+                data: vec![0, 0, 0, 0],
+                is_write: true,
+            },
+            VcpuExit::Mmio {
+                addr: UART_BASE + 0x24,
+                data: vec![1, 0, 0, 0],
+                is_write: true,
+            },
+            VcpuExit::Mmio {
+                addr: UART_BASE + 0x2c,
+                data: vec![0x60, 0, 0, 0],
+                is_write: true,
+            },
+            // A flag-register READ — the `putb` poll. The loop must answer it.
+            VcpuExit::Mmio {
+                addr: PL011_FR,
+                data: vec![0, 0, 0, 0],
+                is_write: false,
+            },
+        ];
+        // Then the ordinary console byte stream.
+        for &b in &transcript() {
+            exits.push(VcpuExit::Mmio {
+                addr: PL011_DR,
+                data: vec![b],
+                is_write: true,
+            });
+        }
+        let mut vcpu = ScriptedVcpu::from_exits(exits);
+        let mut counter = ScriptedCounter::new(&[1_000, 2_001]);
+        let record = run_sample(&mut vcpu, &mut counter, &spec(None)).expect("guest booted");
+        assert_eq!(
+            record.measured_taken, 1_001,
+            "the window was still measured"
+        );
+        // The FR read was answered "ready" (zero), so the guest's poll is single-pass.
+        assert_eq!(vcpu.last_read_reply.as_deref(), Some(&[0u8, 0, 0, 0][..]));
     }
 
     #[test]
