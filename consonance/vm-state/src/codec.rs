@@ -4,7 +4,7 @@
 //! Container layout (all integers little-endian):
 //!
 //! ```text
-//! header:  magic:u32  version:u16  section_count:u16
+//! header:  magic:u32  version:u16  arch:u16  section_count:u16
 //! section: tag:u16  len:u32  payload[len]      (repeated, ascending tag order)
 //! ```
 //!
@@ -24,7 +24,7 @@ use crate::wire::{
     DebugRegsWire, EventsWire, HeaderWire, MsrPairWire, RegsWire, SregsWire, TimerEntryWire,
     VtimeWire, XcrsWire,
 };
-use crate::{VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
+use crate::{ARCH_X86_64, VM_STATE_MAGIC, VM_STATE_VERSION, VmState};
 
 // Section tags, in their canonical ascending order. Every v1 blob carries all
 // of them exactly once; there are no optional sections.
@@ -45,8 +45,9 @@ const TAG_CONTRACT_HASH: u16 = 13;
 /// The number of sections every v1 blob carries.
 const SECTION_COUNT: u16 = 13;
 
-/// Length of the fixed container header (magic + version + section count).
-const HEADER_LEN: usize = 8;
+/// Length of the fixed container header (magic + version + arch tag + section
+/// count). 10 bytes since v2 (the arch tag).
+const HEADER_LEN: usize = 10;
 
 const MP_STATE_RUNNABLE: u8 = 0;
 const MP_STATE_HALTED: u8 = 1;
@@ -84,6 +85,9 @@ impl VmState {
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
                 version: VM_STATE_VERSION.into(),
+                // The record set below is x86-64's; the tag says so, so a decoder
+                // can never reinterpret it as another architecture's.
+                arch: ARCH_X86_64.into(),
                 section_count: SECTION_COUNT.into(),
             }
             .as_bytes(),
@@ -134,6 +138,13 @@ impl VmState {
         let version = header.version.get();
         if version != VM_STATE_VERSION {
             return Err(VmStateError::UnsupportedVersion(version));
+        }
+        // The arch tag gates the RECORDS: this build carries only the x86-64
+        // record set, and another architecture's `REGS`/`SREGS` bytes would decode
+        // into x86 fields without a single length or tag mismatch. Fail closed.
+        let arch = header.arch.get();
+        if arch != ARCH_X86_64 {
+            return Err(VmStateError::UnsupportedArch(arch));
         }
         let section_count = header.section_count.get();
 

@@ -66,7 +66,22 @@ pub use types::{
 pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
 /// The format version this build writes and is the only version it decodes.
-pub const VM_STATE_VERSION: u16 = 1;
+///
+/// **v2** (`docs/ARCH-BOUNDARY.md` step 4) added the container header's **arch
+/// tag**: the register/sysreg record set a blob carries is per-architecture, and
+/// the record *tags* alone cannot tell an x86 `REGS` section from an arm64 one —
+/// two different record sets would decode into each other's fields. The tag makes
+/// that a loud [`VmStateError::UnsupportedArch`] instead of a silent
+/// reinterpretation. A v1 blob (no tag) is rejected at the version gate, never
+/// parsed with the v2 reader.
+pub const VM_STATE_VERSION: u16 = 2;
+
+/// The **arch tag** of the record set this build writes: x86-64
+/// (`docs/ARCH-BOUNDARY.md` §B — "arm64 record set; same TLV container;
+/// `VM_STATE_VERSION` bump + arch tag in the header"). A vendor's records are
+/// only ever decoded under its own tag; an unknown tag is
+/// [`VmStateError::UnsupportedArch`], never a reinterpretation of foreign bytes.
+pub const ARCH_X86_64: u16 = 1;
 
 /// The complete non-memory machine snapshot.
 ///

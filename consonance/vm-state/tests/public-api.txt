@@ -12,6 +12,7 @@ pub vm_state::VmStateError::SectionOrder(u16)
 pub vm_state::VmStateError::TrailingBytes
 pub vm_state::VmStateError::Truncated
 pub vm_state::VmStateError::UnknownTag(u16)
+pub vm_state::VmStateError::UnsupportedArch(u16)
 pub vm_state::VmStateError::UnsupportedVersion(u16)
 pub struct vm_state::DebugRegs
 pub vm_state::DebugRegs::db: [u64; 4]
@@ -107,5 +108,6 @@ pub vm_state::VtimeState::snapshot_vns: u64
 pub struct vm_state::Xcrs
 pub vm_state::Xcrs::xcr0: u64
 pub struct vm_state::XsaveImage(pub alloc::vec::Vec<u8>)
+pub const vm_state::ARCH_X86_64: u16
 pub const vm_state::VM_STATE_MAGIC: u32
 pub const vm_state::VM_STATE_VERSION: u16

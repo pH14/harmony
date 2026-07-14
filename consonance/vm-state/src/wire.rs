@@ -13,12 +13,17 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::types::{DebugRegs, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VtimeState, Xcrs};
 
-/// The 8-byte container header: magic, version, section count.
+/// The 10-byte container header: magic, version, arch tag, section count.
+///
+/// The **arch tag** (v2) names the architecture whose record set the sections
+/// carry — which registers a `REGS`/`SREGS` section holds is per-arch, so a blob
+/// is only ever decoded under its own tag.
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 pub(crate) struct HeaderWire {
     pub magic: U32,
     pub version: U16,
+    pub arch: U16,
     pub section_count: U16,
 }
 
