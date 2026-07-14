@@ -32,7 +32,7 @@ throughput; the vendor spikes gate *trust* (measured constants, the trait freeze
 fill), not construction. The ruled 5-lane queue and its risk acceptance live in
 `docs/ARCH-BOUNDARY.md` §Pre-build ruling.
 
-## In flight (1 active worker; 1 PR in foreman review)
+## In flight (2 active workers; 1 PR in foreman review)
 
 - **Nested-x86 re-certification** (PR #98, worker agent-pr98, Fable 5) — **⛔ MERGE HALTED
   AT THE LAST GATE, ESCALATED TO PAUL (2026-07-14 ~10:20)**: N-3 is fully green (six
@@ -48,6 +48,12 @@ fill), not construction. The ruled 5-lane queue and its risk acceptance live in
   revision** — see PR #98 comment 4970278590. Worker meanwhile fixing the instrument
   (armed-PMI recompute from records, disposition walk-back, fmt/SPDX/stressor/migration/
   n5-demo/pmu-cursor findings). `hm-60k` blocked on the ruling.
+- **Paravirt work-derived clock, x86** (tasks/110, `hm-rk5`) — **SPAWNED 2026-07-14 midday**
+  (Fable 5, branch task/paravirt-clock-x86) off the freshly-merged Arch seam. Implementation
+  spec committed to main (a1ee416) binding docs/PARAVIRT-CLOCK.md: rename ride-along,
+  page stamping + 4-point refresh discipline, registration transport, seal canonical
+  re-stamp, guest clocksource, rdtsc opcode-scan gate, G1/G2/G3 + N-4 perf. Portable-first;
+  box only in a foreman-granted window (nested-x86 re-cert has priority).
 - **ARM pre-build apparatus** (tasks/109, `hm-2kj`) — **round 5 in flight** (PR #108).
   Rounds 1–4 each fixed-and-verified (r1's 8 evidence-integrity threads, r2's KVM machine
   layer, r3's semantic edges, r4's 8 fail-closed/accounting items incl. live-clock-filtered
@@ -114,8 +120,9 @@ spawn these until that lane re-opens):
   **harmonyd `hm-9od` is DEFERRED** (Paul 2026-07-12: no resident daemon until a live
   consumer exists; appliance ships gate mode only — do not auto-spawn).
 - **Pre-build queue, gated lanes** (`docs/ARCH-BOUNDARY.md` §Pre-build ruling): the
-  paravirt work-derived clock x86-first `hm-rk5`, the ARM backend skeleton (D-list)
-  `hm-cbt`, and the contract vendor column (AE-4's shape) `hm-0nf` — all three now ←
+  ARM backend skeleton (D-list)
+  `hm-cbt` and the contract vendor column (AE-4's shape) `hm-0nf` (paravirt clock `hm-rk5`
+  now IN FLIGHT, tasks/110) — ←
   **PR #109 merge gate `hm-54m`** (the keystone branch is done but unmerged; the
   merge-window rule holds until it lands — **cleared 2026-07-14 midday**); AMD hammer variants + `svm.c` draft `hm-8v4`
   ← spike-branch merge `hm-l2g` (the hammer source and the Intel box both free then).
